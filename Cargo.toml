@@ -1,0 +1,10 @@
+[package]
+name = "xana"
+version = "0.1.0"
+edition = "2024"
+description = "A small, extensible personal AI agent harness written in Rust"
+license = "MIT"
+repository = "https://github.com/labcoder/xana"
+readme = "README.md"
+
+[dependencies]

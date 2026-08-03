@@ -1,0 +1,7 @@
+/target
+
+# Local secrets and machine-specific environment
+.env
+.env.*
+!.env.example
+.DS_Store
