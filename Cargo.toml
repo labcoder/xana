@@ -8,3 +8,5 @@ repository = "https://github.com/labcoder/xana"
 readme = "README.md"
 
 [dependencies]
+anyhow = "1.0.104"
+directories = "6.0.0"
