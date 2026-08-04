@@ -4,8 +4,8 @@ use serde_json::Value;
 pub(crate) enum Role {
     User,
     Assistant,
+    Tool,
 }
-
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolCall {
     pub(crate) id: String,
@@ -13,10 +13,42 @@ pub(crate) struct ToolCall {
     pub(crate) arguments: Value,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ToolResultStatus {
+    Success,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ToolResult {
+    pub(crate) call_id: String,
+    pub(crate) output: String,
+    pub(crate) status: ToolResultStatus,
+}
+
+impl ToolResult {
+    pub(crate) fn success(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            call_id: call_id.into(),
+            output: output.into(),
+            status: ToolResultStatus::Success,
+        }
+    }
+
+    pub(crate) fn error(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            call_id: call_id.into(),
+            output: output.into(),
+            status: ToolResultStatus::Error,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ContentBlock {
     Text(String),
     ToolCall(ToolCall),
+    ToolResult(ToolResult),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +65,13 @@ impl Message {
         Self {
             role,
             content: vec![ContentBlock::Text(text)],
+        }
+    }
+
+    pub(crate) fn tool_result(result: ToolResult) -> Self {
+        Self {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(result)],
         }
     }
 }
@@ -82,6 +121,29 @@ mod tests {
         assert!(matches!(
             &message.content[2],
             ContentBlock::Text(text) if text == "after"
+        ));
+    }
+
+    #[test]
+    fn tool_result_constructors_preserve_semantic_output() {
+        let success = ToolResult::success("call-1", "contents");
+        let error = ToolResult::error("call-2", "missing file");
+
+        assert_eq!(success.status, ToolResultStatus::Success);
+        assert_eq!(success.output, "contents");
+        assert_eq!(error.status, ToolResultStatus::Error);
+        assert_eq!(error.output, "missing file");
+    }
+
+    #[test]
+    fn tool_result_message_has_one_correlated_block() {
+        let message = Message::tool_result(ToolResult::success("call-1", "contents"));
+
+        assert_eq!(message.role, Role::Tool);
+        assert!(matches!(
+            message.content.as_slice(),
+            [ContentBlock::ToolResult(result)]
+                if result.call_id == "call-1" && result.output == "contents"
         ));
     }
 }

@@ -1,4 +1,4 @@
-use crate::message::{ContentBlock, Message, Role, ToolCall};
+use crate::message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -9,6 +9,7 @@ use std::fmt;
 enum WireRole {
     User,
     Assistant,
+    Tool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,6 +39,8 @@ struct WireMessage {
     content: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<WireToolCall>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,6 +66,11 @@ enum MessageConversionError {
     InvalidToolArguments {
         tool_call_id: String,
         source: serde_json::Error,
+    },
+    UnexpectedResponseRole(WireRole),
+    InvalidMessageShape {
+        role: Role,
+        detail: &'static str,
     },
 }
 
@@ -181,6 +189,12 @@ impl fmt::Display for MessageConversionError {
                     "tool call {tool_call_id:?} contained invalid JSON arguments: {source}"
                 )
             }
+            Self::UnexpectedResponseRole(role) => {
+                write!(f, "provider returned unexpected response role {role:?}")
+            }
+            Self::InvalidMessageShape { role, detail } => {
+                write!(f, "internal {role:?} message is invalid: {detail}")
+            }
         }
     }
 }
@@ -189,7 +203,9 @@ impl Error for MessageConversionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::InvalidToolArguments { source, .. } => Some(source),
-            Self::TextAfterToolCall => None,
+            Self::TextAfterToolCall
+            | Self::UnexpectedResponseRole(_)
+            | Self::InvalidMessageShape { .. } => None,
         }
     }
 }
@@ -199,15 +215,7 @@ impl From<Role> for WireRole {
         match role {
             Role::User => Self::User,
             Role::Assistant => Self::Assistant,
-        }
-    }
-}
-
-impl From<WireRole> for Role {
-    fn from(role: WireRole) -> Self {
-        match role {
-            WireRole::User => Self::User,
-            WireRole::Assistant => Self::Assistant,
+            Role::Tool => Self::Tool,
         }
     }
 }
@@ -254,6 +262,10 @@ impl TryFrom<WireMessage> for Message {
     type Error = MessageConversionError;
 
     fn try_from(wire: WireMessage) -> Result<Self, Self::Error> {
+        if wire.role != WireRole::Assistant {
+            return Err(MessageConversionError::UnexpectedResponseRole(wire.role));
+        }
+
         let mut content = Vec::new();
 
         if let Some(text) = wire.content {
@@ -265,7 +277,7 @@ impl TryFrom<WireMessage> for Message {
         }
 
         Ok(Self {
-            role: wire.role.into(),
+            role: Role::Assistant,
             content,
         })
     }
@@ -275,6 +287,28 @@ impl TryFrom<&Message> for WireMessage {
     type Error = MessageConversionError;
 
     fn try_from(message: &Message) -> Result<Self, Self::Error> {
+        if message.role == Role::Tool {
+            return match message.content.as_slice() {
+                [ContentBlock::ToolResult(result)] => {
+                    let content = match result.status {
+                        ToolResultStatus::Success => result.output.clone(),
+                        ToolResultStatus::Error => format!("ERROR: {}", result.output),
+                    };
+
+                    Ok(Self {
+                        role: WireRole::Tool,
+                        content: Some(content),
+                        tool_calls: None,
+                        tool_call_id: Some(result.call_id.clone()),
+                    })
+                }
+                _ => Err(MessageConversionError::InvalidMessageShape {
+                    role: message.role,
+                    detail: "tool messages require exactly one tool-result block",
+                }),
+            };
+        }
+
         let mut text: Option<String> = None;
         let mut tool_calls = Vec::new();
         let mut saw_tool_call = false;
@@ -295,6 +329,12 @@ impl TryFrom<&Message> for WireMessage {
                     saw_tool_call = true;
                     tool_calls.push(WireToolCall::from(tool_call));
                 }
+                ContentBlock::ToolResult(_) => {
+                    return Err(MessageConversionError::InvalidMessageShape {
+                        role: message.role,
+                        detail: "user and assistant messages cannot contain tool results",
+                    });
+                }
             }
         }
 
@@ -302,6 +342,7 @@ impl TryFrom<&Message> for WireMessage {
             role: message.role.into(),
             content: text,
             tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+            tool_call_id: None,
         })
     }
 }
@@ -386,6 +427,7 @@ fn chat_endpoint(base_url: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::ToolResult;
 
     fn first_fixture_message(json: &str) -> WireMessage {
         let response = match serde_json::from_str::<WireChatResponse>(json) {
@@ -402,6 +444,7 @@ mod tests {
     fn assert_wire_messages_match(expected: &WireMessage, actual: &WireMessage) {
         assert_eq!(actual.role, expected.role);
         assert_eq!(actual.content, expected.content);
+        assert_eq!(actual.tool_call_id, expected.tool_call_id);
         let expected_calls = expected.tool_calls.as_deref().unwrap_or(&[]);
         let actual_calls = actual.tool_calls.as_deref().unwrap_or(&[]);
 
@@ -434,11 +477,59 @@ mod tests {
     }
 
     #[test]
-    fn roles_convert_in_both_directions() {
+    fn roles_convert_to_wire() {
         assert_eq!(WireRole::from(Role::User), WireRole::User);
         assert_eq!(WireRole::from(Role::Assistant), WireRole::Assistant);
-        assert_eq!(Role::from(WireRole::User), Role::User);
-        assert_eq!(Role::from(WireRole::Assistant), Role::Assistant);
+        assert_eq!(WireRole::from(Role::Tool), WireRole::Tool);
+    }
+
+    #[test]
+    fn tool_results_serialize_status_and_original_call_id() {
+        let success = Message::tool_result(ToolResult::success("call-ok", "contents"));
+        let error = Message::tool_result(ToolResult::error("call-err", "missing file"));
+
+        let success_wire = WireMessage::try_from(&success).expect("success wire message");
+        let error_wire = WireMessage::try_from(&error).expect("error wire message");
+
+        assert_eq!(success_wire.role, WireRole::Tool);
+        assert_eq!(success_wire.content.as_deref(), Some("contents"));
+        assert_eq!(success_wire.tool_call_id.as_deref(), Some("call-ok"));
+        assert_eq!(error_wire.content.as_deref(), Some("ERROR: missing file"));
+        assert_eq!(error_wire.tool_call_id.as_deref(), Some("call-err"));
+    }
+
+    #[test]
+    fn tool_role_from_provider_is_rejected_as_a_response() {
+        let wire = WireMessage {
+            role: WireRole::Tool,
+            content: Some("contents".to_owned()),
+            tool_calls: None,
+            tool_call_id: Some("call-1".to_owned()),
+        };
+
+        assert!(matches!(
+            Message::try_from(wire),
+            Err(MessageConversionError::UnexpectedResponseRole(
+                WireRole::Tool
+            ))
+        ));
+    }
+
+    #[test]
+    fn invalid_tool_message_fails_before_http() {
+        let client =
+            OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
+        let message = Message::text(Role::Tool, "tool messages require a tool-result block");
+
+        let result = client.send_message(&[message]);
+
+        match result {
+            Err(error) => {
+                assert_eq!(error.kind, OpenAiCompatErrorKind::RequestConversion);
+                assert!(error.source().is_some());
+            }
+            Ok(_) => panic!("expected request conversion to fail"),
+        }
     }
 
     #[test]
@@ -696,7 +787,7 @@ mod tests {
         assert_eq!(value["messages"][1]["content"], "Hi there");
     }
 
-        #[test]
+    #[test]
     fn adjacent_text_blocks_normalize_to_one_wire_string() {
         let message = Message {
             role: Role::Assistant,

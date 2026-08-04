@@ -35,6 +35,7 @@ fn print_assistant(message: &Message) {
             ContentBlock::ToolCall(tool_call) => {
                 print!("[tool call requested: {}]", tool_call.name);
             }
+            ContentBlock::ToolResult(_) => {}
         }
     }
 
