@@ -1,4 +1,5 @@
 use crate::message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus};
+use crate::tool::ToolDefinition;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -32,6 +33,20 @@ struct WireToolCall {
     function: WireFunctionCall,
 }
 
+#[derive(Debug, Serialize)]
+struct WireToolDefinition<'a> {
+    #[serde(rename = "type")]
+    kind: WireToolKind,
+    function: WireFunctionDefinition<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct WireFunctionDefinition<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WireMessage {
     role: WireRole,
@@ -48,6 +63,8 @@ struct WireChatRequest<'a> {
     model: &'a str,
     messages: Vec<WireMessage>,
     stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<WireToolDefinition<'a>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,6 +184,19 @@ impl Error for OpenAiCompatError {
             OpenAiCompatErrorSource::Conversion(source) => Some(source),
             OpenAiCompatErrorSource::Http(source) => Some(source),
             OpenAiCompatErrorSource::None => None,
+        }
+    }
+}
+
+impl<'a> From<&'a ToolDefinition> for WireToolDefinition<'a> {
+    fn from(definition: &'a ToolDefinition) -> Self {
+        Self {
+            kind: WireToolKind::Function,
+            function: WireFunctionDefinition {
+                name: definition.name,
+                description: definition.description,
+                parameters: &definition.parameters,
+            },
         }
     }
 }
@@ -368,7 +398,11 @@ impl OpenAiCompatClient {
         &self.endpoint
     }
 
-    pub(crate) fn send_message(&self, messages: &[Message]) -> Result<Message, OpenAiCompatError> {
+    pub(crate) fn send_message(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+    ) -> Result<Message, OpenAiCompatError> {
         let wire_messages = messages
             .iter()
             .map(WireMessage::try_from)
@@ -385,6 +419,7 @@ impl OpenAiCompatClient {
             model: &self.model,
             messages: wire_messages,
             stream: false,
+            tools: tools.iter().map(WireToolDefinition::from).collect(),
         };
 
         let response = self
@@ -521,7 +556,7 @@ mod tests {
             OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
         let message = Message::text(Role::Tool, "tool messages require a tool-result block");
 
-        let result = client.send_message(&[message]);
+        let result = client.send_message(&[message], &[]);
 
         match result {
             Err(error) => {
@@ -667,7 +702,7 @@ mod tests {
             ],
         };
 
-        let result = client.send_message(&[message]);
+        let result = client.send_message(&[message], &[]);
 
         match result {
             Err(error) => {
@@ -751,8 +786,16 @@ mod tests {
     #[test]
     fn request_serializes_internal_history_at_the_wire_edge() {
         let messages = [
-            Message::text(Role::User, "Hello"),
-            Message::text(Role::Assistant, "Hi there"),
+            Message::text(Role::User, "Read README.md"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: "call-1".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: serde_json::json!({"path": "README.md"}),
+                })],
+            },
+            Message::tool_result(ToolResult::success("call-1", "README contents")),
         ];
 
         let wire_messages = match messages
@@ -768,6 +811,7 @@ mod tests {
             model: "qwen2.5-coder:7b",
             messages: wire_messages,
             stream: false,
+            tools: Vec::new(),
         };
 
         let value = match serde_json::to_value(&request) {
@@ -777,14 +821,75 @@ mod tests {
 
         assert_eq!(value["model"], "qwen2.5-coder:7b");
         assert_eq!(value["stream"], false);
+        assert!(value.get("tools").is_none());
+
+        let messages = &value["messages"];
+
+        assert_eq!(messages.as_array().map(Vec::len), Some(3));
+
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], "Read README.md");
+
+        assert_eq!(messages[1]["role"], "assistant");
+        assert_eq!(messages[1]["tool_calls"][0]["id"], "call-1");
+        assert_eq!(messages[1]["tool_calls"][0]["type"], "function");
         assert_eq!(
-            value["messages"].as_array().map(|messages| messages.len()),
-            Some(2)
+            messages[1]["tool_calls"][0]["function"]["name"],
+            "read_file"
         );
-        assert_eq!(value["messages"][0]["role"], "user");
-        assert_eq!(value["messages"][0]["content"], "Hello");
-        assert_eq!(value["messages"][1]["role"], "assistant");
-        assert_eq!(value["messages"][1]["content"], "Hi there");
+        assert_eq!(
+            messages[1]["tool_calls"][0]["function"]["arguments"],
+            r#"{"path":"README.md"}"#
+        );
+
+        assert_eq!(messages[2]["role"], "tool");
+        assert_eq!(messages[2]["content"], "README contents");
+        assert_eq!(messages[2]["tool_call_id"], "call-1");
+    }
+
+    #[test]
+    fn request_serializes_tool_definition_at_the_wire_edge() {
+        let definitions = crate::tool::definitions();
+
+        let definition = match definitions.first() {
+            Some(definition) => definition,
+            None => panic!("expected one tool definition"),
+        };
+
+        let request = WireChatRequest {
+            model: "test-model",
+            messages: Vec::new(),
+            stream: false,
+            tools: vec![WireToolDefinition::from(definition)],
+        };
+
+        let value = match serde_json::to_value(&request) {
+            Ok(value) => value,
+            Err(error) => panic!("expected request to serialize: {error}"),
+        };
+
+        assert_eq!(value["tools"].as_array().map(Vec::len), Some(1));
+        assert_eq!(value["tools"][0]["type"], "function");
+        assert_eq!(value["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(
+            value["tools"][0]["function"]["parameters"]["type"],
+            "object"
+        );
+        assert_eq!(
+            value["tools"][0]["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        assert_eq!(
+            value["tools"][0]["function"]["parameters"]["required"],
+            serde_json::json!(["path"])
+        );
+
+        let properties = &value["tools"][0]["function"]["parameters"]["properties"];
+
+        assert_eq!(properties["start_line"]["type"], "integer");
+        assert_eq!(properties["start_line"]["minimum"], 1);
+        assert_eq!(properties["end_line"]["type"], "integer");
+        assert_eq!(properties["end_line"]["minimum"], 1);
     }
 
     #[test]

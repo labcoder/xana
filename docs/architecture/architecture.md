@@ -6,9 +6,22 @@ not claims about code that has already shipped.
 
 ## Current state
 
-Xana is currently one Rust binary crate. Cross-platform CI, package metadata,
-and the architectural guardrails are in place; configuration and agent
-behavior are being added incrementally.
+Xana is currently one Rust binary crate with a blocking terminal interface.
+Its provider-neutral conversation model carries ordered text, tool-call, and
+correlated tool-result content. OpenAI-compatible request and response types,
+including the conversion of those calls and results, remain private to the
+provider adapter.
+
+The current host-tool surface contains one workspace-scoped tool:
+`read_file`. It accepts relative paths beneath the directory where Xana
+started, resolves them against that root, requires a regular UTF-8 file, and
+limits reads to 64 KiB. The CLI advertises that definition, executes requested
+calls serially, appends each correlated result to conversation history, and
+continues through a blocking model/tool loop with an eight-round bound.
+
+Those checks are path and resource policy, not user authorization or process
+containment. The current implementation has no permission broker or sandbox;
+the process still runs with its ordinary host access.
 
 The early single-crate layout is intentional. Module boundaries establish the
 design first. They become workspace crate boundaries only after the engine,
