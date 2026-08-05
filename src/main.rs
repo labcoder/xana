@@ -1,29 +1,20 @@
+mod agent;
 mod config;
 mod message;
 mod provider;
 mod tool;
 
-use anyhow::{Context, Result, bail};
+use agent::Agent;
+use anyhow::{Context, Result};
 use config::{XanaConfig, config_path};
-use message::{ContentBlock, Message, Role, ToolCall};
+use message::{ContentBlock, Message, Role};
 use provider::openai_compat::OpenAiCompatClient;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
-use std::path::{Path, PathBuf};
-use tool::ToolDefinition;
+use std::path::PathBuf;
+use tool::ToolRegistry;
 
 const MAX_TOOL_ROUNDS: usize = 8;
-
-fn requested_tools(message: &Message) -> Vec<ToolCall> {
-    message
-        .content
-        .iter()
-        .filter_map(|block| match block {
-            ContentBlock::ToolCall(call) => Some(call.clone()),
-            ContentBlock::Text(_) | ContentBlock::ToolResult(_) => None,
-        })
-        .collect()
-}
 
 #[derive(Debug, PartialEq, Eq)]
 enum InputAction<'a> {
@@ -58,41 +49,14 @@ fn print_assistant(message: &Message) {
     println!();
 }
 
-fn run_turn(
-    provider: &OpenAiCompatClient,
-    definitions: &[ToolDefinition],
-    workspace_root: &Path,
-    messages: &mut Vec<Message>,
-) -> Result<()> {
-    for _ in 0..MAX_TOOL_ROUNDS {
-        let assistant = provider.send_message(messages, definitions)?;
-        let calls = requested_tools(&assistant);
-
-        if calls.is_empty() {
-            print_assistant(&assistant);
-            messages.push(assistant);
-            return Ok(());
-        }
-
-        messages.push(assistant);
-
-        for call in calls {
-            println!("xana> using {}", call.name);
-            let result = tool::execute(&call, workspace_root);
-            messages.push(Message::tool_result(result));
-        }
-    }
-
-    bail!("model exceeded the {MAX_TOOL_ROUNDS}-round tool limit")
-}
-
 fn run_chat(config: XanaConfig, workspace_root: PathBuf) -> Result<()> {
     let provider = OpenAiCompatClient::new(config.base_url, config.model);
-    let definitions = tool::definitions();
+    println!("chat endpoint: {}", provider.endpoint());
+
+    let tools = ToolRegistry::builtins().context("could not build tool registry")?;
+    let agent = Agent::new(provider, tools, workspace_root, MAX_TOOL_ROUNDS);
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let mut messages = Vec::new();
-
-    println!("chat endpoint: {}", provider.endpoint());
 
     loop {
         match editor.readline("you> ") {
@@ -111,7 +75,9 @@ fn run_chat(config: XanaConfig, workspace_root: PathBuf) -> Result<()> {
                         .context("could not add input to editor history")?;
 
                     messages.push(Message::text(Role::User, input));
-                    run_turn(&provider, &definitions, &workspace_root, &mut messages)?;
+                    let assistant = agent.run_turn(&mut messages)?;
+                    print_assistant(&assistant);
+                    messages.push(assistant);
                 }
             },
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
@@ -154,50 +120,5 @@ mod tests {
             InputAction::Send("hello Xana")
         );
         assert_eq!(classify_input("clear"), InputAction::Send("clear"));
-    }
-
-    #[test]
-    fn requested_tools_preserve_model_order_and_values() {
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
-                ContentBlock::Text("I'll inspect both.".to_owned()),
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call-a".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "a.txt"}),
-                }),
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call-b".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "b.txt"}),
-                }),
-            ],
-        };
-
-        let calls = requested_tools(&message);
-
-        assert_eq!(
-            calls,
-            vec![
-                ToolCall {
-                    id: "call-a".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "a.txt"}),
-                },
-                ToolCall {
-                    id: "call-b".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "b.txt"}),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn requested_tools_are_empty_for_final_text() {
-        let message = Message::text(Role::Assistant, "Finished.");
-
-        assert!(requested_tools(&message).is_empty());
     }
 }

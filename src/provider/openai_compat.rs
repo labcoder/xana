@@ -401,7 +401,7 @@ impl OpenAiCompatClient {
     pub(crate) fn send_message(
         &self,
         messages: &[Message],
-        tools: &[ToolDefinition],
+        tools: &[&ToolDefinition],
     ) -> Result<Message, OpenAiCompatError> {
         let wire_messages = messages
             .iter()
@@ -419,7 +419,10 @@ impl OpenAiCompatClient {
             model: &self.model,
             messages: wire_messages,
             stream: false,
-            tools: tools.iter().map(WireToolDefinition::from).collect(),
+            tools: tools
+                .iter()
+                .map(|definition| WireToolDefinition::from(*definition))
+                .collect(),
         };
 
         let response = self
@@ -848,48 +851,77 @@ mod tests {
     }
 
     #[test]
-    fn request_serializes_tool_definition_at_the_wire_edge() {
-        let definitions = crate::tool::definitions();
-
-        let definition = match definitions.first() {
-            Some(definition) => definition,
-            None => panic!("expected one tool definition"),
-        };
-
+    fn request_serializes_all_registry_definitions_without_runtime_metadata() {
+        let registry = crate::tool::ToolRegistry::builtins().expect("built-in registry");
+        let definitions = registry.definitions();
         let request = WireChatRequest {
             model: "test-model",
             messages: Vec::new(),
             stream: false,
-            tools: vec![WireToolDefinition::from(definition)],
+            tools: definitions
+                .iter()
+                .map(|definition| WireToolDefinition::from(*definition))
+                .collect(),
         };
 
-        let value = match serde_json::to_value(&request) {
-            Ok(value) => value,
-            Err(error) => panic!("expected request to serialize: {error}"),
-        };
+        let value = serde_json::to_value(&request).expect("request JSON");
+        let tools = value["tools"].as_array().expect("tool array");
 
-        assert_eq!(value["tools"].as_array().map(Vec::len), Some(1));
-        assert_eq!(value["tools"][0]["type"], "function");
-        assert_eq!(value["tools"][0]["function"]["name"], "read_file");
+        assert_eq!(tools.len(), 3);
         assert_eq!(
-            value["tools"][0]["function"]["parameters"]["type"],
-            "object"
+            tools
+                .iter()
+                .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
+                .collect::<Vec<_>>(),
+            vec!["read_file", "list_files", "edit_file"]
         );
+
+        for tool in tools {
+            assert_eq!(tool["type"], "function");
+            assert_eq!(tool["function"]["parameters"]["type"], "object");
+            assert_eq!(
+                tool["function"]["parameters"]["additionalProperties"],
+                false
+            );
+            assert!(tool.get("effect_class").is_none());
+            assert!(tool.get("replay_safety").is_none());
+            assert!(tool["function"].get("effect_class").is_none());
+            assert!(tool["function"].get("replay_safety").is_none());
+        }
+
+        let read_file = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "read_file")
+            .expect("read_file schema");
+        let list_files = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "list_files")
+            .expect("list_files schema");
+        let edit_file = tools
+            .iter()
+            .find(|tool| tool["function"]["name"] == "edit_file")
+            .expect("edit_file schema");
+
         assert_eq!(
-            value["tools"][0]["function"]["parameters"]["additionalProperties"],
-            false
-        );
-        assert_eq!(
-            value["tools"][0]["function"]["parameters"]["required"],
+            read_file["function"]["parameters"]["required"],
             serde_json::json!(["path"])
         );
-
-        let properties = &value["tools"][0]["function"]["parameters"]["properties"];
-
-        assert_eq!(properties["start_line"]["type"], "integer");
-        assert_eq!(properties["start_line"]["minimum"], 1);
-        assert_eq!(properties["end_line"]["type"], "integer");
-        assert_eq!(properties["end_line"]["minimum"], 1);
+        assert_eq!(
+            read_file["function"]["parameters"]["properties"]["start_line"]["minimum"],
+            1
+        );
+        assert_eq!(
+            read_file["function"]["parameters"]["properties"]["end_line"]["minimum"],
+            1
+        );
+        assert_eq!(
+            list_files["function"]["parameters"]["required"],
+            serde_json::json!(["path"])
+        );
+        assert_eq!(
+            edit_file["function"]["parameters"]["required"],
+            serde_json::json!(["path", "old_text", "new_text"])
+        );
     }
 
     #[test]

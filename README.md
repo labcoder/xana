@@ -20,15 +20,22 @@ Xana currently provides multi-turn terminal chat through an
 OpenAI-compatible local endpoint. The configured model must support native
 tool calling to use Xana's tool path.
 
-Xana advertises one tool: `read_file`. When the model requests it, Xana reads
-a regular UTF-8 file beneath the directory where the process started and
-returns the contents to the same conversation. Paths must be relative, must
-remain within that launch directory after resolution, and cannot name files
-larger than 64 KiB.
+Xana advertises three workspace tools through a trait-based registry:
 
-These reads currently run automatically. Path validation limits what
-`read_file` accepts, but it is not a permission system or a sandbox. Xana does
-not yet prompt for approval, and the process retains its normal host access.
+- `read_file` reads a regular UTF-8 file, or an inclusive one-based line range.
+- `list_files` lists one directory non-recursively as sorted JSON, with limits
+  of 256 entries and 64 KiB of output.
+- `edit_file` replaces exactly one occurrence of text in an existing regular
+  UTF-8 file.
+
+All paths must be relative to the directory where Xana started and must remain
+beneath that directory after resolution. Reads and resulting edits are capped
+at 64 KiB. The agent loop is also bounded to eight model/tool rounds per turn.
+
+These tools currently run automatically. Their path and resource validation,
+effect class, and replay-safety metadata are not a permission system or a
+sandbox. Xana does not yet prompt for approval, and the process retains its
+normal host access. `edit_file` also does not claim atomic or crash-safe writes.
 
 ## Development
 

@@ -12,16 +12,24 @@ correlated tool-result content. OpenAI-compatible request and response types,
 including the conversion of those calls and results, remain private to the
 provider adapter.
 
-The current host-tool surface contains one workspace-scoped tool:
-`read_file`. It accepts relative paths beneath the directory where Xana
-started, resolves them against that root, requires a regular UTF-8 file, and
-limits reads to 64 KiB. The CLI advertises that definition, executes requested
-calls serially, appends each correlated result to conversation history, and
-continues through a blocking model/tool loop with an eight-round bound.
+The current host-tool surface contains three workspace-scoped tools behind a
+provider-neutral, object-safe `Tool` trait. `read_file` reads bounded UTF-8
+content and retains its optional inclusive line ranges. `list_files` returns a
+bounded, sorted, non-recursive directory listing. `edit_file` replaces exactly
+one match in an existing bounded UTF-8 file. A deterministic registry caches
+each definition beside its implementation, dispatches requested calls, and
+declares broad effect class separately from replay safety.
 
-Those checks are path and resource policy, not user authorization or process
-containment. The current implementation has no permission broker or sandbox;
-the process still runs with its ordinary host access.
+A headless `Agent` value owns the concrete provider, tool registry, launch
+workspace, and eight-round tool limit. It executes requested calls serially,
+appends correlated results to conversation history, and returns the final
+assistant message. The CLI continues to own terminal input, rendering,
+configuration and process-path loading, and temporary Phase 1 history.
+
+Those checks and metadata are path and resource policy, not user authorization,
+durable recovery, or process containment. The current implementation has no
+permission broker, sandbox, runtime crate split, TOML profile configuration, or
+crash-safe edit protocol; the process still runs with its ordinary host access.
 
 The early single-crate layout is intentional. Module boundaries establish the
 design first. They become workspace crate boundaries only after the engine,
