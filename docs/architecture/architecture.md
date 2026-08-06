@@ -26,9 +26,18 @@ appends correlated results to conversation history, and returns the final
 assistant message. The CLI continues to own terminal input, rendering,
 configuration and process-path loading, and temporary Phase 1 history.
 
+Startup resolves platform-standard config, data, cache, and runtime locations
+through one path policy. An optional non-empty absolute `XANA_HOME` maps those
+shared backend categories beneath one portable root; an unset or empty value
+uses platform defaults. Xana loads a strict, versioned `config.toml`, validates
+every named OpenAI-compatible provider connection and agent profile, and
+resolves the required default profile into owned values before constructing
+`Agent`. Only the current automatic `allow` permission mode is accepted;
+permission enforcement has not shipped.
+
 Those checks and metadata are path and resource policy, not user authorization,
 durable recovery, or process containment. The current implementation has no
-permission broker, sandbox, runtime crate split, TOML profile configuration, or
+permission broker, sandbox, runtime crate split, runtime profile switching, or
 crash-safe edit protocol; the process still runs with its ordinary host access.
 
 The early single-crate layout is intentional. Module boundaries establish the

@@ -1,20 +1,20 @@
 mod agent;
 mod config;
 mod message;
+mod paths;
 mod provider;
 mod tool;
 
 use agent::Agent;
 use anyhow::{Context, Result};
-use config::{XanaConfig, config_path};
+use config::{PermissionMode, ProviderKind, XanaConfig};
 use message::{ContentBlock, Message, Role};
+use paths::XanaPaths;
 use provider::openai_compat::OpenAiCompatClient;
 use rustyline::DefaultEditor;
 use rustyline::error::ReadlineError;
 use std::path::PathBuf;
 use tool::ToolRegistry;
-
-const MAX_TOOL_ROUNDS: usize = 8;
 
 #[derive(Debug, PartialEq, Eq)]
 enum InputAction<'a> {
@@ -50,11 +50,28 @@ fn print_assistant(message: &Message) {
 }
 
 fn run_chat(config: XanaConfig, workspace_root: PathBuf) -> Result<()> {
-    let provider = OpenAiCompatClient::new(config.base_url, config.model);
+    let XanaConfig {
+        provider_name,
+        provider_kind,
+        base_url,
+        model,
+        permission_mode,
+        max_tool_rounds,
+    } = config;
+
+    match permission_mode {
+        PermissionMode::Allow => {}
+    }
+
+    let provider = match provider_kind {
+        ProviderKind::OpenAiCompat => OpenAiCompatClient::new(base_url, model),
+    };
+
+    println!("provider connection: {provider_name}");
     println!("chat endpoint: {}", provider.endpoint());
 
     let tools = ToolRegistry::builtins().context("could not build tool registry")?;
-    let agent = Agent::new(provider, tools, workspace_root, MAX_TOOL_ROUNDS);
+    let agent = Agent::new(provider, tools, workspace_root, max_tool_rounds);
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let mut messages = Vec::new();
 
@@ -92,13 +109,18 @@ fn run_chat(config: XanaConfig, workspace_root: PathBuf) -> Result<()> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
-    let path = config_path().context("could not resolve Xana config path")?;
+fn main() -> Result<()> {
+    let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
+        .context("could not resolve Xana paths")?;
 
-    println!("loading Xana config from {}", path.display());
+    println!("loading Xana config from {}", paths.config_file().display());
 
-    let config = XanaConfig::load_from(&path)
-        .with_context(|| format!("failed to load config from {}", path.display()))?;
+    let config = XanaConfig::load_from(paths.config_file()).with_context(|| {
+        format!(
+            "failed to load config from {}",
+            paths.config_file().display()
+        )
+    })?;
 
     let workspace_root =
         std::env::current_dir().context("could not resolve Xana workspace root")?;

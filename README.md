@@ -6,6 +6,29 @@ Xana is a small, extensible personal AI agent harness written in Rust.
 
 The project is at an early stage. The first target is a focused terminal agent with explicit provider boundaries, tools, event-driven frontends, and cross-platform behavior.
 
+## Configuration
+
+Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama
+configuration is:
+
+```toml
+version = 1
+default_profile = "default"
+permission_mode = "allow"
+
+[providers.ollama]
+kind = "openai_compat"
+base_url = "http://localhost:11434/v1"
+
+[profiles.default]
+provider = "ollama"
+model = "qwen3:1.7b"
+# max_tool_rounds = 8
+```
+
+See [Configuration](docs/configuration.md) for platform paths, `XANA_HOME`,
+validation rules, and migration from the temporary `config.kv` format.
+
 ## Design direction
 
 - Keep the core small and headless.
