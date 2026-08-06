@@ -25,3 +25,12 @@ cargo test --all-targets --all-features
 7. Make no platform assumptions. Use Rust path APIs and explicit shell abstractions, and keep Linux, macOS, and Windows CI green.
 8. Keep core small. Prefer tools, events, and context hooks as extension seams.
 9. Treat context as a budget, not a bucket. Every prompt input must pass through an explicit token budget.
+10. Keep optional capability lifecycle explicit. Discovery is pure and
+    read-only; installation and enablement are control-plane operations outside
+    agent turns; each agent receives an immutable, truthful tool snapshot.
+    Lazy activation may initialize an already-installed expensive provider, but
+    must not install one.
+11. Treat structured documents as untrusted parser input. Resolve and authorize
+    one regular file, read it once through a bound, prefer content/container
+    identity over extensions, enforce layered resource/output/context limits,
+    preserve typed failures, and never auto-fetch or execute extracted content.

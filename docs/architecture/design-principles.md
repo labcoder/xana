@@ -100,6 +100,22 @@ Provider adapters may encode bytes for a request or decode a response, but
 provider payloads and repeated base64 blobs do not become Xana's session or
 frontend protocol.
 
+## Treat document conversion as untrusted parsing
+
+A document extractor is a focused runtime service, not a more permissive file
+read and not part of `xana-core`. The runtime resolves and authorizes a path,
+opens one regular file once, reads it through a bounded buffer, and passes the
+bytes to the selected extractor. Content signatures and container identity take
+precedence over the filename; an extension may refine a compatible or
+signatureless format, but it is never proof of type or safety.
+
+Compressed input size, archive entries, expanded bytes, parser work, extracted
+text, artifacts, and model-visible context need independent bounds. Parser
+limits supplied by a library are defense in depth, not Xana's complete resource
+policy. Extraction preserves typed unsupported, malformed, and limit failures.
+Links, macros, embedded objects, and remote image references remain untrusted
+data: conversion does not execute them, open them, or fetch them automatically.
+
 ## Make effects durable without guessing
 
 A completed transcript is not enough to recover an agent safely. The runtime
@@ -180,6 +196,27 @@ Extension code may still be powerful. Extension manifests declare requested
 capabilities, and extension-originated side effects cross the same permission
 broker as built-in tools. Loading code and authorizing its actions remain
 separate decisions.
+
+## Make optional capabilities explicit and stable
+
+Installed, discovered, enabled, available, profile-selected, exposed, and
+authorized describe different stages. The runtime catalog keeps those stages
+separate and resolves declarative required and optional dependencies before an
+agent is constructed. Missing requirements and dependency cycles are typed
+configuration failures; optional absences remain explainable rather than
+silently changing behavior.
+
+Discovery and health/capability probes are pure and read-only. Installing,
+upgrading, enabling, or removing a package is an explicit control-plane action
+outside an agent turn. A newly installed or enabled capability becomes visible
+only after a runtime reload or new agent snapshot, so the model sees one
+truthful, immutable tool schema for the life of that agent.
+
+Expensive, already-installed providers may activate on first use. That path
+uses single-flight initialization, caches success rather than a first failure,
+and applies typed retry policy to transient failures. Lazy activation must not
+silently download packages or mutate the installation. Stateless in-process
+adapters gain nothing from being artificially lazy.
 
 ## Treat context as a budget
 

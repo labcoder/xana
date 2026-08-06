@@ -78,8 +78,9 @@ flowchart TB
     GUI["Desktop / Web"]
     CLIENT["Supervising client"]
 
-    RUNTIME["xana-runtime<br/>config · sessions · threads · coordination<br/>capability routes · permissions · artifacts"]
+    RUNTIME["xana-runtime<br/>config · sessions · threads · coordination<br/>capability catalog/routes · permissions · artifacts"]
     CORE["xana-core<br/>agent loop · tool contracts<br/>conversation · events · context budgets"]
+    CATALOG["Capability catalog + resolver<br/>descriptors · dependencies · activation"]
 
     PROVIDERS["Conversational provider adapters"]
     TOOLS["Tool registry + injected executor"]
@@ -92,6 +93,11 @@ flowchart TB
     CLIENT <-->|"commands / events"| RUNTIME
 
     RUNTIME -->|"typed agent config and commands"| CORE
+    RUNTIME --> CATALOG
+    CATALOG --> PROVIDERS
+    CATALOG --> TOOLS
+    CATALOG --> SERVICES
+    CATALOG --> EXECUTORS
     CORE --> PROVIDERS
     CORE --> TOOLS
     RUNTIME --> SERVICES
@@ -121,6 +127,8 @@ ambient authority merely because the process can access the host.
 The application layer owns:
 
 - resolving and validating shared configuration;
+- discovering provider descriptors and resolving required/optional capability
+  dependencies into immutable per-agent tool snapshots;
 - provider connections, model descriptors, profile/task-route resolution, and
   immutable per-agent configuration snapshots;
 - provider, focused service, tool, and execution-backend construction;
@@ -176,6 +184,50 @@ operations use focused interfaces such as `ImageGenerator`,
 `SpeechSynthesizer`, `Transcriber`, and `Embedder`. One account may supply
 several interfaces and reuse credentials, but their request and lifecycle
 contracts remain distinct.
+
+## Capability discovery, resolution, and activation
+
+**Target**
+
+Optional capability lifecycle and per-call authority are deliberately separate:
+
+| Stage | Meaning |
+|---|---|
+| Installed | Package or built-in provider is present in this build/runtime home |
+| Discovered | Pure metadata inspection produced a descriptor without starting or installing it |
+| Enabled | User-owned configuration permits the provider to participate |
+| Available | Platform, version, health, and required dependencies currently resolve |
+| Selected/exposed | An agent profile selected the capability and its truthful tools entered that agent's immutable schema |
+| Authorized | The permission broker allowed one concrete invocation with final arguments |
+
+The runtime catalog is the source of truth for provider ids, logical
+capability/tool ids, required and optional dependencies, lifecycle needs, and
+unavailable reasons. Resolution is deterministic, detects missing requirements
+and cycles, and records optional absences without silently substituting a
+different behavior. In compact form:
+
+```text
+exposed = available ∩ enabled ∩ profile-selected
+```
+
+Authorization is intentionally absent from that equation because it is
+evaluated for each invocation. A capability being visible does not preapprove
+its use.
+
+Discovery and probes are pure, read-only operations: they do not install a
+package, import untrusted extension code, spawn a provider process, or access
+the network. Installation, upgrade, enablement, and removal are explicit
+control-plane operations outside agent turns. They stage and activate changes
+atomically and require a runtime reload/new agent snapshot; a model-visible tool
+set does not change as a side effect of listing or invoking a tool.
+
+An expensive, already-installed MCP server, WASM module, sidecar, OCR engine,
+or local model may activate on first use. Initialization is single-flight,
+caches success rather than the first result, retains typed transient versus
+permanent failures, and applies a bounded retry/cooldown policy. Lazy activation
+never downloads or mutates the installation. Stateless in-process adapters,
+including the planned AnyDoc provider, are constructed eagerly because adding a
+lazy state machine would provide no material benefit.
 
 ## Tool authority and execution
 
@@ -358,6 +410,47 @@ neither belongs in the conversational Provider trait. Browser and desktop
 control are optional execution backends that combine screenshots with typed
 actions and remain behind both capability checks and the permission broker.
 
+## Document extraction
+
+**Target**
+
+Structured document conversion uses a focused `DocumentExtractor` runtime
+service identified by the logical capability `document.extract`. A separate
+`read_document` tool consumes that interface. The existing `read_file` remains
+an extension-agnostic bounded UTF-8 operation for source and text, including
+text whose filename has an unusual extension.
+
+AnyDoc is planned as the first default-bundled provider for
+`document.extract`, registered by the runtime/CLI composition root outside
+`xana-core`. A minimal build may omit that provider with a Cargo feature. Other
+providers—such as a future OCR service or isolated parser—can implement the
+same contract. Downstream vision, skills, and document-to-memory ingestion
+depend on the logical capability, not on the AnyDoc crate.
+
+Document bytes are untrusted input. The extraction flow is:
+
+1. resolve the requested path within the applicable scope and evaluate read
+   authority;
+2. open one regular file once, reject unsupported file kinds, and read through
+   a Xana input bound;
+3. pass the bounded bytes to the extractor, preferring signatures and container
+   identity over filename extensions; use an extension only to refine a
+   compatible or signatureless format;
+4. enforce separate limits for input, archive entries and expansion, parser
+   work, extracted output, artifacts, and model context;
+5. return typed unsupported, malformed, limit, and extraction failures, plus
+   typed artifact references when assets are retained.
+
+Renaming an executable or arbitrary text to `.docx` does not make it a valid
+Office document; an extension is untrusted routing input, not a security
+decision. Conversely, ordinary text is still readable through `read_file`
+regardless of a misleading extension. Extracted links, macros, embedded
+objects, and remote Markdown images are data only: Xana does not execute, open,
+or fetch them automatically. Library-internal archive/XML limits provide
+defense in depth. A later hostile-upload posture may run parsers behind a
+killable process/OS boundary because an in-process synchronous parser cannot be
+reliably force-stopped by an async timeout.
+
 ## Threads, turns, and agents
 
 **Target**
@@ -432,6 +525,12 @@ profiles, named task routes, enabled features, user-owned permission policy,
 and extension declarations. It does not hold plaintext credentials, session
 history, artifacts, caches, audit logs, or frontend implementation state.
 
+Installed packages live in runtime-owned durable data; enabled providers and
+profile selections are declarative configuration. Availability is resolved
+from those inputs and current platform health. Keeping installation,
+enablement, selection, and authority distinct prevents config loading or tool
+discovery from becoming a hidden package manager or permission grant.
+
 The first production schema requires one default provider/profile and a
 permission mode. Later named profiles, routes, capability overrides, and
 fine-grained rules extend the versioned document rather than replacing a flat
@@ -471,3 +570,8 @@ xana-cli        terminal frontend and xana serve entry points
 
 Additional frontend packages consume the runtime protocol; they do not link
 provider wire types or reimplement session mutation.
+
+Focused bundled capability packs may be additional workspace crates or adapters
+registered at the composition root. They depend inward on runtime/core
+contracts; `xana-core` does not depend outward on a concrete document, media,
+MCP, WASM, or service implementation.
