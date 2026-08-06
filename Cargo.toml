@@ -8,7 +8,9 @@ repository = "https://github.com/labcoder/xana"
 readme = "README.md"
 
 [dependencies]
+anstream = "1.0.0"
 anyhow = "1.0.104"
+clap = { version = "4.6.6", features = ["derive"] }
 directories = "6.0.0"
 reqwest = { version = "0.13.4", features = ["blocking", "json", "rustls"] }
 rustyline = "18.0.1"

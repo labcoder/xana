@@ -26,6 +26,16 @@ appends correlated results to conversation history, and returns the final
 assistant message. The CLI continues to own terminal input, rendering,
 configuration and process-path loading, and temporary Phase 1 history.
 
+The CLI parses arguments into typed commands while preserving bare `xana` as
+the chat route. `xana init` collects interactive or explicit noninteractive
+answers outside the core, serializes the same version 1 configuration shape,
+passes it back through the production validator, and creates `config.toml`
+with no-overwrite semantics. `xana config path` and `xana config check` expose
+path and validation diagnostics without constructing an agent. A small
+terminal-output adapter owns the selected static startup/setup mark and its
+TTY, monochrome, and suppression fallbacks; presentation remains a frontend
+concern.
+
 Startup resolves platform-standard config, data, cache, and runtime locations
 through one path policy. An optional non-empty absolute `XANA_HOME` maps those
 shared backend categories beneath one portable root; an unset or empty value

@@ -6,10 +6,28 @@ Xana is a small, extensible personal AI agent harness written in Rust.
 
 The project is at an early stage. The first target is a focused terminal agent with explicit provider boundaries, tools, event-driven frontends, and cross-platform behavior.
 
+## Quick start from a source checkout
+
+Run the first-time initializer, then start Xana:
+
+```bash
+cargo run -- init
+cargo run
+```
+
+The initializer offers local Ollama or a custom unauthenticated
+OpenAI-compatible endpoint, validates the resulting document, and creates
+`config.toml` without replacing an existing file. It also states that Phase 1
+tools run automatically with your user permissions before asking for consent.
+
+As an optional developer convenience, `cargo install --path . --locked`
+installs the current checkout. It is not a Xana release or distribution
+channel.
+
 ## Configuration
 
 Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama
-configuration is:
+configuration can also be created manually:
 
 ```toml
 version = 1
@@ -26,8 +44,9 @@ model = "qwen3:1.7b"
 # max_tool_rounds = 8
 ```
 
-See [Configuration](docs/configuration.md) for platform paths, `XANA_HOME`,
-validation rules, and migration from the temporary `config.kv` format.
+See [Configuration](docs/configuration.md) for interactive and scripted setup,
+diagnostics, platform paths, `XANA_HOME`, validation rules, and migration from
+the temporary `config.kv` format.
 
 ## Design direction
 
@@ -42,6 +61,11 @@ validation rules, and migration from the temporary `config.kv` format.
 Xana currently provides multi-turn terminal chat through an
 OpenAI-compatible local endpoint. The configured model must support native
 tool calling to use Xana's tool path.
+
+The typed command boundary also provides `xana init`, `xana config path`, and
+`xana config check`. Bare `xana` remains the chat route. On an interactive
+terminal, startup and interactive setup show Xana's static terminal mark;
+`--no-banner` suppresses it and `NO_COLOR` keeps a monochrome version.
 
 Xana advertises three workspace tools through a trait-based registry:
 

@@ -3,6 +3,74 @@
 Xana loads one human-authored, versioned TOML document at startup. Startup
 prints the resolved configuration path before loading the file.
 
+## First-time initialization
+
+From a source checkout, start the interactive initializer:
+
+```bash
+cargo run -- init
+```
+
+It offers two connection routes:
+
+- local Ollama, with provider name `ollama` and base URL
+  `http://localhost:11434/v1`; or
+- a custom unauthenticated OpenAI-compatible HTTP(S) endpoint.
+
+Both routes require a model. The prompt defaults the bounded tool-call limit
+to `8`, explains that Phase 1 tools run automatically with the user's host
+permissions, previews the selected values, and asks for final confirmation.
+The generated TOML is serialized through the version 1 schema and parsed back
+through the production validator before any directory or file is created.
+
+For automation, every provider/model value and the authority acknowledgement
+must be explicit:
+
+```bash
+cargo run -- init \
+  --non-interactive \
+  --provider-name ollama \
+  --base-url http://localhost:11434/v1 \
+  --model qwen3:1.7b \
+  --max-tool-rounds 8 \
+  --accept-automatic-tools
+```
+
+Noninteractive setup never reads stdin. Omitting `--max-tool-rounds` uses `8`;
+the provider name, URL, model, and acknowledgement have no hidden defaults.
+
+Add `--dry-run` to either route to render and validate the proposed document
+without creating its parent directory or `config.toml`. Interactive dry-run
+still asks the setup questions; a scripted dry-run uses the complete
+noninteractive command above plus `--dry-run`.
+
+Initialization handles existing state conservatively:
+
+| State | Result |
+|---|---|
+| Valid `config.toml` | Reports that Xana is already initialized, exits successfully, and does not prompt or rewrite it |
+| Invalid `config.toml` | Reports the real validation error and leaves the bytes unchanged |
+| Legacy `config.kv` without `config.toml` | Reports the manual migration requirement and creates no new file |
+| Declined confirmation or EOF | Prints `No changes made.` and creates nothing |
+| Another process creates the target first | The create-new open fails and never overwrites the winner |
+
+Interactive setup requires a terminal. Piped input is rejected instead of
+hanging; use the explicit noninteractive route in scripts.
+
+## Configuration diagnostics
+
+These commands inspect the same active path used by startup and initialization:
+
+```bash
+cargo run -- config path
+cargo run -- config check
+```
+
+`config path` prints the resolved `config.toml` path without loading it.
+`config check` loads and validates the complete document without constructing
+an agent or contacting a provider. Bare `cargo run` remains normal chat; when
+the file is missing it points explicitly to `xana init`.
+
 ## Complete version 1 example
 
 ```toml
@@ -25,8 +93,9 @@ profile names such as `ollama` and `default` are user-chosen references.
 
 ## File location
 
-Without a non-empty `XANA_HOME`, Xana follows platform conventions through the
-stable application identity `io.github.labcoder.xana`:
+Path selection follows this precedence: a non-empty absolute `XANA_HOME` wins;
+otherwise Xana follows platform conventions through the stable application
+identity `io.github.labcoder.xana`:
 
 | Platform | Default `config.toml` location |
 |---|---|
@@ -88,6 +157,15 @@ cargo run
 
 These examples affect the current shell. Persistent setup belongs in the
 appropriate user-level shell or environment configuration for that platform.
+Xana reads `XANA_HOME`; `xana init` never writes it or edits a shell profile.
+
+## Terminal presentation
+
+Bare interactive startup and interactive initialization show Xana's static
+terminal portrait and wordmark. Redirected output, config diagnostics,
+noninteractive setup, and dry-run omit it. Use `--no-banner` to suppress it;
+setting `NO_COLOR` retains the mark without ANSI color. A dumb terminal also
+receives plain operational output without the mark.
 
 ## Version 1 field reference
 
@@ -173,3 +251,7 @@ archive `config.kv` after verifying startup.
   `default_profile` can be selected in Phase 1.
 - Version 1 has one provider kind, `openai_compat`, and no plaintext credential
   fields.
+- Initialization does not collect credentials or onboard authenticated remote
+  providers.
+- There is no `--force`, automatic repair, automatic legacy migration, project
+  initialization, shell-profile editing, or general configuration editor.

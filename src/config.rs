@@ -1,5 +1,5 @@
 use reqwest::Url;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -16,7 +16,7 @@ struct VersionHeader {
     version: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigDocument {
     version: u32,
@@ -26,26 +26,26 @@ struct ConfigDocument {
     profiles: BTreeMap<String, AgentProfile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ProviderKind {
     #[serde(rename = "openai_compat")]
     OpenAiCompat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PermissionMode {
     Allow,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderConnection {
     kind: ProviderKind,
     base_url: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentProfile {
     provider: String,
@@ -68,6 +68,14 @@ pub(crate) struct XanaConfig {
     pub(crate) max_tool_rounds: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InitialConfig {
+    pub(crate) provider_name: String,
+    pub(crate) base_url: String,
+    pub(crate) model: String,
+    pub(crate) max_tool_rounds: usize,
+}
+
 #[derive(Debug)]
 pub(crate) enum ConfigError {
     Io {
@@ -75,6 +83,7 @@ pub(crate) enum ConfigError {
         source: io::Error,
     },
     Decode(toml::de::Error),
+    Encode(toml::ser::Error),
     LegacyConfigFound {
         legacy_path: PathBuf,
         config_path: PathBuf,
@@ -113,6 +122,7 @@ impl fmt::Display for ConfigError {
                 write!(f, "could not read {}: {source}", path.display())
             }
             Self::Decode(source) => write!(f, "could not decode config.toml: {source}"),
+            Self::Encode(source) => write!(f, "could not encode config.toml: {source}"),
             Self::LegacyConfigFound {
                 legacy_path,
                 config_path,
@@ -156,6 +166,7 @@ impl Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Decode(source) => Some(source),
+            Self::Encode(source) => Some(source),
             Self::LegacyConfigFound { .. }
             | Self::UnsupportedVersion { .. }
             | Self::InvalidName { .. }
@@ -203,7 +214,7 @@ impl XanaConfig {
         }
     }
 
-    fn parse(input: &str) -> Result<Self, ConfigError> {
+    pub(crate) fn parse(input: &str) -> Result<Self, ConfigError> {
         let header: VersionHeader = toml::from_str(input).map_err(ConfigError::Decode)?;
 
         if header.version != CONFIG_VERSION {
@@ -215,6 +226,56 @@ impl XanaConfig {
         let document: ConfigDocument = toml::from_str(input).map_err(ConfigError::Decode)?;
 
         validate_and_resolve(document)
+    }
+
+    pub(crate) fn render_initial(input: InitialConfig) -> Result<String, ConfigError> {
+        let InitialConfig {
+            provider_name,
+            base_url,
+            model,
+            max_tool_rounds,
+        } = input;
+
+        let mut providers = BTreeMap::new();
+        providers.insert(
+            provider_name.clone(),
+            ProviderConnection {
+                kind: ProviderKind::OpenAiCompat,
+                base_url,
+            },
+        );
+
+        let mut profiles = BTreeMap::new();
+        profiles.insert(
+            "default".to_owned(),
+            AgentProfile {
+                provider: provider_name,
+                model,
+                max_tool_rounds,
+            },
+        );
+
+        let document = ConfigDocument {
+            version: CONFIG_VERSION,
+            default_profile: "default".to_owned(),
+            permission_mode: PermissionMode::Allow,
+            providers,
+            profiles,
+        };
+
+        let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
+        Self::parse(&rendered)?;
+
+        Ok(rendered)
+    }
+}
+
+impl ConfigError {
+    pub(crate) fn is_missing_config(&self) -> bool {
+        matches!(
+            self,
+            Self::Io { source, .. } if source.kind() == io::ErrorKind::NotFound
+        )
     }
 }
 
@@ -672,6 +733,90 @@ max_tool_rounds = 4
                 path: actual_path,
                 source,
             } if actual_path == path && source.kind() == io::ErrorKind::NotFound
+        ));
+    }
+
+    fn initial_config() -> InitialConfig {
+        InitialConfig {
+            provider_name: "ollama".to_owned(),
+            base_url: "http://localhost:11434/v1".to_owned(),
+            model: "qwen3:1.7b".to_owned(),
+            max_tool_rounds: 12,
+        }
+    }
+
+    #[test]
+    fn rendered_initial_config_round_trips_through_the_real_loader() {
+        let rendered = XanaConfig::render_initial(initial_config()).expect("render config");
+        let parsed = XanaConfig::parse(&rendered).expect("parse rendered config");
+
+        assert_eq!(
+            parsed,
+            XanaConfig {
+                provider_name: "ollama".to_owned(),
+                provider_kind: ProviderKind::OpenAiCompat,
+                base_url: "http://localhost:11434/v1".to_owned(),
+                model: "qwen3:1.7b".to_owned(),
+                permission_mode: PermissionMode::Allow,
+                max_tool_rounds: 12,
+            }
+        );
+        assert!(rendered.contains("permission_mode = \"allow\""));
+    }
+
+    #[test]
+    fn rendered_initial_config_escapes_model_text_as_toml() {
+        let mut input = initial_config();
+        input.model = "model \\\"quoted\\\"\\nnext".to_owned();
+
+        let rendered = XanaConfig::render_initial(input.clone()).expect("render escaped config");
+        let parsed = XanaConfig::parse(&rendered).expect("parse escaped config");
+
+        assert_eq!(parsed.model, input.model);
+    }
+
+    #[test]
+    fn invalid_initial_provider_name_uses_the_existing_validation_error() {
+        let mut input = initial_config();
+        input.provider_name = "Bad Provider".to_owned();
+
+        let error = XanaConfig::render_initial(input).expect_err("invalid provider should fail");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidName {
+                section: "provider",
+                name,
+            } if name == "Bad Provider"
+        ));
+    }
+
+    #[test]
+    fn invalid_initial_url_uses_the_existing_validation_error() {
+        let mut input = initial_config();
+        input.base_url = "/v1".to_owned();
+
+        let error = XanaConfig::render_initial(input).expect_err("invalid URL should fail");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidBaseUrl { provider, .. } if provider == "ollama"
+        ));
+    }
+
+    #[test]
+    fn invalid_initial_round_limit_uses_the_existing_validation_error() {
+        let mut input = initial_config();
+        input.max_tool_rounds = 0;
+
+        let error = XanaConfig::render_initial(input).expect_err("invalid rounds should fail");
+
+        assert!(matches!(
+            error,
+            ConfigError::InvalidToolRoundLimit {
+                profile,
+                value: 0,
+            } if profile == "default"
         ));
     }
 }
