@@ -1,3 +1,8 @@
+//! Headless, bounded agent loop.
+//!
+//! The agent receives owned provider, tool, workspace, and limit values. It
+//! does not read configuration, environment variables, or terminal state.
+
 use crate::message::{ContentBlock, Message, ToolCall};
 use crate::provider::openai_compat::OpenAiCompatClient;
 use crate::tool::ToolRegistry;

@@ -23,8 +23,9 @@ declares broad effect class separately from replay safety.
 A headless `Agent` value owns the concrete provider, tool registry, launch
 workspace, and eight-round tool limit. It executes requested calls serially,
 appends correlated results to conversation history, and returns the final
-assistant message. The CLI continues to own terminal input, rendering,
-configuration and process-path loading, and temporary Phase 1 history.
+assistant message. The application edge loads configuration and process paths
+and constructs the agent; the terminal frontend owns readline input, rendering,
+and temporary Phase 1 history.
 
 The CLI parses arguments into typed commands while preserving bare `xana` as
 the chat route. `xana init` collects interactive or explicit noninteractive
@@ -53,6 +54,15 @@ crash-safe edit protocol; the process still runs with its ordinary host access.
 The early single-crate layout is intentional. Module boundaries establish the
 design first. They become workspace crate boundaries only after the engine,
 runtime policy, and frontend responsibilities are concrete enough to test.
+
+Within the current crate, `main.rs` is a thin process composition root, `app`
+routes commands and constructs dependencies, and `terminal` owns interactive
+chat. Initialization is split between pure planning and create-new filesystem
+code. The OpenAI-compatible adapter separately owns its private wire shapes,
+conversion rules, HTTP client, and captured fixtures. Tool and provider facades
+use the modern `feature.rs` plus `feature/child.rs` module layout. See
+[Code organization](code-organization.md) for the maintenance rules that keep
+these seams intact before the Lesson 3.1 workspace split.
 
 ## Product identity
 

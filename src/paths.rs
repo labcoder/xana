@@ -1,3 +1,8 @@
+//! Pure policy for Xana-owned filesystem locations.
+//!
+//! Resolution maps an optional explicit override or platform directories into
+//! paths without creating or canonicalizing anything.
+
 use directories::ProjectDirs;
 use std::{
     error::Error,

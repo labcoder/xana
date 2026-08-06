@@ -56,6 +56,10 @@ the temporary `config.kv` format.
 - Keep configuration and limits per agent.
 - Build and test on Linux, macOS, and Windows.
 
+The current single-crate module and test organization is documented in
+[Code organization](docs/architecture/code-organization.md). The physical
+workspace split remains a later architecture milestone.
+
 ## Current CLI
 
 Xana currently provides multi-turn terminal chat through an

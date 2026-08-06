@@ -1,3 +1,8 @@
+//! Terminal banner selection and rendering.
+//!
+//! Presentation is a frontend concern. Capability facts are passed into the
+//! pure selector so this module never inspects process-global terminal state.
+
 use std::io::{self, Write};
 
 const PORTRAIT_WIDTH: usize = 79;

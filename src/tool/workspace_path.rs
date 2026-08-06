@@ -1,3 +1,8 @@
+//! Shared lexical and canonical workspace-path enforcement for host tools.
+//!
+//! Callers validate arguments before filesystem access, then use this module
+//! to keep resolved targets beneath the launch workspace, including symlinks.
+
 use std::error::Error;
 use std::fmt;
 use std::io;

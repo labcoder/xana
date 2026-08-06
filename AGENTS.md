@@ -34,3 +34,22 @@ cargo test --all-targets --all-features
     one regular file, read it once through a bound, prefer content/container
     identity over extensions, enforce layered resource/output/context limits,
     preserve typed failures, and never auto-fetch or execute extracted content.
+
+## Code organization
+
+1. Keep `main.rs` as a thin process composition root. Put application command
+   routing in `app` and terminal interaction in `terminal`.
+2. Split modules at responsibility, ownership, and I/O boundaries rather than
+   enforcing a hard line limit. Treat 400 production lines or 700 total lines
+   as a review prompt.
+3. Use `feature.rs` plus `feature/child.rs`; do not add new `mod.rs` files.
+4. Keep items private by default and re-export only the smallest useful
+   `pub(crate)` facade.
+5. Keep focused unit tests beside private code. Move large test blocks to
+   `feature/tests.rs`; reserve top-level `tests/` for package-level behavior.
+6. Document architectural modules with `//!`. Comment invariants and rationale,
+   not obvious syntax, and do not target a comment percentage.
+7. Use rustfmt defaults and the checked-in toolchain. Do not blanket-enable
+   Clippy's pedantic, restriction, or nursery groups.
+
+See `docs/architecture/code-organization.md` for the full policy.

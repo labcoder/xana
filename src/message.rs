@@ -1,3 +1,8 @@
+//! Xana's provider-neutral conversation model.
+//!
+//! Provider adapters translate these ordered content blocks at their private
+//! wire boundary. Durable sessions will also record these internal types.
+
 use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

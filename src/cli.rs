@@ -1,3 +1,8 @@
+//! Typed command-line syntax.
+//!
+//! Clap turns process arguments into command data only; command execution and
+//! terminal/filesystem effects remain at the application edge.
+
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
