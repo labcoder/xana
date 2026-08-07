@@ -4,6 +4,7 @@
 //! immutable agent snapshot. It does not read process environment variables or
 //! invent initializer-specific validation.
 
+use crate::shell::{Shell, ShellConfig, ShellError};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -28,6 +29,8 @@ struct ConfigDocument {
     version: u32,
     default_profile: String,
     permission_mode: PermissionMode,
+    #[serde(default)]
+    shell: ShellConfig,
     providers: BTreeMap<String, ProviderConnection>,
     profiles: BTreeMap<String, AgentProfile>,
 }
@@ -71,6 +74,7 @@ pub(crate) struct XanaConfig {
     pub(crate) base_url: String,
     pub(crate) model: String,
     pub(crate) permission_mode: PermissionMode,
+    pub(crate) shell: ShellConfig,
     pub(crate) max_tool_rounds: usize,
 }
 
@@ -80,6 +84,7 @@ pub(crate) struct InitialConfig {
     pub(crate) base_url: String,
     pub(crate) model: String,
     pub(crate) max_tool_rounds: usize,
+    pub(crate) shell: ShellConfig,
 }
 
 #[derive(Debug)]
@@ -119,6 +124,7 @@ pub(crate) enum ConfigError {
         profile: String,
         value: usize,
     },
+    InvalidShell(ShellError),
 }
 
 impl fmt::Display for ConfigError {
@@ -163,6 +169,7 @@ impl fmt::Display for ConfigError {
                 f,
                 "profile {profile:?} has max_tool_rounds = {value}; expected 1..={MAX_MAX_TOOL_ROUNDS}"
             ),
+            Self::InvalidShell(source) => write!(f, "invalid shell configuration: {source}"),
         }
     }
 }
@@ -173,6 +180,7 @@ impl Error for ConfigError {
             Self::Io { source, .. } => Some(source),
             Self::Decode(source) => Some(source),
             Self::Encode(source) => Some(source),
+            Self::InvalidShell(source) => Some(source),
             Self::LegacyConfigFound { .. }
             | Self::UnsupportedVersion { .. }
             | Self::InvalidName { .. }
@@ -240,6 +248,7 @@ impl XanaConfig {
             base_url,
             model,
             max_tool_rounds,
+            shell,
         } = input;
 
         let mut providers = BTreeMap::new();
@@ -265,6 +274,7 @@ impl XanaConfig {
             version: CONFIG_VERSION,
             default_profile: "default".to_owned(),
             permission_mode: PermissionMode::Allow,
+            shell,
             providers,
             profiles,
         };
@@ -287,6 +297,8 @@ impl ConfigError {
 
 fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, ConfigError> {
     debug_assert_eq!(document.version, CONFIG_VERSION);
+
+    Shell::resolve(document.shell.clone()).map_err(ConfigError::InvalidShell)?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
@@ -338,6 +350,7 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         base_url: provider.base_url,
         model: profile.model,
         permission_mode: document.permission_mode,
+        shell: document.shell,
         max_tool_rounds: profile.max_tool_rounds,
     })
 }

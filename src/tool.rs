@@ -7,9 +7,12 @@
 mod edit_file;
 mod list_files;
 mod read_file;
+mod run_command;
 mod workspace_path;
 
+use crate::approval::ProvisionalApprover;
 use crate::message::{ToolCall, ToolResult};
+use crate::shell::Shell;
 use serde_json::Value;
 use std::error::Error;
 use std::fmt;
@@ -19,7 +22,6 @@ use std::path::Path;
 pub(crate) enum EffectClass {
     Read,
     Write,
-    #[allow(dead_code)] // run_command lands later
     Execute,
     #[allow(dead_code)] // network tools arrive through later extensions
     Network,
@@ -127,12 +129,34 @@ impl ToolRegistry {
         }
     }
 
-    pub(crate) fn builtins() -> Result<Self, RegistryError> {
+    pub(crate) fn builtins(
+        shell: Shell,
+        approver: Box<dyn ProvisionalApprover>,
+    ) -> Result<Self, RegistryError> {
         let mut registry = Self::new();
         registry.register(read_file::ReadFile)?;
         registry.register(list_files::ListFiles)?;
         registry.register(edit_file::EditFile)?;
+        registry.register(run_command::RunCommand::new(shell, approver))?;
         Ok(registry)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn builtins_for_tests() -> Result<Self, RegistryError> {
+        struct Deny;
+
+        impl ProvisionalApprover for Deny {
+            fn confirm(
+                &self,
+                _action: &crate::approval::RequestedAction,
+            ) -> Result<bool, crate::approval::ApprovalError> {
+                Ok(false)
+            }
+        }
+
+        let shell = Shell::resolve(crate::shell::ShellConfig::default())
+            .expect("the platform shell configuration is valid");
+        Self::builtins(shell, Box::new(Deny))
     }
 }
 

@@ -11,6 +11,11 @@ state needs explicit owners and lifecycles. This proposal extends the existing
 platform path and versioned-TOML foundations without treating one directory or
 configuration file as a bucket for every kind of state.
 
+The implemented version 1 document includes a validated `[shell]` table for
+local command execution. That shipped field remains part of shared
+human-authored configuration; it does not accept the broader permission,
+extension, route, or durable-state model proposed below.
+
 ## Proposed state ownership
 
 | State | Platform location | Portable-home location | Owner | Lifecycle |

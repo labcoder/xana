@@ -343,6 +343,7 @@ fn initial_config() -> InitialConfig {
         base_url: "http://localhost:11434/v1".to_owned(),
         model: "qwen3:1.7b".to_owned(),
         max_tool_rounds: 12,
+        shell: crate::shell::ShellConfig::default(),
     }
 }
 
@@ -359,10 +360,33 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
             base_url: "http://localhost:11434/v1".to_owned(),
             model: "qwen3:1.7b".to_owned(),
             permission_mode: PermissionMode::Allow,
+            shell: crate::shell::ShellConfig::default(),
             max_tool_rounds: 12,
         }
     );
     assert!(rendered.contains("permission_mode = \"allow\""));
+    assert!(rendered.contains("[shell]"));
+    assert!(rendered.contains("kind = \"platform\""));
+}
+
+#[test]
+fn missing_shell_table_uses_the_platform_default() {
+    let parsed = parse_ok(MINIMAL);
+
+    assert_eq!(parsed.shell, crate::shell::ShellConfig::default());
+}
+
+#[test]
+fn incompatible_shell_kind_is_rejected_during_config_validation() {
+    #[cfg(windows)]
+    let kind = "posix";
+    #[cfg(unix)]
+    let kind = "powershell";
+    let input = format!("{MINIMAL}\n[shell]\nkind = {kind:?}\n");
+
+    let error = XanaConfig::parse(&input).expect_err("incompatible shell should fail");
+
+    assert!(matches!(error, ConfigError::InvalidShell(_)));
 }
 
 #[test]

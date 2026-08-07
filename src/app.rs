@@ -12,6 +12,7 @@ use crate::{
     paths::XanaPaths,
     presentation::{self, BannerMode},
     provider::openai_compat::OpenAiCompatClient,
+    shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
 };
@@ -84,6 +85,7 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         base_url,
         model,
         permission_mode,
+        shell,
         max_tool_rounds,
     } = config;
 
@@ -99,7 +101,9 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         model,
         endpoint: provider.endpoint().to_owned(),
     };
-    let tools = ToolRegistry::builtins().context("could not build tool registry")?;
+    let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
+    let tools = ToolRegistry::builtins(shell, terminal::terminal_approver())
+        .context("could not build tool registry")?;
     let workspace_root =
         std::env::current_dir().context("could not resolve Xana workspace root")?;
     let agent = Agent::new(provider, tools, workspace_root, max_tool_rounds);
@@ -263,6 +267,7 @@ mod tests {
             base_url: "http://localhost:11434/v1".to_owned(),
             model: "model".to_owned(),
             max_tool_rounds: 8,
+            shell: crate::shell::ShellConfig::default(),
         })
         .expect("render config");
         fs::write(paths.config_file(), rendered).expect("write config");
@@ -295,6 +300,8 @@ mod tests {
             base_url: Some("http://localhost:11434/v1".to_owned()),
             model: Some("model".to_owned()),
             max_tool_rounds: Some(8),
+            shell: None,
+            shell_program: None,
             accept_automatic_tools: true,
             dry_run: false,
         };
@@ -334,6 +341,8 @@ mod tests {
                 base_url: Some("http://localhost:11434/v1".to_owned()),
                 model: Some("model".to_owned()),
                 max_tool_rounds: None,
+                shell: None,
+                shell_program: None,
                 accept_automatic_tools: true,
                 dry_run: false,
             }

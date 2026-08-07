@@ -4,12 +4,16 @@
 //! rendering. It receives a fully constructed `Agent` and never loads config,
 //! reads environment variables, or knows provider wire types.
 
+mod provisional_approval;
+
 use crate::{
     agent::Agent,
     message::{ContentBlock, Message, Role},
 };
 use anyhow::{Context, Result};
 use rustyline::{DefaultEditor, error::ReadlineError};
+
+pub(crate) use provisional_approval::terminal_approver;
 
 pub(crate) struct ChatHeader {
     pub(crate) provider_name: String,

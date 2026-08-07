@@ -24,6 +24,9 @@ flowchart LR
     AGENT --> PROVIDER["provider adapter"]
     AGENT --> TOOLS["tool registry"]
     TOOLS --> HOST["workspace-scoped host tools"]
+    TOOLS --> SHELL["configured shell plan"]
+    SHELL --> APPROVAL["terminal per-call approval"]
+    APPROVAL --> HOST
 ```
 
 `terminal` owns readline input, temporary conversation history, and human
@@ -49,13 +52,16 @@ render terminal output.
 
 ## Tool boundary
 
-Xana exposes three host tools through an object-safe `Tool` trait and a
+Xana exposes four host tools through an object-safe `Tool` trait and a
 provider-neutral registry:
 
 - `read_file` reads bounded UTF-8 content with an optional inclusive line
   range.
 - `list_files` returns a bounded, sorted, non-recursive directory listing.
 - `edit_file` replaces exactly one match in an existing bounded UTF-8 file.
+- `run_command` executes one command string through a configured shell in an
+  existing workspace directory after a fail-closed terminal approval. It
+  returns status plus independently bounded stdout and stderr.
 
 All tool paths are relative to Xana's launch workspace and must remain beneath
 that workspace after lexical and canonical resolution. Reads and resulting
@@ -64,9 +70,19 @@ edits are capped at 64 KiB; directory listings are capped at 256 entries and
 
 The registry caches each validated definition beside its implementation,
 dispatches model requests, and reports effect class separately from replay
-safety. That metadata and the path/resource checks are not permission
-enforcement or process containment. Tools run with the Xana process's ordinary
-host access, and `edit_file` does not claim atomic or crash-safe writes.
+safety. `run_command` is `Execute` plus `ReplaySafety::Never`; its exact program
+argv, command, shell, and canonical cwd exist before approval and spawn. Shell
+selection resolves once at the application edge: macOS/Linux support POSIX
+`sh -lc`, while Windows supports PowerShell, Git Bash, and `cmd` through
+explicit configurations. A custom compatible program path may replace the
+default executable.
+
+File tools currently execute under the configuration's automatic `allow`
+mode. The command approval contract is a deliberately provisional frontend
+adapter, not the proposed runtime permission protocol. Neither metadata,
+workspace path checks, nor approval provides process containment. Tools run
+with the Xana process's ordinary host access, and `edit_file` does not claim
+atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
@@ -81,9 +97,10 @@ configuration diagnostics do not construct an agent.
 
 Xana loads a strict, versioned `config.toml`. It validates named
 OpenAI-compatible provider connections and agent profiles, then resolves the
-required default profile into owned values before constructing `Agent`. Only
-automatic `allow` permission mode is supported; Xana has no permission broker
-or approval flow.
+required default profile and shell configuration into owned values before
+constructing `Agent`. Interactive initialization collects a platform shell
+choice; noninteractive initialization accepts explicit shell kind and program
+flags. Existing version 1 documents without `[shell]` use `platform`.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
@@ -130,7 +147,9 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no durable session store, permission broker, sandbox, background
-runtime, workspace crate split, runtime profile switching, streaming event
-protocol, or crash-safe edit protocol. These absences are implementation facts,
-not predictions about which proposals will be accepted.
+Xana has no durable session store, unified permission broker, sandbox,
+background runtime, workspace crate split, runtime profile switching,
+streaming event protocol, scoped or persistent grants, permission audit store,
+or crash-safe edit protocol. The `run_command` y/n prompt is the only approval
+path and is explicitly temporary. These absences are implementation facts, not
+predictions about which proposals will be accepted.

@@ -3,7 +3,32 @@
 //! Clap turns process arguments into command data only; command execution and
 //! terminal/filesystem effects remain at the application edge.
 
-use clap::{Args, Parser, Subcommand};
+use crate::shell::ShellKind;
+use clap::{Args, Parser, Subcommand, ValueEnum};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ShellChoice {
+    Platform,
+    Posix,
+    #[value(name = "git_bash")]
+    GitBash,
+    #[value(name = "powershell")]
+    PowerShell,
+    Cmd,
+}
+
+impl From<ShellChoice> for ShellKind {
+    fn from(value: ShellChoice) -> Self {
+        match value {
+            ShellChoice::Platform => Self::Platform,
+            ShellChoice::Posix => Self::Posix,
+            ShellChoice::GitBash => Self::GitBash,
+            ShellChoice::PowerShell => Self::PowerShell,
+            ShellChoice::Cmd => Self::Cmd,
+        }
+    }
+}
 
 #[derive(Debug, Parser)]
 #[command(name = "xana", version, about = "A small personal AI agent harness")]
@@ -46,7 +71,15 @@ pub(crate) struct InitArgs {
     #[arg(long, value_name = "COUNT")]
     pub(crate) max_tool_rounds: Option<usize>,
 
-    /// Explicitly accept the automatic host tool execution.
+    /// Select the shell used by run_command (defaults to platform).
+    #[arg(long, value_enum, value_name = "KIND")]
+    pub(crate) shell: Option<ShellChoice>,
+
+    /// Override the executable used for the selected shell.
+    #[arg(long, value_name = "PATH", requires = "non_interactive")]
+    pub(crate) shell_program: Option<PathBuf>,
+
+    /// Explicitly accept automatic file-tool execution with host access.
     #[arg(long)]
     pub(crate) accept_automatic_tools: bool,
 
@@ -95,6 +128,8 @@ mod tests {
                 base_url: None,
                 model: None,
                 max_tool_rounds: None,
+                shell: None,
+                shell_program: None,
                 accept_automatic_tools: false,
                 dry_run: true,
             }))
@@ -115,6 +150,10 @@ mod tests {
             "qwen3:1.7b",
             "--max-tool-rounds",
             "12",
+            "--shell",
+            "powershell",
+            "--shell-program",
+            "pwsh.exe",
             "--accept-automatic-tools",
         ])
         .expect("complete noninteractive initialization");
@@ -127,6 +166,8 @@ mod tests {
                 base_url: Some("http://localhost:11434/v1".to_owned()),
                 model: Some("qwen3:1.7b".to_owned()),
                 max_tool_rounds: Some(12),
+                shell: Some(ShellChoice::PowerShell),
+                shell_program: Some(PathBuf::from("pwsh.exe")),
                 accept_automatic_tools: true,
                 dry_run: false,
             }))
