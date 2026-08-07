@@ -19,7 +19,7 @@ use std::path::Path;
 pub(crate) enum EffectClass {
     Read,
     Write,
-    #[allow(dead_code)] // run_command lands in Lesson 2.1
+    #[allow(dead_code)] // run_command lands later
     Execute,
     #[allow(dead_code)] // network tools arrive through later extensions
     Network,
@@ -38,9 +38,9 @@ pub(crate) struct ToolDefinition {
     pub(crate) name: &'static str,
     pub(crate) description: &'static str,
     pub(crate) parameters: Value,
-    #[allow(dead_code)] // persisted and enforced by the Lesson 2.6 recovery path
+    #[allow(dead_code)] // persisted and enforced by the later recovery path
     pub(crate) effect_class: EffectClass,
-    #[allow(dead_code)] // persisted and enforced by the Lesson 2.6 recovery path
+    #[allow(dead_code)] // persisted and enforced by the later recovery path
     pub(crate) replay_safety: ReplaySafety,
 }
 

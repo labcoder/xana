@@ -187,7 +187,7 @@ fn plan_interactive<R: BufRead, W: Write>(
     let Some(automatic_tools) = prompt(
         input,
         output,
-        "Accept automatic tool execution for this Phase 1 configuration? [y/N]: ",
+        "Accept automatic tool execution for this configuration? [y/N]: ",
     )?
     else {
         return Ok(InitPlan::Cancelled);

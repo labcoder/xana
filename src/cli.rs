@@ -46,7 +46,7 @@ pub(crate) struct InitArgs {
     #[arg(long, value_name = "COUNT")]
     pub(crate) max_tool_rounds: Option<usize>,
 
-    /// Explicitly accept Phase 1's automatic host tool execution.
+    /// Explicitly accept the automatic host tool execution.
     #[arg(long)]
     pub(crate) accept_automatic_tools: bool,
 

@@ -1,0 +1,92 @@
+# Xana documentation
+
+Xana keeps documentation for people using the program separate from the
+engineering contracts used to change it.
+
+## Using Xana
+
+- [Configuration](user/configuration.md) explains initialization, provider and
+  profile settings, platform paths, `XANA_HOME`, and configuration diagnostics.
+- The repository [README](../README.md) is the user-first starting point for a
+  source checkout and the shipped CLI.
+
+User Documentation describes behavior available in the executable. It may
+state a limitation, but it does not present a proposal as an upcoming feature.
+
+## Engineering Xana
+
+- [Architecture](architecture/README.md) describes what exists and how it
+  works.
+- [Design Principles](principles.md) defines the durable constraints future
+  work follows unless they are explicitly reconsidered.
+- [Proposals](proposals/) contains particular future designs and their
+  lifecycle status.
+- [Code organization](development/code-organization.md) defines the repository
+  policy for modules, tests, comments, formatting, and tooling.
+- [Xana Documentation](../CONTEXT.md) is the glossary for documentation
+  authority and audience terms.
+
+Architecture Decision Records are created under `docs/adr/` only when a choice
+is costly to reverse, surprising without context, and the result of a genuine
+tradeoff. Architecture, a principle, or an accepted proposal states the
+contract; an ADR explains why a consequential contract exists.
+
+## Authority model
+
+| Artifact | Audience | Authority |
+|---|---|---|
+| Architecture | Contributors and coding agents | Descriptive: de facto behavior and boundaries |
+| Design Principles | Contributors and coding agents | Prescriptive: durable constraints and philosophies |
+| Accepted Proposal | Contributors and coding agents | Prescriptive: an approved but unimplemented change |
+| Other Proposal states | Contributors and coding agents | None; historical or exploratory |
+| User Documentation | People installing, configuring, or using Xana | Shipped behavior only |
+| Development Documentation | Contributors and coding agents | Repository policy |
+
+Code and tests are evidence of what Xana does. If Architecture or User
+Documentation disagrees with that evidence, the documentation is defective;
+do not change behavior merely to preserve a descriptive claim.
+
+## Proposal lifecycle
+
+Proposal filenames use a stable four-digit identifier and a descriptive slug.
+The sequence provides an address, not a priority or delivery order.
+
+| Status | Meaning | Authority |
+|---|---|---|
+| Proposed | Under consideration | None |
+| Accepted | Approved for future implementation | Prescriptive |
+| Implemented | Reflected in code and Architecture | Historical |
+| Rejected | Considered and declined | Historical |
+| Withdrawn | Removed by its author before a decision | Historical |
+| Superseded | Replaced by an identified proposal | Historical |
+
+Accepting a proposal requires one repository change that marks it Accepted and
+records the complete prescriptive design. Updating only a status label is not
+enough. If the decision meets the ADR threshold, that change also records its
+rationale in a numbered ADR.
+
+Implementing a proposal requires the same change to update affected
+Architecture and User Documentation and mark the proposal Implemented. Once
+implemented, Architecture owns the resulting description and the proposal is
+historical evidence.
+
+## Keeping documentation accurate
+
+Update documentation in the same change that alters what it describes:
+
+- Update Architecture when responsibilities, dependencies, invariants, data
+  flow, or externally meaningful limitations change.
+- Update User Documentation when installation, CLI, configuration, paths,
+  diagnostics, or visible behavior changes.
+- Update a Proposal when its design or lifecycle status changes.
+- Change a Design Principle only through an explicit architecture decision,
+  not merely because implementation drifted away from it.
+- Add or supersede an ADR only when the sparse-ADR threshold is met.
+
+A refactor that preserves documented behavior and boundaries needs no
+documentation change. Documents do not carry review dates or commit hashes;
+same-change maintenance and Git history provide provenance.
+
+Architecture documents and proposals begin with visible audience, authority,
+and status lines as applicable. User documents begin with a visible audience
+line. No additional metadata tooling is required.

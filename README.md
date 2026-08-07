@@ -2,9 +2,7 @@
 
 # Xana
 
-Xana is a small, extensible personal AI agent harness written in Rust.
-
-The project is at an early stage. The first target is a focused terminal agent with explicit provider boundaries, tools, event-driven frontends, and cross-platform behavior.
+Xana is a small, extensible personal AI agent harness written in Rust. Its name comes from Asturian folklore: a xana is a mysterious guide associated with water, forests, and hidden places. The project reinterprets that idea as a guide within the system, making complex paths understandable without becoming a source of hidden authority.
 
 ## Quick start from a source checkout
 
@@ -15,19 +13,13 @@ cargo run -- init
 cargo run
 ```
 
-The initializer offers local Ollama or a custom unauthenticated
-OpenAI-compatible endpoint, validates the resulting document, and creates
-`config.toml` without replacing an existing file. It also states that Phase 1
-tools run automatically with your user permissions before asking for consent.
+The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools run automatically with the user's host permissions and asks for confirmation.
 
-As an optional developer convenience, `cargo install --path . --locked`
-installs the current checkout. It is not a Xana release or distribution
-channel.
+As an optional developer convenience, `cargo install --path . --locked` installs the checked-out source. It is not a Xana release or distribution channel.
 
 ## Configuration
 
-Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama
-configuration can also be created manually:
+Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama configuration is:
 
 ```toml
 version = 1
@@ -44,49 +36,30 @@ model = "qwen3:1.7b"
 # max_tool_rounds = 8
 ```
 
-See [Configuration](docs/configuration.md) for interactive and scripted setup,
-diagnostics, platform paths, `XANA_HOME`, validation rules, and migration from
-the temporary `config.kv` format.
+See [Configuration](docs/user/configuration.md) for initialization, diagnostics, platform paths, `XANA_HOME`, validation rules, and legacy `config.kv` migration.
 
-## Design direction
+## CLI and tools
 
-- Keep the core small and headless.
-- Treat providers as adapters around one internal conversation model.
-- Make tools and events the extension seams.
-- Keep configuration and limits per agent.
-- Build and test on Linux, macOS, and Windows.
+Bare `xana` starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. The configured model must support native tool calling to use Xana's tool path.
 
-The current single-crate module and test organization is documented in
-[Code organization](docs/architecture/code-organization.md). The physical
-workspace split remains a later architecture milestone.
+The command boundary also provides `xana init`, `xana config path`, and `xana config check`. Interactive startup and setup show Xana's terminal mark; `--no-banner` suppresses it, and `NO_COLOR` keeps a monochrome version.
 
-## Current CLI
+Xana advertises three workspace tools:
 
-Xana currently provides multi-turn terminal chat through an
-OpenAI-compatible local endpoint. The configured model must support native
-tool calling to use Xana's tool path.
+- `read_file` reads a regular UTF-8 file or an inclusive one-based line range.
+- `list_files` lists one directory non-recursively as sorted JSON, with limits of 256 entries and 64 KiB of output.
+- `edit_file` replaces exactly one occurrence of text in an existing regular UTF-8 file.
 
-The typed command boundary also provides `xana init`, `xana config path`, and
-`xana config check`. Bare `xana` remains the chat route. On an interactive
-terminal, startup and interactive setup show Xana's static terminal mark;
-`--no-banner` suppresses it and `NO_COLOR` keeps a monochrome version.
+Tool paths must be relative to Xana's launch directory and remain beneath it after resolution. Reads and resulting edits are capped at 64 KiB. The agent loop is bounded to eight model/tool rounds per turn.
 
-Xana advertises three workspace tools through a trait-based registry:
+Tools run automatically with the Xana process's ordinary host access. Path and resource checks, effect classification, and replay-safety metadata are not a permission system or sandbox. Xana does not prompt for per-tool approval, and `edit_file` does not claim atomic or crash-safe writes.
 
-- `read_file` reads a regular UTF-8 file, or an inclusive one-based line range.
-- `list_files` lists one directory non-recursively as sorted JSON, with limits
-  of 256 entries and 64 KiB of output.
-- `edit_file` replaces exactly one occurrence of text in an existing regular
-  UTF-8 file.
+## Documentation
 
-All paths must be relative to the directory where Xana started and must remain
-beneath that directory after resolution. Reads and resulting edits are capped
-at 64 KiB. The agent loop is also bounded to eight model/tool rounds per turn.
-
-These tools currently run automatically. Their path and resource validation,
-effect class, and replay-safety metadata are not a permission system or a
-sandbox. Xana does not yet prompt for approval, and the process retains its
-normal host access. `edit_file` also does not claim atomic or crash-safe writes.
+- [Configuration](docs/user/configuration.md) is the user reference.
+- [Documentation index](docs/README.md) separates user and engineering material and explains its authority model.
+- [Architecture](docs/architecture/README.md) describes what Xana is and how the implemented system works.
+- [Design Principles](docs/principles.md) defines durable constraints for future changes.
 
 ## Development
 
@@ -98,6 +71,8 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
+See [Code organization](docs/development/code-organization.md) for repository policy.
+
 ## License
 
-MIT - see [LICENSE](./LICENSE)
+MIT — see [LICENSE](./LICENSE).

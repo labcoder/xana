@@ -1,5 +1,7 @@
 # Xana configuration
 
+> Audience: People installing, configuring, or using Xana.
+
 Xana loads one human-authored, versioned TOML document at startup. Startup
 prints the resolved configuration path before loading the file.
 
@@ -18,10 +20,10 @@ It offers two connection routes:
 - a custom unauthenticated OpenAI-compatible HTTP(S) endpoint.
 
 Both routes require a model. The prompt defaults the bounded tool-call limit
-to `8`, explains that Phase 1 tools run automatically with the user's host
-permissions, previews the selected values, and asks for final confirmation.
-The generated TOML is serialized through the version 1 schema and parsed back
-through the production validator before any directory or file is created.
+to `8`, explains that tools run automatically with the user's host permissions,
+previews the selected values, and asks for final confirmation. The generated
+TOML is serialized through the version 1 schema and parsed back through the
+production validator before any directory or file is created.
 
 For automation, every provider/model value and the authority acknowledgement
 must be explicit:
@@ -103,8 +105,8 @@ identity `io.github.labcoder.xana`:
 | macOS | `~/Library/Application Support/io.github.labcoder.xana/config.toml` |
 | Windows | `%APPDATA%\labcoder\xana\config\config.toml` |
 
-Xana prints the actual resolved path at startup because platform environment
-and user folders can change these defaults.
+Xana prints the resolved path at startup because platform environment and user
+folders can change these defaults.
 
 The resolver keeps state categories separate:
 
@@ -155,14 +157,14 @@ set "XANA_HOME=%USERPROFILE%\.xana"
 cargo run
 ```
 
-These examples affect the current shell. Persistent setup belongs in the
+These examples affect the active shell. Persistent setup belongs in the
 appropriate user-level shell or environment configuration for that platform.
 Xana reads `XANA_HOME`; `xana init` never writes it or edits a shell profile.
 
 ## Terminal presentation
 
 Bare interactive startup and interactive initialization show Xana's static
-terminal portrait and wordmark. Redirected output, config diagnostics,
+terminal portrait and wordmark. Redirected output, configuration diagnostics,
 noninteractive setup, and dry-run omit it. Use `--no-banner` to suppress it;
 setting `NO_COLOR` retains the mark without ANSI color. A dumb terminal also
 receives plain operational output without the mark.
@@ -173,20 +175,20 @@ receives plain operational output without the mark.
 |---|---|---:|---|---|
 | `version` | integer | Yes | None | Configuration schema version; this build accepts `1` |
 | `default_profile` | string | Yes | None | Name beneath `[profiles]` selected at startup |
-| `permission_mode` | string enum | Yes | None | Phase 1 behavior; only `allow` is accepted |
-| `providers.<name>.kind` | string enum | Yes | None | Provider adapter kind; v1 accepts `openai_compat` |
+| `permission_mode` | string enum | Yes | None | Only `allow` is accepted; tools run automatically with host access |
+| `providers.<name>.kind` | string enum | Yes | None | Provider adapter kind; version 1 accepts `openai_compat` |
 | `providers.<name>.base_url` | string | Yes | None | Absolute HTTP(S) provider base URL |
 | `profiles.<name>.provider` | string | Yes | None | Name beneath `[providers]` |
 | `profiles.<name>.model` | string | Yes | None | Non-blank model identifier sent to the provider |
 | `profiles.<name>.max_tool_rounds` | integer | No | `8` | Bounded agent tool rounds; accepted range is `1..=64` |
 
-Unknown fields are errors. This keeps misspellings and unsupported future
-settings from being silently ignored.
+Unknown fields are errors. This keeps misspellings and unsupported settings
+from being silently ignored.
 
 ## Name and URL rules
 
-Provider/profile names must begin with a lowercase ASCII letter or digit. The
-remaining characters may be lowercase ASCII letters, digits, `_`, or `-`.
+Provider and profile names must begin with a lowercase ASCII letter or digit.
+Remaining characters may be lowercase ASCII letters, digits, `_`, or `-`.
 
 Valid examples: `ollama`, `local_qwen`, `fast-worker`, `worker2`.
 
@@ -209,13 +211,12 @@ Do not store plaintext credentials, OAuth sessions, conversation or operation
 records, artifacts, cache data, audit records, logs, or frontend-local UI
 preferences in this file.
 
-Secrets will use operating-system credential storage or explicit environment
-references when those provider features land. An unknown field such as
-`api_key` is rejected in version 1.
+Version 1 does not support credential fields or authenticated-provider setup.
+An unknown field such as `api_key` is rejected.
 
 ## Migrating from `config.kv`
 
-Xana does not rewrite the temporary Phase 1 file automatically. An old file:
+Xana does not rewrite the legacy `config.kv` file automatically. An old file:
 
 ```text
 model=qwen3:1.7b
@@ -238,17 +239,17 @@ provider = "ollama"
 model = "qwen3:1.7b"
 ```
 
-Choose the `ollama` and `default` names yourself, and confirm that the current
-automatic `allow` behavior is your intent. Write the result to `config.toml`
-beside the old file. When both files exist, Xana uses `config.toml`; remove or
-archive `config.kv` after verifying startup.
+Choose the `ollama` and `default` names yourself, and confirm that automatic
+`allow` behavior is your intent. Write the result to `config.toml` beside the
+old file. When both files exist, Xana uses `config.toml`; remove or archive
+`config.kv` after verifying startup.
 
-## Current limitations
+## Limitations
 
-- Version 1 accepts only `permission_mode = "allow"`; the permission protocol
-  lands in a later phase.
-- Multiple named providers and profiles are validated, but only
-  `default_profile` can be selected in Phase 1.
+- Version 1 accepts only `permission_mode = "allow"`; no permission broker or
+  approval flow is implemented.
+- Multiple named providers and profiles are validated, but the executable
+  selects only `default_profile`.
 - Version 1 has one provider kind, `openai_compat`, and no plaintext credential
   fields.
 - Initialization does not collect credentials or onboard authenticated remote
