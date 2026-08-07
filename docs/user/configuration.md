@@ -175,6 +175,10 @@ The resolver keeps state categories separate:
 Path resolution does not create these directories. The code that first writes
 a category is responsible for creating only the directory it owns.
 
+Starting chat creates `data/sessions/` and `data/artifacts/`. Session JSONL,
+permission audits, context metadata, and immutable artifact bytes never belong
+in `config.toml`; see [Sessions](sessions.md).
+
 ## `XANA_HOME`
 
 Set `XANA_HOME` to an absolute path to use one predictable portable root for
@@ -309,9 +313,9 @@ result to `config.toml` beside the old file. When both files exist, Xana uses
 
 ## Limitations
 
-- Permission audit facts and session grants are memory-only. There are no
-  persistent grants, durable audit store, remote controller roles, or
-  permission-derived process containment.
+- Permission audit facts are appended to the durable session, while session
+  grants remain memory-only. There are no persistent grants, remote controller
+  roles, or permission-derived process containment.
 - Multiple named providers and profiles are validated, but the executable
   selects only `default_profile`.
 - Version 1 has one provider kind, `openai_compat`, and no plaintext credential

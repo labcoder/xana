@@ -6,16 +6,17 @@
 
 use crate::{
     agent::Agent,
-    cli::{self, Cli, Command, ConfigCommand},
+    cli::{self, Cli, Command, ConfigCommand, SessionCommand},
     config::{ProviderKind, XanaConfig},
-    context::{ContextBudget, ContextPlanReport, load_project_sources},
+    context::{ContextBudget, ContextPlanReport},
     init::{self, InitPlan, WriteOutcome},
     paths::XanaPaths,
     permission::PermissionPolicy,
     presentation::{self, BannerMode},
-    prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    prompt::{PromptAssembler, PromptEnvironment, PromptSurface},
     provider::openai_compat::OpenAiCompatClient,
     runtime::RuntimeHandle,
+    session::DurableSession,
     shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
@@ -29,6 +30,10 @@ const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
 
+    if cli.resume.is_some() && cli.command.is_some() {
+        anyhow::bail!("--resume starts chat and cannot be combined with a subcommand");
+    }
+
     match cli.command {
         None => {
             let mode = banner_mode(
@@ -37,12 +42,16 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 io::stdout().is_terminal(),
                 no_banner,
             );
-            run_default(&paths, mode).await
+            run_default(&paths, mode, cli.resume).await
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
             run_config_command(args.command, &paths, &mut stdout.lock())
+        }
+        Some(Command::Session(args)) => {
+            let stdout = io::stdout();
+            run_session_command(args.command, &paths, &mut stdout.lock())
         }
     }
 }
@@ -56,7 +65,11 @@ fn load_config(paths: &XanaPaths) -> Result<XanaConfig> {
     })
 }
 
-async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
+async fn run_default(
+    paths: &XanaPaths,
+    banner_mode: BannerMode,
+    resume: Option<crate::identity::SessionId>,
+) -> Result<()> {
     {
         let mut output = anstream::stdout().lock();
         presentation::write_banner(&mut output, banner_mode)
@@ -108,29 +121,65 @@ async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
-    let permission_policy =
-        PermissionPolicy::new(permission_mode.into(), permission_rules, &workspace_root)
-            .context("could not resolve permission policy for the launch workspace")?;
-    let project_sources = load_project_sources(&workspace_root)
-        .context("could not load project prompt instructions")?;
+    let (session, permission_policy, resumed, repair_truncate_to, unfinished) = match resume {
+        Some(session_id) => {
+            let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
+            if session.workspace_root() != workspace_root {
+                writeln!(
+                    anstream::stdout().lock(),
+                    "resuming session workspace {} (current directory is {})",
+                    session.workspace_root().display(),
+                    workspace_root.display()
+                )?;
+            }
+            let unfinished = summary.unfinished.clone();
+            let permission_policy = PermissionPolicy::new(
+                permission_mode.into(),
+                permission_rules,
+                session.workspace_root(),
+            )
+            .context("could not resolve permission policy for the session workspace")?;
+            (
+                session,
+                permission_policy,
+                true,
+                summary.repair_truncate_to,
+                unfinished,
+            )
+        }
+        None => {
+            let permission_policy =
+                PermissionPolicy::new(permission_mode.into(), permission_rules, &workspace_root)
+                    .context("could not resolve permission policy for the launch workspace")?;
+            (
+                DurableSession::create(paths.data_dir(), workspace_root.clone())?,
+                permission_policy,
+                false,
+                None,
+                Vec::new(),
+            )
+        }
+    };
+    let workspace_root = session.workspace_root().to_owned();
     let environment = PromptEnvironment {
         operating_system: std::env::consts::OS.to_owned(),
         working_directory: workspace_root.clone(),
         configured_shell,
         surface: PromptSurface::Cli,
     };
-    let definitions = tools.definitions();
-    let prompt = assemble_snapshot(PromptInputs {
-        tool_definitions: &definitions,
-        environment: &environment,
-        product_documentation: None,
-        project_sources: &project_sources,
-        budget: ContextBudget {
+    let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+    let prompt_assembler = PromptAssembler::new(
+        definitions,
+        environment,
+        None,
+        ContextBudget {
             total_tokens: PROMPT_TOTAL_TOKENS,
             conversation_reserve_tokens: PROMPT_CONVERSATION_RESERVE_TOKENS,
         },
-    })
-    .context("could not assemble Xana prompt")?;
+    );
+    let prompt = prompt_assembler
+        .assemble(&[])
+        .context("could not assemble Xana base prompt")?;
     let context_report = ContextPlanReport::render(&prompt.context_plan)
         .as_str()
         .to_owned();
@@ -141,15 +190,63 @@ async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         prompt,
         max_tool_rounds,
     );
-    let runtime = RuntimeHandle::spawn(agent, permission_policy, true);
+    let session_id = session.session_id();
+    let session_path = session.path().to_owned();
+    let runtime =
+        RuntimeHandle::spawn_persistent(agent, permission_policy, true, session, prompt_assembler)?;
     let header = ChatHeader {
         provider_name,
         model,
         endpoint,
         context_report,
+        session_id,
+        session_path,
+        resumed,
+        repair_truncate_to,
+        unfinished,
     };
 
     terminal::run_chat(runtime, header).await
+}
+
+fn run_session_command<W: Write>(
+    command: SessionCommand,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    match command {
+        SessionCommand::Inspect { session_id } => {
+            let summary = DurableSession::inspect(paths.data_dir(), session_id)?;
+            writeln!(output, "session: {}", summary.session_id)?;
+            writeln!(output, "path: {}", summary.path.display())?;
+            writeln!(output, "records: {}", summary.record_count)?;
+            writeln!(
+                output,
+                "unfinished operations: {}",
+                summary.unfinished.len()
+            )?;
+            for (operation_id, state) in summary.unfinished {
+                writeln!(output, "  {operation_id}: {state:?}")?;
+            }
+            writeln!(output, "artifacts: {}", summary.artifact_count)?;
+            writeln!(output, "artifact bytes: {}", summary.artifact_bytes)?;
+            writeln!(
+                output,
+                "context versions: {}",
+                summary.context_versions.len()
+            )?;
+            for (context_id, version) in summary.context_versions {
+                writeln!(output, "  {context_id} v{version}")?;
+            }
+            match summary.repair_truncate_to {
+                Some(offset) => {
+                    writeln!(output, "torn tail: repair would truncate to byte {offset}")?
+                }
+                None => writeln!(output, "torn tail: none")?,
+            }
+            Ok(())
+        }
+    }
 }
 
 fn run_config_command<W: Write>(

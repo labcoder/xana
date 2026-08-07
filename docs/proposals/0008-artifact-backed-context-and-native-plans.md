@@ -16,15 +16,15 @@ Recursive Language Model research without adding an `RLM mode`, a persistent
 language kernel, or a second blob store. Artifacts remain the byte/document
 substrate, and the Rust runtime remains the complete composition path.
 
-Xana currently implements only a transient precursor: `xana-prompt-v1` applies
-one estimated input budget to fixed layers, exact tool schemas, root
-`AGENTS.md` previews, and actual history. Source ids, selectors, provenance,
-and range/search previews live for one agent and have no durable artifact,
-context, owner, version, or recovery identity. This proposal remains
-unimplemented for context capabilities, native plans, and optional
-computation. The artifact-backed context record, first selectors, and
-persisted materialization subset is accepted separately by
-[Proposal 0012](0012-durable-sessions-and-context.md).
+Xana implements a durable precursor: `xana-prompt-v1` applies one estimated
+input budget to fixed layers, exact tool schemas, persisted root `AGENTS.md`
+views, and actual history. Artifact-backed context records carry identity,
+owner, version, provenance, trust, and recovery identity; full, line, and
+literal-search selectors materialize bounded persisted bytes. That subset is
+implemented through historical
+[Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
+unimplemented for model-facing context capabilities, native plans, and
+optional computation.
 
 ## Proposed context references
 
@@ -54,8 +54,7 @@ struct ContextViewRef {
 }
 ```
 
-The exact Rust fields wait for artifact and session formats. The semantic
-contract is:
+The broader model-facing service retains this proposed semantic contract:
 
 - references are immutable or explicitly versioned;
 - derived views record source, selector, source version, content hash, trust,

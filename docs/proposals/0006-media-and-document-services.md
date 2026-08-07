@@ -13,7 +13,8 @@ the conversational provider interface into unrelated operations.
 
 ## Media and artifacts
 
-The immutable content-addressed artifact substrate is accepted separately by
+The immutable content-addressed artifact substrate is implemented separately
+through historical
 [Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
 Proposed for media blocks, document extraction, and focused media services.
 

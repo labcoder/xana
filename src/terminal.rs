@@ -4,7 +4,7 @@
 //! does not own conversation history or call providers and tools directly.
 
 use crate::{
-    identity::{OperationId, ToolInvocationId},
+    identity::{OperationId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
@@ -12,12 +12,18 @@ use crate::{
 use anyhow::{Context, Result, bail};
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 
 pub(crate) struct ChatHeader {
     pub(crate) provider_name: String,
     pub(crate) model: String,
     pub(crate) endpoint: String,
     pub(crate) context_report: String,
+    pub(crate) session_id: SessionId,
+    pub(crate) session_path: PathBuf,
+    pub(crate) resumed: bool,
+    pub(crate) repair_truncate_to: Option<u64>,
+    pub(crate) unfinished: Vec<(OperationId, OperationState)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -145,6 +151,20 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
     println!("model: {}", header.model);
     println!("chat endpoint: {}", header.endpoint);
     println!("context plan:\n{}", header.context_report);
+    println!("session: {}", header.session_id);
+    println!("session file: {}", header.session_path.display());
+    if header.resumed {
+        println!("resumed: yes");
+    }
+    if let Some(offset) = header.repair_truncate_to {
+        println!("repaired torn session tail at byte {offset}");
+    }
+    if !header.unfinished.is_empty() {
+        println!(
+            "unfinished operations restored without replay: {}",
+            header.unfinished.len()
+        );
+    }
 
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let stdout = anstream::stdout();

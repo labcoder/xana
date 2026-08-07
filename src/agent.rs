@@ -12,10 +12,50 @@ use crate::{
     runtime::AgentEvent,
     tool::{ToolContext, ToolDefinition, ToolRegistry},
 };
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use futures::future::BoxFuture;
 use std::{error::Error, fmt, path::PathBuf};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
+
+#[derive(Clone)]
+pub(crate) struct ConversationCommitSender {
+    sender: mpsc::UnboundedSender<ConversationCommit>,
+}
+
+pub(crate) struct ConversationCommit {
+    pub(crate) operation_id: OperationId,
+    pub(crate) message: Message,
+    pub(crate) tool_finished: Option<(ToolInvocationId, Message)>,
+    pub(crate) acknowledged: oneshot::Sender<Result<(), String>>,
+}
+
+impl ConversationCommitSender {
+    pub(crate) fn channel() -> (Self, mpsc::UnboundedReceiver<ConversationCommit>) {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        (Self { sender }, receiver)
+    }
+
+    async fn commit(
+        &self,
+        operation_id: OperationId,
+        message: Message,
+        tool_finished: Option<(ToolInvocationId, Message)>,
+    ) -> Result<()> {
+        let (acknowledged, acknowledgement) = oneshot::channel();
+        self.sender
+            .send(ConversationCommit {
+                operation_id,
+                message,
+                tool_finished,
+                acknowledged,
+            })
+            .map_err(|_| anyhow::anyhow!("durable conversation writer is unavailable"))?;
+        acknowledgement
+            .await
+            .map_err(|_| anyhow::anyhow!("durable conversation writer dropped its reply"))?
+            .map_err(anyhow::Error::msg)
+    }
+}
 
 pub(crate) trait ChatTransport: Send + Sync {
     fn stream_message<'a>(
@@ -84,6 +124,26 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<Message> {
+        self.run_turn_with_prompt(
+            operation_id,
+            messages,
+            &self.prompt,
+            permissions,
+            events,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn run_turn_with_prompt(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        prompt: &PromptSnapshot,
+        permissions: PermissionBrokerHandle,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        commits: Option<ConversationCommitSender>,
+    ) -> Result<Message> {
         let definitions = self.tools.definitions();
         let delta_sink = EventDeltaSink {
             operation_id,
@@ -91,7 +151,7 @@ impl Agent {
         };
 
         for _ in 0..self.max_tool_rounds {
-            let request_messages = self.prompt.messages_for_request(messages)?;
+            let request_messages = prompt.messages_for_request(messages)?;
             let step_id = StepId::new();
             let assistant = self
                 .provider
@@ -103,7 +163,13 @@ impl Agent {
                 return Ok(assistant);
             }
 
-            messages.push(assistant);
+            messages.push(assistant.clone());
+            if let Some(commits) = &commits {
+                commits
+                    .commit(operation_id, assistant, None)
+                    .await
+                    .context("could not commit assistant tool request")?;
+            }
 
             for call in calls {
                 let invocation_id = ToolInvocationId::new();
@@ -120,11 +186,22 @@ impl Agent {
                     )
                     .await;
                 let result_message = Message::tool_result(result);
-                let _ = events.send(AgentEvent::ToolFinished {
-                    operation_id,
-                    invocation_id,
-                    result: result_message.clone(),
-                });
+                if let Some(commits) = &commits {
+                    commits
+                        .commit(
+                            operation_id,
+                            result_message.clone(),
+                            Some((invocation_id, result_message.clone())),
+                        )
+                        .await
+                        .context("could not commit tool result")?;
+                } else {
+                    let _ = events.send(AgentEvent::ToolFinished {
+                        operation_id,
+                        invocation_id,
+                        result: result_message.clone(),
+                    });
+                }
                 messages.push(result_message);
             }
         }

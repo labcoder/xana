@@ -1,14 +1,17 @@
 //! Bounded prompt-context planning.
 //!
-//! Phase 2 sources are transient. They preserve selection and provenance for
-//! one prompt snapshot but are not durable artifact or context identities.
+//! Prompt inputs are transient materializations of separately persisted
+//! artifact/context identities. Selection and provenance remain explicit.
 
+pub(crate) mod persisted;
 mod preview;
+#[cfg(test)]
 mod source;
 
 use std::{collections::HashSet, error::Error, fmt, io, path::PathBuf, string::FromUtf8Error};
 
 pub(crate) use preview::{canonical_text, estimate_tokens, preview};
+#[cfg(test)]
 pub(crate) use source::load_project_sources;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -94,6 +97,7 @@ pub(crate) struct ContextPlanner {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)] // Source-loading variants remain covered by compatibility tests.
 pub(crate) enum ContextError {
     DuplicateSourceId {
         id: TransientSourceId,

@@ -8,7 +8,8 @@ use crate::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
         PermissionScope, PolicyDecision,
     },
-    prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    prompt::{PromptAssembler, PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    session::{DurableSession, SessionStore, reduce},
     tool::{ToolDefinition, ToolRegistry},
 };
 use futures::future::BoxFuture;
@@ -19,6 +20,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use tempfile::tempdir;
 use tokio::sync::Notify;
 
 type CapturedRequests = Arc<Mutex<Vec<Vec<Message>>>>;
@@ -125,6 +127,30 @@ fn queue_agent(
         deltas,
     };
     (make_agent(Box::new(transport)), requests, completed)
+}
+
+fn persistent_agent(
+    provider: Box<dyn ChatTransport>,
+    workspace: std::path::PathBuf,
+) -> (Agent, PromptAssembler) {
+    let tools = ToolRegistry::new();
+    let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+    let assembler = PromptAssembler::new(
+        definitions,
+        PromptEnvironment {
+            operating_system: "test".to_owned(),
+            working_directory: workspace.clone(),
+            configured_shell: "test shell".to_owned(),
+            surface: PromptSurface::Cli,
+        },
+        None,
+        ContextBudget {
+            total_tokens: 16_384,
+            conversation_reserve_tokens: 4_096,
+        },
+    );
+    let prompt = assembler.assemble(&[]).expect("base prompt");
+    (Agent::new(provider, tools, workspace, prompt, 2), assembler)
 }
 
 async fn receive_finished(
@@ -285,6 +311,71 @@ async fn runtime_owns_history_across_turns() {
         Message::text(Role::Assistant, "first answer")
     );
     assert_eq!(requests[1][3], Message::text(Role::User, "second question"));
+}
+
+#[tokio::test]
+async fn persistent_runtime_commits_conversation_before_final_events() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let workspace_root = workspace
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let completed = Arc::new(AtomicBool::new(false));
+    let provider = QueueTransport {
+        responses: Mutex::new(vec![Ok(Message::text(Role::Assistant, "durable answer"))].into()),
+        requests: Arc::clone(&requests),
+        completed,
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_agent(Box::new(provider), workspace_root.clone());
+    let session = DurableSession::create(data.path(), workspace_root.clone())
+        .expect("create durable session");
+    let session_id = session.session_id();
+    let session_path = session.path().to_owned();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "durable question".to_owned(),
+        })
+        .await
+        .expect("submit durable turn");
+
+    let mut saw_assistant = false;
+    loop {
+        let event = runtime.next_event().await.expect("runtime event");
+        match event {
+            AgentEvent::AssistantMessage { .. } => {
+                let loaded = SessionStore::inspect(&session_path).expect("inspect live session");
+                assert_eq!(loaded.records[0].session_id, session_id);
+                assert!(matches!(
+                    loaded.records[0].record,
+                    crate::session::SessionRecord::SessionCreated { .. }
+                ));
+                let restored = reduce(&loaded.records).expect("reduce committed records");
+                assert_eq!(
+                    restored.conversation_path().expect("conversation path"),
+                    vec![
+                        Message::text(Role::User, "durable question"),
+                        Message::text(Role::Assistant, "durable answer"),
+                    ]
+                );
+                saw_assistant = true;
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            _ => {}
+        }
+    }
+    assert!(saw_assistant);
 }
 
 #[tokio::test]

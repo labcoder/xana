@@ -3,7 +3,7 @@
 //! Clap turns process arguments into command data only; command execution and
 //! terminal/filesystem effects remain at the application edge.
 
-use crate::{config::PermissionMode, shell::ShellKind};
+use crate::{config::PermissionMode, identity::SessionId, shell::ShellKind};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -54,6 +54,10 @@ pub(crate) struct Cli {
     #[arg(long, global = true)]
     pub(crate) no_banner: bool,
 
+    /// Resume exactly one durable session instead of creating a new one.
+    #[arg(long, value_name = "SESSION_ID")]
+    pub(crate) resume: Option<SessionId>,
+
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }
@@ -64,6 +68,8 @@ pub(crate) enum Command {
     Init(InitArgs),
     /// Inspect the active configuration.
     Config(ConfigArgs),
+    /// Inspect durable sessions without entering chat.
+    Session(SessionArgs),
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -119,6 +125,18 @@ pub(crate) enum ConfigCommand {
     Check,
 }
 
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct SessionArgs {
+    #[command(subcommand)]
+    pub(crate) command: SessionCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum SessionCommand {
+    /// Print bounded metadata without conversation content.
+    Inspect { session_id: SessionId },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +147,7 @@ mod tests {
         let cli = Cli::try_parse_from(["xana"]).expect("bare invocation");
 
         assert!(!cli.no_banner);
+        assert_eq!(cli.resume, None);
         assert_eq!(cli.command, None);
     }
 
@@ -207,6 +226,24 @@ mod tests {
             check.command,
             Some(Command::Config(ConfigArgs {
                 command: ConfigCommand::Check,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_explicit_resume_and_session_inspection() {
+        let id = SessionId::new();
+        let resume =
+            Cli::try_parse_from(["xana", "--resume", &id.to_string()]).expect("resume argument");
+        let inspect = Cli::try_parse_from(["xana", "session", "inspect", &id.to_string()])
+            .expect("session inspect command");
+
+        assert_eq!(resume.resume, Some(id));
+        assert_eq!(resume.command, None);
+        assert_eq!(
+            inspect.command,
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::Inspect { session_id: id },
             }))
         );
     }

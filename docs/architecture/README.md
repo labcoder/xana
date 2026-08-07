@@ -21,8 +21,10 @@ flowchart LR
     APP --> INIT["init<br/>configuration planning and creation"]
     APP --> TERMINAL["terminal<br/>runtime protocol client"]
     APP --> CONFIG["config + paths"]
-    APP --> CONTEXT["bounded root project context"]
-    CONTEXT --> PROMPT["xana-prompt-v1 snapshot"]
+    APP --> SESSION["durable session<br/>JSONL owner"]
+    SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
+    SESSION --> CONTEXT["versioned project context"]
+    CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded async headless loop"]
@@ -34,8 +36,8 @@ flowchart LR
     BROKER --> SHELL["configured shell execution"]
 ```
 
-`runtime` owns temporary conversation history and at most one active root
-operation. `terminal` is a protocol client that owns readline input, permission
+`runtime` owns the sole open session writer, reduced conversation history, and
+at most one active root operation. `terminal` is a protocol client that owns readline input, permission
 answers, and human rendering. `presentation` owns terminal-mark selection and
 its TTY, monochrome, suppression, and fallback behavior. None of those
 frontend concerns enters the headless agent loop.
@@ -51,18 +53,22 @@ not alter an operation's result.
 
 `OperationId`, `StepId`, and `ToolInvocationId` are distinct UUID v4 newtypes.
 An operation moves through running or suspended state and always reports a
-finished completed, failed, declined, or interrupted outcome. Conversation
-and live deltas are transient; there is no replay or persistence contract.
+finished completed, failed, declined, or interrupted outcome. Conversation,
+operation states, permission audits, artifacts, and context metadata have
+separate durable records. Live deltas and events remain transient and are not
+treated as a replay log.
 
 ## Agent and conversation boundary
 
 `Agent` owns one asynchronous conversational transport, a deterministic tool
-registry, the launch workspace, a frozen `PromptSnapshot`, and a configured
-tool-round limit. Before each provider call it charges the complete current
-history and prepends the snapshot's unchanged system message. It executes
+registry, the session workspace, a base `PromptSnapshot`, and a configured
+tool-round limit. The runtime supplies a project-context-aware snapshot for
+each accepted root turn; that snapshot is unchanged across the turn's provider
+calls. Before each provider call the agent charges the complete current
+history and prepends the snapshot's system message. It executes
 requested tools serially, appends correlated results, and returns the final
-assistant message. The foreground runtime commits the user and final assistant
-messages to its history only after the turn succeeds.
+assistant message. The foreground runtime commits immutable user, assistant,
+and tool-result entries and moves the thread head separately.
 
 The provider-neutral conversation model carries ordered text, tool-call, and
 tool-result content. Provider request and response shapes remain private to
@@ -88,13 +94,14 @@ render terminal output. It also does not read prompt or project files.
 
 ## Prompt and project-context boundary
 
-The application edge builds one `xana-prompt-v1` snapshot from embedded,
+The application edge owns a `PromptAssembler` built from embedded,
 non-replaceable identity and guideline files; a concise tool catalog derived
-from the immutable registry; owned operating-system, canonical working
-directory, configured-shell, and CLI-surface values; and an optional bounded
-root `AGENTS.md` preview. A product-documentation layer exists only when the
-runtime supplies readable logical references or a capability; normal Phase 2
-composition omits it.
+from the immutable registry; owned operating-system, canonical session
+workspace, configured-shell, and CLI-surface values; and fixed budgets. When a
+root turn is accepted, the runtime refreshes durable project context and
+assembles one `xana-prompt-v1` snapshot. A product-documentation layer exists
+only when the runtime supplies readable logical references or a capability;
+normal composition omits it.
 
 Layers have transient ids, purpose, origin, trust, provenance, estimated cost,
 and deterministic order. Dynamic layer text and attributes are XML-escaped,
@@ -104,7 +111,7 @@ byte-stable across supported platforms. The labels are prompt structure, not a
 security boundary.
 
 Root `AGENTS.md` is optional, must be a non-symlink regular UTF-8 file no larger
-than 64 KiB, and has a 1,024-estimated-token preview limit. Discovery does not
+than 64 KiB, and has independent 16 KiB and 1,024-estimated-token view limits. Discovery does not
 walk parents or nested directories and ignores `XANA.md`, `.agents/`, skills,
 and plugins. Project instructions can guide work but cannot mutate tools,
 configuration, permission state, or Xana's non-replaceable core.
@@ -116,11 +123,60 @@ three Unicode scalar values, rounded up; it is not a provider tokenizer.
 Over-budget required input or history fails before provider I/O. Range and
 literal-search previews remain bounded, Unicode-safe, and provenance-bearing.
 
-Context source and preview identities are transient to one agent. Xana has no
-artifact store, durable context reference, context service, native context
-plan, or prompt compaction. The logical `xana.docs.read` capability and
-`xana_docs` tool are also absent; the workspace file tool is never allowed to
-escape its root to simulate product documentation.
+Prompt-layer ids are transient to one snapshot. Durable `ContextRecord`s carry
+id, monotonic version, artifact reference, kind, BLAKE3 hash, logical size,
+provenance, trust, and owner. `ContextViewRecord`s bind source id/version,
+selector, selected-content hash, and byte/token budgets. Full, inclusive line,
+and capped literal-line-search selectors materialize from verified immutable
+artifact bytes. Only the resulting bounded text can enter a prompt.
+
+Root context refresh occurs only when a new turn is accepted. Unchanged bytes
+reuse the version; changed bytes append one artifact/context version; a missing
+live source does not erase the prior version. Opening or inspecting a session
+does not read live project files. Xana has no general context service, native
+context plan, or prompt compaction. The logical `xana.docs.read` capability
+and `xana_docs` tool are also absent.
+
+## Session and artifact boundary
+
+Bare chat creates `data/sessions/<SessionId>.jsonl` and one thread before any
+conversation entry. `xana --resume SESSION_ID` performs bounded read-only
+inspection and pure ordered reduction, explicitly opens the verified file for
+append, and restores the selected conversation path. The optional `xana
+session inspect SESSION_ID` reports bounded metadata without conversation
+content and never opens for writing.
+
+Every compact newline-terminated envelope has format version 1, record id,
+session id, and one typed record. The initial record owns the thread and
+canonical workspace. Other kinds append immutable conversation entries,
+separate head moves, operation states, permission audits, artifact metadata,
+context versions, context views, and named-context moves. The reducer rejects
+wrong or duplicate identities, unknown references, non-monotonic versions,
+invalid heads/parents, second creation, and invalid operation transitions.
+Only the head-to-root conversation path becomes model history.
+
+Inspection is bounded to 256 KiB per record, 10,000 records, and 16 MiB per
+session. A malformed physical tail after a valid newline-terminated prefix
+returns a truncate plan; a complete object without its final newline is also
+uncommitted tail data. Interior malformed records are corruption. Opening for
+resume rechecks the inspected length and BLAKE3 hash before truncating a tail.
+An append writes one object plus newline and flushes before a corresponding
+committed runtime event is emitted. This promises process-crash record
+boundaries, not power-loss durability or `fsync`.
+
+Artifact bytes live at `data/artifacts/<blake3-hex>` and are capped at 4 MiB.
+Publishing writes and flushes a create-new temporary file, then uses a
+non-overwriting hard link as the final publication step; the temporary name is
+removed afterward. A racing or existing final path is reused only after length
+and digest verification. Reads enforce the caller bound and verify the record's
+length and digest. Logical `ArtifactId`, media type, and owner remain distinct
+from byte equality.
+
+The foreground runtime owns the only open `SessionStore`. There is no
+cross-process writer lock, session deletion or garbage collection, automatic
+latest-session choice, portable-workspace rewrite, or invocation replay.
+Restore reports unfinished operation states but performs no provider, tool,
+context-refresh, or replay effect.
 
 ## Tool boundary
 
@@ -170,18 +226,20 @@ effect and cover only the same or a narrower workspace scope or an exact
 command scope. Unknown, stale, duplicate, mismatched, scope-widening, lost, and
 unattended decisions fail closed.
 
-Each outcome emits an in-memory `PermissionAuditFact` binding operation and
+Each outcome emits a `PermissionAuditFact` binding operation and
 invocation ids, tool/effect, final arguments, scope, policy outcome, optional
-controller decision, and effective decision. Audit facts do not enter the
-conversation and are not durable. Neither policy, metadata, workspace path
+controller decision, and effective decision. The runtime commits the fact as a
+non-conversation session record before forwarding its audit event. Neither policy, metadata, workspace path
 checks, nor authorization provides process containment. Tools run
 asynchronously with the Xana process's ordinary host access, and `edit_file`
 does not claim atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
-Bare `xana` starts terminal chat. The typed command boundary also exposes
-`xana init`, `xana config path`, and `xana config check`.
+Bare `xana` creates a session and starts terminal chat; `xana --resume
+SESSION_ID` resumes only that session. The typed command boundary also exposes
+`xana init`, `xana config path`, `xana config check`, and read-only `xana
+session inspect SESSION_ID`.
 
 Initialization collects interactive or explicit noninteractive answers,
 builds a configuration draft without filesystem effects, renders the version
@@ -232,11 +290,16 @@ physical package boundaries:
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `permission` owns pure policy and scopes, pending controller decisions,
-  session grants, and in-memory audit facts.
+  session grants, and audit-fact values.
+- `session` owns the versioned envelope, bounded JSONL store, pure reduction,
+  durable context refresh, one writer, and resume/inspection summaries.
+- `artifact` owns BLAKE3 content identity, immutable publication, bounded
+  verified reads, and logical artifact metadata.
 - `agent` and `message` contain the headless loop and internal conversation
   model.
-- `prompt` and `context` own versioned assembly, transient source selection,
-  provenance, previewing, and input-budget enforcement.
+- `prompt` and `context` own per-turn versioned assembly, transient prompt
+  selection, durable context records, provenance, previewing, and input-budget
+  enforcement.
 - `provider` and `tool` are narrow facades over private adapter and tool
   implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
@@ -251,11 +314,11 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no durable session store, sandbox,
-background runtime, workspace crate split, runtime profile switching,
-multi-client attachment, event replay, persistent grants, durable permission
-audit store, remote controller authentication, artifact/context store, context service, nested
-project-instruction or skill discovery, prompt compaction, or crash-safe edit
-protocol. Session grants and permission audit facts live only in the foreground
-process. These absences are implementation facts, not predictions about which
-proposals will be accepted.
+Xana has no sandbox, background runtime, workspace crate split, runtime
+profile switching, multi-client attachment, event replay, persistent grants,
+remote controller authentication, general context service, nested
+project-instruction or skill discovery, prompt compaction, artifact/session
+garbage collection, invocation recovery, cross-process writer exclusion,
+power-loss durability, or crash-safe edit protocol. Session grants live only
+in the foreground process. These absences are implementation facts, not
+predictions about which proposals will be accepted.

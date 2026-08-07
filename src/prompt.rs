@@ -115,6 +115,44 @@ pub(crate) struct PromptInputs<'a> {
     pub(crate) budget: ContextBudget,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct PromptAssembler {
+    tool_definitions: Vec<ToolDefinition>,
+    environment: PromptEnvironment,
+    product_documentation: Option<ProductDocumentationHint>,
+    budget: ContextBudget,
+}
+
+impl PromptAssembler {
+    pub(crate) fn new(
+        tool_definitions: Vec<ToolDefinition>,
+        environment: PromptEnvironment,
+        product_documentation: Option<ProductDocumentationHint>,
+        budget: ContextBudget,
+    ) -> Self {
+        Self {
+            tool_definitions,
+            environment,
+            product_documentation,
+            budget,
+        }
+    }
+
+    pub(crate) fn assemble(
+        &self,
+        project_sources: &[ContextSource],
+    ) -> Result<PromptSnapshot, PromptError> {
+        let definitions = self.tool_definitions.iter().collect::<Vec<_>>();
+        assemble_snapshot(PromptInputs {
+            tool_definitions: &definitions,
+            environment: &self.environment,
+            product_documentation: self.product_documentation.as_ref(),
+            project_sources,
+            budget: self.budget,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum PromptError {
     Context(ContextError),

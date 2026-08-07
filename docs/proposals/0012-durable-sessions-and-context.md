@@ -1,8 +1,8 @@
 # Durable sessions and context
 
 > Audience: Contributors and coding agents  
-> Authority: Prescriptive  
-> Status: Accepted
+> Authority: None
+> Status: Implemented
 
 ## Context
 
@@ -11,6 +11,13 @@ context state in memory. This proposal accepts the first durable storage
 boundary without accepting invocation replay, cross-process coordination,
 garbage collection, portable sessions, or the broader native-plan design in
 Proposals 0004, 0006, 0007, and 0008.
+
+## Implementation
+
+The narrow durable-session, artifact, and context contract is implemented.
+[Architecture](../architecture/README.md), [Sessions](../user/sessions.md),
+and [Project context](../user/project-context.md) are authoritative for current
+behavior; this proposal is historical design and scope evidence.
 
 ## Accepted record model
 
@@ -89,4 +96,3 @@ Lesson 2.6 must cross its own proposal gate. It also excludes session deletion,
 automatic latest-session selection, SQLite, embeddings, portable sessions,
 multi-writer coordination, persistent permission grants, and durable compute
 heaps.
-
