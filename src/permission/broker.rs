@@ -31,6 +31,7 @@ pub(crate) struct PermissionBroker {
     pending: HashMap<PermissionKey, PendingRequest>,
     controller_present: bool,
     events: mpsc::UnboundedSender<AgentEvent>,
+    emit_audit_events: bool,
     commands: mpsc::UnboundedReceiver<BrokerCommand>,
 }
 
@@ -65,6 +66,23 @@ impl PermissionBroker {
         controller_present: bool,
         events: mpsc::UnboundedSender<AgentEvent>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
+        Self::spawn_with_audit_events(policy, controller_present, events, true)
+    }
+
+    pub(crate) fn spawn_for_durable_runtime(
+        policy: PermissionPolicy,
+        controller_present: bool,
+        events: mpsc::UnboundedSender<AgentEvent>,
+    ) -> (PermissionBrokerHandle, JoinHandle<()>) {
+        Self::spawn_with_audit_events(policy, controller_present, events, false)
+    }
+
+    fn spawn_with_audit_events(
+        policy: PermissionPolicy,
+        controller_present: bool,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        emit_audit_events: bool,
+    ) -> (PermissionBrokerHandle, JoinHandle<()>) {
         let (sender, receiver) = mpsc::unbounded_channel();
         let broker = Self {
             policy,
@@ -72,6 +90,7 @@ impl PermissionBroker {
             pending: HashMap::new(),
             controller_present,
             events,
+            emit_audit_events,
             commands: receiver,
         };
         let task = tokio::spawn(broker.run());
@@ -202,7 +221,9 @@ impl PermissionBroker {
         } else {
             Authorization::Denied(fact.clone())
         };
-        let _ = self.events.send(AgentEvent::PermissionAudited { fact });
+        if self.emit_audit_events {
+            let _ = self.events.send(AgentEvent::PermissionAudited { fact });
+        }
         let _ = reply.send(authorization);
     }
 

@@ -39,7 +39,8 @@ pub(crate) enum EffectClass {
     External,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ReplaySafety {
     Safe,
     Never,
@@ -48,11 +49,10 @@ pub(crate) enum ReplaySafety {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolDefinition {
     pub(crate) name: &'static str,
+    pub(crate) contract_version: u32,
     pub(crate) description: &'static str,
     pub(crate) parameters: Value,
-    #[allow(dead_code)] // persisted and enforced by the later recovery path
     pub(crate) effect_class: EffectClass,
-    #[allow(dead_code)] // persisted and enforced by the later recovery path
     pub(crate) replay_safety: ReplaySafety,
 }
 
@@ -75,6 +75,42 @@ pub(crate) struct PlannedToolInvocation {
     pub(crate) final_arguments: Value,
     pub(crate) scope: PermissionScope,
     executable: Box<dyn Any + Send + Sync>,
+}
+
+pub(crate) struct PreparedToolInvocation<'a> {
+    pub(crate) call_id: String,
+    pub(crate) definition: &'a ToolDefinition,
+    implementation: &'a dyn Tool,
+    planned: PlannedToolInvocation,
+}
+
+impl PreparedToolInvocation<'_> {
+    pub(crate) fn final_arguments(&self) -> &Value {
+        &self.planned.final_arguments
+    }
+
+    pub(crate) fn scope(&self) -> &PermissionScope {
+        &self.planned.scope
+    }
+
+    pub(crate) fn permission_request(
+        &self,
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+    ) -> PermissionRequest {
+        PermissionRequest {
+            operation_id,
+            invocation_id,
+            tool_name: self.definition.name.to_owned(),
+            effect_class: self.definition.effect_class,
+            final_arguments: self.planned.final_arguments.clone(),
+            scope: self.planned.scope.clone(),
+        }
+    }
+
+    pub(crate) async fn execute(&self) -> Result<String, String> {
+        self.implementation.execute(&self.planned).await
+    }
 }
 
 impl PlannedToolInvocation {
@@ -167,29 +203,11 @@ impl ToolRegistry {
     }
 
     pub(crate) async fn invoke(&self, call: &ToolCall, context: ToolContext<'_>) -> ToolResult {
-        let Some(tool) = self
-            .tools
-            .iter()
-            .find(|tool| tool.definition.name == call.name.as_str())
-        else {
-            return ToolResult::error(call.id.clone(), format!("unknown tool {:?}", call.name));
-        };
-
-        let planned = match tool
-            .implementation
-            .plan(&call.arguments, context.workspace_root)
-        {
+        let planned = match self.plan(call, context.workspace_root) {
             Ok(planned) => planned,
-            Err(error) => return ToolResult::error(call.id.clone(), error),
+            Err(result) => return result,
         };
-        let request = PermissionRequest {
-            operation_id: context.operation_id,
-            invocation_id: context.invocation_id,
-            tool_name: tool.definition.name.to_owned(),
-            effect_class: tool.definition.effect_class,
-            final_arguments: planned.final_arguments.clone(),
-            scope: planned.scope.clone(),
-        };
+        let request = planned.permission_request(context.operation_id, context.invocation_id);
         let authorization = match context.permissions.authorize(request).await {
             Ok(authorization) => authorization,
             Err(error) => return ToolResult::error(call.id.clone(), error.to_string()),
@@ -201,10 +219,38 @@ impl ToolRegistry {
             );
         }
 
-        match tool.implementation.execute(&planned).await {
+        match planned.execute().await {
             Ok(output) => ToolResult::success(call.id.clone(), output),
             Err(error) => ToolResult::error(call.id.clone(), error),
         }
+    }
+
+    pub(crate) fn plan<'a>(
+        &'a self,
+        call: &ToolCall,
+        workspace_root: &Path,
+    ) -> Result<PreparedToolInvocation<'a>, ToolResult> {
+        let Some(tool) = self
+            .tools
+            .iter()
+            .find(|tool| tool.definition.name == call.name.as_str())
+        else {
+            return Err(ToolResult::error(
+                call.id.clone(),
+                format!("unknown tool {:?}", call.name),
+            ));
+        };
+
+        let planned = match tool.implementation.plan(&call.arguments, workspace_root) {
+            Ok(planned) => planned,
+            Err(error) => return Err(ToolResult::error(call.id.clone(), error)),
+        };
+        Ok(PreparedToolInvocation {
+            call_id: call.id.clone(),
+            definition: &tool.definition,
+            implementation: tool.implementation.as_ref(),
+            planned,
+        })
     }
 
     pub(crate) fn builtins(shell: Shell) -> Result<Self, RegistryError> {

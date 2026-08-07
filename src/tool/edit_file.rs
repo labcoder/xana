@@ -215,6 +215,7 @@ impl Tool for EditFile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "edit_file",
+            contract_version: crate::operation::TOOL_CONTRACT_VERSION,
             description: "Replace exactly one text occurrence in an existing UTF-8 workspace file",
             parameters: json!({
                 "type": "object",

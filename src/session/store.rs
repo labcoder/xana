@@ -17,6 +17,7 @@ pub(crate) struct SessionStore {
     session_id: SessionId,
     path: PathBuf,
     file: fs::File,
+    _writer_lock: fs::File,
 }
 
 #[derive(Debug)]
@@ -58,10 +59,12 @@ impl SessionStore {
                 path: path.clone(),
                 source,
             })?;
+        let writer_lock = acquire_writer_lock(&path)?;
         let mut store = Self {
             session_id: created.session_id,
             path,
             file,
+            _writer_lock: writer_lock,
         };
         store.append(&created)?;
         Ok(store)
@@ -166,6 +169,7 @@ impl SessionStore {
                 path: path.to_owned(),
                 source,
             })?;
+        let writer_lock = acquire_writer_lock(path)?;
         if let Some(repair) = loaded.repair {
             file.set_len(repair.truncate_to)
                 .map_err(|source| SessionError::Io {
@@ -182,6 +186,7 @@ impl SessionStore {
             session_id,
             path: path.to_owned(),
             file,
+            _writer_lock: writer_lock,
         })
     }
 
@@ -218,6 +223,30 @@ impl SessionStore {
 
     pub(crate) fn path(&self) -> &Path {
         &self.path
+    }
+}
+
+fn acquire_writer_lock(session_path: &Path) -> Result<fs::File, SessionError> {
+    let lock_path = session_path.with_extension("jsonl.lock");
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|source| SessionError::Io {
+            path: lock_path.clone(),
+            source,
+        })?;
+    match lock.try_lock() {
+        Ok(()) => Ok(lock),
+        Err(fs::TryLockError::WouldBlock) => Err(SessionError::WriterBusy {
+            path: session_path.to_owned(),
+        }),
+        Err(fs::TryLockError::Error(source)) => Err(SessionError::Io {
+            path: lock_path,
+            source,
+        }),
     }
 }
 
@@ -282,6 +311,9 @@ pub(crate) enum SessionError {
     ChangedAfterInspection {
         path: PathBuf,
     },
+    WriterBusy {
+        path: PathBuf,
+    },
     Encode(serde_json::Error),
     Io {
         path: PathBuf,
@@ -328,6 +360,11 @@ impl fmt::Display for SessionError {
             Self::ChangedAfterInspection { path } => write!(
                 formatter,
                 "session {} changed after read-only inspection",
+                path.display()
+            ),
+            Self::WriterBusy { path } => write!(
+                formatter,
+                "session {} already has an active writer or recovery controller",
                 path.display()
             ),
             Self::Encode(source) => write!(formatter, "could not encode session record: {source}"),

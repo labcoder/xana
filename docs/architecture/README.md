@@ -24,12 +24,14 @@ flowchart LR
     APP --> SESSION["durable session<br/>JSONL owner"]
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
     SESSION --> CONTEXT["versioned project context"]
+    SESSION --> OPERATION["durable operation log<br/>intent + result"]
     CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded async headless loop"]
     AGENT --> PROVIDER["provider adapter"]
-    AGENT --> TOOLS["tool registry<br/>plan + invoke"]
+    AGENT --> OPERATION
+    OPERATION --> TOOLS["tool registry<br/>plan + invoke"]
     TOOLS --> BROKER["permission broker<br/>policy + grants + pending"]
     TERMINAL -->|"typed decision"| BROKER
     BROKER --> HOST["workspace-scoped host tools"]
@@ -45,13 +47,17 @@ frontend concerns enters the headless agent loop.
 Control values cross a bounded Tokio channel as serializable
 `RuntimeCommand`s. A single foreground receiver observes serializable
 `AgentEvent`s over an unbounded channel. Commands submit turns, clear idle
-history, correlate permission decisions, and shut down the runtime.
-Events carry operation state, assistant deltas, permission requests and audit facts, tool
-completion, final messages, failures, clearing, and rejections. Except for the
+history, identify explicit recovery work, correlate permission decisions, and
+shut down the runtime. The dedicated CLI recovery controller consumes
+`ResumeOperation`; merely opening a foreground chat never reconciles effects.
+Events carry operation state, assistant deltas, permission requests and audit
+facts, committed invocation facts, tool completion, final messages, failures,
+clearing, and rejections. Except for the
 explicit permission request, event delivery is passive: losing the receiver does
 not alter an operation's result.
 
-`OperationId`, `StepId`, and `ToolInvocationId` are distinct UUID v4 newtypes.
+`OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
+are distinct UUID v4 newtypes.
 An operation moves through running or suspended state and always reports a
 finished completed, failed, declined, or interrupted outcome. Conversation,
 operation states, permission audits, artifacts, and context metadata have
@@ -149,11 +155,14 @@ content and never opens for writing.
 Every compact newline-terminated envelope has format version 1, record id,
 session id, and one typed record. The initial record owns the thread and
 canonical workspace. Other kinds append immutable conversation entries,
-separate head moves, operation states, permission audits, artifact metadata,
-context versions, context views, and named-context moves. The reducer rejects
-wrong or duplicate identities, unknown references, non-monotonic versions,
-invalid heads/parents, second creation, and invalid operation transitions.
-Only the head-to-root conversation path becomes model history.
+separate head moves, accepted operations, steps, invocation intents/results,
+operation states and outcomes, permission and recovery decisions, named
+durable values, artifact metadata, context versions, context views, and
+named-context moves. The reducer rejects wrong or duplicate identities,
+unknown references, non-monotonic versions, invalid heads/parents, second
+creation, invalid transitions, mismatched preallocated result ids, second
+results, and terminal operations with pending invocations. Only the
+head-to-root conversation path becomes model history.
 
 Inspection is bounded to 256 KiB per record, 10,000 records, and 16 MiB per
 session. A malformed physical tail after a valid newline-terminated prefix
@@ -172,11 +181,47 @@ and digest verification. Reads enforce the caller bound and verify the record's
 length and digest. Logical `ArtifactId`, media type, and owner remain distinct
 from byte equality.
 
-The foreground runtime owns the only open `SessionStore`. There is no
-cross-process writer lock, session deletion or garbage collection, automatic
-latest-session choice, portable-workspace rewrite, or invocation replay.
-Restore reports unfinished operation states but performs no provider, tool,
-context-refresh, or replay effect.
+The foreground runtime owns the only open `SessionStore`. A companion lock file
+uses the standard library's nonblocking exclusive file lock, so a second
+process cannot open the same session for writing or recovery concurrently.
+There is no session deletion or garbage collection, automatic latest-session
+choice, or portable-workspace rewrite. Restore reports unfinished operation
+states but performs no provider, tool, context-refresh, or replay effect.
+
+## Durable operation and recovery boundary
+
+Each accepted root turn binds its committed input entry. Every assistant
+tool-call batch starts one step and executes serially. For each invocation,
+Xana plans normalized arguments and canonical scope, authorizes the exact
+plan, commits its audit fact, preallocates a result id, and appends and flushes
+intent before executing. The result and any bounded named output commit after
+the effect and before the correlated conversation result. An append failure
+before intent performs no effect; an intent without result means the external
+outcome is unknown.
+
+Built-in tool contract version starts at 1. `read_file` and `list_files`
+declare `ReplaySafety::Safe`; `edit_file` and `run_command` declare `Never`.
+Recovery never infers safety from a tool name or effect class: an exact
+invocation is eligible only when saved and current declarations are both
+`Safe`, the installed name/version still matches, replanning produces the same
+arguments and scope, and current authorization permits it.
+
+`xana operation plan --session SESSION_ID OPERATION_ID` reduces and classifies
+records without effects or argument disclosure. `xana operation resume
+--session SESSION_ID OPERATION_ID` is the only implemented reconciliation
+controller. It preserves completed results, handles the first missing result
+in original call order, and reauthorizes a safe replay. Unsafe, missing,
+changed, or denied work gets a correlated declined/interrupted result with the
+preallocated id and is not executed. Recovery then terminates the interrupted
+operation; it does not call the provider to invent a continuation.
+
+Committed-fact events follow successful appends. Live text deltas remain
+transient. Large output uses an immutable artifact; bounded inline JSON,
+artifact references, and context id/version pairs are the only authoritative
+named values. No heap, process, channel, socket, or open file is recovery
+state. These guarantees cover process crashes at flushed record boundaries,
+not power loss, filesystem transactions, effect idempotency, containment, or
+`fsync`. Unknown `Never` outcomes may require manual reconciliation.
 
 ## Tool boundary
 
@@ -196,10 +241,11 @@ that workspace after lexical and canonical resolution. Reads and resulting
 edits are capped at 64 KiB; directory listings are capped at 256 entries and
 64 KiB of output.
 
-The registry caches each validated definition beside its implementation and
-reports effect class separately from replay safety. It is the one invocation
-path: resolve a tool, build an immutable plan, authorize the plan, and execute
-only an allowed plan. Plans contain normalized final JSON arguments, canonical
+The registry caches each validated, versioned definition beside its
+implementation and reports effect class separately from replay safety. It is
+the one invocation path: resolve a tool, build an immutable plan, authorize
+the plan, durably bracket its effect when a session is active, and execute only
+an allowed plan. Plans contain normalized final JSON arguments, canonical
 scope, and type-erased executable data created and consumed by the same
 concrete tool. No registry executor bypasses planning and authorization.
 
@@ -239,7 +285,9 @@ does not claim atomic or crash-safe writes.
 Bare `xana` creates a session and starts terminal chat; `xana --resume
 SESSION_ID` resumes only that session. The typed command boundary also exposes
 `xana init`, `xana config path`, `xana config check`, and read-only `xana
-session inspect SESSION_ID`.
+session inspect SESSION_ID`. Recovery adds read-only `xana operation plan
+--session SESSION_ID OPERATION_ID` and effectful, explicit `xana operation
+resume --session SESSION_ID OPERATION_ID`.
 
 Initialization collects interactive or explicit noninteractive answers,
 builds a configuration draft without filesystem effects, renders the version
@@ -289,6 +337,8 @@ physical package boundaries:
 - `terminal` and `presentation` own frontend behavior.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
+- `operation` owns invocation intent/result ordering, bounded durable values,
+  replay classification, and explicit recovery execution.
 - `permission` owns pure policy and scopes, pending controller decisions,
   session grants, and audit-fact values.
 - `session` owns the versioned envelope, bounded JSONL store, pure reduction,
@@ -318,7 +368,8 @@ Xana has no sandbox, background runtime, workspace crate split, runtime
 profile switching, multi-client attachment, event replay, persistent grants,
 remote controller authentication, general context service, nested
 project-instruction or skill discovery, prompt compaction, artifact/session
-garbage collection, invocation recovery, cross-process writer exclusion,
-power-loss durability, or crash-safe edit protocol. Session grants live only
-in the foreground process. These absences are implementation facts, not
-predictions about which proposals will be accepted.
+garbage collection, automatic/background operation replay, generalized
+idempotency, provider continuation after reconciliation, power-loss
+durability, or crash-safe edit protocol. Session
+grants live only in the foreground process. These absences are implementation
+facts, not predictions about which proposals will be accepted.

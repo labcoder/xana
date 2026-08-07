@@ -112,6 +112,8 @@ impl<W: Write> EventRenderer<W> {
                 )?;
             }
             AgentEvent::PermissionAudited { .. } => {}
+            AgentEvent::InvocationIntentCommitted { .. }
+            | AgentEvent::InvocationResultCommitted { .. } => {}
             AgentEvent::ToolFinished { .. } => {
                 self.finish_stream()?;
             }
@@ -269,7 +271,9 @@ async fn send_permission_decision(
     Ok(())
 }
 
-fn prompt_permission_decision(request: &PermissionRequest) -> io::Result<ControllerDecision> {
+pub(crate) fn prompt_permission_decision(
+    request: &PermissionRequest,
+) -> io::Result<ControllerDecision> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = anstream::stdout();

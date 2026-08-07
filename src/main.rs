@@ -13,6 +13,7 @@ mod context;
 mod identity;
 mod init;
 mod message;
+mod operation;
 mod paths;
 mod permission;
 mod presentation;
