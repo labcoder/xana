@@ -94,10 +94,11 @@ workspace escapes fail before policy evaluation. The immutable planned
 arguments that receive permission are the arguments the concrete tool
 executes.
 
-Each result produces an in-memory audit fact containing its ids, tool and
+Each result produces an audit fact containing its ids, tool and
 effect, scope, final arguments, policy outcome, optional terminal decision,
-and effective decision. Audit facts are runtime observations; they are not
-added to model conversation or persisted in this version.
+and effective decision. The foreground runtime appends that fact as a distinct
+session record before forwarding the audit event. Audit facts are never added
+to model conversation. See [Sessions](sessions.md) for durability limits.
 
 ## Permission is not containment
 

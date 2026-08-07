@@ -11,11 +11,13 @@ and process isolation solve different problems. This proposal keeps capability,
 authority, and containment distinct while routing built-in and extension
 effects through one decision point.
 
-The narrow shared policy, planning, scope, foreground decision, session-grant,
-and in-memory audit slice is implemented through historical
-[Proposal 0011](0011-scoped-runtime-permissions.md). This proposal remains
-Proposed for persistent grants, durable audit and intent, general execution
-backends, hooks, remote controllers, and containment.
+The narrow shared policy, planning, scope, foreground decision, and
+session-grant slice is implemented through historical
+[Proposal 0011](0011-scoped-runtime-permissions.md); durable session recording
+of its audit facts is implemented through historical
+[Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
+Proposed for persistent grants, invocation intent, general execution backends,
+hooks, remote controllers, and containment.
 
 ## Proposed layers
 

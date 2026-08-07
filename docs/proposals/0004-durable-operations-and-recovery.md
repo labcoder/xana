@@ -14,7 +14,7 @@ an unknown outcome.
 ## Proposed records
 
 The session envelope, conversation/head records, operation-state records, and
-read-only restoration subset is accepted separately by
+read-only restoration subset is implemented separately through historical
 [Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
 Proposed for invocation intents/results, reconciliation, and effect recovery.
 

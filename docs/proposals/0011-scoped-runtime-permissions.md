@@ -85,7 +85,12 @@ authentication or client-role negotiation contract.
 Each authorization result creates one in-memory typed audit fact containing
 the stable request, policy outcome, optional controller decision, and effective
 decision. Facts are observable events but do not enter conversation or prompt
-context. Durable audit storage and invocation intent remain unimplemented.
+context. At this proposal's implementation boundary, durable audit storage and
+invocation intent were unimplemented.
+
+Historical note: durable session recording of these facts was implemented
+later through [Proposal 0012](0012-durable-sessions-and-context.md). Invocation
+intent remains outside this proposal.
 
 ## Explicit exclusions
 

@@ -6,7 +6,9 @@ use uuid::Uuid;
 
 macro_rules! uuid_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(
+            Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+        )]
         #[serde(transparent)]
         pub(crate) struct $name(Uuid);
 
@@ -21,12 +23,29 @@ macro_rules! uuid_id {
                 self.0.fmt(f)
             }
         }
+
+        impl std::str::FromStr for $name {
+            type Err = uuid::Error;
+
+            fn from_str(value: &str) -> Result<Self, Self::Err> {
+                Uuid::parse_str(value).map(Self)
+            }
+        }
     };
 }
 
 uuid_id!(OperationId);
 uuid_id!(StepId);
 uuid_id!(ToolInvocationId);
+uuid_id!(SessionId);
+uuid_id!(ThreadId);
+uuid_id!(AgentId);
+uuid_id!(ConversationEntryId);
+uuid_id!(RecordId);
+uuid_id!(ArtifactId);
+uuid_id!(ContextId);
+uuid_id!(ContextViewId);
+uuid_id!(PrincipalId);
 
 #[cfg(test)]
 mod tests {

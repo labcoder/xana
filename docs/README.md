@@ -12,6 +12,8 @@ engineering contracts used to change it.
   boundaries.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
+- [Sessions](user/sessions.md) explains durable history, explicit resume,
+  immutable artifacts, inspection, corruption handling, and backup limits.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 

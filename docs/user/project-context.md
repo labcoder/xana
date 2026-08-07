@@ -2,11 +2,11 @@
 
 > Audience: People using Xana in a project or inspecting what enters a model request.
 
-Xana builds one provider-neutral system prompt when an agent starts. The
-assembly contract is versioned as `xana-prompt-v1`, and the resulting bytes are
-frozen for that agent. Every provider request—including later tool rounds—gets
-the same system message followed by the current conversation history. Changes
-on disk take effect only when a new agent starts.
+Xana builds one provider-neutral system-prompt snapshot when a root turn is
+accepted. The assembly contract is versioned as `xana-prompt-v1`, and the
+resulting bytes remain frozen across that turn's provider calls and tool
+rounds. The next root turn refreshes project context and may receive a new
+snapshot. Merely opening or resuming a session never reads project files.
 
 ## Prompt layers
 
@@ -32,7 +32,7 @@ Exact machine-readable tool schemas remain a separate provider request field.
 The human-readable catalog and schemas both come from the same immutable tool
 registry snapshot, so the prompt cannot advertise an unavailable tool.
 
-Each rendered layer has a labeled boundary containing a transient source id,
+Each rendered layer has a labeled boundary containing a prompt source id,
 display name, kind, origin, trust class, optional relative path, and truncation
 flag. Dynamic attributes and bodies are XML-escaped so project text cannot
 forge another source boundary. The labels make provenance legible; they are
@@ -48,9 +48,16 @@ AGENTS.md
 
 Absence is normal. When present, the path must be a regular, non-symlink UTF-8
 file no larger than 64 KiB. Xana reads at most 64 KiB plus one detection byte,
-then automatically selects only a head preview capped at 1,024 estimated
-tokens. Oversized, invalid UTF-8, symlink, and non-regular sources produce a
-typed startup error rather than silently entering the prompt.
+then materializes at most 16 KiB and 1,024 estimated tokens. Oversized, invalid
+UTF-8, symlink, and non-regular sources produce a typed turn-acceptance error
+rather than silently entering the prompt.
+
+When a turn is accepted, Xana stores canonicalized source bytes as an immutable
+BLAKE3-addressed artifact. Unchanged bytes reuse the current context version;
+changed bytes append exactly one version. A missing live file does not delete
+an older version. The view record naming the source id, version, selector,
+content hash, owner, trust, provenance, and independent byte/token bounds is
+committed before its text enters the prompt.
 
 Phase 2 does not search parents, nested directories, home directories, Git
 metadata, `XANA.md`, or `.agents/`. Nested `AGENTS.md` applicability, Agent
@@ -88,8 +95,8 @@ selector, provenance, trust class, estimated cost, and truncation state.
 Unicode truncation occurs at scalar boundaries. These operations are internal
 context mechanisms in this release, not model tools.
 
-Startup prints a context-plan report with selected and omitted source ids,
-estimated project tokens, and truncation flags. It never prints source content.
+Startup prints the base context-plan report; project selection happens when a
+turn is accepted. Reports never print source content.
 
 ## Trust and authority
 
@@ -110,10 +117,14 @@ cannot enforce workspace paths, resource bounds, permission decisions, or
 operating-system isolation. Those guarantees remain runtime responsibilities.
 Xana does not use phrase matching as a substitute for those boundaries.
 
-## Transient limitations
+## Persistence and limitations
 
-Source and preview ids in `xana-prompt-v1` last only for the active agent.
-There is no artifact store, durable context reference, context service,
-context compaction, or native context-plan executor. A later durable layer can
-reuse the selection concepts without pretending these transient values already
-provide persistence or recovery.
+Prompt-layer ids belong to one assembled snapshot, while session context and
+view ids are durable. Materialization always reads the referenced immutable
+artifact, so changing the live file cannot alter an old context version.
+Inclusive one-based lines and capped literal-line search are implemented as
+internal selectors, not model tools.
+
+Xana has no general context service, model-facing context tools, compaction,
+native context-plan executor, artifact garbage collection, or portable-session
+claim. See [Sessions](sessions.md) for storage and recovery boundaries.

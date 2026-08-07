@@ -6,6 +6,7 @@
 
 mod agent;
 mod app;
+mod artifact;
 mod cli;
 mod config;
 mod context;
@@ -18,6 +19,7 @@ mod presentation;
 mod prompt;
 mod provider;
 mod runtime;
+mod session;
 mod shell;
 mod terminal;
 mod tool;

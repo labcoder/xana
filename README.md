@@ -43,11 +43,11 @@ See [Configuration](docs/user/configuration.md) for initialization, diagnostics,
 
 ## CLI and tools
 
-Bare `xana` starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. Assistant text is rendered as streaming deltas while each turn runs. `/clear` resets the foreground runtime's transient conversation, while `/quit`, Ctrl-C, and EOF shut it down. The configured model must support native tool calling to use Xana's tool path.
+Bare `xana` creates a durable session and starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. Xana prints the session id and JSONL path. Resume that exact history with `xana --resume SESSION_ID`; Xana never guesses the latest session or replays unfinished work. `/clear` commits an empty thread head without deleting earlier entries, while `/quit`, Ctrl-C, and EOF shut down the foreground runtime. The configured model must support native tool calling to use Xana's tool path.
 
-At startup Xana freezes `xana-prompt-v1`: its built-in identity and operating guidelines, a summary of the tools actually registered for that agent, owned runtime and CLI context, and a bounded preview of root `AGENTS.md` when present. The same system message is sent on every model request. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or plugins yet. See [Project context and system prompt](docs/user/project-context.md).
+For each accepted root turn Xana freezes one `xana-prompt-v1` snapshot: its built-in identity and operating guidelines, a summary of the tools actually registered for that agent, owned runtime and CLI context, and a bounded materialization of a durable root `AGENTS.md` version when present. The snapshot stays fixed across that turn's tool rounds; changed project instructions become a new version on the next root turn. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or plugins yet. See [Project context and system prompt](docs/user/project-context.md).
 
-The command boundary also provides `xana init`, `xana config path`, and `xana config check`. Interactive startup and setup show Xana's terminal mark; `--no-banner` suppresses it, and `NO_COLOR` keeps a monochrome version.
+The command boundary also provides `xana init`, `xana config path`, `xana config check`, and the read-only `xana session inspect SESSION_ID`. Interactive startup and setup show Xana's terminal mark; `--no-banner` suppresses it, and `NO_COLOR` keeps a monochrome version.
 
 Xana advertises four workspace tools:
 
@@ -60,13 +60,14 @@ Tool paths must be relative to Xana's launch directory and remain beneath it aft
 
 Every built-in tool crosses one runtime-owned permission broker. `permission_mode` sets the default to `deny`, `ask`, or `allow`; matching rules use deny-before-ask-before-allow precedence. An ask can be denied, allowed once, or allowed for the exact current-session scope. Decisions bind the final arguments and canonical scope to the active operation and tool invocation, and losing the controlling terminal fails closed. See [Permissions](docs/user/permissions.md).
 
-Permission is not containment. Allowed tools use the Xana process's ordinary host access, and policy, path checks, effect classification, and replay-safety metadata are not OS-level isolation. Session grants are memory-only, audit facts are not durable yet, and `edit_file` does not claim atomic or crash-safe writes.
+Permission is not containment. Allowed tools use the Xana process's ordinary host access, and policy, path checks, effect classification, and replay-safety metadata are not OS-level isolation. Permission audit facts are durable session records, but grants remain memory-only; `edit_file` does not claim atomic or crash-safe writes.
 
 ## Documentation
 
 - [Configuration](docs/user/configuration.md) is the user reference.
 - [Project context and system prompt](docs/user/project-context.md) explains root `AGENTS.md`, prompt layers, budgets, and trust boundaries.
 - [Permissions](docs/user/permissions.md) explains policy precedence, scopes, controller decisions, and host-access limits.
+- [Sessions](docs/user/sessions.md) explains durable history, explicit resume, artifact paths, inspection, corruption, and backup limits.
 - [Documentation index](docs/README.md) separates user and engineering material and explains its authority model.
 - [Architecture](docs/architecture/README.md) describes what Xana is and how the implemented system works.
 - [Design Principles](docs/principles.md) defines durable constraints for future changes.
