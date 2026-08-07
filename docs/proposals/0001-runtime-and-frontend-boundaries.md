@@ -11,6 +11,12 @@ single-crate boundaries. This proposal explores a physical separation that
 keeps the engine headless, puts application policy in one runtime layer, and
 treats every frontend as a client of that layer.
 
+The single-process foreground command/event boundary needed before a physical
+workspace split has been narrowed into accepted
+[Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
+Proposed for the later package split, runtime host, shared capability catalog,
+and additional frontend topology described below.
+
 ## Proposed component model
 
 ```mermaid
