@@ -1,6 +1,10 @@
 //! Pure and scripted initialization planning.
 
-use crate::{cli::InitArgs, config::InitialConfig};
+use crate::{
+    cli::InitArgs,
+    config::InitialConfig,
+    shell::{ShellConfig, ShellKind},
+};
 use std::{
     error::Error,
     fmt,
@@ -26,6 +30,7 @@ pub(crate) enum InitError {
     MissingNonInteractiveValues { fields: Vec<&'static str> },
     AutomaticToolsNotAccepted,
     InvalidChoice { value: String },
+    InvalidShellChoice { value: String },
     InvalidRoundLimit { value: String },
 }
 
@@ -39,7 +44,7 @@ impl fmt::Display for InitError {
             ),
             Self::InteractiveFlagsRequireNonInteractive => write!(
                 f,
-                "provider, model, round-limit, and acknowledgement flags require --non-interactive"
+                "provider, model, round-limit, shell, and acknowledgement flags require --non-interactive"
             ),
             Self::MissingNonInteractiveValues { fields } => write!(
                 f,
@@ -52,6 +57,10 @@ impl fmt::Display for InitError {
             Self::InvalidChoice { value } => {
                 write!(f, "invalid connection choice {value:?}; expected 1 or 2")
             }
+            Self::InvalidShellChoice { value } => write!(
+                f,
+                "invalid shell choice {value:?}; expected one of the choices shown"
+            ),
             Self::InvalidRoundLimit { value } => write!(
                 f,
                 "invalid maximum tool rounds {value:?}; expected a whole number"
@@ -69,6 +78,7 @@ impl Error for InitError {
             | Self::MissingNonInteractiveValues { .. }
             | Self::AutomaticToolsNotAccepted
             | Self::InvalidChoice { .. }
+            | Self::InvalidShellChoice { .. }
             | Self::InvalidRoundLimit { .. } => None,
         }
     }
@@ -106,6 +116,8 @@ fn has_noninteractive_values(args: &InitArgs) -> bool {
         || args.base_url.is_some()
         || args.model.is_some()
         || args.max_tool_rounds.is_some()
+        || args.shell.is_some()
+        || args.shell_program.is_some()
         || args.accept_automatic_tools
 }
 
@@ -141,6 +153,13 @@ fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
             .expect("base URL presence was checked"),
         model: args.model.clone().expect("model presence was checked"),
         max_tool_rounds: args.max_tool_rounds.unwrap_or(DEFAULT_MAX_TOOL_ROUNDS),
+        shell: ShellConfig {
+            kind: args
+                .shell
+                .unwrap_or(crate::cli::ShellChoice::Platform)
+                .into(),
+            program: args.shell_program.clone(),
+        },
     }))
 }
 
@@ -150,7 +169,7 @@ fn plan_interactive<R: BufRead, W: Write>(
 ) -> Result<InitPlan, InitError> {
     writeln!(output, "First-time setup")?;
     writeln!(output)?;
-    writeln!(output, "[1/3] Connection")?;
+    writeln!(output, "[1/4] Connection")?;
     writeln!(output, "  1. Local Ollama (recommended)")?;
     writeln!(output, "  2. Custom OpenAI-compatible endpoint")?;
 
@@ -178,16 +197,39 @@ fn plan_interactive<R: BufRead, W: Write>(
     };
 
     writeln!(output)?;
-    writeln!(output, "[2/3] Authority")?;
+    writeln!(output, "[2/4] Shell")?;
+    write_shell_choices(output)?;
+    let Some(shell_kind) = prompt_shell_kind(input, output)? else {
+        return Ok(InitPlan::Cancelled);
+    };
+    let Some(shell_program) = prompt(
+        input,
+        output,
+        "Custom shell program path (blank for the default): ",
+    )?
+    else {
+        return Ok(InitPlan::Cancelled);
+    };
+    let shell = ShellConfig {
+        kind: shell_kind,
+        program: (!shell_program.trim().is_empty()).then(|| shell_program.into()),
+    };
+
+    writeln!(output)?;
+    writeln!(output, "[3/4] Authority")?;
     writeln!(
         output,
-        "Xana currently runs requested tools with your user permissions."
+        "Xana currently runs file tools automatically with your user permissions."
+    )?;
+    writeln!(
+        output,
+        "Local commands require a separate y/n approval for every invocation."
     )?;
     writeln!(output, "This is permission, not OS-level containment.")?;
     let Some(automatic_tools) = prompt(
         input,
         output,
-        "Accept automatic tool execution for this configuration? [y/N]: ",
+        "Accept automatic file-tool execution for this configuration? [y/N]: ",
     )?
     else {
         return Ok(InitPlan::Cancelled);
@@ -197,11 +239,19 @@ fn plan_interactive<R: BufRead, W: Write>(
     }
 
     writeln!(output)?;
-    writeln!(output, "[3/3] Review")?;
+    writeln!(output, "[4/4] Review")?;
     writeln!(output, "  Provider:            {provider_name}")?;
     writeln!(output, "  Base URL:            {base_url}")?;
     writeln!(output, "  Model:               {model}")?;
     writeln!(output, "  Maximum tool rounds: {max_tool_rounds}")?;
+    writeln!(
+        output,
+        "  Shell:               {}",
+        shell.kind.config_name()
+    )?;
+    if let Some(program) = &shell.program {
+        writeln!(output, "  Shell program:       {}", program.display())?;
+    }
     let Some(create) = prompt(input, output, "Create this configuration? [y/N]: ")? else {
         return Ok(InitPlan::Cancelled);
     };
@@ -214,7 +264,62 @@ fn plan_interactive<R: BufRead, W: Write>(
         base_url,
         model,
         max_tool_rounds,
+        shell,
     }))
+}
+
+fn write_shell_choices<W: Write>(output: &mut W) -> Result<(), io::Error> {
+    writeln!(
+        output,
+        "  platform: use Xana's documented default for this operating system"
+    )?;
+    #[cfg(unix)]
+    writeln!(output, "  posix: use sh with -lc")?;
+    #[cfg(windows)]
+    {
+        writeln!(output, "  git_bash: use bash.exe with -lc")?;
+        writeln!(output, "  powershell: use powershell.exe without profiles")?;
+        writeln!(output, "  cmd: use cmd.exe with AutoRun disabled")?;
+    }
+    Ok(())
+}
+
+fn prompt_shell_kind<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+) -> Result<Option<ShellKind>, InitError> {
+    for attempt in 0..MAX_PROMPT_ATTEMPTS {
+        let Some(value) = prompt_with_default(input, output, "Shell", "platform")? else {
+            return Ok(None);
+        };
+
+        if let Some(kind) = parse_shell_kind(&value) {
+            return Ok(Some(kind));
+        }
+
+        if attempt + 1 < MAX_PROMPT_ATTEMPTS {
+            writeln!(output, "Choose one of the shell names shown above.")?;
+        } else {
+            return Err(InitError::InvalidShellChoice { value });
+        }
+    }
+
+    unreachable!("the shell-choice loop always returns")
+}
+
+fn parse_shell_kind(value: &str) -> Option<ShellKind> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "platform" => Some(ShellKind::Platform),
+        #[cfg(unix)]
+        "posix" => Some(ShellKind::Posix),
+        #[cfg(windows)]
+        "git_bash" => Some(ShellKind::GitBash),
+        #[cfg(windows)]
+        "powershell" => Some(ShellKind::PowerShell),
+        #[cfg(windows)]
+        "cmd" => Some(ShellKind::Cmd),
+        _ => None,
+    }
 }
 
 fn prompt_connection_choice<R: BufRead, W: Write>(
@@ -323,6 +428,8 @@ mod tests {
             base_url: None,
             model: None,
             max_tool_rounds: None,
+            shell: None,
+            shell_program: None,
             accept_automatic_tools: false,
             dry_run: false,
         }
@@ -335,6 +442,8 @@ mod tests {
             base_url: Some(OLLAMA_BASE_URL.to_owned()),
             model: Some("qwen3:1.7b".to_owned()),
             max_tool_rounds: None,
+            shell: None,
+            shell_program: None,
             accept_automatic_tools: true,
             dry_run: false,
         }
@@ -349,7 +458,7 @@ mod tests {
 
     #[test]
     fn interactive_ollama_flow_uses_only_honest_defaults() {
-        let (plan, transcript) = scripted_plan("\nqwen3:1.7b\n\ny\ny\n").expect("setup plan");
+        let (plan, transcript) = scripted_plan("\nqwen3:1.7b\n\n\n\ny\ny\n").expect("setup plan");
 
         assert_eq!(
             plan,
@@ -358,18 +467,20 @@ mod tests {
                 base_url: OLLAMA_BASE_URL.to_owned(),
                 model: "qwen3:1.7b".to_owned(),
                 max_tool_rounds: 8,
+                shell: ShellConfig::default(),
             })
         );
-        assert!(transcript.contains("[1/3] Connection"));
+        assert!(transcript.contains("[1/4] Connection"));
         assert!(transcript.contains("Choice [1]:"));
         assert!(transcript.contains("Maximum tool rounds [8]:"));
+        assert!(transcript.contains("Shell [platform]:"));
         assert!(transcript.contains("permission, not OS-level containment"));
     }
 
     #[test]
     fn interactive_custom_flow_carries_every_answer() {
         let (plan, _) =
-            scripted_plan("2\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nyes\nyes\n")
+            scripted_plan("2\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nplatform\ncustom-shell\nyes\nyes\n")
                 .expect("custom setup plan");
 
         assert_eq!(
@@ -379,20 +490,24 @@ mod tests {
                 base_url: "https://example.test/v1".to_owned(),
                 model: "model-x".to_owned(),
                 max_tool_rounds: 4,
+                shell: ShellConfig {
+                    kind: ShellKind::Platform,
+                    program: Some("custom-shell".into()),
+                },
             })
         );
     }
 
     #[test]
     fn declining_automatic_tools_cancels() {
-        let (plan, _) = scripted_plan("\nmodel\n\nn\n").expect("declined setup");
+        let (plan, _) = scripted_plan("\nmodel\n\n\n\nn\n").expect("declined setup");
 
         assert_eq!(plan, InitPlan::Cancelled);
     }
 
     #[test]
     fn declining_final_review_cancels() {
-        let (plan, _) = scripted_plan("\nmodel\n\ny\nn\n").expect("declined review");
+        let (plan, _) = scripted_plan("\nmodel\n\n\n\ny\nn\n").expect("declined review");
 
         assert_eq!(plan, InitPlan::Cancelled);
     }
@@ -449,7 +564,7 @@ mod tests {
 
     #[test]
     fn piped_interactive_mode_is_rejected() {
-        let mut input = Cursor::new(b"\nmodel\n\ny\ny\n");
+        let mut input = Cursor::new(b"\nmodel\n\n\n\ny\ny\n");
         let mut output = Vec::new();
 
         let error = plan(&interactive_args(), false, &mut input, &mut output)
@@ -480,9 +595,10 @@ mod tests {
 
     #[test]
     fn invalid_choice_and_round_limit_retry_with_a_complete_transcript() {
-        let (plan, transcript) =
-            scripted_plan("9\n2\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\ny\ny\n")
-                .expect("retrying setup plan");
+        let (plan, transcript) = scripted_plan(
+            "9\n2\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\nplatform\n\ny\ny\n",
+        )
+        .expect("retrying setup plan");
 
         assert!(matches!(
             plan,

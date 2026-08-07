@@ -386,7 +386,7 @@ fn request_serializes_internal_history_at_the_wire_edge() {
 
 #[test]
 fn request_serializes_all_registry_definitions_without_runtime_metadata() {
-    let registry = crate::tool::ToolRegistry::builtins().expect("built-in registry");
+    let registry = crate::tool::ToolRegistry::builtins_for_tests().expect("built-in registry");
     let definitions = registry.definitions();
     let request = WireChatRequest {
         model: "test-model",
@@ -401,13 +401,13 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
     let value = serde_json::to_value(&request).expect("request JSON");
     let tools = value["tools"].as_array().expect("tool array");
 
-    assert_eq!(tools.len(), 3);
+    assert_eq!(tools.len(), 4);
     assert_eq!(
         tools
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>(),
-        vec!["read_file", "list_files", "edit_file"]
+        vec!["read_file", "list_files", "edit_file", "run_command"]
     );
 
     for tool in tools {

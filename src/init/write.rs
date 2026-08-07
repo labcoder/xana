@@ -131,6 +131,7 @@ mod tests {
             base_url: OLLAMA_BASE_URL.to_owned(),
             model: model.to_owned(),
             max_tool_rounds: 8,
+            shell: crate::shell::ShellConfig::default(),
         })
         .expect("render config")
     }

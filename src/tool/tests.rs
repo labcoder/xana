@@ -182,12 +182,12 @@ fn unknown_tool_returns_correlated_error() {
 
 #[test]
 fn builtins_have_deterministic_order_and_safety_metadata() {
-    let registry = ToolRegistry::builtins().expect("built-in registry");
+    let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
     let definitions = registry.definitions();
 
     assert_eq!(
         definitions.iter().map(|item| item.name).collect::<Vec<_>>(),
-        vec!["read_file", "list_files", "edit_file"]
+        vec!["read_file", "list_files", "edit_file", "run_command"]
     );
     assert_eq!(definitions[0].effect_class, EffectClass::Read);
     assert_eq!(definitions[0].replay_safety, ReplaySafety::Safe);
@@ -195,6 +195,8 @@ fn builtins_have_deterministic_order_and_safety_metadata() {
     assert_eq!(definitions[1].replay_safety, ReplaySafety::Safe);
     assert_eq!(definitions[2].effect_class, EffectClass::Write);
     assert_eq!(definitions[2].replay_safety, ReplaySafety::Never);
+    assert_eq!(definitions[3].effect_class, EffectClass::Execute);
+    assert_eq!(definitions[3].replay_safety, ReplaySafety::Never);
 }
 
 #[test]
@@ -203,7 +205,7 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
 
     let workspace = tempdir().expect("temporary workspace");
     fs::write(workspace.path().join("state.txt"), "status=rough\n").expect("state fixture");
-    let registry = ToolRegistry::builtins().expect("built-in registry");
+    let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
 
     let list = registry.execute(
         &ToolCall {

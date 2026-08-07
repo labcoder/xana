@@ -11,6 +11,12 @@ and process isolation solve different problems. This proposal keeps capability,
 authority, and containment distinct while routing built-in and extension
 effects through one decision point.
 
+The implemented `run_command` tool is a precursor: it validates a canonical
+workspace cwd and asks the terminal user for one y/n decision before local host
+execution. File tools still use automatic `allow`, and there is no shared
+policy evaluator, scoped grant, audit store, execution-backend interface, or
+containment. This proposal remains unimplemented.
+
 ## Proposed layers
 
 | Layer | Question | Proposed owner |
