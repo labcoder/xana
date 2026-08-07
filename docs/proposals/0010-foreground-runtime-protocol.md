@@ -1,19 +1,25 @@
 # Foreground runtime protocol
 
 > Audience: Contributors and coding agents  
-> Authority: Prescriptive  
-> Status: Accepted
+> Authority: None
+> Status: Implemented
 
 ## Context
 
-Xana's blocking terminal currently owns conversation history and calls the
-headless agent directly. Streaming, approvals, persistence, and later
-frontends need a logical application owner and a typed boundary before any
-physical crate split is justified. Proposals 0001 and 0005 contain broader
-runtime, frontend, thread, and concurrency designs; this proposal accepts only
-the foreground slice needed now.
+Xana's blocking terminal owned conversation history and called the headless
+agent directly. Streaming, approvals, persistence, and later frontends needed
+a logical application owner and a typed boundary before any physical crate
+split was justified. Proposals 0001 and 0005 contain broader runtime,
+frontend, thread, and concurrency designs; this proposal selected only the
+foreground slice implemented in this change.
 
-## Accepted component boundary
+## Implementation
+
+The foreground protocol is implemented. [Architecture](../architecture/README.md)
+is now authoritative for its current behavior; this proposal remains as
+historical rationale and scope evidence.
+
+## Implemented component boundary
 
 One foreground runtime module inside the existing binary crate owns transient
 conversation history and at most one active root operation. A terminal is a
@@ -27,7 +33,7 @@ boundary is exercised before the proposed `xana-core`, `xana-runtime`, and
 `xana-cli` workspace split; this decision neither accepts nor implements that
 split.
 
-## Accepted protocol
+## Implemented protocol
 
 Control crosses a bounded Tokio channel as serializable `RuntimeCommand`
 values. The initial commands are:

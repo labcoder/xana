@@ -65,12 +65,49 @@ pub(super) struct WireChatRequest<'a> {
     pub(super) tools: Vec<WireToolDefinition<'a>>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 pub(super) struct WireChatResponse {
     pub(super) choices: Vec<WireChatChoice>,
 }
 
+#[cfg(test)]
 #[derive(Debug, Deserialize)]
 pub(super) struct WireChatChoice {
     pub(super) message: WireMessage,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WireStreamResponse {
+    pub(super) choices: Vec<WireStreamChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WireStreamChoice {
+    pub(super) delta: WireDelta,
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub(super) struct WireDelta {
+    #[serde(default)]
+    pub(super) content: Option<String>,
+    #[serde(default)]
+    pub(super) tool_calls: Option<Vec<WireToolCallDelta>>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WireToolCallDelta {
+    pub(super) index: usize,
+    #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(default)]
+    pub(super) function: Option<WireFunctionDelta>,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct WireFunctionDelta {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) arguments: Option<String>,
 }

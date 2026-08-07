@@ -1,11 +1,18 @@
-//! Blocking HTTP transport and structured adapter errors.
+//! Asynchronous streaming HTTP transport and structured adapter errors.
 
 use super::{
     convert::MessageConversionError,
-    wire::{WireChatRequest, WireChatResponse, WireMessage, WireToolDefinition},
+    stream::{SseDecoder, SseItem, StreamAccumulator, StreamError},
+    wire::{WireChatRequest, WireMessage, WireStreamResponse, WireToolDefinition},
 };
-use crate::{message::Message, tool::ToolDefinition};
-use reqwest::blocking::Client;
+use crate::{
+    agent::{ChatError, ChatTransport, DeltaSink},
+    identity::StepId,
+    message::Message,
+    tool::ToolDefinition,
+};
+use futures::{StreamExt, future::BoxFuture};
+use reqwest::Client;
 use std::{error::Error, fmt};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,16 +20,14 @@ pub(crate) enum OpenAiCompatErrorKind {
     RequestConversion,
     Transport,
     HttpStatus,
-    Decode,
-    MissingChoice,
-    ResponseConversion,
+    Stream,
 }
 
 #[derive(Debug)]
 enum OpenAiCompatErrorSource {
-    None,
     Conversion(MessageConversionError),
     Http(reqwest::Error),
+    Stream(StreamError),
 }
 
 #[derive(Debug)]
@@ -33,13 +38,9 @@ pub(crate) struct OpenAiCompatError {
 }
 
 impl OpenAiCompatError {
-    fn conversion(
-        kind: OpenAiCompatErrorKind,
-        endpoint: &str,
-        source: MessageConversionError,
-    ) -> Self {
+    fn conversion(endpoint: &str, source: MessageConversionError) -> Self {
         Self {
-            kind,
+            kind: OpenAiCompatErrorKind::RequestConversion,
             endpoint: endpoint.to_owned(),
             source: OpenAiCompatErrorSource::Conversion(source),
         }
@@ -53,11 +54,11 @@ impl OpenAiCompatError {
         }
     }
 
-    fn missing_choice(endpoint: &str) -> Self {
+    fn stream(endpoint: &str, source: StreamError) -> Self {
         Self {
-            kind: OpenAiCompatErrorKind::MissingChoice,
+            kind: OpenAiCompatErrorKind::Stream,
             endpoint: endpoint.to_owned(),
-            source: OpenAiCompatErrorSource::None,
+            source: OpenAiCompatErrorSource::Stream(source),
         }
     }
 }
@@ -74,20 +75,10 @@ impl fmt::Display for OpenAiCompatError {
             OpenAiCompatErrorKind::HttpStatus => {
                 write!(f, "chat service rejected request at {}", self.endpoint)
             }
-            OpenAiCompatErrorKind::Decode => {
+            OpenAiCompatErrorKind::Stream => {
                 write!(
                     f,
-                    "chat service returned invalid JSON from {}",
-                    self.endpoint
-                )
-            }
-            OpenAiCompatErrorKind::MissingChoice => {
-                write!(f, "chat service returned no choices from {}", self.endpoint)
-            }
-            OpenAiCompatErrorKind::ResponseConversion => {
-                write!(
-                    f,
-                    "chat service returned an unsupported message from {}",
+                    "chat service returned an invalid stream from {}",
                     self.endpoint
                 )
             }
@@ -100,7 +91,7 @@ impl Error for OpenAiCompatError {
         match &self.source {
             OpenAiCompatErrorSource::Conversion(source) => Some(source),
             OpenAiCompatErrorSource::Http(source) => Some(source),
-            OpenAiCompatErrorSource::None => None,
+            OpenAiCompatErrorSource::Stream(source) => Some(source),
         }
     }
 }
@@ -126,27 +117,23 @@ impl OpenAiCompatClient {
         &self.endpoint
     }
 
-    pub(crate) fn send_message(
+    async fn stream_message_inner(
         &self,
         messages: &[Message],
         tools: &[&ToolDefinition],
+        step_id: StepId,
+        deltas: &dyn DeltaSink,
     ) -> Result<Message, OpenAiCompatError> {
         let wire_messages = messages
             .iter()
             .map(WireMessage::try_from)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|source| {
-                OpenAiCompatError::conversion(
-                    OpenAiCompatErrorKind::RequestConversion,
-                    &self.endpoint,
-                    source,
-                )
-            })?;
+            .map_err(|source| OpenAiCompatError::conversion(&self.endpoint, source))?;
 
         let request = WireChatRequest {
             model: &self.model,
             messages: wire_messages,
-            stream: false,
+            stream: true,
             tools: tools
                 .iter()
                 .map(|definition| WireToolDefinition::from(*definition))
@@ -158,30 +145,96 @@ impl OpenAiCompatClient {
             .post(&self.endpoint)
             .json(&request)
             .send()
+            .await
             .map_err(|source| {
                 OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
+            })?
+            .error_for_status()
+            .map_err(|source| {
+                OpenAiCompatError::http(OpenAiCompatErrorKind::HttpStatus, &self.endpoint, source)
             })?;
 
-        let response = response.error_for_status().map_err(|source| {
-            OpenAiCompatError::http(OpenAiCompatErrorKind::HttpStatus, &self.endpoint, source)
-        })?;
+        let mut bytes = response.bytes_stream();
+        let mut decoder = SseDecoder::default();
+        let mut accumulator = StreamAccumulator::default();
+        let mut done = false;
 
-        let response = response.json::<WireChatResponse>().map_err(|source| {
-            OpenAiCompatError::http(OpenAiCompatErrorKind::Decode, &self.endpoint, source)
-        })?;
+        while let Some(chunk) = bytes.next().await {
+            let chunk = chunk.map_err(|source| {
+                OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
+            })?;
+            for item in decoder
+                .push(&chunk)
+                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+            {
+                match item {
+                    SseItem::Done => {
+                        done = true;
+                        break;
+                    }
+                    SseItem::Data(data) => {
+                        let response: WireStreamResponse =
+                            serde_json::from_slice(&data).map_err(|source| {
+                                OpenAiCompatError::stream(
+                                    &self.endpoint,
+                                    StreamError::InvalidJson(source),
+                                )
+                            })?;
+                        let choice = response.choices.into_iter().next().ok_or_else(|| {
+                            OpenAiCompatError::stream(&self.endpoint, StreamError::MissingChoice)
+                        })?;
+                        for fragment in accumulator
+                            .apply(choice.delta)
+                            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+                        {
+                            deltas.text_delta(step_id, &fragment);
+                        }
+                    }
+                }
+            }
+            if done {
+                break;
+            }
+        }
 
-        let choice = response
-            .choices
-            .into_iter()
-            .next()
-            .ok_or_else(|| OpenAiCompatError::missing_choice(&self.endpoint))?;
+        if !done {
+            decoder
+                .finish()
+                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
+        }
+        accumulator
+            .finish()
+            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))
+    }
 
-        Message::try_from(choice.message).map_err(|source| {
-            OpenAiCompatError::conversion(
-                OpenAiCompatErrorKind::ResponseConversion,
-                &self.endpoint,
-                source,
-            )
+    #[cfg(test)]
+    pub(crate) async fn send_message(
+        &self,
+        messages: &[Message],
+        tools: &[&ToolDefinition],
+    ) -> Result<Message, OpenAiCompatError> {
+        struct IgnoreDeltas;
+        impl DeltaSink for IgnoreDeltas {
+            fn text_delta(&self, _step_id: StepId, _text: &str) {}
+        }
+
+        self.stream_message_inner(messages, tools, StepId::new(), &IgnoreDeltas)
+            .await
+    }
+}
+
+impl ChatTransport for OpenAiCompatClient {
+    fn stream_message<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [&'a ToolDefinition],
+        step_id: StepId,
+        deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+        Box::pin(async move {
+            self.stream_message_inner(messages, tools, step_id, deltas)
+                .await
+                .map_err(|error| ChatError::new(error.to_string()))
         })
     }
 }

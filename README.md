@@ -43,7 +43,7 @@ See [Configuration](docs/user/configuration.md) for initialization, diagnostics,
 
 ## CLI and tools
 
-Bare `xana` starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. The configured model must support native tool calling to use Xana's tool path.
+Bare `xana` starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. Assistant text is rendered as streaming deltas while each turn runs. `/clear` resets the foreground runtime's transient conversation, while `/quit`, Ctrl-C, and EOF shut it down. The configured model must support native tool calling to use Xana's tool path.
 
 At startup Xana freezes `xana-prompt-v1`: its built-in identity and operating guidelines, a summary of the tools actually registered for that agent, owned runtime and CLI context, and a bounded preview of root `AGENTS.md` when present. The same system message is sent on every model request. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or plugins yet. See [Project context and system prompt](docs/user/project-context.md).
 
@@ -58,7 +58,7 @@ Xana advertises four workspace tools:
 
 Tool paths must be relative to Xana's launch directory and remain beneath it after resolution. Reads and resulting edits are capped at 64 KiB. The agent loop is bounded to eight model/tool rounds per turn.
 
-File tools currently follow `permission_mode = "allow"` and run automatically. `run_command` has an intentionally temporary, fail-closed approval prompt for every invocation. All tools use the Xana process's ordinary host access: path checks, approval, effect classification, and replay-safety metadata are not OS-level containment. `edit_file` does not claim atomic or crash-safe writes.
+File tools currently follow `permission_mode = "allow"` and run automatically. `run_command` has an intentionally temporary, fail-closed approval prompt for every invocation. The runtime correlates each prompt and reply to the active operation and tool invocation; losing the controlling terminal denies the request. All tools use the Xana process's ordinary host access: path checks, approval, effect classification, and replay-safety metadata are not OS-level containment. `edit_file` does not claim atomic or crash-safe writes.
 
 ## Documentation
 

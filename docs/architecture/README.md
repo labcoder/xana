@@ -9,8 +9,9 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 
 ## System overview
 
-Xana is one Rust binary crate with a blocking terminal frontend. `main.rs` is
-the process composition root: it parses the optional `XANA_HOME` override and
+Xana is one Rust binary crate running on Tokio's multi-thread runtime with a
+terminal frontend and one in-process foreground runtime. `main.rs` is the
+process composition root: it parses the optional `XANA_HOME` override and
 delegates command execution to `app`. The application edge resolves paths,
 loads configuration, initializes dependencies, and routes CLI commands.
 
@@ -18,38 +19,65 @@ loads configuration, initializes dependencies, and routes CLI commands.
 flowchart LR
     MAIN["main<br/>process composition"] --> APP["app<br/>command orchestration"]
     APP --> INIT["init<br/>configuration planning and creation"]
-    APP --> TERMINAL["terminal<br/>blocking chat frontend"]
+    APP --> TERMINAL["terminal<br/>runtime protocol client"]
     APP --> CONFIG["config + paths"]
     APP --> CONTEXT["bounded root project context"]
     CONTEXT --> PROMPT["xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
-    TERMINAL --> AGENT["Agent<br/>bounded headless loop"]
+    TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
+    RUNTIME --> AGENT["Agent<br/>bounded async headless loop"]
     AGENT --> PROVIDER["provider adapter"]
     AGENT --> TOOLS["tool registry"]
     TOOLS --> HOST["workspace-scoped host tools"]
     TOOLS --> SHELL["configured shell plan"]
-    SHELL --> APPROVAL["terminal per-call approval"]
+    SHELL --> APPROVAL["correlated provisional approval"]
+    APPROVAL --> RUNTIME
+    TERMINAL --> APPROVAL
     APPROVAL --> HOST
 ```
 
-`terminal` owns readline input, temporary conversation history, and human
-rendering. `presentation` owns terminal-mark selection and its TTY,
-monochrome, suppression, and fallback behavior. Neither concern enters the
-headless agent loop.
+`runtime` owns temporary conversation history and at most one active root
+operation. `terminal` is a protocol client that owns readline input, approval
+answers, and human rendering. `presentation` owns terminal-mark selection and
+its TTY, monochrome, suppression, and fallback behavior. None of those
+frontend concerns enters the headless agent loop.
+
+Control values cross a bounded Tokio channel as serializable
+`RuntimeCommand`s. A single foreground receiver observes serializable
+`AgentEvent`s over an unbounded channel. Commands submit turns, clear idle
+history, correlate provisional approval decisions, and shut down the runtime.
+Events carry operation state, assistant deltas, approval requests, tool
+completion, final messages, failures, clearing, and rejections. Except for the
+explicit approval request, event delivery is passive: losing the receiver does
+not alter an operation's result.
+
+`OperationId`, `StepId`, and `ToolInvocationId` are distinct UUID v4 newtypes.
+An operation moves through running or suspended state and always reports a
+finished completed, failed, declined, or interrupted outcome. Conversation
+and live deltas are transient; there is no replay or persistence contract.
 
 ## Agent and conversation boundary
 
-`Agent` owns one concrete conversational provider, a deterministic tool
+`Agent` owns one asynchronous conversational transport, a deterministic tool
 registry, the launch workspace, a frozen `PromptSnapshot`, and a configured
 tool-round limit. Before each provider call it charges the complete current
 history and prepends the snapshot's unchanged system message. It executes
 requested tools serially, appends correlated results, and returns the final
-assistant message.
+assistant message. The foreground runtime commits the user and final assistant
+messages to its history only after the turn succeeds.
 
 The provider-neutral conversation model carries ordered text, tool-call, and
 tool-result content. Provider request and response shapes remain private to
 their adapter. The OpenAI-compatible adapter separates its wire structs,
-conversion rules, blocking HTTP client, and captured response fixtures.
+conversion rules, asynchronous streaming HTTP client, and captured response
+and stream fixtures.
+
+The OpenAI-compatible adapter incrementally decodes bounded SSE bytes. It
+supports arbitrary chunk boundaries, LF and CRLF frames, comments, multi-line
+data, and `[DONE]`; incomplete and oversized frames fail the turn. Indexed
+tool-call deltas accumulate id, name, and JSON argument fragments before they
+become one provider-neutral assistant message. Live text deltas are rendered
+immediately but only the completed message becomes conversation history.
 
 The provider-neutral conversation model includes a system role. The
 OpenAI-compatible adapter serializes that role and the changing conversation
@@ -106,8 +134,9 @@ provider-neutral registry:
 - `list_files` returns a bounded, sorted, non-recursive directory listing.
 - `edit_file` replaces exactly one match in an existing bounded UTF-8 file.
 - `run_command` executes one command string through a configured shell in an
-  existing workspace directory after a fail-closed terminal approval. It
-  returns status plus independently bounded stdout and stderr.
+  existing workspace directory after a fail-closed, runtime-correlated
+  terminal approval. It returns status plus independently bounded stdout and
+  stderr.
 
 All tool paths are relative to Xana's launch workspace and must remain beneath
 that workspace after lexical and canonical resolution. Reads and resulting
@@ -124,11 +153,14 @@ explicit configurations. A custom compatible program path may replace the
 default executable.
 
 File tools currently execute under the configuration's automatic `allow`
-mode. The command approval contract is a deliberately provisional frontend
-adapter, not the proposed runtime permission protocol. Neither metadata,
-workspace path checks, nor approval provides process containment. Tools run
-with the Xana process's ordinary host access, and `edit_file` does not claim
-atomic or crash-safe writes.
+mode. The command approval contract is deliberately provisional policy carried
+over the foreground command/event boundary, not a durable permission
+protocol. One pending decision is keyed by operation and tool invocation;
+unknown, stale, duplicate, and mismatched decisions are rejected, and losing
+the controlling client fails closed. Neither metadata, workspace path checks,
+nor approval provides process containment. Tools run asynchronously with the
+Xana process's ordinary host access, and `edit_file` does not claim atomic or
+crash-safe writes.
 
 ## CLI, configuration, and initialization
 
@@ -177,6 +209,8 @@ physical package boundaries:
 - `main.rs` composes the process.
 - `app` owns command routing and dependency construction.
 - `terminal` and `presentation` own frontend behavior.
+- `runtime` and `identity` own foreground state, typed commands and events,
+  correlated approvals, and semantic work identifiers.
 - `agent` and `message` contain the headless loop and internal conversation
   model.
 - `prompt` and `context` own versioned assembly, transient source selection,
@@ -197,9 +231,9 @@ that maintains these boundaries.
 
 Xana has no durable session store, unified permission broker, sandbox,
 background runtime, workspace crate split, runtime profile switching,
-streaming event protocol, scoped or persistent grants, permission audit store,
-artifact/context store, context service, nested project-instruction or skill
-discovery, prompt compaction, or crash-safe edit protocol. The `run_command`
-y/n prompt is the only approval path and is explicitly temporary. These
-absences are implementation facts, not predictions about which proposals will
-be accepted.
+multi-client attachment, event replay, scoped or persistent grants, permission
+audit store, artifact/context store, context service, nested
+project-instruction or skill discovery, prompt compaction, or crash-safe edit
+protocol. The correlated `run_command` y/n prompt is the only approval path and
+is explicitly temporary. These absences are implementation facts, not
+predictions about which proposals will be accepted.

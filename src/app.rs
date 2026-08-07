@@ -14,6 +14,7 @@ use crate::{
     presentation::{self, BannerMode},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::openai_compat::OpenAiCompatClient,
+    runtime::RuntimeHandle,
     shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
@@ -24,7 +25,7 @@ use std::io::{self, BufRead, IsTerminal, Write};
 const PROMPT_TOTAL_TOKENS: usize = 32_768;
 const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 
-pub(crate) fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
+pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
 
     match cli.command {
@@ -35,7 +36,7 @@ pub(crate) fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 io::stdout().is_terminal(),
                 no_banner,
             );
-            run_default(&paths, mode)
+            run_default(&paths, mode).await
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Config(args)) => {
@@ -54,7 +55,7 @@ fn load_config(paths: &XanaPaths) -> Result<XanaConfig> {
     })
 }
 
-fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
+async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
     {
         let mut output = anstream::stdout().lock();
         presentation::write_banner(&mut output, banner_mode)
@@ -104,8 +105,7 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
     let endpoint = provider.endpoint().to_owned();
     let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
     let configured_shell = shell.prompt_description();
-    let tools = ToolRegistry::builtins(shell, terminal::terminal_approver())
-        .context("could not build tool registry")?;
+    let tools = ToolRegistry::builtins(shell).context("could not build tool registry")?;
     let workspace_root = std::env::current_dir()
         .context("could not resolve Xana workspace root")?
         .canonicalize()
@@ -133,7 +133,14 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
     let context_report = ContextPlanReport::render(&prompt.context_plan)
         .as_str()
         .to_owned();
-    let agent = Agent::new(provider, tools, workspace_root, prompt, max_tool_rounds);
+    let agent = Agent::new(
+        Box::new(provider),
+        tools,
+        workspace_root,
+        prompt,
+        max_tool_rounds,
+    );
+    let runtime = RuntimeHandle::spawn(agent);
     let header = ChatHeader {
         provider_name,
         model,
@@ -141,7 +148,7 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         context_report,
     };
 
-    terminal::run_chat(agent, header)
+    terminal::run_chat(runtime, header).await
 }
 
 fn run_config_command<W: Write>(

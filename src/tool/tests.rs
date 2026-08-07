@@ -1,8 +1,11 @@
 use super::*;
 use crate::message::ToolResultStatus;
+use futures::future::BoxFuture;
 use serde_json::json;
-use std::cell::Cell;
-use std::rc::Rc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use tempfile::tempdir;
 
 struct Echo;
@@ -18,8 +21,12 @@ impl Tool for Echo {
         }
     }
 
-    fn execute(&self, _arguments: &Value, _workspace_root: &Path) -> Result<String, String> {
-        Ok("echoed".to_owned())
+    fn execute<'a>(
+        &'a self,
+        _arguments: &'a Value,
+        _context: ToolContext<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Ok("echoed".to_owned()) })
     }
 }
 
@@ -36,18 +43,22 @@ impl Tool for AlwaysFails {
         }
     }
 
-    fn execute(&self, _arguments: &Value, _workspace_root: &Path) -> Result<String, String> {
-        Err("planned failure".to_owned())
+    fn execute<'a>(
+        &'a self,
+        _arguments: &'a Value,
+        _context: ToolContext<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("planned failure".to_owned()) })
     }
 }
 
 struct CountedDefinition {
-    calls: Rc<Cell<usize>>,
+    calls: Arc<AtomicUsize>,
 }
 
 impl Tool for CountedDefinition {
     fn definition(&self) -> ToolDefinition {
-        self.calls.set(self.calls.get() + 1);
+        self.calls.fetch_add(1, Ordering::SeqCst);
         ToolDefinition {
             name: "counted",
             description: "Prove definitions are cached",
@@ -57,8 +68,12 @@ impl Tool for CountedDefinition {
         }
     }
 
-    fn execute(&self, _arguments: &Value, _workspace_root: &Path) -> Result<String, String> {
-        Ok("counted".to_owned())
+    fn execute<'a>(
+        &'a self,
+        _arguments: &'a Value,
+        _context: ToolContext<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Ok("counted".to_owned()) })
     }
 }
 
@@ -84,15 +99,15 @@ fn definitions_preserve_registration_order_and_metadata() {
 
 #[test]
 fn definitions_are_cached_and_lookup_returns_registry_owned_value() {
-    let calls = Rc::new(Cell::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
     let mut registry = ToolRegistry::new();
     registry
         .register(CountedDefinition {
-            calls: Rc::clone(&calls),
+            calls: Arc::clone(&calls),
         })
         .expect("register counted tool");
 
-    assert_eq!(calls.get(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(registry.definitions()[0].name, "counted");
     assert_eq!(
         registry.definition("counted").map(|item| item.name),
@@ -100,7 +115,7 @@ fn definitions_are_cached_and_lookup_returns_registry_owned_value() {
     );
 
     let workspace = tempdir().expect("temporary workspace");
-    let result = registry.execute(
+    let result = registry.execute_for_tests(
         &ToolCall {
             id: "call-counted".to_owned(),
             name: "counted".to_owned(),
@@ -110,7 +125,7 @@ fn definitions_are_cached_and_lookup_returns_registry_owned_value() {
     );
 
     assert_eq!(result.status, ToolResultStatus::Success);
-    assert_eq!(calls.get(), 1);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -134,7 +149,7 @@ fn registered_tool_dispatches_through_trait_object() {
         arguments: json!({}),
     };
 
-    let result = registry.execute(&call, workspace.path());
+    let result = registry.execute_for_tests(&call, workspace.path());
 
     assert_eq!(result.call_id, "call-echo");
     assert_eq!(result.status, ToolResultStatus::Success);
@@ -154,7 +169,7 @@ fn tool_failure_preserves_call_id_and_internal_status() {
         arguments: json!({}),
     };
 
-    let result = registry.execute(&call, workspace.path());
+    let result = registry.execute_for_tests(&call, workspace.path());
 
     assert_eq!(result.call_id, "call-failure");
     assert_eq!(result.status, ToolResultStatus::Error);
@@ -172,7 +187,7 @@ fn unknown_tool_returns_correlated_error() {
         arguments: json!({}),
     };
 
-    let result = registry.execute(&call, workspace.path());
+    let result = registry.execute_for_tests(&call, workspace.path());
 
     assert_eq!(result.call_id, "call-unknown");
     assert_eq!(result.status, ToolResultStatus::Error);
@@ -207,7 +222,7 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
     fs::write(workspace.path().join("state.txt"), "status=rough\n").expect("state fixture");
     let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
 
-    let list = registry.execute(
+    let list = registry.execute_for_tests(
         &ToolCall {
             id: "call-list".to_owned(),
             name: "list_files".to_owned(),
@@ -215,7 +230,7 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
         },
         workspace.path(),
     );
-    let edit = registry.execute(
+    let edit = registry.execute_for_tests(
         &ToolCall {
             id: "call-edit".to_owned(),
             name: "edit_file".to_owned(),
@@ -227,7 +242,7 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
         },
         workspace.path(),
     );
-    let read = registry.execute(
+    let read = registry.execute_for_tests(
         &ToolCall {
             id: "call-read".to_owned(),
             name: "read_file".to_owned(),

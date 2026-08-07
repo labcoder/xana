@@ -99,13 +99,13 @@ fn tool_role_from_provider_is_rejected_as_a_response() {
     ));
 }
 
-#[test]
-fn invalid_tool_message_fails_before_http() {
+#[tokio::test]
+async fn invalid_tool_message_fails_before_http() {
     let client =
         OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
     let message = Message::text(Role::Tool, "tool messages require a tool-result block");
 
-    let result = client.send_message(&[message], &[]);
+    let result = client.send_message(&[message], &[]).await;
 
     match result {
         Err(error) => {
@@ -235,8 +235,8 @@ fn text_after_a_tool_call_is_rejected() {
     ));
 }
 
-#[test]
-fn unrepresentable_history_fails_before_http() {
+#[tokio::test]
+async fn unrepresentable_history_fails_before_http() {
     let client =
         OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
     let message = Message {
@@ -251,7 +251,7 @@ fn unrepresentable_history_fails_before_http() {
         ],
     };
 
-    let result = client.send_message(&[message], &[]);
+    let result = client.send_message(&[message], &[]).await;
 
     match result {
         Err(error) => {
