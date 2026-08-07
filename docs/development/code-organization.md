@@ -1,8 +1,10 @@
 # Code organization
 
-Xana stays one binary crate until the planned workspace split. Within that
-crate, modules enforce the same dependency direction that the future
-`xana-core`, `xana-runtime`, and `xana-cli` crates will make physical.
+> Audience: Contributors and coding agents  
+> Authority: Repository policy
+
+Xana is one binary crate. Its modules separate responsibilities and I/O
+boundaries without assuming which proposals will be accepted later.
 
 ## Module boundaries
 
@@ -27,30 +29,31 @@ to `feature/tests.rs` through `#[cfg(test)] mod tests;` without becoming an
 integration test.
 
 Top-level `tests/` targets exercise externally visible package behavior. Keep
-the current executable smoke suite small; the broader `xana-core` and
-`xana-runtime` integration suites arrive with the Lesson 3.1 workspace split.
-Test volume is not a defect by itself: split when production code becomes hard
-to find or when the tests cover several independent responsibilities.
+executable smoke coverage focused. Test volume is not a defect by itself:
+split when production code becomes hard to find or when tests cover several
+independent responsibilities.
 
 ## Documentation and comments
 
-- Use `//!` on architectural modules to state their responsibility,
-  invariants, and forbidden dependencies.
+- Use `//!` on architectural modules to state responsibility, invariants, and
+  forbidden dependencies.
 - Use `///` for caller-visible contracts, error conditions, and security or
   resource guarantees.
 - Use `//` for rationale, ordering constraints, and platform or protocol
   details. Do not narrate obvious control flow or target a comment percentage.
+- Follow the [documentation maintenance policy](../README.md#keeping-documentation-accurate)
+  when a change affects Architecture or User Documentation.
 
 ## Formatting and toolchain
 
-Rustfmt's default Rust 2024 style is the formatting authority. Clippy's
-default lint groups run with warnings denied; additional pedantic or
-restriction lints are selected individually rather than enabled wholesale.
-The checked-in toolchain file keeps Rust, rustfmt, and Clippy aligned across
-developer machines and CI. Repository text files use explicit Git line-ending
-rules so Windows and macOS produce stable diffs.
+Rustfmt's default Rust 2024 style is the formatting authority. Clippy's default
+lint groups run with warnings denied; additional pedantic or restriction lints
+are selected individually rather than enabled wholesale. The checked-in
+toolchain keeps Rust, rustfmt, and Clippy aligned across developer machines and
+CI. Repository text files use explicit Git line-ending rules so Windows and
+macOS produce stable diffs.
 
-The required local and CI gate remains:
+The required local and CI gate is:
 
 ```text
 cargo fmt --all --check

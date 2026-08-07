@@ -2,7 +2,21 @@
 
 ## Project
 
-Xana is a small, extensible personal AI agent harness written in Rust. Keep the implementation cross-platform and keep the core independent of any frontend or provider wire format.
+Xana is a small, extensible personal AI agent harness written in Rust. Keep the
+implementation cross-platform and the headless agent independent of frontend,
+process-global, and provider-wire concerns.
+
+## Before changing Xana
+
+1. Start at the [documentation index](docs/README.md).
+2. Read [Architecture](docs/architecture/README.md) for implemented behavior
+   and boundaries.
+3. Read [Design Principles](docs/principles.md) for prescriptive constraints.
+4. Check the relevant [proposal](docs/proposals/) when changing an area with
+   future design work. Only a proposal marked Accepted is prescriptive.
+
+Do not describe a proposal as implemented. Do not add future design claims to
+Architecture or User Documentation.
 
 ## Required checks
 
@@ -14,42 +28,39 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-## Architecture rules
+## Source boundaries
 
-1. Wire formats never leave their provider module. The rest of Xana uses its internal conversation types.
-2. The agent loop is a value, not `main()`. `main` constructs agents and subscribes to their events.
-3. The core is headless. It emits events and accepts commands; it does not render a CLI or GUI.
-4. Configuration is per agent and passed in. Core code does not read global configuration or environment variables.
-5. Sessions record internal types and agent lineage.
-6. Keep Phase 1 blocking; make the async boundary explicit when streaming is introduced.
-7. Make no platform assumptions. Use Rust path APIs and explicit shell abstractions, and keep Linux, macOS, and Windows CI green.
-8. Keep core small. Prefer tools, events, and context hooks as extension seams.
-9. Treat context as a budget, not a bucket. Every prompt input must pass through an explicit token budget.
-10. Keep optional capability lifecycle explicit. Discovery is pure and
-    read-only; installation and enablement are control-plane operations outside
-    agent turns; each agent receives an immutable, truthful tool snapshot.
-    Lazy activation may initialize an already-installed expensive provider, but
-    must not install one.
-11. Treat structured documents as untrusted parser input. Resolve and authorize
-    one regular file, read it once through a bound, prefer content/container
-    identity over extensions, enforce layered resource/output/context limits,
-    preserve typed failures, and never auto-fetch or execute extracted content.
+- Provider wire formats remain private to their adapters. The rest of Xana
+  uses its internal conversation model.
+- `Agent` remains a headless value. It receives configuration and dependencies;
+  it does not load global state, inspect environment variables, or render a
+  frontend.
+- `main.rs` remains the process composition root. Application routing belongs
+  in `app`; terminal interaction belongs in `terminal`.
+- Use Rust path APIs and explicit platform behavior. Keep Linux, macOS, and
+  Windows validation meaningful.
+- Keep optional capabilities, authority, containment, and context budgets
+  explicit as described by Design Principles.
 
 ## Code organization
 
-1. Keep `main.rs` as a thin process composition root. Put application command
-   routing in `app` and terminal interaction in `terminal`.
-2. Split modules at responsibility, ownership, and I/O boundaries rather than
-   enforcing a hard line limit. Treat 400 production lines or 700 total lines
-   as a review prompt.
-3. Use `feature.rs` plus `feature/child.rs`; do not add new `mod.rs` files.
-4. Keep items private by default and re-export only the smallest useful
-   `pub(crate)` facade.
-5. Keep focused unit tests beside private code. Move large test blocks to
-   `feature/tests.rs`; reserve top-level `tests/` for package-level behavior.
-6. Document architectural modules with `//!`. Comment invariants and rationale,
-   not obvious syntax, and do not target a comment percentage.
-7. Use rustfmt defaults and the checked-in toolchain. Do not blanket-enable
-   Clippy's pedantic, restriction, or nursery groups.
+Follow [Code organization](docs/development/code-organization.md). Split at
+responsibility, ownership, and I/O boundaries rather than a hard line count;
+keep items private by default and expose the smallest useful facade.
 
-See `docs/architecture/code-organization.md` for the full policy.
+## Documentation impact
+
+Update documentation in the same change when code alters:
+
+- responsibilities, dependencies, invariants, data flow, or meaningful
+  limitations described by Architecture;
+- installation, CLI, configuration, paths, diagnostics, or visible behavior
+  described by User Documentation; or
+- an implemented proposal's status and resulting architectural description.
+
+Refactors that preserve documented behavior and boundaries need no docs
+change. Code and tests are evidence of implemented behavior; a disagreement
+with descriptive documentation is a documentation defect. Keep this repository
+self-contained: its documentation must stand on repository evidence and the
+proposal and decision system rather than outside teaching or sequencing
+material.
