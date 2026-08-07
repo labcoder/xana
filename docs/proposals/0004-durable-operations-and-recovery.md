@@ -18,6 +18,11 @@ read-only restoration subset is implemented separately through historical
 [Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
 Proposed for invocation intents/results, reconciliation, and effect recovery.
 
+The serial tool-intent/result and explicit recovery subset is accepted by
+[Proposal 0013](0013-crash-recoverable-tool-operations.md). This proposal
+remains Proposed for broader continuation, context transforms, and recovery
+semantics.
+
 | Record kind | Purpose | Enters model context? |
 |---|---|---|
 | Conversation entry | User, assistant, and tool-result content with immutable identity and optional parent | Yes, subject to context assembly |
