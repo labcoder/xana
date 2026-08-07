@@ -11,10 +11,10 @@ state needs explicit owners and lifecycles. This proposal extends the existing
 platform path and versioned-TOML foundations without treating one directory or
 configuration file as a bucket for every kind of state.
 
-The implemented version 1 document includes a validated `[shell]` table for
-local command execution. That shipped field remains part of shared
-human-authored configuration; it does not accept the broader permission,
-extension, route, or durable-state model proposed below.
+The version 1 extension for user-owned permission defaults and rules is
+accepted in [Proposal 0011](0011-scoped-runtime-permissions.md). This proposal
+remains Proposed for extension, route, secret, durable-state, and structured
+configuration-editing ownership described below.
 
 ## Proposed state ownership
 
