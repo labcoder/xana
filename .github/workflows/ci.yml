@@ -36,3 +36,10 @@ jobs:
 
       - name: Run tests
         run: cargo test --all-targets --all-features
+
+      - name: Audit package contents
+        shell: pwsh
+        run: ./scripts/check-package-contents.ps1
+
+      - name: Verify source package
+        run: cargo package --locked

@@ -2,10 +2,14 @@
 name = "xana"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.97.1"
 description = "A small, extensible personal AI agent harness written in Rust"
 license = "MIT"
 repository = "https://github.com/labcoder/xana"
 readme = "README.md"
+keywords = ["ai", "agent", "cli", "automation"]
+categories = ["command-line-utilities", "development-tools"]
+publish = false
 
 [dependencies]
 anstream = "1.0.0"
