@@ -20,6 +20,9 @@ flowchart LR
     APP --> INIT["init<br/>configuration planning and creation"]
     APP --> TERMINAL["terminal<br/>blocking chat frontend"]
     APP --> CONFIG["config + paths"]
+    APP --> CONTEXT["bounded root project context"]
+    CONTEXT --> PROMPT["xana-prompt-v1 snapshot"]
+    PROMPT --> AGENT
     TERMINAL --> AGENT["Agent<br/>bounded headless loop"]
     AGENT --> PROVIDER["provider adapter"]
     AGENT --> TOOLS["tool registry"]
@@ -37,18 +40,61 @@ headless agent loop.
 ## Agent and conversation boundary
 
 `Agent` owns one concrete conversational provider, a deterministic tool
-registry, the launch workspace, and an eight-round tool limit. It sends the
-conversation to the provider, executes requested tools serially, appends
-correlated results, and returns the final assistant message.
+registry, the launch workspace, a frozen `PromptSnapshot`, and a configured
+tool-round limit. Before each provider call it charges the complete current
+history and prepends the snapshot's unchanged system message. It executes
+requested tools serially, appends correlated results, and returns the final
+assistant message.
 
 The provider-neutral conversation model carries ordered text, tool-call, and
 tool-result content. Provider request and response shapes remain private to
 their adapter. The OpenAI-compatible adapter separates its wire structs,
 conversion rules, blocking HTTP client, and captured response fixtures.
 
+The provider-neutral conversation model includes a system role. The
+OpenAI-compatible adapter serializes that role and the changing conversation
+at its private wire boundary; exact tool schemas remain a separate request
+field.
+
 `Agent` receives owned dependencies and limits. It does not load
 configuration, inspect environment variables, resolve platform paths, or
-render terminal output.
+render terminal output. It also does not read prompt or project files.
+
+## Prompt and project-context boundary
+
+The application edge builds one `xana-prompt-v1` snapshot from embedded,
+non-replaceable identity and guideline files; a concise tool catalog derived
+from the immutable registry; owned operating-system, canonical working
+directory, configured-shell, and CLI-surface values; and an optional bounded
+root `AGENTS.md` preview. A product-documentation layer exists only when the
+runtime supplies readable logical references or a capability; normal Phase 2
+composition omits it.
+
+Layers have transient ids, purpose, origin, trust, provenance, estimated cost,
+and deterministic order. Dynamic layer text and attributes are XML-escaped,
+line endings are canonicalized to LF, only outer blank lines are trimmed, and
+layers are separated by one empty line. These properties make unchanged input
+byte-stable across supported platforms. The labels are prompt structure, not a
+security boundary.
+
+Root `AGENTS.md` is optional, must be a non-symlink regular UTF-8 file no larger
+than 64 KiB, and has a 1,024-estimated-token preview limit. Discovery does not
+walk parents or nested directories and ignores `XANA.md`, `.agents/`, skills,
+and plugins. Project instructions can guide work but cannot mutate tools,
+configuration, permission state, or Xana's non-replaceable core.
+
+One estimated 32,768-token budget charges rendered system layers, exact tool
+schemas, selected previews, and actual history while reserving 8,192 tokens
+for conversation during assembly. The Phase 2 estimator uses one token per
+three Unicode scalar values, rounded up; it is not a provider tokenizer.
+Over-budget required input or history fails before provider I/O. Range and
+literal-search previews remain bounded, Unicode-safe, and provenance-bearing.
+
+Context source and preview identities are transient to one agent. Xana has no
+artifact store, durable context reference, context service, native context
+plan, or prompt compaction. The logical `xana.docs.read` capability and
+`xana_docs` tool are also absent; the workspace file tool is never allowed to
+escape its root to simulate product documentation.
 
 ## Tool boundary
 
@@ -133,6 +179,8 @@ physical package boundaries:
 - `terminal` and `presentation` own frontend behavior.
 - `agent` and `message` contain the headless loop and internal conversation
   model.
+- `prompt` and `context` own versioned assembly, transient source selection,
+  provenance, previewing, and input-budget enforcement.
 - `provider` and `tool` are narrow facades over private adapter and tool
   implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
@@ -150,6 +198,8 @@ that maintains these boundaries.
 Xana has no durable session store, unified permission broker, sandbox,
 background runtime, workspace crate split, runtime profile switching,
 streaming event protocol, scoped or persistent grants, permission audit store,
-or crash-safe edit protocol. The `run_command` y/n prompt is the only approval
-path and is explicitly temporary. These absences are implementation facts, not
-predictions about which proposals will be accepted.
+artifact/context store, context service, nested project-instruction or skill
+discovery, prompt compaction, or crash-safe edit protocol. The `run_command`
+y/n prompt is the only approval path and is explicitly temporary. These
+absences are implementation facts, not predictions about which proposals will
+be accepted.

@@ -4,6 +4,7 @@
 //! does not read configuration, environment variables, or terminal state.
 
 use crate::message::{ContentBlock, Message, ToolCall};
+use crate::prompt::PromptSnapshot;
 use crate::provider::openai_compat::OpenAiCompatClient;
 use crate::tool::ToolRegistry;
 use anyhow::{Result, bail};
@@ -13,6 +14,7 @@ pub(crate) struct Agent {
     provider: OpenAiCompatClient,
     tools: ToolRegistry,
     workspace_root: PathBuf,
+    prompt: PromptSnapshot,
     max_tool_rounds: usize,
 }
 
@@ -21,12 +23,14 @@ impl Agent {
         provider: OpenAiCompatClient,
         tools: ToolRegistry,
         workspace_root: PathBuf,
+        prompt: PromptSnapshot,
         max_tool_rounds: usize,
     ) -> Self {
         Self {
             provider,
             tools,
             workspace_root,
+            prompt,
             max_tool_rounds,
         }
     }
@@ -35,7 +39,10 @@ impl Agent {
         let definitions = self.tools.definitions();
 
         for _ in 0..self.max_tool_rounds {
-            let assistant = self.provider.send_message(messages, &definitions)?;
+            let request_messages = self.prompt.messages_for_request(messages)?;
+            let assistant = self
+                .provider
+                .send_message(&request_messages, &definitions)?;
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
@@ -71,7 +78,11 @@ fn requested_tools(message: &Message) -> Vec<ToolCall> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Role;
+    use crate::{
+        context::ContextBudget,
+        message::Role,
+        prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -125,7 +136,24 @@ mod tests {
             OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
         let tools = ToolRegistry::new();
         let workspace = tempdir().expect("temporary workspace");
-        let agent = Agent::new(provider, tools, workspace.path().to_owned(), 0);
+        let environment = PromptEnvironment {
+            operating_system: "test".to_owned(),
+            working_directory: workspace.path().to_owned(),
+            configured_shell: "test shell".to_owned(),
+            surface: PromptSurface::Cli,
+        };
+        let prompt = assemble_snapshot(PromptInputs {
+            tool_definitions: &tools.definitions(),
+            environment: &environment,
+            product_documentation: None,
+            project_sources: &[],
+            budget: ContextBudget {
+                total_tokens: 8_192,
+                conversation_reserve_tokens: 2_048,
+            },
+        })
+        .expect("test prompt");
+        let agent = Agent::new(provider, tools, workspace.path().to_owned(), prompt, 0);
         let mut messages = Vec::new();
 
         let result = agent.run_turn(&mut messages);

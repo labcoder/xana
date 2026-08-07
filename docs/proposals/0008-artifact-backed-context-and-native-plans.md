@@ -16,6 +16,13 @@ Recursive Language Model research without adding an `RLM mode`, a persistent
 language kernel, or a second blob store. Artifacts remain the byte/document
 substrate, and the Rust runtime remains the complete composition path.
 
+Xana currently implements only a transient precursor: `xana-prompt-v1` applies
+one estimated input budget to fixed layers, exact tool schemas, root
+`AGENTS.md` previews, and actual history. Source ids, selectors, provenance,
+and range/search previews live for one agent and have no durable artifact,
+context, owner, version, or recovery identity. This proposal remains
+unimplemented.
+
 ## Proposed context references
 
 Conceptually, a context record identifies one immutable or explicitly

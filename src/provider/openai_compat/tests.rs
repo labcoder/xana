@@ -50,9 +50,21 @@ fn assert_wire_messages_match(expected: &WireMessage, actual: &WireMessage) {
 
 #[test]
 fn roles_convert_to_wire() {
+    assert_eq!(WireRole::from(Role::System), WireRole::System);
     assert_eq!(WireRole::from(Role::User), WireRole::User);
     assert_eq!(WireRole::from(Role::Assistant), WireRole::Assistant);
     assert_eq!(WireRole::from(Role::Tool), WireRole::Tool);
+}
+
+#[test]
+fn system_role_serializes_at_the_wire_edge() {
+    let message = Message::text(Role::System, "frozen system prompt");
+    let wire = WireMessage::try_from(&message).expect("system wire message");
+    let value = serde_json::to_value(&wire).expect("wire JSON");
+
+    assert_eq!(wire.role, WireRole::System);
+    assert_eq!(wire.content.as_deref(), Some("frozen system prompt"));
+    assert_eq!(value["role"], "system");
 }
 
 #[test]

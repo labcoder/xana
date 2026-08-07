@@ -45,6 +45,8 @@ See [Configuration](docs/user/configuration.md) for initialization, diagnostics,
 
 Bare `xana` starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. The configured model must support native tool calling to use Xana's tool path.
 
+At startup Xana freezes `xana-prompt-v1`: its built-in identity and operating guidelines, a summary of the tools actually registered for that agent, owned runtime and CLI context, and a bounded preview of root `AGENTS.md` when present. The same system message is sent on every model request. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or plugins yet. See [Project context and system prompt](docs/user/project-context.md).
+
 The command boundary also provides `xana init`, `xana config path`, and `xana config check`. Interactive startup and setup show Xana's terminal mark; `--no-banner` suppresses it, and `NO_COLOR` keeps a monochrome version.
 
 Xana advertises four workspace tools:
@@ -61,6 +63,7 @@ File tools currently follow `permission_mode = "allow"` and run automatically. `
 ## Documentation
 
 - [Configuration](docs/user/configuration.md) is the user reference.
+- [Project context and system prompt](docs/user/project-context.md) explains root `AGENTS.md`, prompt layers, budgets, and trust boundaries.
 - [Documentation index](docs/README.md) separates user and engineering material and explains its authority model.
 - [Architecture](docs/architecture/README.md) describes what Xana is and how the implemented system works.
 - [Design Principles](docs/principles.md) defines durable constraints for future changes.

@@ -79,6 +79,7 @@ impl<'a> From<&'a ToolDefinition> for WireToolDefinition<'a> {
 impl From<Role> for WireRole {
     fn from(role: Role) -> Self {
         match role {
+            Role::System => Self::System,
             Role::User => Self::User,
             Role::Assistant => Self::Assistant,
             Role::Tool => Self::Tool,

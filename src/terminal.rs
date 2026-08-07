@@ -19,6 +19,7 @@ pub(crate) struct ChatHeader {
     pub(crate) provider_name: String,
     pub(crate) model: String,
     pub(crate) endpoint: String,
+    pub(crate) context_report: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,6 +59,7 @@ pub(crate) fn run_chat(agent: Agent, header: ChatHeader) -> Result<()> {
     println!("provider connection: {}", header.provider_name);
     println!("model: {}", header.model);
     println!("chat endpoint: {}", header.endpoint);
+    println!("context plan:\n{}", header.context_report);
 
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let mut messages = Vec::new();
