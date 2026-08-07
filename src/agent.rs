@@ -7,6 +7,10 @@
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
     message::{ContentBlock, Message, ToolCall},
+    operation::{
+        BoundaryObserver, CrashSite, DurableOperationSender, NoopBoundaryObserver,
+        OperationExecutor,
+    },
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
     runtime::AgentEvent,
@@ -14,7 +18,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use futures::future::BoxFuture;
-use std::{error::Error, fmt, path::PathBuf};
+use std::{error::Error, fmt, path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone)]
@@ -26,7 +30,25 @@ pub(crate) struct ConversationCommit {
     pub(crate) operation_id: OperationId,
     pub(crate) message: Message,
     pub(crate) tool_finished: Option<(ToolInvocationId, Message)>,
-    pub(crate) acknowledged: oneshot::Sender<Result<(), String>>,
+    pub(crate) acknowledged: oneshot::Sender<Result<crate::identity::ConversationEntryId, String>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct DurableTurnServices {
+    conversations: ConversationCommitSender,
+    operations: DurableOperationSender,
+}
+
+impl DurableTurnServices {
+    pub(crate) fn new(
+        conversations: ConversationCommitSender,
+        operations: DurableOperationSender,
+    ) -> Self {
+        Self {
+            conversations,
+            operations,
+        }
+    }
 }
 
 impl ConversationCommitSender {
@@ -40,7 +62,7 @@ impl ConversationCommitSender {
         operation_id: OperationId,
         message: Message,
         tool_finished: Option<(ToolInvocationId, Message)>,
-    ) -> Result<()> {
+    ) -> Result<crate::identity::ConversationEntryId> {
         let (acknowledged, acknowledgement) = oneshot::channel();
         self.sender
             .send(ConversationCommit {
@@ -98,6 +120,7 @@ pub(crate) struct Agent {
     workspace_root: PathBuf,
     prompt: PromptSnapshot,
     max_tool_rounds: usize,
+    boundary_observer: Arc<dyn BoundaryObserver>,
 }
 
 impl Agent {
@@ -114,6 +137,7 @@ impl Agent {
             workspace_root,
             prompt,
             max_tool_rounds,
+            boundary_observer: Arc::new(NoopBoundaryObserver),
         }
     }
 
@@ -142,7 +166,7 @@ impl Agent {
         prompt: &PromptSnapshot,
         permissions: PermissionBrokerHandle,
         events: mpsc::UnboundedSender<AgentEvent>,
-        commits: Option<ConversationCommitSender>,
+        durable: Option<DurableTurnServices>,
     ) -> Result<Message> {
         let definitions = self.tools.definitions();
         let delta_sink = EventDeltaSink {
@@ -164,30 +188,57 @@ impl Agent {
             }
 
             messages.push(assistant.clone());
-            if let Some(commits) = &commits {
-                commits
+            if let Some(durable) = &durable {
+                let assistant_entry_id = durable
+                    .conversations
                     .commit(operation_id, assistant, None)
                     .await
                     .context("could not commit assistant tool request")?;
+                durable
+                    .operations
+                    .append(
+                        crate::session::SessionRecord::StepStarted {
+                            operation_id,
+                            step_id,
+                            assistant_entry_id,
+                        },
+                        None,
+                    )
+                    .await
+                    .context("could not commit operation step")?;
+                self.boundary_observer
+                    .reached(CrashSite::AfterStepStarted)?;
             }
 
             for call in calls {
                 let invocation_id = ToolInvocationId::new();
-                let result = self
-                    .tools
-                    .invoke(
-                        &call,
-                        ToolContext {
-                            workspace_root: &self.workspace_root,
-                            operation_id,
-                            invocation_id,
-                            permissions: &permissions,
-                        },
+                let result = if let Some(durable) = &durable {
+                    OperationExecutor::new(
+                        &self.tools,
+                        &self.workspace_root,
+                        permissions.clone(),
+                        durable.operations.clone(),
+                        Arc::clone(&self.boundary_observer),
                     )
-                    .await;
+                    .invoke_tool(operation_id, step_id, invocation_id, call.clone())
+                    .await?
+                } else {
+                    self.tools
+                        .invoke(
+                            &call,
+                            ToolContext {
+                                workspace_root: &self.workspace_root,
+                                operation_id,
+                                invocation_id,
+                                permissions: &permissions,
+                            },
+                        )
+                        .await
+                };
                 let result_message = Message::tool_result(result);
-                if let Some(commits) = &commits {
-                    commits
+                if let Some(durable) = &durable {
+                    let _entry_id = durable
+                        .conversations
                         .commit(
                             operation_id,
                             result_message.clone(),
@@ -195,6 +246,8 @@ impl Agent {
                         )
                         .await
                         .context("could not commit tool result")?;
+                    self.boundary_observer
+                        .reached(CrashSite::AfterConversationResult)?;
                 } else {
                     let _ = events.send(AgentEvent::ToolFinished {
                         operation_id,
@@ -210,6 +263,16 @@ impl Agent {
             "model exceeded the {}-round tool limit",
             self.max_tool_rounds
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_boundary_observer(mut self, observer: Arc<dyn BoundaryObserver>) -> Self {
+        self.boundary_observer = observer;
+        self
+    }
+
+    pub(crate) fn observe_boundary(&self, site: CrashSite) -> Result<()> {
+        self.boundary_observer.reached(site)
     }
 }
 

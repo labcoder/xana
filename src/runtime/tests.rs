@@ -4,6 +4,7 @@ use crate::{
     context::ContextBudget,
     identity::{StepId, ToolInvocationId},
     message::{ContentBlock, Role, ToolResult},
+    operation::{BoundaryObserver, CrashSite},
     permission::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
         PermissionScope, PolicyDecision,
@@ -173,6 +174,7 @@ fn commands_and_events_round_trip_through_json() {
     let operation_id = OperationId::new();
     let step_id = StepId::new();
     let invocation_id = ToolInvocationId::new();
+    let result_id = crate::identity::ToolResultId::new();
     let message = Message::text(Role::Assistant, "hello");
     let commands = vec![
         RuntimeCommand::SubmitTurn {
@@ -180,6 +182,10 @@ fn commands_and_events_round_trip_through_json() {
             input: "hello".to_owned(),
         },
         RuntimeCommand::ClearConversation,
+        RuntimeCommand::ResumeOperation {
+            session_id: crate::identity::SessionId::new(),
+            operation_id,
+        },
         RuntimeCommand::DecidePermission {
             operation_id,
             invocation_id,
@@ -228,6 +234,46 @@ fn commands_and_events_round_trip_through_json() {
                 policy_evaluation: PolicyDecision::Ask,
                 controller_decision: Some(ControllerDecision::AllowOnce),
                 effective: PolicyDecision::Allow,
+            },
+        },
+        AgentEvent::InvocationIntentCommitted {
+            intent: crate::operation::InvocationIntent {
+                operation_id,
+                step_id,
+                invocation_id,
+                result_id,
+                model_call_id: "call-1".to_owned(),
+                target: crate::operation::InvocationTarget::Tool {
+                    name: "read_file".to_owned(),
+                    contract_version: 1,
+                },
+                final_arguments: serde_json::json!({"path": "README.md"}),
+                permission: PermissionAuditFact {
+                    request: PermissionRequest {
+                        operation_id,
+                        invocation_id,
+                        tool_name: "read_file".to_owned(),
+                        effect_class: crate::tool::EffectClass::Read,
+                        final_arguments: serde_json::json!({"path": "README.md"}),
+                        scope: PermissionScope::Unscoped,
+                    },
+                    policy_evaluation: PolicyDecision::Allow,
+                    controller_decision: None,
+                    effective: PolicyDecision::Allow,
+                },
+                saved_replay_safety: crate::tool::ReplaySafety::Safe,
+            },
+        },
+        AgentEvent::InvocationResultCommitted {
+            result: crate::operation::InvocationResultRecord {
+                operation_id,
+                invocation_id,
+                result_id,
+                outcome: crate::operation::InvocationOutcome::Completed {
+                    output: crate::operation::DurableValueRef::InlineJson(serde_json::json!(
+                        "contents"
+                    )),
+                },
             },
         },
         AgentEvent::ToolFinished {
@@ -580,4 +626,161 @@ fn events_are_passive_observations_not_commands() {
         result.content.as_slice(),
         [ContentBlock::ToolResult(_)]
     ));
+}
+
+struct RuntimeCrashObserver {
+    target: CrashSite,
+    path: std::path::PathBuf,
+    snapshot: Mutex<Option<Vec<crate::session::SessionRecord>>>,
+}
+
+impl BoundaryObserver for RuntimeCrashObserver {
+    fn reached(&self, site: CrashSite) -> anyhow::Result<()> {
+        if site == self.target {
+            let loaded = SessionStore::inspect(&self.path)?;
+            *self
+                .snapshot
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(
+                loaded
+                    .records
+                    .into_iter()
+                    .map(|record| record.record)
+                    .collect(),
+            );
+            anyhow::bail!("injected runtime crash at {site:?}");
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn runtime_crash_sites_commit_acceptance_step_and_conversation_in_order() {
+    for site in [
+        CrashSite::AfterOperationAccepted,
+        CrashSite::AfterStepStarted,
+        CrashSite::AfterConversationResult,
+    ] {
+        let data = tempdir().expect("Xana data tempdir");
+        let workspace = tempdir().expect("workspace tempdir");
+        std::fs::write(workspace.path().join("note.txt"), "durable bytes")
+            .expect("write readable fixture");
+        let workspace_root = workspace.path().canonicalize().expect("workspace root");
+        let session = DurableSession::create(data.path(), workspace_root.clone())
+            .expect("create durable session");
+        let path = session.path().to_owned();
+        let observer = Arc::new(RuntimeCrashObserver {
+            target: site,
+            path,
+            snapshot: Mutex::new(None),
+        });
+        let response = if site == CrashSite::AfterOperationAccepted {
+            Message::text(Role::Assistant, "unreachable")
+        } else {
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(crate::message::ToolCall {
+                    id: "call-read".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: serde_json::json!({"path": "note.txt"}),
+                })],
+            }
+        };
+        let provider = QueueTransport {
+            responses: Mutex::new(vec![Ok(response)].into()),
+            requests: Arc::new(Mutex::new(Vec::new())),
+            completed: Arc::new(AtomicBool::new(false)),
+            deltas: Vec::new(),
+        };
+        let tools = ToolRegistry::builtins_for_tests().expect("builtin tools");
+        let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+        let assembler = PromptAssembler::new(
+            definitions,
+            PromptEnvironment {
+                operating_system: "test".to_owned(),
+                working_directory: workspace_root.clone(),
+                configured_shell: "test shell".to_owned(),
+                surface: PromptSurface::Cli,
+            },
+            None,
+            ContextBudget {
+                total_tokens: 16_384,
+                conversation_reserve_tokens: 4_096,
+            },
+        );
+        let prompt = assembler.assemble(&[]).expect("base prompt");
+        let agent = Agent::new(Box::new(provider), tools, workspace_root.clone(), prompt, 2)
+            .with_boundary_observer(observer.clone());
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+            .expect("allow policy");
+        let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+            .expect("persistent runtime");
+        let operation_id = OperationId::new();
+        runtime
+            .send(RuntimeCommand::SubmitTurn {
+                operation_id,
+                input: "exercise crash boundary".to_owned(),
+            })
+            .await
+            .expect("submit turn");
+
+        if site == CrashSite::AfterOperationAccepted {
+            loop {
+                if matches!(
+                    runtime.next_event().await,
+                    Some(AgentEvent::CommandRejected { .. })
+                ) {
+                    break;
+                }
+            }
+        } else {
+            assert_eq!(
+                receive_finished(&mut runtime, operation_id).await,
+                OperationOutcome::Failed
+            );
+        }
+
+        let records = observer
+            .snapshot
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .expect("runtime crash prefix");
+        let has_accepted = records.iter().any(|record| {
+            matches!(
+                record,
+                crate::session::SessionRecord::OperationAccepted {
+                    operation_id: actual,
+                    ..
+                } if *actual == operation_id
+            )
+        });
+        let has_step = records.iter().any(|record| {
+            matches!(
+                record,
+                crate::session::SessionRecord::StepStarted {
+                    operation_id: actual,
+                    ..
+                } if *actual == operation_id
+            )
+        });
+        let has_result = records.iter().any(|record| {
+            matches!(
+                record,
+                crate::session::SessionRecord::InvocationResultAppended { result }
+                    if result.operation_id == operation_id
+            )
+        });
+        assert!(has_accepted, "{site:?}");
+        assert_eq!(
+            has_step,
+            site != CrashSite::AfterOperationAccepted,
+            "{site:?}"
+        );
+        assert_eq!(
+            has_result,
+            site == CrashSite::AfterConversationResult,
+            "{site:?}"
+        );
+    }
 }

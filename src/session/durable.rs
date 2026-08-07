@@ -17,6 +17,7 @@ use crate::{
         SessionId, ThreadId,
     },
     message::Message,
+    operation::{DurableValueRef, MAX_INLINE_VALUE_BYTES},
     permission::PermissionAuditFact,
     runtime::OperationState,
 };
@@ -91,6 +92,17 @@ impl DurableSession {
         summary_from_loaded(&path, &loaded)
     }
 
+    pub(crate) fn inspect_restored(
+        data_dir: &Path,
+        session_id: SessionId,
+    ) -> Result<(SessionSummary, RestoredSession)> {
+        let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
+        let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
+        let summary = summary_from_loaded(&path, &loaded)?;
+        let restored = reduce(&loaded.records).context("could not reduce inspected session")?;
+        Ok((summary, restored))
+    }
+
     fn from_open_store(
         data_dir: &Path,
         store: SessionStore,
@@ -111,6 +123,10 @@ impl DurableSession {
         self.store.session_id()
     }
 
+    pub(crate) fn thread_id(&self) -> ThreadId {
+        self.restored.thread_id
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.store.path()
     }
@@ -125,6 +141,7 @@ impl DurableSession {
             .context("could not restore conversation path")
     }
 
+    #[cfg(test)]
     pub(crate) fn append_operation_state(
         &mut self,
         operation_id: OperationId,
@@ -138,6 +155,44 @@ impl DurableSession {
 
     pub(crate) fn append_audit(&mut self, fact: PermissionAuditFact) -> Result<()> {
         self.append(SessionRecord::PermissionAudited { fact })
+    }
+
+    pub(crate) fn append_record(&mut self, record: SessionRecord) -> Result<()> {
+        self.append(record)
+    }
+
+    pub(crate) fn store_json_value(&mut self, value: serde_json::Value) -> Result<DurableValueRef> {
+        let bytes = serde_json::to_vec(&value).context("could not encode durable JSON value")?;
+        if bytes.len() <= MAX_INLINE_VALUE_BYTES {
+            return Ok(DurableValueRef::InlineJson(value));
+        }
+        let (artifact, _) = self
+            .artifacts
+            .put(&bytes, "application/json", self.owner)
+            .context("could not store durable JSON artifact")?;
+        self.append(SessionRecord::ArtifactRegistered {
+            artifact: artifact.clone(),
+        })?;
+        Ok(DurableValueRef::Artifact(artifact.reference))
+    }
+
+    pub(crate) fn operation_has_pending(&self, operation_id: OperationId) -> bool {
+        self.restored
+            .operation_details
+            .get(&operation_id)
+            .is_some_and(|operation| {
+                operation
+                    .invocation_order
+                    .iter()
+                    .any(|id| !operation.results.contains_key(id))
+            })
+    }
+
+    pub(crate) fn restored_operation(
+        &self,
+        operation_id: OperationId,
+    ) -> Option<crate::session::RestoredOperation> {
+        self.restored.operation_details.get(&operation_id).cloned()
     }
 
     pub(crate) fn append_message(&mut self, message: Message) -> Result<ConversationEntryId> {

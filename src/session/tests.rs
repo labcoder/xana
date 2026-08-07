@@ -7,9 +7,13 @@ use crate::{
     },
     identity::*,
     message::{Message, Role},
+    operation::{
+        DurableValueRef, InvocationIntent, InvocationOutcome, InvocationResultRecord,
+        InvocationTarget, NamedValueRecord, RecoveryDecision, SuspensionReason,
+    },
     permission::{PermissionAuditFact, PermissionRequest, PermissionScope, PolicyDecision},
     runtime::{OperationOutcome, OperationState},
-    tool::EffectClass,
+    tool::{EffectClass, ReplaySafety},
 };
 use std::{fs, io::Write, path::PathBuf};
 use tempfile::tempdir;
@@ -133,6 +137,271 @@ fn every_v1_record_kind_round_trips_without_collapsing_audit_into_conversation()
     .expect("encode audit");
     assert!(audit_json.contains("permission_audited"));
     assert!(!audit_json.contains("conversation_entry_appended"));
+}
+
+#[test]
+fn crash_recovery_record_kinds_round_trip_with_semantic_identities() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let operation_id = OperationId::new();
+    let step_id = StepId::new();
+    let invocation_id = ToolInvocationId::new();
+    let result_id = ToolResultId::new();
+    let input_entry_id = ConversationEntryId::new();
+    let assistant_entry_id = ConversationEntryId::new();
+    let arguments = serde_json::json!({"path": "README.md"});
+    let fact = PermissionAuditFact {
+        request: PermissionRequest {
+            operation_id,
+            invocation_id,
+            tool_name: "read_file".to_owned(),
+            effect_class: EffectClass::Read,
+            final_arguments: arguments.clone(),
+            scope: PermissionScope::Unscoped,
+        },
+        policy_evaluation: PolicyDecision::Allow,
+        controller_decision: None,
+        effective: PolicyDecision::Allow,
+    };
+    let intent = InvocationIntent {
+        operation_id,
+        step_id,
+        invocation_id,
+        result_id,
+        model_call_id: "call-1".to_owned(),
+        target: InvocationTarget::Tool {
+            name: "read_file".to_owned(),
+            contract_version: 1,
+        },
+        final_arguments: arguments,
+        permission: fact,
+        saved_replay_safety: ReplaySafety::Safe,
+    };
+    let records = vec![
+        SessionRecord::OperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+        },
+        SessionRecord::StepStarted {
+            operation_id,
+            step_id,
+            assistant_entry_id,
+        },
+        SessionRecord::InvocationIntentAppended {
+            intent: intent.clone(),
+        },
+        SessionRecord::OperationSuspended {
+            operation_id,
+            reason: SuspensionReason::ProcessInterrupted,
+        },
+        SessionRecord::RecoveryDecisionAppended {
+            operation_id,
+            invocation_id,
+            decision: RecoveryDecision::Replay,
+        },
+        SessionRecord::InvocationResultAppended {
+            result: InvocationResultRecord {
+                operation_id,
+                invocation_id,
+                result_id,
+                outcome: InvocationOutcome::Completed {
+                    output: DurableValueRef::InlineJson(serde_json::json!("contents")),
+                },
+            },
+        },
+        SessionRecord::NamedValueSet {
+            value: NamedValueRecord {
+                id: NamedValueId::new(),
+                operation_id,
+                name: format!("tool_output:{invocation_id}"),
+                value: DurableValueRef::InlineJson(serde_json::json!("contents")),
+            },
+        },
+        SessionRecord::OperationFinished {
+            operation_id,
+            outcome: OperationOutcome::Interrupted,
+        },
+    ];
+
+    for record in records {
+        let envelope = RecordEnvelope::new(session_id, record);
+        let encoded = serde_json::to_vec(&envelope).expect("encode recovery record");
+        assert_eq!(
+            serde_json::from_slice::<RecordEnvelope>(&encoded).expect("decode recovery record"),
+            envelope
+        );
+    }
+}
+
+fn valid_recovery_sequence() -> (
+    Vec<RecordEnvelope>,
+    OperationId,
+    ToolInvocationId,
+    ToolResultId,
+) {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let operation_id = OperationId::new();
+    let step_id = StepId::new();
+    let invocation_id = ToolInvocationId::new();
+    let result_id = ToolResultId::new();
+    let input_entry_id = ConversationEntryId::new();
+    let assistant_entry_id = ConversationEntryId::new();
+    let arguments = serde_json::json!({"path": "README.md"});
+    let fact = PermissionAuditFact {
+        request: PermissionRequest {
+            operation_id,
+            invocation_id,
+            tool_name: "read_file".to_owned(),
+            effect_class: EffectClass::Read,
+            final_arguments: arguments.clone(),
+            scope: PermissionScope::Unscoped,
+        },
+        policy_evaluation: PolicyDecision::Allow,
+        controller_decision: None,
+        effective: PolicyDecision::Allow,
+    };
+    let records = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ConversationEntryAppended {
+                entry: ConversationEntry {
+                    id: input_entry_id,
+                    parent: None,
+                    agent_id: AgentId::new(),
+                    message: Message::text(Role::User, "recover"),
+                },
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ConversationEntryAppended {
+                entry: ConversationEntry {
+                    id: assistant_entry_id,
+                    parent: Some(input_entry_id),
+                    agent_id: AgentId::new(),
+                    message: Message::text(Role::Assistant, "read"),
+                },
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::OperationAccepted {
+                operation_id,
+                thread_id,
+                input_entry_id,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::StepStarted {
+                operation_id,
+                step_id,
+                assistant_entry_id,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::InvocationIntentAppended {
+                intent: InvocationIntent {
+                    operation_id,
+                    step_id,
+                    invocation_id,
+                    result_id,
+                    model_call_id: "call-1".to_owned(),
+                    target: InvocationTarget::Tool {
+                        name: "read_file".to_owned(),
+                        contract_version: 1,
+                    },
+                    final_arguments: arguments,
+                    permission: fact,
+                    saved_replay_safety: ReplaySafety::Safe,
+                },
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::InvocationResultAppended {
+                result: InvocationResultRecord {
+                    operation_id,
+                    invocation_id,
+                    result_id,
+                    outcome: InvocationOutcome::Completed {
+                        output: DurableValueRef::InlineJson(serde_json::json!("contents")),
+                    },
+                },
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::NamedValueSet {
+                value: NamedValueRecord {
+                    id: NamedValueId::new(),
+                    operation_id,
+                    name: format!("tool_output:{invocation_id}"),
+                    value: DurableValueRef::InlineJson(serde_json::json!("contents")),
+                },
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::OperationFinished {
+                operation_id,
+                outcome: OperationOutcome::Completed,
+            },
+        ),
+    ];
+    (records, operation_id, invocation_id, result_id)
+}
+
+#[test]
+fn reducer_accepts_complete_recovery_and_rejects_ambiguous_effect_sequences() {
+    let (records, operation_id, invocation_id, result_id) = valid_recovery_sequence();
+    let restored = reduce(&records).expect("valid recovery records");
+    let operation = &restored.operation_details[&operation_id];
+    assert_eq!(operation.results[&invocation_id].result_id, result_id);
+    assert_eq!(operation.finished, Some(OperationOutcome::Completed));
+    assert_eq!(restored.named_values.len(), 1);
+
+    let mut pending_finish = records.clone();
+    pending_finish.remove(pending_finish.len() - 2);
+    pending_finish.remove(pending_finish.len() - 2);
+    assert!(matches!(
+        reduce(&pending_finish),
+        Err(reduce::ReductionError::PendingInvocationAtFinish { .. })
+    ));
+
+    let mut duplicate_result = records.clone();
+    let duplicate_record = duplicate_result[duplicate_result.len() - 3].record.clone();
+    let duplicate_session = duplicate_result[0].session_id;
+    duplicate_result.insert(
+        duplicate_result.len() - 2,
+        RecordEnvelope::new(duplicate_session, duplicate_record),
+    );
+    assert!(matches!(
+        reduce(&duplicate_result),
+        Err(reduce::ReductionError::DuplicateResult { .. })
+    ));
+
+    let mut mismatched_result = records.clone();
+    let result_record = mismatched_result
+        .iter_mut()
+        .find(|record| {
+            matches!(
+                record.record,
+                SessionRecord::InvocationResultAppended { .. }
+            )
+        })
+        .expect("result record");
+    if let SessionRecord::InvocationResultAppended { result } = &mut result_record.record {
+        result.result_id = ToolResultId::new();
+    }
+    assert!(matches!(
+        reduce(&mismatched_result),
+        Err(reduce::ReductionError::ResultMismatch { .. })
+    ));
 }
 
 #[test]

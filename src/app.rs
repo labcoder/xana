@@ -6,17 +6,18 @@
 
 use crate::{
     agent::Agent,
-    cli::{self, Cli, Command, ConfigCommand, SessionCommand},
+    cli::{self, Cli, Command, ConfigCommand, OperationCommand, SessionCommand},
     config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
     init::{self, InitPlan, WriteOutcome},
+    operation::{RecoveryAction, execute_recovery, plan_recovery},
     paths::XanaPaths,
-    permission::PermissionPolicy,
+    permission::{PermissionBroker, PermissionPolicy},
     presentation::{self, BannerMode},
     prompt::{PromptAssembler, PromptEnvironment, PromptSurface},
     provider::openai_compat::OpenAiCompatClient,
-    runtime::RuntimeHandle,
-    session::DurableSession,
+    runtime::{RuntimeCommand, RuntimeHandle},
+    session::{DurableSession, RestoredOperation},
     shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
@@ -53,7 +54,146 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_session_command(args.command, &paths, &mut stdout.lock())
         }
+        Some(Command::Operation(args)) => {
+            let stdout = io::stdout();
+            run_operation_command(args.command, &paths, &mut stdout.lock()).await
+        }
     }
+}
+
+async fn run_operation_command<W: Write>(
+    command: OperationCommand,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    let config = load_config(paths)?;
+    let shell =
+        Shell::resolve(config.shell.clone()).context("could not resolve configured shell")?;
+    let tools = ToolRegistry::builtins(shell).context("could not build tool registry")?;
+
+    match command {
+        OperationCommand::Plan {
+            session,
+            operation_id,
+        } => {
+            let (_, restored) = DurableSession::inspect_restored(paths.data_dir(), session)?;
+            let operation = restored
+                .operation_details
+                .get(&operation_id)
+                .with_context(|| format!("operation {operation_id} is not in session {session}"))?;
+            let actions = plan_recovery(operation, &tools)?;
+            write_recovery_plan(output, session, operation, &actions)
+        }
+        OperationCommand::Resume {
+            session,
+            operation_id,
+        } => {
+            execute_recovery_command(
+                RuntimeCommand::ResumeOperation {
+                    session_id: session,
+                    operation_id,
+                },
+                paths,
+                &config,
+                &tools,
+                output,
+            )
+            .await
+        }
+    }
+}
+
+async fn execute_recovery_command<W: Write>(
+    command: RuntimeCommand,
+    paths: &XanaPaths,
+    config: &XanaConfig,
+    tools: &ToolRegistry,
+    output: &mut W,
+) -> Result<()> {
+    match command {
+        RuntimeCommand::ResumeOperation {
+            session_id,
+            operation_id,
+        } => {
+            let (mut durable, _) = DurableSession::resume(paths.data_dir(), session_id)?;
+            let operation = durable.restored_operation(operation_id).with_context(|| {
+                format!("operation {operation_id} is not in session {session_id}")
+            })?;
+            let policy = PermissionPolicy::new(
+                config.permission_mode.into(),
+                config.permission_rules.clone(),
+                durable.workspace_root(),
+            )
+            .context("could not resolve current recovery permission policy")?;
+            let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+            let (permissions, broker) =
+                PermissionBroker::spawn_for_durable_runtime(policy, true, events);
+            let actions = execute_recovery(
+                &mut durable,
+                operation_id,
+                tools,
+                &permissions,
+                &mut event_receiver,
+                |request| terminal::prompt_permission_decision(request).map_err(Into::into),
+            )
+            .await?;
+            permissions.shutdown();
+            let _ = broker.await;
+            write_recovery_plan(output, session_id, &operation, &actions)
+        }
+        RuntimeCommand::SubmitTurn { .. }
+        | RuntimeCommand::ClearConversation
+        | RuntimeCommand::DecidePermission { .. }
+        | RuntimeCommand::Shutdown => {
+            anyhow::bail!("the explicit recovery controller accepts only ResumeOperation")
+        }
+    }
+}
+
+fn write_recovery_plan<W: Write>(
+    output: &mut W,
+    session_id: crate::identity::SessionId,
+    operation: &RestoredOperation,
+    actions: &[RecoveryAction],
+) -> Result<()> {
+    writeln!(output, "session: {session_id}")?;
+    writeln!(output, "operation: {}", operation.operation_id)?;
+    writeln!(output, "thread: {}", operation.thread_id)?;
+    writeln!(output, "input entry: {}", operation.input_entry_id)?;
+    if operation.step_order.is_empty() {
+        writeln!(output, "steps: none committed")?;
+    } else {
+        let steps = operation
+            .step_order
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        writeln!(output, "steps: {steps}")?;
+    }
+    for action in actions {
+        match action {
+            RecoveryAction::AlreadyCompleted { result_id } => {
+                writeln!(output, "already completed: result {result_id}")?
+            }
+            RecoveryAction::ReplayExactInvocation { invocation_id } => {
+                writeln!(output, "replay after current permission: {invocation_id}")?
+            }
+            RecoveryAction::RecordInterruption {
+                invocation_id,
+                result_id,
+                reason,
+            } => writeln!(
+                output,
+                "record interruption: invocation {invocation_id}, result {result_id}, reason {reason:?}"
+            )?,
+            RecoveryAction::ContinueWithNextInvocation => {
+                writeln!(output, "continue in original call order")?
+            }
+            RecoveryAction::FinishOperation => writeln!(output, "finish operation")?,
+        }
+    }
+    Ok(())
 }
 
 fn load_config(paths: &XanaPaths) -> Result<XanaConfig> {

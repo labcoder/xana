@@ -46,6 +46,8 @@ uuid_id!(ArtifactId);
 uuid_id!(ContextId);
 uuid_id!(ContextViewId);
 uuid_id!(PrincipalId);
+uuid_id!(ToolResultId);
+uuid_id!(NamedValueId);
 
 #[cfg(test)]
 mod tests {

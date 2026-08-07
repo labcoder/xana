@@ -70,6 +70,8 @@ pub(crate) enum Command {
     Config(ConfigArgs),
     /// Inspect durable sessions without entering chat.
     Session(SessionArgs),
+    /// Inspect or explicitly reconcile interrupted operations.
+    Operation(OperationArgs),
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -135,6 +137,28 @@ pub(crate) struct SessionArgs {
 pub(crate) enum SessionCommand {
     /// Print bounded metadata without conversation content.
     Inspect { session_id: SessionId },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct OperationArgs {
+    #[command(subcommand)]
+    pub(crate) command: OperationCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum OperationCommand {
+    /// Render a read-only recovery plan without arguments.
+    Plan {
+        #[arg(long)]
+        session: SessionId,
+        operation_id: crate::identity::OperationId,
+    },
+    /// Explicitly reconcile one unfinished operation.
+    Resume {
+        #[arg(long)]
+        session: SessionId,
+        operation_id: crate::identity::OperationId,
+    },
 }
 
 #[cfg(test)]
@@ -246,6 +270,24 @@ mod tests {
                 command: SessionCommand::Inspect { session_id: id },
             }))
         );
+    }
+
+    #[test]
+    fn parses_operation_plan_and_resume() {
+        let session_id = SessionId::new();
+        let operation_id = crate::identity::OperationId::new();
+        for action in ["plan", "resume"] {
+            let parsed = Cli::try_parse_from([
+                "xana",
+                "operation",
+                action,
+                "--session",
+                &session_id.to_string(),
+                &operation_id.to_string(),
+            ])
+            .expect("operation command");
+            assert!(matches!(parsed.command, Some(Command::Operation(_))));
+        }
     }
 
     #[test]

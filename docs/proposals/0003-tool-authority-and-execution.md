@@ -19,7 +19,7 @@ of its audit facts is implemented through historical
 Proposed for persistent grants, invocation intent, general execution backends,
 hooks, remote controllers, and containment.
 
-The narrow invocation-intent and explicit tool-recovery subset is accepted by
+The narrow invocation-intent and explicit tool-recovery subset is implemented through
 [Proposal 0013](0013-crash-recoverable-tool-operations.md). This proposal
 remains Proposed for the broader execution-backend and containment design.
 

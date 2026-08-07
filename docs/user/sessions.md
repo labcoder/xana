@@ -23,6 +23,7 @@ Sessions and artifacts use Xana's durable data category:
 ```text
 data/
   sessions/<session-uuid>.jsonl
+  sessions/<session-uuid>.jsonl.lock
   artifacts/<64-character-blake3-hex>
 ```
 
@@ -33,8 +34,9 @@ Every compact JSONL envelope has format version `1`, a unique record id, the
 session id, and one typed record. Conversation entries are immutable and name
 an optional parent; a separate thread-head record selects the visible branch.
 `/clear` moves that head to empty and does not erase earlier records. Operation
-states, permission audits, artifacts, contexts, and views are distinct record
-kinds and never enter model history automatically.
+acceptance, steps, invocation intents/results, states, permission audits,
+recovery decisions, named values, artifacts, contexts, and views are distinct
+record kinds and never enter model history automatically.
 
 Each logical artifact has its own id, media type, byte length, and owner. Its
 bytes use a shared BLAKE3 content path. Existing content is reused only after
@@ -66,6 +68,17 @@ verified tail before opening for append. A complete JSON object without its
 final newline is treated as an uncommitted tail. Malformed newline-terminated
 interior data is visible corruption and is never skipped.
 
+The session's companion `.lock` file is retained and locked only while a
+writer is active. It prevents a second Xana process from opening the same
+session for chat or recovery at the same time. Read-only inspection remains
+available. A lock is released by the operating system when its process exits;
+the empty companion file itself is not evidence that Xana is running.
+
+An unfinished intent does not prove that its effect did not happen. Normal
+`--resume` restores and reports it without executing. Use the separate,
+explicit workflow in [Operation recovery](operations.md) to inspect or
+reconcile it.
+
 Current load limits are 256 KiB per record, 10,000 records, and 16 MiB per
 session. Artifact registrations accept at most 4 MiB. Root `AGENTS.md` input is
 at most 64 KiB and its automatic view is bounded independently to 16 KiB and
@@ -74,11 +87,12 @@ at most 64 KiB and its automatic view is bounded independently to 16 KiB and
 ## Backup expectations and limits
 
 Stop Xana before copying a session and its referenced `artifacts/` directory.
-The runtime owns one writer, but there is no cross-process lock or multi-writer
-coordination. Keep the JSONL and artifacts together; copying only the session
-metadata can leave context references unreadable.
+The runtime owns one writer and rejects a second writer through the companion
+lock. Keep the JSONL, its lock companion, and artifacts together; copying only
+the session metadata can leave context references unreadable.
 
 There is no session deletion, garbage collection, automatic latest-session
 selection, portable-workspace rewrite, durable session grant, invocation
-replay, or database migration tool yet. Unknown future record versions and
-artifact hash mismatches fail visibly.
+auto-replay, or database migration tool yet. Explicit conservative operation
+recovery is described separately. Unknown future record versions and artifact
+hash mismatches fail visibly.

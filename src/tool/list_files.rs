@@ -218,6 +218,7 @@ impl Tool for ListFiles {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "list_files",
+            contract_version: crate::operation::TOOL_CONTRACT_VERSION,
             description: "List one directory beneath the workspace as sorted JSON",
             parameters: json!({
                 "type": "object",

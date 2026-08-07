@@ -18,6 +18,7 @@ impl Tool for Echo {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "echo",
+            contract_version: 1,
             description: "Return a fixed test value",
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Read,
@@ -51,6 +52,7 @@ impl Tool for AlwaysFails {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "always_fails",
+            contract_version: 1,
             description: "Return a fixed test failure",
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::External,
@@ -87,6 +89,7 @@ impl Tool for CountedDefinition {
         self.calls.fetch_add(1, Ordering::SeqCst);
         ToolDefinition {
             name: "counted",
+            contract_version: 1,
             description: "Prove definitions are cached",
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Read,
@@ -307,6 +310,7 @@ impl Tool for FakeEffect {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "fake_effect",
+            contract_version: 1,
             description: "Test the unified permission boundary",
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Write,

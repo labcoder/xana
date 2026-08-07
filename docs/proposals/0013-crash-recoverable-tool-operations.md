@@ -1,17 +1,17 @@
 # Crash-recoverable tool operations
 
 > Audience: Contributors and coding agents
-> Authority: Prescriptive
-> Status: Accepted
+> Authority: None
+> Status: Implemented
 
 ## Context
 
-Durable sessions can currently expose an operation that was running at process
-exit, but cannot distinguish a tool that never became eligible from one whose
-effect happened before its result record. This proposal accepts the first
-write-ahead invocation and explicit recovery boundary without accepting
-automatic replay, parallel effect batches, distributed transactions, or a
-durable compute heap from Proposals 0003 and 0004.
+Durable sessions previously exposed an operation that was running at process
+exit without distinguishing a tool that never became eligible from one whose
+effect happened before its result record. This historical proposal accepted
+the implemented write-ahead invocation and explicit recovery boundary without
+accepting automatic replay, parallel effect batches, distributed transactions,
+or a durable compute heap from Proposals 0003 and 0004.
 
 ## Accepted records and identities
 
@@ -102,4 +102,3 @@ This proposal excludes automatic retries, background recovery, parallel effect
 batches, generalized idempotency, session portability, multi-process writers,
 distributed transactions, power-loss durability, and containment. Replayed
 tools still use Xana's ordinary host permissions.
-

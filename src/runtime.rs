@@ -9,12 +9,13 @@ mod protocol;
 pub(crate) use protocol::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand};
 
 use crate::{
-    agent::{Agent, ConversationCommit, ConversationCommitSender},
+    agent::{Agent, ConversationCommit, ConversationCommitSender, DurableTurnServices},
     identity::OperationId,
     message::{Message, Role},
+    operation::{CrashSite, DurableOperationCommand, DurableOperationSender, SuspensionReason},
     permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
     prompt::{PromptAssembler, PromptSnapshot},
-    session::DurableSession,
+    session::{DurableSession, SessionRecord},
 };
 use std::{error::Error, fmt, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -38,6 +39,8 @@ struct Runtime {
     completion_sender: mpsc::UnboundedSender<OperationCompletion>,
     conversation_commits: mpsc::UnboundedReceiver<ConversationCommit>,
     conversation_committer: ConversationCommitSender,
+    durable_operations: mpsc::UnboundedReceiver<DurableOperationCommand>,
+    durable_operation_sender: DurableOperationSender,
     session: Option<DurableSession>,
     prompt_assembler: Option<PromptAssembler>,
 }
@@ -92,8 +95,16 @@ impl RuntimeHandle {
         let (broker_event_sender, broker_event_receiver) = mpsc::unbounded_channel();
         let (completion_sender, completion_receiver) = mpsc::unbounded_channel();
         let (conversation_committer, conversation_commits) = ConversationCommitSender::channel();
-        let (permissions, _broker_task) =
-            PermissionBroker::spawn(policy, controller_present, broker_event_sender);
+        let (durable_operation_sender, durable_operations) = DurableOperationSender::channel();
+        let (permissions, _broker_task) = if session.is_some() {
+            PermissionBroker::spawn_for_durable_runtime(
+                policy,
+                controller_present,
+                broker_event_sender,
+            )
+        } else {
+            PermissionBroker::spawn(policy, controller_present, broker_event_sender)
+        };
         let runtime = Runtime {
             agent: Arc::new(agent),
             history,
@@ -106,6 +117,8 @@ impl RuntimeHandle {
             completion_sender,
             conversation_commits,
             conversation_committer,
+            durable_operations,
+            durable_operation_sender,
             session,
             prompt_assembler,
         };
@@ -158,6 +171,11 @@ impl Runtime {
                         self.handle_conversation_commit(commit);
                     }
                 }
+                command = self.durable_operations.recv() => {
+                    if let Some(command) = command {
+                        self.handle_durable_operation(command);
+                    }
+                }
             }
         }
     }
@@ -190,6 +208,7 @@ impl Runtime {
                 let events = self.events.clone();
                 let completions = self.completion_sender.clone();
                 let conversation_committer = self.conversation_committer.clone();
+                let durable_operation_sender = self.durable_operation_sender.clone();
                 let prompt = match self.prepare_turn_prompt() {
                     Ok(prompt) => prompt,
                     Err(reason) => {
@@ -198,24 +217,43 @@ impl Runtime {
                     }
                 };
                 let user_message = Message::text(Role::User, input);
-                if let Some(session) = &mut self.session
-                    && let Err(error) = session.append_message(user_message.clone())
-                {
-                    self.emit(AgentEvent::CommandRejected {
-                        reason: format!("could not commit user conversation entry: {error:#}"),
-                    });
-                    return false;
-                }
+                let input_entry_id = if let Some(session) = &mut self.session {
+                    match session.append_message(user_message.clone()) {
+                        Ok(entry_id) => Some(entry_id),
+                        Err(error) => {
+                            self.emit(AgentEvent::CommandRejected {
+                                reason: format!(
+                                    "could not commit user conversation entry: {error:#}"
+                                ),
+                            });
+                            return false;
+                        }
+                    }
+                } else {
+                    None
+                };
                 self.history.push(user_message);
                 let mut history = self.history.clone();
-                if let Some(session) = &mut self.session
-                    && let Err(error) =
-                        session.append_operation_state(operation_id, OperationState::Running)
-                {
-                    self.emit(AgentEvent::CommandRejected {
-                        reason: format!("could not commit operation start: {error:#}"),
-                    });
-                    return false;
+                if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
+                    if let Err(error) = session.append_record(SessionRecord::OperationAccepted {
+                        operation_id,
+                        thread_id: session.thread_id(),
+                        input_entry_id,
+                    }) {
+                        self.emit(AgentEvent::CommandRejected {
+                            reason: format!("could not commit operation acceptance: {error:#}"),
+                        });
+                        return false;
+                    }
+                    if let Err(error) = self
+                        .agent
+                        .observe_boundary(CrashSite::AfterOperationAccepted)
+                    {
+                        self.emit(AgentEvent::CommandRejected {
+                            reason: format!("operation stopped at accepted boundary: {error:#}"),
+                        });
+                        return false;
+                    }
                 }
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id,
@@ -232,7 +270,10 @@ impl Runtime {
                                     &prompt,
                                     permissions,
                                     events,
-                                    Some(conversation_committer),
+                                    Some(DurableTurnServices::new(
+                                        conversation_committer,
+                                        durable_operation_sender,
+                                    )),
                                 )
                                 .await
                         }
@@ -276,6 +317,12 @@ impl Runtime {
                     self.history.clear();
                     self.emit(AgentEvent::ConversationCleared);
                 }
+            }
+            RuntimeCommand::ResumeOperation { .. } => {
+                self.emit(AgentEvent::CommandRejected {
+                    reason: "operation recovery is owned by the explicit `xana operation resume` controller"
+                        .to_owned(),
+                });
             }
             RuntimeCommand::DecidePermission {
                 operation_id,
@@ -340,10 +387,12 @@ impl Runtime {
         match completion.result {
             Ok(message) => {
                 self.history = completion.history;
-                if !self.commit_operation_state(
-                    completion.operation_id,
-                    OperationState::Finished(OperationOutcome::Completed),
-                ) {
+                if active.progress_committed
+                    && !self.commit_operation_finished(
+                        completion.operation_id,
+                        OperationOutcome::Completed,
+                    )
+                {
                     return;
                 }
                 self.emit(AgentEvent::AssistantMessage {
@@ -357,10 +406,37 @@ impl Runtime {
             }
             Err(reason) => {
                 self.history = completion.history;
-                if !self.commit_operation_state(
-                    completion.operation_id,
-                    OperationState::Finished(OperationOutcome::Failed),
-                ) {
+                if active.progress_committed && self.operation_has_pending(completion.operation_id)
+                {
+                    if let Some(session) = &mut self.session
+                        && let Err(error) =
+                            session.append_record(SessionRecord::OperationSuspended {
+                                operation_id: completion.operation_id,
+                                reason: SuspensionReason::ProcessInterrupted,
+                            })
+                    {
+                        self.emit(AgentEvent::OperationFailed {
+                            operation_id: completion.operation_id,
+                            reason: format!("could not commit operation suspension: {error:#}"),
+                        });
+                        return;
+                    }
+                    self.emit(AgentEvent::OperationFailed {
+                        operation_id: completion.operation_id,
+                        reason,
+                    });
+                    self.emit(AgentEvent::OperationStateChanged {
+                        operation_id: completion.operation_id,
+                        state: OperationState::Suspended,
+                    });
+                    return;
+                }
+                if active.progress_committed
+                    && !self.commit_operation_finished(
+                        completion.operation_id,
+                        OperationOutcome::Failed,
+                    )
+                {
                     return;
                 }
                 self.emit(AgentEvent::OperationFailed {
@@ -378,10 +454,17 @@ impl Runtime {
     fn interrupt_active(&mut self) {
         if let Some(active) = self.active.take() {
             active.task.abort();
-            if !self.commit_operation_state(
-                active.operation_id,
-                OperationState::Finished(OperationOutcome::Interrupted),
-            ) {
+            if active.progress_committed {
+                if let Some(session) = &mut self.session {
+                    let _ = session.append_record(SessionRecord::OperationSuspended {
+                        operation_id: active.operation_id,
+                        reason: SuspensionReason::ProcessInterrupted,
+                    });
+                }
+                self.emit(AgentEvent::OperationStateChanged {
+                    operation_id: active.operation_id,
+                    state: OperationState::Suspended,
+                });
                 return;
             }
             self.emit(AgentEvent::OperationStateChanged {
@@ -417,7 +500,22 @@ impl Runtime {
             AgentEvent::OperationStateChanged {
                 operation_id,
                 state,
-            } => self.commit_operation_state(*operation_id, *state),
+            } => {
+                if *state == OperationState::Suspended
+                    && let Some(session) = &mut self.session
+                    && let Err(error) = session.append_record(SessionRecord::OperationSuspended {
+                        operation_id: *operation_id,
+                        reason: SuspensionReason::Permission,
+                    })
+                {
+                    self.emit(AgentEvent::OperationFailed {
+                        operation_id: *operation_id,
+                        reason: format!("could not commit operation suspension: {error:#}"),
+                    });
+                    return;
+                }
+                true
+            }
             AgentEvent::PermissionAudited { fact } => {
                 if let Some(session) = &mut self.session {
                     if let Err(error) = session.append_audit(fact.clone()) {
@@ -453,10 +551,9 @@ impl Runtime {
         } else if let Some(session) = &mut self.session {
             session
                 .append_message(commit.message)
-                .map(|_| ())
                 .map_err(|error| format!("could not commit conversation entry: {error:#}"))
         } else {
-            Ok(())
+            Err("conversation commit has no durable session".to_owned())
         };
 
         if result.is_ok()
@@ -471,17 +568,71 @@ impl Runtime {
         let _ = commit.acknowledged.send(result);
     }
 
-    fn commit_operation_state(&mut self, operation_id: OperationId, state: OperationState) -> bool {
+    fn handle_durable_operation(&mut self, command: DurableOperationCommand) {
+        match command {
+            DurableOperationCommand::Append {
+                record,
+                event,
+                acknowledged,
+            } => {
+                let result = self
+                    .session
+                    .as_mut()
+                    .ok_or_else(|| "durable operation has no session writer".to_owned())
+                    .and_then(|session| {
+                        session.append_record(*record).map_err(|error| {
+                            format!("could not append operation record: {error:#}")
+                        })
+                    });
+                if result.is_ok()
+                    && let Some(event) = event
+                {
+                    self.emit(*event);
+                }
+                let _ = acknowledged.send(result);
+            }
+            DurableOperationCommand::StoreJson {
+                value,
+                acknowledged,
+            } => {
+                let result = self
+                    .session
+                    .as_mut()
+                    .ok_or_else(|| "durable value has no session writer".to_owned())
+                    .and_then(|session| {
+                        session
+                            .store_json_value(value)
+                            .map_err(|error| format!("could not store durable value: {error:#}"))
+                    });
+                let _ = acknowledged.send(result);
+            }
+        }
+    }
+
+    fn commit_operation_finished(
+        &mut self,
+        operation_id: OperationId,
+        outcome: OperationOutcome,
+    ) -> bool {
         if let Some(session) = &mut self.session
-            && let Err(error) = session.append_operation_state(operation_id, state)
+            && let Err(error) = session.append_record(SessionRecord::OperationFinished {
+                operation_id,
+                outcome,
+            })
         {
             self.emit(AgentEvent::OperationFailed {
                 operation_id,
-                reason: format!("could not commit operation state: {error:#}"),
+                reason: format!("could not commit operation finish: {error:#}"),
             });
             return false;
         }
         true
+    }
+
+    fn operation_has_pending(&self, operation_id: OperationId) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.operation_has_pending(operation_id))
     }
 }
 

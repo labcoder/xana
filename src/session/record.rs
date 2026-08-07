@@ -3,6 +3,10 @@ use crate::{
     context::persisted::{ContextRecord, ContextViewRecord},
     identity::*,
     message::Message,
+    operation::{
+        InvocationIntent, InvocationResultRecord, NamedValueRecord, RecoveryDecision,
+        SuspensionReason,
+    },
     permission::PermissionAuditFact,
     runtime::OperationState,
 };
@@ -65,6 +69,38 @@ pub(crate) enum SessionRecord {
         name: String,
         context_id: ContextId,
         version: u64,
+    },
+    OperationAccepted {
+        operation_id: OperationId,
+        thread_id: ThreadId,
+        input_entry_id: ConversationEntryId,
+    },
+    StepStarted {
+        operation_id: OperationId,
+        step_id: StepId,
+        assistant_entry_id: ConversationEntryId,
+    },
+    InvocationIntentAppended {
+        intent: InvocationIntent,
+    },
+    InvocationResultAppended {
+        result: InvocationResultRecord,
+    },
+    OperationSuspended {
+        operation_id: OperationId,
+        reason: SuspensionReason,
+    },
+    OperationFinished {
+        operation_id: OperationId,
+        outcome: crate::runtime::OperationOutcome,
+    },
+    RecoveryDecisionAppended {
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+        decision: RecoveryDecision,
+    },
+    NamedValueSet {
+        value: NamedValueRecord,
     },
 }
 

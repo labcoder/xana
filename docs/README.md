@@ -14,6 +14,8 @@ engineering contracts used to change it.
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
   immutable artifacts, inspection, corruption handling, and backup limits.
+- [Operation recovery](user/operations.md) explains read-only recovery plans,
+  explicit reconciliation, replay safety, and unknown effect outcomes.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 
