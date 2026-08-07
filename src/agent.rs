@@ -1,19 +1,20 @@
 //! Headless, bounded asynchronous agent loop.
 //!
 //! The agent receives owned provider, prompt, tool, workspace, and limit
-//! values. Runtime services provide operation identity, approvals, and passive
+//! values. Runtime services provide operation identity, permissions, and passive
 //! events; no frontend or process-global state enters here.
 
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
     message::{ContentBlock, Message, ToolCall},
+    permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
-    runtime::{AgentEvent, ProvisionalApprovalCoordinator},
+    runtime::AgentEvent,
     tool::{ToolContext, ToolDefinition, ToolRegistry},
 };
 use anyhow::{Result, bail};
 use futures::future::BoxFuture;
-use std::{error::Error, fmt, path::PathBuf, sync::Arc};
+use std::{error::Error, fmt, path::PathBuf};
 use tokio::sync::mpsc;
 
 pub(crate) trait ChatTransport: Send + Sync {
@@ -80,7 +81,7 @@ impl Agent {
         &self,
         operation_id: OperationId,
         messages: &mut Vec<Message>,
-        approvals: Arc<ProvisionalApprovalCoordinator>,
+        permissions: PermissionBrokerHandle,
         events: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<Message> {
         let definitions = self.tools.definitions();
@@ -108,13 +109,13 @@ impl Agent {
                 let invocation_id = ToolInvocationId::new();
                 let result = self
                     .tools
-                    .execute(
+                    .invoke(
                         &call,
                         ToolContext {
                             workspace_root: &self.workspace_root,
                             operation_id,
                             invocation_id,
-                            approvals: &approvals,
+                            permissions: &permissions,
                         },
                     )
                     .await;

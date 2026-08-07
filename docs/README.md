@@ -10,6 +10,8 @@ engineering contracts used to change it.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, input budgets, and instruction
   boundaries.
+- [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
+  session grants, controller decisions, and the lack of containment.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 

@@ -94,12 +94,46 @@ fn future_version_is_reported_before_future_fields() {
 }
 
 #[test]
-fn permission_modes_other_than_allow_are_rejected() {
-    let input = MINIMAL.replace("permission_mode = \"allow\"", "permission_mode = \"ask\"");
+fn deny_ask_and_allow_permission_modes_are_accepted() {
+    for (name, expected) in [
+        ("deny", PermissionMode::Deny),
+        ("ask", PermissionMode::Ask),
+        ("allow", PermissionMode::Allow),
+    ] {
+        let input = MINIMAL.replace(
+            "permission_mode = \"allow\"",
+            &format!("permission_mode = {name:?}"),
+        );
+        assert_eq!(parse_ok(&input).permission_mode, expected);
+    }
+}
 
-    let error = parse_error(&input);
+#[test]
+fn permission_rules_decode_and_retain_lexical_workspace_paths() {
+    let input = format!(
+        "{MINIMAL}\n[[permission_rules]]\nid = \"allow-reads\"\ndecision = \"allow\"\neffect = \"read\"\nworkspace = \".\"\n"
+    );
+    let config = parse_ok(&input);
 
-    assert!(matches!(error, ConfigError::Decode(_)));
+    assert_eq!(config.permission_rules.len(), 1);
+    assert_eq!(config.permission_rules[0].id, "allow-reads");
+    assert_eq!(
+        config.permission_rules[0].workspace.as_deref(),
+        Some(std::path::Path::new("."))
+    );
+}
+
+#[test]
+fn invalid_permission_rules_use_a_structured_config_error() {
+    let duplicate = format!(
+        "{MINIMAL}\n[[permission_rules]]\nid = \"same\"\ndecision = \"ask\"\ntool = \"read_file\"\n\n[[permission_rules]]\nid = \"same\"\ndecision = \"deny\"\neffect = \"write\"\n"
+    );
+    let error = parse_error(&duplicate);
+
+    assert!(matches!(
+        error,
+        ConfigError::InvalidPermissionPolicy(PolicyError::DuplicateRuleId(id)) if id == "same"
+    ));
 }
 
 #[test]
@@ -344,6 +378,7 @@ fn initial_config() -> InitialConfig {
         model: "qwen3:1.7b".to_owned(),
         max_tool_rounds: 12,
         shell: crate::shell::ShellConfig::default(),
+        permission_mode: PermissionMode::Ask,
     }
 }
 
@@ -359,12 +394,13 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
             provider_kind: ProviderKind::OpenAiCompat,
             base_url: "http://localhost:11434/v1".to_owned(),
             model: "qwen3:1.7b".to_owned(),
-            permission_mode: PermissionMode::Allow,
+            permission_mode: PermissionMode::Ask,
+            permission_rules: Vec::new(),
             shell: crate::shell::ShellConfig::default(),
             max_tool_rounds: 12,
         }
     );
-    assert!(rendered.contains("permission_mode = \"allow\""));
+    assert!(rendered.contains("permission_mode = \"ask\""));
     assert!(rendered.contains("[shell]"));
     assert!(rendered.contains("kind = \"platform\""));
 }

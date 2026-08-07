@@ -1,11 +1,12 @@
 //! Terminal client for Xana's foreground runtime protocol.
 //!
-//! This module owns readline input, approval prompts, and human rendering. It
+//! This module owns readline input, permission prompts, and human rendering. It
 //! does not own conversation history or call providers and tools directly.
 
 use crate::{
     identity::{OperationId, ToolInvocationId},
     message::{ContentBlock, Message},
+    permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
 };
 use anyhow::{Context, Result, bail};
@@ -93,10 +94,18 @@ impl<W: Write> EventRenderer<W> {
                 write!(self.output, "{text}")?;
                 self.output.flush()?;
             }
-            AgentEvent::ProvisionalApprovalRequested { action, .. } => {
+            AgentEvent::PermissionRequested { request } => {
                 self.finish_stream()?;
-                writeln!(self.output, "xana> approval required:\n{action}")?;
+                writeln!(
+                    self.output,
+                    "xana> permission required\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
+                    request.tool_name,
+                    request.effect_class,
+                    display_scope(&request.scope),
+                    request.final_arguments
+                )?;
             }
+            AgentEvent::PermissionAudited { .. } => {}
             AgentEvent::ToolFinished { .. } => {
                 self.finish_stream()?;
             }
@@ -209,13 +218,10 @@ async fn render_operation<W: Write>(
         renderer.render(&event)?;
 
         match event {
-            AgentEvent::ProvisionalApprovalRequested {
-                operation_id: requested_operation,
-                invocation_id,
-                ..
-            } if requested_operation == operation_id => {
-                let approved = confirm_once()?;
-                send_approval(runtime, operation_id, invocation_id, approved).await?;
+            AgentEvent::PermissionRequested { request } if request.operation_id == operation_id => {
+                let decision = prompt_permission_decision(&request)?;
+                send_permission_decision(runtime, operation_id, request.invocation_id, decision)
+                    .await?;
             }
             AgentEvent::OperationStateChanged {
                 operation_id: finished_operation,
@@ -227,43 +233,67 @@ async fn render_operation<W: Write>(
     }
 }
 
-async fn send_approval(
+async fn send_permission_decision(
     runtime: &RuntimeHandle,
     operation_id: OperationId,
     invocation_id: ToolInvocationId,
-    approved: bool,
+    decision: ControllerDecision,
 ) -> Result<()> {
     runtime
-        .send(RuntimeCommand::DecideProvisionalApproval {
+        .send(RuntimeCommand::DecidePermission {
             operation_id,
             invocation_id,
-            approved,
+            decision,
         })
         .await?;
     Ok(())
 }
 
-fn confirm_once() -> io::Result<bool> {
+fn prompt_permission_decision(request: &PermissionRequest) -> io::Result<ControllerDecision> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let stdout = anstream::stdout();
     let mut output = stdout.lock();
-    confirm_with_io(&mut input, &mut output)
+    permission_decision_with_io(request, &mut input, &mut output)
 }
 
-fn confirm_with_io<R: BufRead, W: Write>(input: &mut R, output: &mut W) -> io::Result<bool> {
-    write!(output, "approve once? [y/N] ")?;
+fn permission_decision_with_io<R: BufRead, W: Write>(
+    request: &PermissionRequest,
+    input: &mut R,
+    output: &mut W,
+) -> io::Result<ControllerDecision> {
+    write!(output, "decision [d=deny/o=once/s=session; default d]: ")?;
     output.flush()?;
 
     let mut answer = String::new();
     if input.read_line(&mut answer)? == 0 {
-        return Ok(false);
+        return Ok(ControllerDecision::Deny);
     }
 
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
+    Ok(match answer.trim().to_ascii_lowercase().as_str() {
+        "o" | "once" | "y" | "yes" => ControllerDecision::AllowOnce,
+        "s" | "session" => ControllerDecision::AllowSession {
+            scope: request.scope.clone(),
+        },
+        _ => ControllerDecision::Deny,
+    })
+}
+
+fn display_scope(scope: &PermissionScope) -> String {
+    match scope {
+        PermissionScope::WorkspacePath { canonical_path } => {
+            format!("workspace path {}", canonical_path.display())
+        }
+        PermissionScope::Command {
+            shell,
+            canonical_cwd,
+            command,
+        } => format!(
+            "command {command:?} via {shell} in {}",
+            canonical_cwd.display()
+        ),
+        PermissionScope::Unscoped => "unscoped".to_owned(),
+    }
 }
 
 #[cfg(test)]
@@ -321,15 +351,34 @@ mod tests {
     }
 
     #[test]
-    fn approval_defaults_to_denied_and_requires_explicit_yes() {
-        for (answer, expected) in [("y\n", true), ("YES\r\n", true), ("\n", false), ("", false)] {
+    fn permission_prompt_offers_once_session_and_fail_closed_default() {
+        let request = PermissionRequest {
+            operation_id: OperationId::new(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "read_file".to_owned(),
+            effect_class: crate::tool::EffectClass::Read,
+            final_arguments: serde_json::json!({"path": "README.md"}),
+            scope: PermissionScope::Unscoped,
+        };
+        for (answer, expected) in [
+            ("o\n", ControllerDecision::AllowOnce),
+            (
+                "session\r\n",
+                ControllerDecision::AllowSession {
+                    scope: PermissionScope::Unscoped,
+                },
+            ),
+            ("\n", ControllerDecision::Deny),
+            ("", ControllerDecision::Deny),
+        ] {
             let mut input = io::Cursor::new(answer.as_bytes());
             let mut output = Vec::new();
             assert_eq!(
-                confirm_with_io(&mut input, &mut output).expect("approval answer"),
+                permission_decision_with_io(&request, &mut input, &mut output)
+                    .expect("permission answer"),
                 expected
             );
-            assert_eq!(output, b"approve once? [y/N] ");
+            assert_eq!(output, b"decision [d=deny/o=once/s=session; default d]: ");
         }
     }
 }

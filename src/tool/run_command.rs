@@ -1,8 +1,10 @@
-//! Bounded local command execution behind the temporary approval protocol.
+//! Bounded local command execution behind the shared permission planner.
 
-use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition, workspace_path};
+use super::{
+    EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition, workspace_path,
+};
 use crate::{
-    approval::{ApprovalError, RequestedAction},
+    permission::PermissionScope,
     shell::{ProcessPlan, Shell, display_argv},
 };
 use futures::future::BoxFuture;
@@ -13,12 +15,18 @@ use tokio::process::Command;
 
 const MAX_STREAM_BYTES: usize = 32 * 1024;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RunCommandArgs {
     command: String,
     #[serde(default = "default_cwd")]
     cwd: String,
+}
+
+struct RunCommandPlan {
+    args: RunCommandArgs,
+    process: ProcessPlan,
+    canonical_cwd: PathBuf,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -47,11 +55,6 @@ enum RunCommandError {
         requested: String,
         resolved: PathBuf,
     },
-    Approval(ApprovalError),
-    Declined {
-        command: String,
-        cwd: PathBuf,
-    },
     Process {
         plan: ProcessPlan,
         source: io::Error,
@@ -64,11 +67,11 @@ impl RunCommand {
         Self { shell }
     }
 
-    async fn execute_inner(
+    fn plan_inner(
         &self,
         arguments: &Value,
-        context: ToolContext<'_>,
-    ) -> Result<CommandResult, RunCommandError> {
+        workspace_root: &std::path::Path,
+    ) -> Result<RunCommandPlan, RunCommandError> {
         let args: RunCommandArgs =
             serde_json::from_value(arguments.clone()).map_err(RunCommandError::InvalidArguments)?;
 
@@ -76,13 +79,11 @@ impl RunCommand {
             return Err(RunCommandError::BlankCommand);
         }
 
-        let resolved_cwd =
-            workspace_path::resolve_existing(args.cwd.clone(), context.workspace_root).map_err(
-                |source| RunCommandError::InvalidCwd {
-                    requested: args.cwd,
-                    source,
-                },
-            )?;
+        let resolved_cwd = workspace_path::resolve_existing(args.cwd.clone(), workspace_root)
+            .map_err(|source| RunCommandError::InvalidCwd {
+                requested: args.cwd.clone(),
+                source,
+            })?;
         if !resolved_cwd.canonical_path.is_dir() {
             return Err(RunCommandError::CwdNotDirectory {
                 requested: resolved_cwd.requested_path,
@@ -90,37 +91,25 @@ impl RunCommand {
             });
         }
 
-        let plan = self.shell.plan(&args.command);
-        let action = RequestedAction {
-            tool_name: "run_command",
-            shell: self.shell.display_name(),
-            command: args.command,
-            argv: display_argv(&plan),
-            cwd: resolved_cwd.canonical_path,
-        };
+        let process = self.shell.plan(&args.command);
+        Ok(RunCommandPlan {
+            args,
+            process,
+            canonical_cwd: resolved_cwd.canonical_path,
+        })
+    }
 
-        let approved = context
-            .approvals
-            .request(context.operation_id, context.invocation_id, &action)
-            .await
-            .map_err(RunCommandError::Approval)?;
-        if !approved {
-            return Err(RunCommandError::Declined {
-                command: action.command,
-                cwd: action.cwd,
-            });
-        }
-
-        let mut command = Command::new(&plan.program);
+    async fn execute_inner(&self, plan: &RunCommandPlan) -> Result<CommandResult, RunCommandError> {
+        let mut command = Command::new(&plan.process.program);
         command
-            .args(&plan.args)
-            .current_dir(&action.cwd)
+            .args(&plan.process.args)
+            .current_dir(&plan.canonical_cwd)
             .kill_on_drop(true);
         let output = command
             .output()
             .await
             .map_err(|source| RunCommandError::Process {
-                plan: plan.clone(),
+                plan: plan.process.clone(),
                 source,
             })?;
         let (stdout, stdout_truncated) = bounded_text(&output.stdout, MAX_STREAM_BYTES);
@@ -151,7 +140,7 @@ impl Tool for RunCommand {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
             name: "run_command",
-            description: "Run one command through Xana's configured local shell after explicit per-call approval. The process uses Xana's ordinary host permissions and is not sandboxed.",
+            description: "Run one command through Xana's configured local shell when runtime permission allows it. The process uses Xana's ordinary host permissions and is not sandboxed.",
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -173,14 +162,32 @@ impl Tool for RunCommand {
         }
     }
 
+    fn plan(
+        &self,
+        arguments: &Value,
+        workspace_root: &std::path::Path,
+    ) -> Result<PlannedToolInvocation, String> {
+        let plan = self
+            .plan_inner(arguments, workspace_root)
+            .map_err(|error| error.to_string())?;
+        let final_arguments =
+            serde_json::to_value(&plan.args).map_err(|error| error.to_string())?;
+        let scope = PermissionScope::Command {
+            shell: self.shell.prompt_description(),
+            canonical_cwd: plan.canonical_cwd.clone(),
+            command: plan.args.command.clone(),
+        };
+        Ok(PlannedToolInvocation::new(final_arguments, scope, plan))
+    }
+
     fn execute<'a>(
         &'a self,
-        arguments: &'a Value,
-        context: ToolContext<'a>,
+        planned: &'a PlannedToolInvocation,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
+            let plan = planned.executable::<RunCommandPlan>("run_command")?;
             let result = self
-                .execute_inner(arguments, context)
+                .execute_inner(plan)
                 .await
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&result)
@@ -205,12 +212,6 @@ impl fmt::Display for RunCommandError {
                 "run_command cwd {requested:?} resolves to non-directory {}",
                 resolved.display()
             ),
-            Self::Approval(_) => write!(f, "run_command approval could not be completed"),
-            Self::Declined { command, cwd } => write!(
-                f,
-                "run_command was declined for {command:?} in {}",
-                cwd.display()
-            ),
             Self::Process { plan, source } => {
                 write!(f, "could not execute {}: {source}", display_argv(plan))
             }
@@ -224,9 +225,8 @@ impl Error for RunCommandError {
         match self {
             Self::InvalidArguments(source) | Self::Serialize(source) => Some(source),
             Self::InvalidCwd { source, .. } => Some(source),
-            Self::Approval(source) => Some(source),
             Self::Process { source, .. } => Some(source),
-            Self::BlankCommand | Self::CwdNotDirectory { .. } | Self::Declined { .. } => None,
+            Self::BlankCommand | Self::CwdNotDirectory { .. } => None,
         }
     }
 }

@@ -4,7 +4,10 @@
 //! immutable agent snapshot. It does not read process environment variables or
 //! invent initializer-specific validation.
 
-use crate::shell::{Shell, ShellConfig, ShellError};
+use crate::{
+    permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
+    shell::{Shell, ShellConfig, ShellError},
+};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -30,6 +33,8 @@ struct ConfigDocument {
     default_profile: String,
     permission_mode: PermissionMode,
     #[serde(default)]
+    permission_rules: Vec<PermissionRule>,
+    #[serde(default)]
     shell: ShellConfig,
     providers: BTreeMap<String, ProviderConnection>,
     profiles: BTreeMap<String, AgentProfile>,
@@ -44,7 +49,19 @@ pub(crate) enum ProviderKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PermissionMode {
+    Deny,
+    Ask,
     Allow,
+}
+
+impl From<PermissionMode> for PolicyDecision {
+    fn from(value: PermissionMode) -> Self {
+        match value {
+            PermissionMode::Deny => Self::Deny,
+            PermissionMode::Ask => Self::Ask,
+            PermissionMode::Allow => Self::Allow,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,6 +91,7 @@ pub(crate) struct XanaConfig {
     pub(crate) base_url: String,
     pub(crate) model: String,
     pub(crate) permission_mode: PermissionMode,
+    pub(crate) permission_rules: Vec<PermissionRule>,
     pub(crate) shell: ShellConfig,
     pub(crate) max_tool_rounds: usize,
 }
@@ -85,6 +103,7 @@ pub(crate) struct InitialConfig {
     pub(crate) model: String,
     pub(crate) max_tool_rounds: usize,
     pub(crate) shell: ShellConfig,
+    pub(crate) permission_mode: PermissionMode,
 }
 
 #[derive(Debug)]
@@ -125,6 +144,7 @@ pub(crate) enum ConfigError {
         value: usize,
     },
     InvalidShell(ShellError),
+    InvalidPermissionPolicy(PolicyError),
 }
 
 impl fmt::Display for ConfigError {
@@ -170,6 +190,9 @@ impl fmt::Display for ConfigError {
                 "profile {profile:?} has max_tool_rounds = {value}; expected 1..={MAX_MAX_TOOL_ROUNDS}"
             ),
             Self::InvalidShell(source) => write!(f, "invalid shell configuration: {source}"),
+            Self::InvalidPermissionPolicy(source) => {
+                write!(f, "invalid permission policy: {source}")
+            }
         }
     }
 }
@@ -181,6 +204,7 @@ impl Error for ConfigError {
             Self::Decode(source) => Some(source),
             Self::Encode(source) => Some(source),
             Self::InvalidShell(source) => Some(source),
+            Self::InvalidPermissionPolicy(source) => Some(source),
             Self::LegacyConfigFound { .. }
             | Self::UnsupportedVersion { .. }
             | Self::InvalidName { .. }
@@ -249,6 +273,7 @@ impl XanaConfig {
             model,
             max_tool_rounds,
             shell,
+            permission_mode,
         } = input;
 
         let mut providers = BTreeMap::new();
@@ -273,7 +298,8 @@ impl XanaConfig {
         let document = ConfigDocument {
             version: CONFIG_VERSION,
             default_profile: "default".to_owned(),
-            permission_mode: PermissionMode::Allow,
+            permission_mode,
+            permission_rules: Vec::new(),
             shell,
             providers,
             profiles,
@@ -299,6 +325,8 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
     debug_assert_eq!(document.version, CONFIG_VERSION);
 
     Shell::resolve(document.shell.clone()).map_err(ConfigError::InvalidShell)?;
+    PermissionPolicy::validate_rules(&document.permission_rules)
+        .map_err(ConfigError::InvalidPermissionPolicy)?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
@@ -350,6 +378,7 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         base_url: provider.base_url,
         model: profile.model,
         permission_mode: document.permission_mode,
+        permission_rules: document.permission_rules,
         shell: document.shell,
         max_tool_rounds: profile.max_tool_rounds,
     })

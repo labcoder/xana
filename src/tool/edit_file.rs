@@ -1,20 +1,21 @@
 use super::workspace_path::{WorkspacePathError, resolve_existing};
-use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition};
+use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
+use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::error::Error;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
 const MAX_EDIT_BYTES: usize = 64 * 1024;
 
 pub(crate) struct EditFile;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EditFileArgs {
     path: String,
@@ -107,7 +108,7 @@ impl Error for EditFileError {
     }
 }
 
-fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFileError> {
+fn plan_edit_file(arguments: &Value, workspace_root: &Path) -> Result<EditFilePlan, EditFileError> {
     let args: EditFileArgs =
         serde_json::from_value(arguments.clone()).map_err(EditFileError::InvalidArguments)?;
     let requested_path = args.path.clone();
@@ -123,7 +124,8 @@ fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFil
         });
     }
 
-    let resolved = resolve_existing(args.path, workspace_root).map_err(EditFileError::Path)?;
+    let resolved =
+        resolve_existing(args.path.clone(), workspace_root).map_err(EditFileError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
     let metadata = canonical_path
@@ -144,7 +146,18 @@ fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFil
         });
     }
 
-    let file = File::open(&canonical_path).map_err(|source| EditFileError::Read {
+    Ok(EditFilePlan {
+        args,
+        requested_path,
+        canonical_path,
+    })
+}
+
+fn execute_edit_file(plan: &EditFilePlan) -> Result<String, EditFileError> {
+    let args = &plan.args;
+    let requested_path = plan.requested_path.clone();
+
+    let file = File::open(&plan.canonical_path).map_err(|source| EditFileError::Read {
         requested_path: requested_path.clone(),
         source,
     })?;
@@ -185,12 +198,17 @@ fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFil
         });
     }
 
-    fs::write(&canonical_path, updated.as_bytes()).map_err(|source| EditFileError::Write {
+    fs::write(&plan.canonical_path, updated.as_bytes()).map_err(|source| EditFileError::Write {
         requested_path: requested_path.clone(),
         source,
     })?;
 
     Ok(format!("edited {requested_path:?}"))
+}
+
+#[cfg(test)]
+fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFileError> {
+    execute_edit_file(&plan_edit_file(arguments, workspace_root)?)
 }
 
 impl Tool for EditFile {
@@ -222,15 +240,35 @@ impl Tool for EditFile {
         }
     }
 
+    fn plan(
+        &self,
+        arguments: &Value,
+        workspace_root: &Path,
+    ) -> Result<PlannedToolInvocation, String> {
+        let plan = plan_edit_file(arguments, workspace_root).map_err(|error| error.to_string())?;
+        let final_arguments =
+            serde_json::to_value(&plan.args).map_err(|error| error.to_string())?;
+        let scope = PermissionScope::WorkspacePath {
+            canonical_path: plan.canonical_path.clone(),
+        };
+        Ok(PlannedToolInvocation::new(final_arguments, scope, plan))
+    }
+
     fn execute<'a>(
         &'a self,
-        arguments: &'a Value,
-        context: ToolContext<'a>,
+        planned: &'a PlannedToolInvocation,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            edit_file(arguments, context.workspace_root).map_err(|error| error.to_string())
+            let plan = planned.executable::<EditFilePlan>("edit_file")?;
+            execute_edit_file(plan).map_err(|error| error.to_string())
         })
     }
+}
+
+struct EditFilePlan {
+    args: EditFileArgs,
+    requested_path: String,
+    canonical_path: PathBuf,
 }
 
 #[cfg(test)]

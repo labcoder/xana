@@ -59,7 +59,8 @@ fn noninteractive_init_creates_once_and_config_check_loads_it() {
         "http://localhost:11434/v1",
         "--model",
         "qwen3:1.7b",
-        "--accept-automatic-tools",
+        "--permission-mode",
+        "ask",
     ];
 
     let first = xana(&home)

@@ -13,7 +13,7 @@ cargo run -- init
 cargo run
 ```
 
-The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint and asks which shell `run_command` should use. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
+The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint, asks which shell `run_command` should use, and selects `deny`, `ask`, or `allow` permission behavior with `ask` as the human default. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
 
 As an optional developer convenience, `cargo install --path . --locked` installs the checked-out source. It is not a Xana release or distribution channel.
 
@@ -24,7 +24,7 @@ Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama 
 ```toml
 version = 1
 default_profile = "default"
-permission_mode = "allow"
+permission_mode = "ask"
 
 [shell]
 kind = "platform"
@@ -54,16 +54,19 @@ Xana advertises four workspace tools:
 - `read_file` reads a regular UTF-8 file or an inclusive one-based line range.
 - `list_files` lists one directory non-recursively as sorted JSON, with limits of 256 entries and 64 KiB of output.
 - `edit_file` replaces exactly one occurrence of text in an existing regular UTF-8 file.
-- `run_command` runs one command through the configured shell from an existing workspace directory. Every invocation shows its shell, exact command and argv, and canonical working directory for explicit approval. Stdout and stderr are each limited to 32 KiB.
+- `run_command` runs one command through the configured shell from an existing workspace directory. Its permission scope binds the selected shell, exact command, and canonical working directory. Stdout and stderr are each limited to 32 KiB.
 
 Tool paths must be relative to Xana's launch directory and remain beneath it after resolution. Reads and resulting edits are capped at 64 KiB. The agent loop is bounded to eight model/tool rounds per turn.
 
-File tools currently follow `permission_mode = "allow"` and run automatically. `run_command` has an intentionally temporary, fail-closed approval prompt for every invocation. The runtime correlates each prompt and reply to the active operation and tool invocation; losing the controlling terminal denies the request. All tools use the Xana process's ordinary host access: path checks, approval, effect classification, and replay-safety metadata are not OS-level containment. `edit_file` does not claim atomic or crash-safe writes.
+Every built-in tool crosses one runtime-owned permission broker. `permission_mode` sets the default to `deny`, `ask`, or `allow`; matching rules use deny-before-ask-before-allow precedence. An ask can be denied, allowed once, or allowed for the exact current-session scope. Decisions bind the final arguments and canonical scope to the active operation and tool invocation, and losing the controlling terminal fails closed. See [Permissions](docs/user/permissions.md).
+
+Permission is not containment. Allowed tools use the Xana process's ordinary host access, and policy, path checks, effect classification, and replay-safety metadata are not OS-level isolation. Session grants are memory-only, audit facts are not durable yet, and `edit_file` does not claim atomic or crash-safe writes.
 
 ## Documentation
 
 - [Configuration](docs/user/configuration.md) is the user reference.
 - [Project context and system prompt](docs/user/project-context.md) explains root `AGENTS.md`, prompt layers, budgets, and trust boundaries.
+- [Permissions](docs/user/permissions.md) explains policy precedence, scopes, controller decisions, and host-access limits.
 - [Documentation index](docs/README.md) separates user and engineering material and explains its authority model.
 - [Architecture](docs/architecture/README.md) describes what Xana is and how the implemented system works.
 - [Design Principles](docs/principles.md) defines durable constraints for future changes.

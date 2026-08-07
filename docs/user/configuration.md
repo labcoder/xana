@@ -20,14 +20,14 @@ It offers two connection routes:
 - a custom unauthenticated OpenAI-compatible HTTP(S) endpoint.
 
 Both routes require a model. The prompt defaults the bounded tool-call limit
-to `8`, collects the shell used by `run_command`, explains the current host
-authority behavior, previews the selected values, and asks for final
+to `8`, collects the shell used by `run_command`, explains `deny`, `ask`, and
+`allow`, defaults permission to `ask`, previews the selected values, and asks for final
 confirmation. The generated TOML is serialized through the version 1 schema
 and parsed back through the production validator before any directory or file
 is created.
 
-For automation, every provider/model value and the authority acknowledgement
-must be explicit:
+For automation, every provider/model value and the permission mode must be
+explicit:
 
 ```bash
 cargo run -- init \
@@ -37,12 +37,12 @@ cargo run -- init \
   --model qwen3:1.7b \
   --max-tool-rounds 8 \
   --shell platform \
-  --accept-automatic-tools
+  --permission-mode ask
 ```
 
 Noninteractive setup never reads stdin. Omitting `--max-tool-rounds` uses `8`,
 and omitting `--shell` uses `platform`; the provider name, URL, model, and
-acknowledgement have no hidden defaults. `--shell-program PATH` explicitly
+permission mode have no hidden defaults. `--shell-program PATH` explicitly
 overrides the program used by the selected shell.
 
 Add `--dry-run` to either route to render and validate the proposed document
@@ -82,7 +82,7 @@ the file is missing it points explicitly to `xana init`.
 ```toml
 version = 1
 default_profile = "default"
-permission_mode = "allow"
+permission_mode = "ask"
 
 [shell]
 kind = "platform"
@@ -100,14 +100,28 @@ model = "qwen3:1.7b"
 Change the URL and model to values supported by your provider. Provider and
 profile names such as `ollama` and `default` are user-chosen references.
 
+## Permission policy
+
+Version 1 accepts `deny`, `ask`, and `allow` as the default
+`permission_mode`, plus an optional `permission_rules` array. Rules can match
+tool name, effect, relative workspace path, and exact command. All matching
+rules are combined with deny-before-ask-before-allow precedence, regardless of
+their TOML order. See [Permissions](permissions.md) for the complete schema,
+examples, scopes, session grants, and fail-closed behavior.
+
+Existing documents with `permission_mode = "allow"` remain compatible and
+authorize all built-in host-tool effects automatically unless a matching rule
+narrows them. New initialization defaults to `ask`.
+
 ## Shell execution
 
 `run_command` interprets one command string through the configured shell. Its
 optional `cwd` is relative to Xana's launch workspace and must resolve to an
-existing directory beneath that workspace. Before every process spawn, Xana
-shows the shell, canonical working directory, original command, and planned
-argv. Only `y` or `yes` approves; EOF, blank input, and every other answer
-deny. Approval applies to that invocation only.
+existing directory beneath that workspace. Before a process spawn, Xana plans
+the selected shell, canonical working directory, and exact command and sends
+that immutable scope through the same permission broker as every file tool.
+An `ask` may be denied, allowed once, or allowed for the exact session command
+scope. EOF and blank input deny.
 
 The shell kinds are:
 
@@ -216,7 +230,8 @@ receives plain operational output without the mark.
 |---|---|---:|---|---|
 | `version` | integer | Yes | None | Configuration schema version; this build accepts `1` |
 | `default_profile` | string | Yes | None | Name beneath `[profiles]` selected at startup |
-| `permission_mode` | string enum | Yes | None | Only `allow` is accepted; file tools run automatically, while `run_command` has its temporary per-call approval |
+| `permission_mode` | string enum | Yes | None | Default tool authority: `deny`, `ask`, or `allow`; new initialization selects `ask` |
+| `permission_rules` | array of tables | No | Empty | User-owned rules with id, decision, and tool/effect/workspace/command matchers |
 | `shell.kind` | string enum | No | `platform` | `platform`, `posix`, `git_bash`, `powershell`, or `cmd`, subject to platform support |
 | `shell.program` | path | No | Selected kind's program | Explicit executable used for the selected shell |
 | `providers.<name>.kind` | string enum | Yes | None | Provider adapter kind; version 1 accepts `openai_compat` |
@@ -285,17 +300,18 @@ provider = "ollama"
 model = "qwen3:1.7b"
 ```
 
-Choose the `ollama` and `default` names yourself, and confirm that the current
-file-tool `allow` behavior is your intent. The platform shell default is
+Choose the `ollama` and `default` names yourself, and confirm that automatic
+host-tool `allow` behavior is your intent. Use `ask` instead for the new
+initializer default. The platform shell default is
 portable; select another supported shell explicitly if needed. Write the
 result to `config.toml` beside the old file. When both files exist, Xana uses
 `config.toml`; remove or archive `config.kv` after verifying startup.
 
 ## Limitations
 
-- Version 1 accepts only `permission_mode = "allow"`; no unified permission
-  broker, scoped grant, audit store, or policy language is implemented. The
-  `run_command` y/n prompt is a temporary per-invocation gate.
+- Permission audit facts and session grants are memory-only. There are no
+  persistent grants, durable audit store, remote controller roles, or
+  permission-derived process containment.
 - Multiple named providers and profiles are validated, but the executable
   selects only `default_profile`.
 - Version 1 has one provider kind, `openai_compat`, and no plaintext credential

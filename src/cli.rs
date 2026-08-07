@@ -3,7 +3,7 @@
 //! Clap turns process arguments into command data only; command execution and
 //! terminal/filesystem effects remain at the application edge.
 
-use crate::shell::ShellKind;
+use crate::{config::PermissionMode, shell::ShellKind};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
@@ -26,6 +26,23 @@ impl From<ShellChoice> for ShellKind {
             ShellChoice::GitBash => Self::GitBash,
             ShellChoice::PowerShell => Self::PowerShell,
             ShellChoice::Cmd => Self::Cmd,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum PermissionChoice {
+    Deny,
+    Ask,
+    Allow,
+}
+
+impl From<PermissionChoice> for PermissionMode {
+    fn from(value: PermissionChoice) -> Self {
+        match value {
+            PermissionChoice::Deny => Self::Deny,
+            PermissionChoice::Ask => Self::Ask,
+            PermissionChoice::Allow => Self::Allow,
         }
     }
 }
@@ -79,9 +96,9 @@ pub(crate) struct InitArgs {
     #[arg(long, value_name = "PATH", requires = "non_interactive")]
     pub(crate) shell_program: Option<PathBuf>,
 
-    /// Explicitly accept automatic file-tool execution with host access.
-    #[arg(long)]
-    pub(crate) accept_automatic_tools: bool,
+    /// Select the default permission policy for all tools.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub(crate) permission_mode: Option<PermissionChoice>,
 
     /// Render and validate the proposed TOML without writing it.
     #[arg(long)]
@@ -130,7 +147,7 @@ mod tests {
                 max_tool_rounds: None,
                 shell: None,
                 shell_program: None,
-                accept_automatic_tools: false,
+                permission_mode: None,
                 dry_run: true,
             }))
         );
@@ -154,7 +171,8 @@ mod tests {
             "powershell",
             "--shell-program",
             "pwsh.exe",
-            "--accept-automatic-tools",
+            "--permission-mode",
+            "ask",
         ])
         .expect("complete noninteractive initialization");
 
@@ -168,7 +186,7 @@ mod tests {
                 max_tool_rounds: Some(12),
                 shell: Some(ShellChoice::PowerShell),
                 shell_program: Some(PathBuf::from("pwsh.exe")),
-                accept_automatic_tools: true,
+                permission_mode: Some(PermissionChoice::Ask),
                 dry_run: false,
             }))
         );

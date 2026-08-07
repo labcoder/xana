@@ -2,10 +2,15 @@ use super::*;
 use crate::{
     context::ContextBudget,
     message::{Role, ToolResultStatus},
+    permission::{PermissionBroker, PermissionPolicy, PolicyDecision},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     shell::{Shell, ShellConfig},
 };
-use std::{collections::VecDeque, fs, sync::Mutex};
+use std::{
+    collections::VecDeque,
+    fs,
+    sync::{Arc, Mutex},
+};
 use tempfile::tempdir;
 
 #[derive(Clone)]
@@ -96,14 +101,20 @@ fn make_agent(
 
 fn operation_services() -> (
     OperationId,
-    Arc<ProvisionalApprovalCoordinator>,
+    crate::permission::PermissionBrokerHandle,
     mpsc::UnboundedSender<AgentEvent>,
     mpsc::UnboundedReceiver<AgentEvent>,
 ) {
     let operation_id = OperationId::new();
     let (events, receiver) = mpsc::unbounded_channel();
-    let approvals = Arc::new(ProvisionalApprovalCoordinator::new(events.clone()));
-    (operation_id, approvals, events, receiver)
+    let policy = PermissionPolicy::new(
+        PolicyDecision::Allow,
+        Vec::new(),
+        &std::env::current_dir().expect("current directory"),
+    )
+    .expect("allow policy");
+    let (permissions, _broker) = PermissionBroker::spawn(policy, false, events.clone());
+    (operation_id, permissions, events, receiver)
 }
 
 #[test]
@@ -146,11 +157,11 @@ async fn scripted_text_turn_emits_deltas_then_final_message() {
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 2);
-    let (operation_id, approvals, events, mut receiver) = operation_services();
+    let (operation_id, permissions, events, mut receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "say hello")];
 
     let result = agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect("scripted turn");
     let first = receiver.recv().await.expect("first delta");
@@ -200,17 +211,19 @@ async fn scripted_tool_turn_preserves_step_and_invocation_identity() {
     };
     let (provider, _) = ScriptedChatTransport::new(vec![tool_response, final_response]);
     let agent = make_agent(provider, workspace.path(), 3);
-    let (operation_id, approvals, events, mut receiver) = operation_services();
+    let (operation_id, permissions, events, mut receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "read note")];
 
     let result = agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect("scripted tool turn");
+    let audit_event = receiver.recv().await.expect("permission audit");
     let tool_event = receiver.recv().await.expect("tool completion");
     let delta_event = receiver.recv().await.expect("final delta");
 
     assert_eq!(result, Message::text(Role::Assistant, "done"));
+    assert!(matches!(audit_event, AgentEvent::PermissionAudited { .. }));
     match tool_event {
         AgentEvent::ToolFinished {
             operation_id: actual_operation,
@@ -252,11 +265,11 @@ async fn tool_round_limit_finishes_failed() {
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 1);
-    let (operation_id, approvals, events, _receiver) = operation_services();
+    let (operation_id, permissions, events, _receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "loop")];
 
     let error = agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect_err("round limit");
 
@@ -272,12 +285,12 @@ async fn subscriber_drop_does_not_change_returned_message() {
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 2);
-    let (operation_id, approvals, events, receiver) = operation_services();
+    let (operation_id, permissions, events, receiver) = operation_services();
     drop(receiver);
     let mut history = vec![Message::text(Role::User, "continue")];
 
     let result = agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect("observer-independent result");
 
@@ -307,11 +320,11 @@ async fn prompt_prefix_remains_stable_across_streamed_tool_rounds() {
     ];
     let (provider, requests) = ScriptedChatTransport::new(responses);
     let agent = make_agent(provider, workspace.path(), 3);
-    let (operation_id, approvals, events, _receiver) = operation_services();
+    let (operation_id, permissions, events, _receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "read")];
 
     agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect("tool turn");
     let requests = requests
@@ -329,11 +342,11 @@ async fn zero_round_limit_fails_before_history_changes() {
     let workspace = tempdir().expect("temporary workspace");
     let (provider, _) = ScriptedChatTransport::new(Vec::new());
     let agent = make_agent(provider, workspace.path(), 0);
-    let (operation_id, approvals, events, _receiver) = operation_services();
+    let (operation_id, permissions, events, _receiver) = operation_services();
     let mut history = Vec::new();
 
     let result = agent
-        .run_turn(operation_id, &mut history, approvals, events)
+        .run_turn(operation_id, &mut history, permissions, events)
         .await;
 
     assert!(result.is_err());

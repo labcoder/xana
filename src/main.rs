@@ -6,7 +6,6 @@
 
 mod agent;
 mod app;
-mod approval;
 mod cli;
 mod config;
 mod context;
@@ -14,6 +13,7 @@ mod identity;
 mod init;
 mod message;
 mod paths;
+mod permission;
 mod presentation;
 mod prompt;
 mod provider;

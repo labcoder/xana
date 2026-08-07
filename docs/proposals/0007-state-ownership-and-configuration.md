@@ -12,7 +12,7 @@ platform path and versioned-TOML foundations without treating one directory or
 configuration file as a bucket for every kind of state.
 
 The version 1 extension for user-owned permission defaults and rules is
-accepted in [Proposal 0011](0011-scoped-runtime-permissions.md). This proposal
+implemented through historical [Proposal 0011](0011-scoped-runtime-permissions.md). This proposal
 remains Proposed for extension, route, secret, durable-state, and structured
 configuration-editing ownership described below.
 

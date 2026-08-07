@@ -1,6 +1,7 @@
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
     message::Message,
+    permission::{ControllerDecision, PermissionAuditFact, PermissionRequest},
 };
 use serde::{Deserialize, Serialize};
 
@@ -11,10 +12,10 @@ pub(crate) enum RuntimeCommand {
         input: String,
     },
     ClearConversation,
-    DecideProvisionalApproval {
+    DecidePermission {
         operation_id: OperationId,
         invocation_id: ToolInvocationId,
-        approved: bool,
+        decision: ControllerDecision,
     },
     Shutdown,
 }
@@ -45,11 +46,11 @@ pub(crate) enum AgentEvent {
         step_id: StepId,
         text: String,
     },
-    ProvisionalApprovalRequested {
-        operation_id: OperationId,
-        invocation_id: ToolInvocationId,
-        tool_name: String,
-        action: String,
+    PermissionRequested {
+        request: PermissionRequest,
+    },
+    PermissionAudited {
+        fact: PermissionAuditFact,
     },
     ToolFinished {
         operation_id: OperationId,

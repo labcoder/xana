@@ -132,6 +132,7 @@ mod tests {
             model: model.to_owned(),
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
+            permission_mode: crate::config::PermissionMode::Ask,
         })
         .expect("render config")
     }

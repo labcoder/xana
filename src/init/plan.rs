@@ -2,7 +2,7 @@
 
 use crate::{
     cli::InitArgs,
-    config::InitialConfig,
+    config::{InitialConfig, PermissionMode},
     shell::{ShellConfig, ShellKind},
 };
 use std::{
@@ -28,7 +28,7 @@ pub(crate) enum InitError {
     InteractiveTerminalRequired,
     InteractiveFlagsRequireNonInteractive,
     MissingNonInteractiveValues { fields: Vec<&'static str> },
-    AutomaticToolsNotAccepted,
+    InvalidPermissionMode { value: String },
     InvalidChoice { value: String },
     InvalidShellChoice { value: String },
     InvalidRoundLimit { value: String },
@@ -44,16 +44,17 @@ impl fmt::Display for InitError {
             ),
             Self::InteractiveFlagsRequireNonInteractive => write!(
                 f,
-                "provider, model, round-limit, shell, and acknowledgement flags require --non-interactive"
+                "provider, model, round-limit, shell, and permission flags require --non-interactive"
             ),
             Self::MissingNonInteractiveValues { fields } => write!(
                 f,
                 "noninteractive setup is missing required flags: {}",
                 fields.join(", ")
             ),
-            Self::AutomaticToolsNotAccepted => {
-                write!(f, "noninteractive setup requires --accept-automatic-tools")
-            }
+            Self::InvalidPermissionMode { value } => write!(
+                f,
+                "invalid permission mode {value:?}; expected deny, ask, or allow"
+            ),
             Self::InvalidChoice { value } => {
                 write!(f, "invalid connection choice {value:?}; expected 1 or 2")
             }
@@ -76,7 +77,7 @@ impl Error for InitError {
             Self::InteractiveTerminalRequired
             | Self::InteractiveFlagsRequireNonInteractive
             | Self::MissingNonInteractiveValues { .. }
-            | Self::AutomaticToolsNotAccepted
+            | Self::InvalidPermissionMode { .. }
             | Self::InvalidChoice { .. }
             | Self::InvalidShellChoice { .. }
             | Self::InvalidRoundLimit { .. } => None,
@@ -118,7 +119,7 @@ fn has_noninteractive_values(args: &InitArgs) -> bool {
         || args.max_tool_rounds.is_some()
         || args.shell.is_some()
         || args.shell_program.is_some()
-        || args.accept_automatic_tools
+        || args.permission_mode.is_some()
 }
 
 fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
@@ -133,13 +134,12 @@ fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
     if args.model.is_none() {
         fields.push("--model");
     }
+    if args.permission_mode.is_none() {
+        fields.push("--permission-mode");
+    }
 
     if !fields.is_empty() {
         return Err(InitError::MissingNonInteractiveValues { fields });
-    }
-
-    if !args.accept_automatic_tools {
-        return Err(InitError::AutomaticToolsNotAccepted);
     }
 
     Ok(InitPlan::Create(InitialConfig {
@@ -160,6 +160,10 @@ fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
                 .into(),
             program: args.shell_program.clone(),
         },
+        permission_mode: args
+            .permission_mode
+            .expect("permission mode presence was checked")
+            .into(),
     }))
 }
 
@@ -217,26 +221,19 @@ fn plan_interactive<R: BufRead, W: Write>(
 
     writeln!(output)?;
     writeln!(output, "[3/4] Authority")?;
+    writeln!(output, "  deny: reject tool effects")?;
     writeln!(
         output,
-        "Xana currently runs file tools automatically with your user permissions."
+        "  ask: request a decision for each new tool scope (recommended)"
     )?;
+    writeln!(output, "  allow: run tool effects automatically")?;
     writeln!(
         output,
-        "Local commands require a separate y/n approval for every invocation."
+        "All modes use your ordinary host permissions; none is containment."
     )?;
-    writeln!(output, "This is permission, not OS-level containment.")?;
-    let Some(automatic_tools) = prompt(
-        input,
-        output,
-        "Accept automatic file-tool execution for this configuration? [y/N]: ",
-    )?
-    else {
+    let Some(permission_mode) = prompt_permission_mode(input, output)? else {
         return Ok(InitPlan::Cancelled);
     };
-    if !confirmed(&automatic_tools) {
-        return Ok(InitPlan::Cancelled);
-    }
 
     writeln!(output)?;
     writeln!(output, "[4/4] Review")?;
@@ -252,6 +249,11 @@ fn plan_interactive<R: BufRead, W: Write>(
     if let Some(program) = &shell.program {
         writeln!(output, "  Shell program:       {}", program.display())?;
     }
+    writeln!(
+        output,
+        "  Permission mode:     {}",
+        permission_mode_name(permission_mode)
+    )?;
     let Some(create) = prompt(input, output, "Create this configuration? [y/N]: ")? else {
         return Ok(InitPlan::Cancelled);
     };
@@ -265,7 +267,45 @@ fn plan_interactive<R: BufRead, W: Write>(
         model,
         max_tool_rounds,
         shell,
+        permission_mode,
     }))
+}
+
+fn prompt_permission_mode<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+) -> Result<Option<PermissionMode>, InitError> {
+    for attempt in 0..MAX_PROMPT_ATTEMPTS {
+        let Some(value) = prompt_with_default(input, output, "Permission mode", "ask")? else {
+            return Ok(None);
+        };
+        if let Some(mode) = parse_permission_mode(&value) {
+            return Ok(Some(mode));
+        }
+        if attempt + 1 < MAX_PROMPT_ATTEMPTS {
+            writeln!(output, "Choose deny, ask, or allow.")?;
+        } else {
+            return Err(InitError::InvalidPermissionMode { value });
+        }
+    }
+    unreachable!("the permission-mode loop always returns")
+}
+
+fn parse_permission_mode(value: &str) -> Option<PermissionMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "deny" => Some(PermissionMode::Deny),
+        "ask" => Some(PermissionMode::Ask),
+        "allow" => Some(PermissionMode::Allow),
+        _ => None,
+    }
+}
+
+fn permission_mode_name(mode: PermissionMode) -> &'static str {
+    match mode {
+        PermissionMode::Deny => "deny",
+        PermissionMode::Ask => "ask",
+        PermissionMode::Allow => "allow",
+    }
 }
 
 fn write_shell_choices<W: Write>(output: &mut W) -> Result<(), io::Error> {
@@ -430,7 +470,7 @@ mod tests {
             max_tool_rounds: None,
             shell: None,
             shell_program: None,
-            accept_automatic_tools: false,
+            permission_mode: None,
             dry_run: false,
         }
     }
@@ -444,7 +484,7 @@ mod tests {
             max_tool_rounds: None,
             shell: None,
             shell_program: None,
-            accept_automatic_tools: true,
+            permission_mode: Some(crate::cli::PermissionChoice::Ask),
             dry_run: false,
         }
     }
@@ -458,7 +498,7 @@ mod tests {
 
     #[test]
     fn interactive_ollama_flow_uses_only_honest_defaults() {
-        let (plan, transcript) = scripted_plan("\nqwen3:1.7b\n\n\n\ny\ny\n").expect("setup plan");
+        let (plan, transcript) = scripted_plan("\nqwen3:1.7b\n\n\n\n\ny\n").expect("setup plan");
 
         assert_eq!(
             plan,
@@ -468,19 +508,21 @@ mod tests {
                 model: "qwen3:1.7b".to_owned(),
                 max_tool_rounds: 8,
                 shell: ShellConfig::default(),
+                permission_mode: PermissionMode::Ask,
             })
         );
         assert!(transcript.contains("[1/4] Connection"));
         assert!(transcript.contains("Choice [1]:"));
         assert!(transcript.contains("Maximum tool rounds [8]:"));
         assert!(transcript.contains("Shell [platform]:"));
-        assert!(transcript.contains("permission, not OS-level containment"));
+        assert!(transcript.contains("none is containment"));
+        assert!(transcript.contains("Permission mode [ask]:"));
     }
 
     #[test]
     fn interactive_custom_flow_carries_every_answer() {
         let (plan, _) =
-            scripted_plan("2\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nplatform\ncustom-shell\nyes\nyes\n")
+            scripted_plan("2\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nplatform\ncustom-shell\nallow\nyes\n")
                 .expect("custom setup plan");
 
         assert_eq!(
@@ -494,20 +536,27 @@ mod tests {
                     kind: ShellKind::Platform,
                     program: Some("custom-shell".into()),
                 },
+                permission_mode: PermissionMode::Allow,
             })
         );
     }
 
     #[test]
-    fn declining_automatic_tools_cancels() {
-        let (plan, _) = scripted_plan("\nmodel\n\n\n\nn\n").expect("declined setup");
+    fn deny_is_a_valid_explicit_permission_selection() {
+        let (plan, _) = scripted_plan("\nmodel\n\n\n\ndeny\ny\n").expect("deny setup");
 
-        assert_eq!(plan, InitPlan::Cancelled);
+        assert!(matches!(
+            plan,
+            InitPlan::Create(InitialConfig {
+                permission_mode: PermissionMode::Deny,
+                ..
+            })
+        ));
     }
 
     #[test]
     fn declining_final_review_cancels() {
-        let (plan, _) = scripted_plan("\nmodel\n\n\n\ny\nn\n").expect("declined review");
+        let (plan, _) = scripted_plan("\nmodel\n\n\n\n\nn\n").expect("declined review");
 
         assert_eq!(plan, InitPlan::Cancelled);
     }
@@ -520,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn noninteractive_mode_requires_every_value_and_acknowledgement() {
+    fn noninteractive_mode_requires_every_value_and_permission_mode() {
         let mut input = Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
         let missing = plan(
@@ -533,19 +582,10 @@ mod tests {
             &mut output,
         )
         .expect_err("missing values should fail");
-        let mut no_acknowledgement = noninteractive_args();
-        no_acknowledgement.accept_automatic_tools = false;
-        let acknowledgement = plan(&no_acknowledgement, false, &mut input, &mut output)
-            .expect_err("missing acknowledgement should fail");
-
         assert!(matches!(
             missing,
             InitError::MissingNonInteractiveValues { fields }
-                if fields == ["--provider-name", "--base-url", "--model"]
-        ));
-        assert!(matches!(
-            acknowledgement,
-            InitError::AutomaticToolsNotAccepted
+                if fields == ["--provider-name", "--base-url", "--model", "--permission-mode"]
         ));
     }
 
@@ -596,7 +636,7 @@ mod tests {
     #[test]
     fn invalid_choice_and_round_limit_retry_with_a_complete_transcript() {
         let (plan, transcript) = scripted_plan(
-            "9\n2\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\nplatform\n\ny\ny\n",
+            "9\n2\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\nplatform\n\n\ny\n",
         )
         .expect("retrying setup plan");
 
