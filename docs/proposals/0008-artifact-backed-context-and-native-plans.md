@@ -21,7 +21,10 @@ one estimated input budget to fixed layers, exact tool schemas, root
 `AGENTS.md` previews, and actual history. Source ids, selectors, provenance,
 and range/search previews live for one agent and have no durable artifact,
 context, owner, version, or recovery identity. This proposal remains
-unimplemented.
+unimplemented for context capabilities, native plans, and optional
+computation. The artifact-backed context record, first selectors, and
+persisted materialization subset is accepted separately by
+[Proposal 0012](0012-durable-sessions-and-context.md).
 
 ## Proposed context references
 

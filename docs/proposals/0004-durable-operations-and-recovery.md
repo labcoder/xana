@@ -13,6 +13,11 @@ an unknown outcome.
 
 ## Proposed records
 
+The session envelope, conversation/head records, operation-state records, and
+read-only restoration subset is accepted separately by
+[Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
+Proposed for invocation intents/results, reconciliation, and effect recovery.
+
 | Record kind | Purpose | Enters model context? |
 |---|---|---|
 | Conversation entry | User, assistant, and tool-result content with immutable identity and optional parent | Yes, subject to context assembly |
