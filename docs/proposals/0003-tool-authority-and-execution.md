@@ -11,11 +11,11 @@ and process isolation solve different problems. This proposal keeps capability,
 authority, and containment distinct while routing built-in and extension
 effects through one decision point.
 
-The implemented `run_command` tool is a precursor: it validates a canonical
-workspace cwd and asks the terminal user for one y/n decision before local host
-execution. File tools still use automatic `allow`, and there is no shared
-policy evaluator, scoped grant, audit store, execution-backend interface, or
-containment. This proposal remains unimplemented.
+The narrow shared policy, planning, scope, foreground decision, session-grant,
+and in-memory audit slice is accepted in
+[Proposal 0011](0011-scoped-runtime-permissions.md). This proposal remains
+Proposed for persistent grants, durable audit and intent, general execution
+backends, hooks, remote controllers, and containment.
 
 ## Proposed layers
 

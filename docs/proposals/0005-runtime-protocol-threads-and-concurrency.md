@@ -18,6 +18,11 @@ semantics—has been implemented through historical
 Proposed for atomic client attachment, durable threads, hooks, child handles,
 structured concurrency, multi-client fan-out, and retained work.
 
+The foreground permission command/event exchange and its single embedded
+controller are separately accepted in
+[Proposal 0011](0011-scoped-runtime-permissions.md). Authentication, remote
+controller roles, hooks, and multi-client control remain Proposed here.
+
 ## Commands, events, hooks, and telemetry
 
 The runtime exposes three planes:
