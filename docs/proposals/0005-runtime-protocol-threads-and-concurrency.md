@@ -11,6 +11,13 @@ agents need explicit ownership. This proposal separates control from
 observation and telemetry, defines attachment semantics, and gives concurrent
 work structured lineage and cancellation.
 
+The smaller foreground protocol—one runtime owner, one active root turn,
+serializable commands/events/ids, live-only deltas, and observer-failure
+semantics—has been narrowed into accepted
+[Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
+Proposed for atomic client attachment, durable threads, hooks, child handles,
+structured concurrency, multi-client fan-out, and retained work.
+
 ## Commands, events, hooks, and telemetry
 
 The runtime exposes three planes:
