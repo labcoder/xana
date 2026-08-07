@@ -5,6 +5,9 @@ use crate::{
 };
 use tempfile::tempdir;
 
+const UNIX_BOUNDED_OUTPUT_COMMAND: &str =
+    r"head -c 40000 /dev/zero | tr '\0' o; head -c 40001 /dev/zero | tr '\0' e >&2";
+
 fn platform_shell() -> Shell {
     Shell::resolve(ShellConfig::default()).expect("platform shell")
 }
@@ -129,10 +132,7 @@ async fn assert_nonzero_result(command: &str) {
 #[cfg(unix)]
 #[tokio::test]
 async fn stdout_and_stderr_are_bounded_independently() {
-    assert_bounded_result(
-        "head -c 40000 /dev/zero | tr '\0' o; head -c 40001 /dev/zero | tr '\0' e >&2",
-    )
-    .await;
+    assert_bounded_result(UNIX_BOUNDED_OUTPUT_COMMAND).await;
 }
 
 #[cfg(windows)]
@@ -140,6 +140,11 @@ async fn stdout_and_stderr_are_bounded_independently() {
 async fn stdout_and_stderr_are_bounded_independently() {
     assert_bounded_result("[Console]::Out.Write('o' * 40000); [Console]::Error.Write('e' * 40001)")
         .await;
+}
+
+#[test]
+fn unix_bounded_output_fixture_contains_no_nul() {
+    assert!(!UNIX_BOUNDED_OUTPUT_COMMAND.contains('\0'));
 }
 
 async fn assert_bounded_result(command: &str) {
