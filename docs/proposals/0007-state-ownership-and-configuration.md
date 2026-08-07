@@ -18,6 +18,7 @@ configuration file as a bucket for every kind of state.
 | Shared configuration | Platform configuration directory | `config.toml` | User authors; runtime validates | Durable and portable |
 | Sessions and shared data | Platform data directory | `data/` | Runtime | Durable |
 | Artifacts and audit records | Platform data directory | `data/` | Runtime | Declared per artifact/record |
+| Context views, plan values, and harness revisions | Platform data directory | `data/` | Runtime | Versioned; durable or derivable by contract |
 | Caches, downloads, and indexes | Platform cache directory | `cache/` | Runtime implementation | Disposable |
 | Locks, sockets, and process state | Platform runtime directory or explicit fallback | `run/` | Active runtime | Ephemeral |
 | Secrets | OS credential storage or explicit environment references | Not redirected | Credential provider | Sensitive |
@@ -70,6 +71,10 @@ conversation, operation, audit, and runtime state.
 Capability lifecycle and routing are developed in
 [Proposal 0002](0002-capability-model-and-routing.md). Durable record semantics
 are developed in [Proposal 0004](0004-durable-operations-and-recovery.md).
+External context is developed in
+[Proposal 0008](0008-artifact-backed-context-and-native-plans.md), and harness
+revision/promotion state in
+[Proposal 0009](0009-evaluated-harness-refinement.md).
 
 ## Open questions
 
@@ -77,4 +82,5 @@ are developed in [Proposal 0004](0004-durable-operations-and-recovery.md).
   the next configuration version?
 - Which credential providers are supported on each platform?
 - What process owns locks and migrations for shared state?
+- Which derived context values are retained, garbage-collected, or regenerated?
 - Which structured editor can preserve TOML comments and user organization?

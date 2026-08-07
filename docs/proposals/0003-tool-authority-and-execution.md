@@ -65,6 +65,14 @@ workers, isolated browsers, or platform desktop adapters. Every backend still
 crosses the capability and authority layers; containment does not imply
 permission, and permission does not imply containment.
 
+Typed native context/agent plans should cover bounded selection, fan-out, and
+aggregation before Xana considers arbitrary generated computation. A language
+kernel is not a universal interface and does not belong in the headless core.
+If evaluations later justify a general-code adapter, it enters through an
+`ExecutionBackend`, receives only explicit capabilities and typed references,
+and reports its real containment. Xana must remain fully functional without it.
+See [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
+
 ## Open questions
 
 - What user-owned policy language represents deny, ask, allow, and scoped
@@ -72,3 +80,4 @@ permission, and permission does not imply containment.
 - How is a controlling client authenticated and authorized to approve work?
 - Which transformations may occur before approval, and how are they displayed?
 - What execution backends are worth standardizing before a sandbox is offered?
+- Which measured native-plan gap, if any, justifies a general-code backend?

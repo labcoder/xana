@@ -17,6 +17,7 @@ an unknown outcome.
 |---|---|---|
 | Conversation entry | User, assistant, and tool-result content with immutable identity and optional parent | Yes, subject to context assembly |
 | Operation record | Accepted work, steps, invocation intents/results, suspension, cancellation, and recovery | No |
+| Context record | Versioned source/view identity, selector, provenance, trust, bounds, and content hash | Only a bounded materialization |
 | Audit fact | Permission decisions and other security-relevant facts | No |
 | Live event | Rendering committed facts or explicitly transient in-progress state | No; not authoritative persistence |
 | Telemetry | Durations, counts, status, and diagnostic correlation | No |
@@ -79,10 +80,25 @@ malformed interior records are visible corruption. Stronger power-loss or
 `fsync` guarantees must be stated and tested. A later storage backend may
 change mechanics without changing operation semantics.
 
+## Authoritative state and compute snapshots
+
+Durable context transformations and native plans record their inputs,
+instruction/invocation identities, named intermediate references, and outputs
+through the same operation boundary. Recovery reconstructs them from operation
+records, immutable artifacts, and versioned context references.
+
+An interpreter, notebook, sidecar, or other compute backend may eventually
+offer a best-effort heap snapshot as a convenience. Such a snapshot is never
+authoritative: open files, sockets, native objects, external resources, or
+environment-sensitive values may be absent or unsafe to restore. Xana remains
+correct if every compute snapshot is discarded.
+
 The permission decision preceding intent persistence is developed in
 [Proposal 0003](0003-tool-authority-and-execution.md). Live protocol and thread
 ownership are developed in
-[Proposal 0005](0005-runtime-protocol-threads-and-concurrency.md).
+[Proposal 0005](0005-runtime-protocol-threads-and-concurrency.md). Context and
+native-plan records are developed in
+[Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
 ## Open questions
 
@@ -90,5 +106,7 @@ ownership are developed in
   ships?
 - Which failures suspend an operation versus finish it?
 - How are partial multi-call steps represented and resumed?
+- Which pure context derivations can be recomputed rather than persisted as
+  materialized output?
 - What durability guarantee is practical and testable on each supported
   platform?
