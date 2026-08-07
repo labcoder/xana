@@ -7,6 +7,7 @@ use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Role {
+    System,
     User,
     Assistant,
     Tool,
@@ -94,6 +95,18 @@ mod tests {
             message.content.as_slice(),
             [ContentBlock::Text(text)] if text == "hello"
         ));
+    }
+
+    #[test]
+    fn system_text_preserves_exact_content() {
+        let content = "identity\n\n<source>guidance</source>";
+        let message = Message::text(Role::System, content);
+
+        assert_eq!(message.role, Role::System);
+        assert_eq!(
+            message.content,
+            vec![ContentBlock::Text(content.to_owned())]
+        );
     }
 
     #[test]

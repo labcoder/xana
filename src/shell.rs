@@ -145,6 +145,14 @@ impl Shell {
             ResolvedShellKind::Cmd => "Command Prompt",
         }
     }
+
+    pub(crate) fn prompt_description(&self) -> String {
+        format!(
+            "{} (program: {})",
+            self.display_name(),
+            self.program.display()
+        )
+    }
 }
 
 /// Formats argv for review only; the result is intentionally not a command

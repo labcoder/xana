@@ -8,9 +8,11 @@ use crate::{
     agent::Agent,
     cli::{self, Cli, Command, ConfigCommand},
     config::{PermissionMode, ProviderKind, XanaConfig},
+    context::{ContextBudget, ContextPlanReport, load_project_sources},
     init::{self, InitPlan, WriteOutcome},
     paths::XanaPaths,
     presentation::{self, BannerMode},
+    prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::openai_compat::OpenAiCompatClient,
     shell::Shell,
     terminal::{self, ChatHeader},
@@ -18,6 +20,9 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
+
+const PROMPT_TOTAL_TOKENS: usize = 32_768;
+const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 
 pub(crate) fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
@@ -96,17 +101,45 @@ fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
     let provider = match provider_kind {
         ProviderKind::OpenAiCompat => OpenAiCompatClient::new(base_url, model.clone()),
     };
+    let endpoint = provider.endpoint().to_owned();
+    let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
+    let configured_shell = shell.prompt_description();
+    let tools = ToolRegistry::builtins(shell, terminal::terminal_approver())
+        .context("could not build tool registry")?;
+    let workspace_root = std::env::current_dir()
+        .context("could not resolve Xana workspace root")?
+        .canonicalize()
+        .context("could not canonicalize Xana workspace root")?;
+    let project_sources = load_project_sources(&workspace_root)
+        .context("could not load project prompt instructions")?;
+    let environment = PromptEnvironment {
+        operating_system: std::env::consts::OS.to_owned(),
+        working_directory: workspace_root.clone(),
+        configured_shell,
+        surface: PromptSurface::Cli,
+    };
+    let definitions = tools.definitions();
+    let prompt = assemble_snapshot(PromptInputs {
+        tool_definitions: &definitions,
+        environment: &environment,
+        product_documentation: None,
+        project_sources: &project_sources,
+        budget: ContextBudget {
+            total_tokens: PROMPT_TOTAL_TOKENS,
+            conversation_reserve_tokens: PROMPT_CONVERSATION_RESERVE_TOKENS,
+        },
+    })
+    .context("could not assemble Xana prompt")?;
+    let context_report = ContextPlanReport::render(&prompt.context_plan)
+        .as_str()
+        .to_owned();
+    let agent = Agent::new(provider, tools, workspace_root, prompt, max_tool_rounds);
     let header = ChatHeader {
         provider_name,
         model,
-        endpoint: provider.endpoint().to_owned(),
+        endpoint,
+        context_report,
     };
-    let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
-    let tools = ToolRegistry::builtins(shell, terminal::terminal_approver())
-        .context("could not build tool registry")?;
-    let workspace_root =
-        std::env::current_dir().context("could not resolve Xana workspace root")?;
-    let agent = Agent::new(provider, tools, workspace_root, max_tool_rounds);
 
     terminal::run_chat(agent, header)
 }

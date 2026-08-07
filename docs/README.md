@@ -7,6 +7,9 @@ engineering contracts used to change it.
 
 - [Configuration](user/configuration.md) explains initialization, provider and
   profile settings, platform paths, `XANA_HOME`, and configuration diagnostics.
+- [Project context and system prompt](user/project-context.md) explains the
+  built-in prompt, root `AGENTS.md` discovery, input budgets, and instruction
+  boundaries.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 
