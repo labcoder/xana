@@ -1,20 +1,21 @@
 use super::workspace_path::{WorkspacePathError, resolve_existing};
-use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition};
+use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
+use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
 const MAX_READ_BYTES: usize = 64 * 1024;
 
 pub(crate) struct ReadFile;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReadFileArgs {
     path: String,
@@ -94,7 +95,7 @@ impl Error for ReadFileError {
     }
 }
 
-fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFileError> {
+fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePlan, ReadFileError> {
     let args: ReadFileArgs =
         serde_json::from_value(arguments.clone()).map_err(ReadFileError::InvalidArguments)?;
 
@@ -111,7 +112,8 @@ fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFil
         });
     }
 
-    let resolved = resolve_existing(args.path, workspace_root).map_err(ReadFileError::Path)?;
+    let resolved =
+        resolve_existing(args.path.clone(), workspace_root).map_err(ReadFileError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
 
@@ -126,7 +128,19 @@ fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFil
         return Err(ReadFileError::NotRegularFile { requested_path });
     }
 
-    let file = File::open(&canonical_path).map_err(|source| ReadFileError::Unavailable {
+    Ok(ReadFilePlan {
+        args,
+        requested_path,
+        canonical_path,
+    })
+}
+
+fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
+    let start_line = plan.args.start_line.unwrap_or(1);
+    let end_line = plan.args.end_line;
+    let requested_path = plan.requested_path.clone();
+
+    let file = File::open(&plan.canonical_path).map_err(|source| ReadFileError::Unavailable {
         requested_path: requested_path.clone(),
         source,
     })?;
@@ -177,6 +191,11 @@ fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFil
     })
 }
 
+#[cfg(test)]
+fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFileError> {
+    execute_read_file(&plan_read_file(arguments, workspace_root)?)
+}
+
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -208,15 +227,35 @@ impl Tool for ReadFile {
         }
     }
 
+    fn plan(
+        &self,
+        arguments: &Value,
+        workspace_root: &Path,
+    ) -> Result<PlannedToolInvocation, String> {
+        let plan = plan_read_file(arguments, workspace_root).map_err(|error| error.to_string())?;
+        let final_arguments =
+            serde_json::to_value(&plan.args).map_err(|error| error.to_string())?;
+        let scope = PermissionScope::WorkspacePath {
+            canonical_path: plan.canonical_path.clone(),
+        };
+        Ok(PlannedToolInvocation::new(final_arguments, scope, plan))
+    }
+
     fn execute<'a>(
         &'a self,
-        arguments: &'a Value,
-        context: ToolContext<'a>,
+        planned: &'a PlannedToolInvocation,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            read_file(arguments, context.workspace_root).map_err(|error| error.to_string())
+            let plan = planned.executable::<ReadFilePlan>("read_file")?;
+            execute_read_file(plan).map_err(|error| error.to_string())
         })
     }
+}
+
+struct ReadFilePlan {
+    args: ReadFileArgs,
+    requested_path: String,
+    canonical_path: PathBuf,
 }
 
 #[cfg(test)]

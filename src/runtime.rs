@@ -1,19 +1,18 @@
 //! Foreground owner for transient conversation and operation state.
 //!
 //! Commands may affect execution. Events are passive observations; except for
-//! the explicit approval request transport, a closed receiver never changes an
+//! the explicit permission request transport, a closed receiver never changes an
 //! operation result.
 
-mod approval;
 mod protocol;
 
-pub(crate) use approval::ProvisionalApprovalCoordinator;
 pub(crate) use protocol::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand};
 
 use crate::{
     agent::Agent,
     identity::OperationId,
     message::{Message, Role},
+    permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
 };
 use std::{error::Error, fmt, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
@@ -31,7 +30,7 @@ struct Runtime {
     active: Option<ActiveOperation>,
     commands: mpsc::Receiver<RuntimeCommand>,
     events: mpsc::UnboundedSender<AgentEvent>,
-    approvals: Arc<ProvisionalApprovalCoordinator>,
+    permissions: PermissionBrokerHandle,
     completions: mpsc::UnboundedReceiver<OperationCompletion>,
     completion_sender: mpsc::UnboundedSender<OperationCompletion>,
 }
@@ -48,18 +47,19 @@ struct OperationCompletion {
 }
 
 impl RuntimeHandle {
-    pub(crate) fn spawn(agent: Agent) -> Self {
+    pub(crate) fn spawn(agent: Agent, policy: PermissionPolicy, controller_present: bool) -> Self {
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let (completion_sender, completion_receiver) = mpsc::unbounded_channel();
-        let approvals = Arc::new(ProvisionalApprovalCoordinator::new(event_sender.clone()));
+        let (permissions, _broker_task) =
+            PermissionBroker::spawn(policy, controller_present, event_sender.clone());
         let runtime = Runtime {
             agent: Arc::new(agent),
             history: Vec::new(),
             active: None,
             commands: command_receiver,
             events: event_sender,
-            approvals,
+            permissions,
             completions: completion_receiver,
             completion_sender,
         };
@@ -89,10 +89,11 @@ impl Runtime {
             tokio::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else {
+                        self.permissions.controller_lost();
                         self.interrupt_active();
                         return;
                     };
-                    if self.handle_command(command) {
+                    if self.handle_command(command).await {
                         return;
                     }
                 }
@@ -106,7 +107,7 @@ impl Runtime {
     }
 
     /// Returns true when the runtime should stop.
-    fn handle_command(&mut self, command: RuntimeCommand) -> bool {
+    async fn handle_command(&mut self, command: RuntimeCommand) -> bool {
         match command {
             RuntimeCommand::SubmitTurn {
                 operation_id,
@@ -129,7 +130,7 @@ impl Runtime {
                 }
 
                 let agent = Arc::clone(&self.agent);
-                let approvals = Arc::clone(&self.approvals);
+                let permissions = self.permissions.clone();
                 let events = self.events.clone();
                 let completions = self.completion_sender.clone();
                 let mut history = self.history.clone();
@@ -140,7 +141,7 @@ impl Runtime {
                 });
                 let task = tokio::spawn(async move {
                     let result = agent
-                        .run_turn(operation_id, &mut history, approvals, events)
+                        .run_turn(operation_id, &mut history, permissions, events)
                         .await
                         .map_err(|error| error.to_string());
                     if let Ok(message) = &result {
@@ -164,18 +165,23 @@ impl Runtime {
                     self.emit(AgentEvent::ConversationCleared);
                 }
             }
-            RuntimeCommand::DecideProvisionalApproval {
+            RuntimeCommand::DecidePermission {
                 operation_id,
                 invocation_id,
-                approved,
+                decision,
             } => {
-                if let Err(error) = self.approvals.decide(operation_id, invocation_id, approved) {
+                if let Err(error) = self
+                    .permissions
+                    .decide(operation_id, invocation_id, decision)
+                    .await
+                {
                     self.emit(AgentEvent::CommandRejected {
                         reason: error.to_string(),
                     });
                 }
             }
             RuntimeCommand::Shutdown => {
+                self.permissions.shutdown();
                 self.interrupt_active();
                 return true;
             }
@@ -224,7 +230,6 @@ impl Runtime {
     }
 
     fn interrupt_active(&mut self) {
-        self.approvals.deny_all();
         if let Some(active) = self.active.take() {
             active.task.abort();
             self.emit(AgentEvent::OperationStateChanged {

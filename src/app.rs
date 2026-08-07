@@ -7,10 +7,11 @@
 use crate::{
     agent::Agent,
     cli::{self, Cli, Command, ConfigCommand},
-    config::{PermissionMode, ProviderKind, XanaConfig},
+    config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport, load_project_sources},
     init::{self, InitPlan, WriteOutcome},
     paths::XanaPaths,
+    permission::PermissionPolicy,
     presentation::{self, BannerMode},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::openai_compat::OpenAiCompatClient,
@@ -91,13 +92,10 @@ async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         base_url,
         model,
         permission_mode,
+        permission_rules,
         shell,
         max_tool_rounds,
     } = config;
-
-    match permission_mode {
-        PermissionMode::Allow => {}
-    }
 
     let provider = match provider_kind {
         ProviderKind::OpenAiCompat => OpenAiCompatClient::new(base_url, model.clone()),
@@ -110,6 +108,9 @@ async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
+    let permission_policy =
+        PermissionPolicy::new(permission_mode.into(), permission_rules, &workspace_root)
+            .context("could not resolve permission policy for the launch workspace")?;
     let project_sources = load_project_sources(&workspace_root)
         .context("could not load project prompt instructions")?;
     let environment = PromptEnvironment {
@@ -140,7 +141,7 @@ async fn run_default(paths: &XanaPaths, banner_mode: BannerMode) -> Result<()> {
         prompt,
         max_tool_rounds,
     );
-    let runtime = RuntimeHandle::spawn(agent);
+    let runtime = RuntimeHandle::spawn(agent, permission_policy, true);
     let header = ChatHeader {
         provider_name,
         model,
@@ -308,6 +309,7 @@ mod tests {
             model: "model".to_owned(),
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
+            permission_mode: crate::config::PermissionMode::Ask,
         })
         .expect("render config");
         fs::write(paths.config_file(), rendered).expect("write config");
@@ -342,7 +344,7 @@ mod tests {
             max_tool_rounds: Some(8),
             shell: None,
             shell_program: None,
-            accept_automatic_tools: true,
+            permission_mode: Some(crate::cli::PermissionChoice::Ask),
             dry_run: false,
         };
         let mut input = Cursor::new(Vec::<u8>::new());
@@ -383,7 +385,7 @@ mod tests {
                 max_tool_rounds: None,
                 shell: None,
                 shell_program: None,
-                accept_automatic_tools: true,
+                permission_mode: Some(crate::cli::PermissionChoice::Ask),
                 dry_run: false,
             }
         };
@@ -404,7 +406,7 @@ mod tests {
         assert!(
             String::from_utf8(output)
                 .expect("dry-run output")
-                .contains("permission_mode = \"allow\"")
+                .contains("permission_mode = \"ask\"")
         );
     }
 }

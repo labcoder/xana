@@ -27,17 +27,15 @@ flowchart LR
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded async headless loop"]
     AGENT --> PROVIDER["provider adapter"]
-    AGENT --> TOOLS["tool registry"]
-    TOOLS --> HOST["workspace-scoped host tools"]
-    TOOLS --> SHELL["configured shell plan"]
-    SHELL --> APPROVAL["correlated provisional approval"]
-    APPROVAL --> RUNTIME
-    TERMINAL --> APPROVAL
-    APPROVAL --> HOST
+    AGENT --> TOOLS["tool registry<br/>plan + invoke"]
+    TOOLS --> BROKER["permission broker<br/>policy + grants + pending"]
+    TERMINAL -->|"typed decision"| BROKER
+    BROKER --> HOST["workspace-scoped host tools"]
+    BROKER --> SHELL["configured shell execution"]
 ```
 
 `runtime` owns temporary conversation history and at most one active root
-operation. `terminal` is a protocol client that owns readline input, approval
+operation. `terminal` is a protocol client that owns readline input, permission
 answers, and human rendering. `presentation` owns terminal-mark selection and
 its TTY, monochrome, suppression, and fallback behavior. None of those
 frontend concerns enters the headless agent loop.
@@ -45,10 +43,10 @@ frontend concerns enters the headless agent loop.
 Control values cross a bounded Tokio channel as serializable
 `RuntimeCommand`s. A single foreground receiver observes serializable
 `AgentEvent`s over an unbounded channel. Commands submit turns, clear idle
-history, correlate provisional approval decisions, and shut down the runtime.
-Events carry operation state, assistant deltas, approval requests, tool
+history, correlate permission decisions, and shut down the runtime.
+Events carry operation state, assistant deltas, permission requests and audit facts, tool
 completion, final messages, failures, clearing, and rejections. Except for the
-explicit approval request, event delivery is passive: losing the receiver does
+explicit permission request, event delivery is passive: losing the receiver does
 not alter an operation's result.
 
 `OperationId`, `StepId`, and `ToolInvocationId` are distinct UUID v4 newtypes.
@@ -134,33 +132,51 @@ provider-neutral registry:
 - `list_files` returns a bounded, sorted, non-recursive directory listing.
 - `edit_file` replaces exactly one match in an existing bounded UTF-8 file.
 - `run_command` executes one command string through a configured shell in an
-  existing workspace directory after a fail-closed, runtime-correlated
-  terminal approval. It returns status plus independently bounded stdout and
-  stderr.
+  existing workspace directory after runtime authorization. It returns status
+  plus independently bounded stdout and stderr.
 
 All tool paths are relative to Xana's launch workspace and must remain beneath
 that workspace after lexical and canonical resolution. Reads and resulting
 edits are capped at 64 KiB; directory listings are capped at 256 entries and
 64 KiB of output.
 
-The registry caches each validated definition beside its implementation,
-dispatches model requests, and reports effect class separately from replay
-safety. `run_command` is `Execute` plus `ReplaySafety::Never`; its exact program
-argv, command, shell, and canonical cwd exist before approval and spawn. Shell
+The registry caches each validated definition beside its implementation and
+reports effect class separately from replay safety. It is the one invocation
+path: resolve a tool, build an immutable plan, authorize the plan, and execute
+only an allowed plan. Plans contain normalized final JSON arguments, canonical
+scope, and type-erased executable data created and consumed by the same
+concrete tool. No registry executor bypasses planning and authorization.
+
+File scopes are canonical target paths beneath the canonical launch workspace.
+Command scopes contain the selected shell, exact command, and canonical cwd.
+Invalid arguments and escaping paths fail before policy evaluation. Planning
+may validate metadata but performs no write, process, network, or external
+effect.
+
+`run_command` is `Execute` plus `ReplaySafety::Never`; its exact program argv,
+command, shell, and canonical cwd exist before authorization and spawn. Shell
 selection resolves once at the application edge: macOS/Linux support POSIX
 `sh -lc`, while Windows supports PowerShell, Git Bash, and `cmd` through
 explicit configurations. A custom compatible program path may replace the
 default executable.
 
-File tools currently execute under the configuration's automatic `allow`
-mode. The command approval contract is deliberately provisional policy carried
-over the foreground command/event boundary, not a durable permission
-protocol. One pending decision is keyed by operation and tool invocation;
-unknown, stale, duplicate, and mismatched decisions are rejected, and losing
-the controlling client fails closed. Neither metadata, workspace path checks,
-nor approval provides process containment. Tools run asynchronously with the
-Xana process's ordinary host access, and `edit_file` does not claim atomic or
-crash-safe writes.
+One runtime-owned broker task owns policy, memory-only session grants, pending
+requests, and controller presence for every built-in tool. Pure policy combines
+all matching user rules with deny-before-ask-before-allow precedence, then uses
+the configured default. An explicit or default deny cannot be overridden by a
+grant. An ask suspends its operation and accepts deny, allow once, or an exact
+current-session scope from the foreground terminal. Grants also bind tool and
+effect and cover only the same or a narrower workspace scope or an exact
+command scope. Unknown, stale, duplicate, mismatched, scope-widening, lost, and
+unattended decisions fail closed.
+
+Each outcome emits an in-memory `PermissionAuditFact` binding operation and
+invocation ids, tool/effect, final arguments, scope, policy outcome, optional
+controller decision, and effective decision. Audit facts do not enter the
+conversation and are not durable. Neither policy, metadata, workspace path
+checks, nor authorization provides process containment. Tools run
+asynchronously with the Xana process's ordinary host access, and `edit_file`
+does not claim atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
@@ -177,8 +193,12 @@ Xana loads a strict, versioned `config.toml`. It validates named
 OpenAI-compatible provider connections and agent profiles, then resolves the
 required default profile and shell configuration into owned values before
 constructing `Agent`. Interactive initialization collects a platform shell
-choice; noninteractive initialization accepts explicit shell kind and program
-flags. Existing version 1 documents without `[shell]` use `platform`.
+choice and defaults human setup to `ask`; noninteractive initialization
+requires an explicit permission mode and accepts explicit shell kind and
+program flags. Existing version 1 documents with explicit `allow` retain
+automatic tool authority. The document also accepts default-empty permission
+rules with tool, effect, workspace, and exact-command matchers. Existing
+documents without `[shell]` use `platform`.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
@@ -210,7 +230,9 @@ physical package boundaries:
 - `app` owns command routing and dependency construction.
 - `terminal` and `presentation` own frontend behavior.
 - `runtime` and `identity` own foreground state, typed commands and events,
-  correlated approvals, and semantic work identifiers.
+  correlated permission control, and semantic work identifiers.
+- `permission` owns pure policy and scopes, pending controller decisions,
+  session grants, and in-memory audit facts.
 - `agent` and `message` contain the headless loop and internal conversation
   model.
 - `prompt` and `context` own versioned assembly, transient source selection,
@@ -229,11 +251,11 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no durable session store, unified permission broker, sandbox,
+Xana has no durable session store, sandbox,
 background runtime, workspace crate split, runtime profile switching,
-multi-client attachment, event replay, scoped or persistent grants, permission
-audit store, artifact/context store, context service, nested
+multi-client attachment, event replay, persistent grants, durable permission
+audit store, remote controller authentication, artifact/context store, context service, nested
 project-instruction or skill discovery, prompt compaction, or crash-safe edit
-protocol. The correlated `run_command` y/n prompt is the only approval path and
-is explicitly temporary. These absences are implementation facts, not
-predictions about which proposals will be accepted.
+protocol. Session grants and permission audit facts live only in the foreground
+process. These absences are implementation facts, not predictions about which
+proposals will be accepted.

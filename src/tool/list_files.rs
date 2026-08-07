@@ -1,5 +1,6 @@
 use super::workspace_path::{WorkspacePathError, resolve_existing};
-use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition};
+use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
+use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,17 +8,23 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const MAX_LIST_ENTRIES: usize = 256;
 const MAX_LIST_OUTPUT_BYTES: usize = 64 * 1024;
 
 pub(crate) struct ListFiles;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ListFilesArgs {
     path: String,
+}
+
+struct ListFilesPlan {
+    args: ListFilesArgs,
+    requested_path: String,
+    canonical_path: PathBuf,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -130,10 +137,14 @@ fn encode_entries(
     Ok(output)
 }
 
-fn list_files(arguments: &Value, workspace_root: &Path) -> Result<String, ListFilesError> {
+fn plan_list_files(
+    arguments: &Value,
+    workspace_root: &Path,
+) -> Result<ListFilesPlan, ListFilesError> {
     let args: ListFilesArgs =
         serde_json::from_value(arguments.clone()).map_err(ListFilesError::InvalidArguments)?;
-    let resolved = resolve_existing(args.path, workspace_root).map_err(ListFilesError::Path)?;
+    let resolved =
+        resolve_existing(args.path.clone(), workspace_root).map_err(ListFilesError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
 
@@ -141,8 +152,18 @@ fn list_files(arguments: &Value, workspace_root: &Path) -> Result<String, ListFi
         return Err(ListFilesError::NotDirectory { requested_path });
     }
 
+    Ok(ListFilesPlan {
+        args,
+        requested_path,
+        canonical_path,
+    })
+}
+
+fn execute_list_files(plan: &ListFilesPlan) -> Result<String, ListFilesError> {
+    let requested_path = plan.requested_path.clone();
+
     let directory =
-        fs::read_dir(&canonical_path).map_err(|source| ListFilesError::ReadDirectory {
+        fs::read_dir(&plan.canonical_path).map_err(|source| ListFilesError::ReadDirectory {
             requested_path: requested_path.clone(),
             source,
         })?;
@@ -188,6 +209,11 @@ fn list_files(arguments: &Value, workspace_root: &Path) -> Result<String, ListFi
     encode_entries(requested_path, entries)
 }
 
+#[cfg(test)]
+fn list_files(arguments: &Value, workspace_root: &Path) -> Result<String, ListFilesError> {
+    execute_list_files(&plan_list_files(arguments, workspace_root)?)
+}
+
 impl Tool for ListFiles {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
@@ -209,13 +235,27 @@ impl Tool for ListFiles {
         }
     }
 
+    fn plan(
+        &self,
+        arguments: &Value,
+        workspace_root: &Path,
+    ) -> Result<PlannedToolInvocation, String> {
+        let plan = plan_list_files(arguments, workspace_root).map_err(|error| error.to_string())?;
+        let final_arguments =
+            serde_json::to_value(&plan.args).map_err(|error| error.to_string())?;
+        let scope = PermissionScope::WorkspacePath {
+            canonical_path: plan.canonical_path.clone(),
+        };
+        Ok(PlannedToolInvocation::new(final_arguments, scope, plan))
+    }
+
     fn execute<'a>(
         &'a self,
-        arguments: &'a Value,
-        context: ToolContext<'a>,
+        planned: &'a PlannedToolInvocation,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            list_files(arguments, context.workspace_root).map_err(|error| error.to_string())
+            let plan = planned.executable::<ListFilesPlan>("list_files")?;
+            execute_list_files(plan).map_err(|error| error.to_string())
         })
     }
 }

@@ -12,7 +12,7 @@ authority, and containment distinct while routing built-in and extension
 effects through one decision point.
 
 The narrow shared policy, planning, scope, foreground decision, session-grant,
-and in-memory audit slice is accepted in
+and in-memory audit slice is implemented through historical
 [Proposal 0011](0011-scoped-runtime-permissions.md). This proposal remains
 Proposed for persistent grants, durable audit and intent, general execution
 backends, hooks, remote controllers, and containment.

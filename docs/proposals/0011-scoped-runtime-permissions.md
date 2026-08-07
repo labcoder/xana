@@ -1,8 +1,8 @@
 # Scoped runtime permissions
 
 > Audience: Contributors and coding agents
-> Authority: Prescriptive
-> Status: Accepted
+> Authority: None
+> Status: Implemented
 
 ## Context
 
@@ -11,6 +11,13 @@ Xana's foreground runtime has correlated provisional approval for
 needs one authority boundary for every built-in effect without accepting the
 broader execution-backend, durable audit, remote controller, hook, or
 containment designs in Proposals 0003, 0005, and 0007.
+
+## Implementation
+
+The scoped foreground permission model is implemented.
+[Architecture](../architecture/README.md) and
+[Permissions](../user/permissions.md) are now authoritative for current
+behavior; this proposal is historical rationale and scope evidence.
 
 ## Accepted policy model
 

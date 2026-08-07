@@ -4,19 +4,22 @@ use crate::{
     context::ContextBudget,
     identity::{StepId, ToolInvocationId},
     message::{ContentBlock, Role, ToolResult},
+    permission::{
+        ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
+        PermissionScope, PolicyDecision,
+    },
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     tool::{ToolDefinition, ToolRegistry},
 };
 use futures::future::BoxFuture;
 use std::{
     collections::VecDeque,
-    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
 };
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::Notify;
 
 type CapturedRequests = Arc<Mutex<Vec<Vec<Message>>>>;
 type CompletionFlag = Arc<AtomicBool>;
@@ -102,6 +105,13 @@ fn make_agent(provider: Box<dyn ChatTransport>) -> Agent {
     Agent::new(provider, tools, workspace, prompt, 2)
 }
 
+fn spawn_runtime(agent: Agent) -> RuntimeHandle {
+    let workspace = std::env::current_dir().expect("current directory");
+    let policy =
+        PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace).expect("allow policy");
+    RuntimeHandle::spawn(agent, policy, true)
+}
+
 fn queue_agent(
     responses: Vec<Result<Message, String>>,
     deltas: Vec<String>,
@@ -144,10 +154,10 @@ fn commands_and_events_round_trip_through_json() {
             input: "hello".to_owned(),
         },
         RuntimeCommand::ClearConversation,
-        RuntimeCommand::DecideProvisionalApproval {
+        RuntimeCommand::DecidePermission {
             operation_id,
             invocation_id,
-            approved: true,
+            decision: ControllerDecision::AllowOnce,
         },
         RuntimeCommand::Shutdown,
     ];
@@ -169,11 +179,30 @@ fn commands_and_events_round_trip_through_json() {
             step_id,
             text: "hel".to_owned(),
         },
-        AgentEvent::ProvisionalApprovalRequested {
-            operation_id,
-            invocation_id,
-            tool_name: "run_command".to_owned(),
-            action: "cargo test".to_owned(),
+        AgentEvent::PermissionRequested {
+            request: PermissionRequest {
+                operation_id,
+                invocation_id,
+                tool_name: "read_file".to_owned(),
+                effect_class: crate::tool::EffectClass::Read,
+                final_arguments: serde_json::json!({"path": "README.md"}),
+                scope: PermissionScope::Unscoped,
+            },
+        },
+        AgentEvent::PermissionAudited {
+            fact: PermissionAuditFact {
+                request: PermissionRequest {
+                    operation_id,
+                    invocation_id,
+                    tool_name: "read_file".to_owned(),
+                    effect_class: crate::tool::EffectClass::Read,
+                    final_arguments: serde_json::json!({"path": "README.md"}),
+                    scope: PermissionScope::Unscoped,
+                },
+                policy_evaluation: PolicyDecision::Ask,
+                controller_decision: Some(ControllerDecision::AllowOnce),
+                effective: PolicyDecision::Allow,
+            },
         },
         AgentEvent::ToolFinished {
             operation_id,
@@ -219,7 +248,7 @@ async fn runtime_owns_history_across_turns() {
         ],
         Vec::new(),
     );
-    let mut runtime = RuntimeHandle::spawn(agent);
+    let mut runtime = spawn_runtime(agent);
     let first = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -267,7 +296,7 @@ async fn clear_resets_runtime_history() {
         ],
         Vec::new(),
     );
-    let mut runtime = RuntimeHandle::spawn(agent);
+    let mut runtime = spawn_runtime(agent);
     let first = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -311,7 +340,7 @@ async fn active_root_turn_rejects_a_second_submission_and_shutdown_interrupts() 
         started: Arc::clone(&started),
         release,
     }));
-    let mut runtime = RuntimeHandle::spawn(agent);
+    let mut runtime = spawn_runtime(agent);
     let active = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -359,7 +388,7 @@ async fn deltas_keep_operation_and_step_identity() {
         vec![Ok(Message::text(Role::Assistant, "hello"))],
         vec!["hel".to_owned(), "lo".to_owned()],
     );
-    let mut runtime = RuntimeHandle::spawn(agent);
+    let mut runtime = spawn_runtime(agent);
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -409,7 +438,7 @@ async fn dropped_event_receiver_does_not_fail_operation() {
         vec![Ok(Message::text(Role::Assistant, "still completes"))],
         vec!["still ".to_owned(), "completes".to_owned()],
     );
-    let RuntimeHandle { commands, events } = RuntimeHandle::spawn(agent);
+    let RuntimeHandle { commands, events } = spawn_runtime(agent);
     drop(events);
     commands
         .send(RuntimeCommand::SubmitTurn {
@@ -430,7 +459,7 @@ async fn dropped_event_receiver_does_not_fail_operation() {
 #[tokio::test]
 async fn failures_always_end_with_a_terminal_failed_state() {
     let (agent, _, _) = queue_agent(vec![Err("provider failed".to_owned())], Vec::new());
-    let mut runtime = RuntimeHandle::spawn(agent);
+    let mut runtime = spawn_runtime(agent);
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -443,79 +472,6 @@ async fn failures_always_end_with_a_terminal_failed_state() {
         receive_finished(&mut runtime, operation_id).await,
         OperationOutcome::Failed
     );
-}
-
-fn requested_action() -> crate::approval::RequestedAction {
-    crate::approval::RequestedAction {
-        tool_name: "run_command",
-        shell: "test shell",
-        command: "cargo test".to_owned(),
-        argv: "shell cargo test".to_owned(),
-        cwd: Path::new("workspace").to_owned(),
-    }
-}
-
-#[tokio::test]
-async fn approvals_are_correlated_reject_duplicates_and_clean_up() {
-    let (events, mut receiver) = mpsc::unbounded_channel();
-    let coordinator = Arc::new(ProvisionalApprovalCoordinator::new(events));
-    let operation_id = OperationId::new();
-    let invocation_id = ToolInvocationId::new();
-    let waiter = {
-        let coordinator = Arc::clone(&coordinator);
-        tokio::spawn(async move {
-            coordinator
-                .request(operation_id, invocation_id, &requested_action())
-                .await
-        })
-    };
-    assert!(matches!(
-        receiver.recv().await,
-        Some(AgentEvent::OperationStateChanged {
-            state: OperationState::Suspended,
-            ..
-        })
-    ));
-    assert!(matches!(
-        receiver.recv().await,
-        Some(AgentEvent::ProvisionalApprovalRequested { operation_id: actual_operation, invocation_id: actual_invocation, .. })
-            if actual_operation == operation_id && actual_invocation == invocation_id
-    ));
-    assert!(matches!(
-        coordinator
-            .request(operation_id, invocation_id, &requested_action())
-            .await,
-        Err(crate::approval::ApprovalError::DuplicatePending { .. })
-    ));
-    coordinator
-        .decide(operation_id, invocation_id, true)
-        .expect("matching decision");
-    assert!(waiter.await.expect("approval task").expect("decision"));
-    assert_eq!(coordinator.pending_count(), 0);
-    assert!(
-        coordinator
-            .decide(operation_id, invocation_id, false)
-            .is_err()
-    );
-}
-
-#[tokio::test]
-async fn approvals_fail_closed_without_a_controller() {
-    let (events, receiver) = mpsc::unbounded_channel();
-    drop(receiver);
-    let coordinator = ProvisionalApprovalCoordinator::new(events);
-
-    assert!(matches!(
-        coordinator
-            .request(
-                OperationId::new(),
-                ToolInvocationId::new(),
-                &requested_action()
-            )
-            .await,
-        Err(crate::approval::ApprovalError::ControllerUnavailable)
-    ));
-    assert_eq!(coordinator.pending_count(), 0);
 }
 
 #[test]
