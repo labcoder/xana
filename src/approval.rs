@@ -1,10 +1,7 @@
-//! Temporary per-call approval seam for local command execution.
-//!
-//! The neutral contract carries a fully resolved action. Frontends decide how
-//! to ask a controlling user; tools and the headless agent never read stdin or
-//! render prompts.
+//! Requested-action data shared by tools and the foreground approval protocol.
 
-use std::{error::Error, fmt, io, path::PathBuf};
+use crate::identity::{OperationId, ToolInvocationId};
+use std::{error::Error, fmt, path::PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RequestedAction {
@@ -15,29 +12,48 @@ pub(crate) struct RequestedAction {
     pub(crate) cwd: PathBuf,
 }
 
-pub(crate) trait ProvisionalApprover {
-    fn confirm(&self, action: &RequestedAction) -> Result<bool, ApprovalError>;
-}
-
-#[derive(Debug)]
-pub(crate) struct ApprovalError {
-    source: io::Error,
-}
-
-impl ApprovalError {
-    pub(crate) fn io(source: io::Error) -> Self {
-        Self { source }
+impl fmt::Display for RequestedAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} requests local host execution\nshell: {}\ncwd: {}\ncommand: {}\nargv: {}\nThis process uses Xana's ordinary host permissions; it is not contained.",
+            self.tool_name,
+            self.shell,
+            self.cwd.display(),
+            self.command,
+            self.argv
+        )
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ApprovalError {
+    DuplicatePending {
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+    },
+    ControllerUnavailable,
+    DecisionChannelClosed,
 }
 
 impl fmt::Display for ApprovalError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "could not request command approval: {}", self.source)
+        match self {
+            Self::DuplicatePending {
+                operation_id,
+                invocation_id,
+            } => write!(
+                f,
+                "approval {operation_id}/{invocation_id} is already pending"
+            ),
+            Self::ControllerUnavailable => {
+                write!(f, "no controlling client can receive the approval request")
+            }
+            Self::DecisionChannelClosed => {
+                write!(f, "the approval decision channel closed without a decision")
+            }
+        }
     }
 }
 
-impl Error for ApprovalError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(&self.source)
-    }
-}
+impl Error for ApprovalError {}

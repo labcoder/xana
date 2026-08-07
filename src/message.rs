@@ -3,29 +3,30 @@
 //! Provider adapters translate these ordered content blocks at their private
 //! wire boundary. Durable sessions will also record these internal types.
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum Role {
     System,
     User,
     Assistant,
     Tool,
 }
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ToolCall {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) arguments: Value,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ToolResultStatus {
     Success,
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ToolResult {
     pub(crate) call_id: String,
     pub(crate) output: String,
@@ -50,14 +51,14 @@ impl ToolResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ContentBlock {
     Text(String),
     ToolCall(ToolCall),
     ToolResult(ToolResult),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Message {
     pub(crate) role: Role,
     pub(crate) content: Vec<ContentBlock>,

@@ -1,5 +1,6 @@
 use super::workspace_path::{WorkspacePathError, resolve_existing};
-use super::{EffectClass, ReplaySafety, Tool, ToolDefinition};
+use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition};
+use futures::future::BoxFuture;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::error::Error;
@@ -207,8 +208,14 @@ impl Tool for ReadFile {
         }
     }
 
-    fn execute(&self, arguments: &Value, workspace_root: &Path) -> Result<String, String> {
-        read_file(arguments, workspace_root).map_err(|error| error.to_string())
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a Value,
+        context: ToolContext<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            read_file(arguments, context.workspace_root).map_err(|error| error.to_string())
+        })
     }
 }
 

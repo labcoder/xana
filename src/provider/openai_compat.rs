@@ -5,6 +5,7 @@
 
 mod client;
 mod convert;
+mod stream;
 mod wire;
 
 pub(crate) use client::OpenAiCompatClient;

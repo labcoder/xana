@@ -13,7 +13,7 @@ work structured lineage and cancellation.
 
 The smaller foreground protocol—one runtime owner, one active root turn,
 serializable commands/events/ids, live-only deltas, and observer-failure
-semantics—has been narrowed into accepted
+semantics—has been implemented through historical
 [Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
 Proposed for atomic client attachment, durable threads, hooks, child handles,
 structured concurrency, multi-client fan-out, and retained work.

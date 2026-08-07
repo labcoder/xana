@@ -1,18 +1,15 @@
-//! Bounded local command execution behind the temporary approval seam.
+//! Bounded local command execution behind the temporary approval protocol.
 
-use super::{EffectClass, ReplaySafety, Tool, ToolDefinition, workspace_path};
+use super::{EffectClass, ReplaySafety, Tool, ToolContext, ToolDefinition, workspace_path};
 use crate::{
-    approval::{ApprovalError, ProvisionalApprover, RequestedAction},
+    approval::{ApprovalError, RequestedAction},
     shell::{ProcessPlan, Shell, display_argv},
 };
+use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{
-    error::Error,
-    fmt, io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{error::Error, fmt, io, path::PathBuf};
+use tokio::process::Command;
 
 const MAX_STREAM_BYTES: usize = 32 * 1024;
 
@@ -36,7 +33,6 @@ struct CommandResult {
 
 pub(super) struct RunCommand {
     shell: Shell,
-    approver: Box<dyn ProvisionalApprover>,
 }
 
 #[derive(Debug)]
@@ -64,14 +60,14 @@ enum RunCommandError {
 }
 
 impl RunCommand {
-    pub(super) fn new(shell: Shell, approver: Box<dyn ProvisionalApprover>) -> Self {
-        Self { shell, approver }
+    pub(super) fn new(shell: Shell) -> Self {
+        Self { shell }
     }
 
-    fn execute_inner(
+    async fn execute_inner(
         &self,
         arguments: &Value,
-        workspace_root: &Path,
+        context: ToolContext<'_>,
     ) -> Result<CommandResult, RunCommandError> {
         let args: RunCommandArgs =
             serde_json::from_value(arguments.clone()).map_err(RunCommandError::InvalidArguments)?;
@@ -80,11 +76,13 @@ impl RunCommand {
             return Err(RunCommandError::BlankCommand);
         }
 
-        let resolved_cwd = workspace_path::resolve_existing(args.cwd.clone(), workspace_root)
-            .map_err(|source| RunCommandError::InvalidCwd {
-                requested: args.cwd,
-                source,
-            })?;
+        let resolved_cwd =
+            workspace_path::resolve_existing(args.cwd.clone(), context.workspace_root).map_err(
+                |source| RunCommandError::InvalidCwd {
+                    requested: args.cwd,
+                    source,
+                },
+            )?;
         if !resolved_cwd.canonical_path.is_dir() {
             return Err(RunCommandError::CwdNotDirectory {
                 requested: resolved_cwd.requested_path,
@@ -101,9 +99,10 @@ impl RunCommand {
             cwd: resolved_cwd.canonical_path,
         };
 
-        let approved = self
-            .approver
-            .confirm(&action)
+        let approved = context
+            .approvals
+            .request(context.operation_id, context.invocation_id, &action)
+            .await
             .map_err(RunCommandError::Approval)?;
         if !approved {
             return Err(RunCommandError::Declined {
@@ -112,10 +111,14 @@ impl RunCommand {
             });
         }
 
-        let output = Command::new(&plan.program)
+        let mut command = Command::new(&plan.program);
+        command
             .args(&plan.args)
             .current_dir(&action.cwd)
+            .kill_on_drop(true);
+        let output = command
             .output()
+            .await
             .map_err(|source| RunCommandError::Process {
                 plan: plan.clone(),
                 source,
@@ -170,12 +173,19 @@ impl Tool for RunCommand {
         }
     }
 
-    fn execute(&self, arguments: &Value, workspace_root: &Path) -> Result<String, String> {
-        let result = self
-            .execute_inner(arguments, workspace_root)
-            .map_err(|error| error.to_string())?;
-        serde_json::to_string(&result)
-            .map_err(|source| RunCommandError::Serialize(source).to_string())
+    fn execute<'a>(
+        &'a self,
+        arguments: &'a Value,
+        context: ToolContext<'a>,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let result = self
+                .execute_inner(arguments, context)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&result)
+                .map_err(|source| RunCommandError::Serialize(source).to_string())
+        })
     }
 }
 
@@ -222,226 +232,4 @@ impl Error for RunCommandError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        approval::RequestedAction,
-        shell::{ShellConfig, ShellKind},
-    };
-    use std::sync::{Arc, Mutex};
-    use tempfile::tempdir;
-
-    struct FixedApprover {
-        answer: bool,
-    }
-
-    impl ProvisionalApprover for FixedApprover {
-        fn confirm(&self, _action: &RequestedAction) -> Result<bool, ApprovalError> {
-            Ok(self.answer)
-        }
-    }
-
-    struct RecordingApprover {
-        action: Arc<Mutex<Option<RequestedAction>>>,
-        answer: bool,
-    }
-
-    impl ProvisionalApprover for RecordingApprover {
-        fn confirm(&self, action: &RequestedAction) -> Result<bool, ApprovalError> {
-            *self.action.lock().expect("action lock") = Some(action.clone());
-            Ok(self.answer)
-        }
-    }
-
-    fn platform_shell() -> Shell {
-        Shell::resolve(ShellConfig::default()).expect("platform shell")
-    }
-
-    fn tool(answer: bool) -> RunCommand {
-        RunCommand::new(platform_shell(), Box::new(FixedApprover { answer }))
-    }
-
-    #[test]
-    fn definition_declares_execute_and_never() {
-        let definition = tool(false).definition();
-
-        assert_eq!(definition.name, "run_command");
-        assert_eq!(definition.effect_class, EffectClass::Execute);
-        assert_eq!(definition.replay_safety, ReplaySafety::Never);
-        assert_eq!(definition.parameters["additionalProperties"], false);
-    }
-
-    #[test]
-    fn unknown_fields_fail_before_workspace_io() {
-        let unavailable_workspace = tempdir().expect("temporary parent").path().join("missing");
-        let result = tool(true).execute_inner(
-            &serde_json::json!({"command": "echo no", "unexpected": true}),
-            &unavailable_workspace,
-        );
-
-        assert!(matches!(result, Err(RunCommandError::InvalidArguments(_))));
-    }
-
-    #[test]
-    fn blank_command_fails_before_approval() {
-        let workspace = tempdir().expect("temporary workspace");
-        let action = Arc::new(Mutex::new(None));
-        let command = RunCommand::new(
-            platform_shell(),
-            Box::new(RecordingApprover {
-                action: Arc::clone(&action),
-                answer: true,
-            }),
-        );
-
-        let result = command.execute_inner(&serde_json::json!({"command": "  "}), workspace.path());
-
-        assert!(matches!(result, Err(RunCommandError::BlankCommand)));
-        assert!(action.lock().expect("action lock").is_none());
-    }
-
-    #[test]
-    fn outside_workspace_cwd_is_rejected() {
-        let workspace = tempdir().expect("temporary workspace");
-        let result = tool(true).execute_inner(
-            &serde_json::json!({"command": "echo no", "cwd": "../outside"}),
-            workspace.path(),
-        );
-
-        assert!(matches!(result, Err(RunCommandError::InvalidCwd { .. })));
-    }
-
-    #[test]
-    fn denial_prevents_even_an_invalid_program_from_spawning() {
-        let workspace = tempdir().expect("temporary workspace");
-        let shell = Shell::resolve(ShellConfig {
-            kind: ShellKind::Platform,
-            program: Some(PathBuf::from("definitely-not-a-real-xana-shell")),
-        })
-        .expect("custom shell plan");
-        let command = RunCommand::new(shell, Box::new(FixedApprover { answer: false }));
-
-        let result = command.execute_inner(
-            &serde_json::json!({"command": "echo should-not-run"}),
-            workspace.path(),
-        );
-
-        assert!(matches!(result, Err(RunCommandError::Declined { .. })));
-    }
-
-    #[test]
-    fn request_contains_exact_shell_command_and_canonical_cwd() {
-        let workspace = tempdir().expect("temporary workspace");
-        let nested = workspace.path().join("nested");
-        std::fs::create_dir(&nested).expect("nested cwd");
-        let action = Arc::new(Mutex::new(None));
-        let command = RunCommand::new(
-            platform_shell(),
-            Box::new(RecordingApprover {
-                action: Arc::clone(&action),
-                answer: false,
-            }),
-        );
-
-        command
-            .execute_inner(
-                &serde_json::json!({"command": "cargo test", "cwd": "nested"}),
-                workspace.path(),
-            )
-            .expect_err("recorded denial");
-        let action = action
-            .lock()
-            .expect("action lock")
-            .clone()
-            .expect("recorded action");
-
-        assert_eq!(action.tool_name, "run_command");
-        assert_eq!(action.command, "cargo test");
-        assert_eq!(
-            action.cwd,
-            nested.canonicalize().expect("canonical nested cwd")
-        );
-        assert!(action.argv.contains("cargo test"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn nonzero_exit_preserves_status_stdout_and_stderr() {
-        assert_nonzero_result("printf output; printf error >&2; exit 7");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn nonzero_exit_preserves_status_stdout_and_stderr() {
-        assert_nonzero_result(
-            "[Console]::Out.Write('output'); [Console]::Error.Write('error'); exit 7",
-        );
-    }
-
-    fn assert_nonzero_result(command: &str) {
-        let workspace = tempdir().expect("temporary workspace");
-        let result = tool(true)
-            .execute_inner(&serde_json::json!({"command": command}), workspace.path())
-            .expect("executed command");
-
-        assert!(!result.success);
-        assert_eq!(result.exit_code, Some(7));
-        assert_eq!(result.stdout, "output");
-        assert_eq!(result.stderr, "error");
-        assert!(!result.stdout_truncated);
-        assert!(!result.stderr_truncated);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn stdout_and_stderr_are_bounded_independently() {
-        assert_bounded_result(
-            "head -c 40000 /dev/zero | tr '\\0' o; head -c 40001 /dev/zero | tr '\\0' e >&2",
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn stdout_and_stderr_are_bounded_independently() {
-        assert_bounded_result(
-            "[Console]::Out.Write('o' * 40000); [Console]::Error.Write('e' * 40001)",
-        );
-    }
-
-    fn assert_bounded_result(command: &str) {
-        let workspace = tempdir().expect("temporary workspace");
-        let result = tool(true)
-            .execute_inner(&serde_json::json!({"command": command}), workspace.path())
-            .expect("executed command");
-
-        assert_eq!(result.stdout.len(), MAX_STREAM_BYTES);
-        assert_eq!(result.stderr.len(), MAX_STREAM_BYTES);
-        assert!(result.stdout.bytes().all(|byte| byte == b'o'));
-        assert!(result.stderr.bytes().all(|byte| byte == b'e'));
-        assert!(result.stdout_truncated);
-        assert!(result.stderr_truncated);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn platform_shell_execution_smoke_test() {
-        assert_smoke_result("printf xana-shell", "xana-shell");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn platform_shell_execution_smoke_test() {
-        assert_smoke_result("[Console]::Out.Write('xana-shell')", "xana-shell");
-    }
-
-    fn assert_smoke_result(command: &str, expected: &str) {
-        let workspace = tempdir().expect("temporary workspace");
-        let result = tool(true)
-            .execute_inner(&serde_json::json!({"command": command}), workspace.path())
-            .expect("executed command");
-
-        assert!(result.success);
-        assert_eq!(result.stdout, expected);
-        assert!(result.stderr.is_empty());
-    }
-}
+mod tests;

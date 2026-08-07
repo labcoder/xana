@@ -1,17 +1,58 @@
-//! Headless, bounded agent loop.
+//! Headless, bounded asynchronous agent loop.
 //!
-//! The agent receives owned provider, tool, workspace, and limit values. It
-//! does not read configuration, environment variables, or terminal state.
+//! The agent receives owned provider, prompt, tool, workspace, and limit
+//! values. Runtime services provide operation identity, approvals, and passive
+//! events; no frontend or process-global state enters here.
 
-use crate::message::{ContentBlock, Message, ToolCall};
-use crate::prompt::PromptSnapshot;
-use crate::provider::openai_compat::OpenAiCompatClient;
-use crate::tool::ToolRegistry;
+use crate::{
+    identity::{OperationId, StepId, ToolInvocationId},
+    message::{ContentBlock, Message, ToolCall},
+    prompt::PromptSnapshot,
+    runtime::{AgentEvent, ProvisionalApprovalCoordinator},
+    tool::{ToolContext, ToolDefinition, ToolRegistry},
+};
 use anyhow::{Result, bail};
-use std::path::PathBuf;
+use futures::future::BoxFuture;
+use std::{error::Error, fmt, path::PathBuf, sync::Arc};
+use tokio::sync::mpsc;
+
+pub(crate) trait ChatTransport: Send + Sync {
+    fn stream_message<'a>(
+        &'a self,
+        messages: &'a [Message],
+        tools: &'a [&'a ToolDefinition],
+        step_id: StepId,
+        deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ChatError>>;
+}
+
+pub(crate) trait DeltaSink: Send + Sync {
+    fn text_delta(&self, step_id: StepId, text: &str);
+}
+
+#[derive(Debug)]
+pub(crate) struct ChatError {
+    message: String,
+}
+
+impl ChatError {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for ChatError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for ChatError {}
 
 pub(crate) struct Agent {
-    provider: OpenAiCompatClient,
+    provider: Box<dyn ChatTransport>,
     tools: ToolRegistry,
     workspace_root: PathBuf,
     prompt: PromptSnapshot,
@@ -20,7 +61,7 @@ pub(crate) struct Agent {
 
 impl Agent {
     pub(crate) fn new(
-        provider: OpenAiCompatClient,
+        provider: Box<dyn ChatTransport>,
         tools: ToolRegistry,
         workspace_root: PathBuf,
         prompt: PromptSnapshot,
@@ -35,14 +76,26 @@ impl Agent {
         }
     }
 
-    pub(crate) fn run_turn(&self, messages: &mut Vec<Message>) -> Result<Message> {
+    pub(crate) async fn run_turn(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        approvals: Arc<ProvisionalApprovalCoordinator>,
+        events: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<Message> {
         let definitions = self.tools.definitions();
+        let delta_sink = EventDeltaSink {
+            operation_id,
+            events: events.clone(),
+        };
 
         for _ in 0..self.max_tool_rounds {
             let request_messages = self.prompt.messages_for_request(messages)?;
+            let step_id = StepId::new();
             let assistant = self
                 .provider
-                .send_message(&request_messages, &definitions)?;
+                .stream_message(&request_messages, &definitions, step_id, &delta_sink)
+                .await?;
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
@@ -52,8 +105,26 @@ impl Agent {
             messages.push(assistant);
 
             for call in calls {
-                let result = self.tools.execute(&call, &self.workspace_root);
-                messages.push(Message::tool_result(result));
+                let invocation_id = ToolInvocationId::new();
+                let result = self
+                    .tools
+                    .execute(
+                        &call,
+                        ToolContext {
+                            workspace_root: &self.workspace_root,
+                            operation_id,
+                            invocation_id,
+                            approvals: &approvals,
+                        },
+                    )
+                    .await;
+                let result_message = Message::tool_result(result);
+                let _ = events.send(AgentEvent::ToolFinished {
+                    operation_id,
+                    invocation_id,
+                    result: result_message.clone(),
+                });
+                messages.push(result_message);
             }
         }
 
@@ -61,6 +132,21 @@ impl Agent {
             "model exceeded the {}-round tool limit",
             self.max_tool_rounds
         )
+    }
+}
+
+struct EventDeltaSink {
+    operation_id: OperationId,
+    events: mpsc::UnboundedSender<AgentEvent>,
+}
+
+impl DeltaSink for EventDeltaSink {
+    fn text_delta(&self, step_id: StepId, text: &str) {
+        let _ = self.events.send(AgentEvent::AssistantTextDelta {
+            operation_id: self.operation_id,
+            step_id,
+            text: text.to_owned(),
+        });
     }
 }
 
@@ -76,89 +162,4 @@ fn requested_tools(message: &Message) -> Vec<ToolCall> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        context::ContextBudget,
-        message::Role,
-        prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
-    };
-    use tempfile::tempdir;
-
-    #[test]
-    fn requested_tools_preserve_model_order_and_values() {
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
-                ContentBlock::Text("I'll inspect both.".to_owned()),
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call-a".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "a.txt"}),
-                }),
-                ContentBlock::ToolCall(ToolCall {
-                    id: "call-b".to_owned(),
-                    name: "list_files".to_owned(),
-                    arguments: serde_json::json!({"path": "src"}),
-                }),
-            ],
-        };
-
-        let calls = requested_tools(&message);
-
-        assert_eq!(
-            calls,
-            vec![
-                ToolCall {
-                    id: "call-a".to_owned(),
-                    name: "read_file".to_owned(),
-                    arguments: serde_json::json!({"path": "a.txt"}),
-                },
-                ToolCall {
-                    id: "call-b".to_owned(),
-                    name: "list_files".to_owned(),
-                    arguments: serde_json::json!({"path": "src"}),
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn requested_tools_are_empty_for_final_text() {
-        let message = Message::text(Role::Assistant, "Finished.");
-
-        assert!(requested_tools(&message).is_empty());
-    }
-
-    #[test]
-    fn zero_round_limit_fails_before_history_changes() {
-        let provider =
-            OpenAiCompatClient::new("http://127.0.0.1:9/v1".to_owned(), "test-model".to_owned());
-        let tools = ToolRegistry::new();
-        let workspace = tempdir().expect("temporary workspace");
-        let environment = PromptEnvironment {
-            operating_system: "test".to_owned(),
-            working_directory: workspace.path().to_owned(),
-            configured_shell: "test shell".to_owned(),
-            surface: PromptSurface::Cli,
-        };
-        let prompt = assemble_snapshot(PromptInputs {
-            tool_definitions: &tools.definitions(),
-            environment: &environment,
-            product_documentation: None,
-            project_sources: &[],
-            budget: ContextBudget {
-                total_tokens: 8_192,
-                conversation_reserve_tokens: 2_048,
-            },
-        })
-        .expect("test prompt");
-        let agent = Agent::new(provider, tools, workspace.path().to_owned(), prompt, 0);
-        let mut messages = Vec::new();
-
-        let result = agent.run_turn(&mut messages);
-
-        assert!(result.is_err());
-        assert!(messages.is_empty());
-    }
-}
+mod tests;
