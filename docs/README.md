@@ -5,6 +5,9 @@ engineering contracts used to change it.
 
 ## Using Xana
 
+- [Source installation](user/installation.md) explains prerequisites,
+  checkout and Git installation, platform `XANA_HOME` syntax, updates, and
+  uninstall behavior.
 - [Configuration](user/configuration.md) explains initialization, provider and
   profile settings, platform paths, `XANA_HOME`, and configuration diagnostics.
 - [Project context and system prompt](user/project-context.md) explains the

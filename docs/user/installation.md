@@ -1,0 +1,113 @@
+# Source installation
+
+> Audience: People installing, updating, or removing Xana from source.
+
+Xana's developer preview is distributed as Rust source. It has no prebuilt
+binary archive, platform installer, package-manager channel, automatic updater,
+or crates.io release. Source compilation happens on the local machine.
+
+## Prerequisites
+
+Install Git and Rust through [rustup](https://rustup.rs/). Xana pins Rust
+`1.97.1` in `rust-toolchain.toml`; Cargo, rustfmt, and Clippy use that toolchain
+inside a checkout. Platform-default shell execution also requires `sh` on
+macOS/Linux or PowerShell on Windows. Git Bash and `cmd` are explicit Windows
+alternatives.
+
+## Install from a checkout
+
+```bash
+git clone https://github.com/labcoder/xana.git
+cd xana
+cargo install --path . --locked
+```
+
+`--locked` uses Xana's checked-in application dependency graph. Repeating the
+command rebuilds and replaces the installed Cargo binary when the source
+version changes.
+
+## Install from Git
+
+```bash
+cargo install --git https://github.com/labcoder/xana.git --locked
+```
+
+That command follows the repository's current default branch. For a reviewed,
+repeatable build, add `--rev COMMIT_SHA`. No Phase 2 release tag is claimed
+until one actually exists.
+
+Confirm which binary is on the path:
+
+```bash
+xana --version
+xana --help
+```
+
+## Choose Xana's home
+
+An unset `XANA_HOME` uses platform-standard directories. When set, it must be
+a nonempty native absolute path; Xana does not expand `~` and Windows Rust does
+not treat Git Bash's `/c/...` spelling as absolute.
+
+macOS or Linux:
+
+```bash
+export XANA_HOME="$HOME/.xana"
+```
+
+Windows PowerShell:
+
+```powershell
+$env:XANA_HOME = 'C:\Users\you\.xana'
+```
+
+Windows Git Bash:
+
+```bash
+export XANA_HOME='C:/Users/you/.xana'
+```
+
+The shell expands `$HOME` in the first example before Xana starts. Prefer the
+native `C:/...` form in Git Bash; do not pass `/c/...` or a literal `~/.xana`.
+
+## Initialize and verify
+
+Interactive setup:
+
+```bash
+xana init
+xana config check
+xana
+```
+
+For a disposable noninteractive local Ollama setup:
+
+```bash
+xana init --non-interactive \
+  --provider-name ollama \
+  --base-url http://localhost:11434/v1 \
+  --model qwen3:1.7b \
+  --shell platform \
+  --permission-mode ask
+xana config check
+```
+
+See [Configuration](configuration.md) for paths and schema,
+[Permissions](permissions.md) for host authority, [Project context and system
+prompt](project-context.md) for `AGENTS.md`, [Sessions](sessions.md) for durable
+history, and [Operation recovery](operations.md) for interrupted effects.
+
+## Update or remove
+
+Pull or select a reviewed Git revision, then repeat the relevant `cargo
+install ... --locked` command. This source channel does not update itself.
+
+Remove the Cargo-installed binary with:
+
+```bash
+cargo uninstall xana
+```
+
+Uninstalling the binary does not delete Xana's configuration, sessions, or
+artifacts. Report platform or installation failures at the repository's
+[issue tracker](https://github.com/labcoder/xana/issues).

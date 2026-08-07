@@ -4,18 +4,33 @@
 
 Xana is a small, extensible personal AI agent harness written in Rust. Its name comes from Asturian folklore: a xana is a mysterious guide associated with water, forests, and hidden places. The project reinterprets that idea as a guide within the system, making complex paths understandable without becoming a source of hidden authority.
 
-## Quick start from a source checkout
+## Install from source
 
-Run the first-time initializer, then start Xana:
+Xana's developer preview is built locally with the pinned Rust toolchain. From
+a checkout:
 
 ```bash
-cargo run -- init
-cargo run
+git clone https://github.com/labcoder/xana.git
+cd xana
+cargo install --path . --locked
+xana init
+xana config check
+xana
 ```
 
-The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint, asks which shell `run_command` should use, and selects `deny`, `ask`, or `allow` permission behavior with `ask` as the human default. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
+Install directly from the Git repository with:
 
-As an optional developer convenience, `cargo install --path . --locked` installs the checked-out source. It is not a Xana release or distribution channel.
+```bash
+cargo install --git https://github.com/labcoder/xana.git --locked
+```
+
+Use `--rev COMMIT_SHA` for a reviewed, repeatable Git build. Xana is not
+published to crates.io and does not provide prebuilt binaries, an installer,
+or automatic updates. See [Source installation](docs/user/installation.md) for
+Rust and shell prerequisites, platform-correct `XANA_HOME` examples, updates,
+and uninstall instructions.
+
+The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint, asks which shell `run_command` should use, and selects `deny`, `ask`, or `allow` permission behavior with `ask` as the human default. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
 
 ## Configuration
 
@@ -72,6 +87,8 @@ containment. See [Operation recovery](docs/user/operations.md).
 
 ## Documentation
 
+- [Source installation](docs/user/installation.md) explains supported Cargo
+  installation routes, prerequisites, platform homes, updates, and uninstall.
 - [Configuration](docs/user/configuration.md) is the user reference.
 - [Project context and system prompt](docs/user/project-context.md) explains root `AGENTS.md`, prompt layers, budgets, and trust boundaries.
 - [Permissions](docs/user/permissions.md) explains policy precedence, scopes, controller decisions, and host-access limits.

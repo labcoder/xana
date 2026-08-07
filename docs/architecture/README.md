@@ -327,6 +327,23 @@ override must be an absolute native path and maps Xana's backend state beneath
 one portable root. Path resolution is pure policy; it does not create or
 canonicalize the returned directories.
 
+## Distribution boundary
+
+Xana is a Cargo-installable source application pinned to Rust 1.97.1. The
+checked-in lockfile is part of its package contract, and supported checkout or
+Git installs use `cargo install ... --locked`. CI runs formatting, Clippy,
+tests, a reviewed package-path audit, and `cargo package --locked` on Linux,
+macOS, and Windows. The package includes its license, README, and User
+Documentation. Release builds retain Cargo's default profile; the measured
+Windows smoke binary was about 8.1 MiB, and no cross-platform evidence yet
+justifies custom LTO, stripping, panic, or codegen settings.
+
+There is no crates.io publication, prebuilt archive, platform installer,
+package-manager channel, automatic updater, or release tag claimed by the
+current repository. Publication and tagging remain separate owner-controlled
+effects, and the manifest currently sets `publish = false` to prevent an
+accidental registry upload.
+
 ## Source organization
 
 The crate establishes responsibility and I/O boundaries before it needs
