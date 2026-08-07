@@ -75,7 +75,10 @@ material value.
 Invocation authority and containment are addressed in
 [Proposal 0003](0003-tool-authority-and-execution.md). Proposed configuration
 and state ownership are addressed in
-[Proposal 0007](0007-state-ownership-and-configuration.md).
+[Proposal 0007](0007-state-ownership-and-configuration.md). Artifact-backed
+context inspection and derivation use the same logical-capability resolution
+rather than becoming ambient engine methods; see
+[Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
 ## Open questions
 

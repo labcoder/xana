@@ -70,7 +70,9 @@ found inside a document.
 
 Recovery must distinguish conversation from execution intent and outcome.
 Xana never infers replay safety from a broad effect label and never silently
-repeats an unfinished effect whose outcome is unknown.
+repeats an unfinished effect whose outcome is unknown. Durable correctness
+comes from explicit records, artifacts, and named values; a process or
+interpreter heap snapshot is always disposable.
 
 ## Separate capability, authority, and containment
 
@@ -89,7 +91,9 @@ writers. Use platform conventions by default and explicit portable overrides.
 ## Make concurrency structured
 
 Concurrent work has an owner, lineage, limits, cancellation path, and lifetime.
-Detached work that silently outlives its owning thread or operation is a bug.
+Admission, waiting, collection, and cancellation remain explicit operations,
+and total-work budgets cover both depth and breadth. Detached work that
+silently outlives its owning thread or operation is a bug.
 
 ## Keep the engine small through explicit seams
 
@@ -109,7 +113,17 @@ visible tools as a side effect of use.
 
 History, memory, tool output, and every other prompt source pass through an
 explicit token budget. Durable stores may grow; the automatically injected
-slice may not. Compaction is a deliberate state transition.
+slice may not. Large working data remains addressable outside the prompt
+through immutable or versioned references with provenance, trust, ownership,
+and bounded materialization. Compaction is a deliberate state transition.
+
+## Promote harness changes through evidence
+
+Prompts, memories, skills, routes, hooks, and child definitions are versioned
+inputs, not ambient self-modifying state. Keep a proposed change, declared
+validation, observed held-out result, promotion decision, and rollback path
+distinct. Untrusted content cannot promote itself into governing policy, and
+executable or security-policy changes never auto-promote.
 
 ## Be cross-platform by construction
 

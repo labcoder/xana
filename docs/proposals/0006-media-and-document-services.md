@@ -23,6 +23,12 @@ lifecycle and exposes a typed `ArtifactRef`. Provider adapters resolve and
 encode bytes at the wire edge; frontends fetch or render artifacts by
 reference.
 
+The same artifact store is the byte/document substrate for addressable external
+context. A context record adds versions, selectors, provenance, trust,
+ownership, hashes, and materialization budgets without introducing another
+blob store. See
+[Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
+
 Image generation is a focused service that an agent may see through a tool.
 Text-to-speech observes text output, while transcription produces user input;
 neither belongs in the conversational provider trait. Browser and desktop
@@ -73,5 +79,7 @@ developed in [Proposal 0003](0003-tool-authority-and-execution.md).
 - Which document formats and output structure belong in the first extractor
   contract?
 - Which artifacts are durable, disposable, or model-context-only?
+- Which extracted structures become reusable context views rather than only
+  rendered artifacts?
 - How is AnyDoc packaged without forcing it into every build?
 - Which parser workloads require process isolation before they are exposed?
