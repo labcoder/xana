@@ -13,6 +13,10 @@ the conversational provider interface into unrelated operations.
 
 ## Media and artifacts
 
+The immutable content-addressed artifact substrate is accepted separately by
+[Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
+Proposed for media blocks, document extraction, and focused media services.
+
 The internal conversation model continues to carry ordered content blocks.
 Image input can join text and tool blocks without exposing a provider wire
 format to the engine.

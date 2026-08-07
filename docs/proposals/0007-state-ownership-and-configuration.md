@@ -16,6 +16,10 @@ implemented through historical [Proposal 0011](0011-scoped-runtime-permissions.m
 remains Proposed for extension, route, secret, durable-state, and structured
 configuration-editing ownership described below.
 
+The durable `data/sessions` and `data/artifacts` ownership subset is accepted
+separately by [Proposal 0012](0012-durable-sessions-and-context.md). This
+proposal remains Proposed for the other state and configuration contracts.
+
 ## Proposed state ownership
 
 | State | Platform location | Portable-home location | Owner | Lifecycle |
