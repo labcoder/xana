@@ -1,0 +1,46 @@
+//! Xana runtime package.
+//!
+//! This package owns state, policy, persistence, services, and provider
+//! adapters. The `xana-cli` workspace member is the preferred installed
+//! binary; this library also exposes a small compatibility runner for source
+//! checkouts and integration tests.
+
+mod agent;
+mod app;
+mod artifact;
+mod cli;
+mod config;
+mod context;
+mod identity;
+mod init;
+mod message;
+mod operation;
+mod paths;
+mod permission;
+mod presentation;
+mod prompt;
+mod provider;
+mod runtime;
+mod session;
+mod shell;
+mod terminal;
+mod tool;
+
+use anyhow::{Context, Result};
+use clap::Parser;
+use cli::Cli;
+use paths::XanaPaths;
+
+/// Run the process-bound command using the runtime's stable CLI adapter.
+pub fn run() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not create Xana runtime")?;
+    runtime.block_on(async {
+        let cli = Cli::parse();
+        let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
+            .context("could not resolve Xana paths")?;
+        app::run(cli, paths).await
+    })
+}
