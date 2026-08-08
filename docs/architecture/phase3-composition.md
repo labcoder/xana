@@ -2,6 +2,9 @@
 
 Audience: contributors and coding agents. Authority: descriptive.
 
+The precise implemented subset and its deliberate gates are recorded in
+[proposal 0014](../proposals/0014-phase3-implemented-subset.md).
+
 Xana is a Cargo workspace with three packages:
 
 - `xana-core` contains provider-neutral messages, stable capability/tool ids,
