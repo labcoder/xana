@@ -47,6 +47,14 @@ impl From<PermissionChoice> for PermissionMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum InitConnectionKindChoice {
+    Ollama,
+    #[value(name = "openai_compat")]
+    OpenAiCompat,
+    Codex,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "xana", version, about = "A small personal AI agent harness")]
 pub(crate) struct Cli {
@@ -216,13 +224,25 @@ pub(crate) struct InitArgs {
     #[arg(long)]
     pub(crate) non_interactive: bool,
 
-    /// Name the OpenAI-compatible provider connection.
+    /// Select the first connection kind (defaults to openai_compat for compatibility).
+    #[arg(long, value_enum, value_name = "KIND")]
+    pub(crate) kind: Option<InitConnectionKindChoice>,
+
+    /// Name the first provider or managed-runtime connection.
     #[arg(long, value_name = "NAME")]
     pub(crate) provider_name: Option<String>,
 
     /// Set the provider's absolute HTTP(S) base URL.
     #[arg(long, value_name = "URL")]
     pub(crate) base_url: Option<String>,
+
+    /// Override the Codex executable for a managed Codex connection.
+    #[arg(long, value_name = "PROGRAM")]
+    pub(crate) codex_program: Option<String>,
+
+    /// Isolate a managed Codex connection in an absolute CODEX_HOME.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) codex_home: Option<PathBuf>,
 
     /// Select the model used by the default profile.
     #[arg(long, value_name = "MODEL")]
@@ -397,8 +417,11 @@ mod tests {
             cli.command,
             Some(Command::Init(InitArgs {
                 non_interactive: false,
+                kind: None,
                 provider_name: None,
                 base_url: None,
+                codex_program: None,
+                codex_home: None,
                 model: None,
                 max_tool_rounds: None,
                 shell: None,
@@ -415,6 +438,8 @@ mod tests {
             "xana",
             "init",
             "--non-interactive",
+            "--kind",
+            "ollama",
             "--provider-name",
             "ollama",
             "--base-url",
@@ -436,8 +461,11 @@ mod tests {
             cli.command,
             Some(Command::Init(InitArgs {
                 non_interactive: true,
+                kind: Some(InitConnectionKindChoice::Ollama),
                 provider_name: Some("ollama".to_owned()),
                 base_url: Some("http://localhost:11434/v1".to_owned()),
+                codex_program: None,
+                codex_home: None,
                 model: Some("qwen3:1.7b".to_owned()),
                 max_tool_rounds: Some(12),
                 shell: Some(ShellChoice::PowerShell),
@@ -446,6 +474,36 @@ mod tests {
                 dry_run: false,
             }))
         );
+    }
+
+    #[test]
+    fn parses_managed_codex_init() {
+        let cli = Cli::try_parse_from([
+            "xana",
+            "init",
+            "--non-interactive",
+            "--kind",
+            "codex",
+            "--provider-name",
+            "codex",
+            "--codex-program",
+            "codex-preview",
+            "--model",
+            "gpt-5.6-sol",
+            "--permission-mode",
+            "ask",
+        ])
+        .expect("managed Codex initialization");
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Init(InitArgs {
+                kind: Some(InitConnectionKindChoice::Codex),
+                codex_program: Some(program),
+                base_url: None,
+                ..
+            })) if program == "codex-preview"
+        ));
     }
 
     #[test]

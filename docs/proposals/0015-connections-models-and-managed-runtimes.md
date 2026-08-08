@@ -17,6 +17,8 @@ Implemented scope:
 - tagged environment or operating-system credential references with no
   plaintext fallback;
 - explicit bounded catalog refresh and non-secret caches;
+- first-run Ollama, custom OpenAI-compatible, or managed Codex connection
+  initialization;
 - unified `xana model`, advanced `xana connection`, and `/model` selection;
 - a Codex app-server managed runtime using Codex-owned ChatGPT login, account,
   refresh, model, turn, tool, sandbox, and approval behavior;

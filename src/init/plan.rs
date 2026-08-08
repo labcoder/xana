@@ -1,8 +1,8 @@
 //! Pure and scripted initialization planning.
 
 use crate::{
-    cli::InitArgs,
-    config::{InitialConfig, PermissionMode},
+    cli::{InitArgs, InitConnectionKindChoice},
+    config::{InitialConfig, InitialConnection, PermissionMode},
     shell::{ShellConfig, ShellKind},
 };
 use std::{
@@ -13,8 +13,10 @@ use std::{
 
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_PROMPT_ATTEMPTS: usize = 3;
-const OLLAMA_PROVIDER_NAME: &str = "ollama";
+const OLLAMA_CONNECTION_NAME: &str = "ollama";
 const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
+const CODEX_CONNECTION_NAME: &str = "codex";
+const DEFAULT_CODEX_PROGRAM: &str = "codex";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum InitPlan {
@@ -28,6 +30,7 @@ pub(crate) enum InitError {
     InteractiveTerminalRequired,
     InteractiveFlagsRequireNonInteractive,
     MissingNonInteractiveValues { fields: Vec<&'static str> },
+    IncompatibleNonInteractiveValues { reason: &'static str },
     InvalidPermissionMode { value: String },
     InvalidChoice { value: String },
     InvalidShellChoice { value: String },
@@ -44,19 +47,25 @@ impl fmt::Display for InitError {
             ),
             Self::InteractiveFlagsRequireNonInteractive => write!(
                 f,
-                "provider, model, round-limit, shell, and permission flags require --non-interactive"
+                "connection, model, round-limit, shell, and permission flags require --non-interactive"
             ),
             Self::MissingNonInteractiveValues { fields } => write!(
                 f,
                 "noninteractive setup is missing required flags: {}",
                 fields.join(", ")
             ),
+            Self::IncompatibleNonInteractiveValues { reason } => {
+                write!(f, "invalid noninteractive setup: {reason}")
+            }
             Self::InvalidPermissionMode { value } => write!(
                 f,
                 "invalid permission mode {value:?}; expected deny, ask, or allow"
             ),
             Self::InvalidChoice { value } => {
-                write!(f, "invalid connection choice {value:?}; expected 1 or 2")
+                write!(
+                    f,
+                    "invalid connection choice {value:?}; expected 1, 2, or 3"
+                )
             }
             Self::InvalidShellChoice { value } => write!(
                 f,
@@ -77,6 +86,7 @@ impl Error for InitError {
             Self::InteractiveTerminalRequired
             | Self::InteractiveFlagsRequireNonInteractive
             | Self::MissingNonInteractiveValues { .. }
+            | Self::IncompatibleNonInteractiveValues { .. }
             | Self::InvalidPermissionMode { .. }
             | Self::InvalidChoice { .. }
             | Self::InvalidShellChoice { .. }
@@ -113,8 +123,11 @@ pub(crate) fn plan<R: BufRead, W: Write>(
 }
 
 fn has_noninteractive_values(args: &InitArgs) -> bool {
-    args.provider_name.is_some()
+    args.kind.is_some()
+        || args.provider_name.is_some()
         || args.base_url.is_some()
+        || args.codex_program.is_some()
+        || args.codex_home.is_some()
         || args.model.is_some()
         || args.max_tool_rounds.is_some()
         || args.shell.is_some()
@@ -123,12 +136,13 @@ fn has_noninteractive_values(args: &InitArgs) -> bool {
 }
 
 fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
+    let kind = args.kind.unwrap_or(InitConnectionKindChoice::OpenAiCompat);
     let mut fields = Vec::new();
 
     if args.provider_name.is_none() {
         fields.push("--provider-name");
     }
-    if args.base_url.is_none() {
+    if kind == InitConnectionKindChoice::OpenAiCompat && args.base_url.is_none() {
         fields.push("--base-url");
     }
     if args.model.is_none() {
@@ -142,15 +156,50 @@ fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
         return Err(InitError::MissingNonInteractiveValues { fields });
     }
 
+    if kind == InitConnectionKindChoice::Codex && args.base_url.is_some() {
+        return Err(InitError::IncompatibleNonInteractiveValues {
+            reason: "Codex app-server uses stdio and does not accept --base-url",
+        });
+    }
+    if kind != InitConnectionKindChoice::Codex
+        && (args.codex_program.is_some() || args.codex_home.is_some())
+    {
+        return Err(InitError::IncompatibleNonInteractiveValues {
+            reason: "--codex-program and --codex-home require --kind codex",
+        });
+    }
+
+    let provider_name = args
+        .provider_name
+        .clone()
+        .expect("provider name presence was checked");
+    let connection = match kind {
+        InitConnectionKindChoice::Ollama => InitialConnection::Ollama {
+            name: provider_name,
+            base_url: args
+                .base_url
+                .clone()
+                .unwrap_or_else(|| OLLAMA_BASE_URL.to_owned()),
+        },
+        InitConnectionKindChoice::OpenAiCompat => InitialConnection::OpenAiCompatible {
+            name: provider_name,
+            base_url: args
+                .base_url
+                .clone()
+                .expect("base URL presence was checked"),
+        },
+        InitConnectionKindChoice::Codex => InitialConnection::Codex {
+            name: provider_name,
+            program: args
+                .codex_program
+                .clone()
+                .unwrap_or_else(|| DEFAULT_CODEX_PROGRAM.to_owned()),
+            home: args.codex_home.clone(),
+        },
+    };
+
     Ok(InitPlan::Create(InitialConfig {
-        provider_name: args
-            .provider_name
-            .clone()
-            .expect("provider name presence was checked"),
-        base_url: args
-            .base_url
-            .clone()
-            .expect("base URL presence was checked"),
+        connection,
         model: args.model.clone().expect("model presence was checked"),
         max_tool_rounds: args.max_tool_rounds.unwrap_or(DEFAULT_MAX_TOOL_ROUNDS),
         shell: ShellConfig {
@@ -174,26 +223,60 @@ fn plan_interactive<R: BufRead, W: Write>(
     writeln!(output, "First-time setup")?;
     writeln!(output)?;
     writeln!(output, "[1/4] Connection")?;
-    writeln!(output, "  1. Local Ollama (recommended)")?;
-    writeln!(output, "  2. Custom OpenAI-compatible endpoint")?;
+    writeln!(output, "  1. Local Ollama")?;
+    writeln!(output, "  2. ChatGPT subscription through Codex")?;
+    writeln!(output, "  3. Custom OpenAI-compatible endpoint")?;
 
     let Some(choice) = prompt_connection_choice(input, output)? else {
         return Ok(InitPlan::Cancelled);
     };
 
-    let (provider_name, base_url) = if choice == "1" {
-        (OLLAMA_PROVIDER_NAME.to_owned(), OLLAMA_BASE_URL.to_owned())
-    } else {
-        let Some(provider_name) = prompt(input, output, "Provider name: ")? else {
-            return Ok(InitPlan::Cancelled);
-        };
-        let Some(base_url) = prompt(input, output, "Base URL: ")? else {
-            return Ok(InitPlan::Cancelled);
-        };
-        (provider_name, base_url)
+    let connection = match choice.as_str() {
+        "1" => InitialConnection::Ollama {
+            name: OLLAMA_CONNECTION_NAME.to_owned(),
+            base_url: OLLAMA_BASE_URL.to_owned(),
+        },
+        "2" => {
+            let Some(program) =
+                prompt_with_default(input, output, "Codex executable", DEFAULT_CODEX_PROGRAM)?
+            else {
+                return Ok(InitPlan::Cancelled);
+            };
+            let Some(home) = prompt(
+                input,
+                output,
+                "Codex home (blank to share the Codex default): ",
+            )?
+            else {
+                return Ok(InitPlan::Cancelled);
+            };
+            InitialConnection::Codex {
+                name: CODEX_CONNECTION_NAME.to_owned(),
+                program,
+                home: (!home.trim().is_empty()).then(|| home.into()),
+            }
+        }
+        "3" => {
+            let Some(provider_name) = prompt(input, output, "Connection name: ")? else {
+                return Ok(InitPlan::Cancelled);
+            };
+            let Some(base_url) = prompt(input, output, "Base URL: ")? else {
+                return Ok(InitPlan::Cancelled);
+            };
+            InitialConnection::OpenAiCompatible {
+                name: provider_name,
+                base_url,
+            }
+        }
+        _ => unreachable!("connection choices are validated before planning"),
     };
 
-    let Some(model) = prompt(input, output, "Model (for example qwen3:1.7b): ")? else {
+    let model_prompt = if connection.is_codex() {
+        "Model (for example gpt-5.6-sol): "
+    } else {
+        "Model (for example qwen3:1.7b): "
+    };
+    let Some(model) = prompt(input, output, model_prompt)? else {
         return Ok(InitPlan::Cancelled);
     };
     let Some(max_tool_rounds) = prompt_round_limit(input, output)? else {
@@ -237,8 +320,24 @@ fn plan_interactive<R: BufRead, W: Write>(
 
     writeln!(output)?;
     writeln!(output, "[4/4] Review")?;
-    writeln!(output, "  Provider:            {provider_name}")?;
-    writeln!(output, "  Base URL:            {base_url}")?;
+    writeln!(output, "  Connection:          {}", connection.name())?;
+    match &connection {
+        InitialConnection::Ollama { base_url, .. } => {
+            writeln!(output, "  Kind:                Ollama")?;
+            writeln!(output, "  Base URL:            {base_url}")?;
+        }
+        InitialConnection::OpenAiCompatible { base_url, .. } => {
+            writeln!(output, "  Kind:                OpenAI-compatible")?;
+            writeln!(output, "  Base URL:            {base_url}")?;
+        }
+        InitialConnection::Codex { program, home, .. } => {
+            writeln!(output, "  Kind:                managed Codex")?;
+            writeln!(output, "  Codex executable:    {program}")?;
+            if let Some(home) = home {
+                writeln!(output, "  Codex home:          {}", home.display())?;
+            }
+        }
+    }
     writeln!(output, "  Model:               {model}")?;
     writeln!(output, "  Maximum tool rounds: {max_tool_rounds}")?;
     writeln!(
@@ -262,8 +361,7 @@ fn plan_interactive<R: BufRead, W: Write>(
     }
 
     Ok(InitPlan::Create(InitialConfig {
-        provider_name,
-        base_url,
+        connection,
         model,
         max_tool_rounds,
         shell,
@@ -371,12 +469,12 @@ fn prompt_connection_choice<R: BufRead, W: Write>(
             return Ok(None);
         };
 
-        if matches!(choice.as_str(), "1" | "2") {
+        if matches!(choice.as_str(), "1" | "2" | "3") {
             return Ok(Some(choice));
         }
 
         if attempt + 1 < MAX_PROMPT_ATTEMPTS {
-            writeln!(output, "Enter 1 or 2.")?;
+            writeln!(output, "Enter 1, 2, or 3.")?;
         } else {
             return Err(InitError::InvalidChoice { value: choice });
         }
@@ -464,8 +562,11 @@ mod tests {
     fn interactive_args() -> InitArgs {
         InitArgs {
             non_interactive: false,
+            kind: None,
             provider_name: None,
             base_url: None,
+            codex_program: None,
+            codex_home: None,
             model: None,
             max_tool_rounds: None,
             shell: None,
@@ -478,8 +579,11 @@ mod tests {
     fn noninteractive_args() -> InitArgs {
         InitArgs {
             non_interactive: true,
+            kind: Some(InitConnectionKindChoice::Ollama),
             provider_name: Some("ollama".to_owned()),
             base_url: Some(OLLAMA_BASE_URL.to_owned()),
+            codex_program: None,
+            codex_home: None,
             model: Some("qwen3:1.7b".to_owned()),
             max_tool_rounds: None,
             shell: None,
@@ -503,8 +607,10 @@ mod tests {
         assert_eq!(
             plan,
             InitPlan::Create(InitialConfig {
-                provider_name: "ollama".to_owned(),
-                base_url: OLLAMA_BASE_URL.to_owned(),
+                connection: InitialConnection::Ollama {
+                    name: "ollama".to_owned(),
+                    base_url: OLLAMA_BASE_URL.to_owned(),
+                },
                 model: "qwen3:1.7b".to_owned(),
                 max_tool_rounds: 8,
                 shell: ShellConfig::default(),
@@ -522,14 +628,16 @@ mod tests {
     #[test]
     fn interactive_custom_flow_carries_every_answer() {
         let (plan, _) =
-            scripted_plan("2\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nplatform\ncustom-shell\nallow\nyes\n")
+            scripted_plan("3\nlocal_test\nhttps://example.test/v1\nmodel-x\n4\nplatform\ncustom-shell\nallow\nyes\n")
                 .expect("custom setup plan");
 
         assert_eq!(
             plan,
             InitPlan::Create(InitialConfig {
-                provider_name: "local_test".to_owned(),
-                base_url: "https://example.test/v1".to_owned(),
+                connection: InitialConnection::OpenAiCompatible {
+                    name: "local_test".to_owned(),
+                    base_url: "https://example.test/v1".to_owned(),
+                },
                 model: "model-x".to_owned(),
                 max_tool_rounds: 4,
                 shell: ShellConfig {
@@ -539,6 +647,30 @@ mod tests {
                 permission_mode: PermissionMode::Allow,
             })
         );
+    }
+
+    #[test]
+    fn interactive_codex_flow_builds_a_managed_connection() {
+        let (plan, transcript) =
+            scripted_plan("2\n\n\ngpt-5.6-sol\n\n\n\n\ny\n").expect("Codex setup plan");
+
+        assert_eq!(
+            plan,
+            InitPlan::Create(InitialConfig {
+                connection: InitialConnection::Codex {
+                    name: "codex".to_owned(),
+                    program: "codex".to_owned(),
+                    home: None,
+                },
+                model: "gpt-5.6-sol".to_owned(),
+                max_tool_rounds: 8,
+                shell: ShellConfig::default(),
+                permission_mode: PermissionMode::Ask,
+            })
+        );
+        assert!(transcript.contains("ChatGPT subscription through Codex"));
+        assert!(transcript.contains("Codex executable [codex]:"));
+        assert!(transcript.contains("Kind:                managed Codex"));
     }
 
     #[test]
@@ -603,6 +735,47 @@ mod tests {
     }
 
     #[test]
+    fn noninteractive_codex_defaults_to_the_standard_executable() {
+        let mut args = noninteractive_args();
+        args.kind = Some(InitConnectionKindChoice::Codex);
+        args.provider_name = Some("codex".to_owned());
+        args.base_url = None;
+        args.model = Some("gpt-5.6-sol".to_owned());
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let planned =
+            plan(&args, false, &mut input, &mut output).expect("noninteractive Codex plan");
+
+        assert!(matches!(
+            planned,
+            InitPlan::Create(InitialConfig {
+                connection: InitialConnection::Codex { program, home: None, .. },
+                ..
+            }) if program == "codex"
+        ));
+        assert!(output.is_empty());
+        assert_eq!(input.position(), 0);
+    }
+
+    #[test]
+    fn noninteractive_codex_rejects_an_http_base_url() {
+        let mut args = noninteractive_args();
+        args.kind = Some(InitConnectionKindChoice::Codex);
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let error = plan(&args, false, &mut input, &mut output)
+            .expect_err("Codex base URL should be rejected");
+
+        assert!(matches!(
+            error,
+            InitError::IncompatibleNonInteractiveValues { reason }
+                if reason.contains("does not accept --base-url")
+        ));
+    }
+
+    #[test]
     fn piped_interactive_mode_is_rejected() {
         let mut input = Cursor::new(b"\nmodel\n\n\n\ny\ny\n");
         let mut output = Vec::new();
@@ -636,7 +809,7 @@ mod tests {
     #[test]
     fn invalid_choice_and_round_limit_retry_with_a_complete_transcript() {
         let (plan, transcript) = scripted_plan(
-            "9\n2\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\nplatform\n\n\ny\n",
+            "9\n3\ncustom\nhttps://example.test/v1\nmodel\nnot-a-number\n5\nplatform\n\n\ny\n",
         )
         .expect("retrying setup plan");
 
@@ -647,7 +820,7 @@ mod tests {
                 ..
             })
         ));
-        assert!(transcript.contains("Enter 1 or 2."));
+        assert!(transcript.contains("Enter 1, 2, or 3."));
         assert!(transcript.contains("Enter a whole number."));
     }
 

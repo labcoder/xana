@@ -120,15 +120,17 @@ fn create_config_file(path: &Path, rendered: &str) -> Result<WriteOutcome, InitF
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::InitialConfig;
+    use crate::config::{InitialConfig, InitialConnection};
     use tempfile::tempdir;
 
     const OLLAMA_BASE_URL: &str = "http://localhost:11434/v1";
 
     fn rendered_config(model: &str) -> String {
         XanaConfig::render_initial(InitialConfig {
-            provider_name: "ollama".to_owned(),
-            base_url: OLLAMA_BASE_URL.to_owned(),
+            connection: InitialConnection::Ollama {
+                name: "ollama".to_owned(),
+                base_url: OLLAMA_BASE_URL.to_owned(),
+            },
             model: model.to_owned(),
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),

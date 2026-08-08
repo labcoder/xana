@@ -15,15 +15,22 @@ xana config path
 xana config check
 ```
 
-The initializer creates an unauthenticated local Ollama or custom
-OpenAI-compatible connection, asks for the model, shell, bounded tool rounds,
-and `deny`/`ask`/`allow` permission default, then validates before a create-new
-write. It never replaces an existing file. `--dry-run` renders without writing;
-`--non-interactive` requires provider, URL, model, and permission values and
-never reads stdin.
+The initializer offers local Ollama, a ChatGPT subscription through the
+managed Codex runtime, or a custom OpenAI-compatible endpoint. It asks for the
+model plus the native-agent shell, bounded tool rounds, and
+`deny`/`ask`/`allow` permission default, then validates before a create-new
+write. Codex owns its own tool loop and approvals; the native defaults remain
+available if another connection is added later.
+
+Initialization never replaces an existing file. `--dry-run` renders without
+writing. `--non-interactive` never reads stdin and requires a connection name,
+model, and permission mode. Custom OpenAI-compatible setup also requires a
+base URL. Select the connection shape with `--kind ollama|openai_compat|codex`;
+omitting `--kind` retains the original `openai_compat` behavior.
 
 ```bash
 xana init --non-interactive \
+  --kind ollama \
   --provider-name ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
@@ -31,6 +38,24 @@ xana init --non-interactive \
   --shell platform \
   --permission-mode ask
 ```
+
+For a managed Codex first connection, no HTTP base URL or Xana credential is
+accepted:
+
+```bash
+xana init --non-interactive \
+  --kind codex \
+  --provider-name codex \
+  --model gpt-5.6-sol \
+  --permission-mode ask
+```
+
+`--codex-program PROGRAM` overrides the executable; `--codex-home PATH`
+selects an absolute isolated `CODEX_HOME`. Otherwise Xana launches `codex` and
+shares the normal Codex home. After interactive setup, use the printed
+`connection status`, `connection login`, `connection refresh`, and `model
+list` commands. Status is the first executable/runtime check; login remains an
+explicit account-changing action delegated to Codex.
 
 ## Connections and models
 

@@ -88,3 +88,37 @@ fn noninteractive_init_creates_once_and_config_check_loads_it() {
     assert_success(&check);
     assert!(String::from_utf8_lossy(&check.stdout).starts_with("configuration is valid:"));
 }
+
+#[test]
+fn noninteractive_codex_init_creates_a_valid_managed_connection() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let output = xana(&home)
+        .args([
+            "init",
+            "--non-interactive",
+            "--kind",
+            "codex",
+            "--provider-name",
+            "codex",
+            "--model",
+            "gpt-5.6-sol",
+            "--permission-mode",
+            "ask",
+        ])
+        .output()
+        .expect("initialize managed Codex connection");
+
+    assert_success(&output);
+    let config = std::fs::read_to_string(home.join("config.toml"))
+        .expect("read managed Codex configuration");
+    assert!(config.contains("kind = \"codex\""));
+    assert!(config.contains("codex_program = \"codex\""));
+    assert!(!config.contains("base_url"));
+
+    let check = xana(&home)
+        .args(["config", "check"])
+        .output()
+        .expect("check managed Codex configuration");
+    assert_success(&check);
+}

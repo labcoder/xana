@@ -1013,10 +1013,35 @@ fn run_init_with_io<R: BufRead, W: Write>(
         WriteOutcome::Created { path } => {
             writeln!(output, "Configuration created.")?;
             writeln!(output, "  Config:   {}", path.display())?;
-            writeln!(output, "  Provider: {}", initial.provider_name)?;
+            writeln!(output, "  Connection: {}", initial.connection.name())?;
             writeln!(output, "  Model:    {}", initial.model)?;
             writeln!(output)?;
-            writeln!(output, "Next: xana")?;
+            if initial.connection.is_codex() {
+                writeln!(output, "Next:")?;
+                writeln!(
+                    output,
+                    "  1. xana connection status {}",
+                    initial.connection.name()
+                )?;
+                writeln!(
+                    output,
+                    "  2. xana connection login {}",
+                    initial.connection.name()
+                )?;
+                writeln!(
+                    output,
+                    "  3. xana connection refresh {}",
+                    initial.connection.name()
+                )?;
+                writeln!(
+                    output,
+                    "  4. xana model list --connection {}",
+                    initial.connection.name()
+                )?;
+                writeln!(output, "  5. xana")?;
+            } else {
+                writeln!(output, "Next: xana")?;
+            }
         }
         WriteOutcome::AlreadyInitialized { path } => {
             writeln!(output, "Xana is already initialized.")?;
@@ -1072,7 +1097,7 @@ fn banner_mode(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::InitialConfig;
+    use crate::config::{InitialConfig, InitialConnection};
     use std::{fs, io::Cursor};
     use tempfile::tempdir;
 
@@ -1082,8 +1107,10 @@ mod tests {
         let paths = XanaPaths::resolve(Some(directory.path().as_os_str().to_owned()))
             .expect("absolute Xana home");
         let rendered = XanaConfig::render_initial(InitialConfig {
-            provider_name: "ollama".to_owned(),
-            base_url: "http://localhost:11434/v1".to_owned(),
+            connection: InitialConnection::Ollama {
+                name: "ollama".to_owned(),
+                base_url: "http://localhost:11434/v1".to_owned(),
+            },
             model: "model".to_owned(),
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
@@ -1116,8 +1143,11 @@ mod tests {
         let paths = XanaPaths::resolve(Some(root.into_os_string())).expect("absolute Xana home");
         let args = cli::InitArgs {
             non_interactive: true,
+            kind: Some(crate::cli::InitConnectionKindChoice::Ollama),
             provider_name: Some("ollama".to_owned()),
             base_url: Some("http://localhost:11434/v1".to_owned()),
+            codex_program: None,
+            codex_home: None,
             model: Some("model".to_owned()),
             max_tool_rounds: Some(8),
             shell: None,
@@ -1148,6 +1178,48 @@ mod tests {
     }
 
     #[test]
+    fn interactive_codex_init_writes_managed_runtime_and_next_steps() {
+        let directory = tempdir().expect("temporary Xana home");
+        let root = directory.path().join("xana-home");
+        let paths = XanaPaths::resolve(Some(root.into_os_string())).expect("absolute Xana home");
+        let args = cli::InitArgs {
+            non_interactive: false,
+            kind: None,
+            provider_name: None,
+            base_url: None,
+            codex_program: None,
+            codex_home: None,
+            model: None,
+            max_tool_rounds: None,
+            shell: None,
+            shell_program: None,
+            permission_mode: None,
+            dry_run: false,
+        };
+        let mut input = Cursor::new(b"2\n\n\ngpt-5.6-sol\n\n\n\n\ny\n");
+        let mut output = Vec::new();
+
+        run_init_with_io(
+            &args,
+            &paths,
+            true,
+            &mut input,
+            &mut output,
+            BannerMode::Hidden,
+        )
+        .expect("interactive Codex init");
+
+        let rendered = fs::read_to_string(paths.config_file()).expect("created configuration");
+        assert!(rendered.contains("kind = \"codex\""));
+        assert!(rendered.contains("codex_program = \"codex\""));
+        assert!(!rendered.contains("base_url"));
+        let transcript = String::from_utf8(output).expect("init output");
+        assert!(transcript.contains("xana connection status codex"));
+        assert!(transcript.contains("xana connection login codex"));
+        assert!(transcript.contains("xana model list --connection codex"));
+    }
+
+    #[test]
     fn dry_run_routes_without_creating_the_home() {
         let directory = tempdir().expect("temporary Xana home");
         let root = directory.path().join("xana-home");
@@ -1157,8 +1229,11 @@ mod tests {
             dry_run: true,
             ..cli::InitArgs {
                 non_interactive: true,
+                kind: Some(crate::cli::InitConnectionKindChoice::Ollama),
                 provider_name: Some("ollama".to_owned()),
                 base_url: Some("http://localhost:11434/v1".to_owned()),
+                codex_program: None,
+                codex_home: None,
                 model: Some("model".to_owned()),
                 max_tool_rounds: None,
                 shell: None,
