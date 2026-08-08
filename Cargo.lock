@@ -2073,7 +2073,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
-name = "xana"
+name = "xana-cli"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "xana-runtime",
+]
+
+[[package]]
+name = "xana-core"
+version = "0.2.0"
+dependencies = [
+ "futures",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "xana-runtime"
 version = "0.2.0"
 dependencies = [
  "anstream",
@@ -2090,6 +2107,7 @@ dependencies = [
  "tokio",
  "toml",
  "uuid",
+ "xana-core",
 ]
 
 [[package]]
