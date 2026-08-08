@@ -2,9 +2,10 @@
 
 > Audience: People installing, configuring, or using Xana.
 
-Xana loads one strict, versioned `config.toml`. Human-authored configuration
-declares connections and profiles; static secrets, cached catalogs, model
-selection, sessions, and artifacts live elsewhere.
+Xana loads one strict, versioned `config.toml`, with a 1 MiB file limit.
+Human-authored configuration declares connections and profiles; static
+secrets, cached catalogs, model selection, sessions, and artifacts live
+elsewhere.
 
 ## Initialize
 

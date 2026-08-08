@@ -78,8 +78,9 @@ and canonical scope. The available decisions are:
 A workspace session grant covers the same canonical path or a path beneath it.
 A command grant requires the same selected shell, canonical working directory,
 and exact command. The terminal cannot widen the scope in the request, and a
-session grant cannot override a matching deny rule or a default deny. Grants
-exist only in process memory and disappear when Xana exits.
+session grant cannot override a matching deny rule or a default deny. Exact
+duplicate grants reuse one entry; at most 256 distinct grants can exist in a
+process. Grants exist only in process memory and disappear when Xana exits.
 
 Blank input, EOF, an unknown or stale decision, controller loss, and an
 unattended ask all deny. A pending request is correlated by operation and tool

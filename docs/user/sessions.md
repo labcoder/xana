@@ -74,16 +74,23 @@ whether a torn tail is repairable. It does not render conversation content.
 
 ## Crash and corruption behavior
 
-Each append writes one bounded JSON object plus newline and flushes the file.
+Each append first validates that the record is a legal next state and that the
+active session remains within its total record and byte limits. It then writes
+one bounded JSON object plus newline, flushes the file, and incrementally
+updates the in-memory projection. A rejected record leaves the file unchanged.
+After any append I/O failure, that writer rejects further appends so a partial
+tail cannot become interior corruption.
 Xana claims process-crash recovery only at complete record boundaries. It does
 not claim power-loss durability or call `fsync`.
 
 A malformed physical tail after a valid newline-terminated prefix is a torn
 append. Read-only inspection reports the truncate offset. Explicit resume
 rechecks the complete file length and BLAKE3 hash, then truncates only that
-verified tail before opening for append. A complete JSON object without its
-final newline is treated as an uncommitted tail. Malformed newline-terminated
-interior data is visible corruption and is never skipped.
+verified tail before opening for append. The writer lock is held during that
+recheck and repair, so recovery cannot discard a concurrent append. A complete
+JSON object without its final newline is treated as an uncommitted tail.
+Malformed newline-terminated interior data is visible corruption and is never
+skipped.
 
 The session's companion `.lock` file is retained and locked only while a
 writer is active. It prevents a second Xana process from opening the same

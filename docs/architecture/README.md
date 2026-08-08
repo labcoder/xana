@@ -92,12 +92,15 @@ storage, and managed agent runtimes remain outside it. Native and managed
 composition are described in [Provider contracts](providers.md) and
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md).
 
-The OpenAI-compatible adapter incrementally decodes bounded SSE bytes. It
+The native HTTP adapters share one incremental, line-oriented SSE decoder. It
 supports arbitrary chunk boundaries, LF and CRLF frames, comments, multi-line
-data, and `[DONE]`; incomplete and oversized frames fail the turn. Indexed
-tool-call deltas accumulate id, name, and JSON argument fragments before they
-become one provider-neutral assistant message. Live text deltas are rendered
-immediately but only the completed message becomes conversation history.
+data, and bounded frames. Each adapter additionally caps aggregate text,
+tool-input, and content-block accumulation for the complete response; a peer
+cannot bypass the turn bound with many individually valid frames. Indexed
+OpenAI-compatible tool-call deltas accumulate id, name, and JSON argument
+fragments before they become one provider-neutral assistant message. Live text
+deltas are rendered immediately but only the completed message becomes
+conversation history.
 
 The provider-neutral conversation model includes a system role. The
 OpenAI-compatible adapter serializes that role and the changing conversation
@@ -134,10 +137,12 @@ configuration, permission state, or Xana's non-replaceable core.
 
 One estimated 32,768-token budget charges rendered system layers, exact tool
 schemas, selected previews, and actual history while reserving 8,192 tokens
-for conversation during assembly. The Phase 2 estimator uses one token per
-three Unicode scalar values, rounded up; it is not a provider tokenizer.
-Over-budget required input or history fails before provider I/O. Range and
-literal-search previews remain bounded, Unicode-safe, and provenance-bearing.
+for conversation during assembly. The Phase 2 text estimator uses one token
+per three Unicode scalar values, rounded up; image blocks reserve a
+provider-neutral, pixel-based conservative estimate instead of a textual
+placeholder. Neither estimate is a provider tokenizer. Over-budget required
+input or history fails before provider I/O. Range and literal-search previews
+remain bounded, Unicode-safe, and provenance-bearing.
 
 Prompt-layer ids are transient to one snapshot. Durable `ContextRecord`s carry
 id, monotonic version, artifact reference, kind, BLAKE3 hash, logical size,
@@ -191,10 +196,17 @@ Inspection is bounded to 256 KiB per record, 10,000 records, and 16 MiB per
 session. A malformed physical tail after a valid newline-terminated prefix
 returns a truncate plan; a complete object without its final newline is also
 uncommitted tail data. Interior malformed records are corruption. Opening for
-resume rechecks the inspected length and BLAKE3 hash before truncating a tail.
-An append writes one object plus newline and flushes before a corresponding
-committed runtime event is emitted. This promises process-crash record
-boundaries, not power-loss durability or `fsync`.
+resume acquires the writer lock before rechecking the inspected length and
+BLAKE3 hash or truncating a tail, so repair cannot discard a concurrent
+append. The same byte and record limits apply to active appends, not only
+later inspection. Each record is semantically validated before it is written,
+then incrementally applied to the in-memory projection after the append
+succeeds; invalid state never enters the journal and appends do not replay the
+full history. An append writes one object plus newline and flushes before a
+corresponding committed runtime event is emitted. This promises process-crash
+record boundaries, not power-loss durability or `fsync`. An append I/O failure
+poisons that writer so later bytes cannot turn a partial tail into interior
+corruption.
 
 Artifact bytes live at `data/artifacts/<blake3-hex>` and are capped at 4 MiB.
 Publishing writes and flushes a create-new temporary file, then uses a
@@ -265,9 +277,12 @@ registry:
   logical id.
 
 All tool paths are relative to Xana's launch workspace and must remain beneath
-that workspace after lexical and canonical resolution. Reads and resulting
-edits are capped at 64 KiB; directory listings are capped at 256 entries and
-64 KiB of output.
+that workspace after lexical and canonical resolution. Execution revalidates
+the planned canonical path and filesystem identity; file tools also verify the
+opened handle before reading or writing. This rejects ordinary replacement or
+symlink-retargeting races between permission planning and execution. Reads and
+resulting edits are capped at 64 KiB; directory listings are capped at 256
+entries and 64 KiB of output.
 
 The registry caches each validated, versioned definition beside its
 implementation and reports effect class separately from replay safety. It is
@@ -284,8 +299,10 @@ may validate metadata but performs no write, process, network, or external
 effect.
 
 `run_command` is `Execute` plus `ReplaySafety::Never`; its exact program argv,
-command, shell, and canonical cwd exist before authorization and spawn. Shell
-selection resolves once at the application edge: macOS/Linux support POSIX
+command, shell, and canonical cwd exist before authorization and spawn. Stdout
+and stderr are drained concurrently after their independent 32 KiB retention
+limits, so child output cannot force unbounded capture memory or deadlock on a
+full pipe. Shell selection resolves once at the application edge: macOS/Linux support POSIX
 `sh -lc`, while Windows supports PowerShell, Git Bash, and `cmd` through
 explicit configurations. A custom compatible program path may replace the
 default executable.
@@ -297,7 +314,8 @@ the configured default. An explicit or default deny cannot be overridden by a
 grant. An ask suspends its operation and accepts deny, allow once, or an exact
 current-session scope from the foreground terminal. Grants also bind tool and
 effect and cover only the same or a narrower workspace scope or an exact
-command scope. Unknown, stale, duplicate, mismatched, scope-widening, lost, and
+command scope. Exact duplicate grants reuse one entry and the in-memory set is
+capped at 256. Unknown, stale, duplicate, mismatched, scope-widening, lost, and
 unattended decisions fail closed.
 
 Each outcome emits a `PermissionAuditFact` binding operation and
@@ -328,11 +346,12 @@ builds a configuration draft without filesystem effects, renders the version
 creates `config.toml` without replacing an existing file. Path and
 configuration diagnostics do not construct an agent.
 
-Xana loads a strict version 1-or-2 `config.toml`. It validates named native and
-managed connections, tagged credential references, connection-owned model
+Xana loads a strict version 1-or-2 `config.toml`, capped at 1 MiB. It validates
+named native and managed connections, tagged credential references, connection-owned model
 overrides, profiles, Codex-only fields, shell policy, and permission rules.
-Model selection and bounded non-secret catalogs are stored separately so the
-control plane does not rewrite a user's normal selection into TOML. Structured
+Model selection (64 KiB maximum) and bounded non-secret catalogs (8 MiB each)
+are stored separately so the control plane does not rewrite a user's normal
+selection into TOML. Structured
 connection add/remove edits preserve comments and validate the complete
 result. Existing version 1 documents retain their behavior.
 
@@ -399,7 +418,8 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `permission` owns pure policy and scopes, pending controller decisions,
   session grants, and audit-fact values.
 - `session` owns the versioned envelope, bounded JSONL store, pure reduction,
-  durable context refresh, one writer, and resume/inspection summaries.
+  incremental projection, durable context refresh, one writer, and
+  resume/inspection summaries.
 - `artifact` owns BLAKE3 content identity, immutable publication, bounded
   verified reads, and logical artifact metadata.
 - `agent` and `message` contain the headless loop and internal conversation
@@ -411,6 +431,8 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   catalogs/selection, static secret ownership, and foreign runtime control.
   `managed/codex/events` is the bounded wire-to-domain event normalizer;
   `managed/thread_store` owns only opaque managed thread handles.
+- `process_capture` and `bounded_file` are shared constant-memory ingress
+  primitives for child output and small structured state files.
 - `tool` is a narrow facade over capability-composed private implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
   the application edge.
