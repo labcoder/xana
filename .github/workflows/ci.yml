@@ -41,5 +41,5 @@ jobs:
         shell: pwsh
         run: ./scripts/check-package-contents.ps1
 
-      - name: Verify source package
-        run: cargo package --locked
+      - name: Verify packageable source crate
+        run: cargo package --package xana-core --locked
