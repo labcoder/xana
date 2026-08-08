@@ -53,6 +53,22 @@ speech, transcription, embeddings, and document extraction have different
 contracts. Sharing a vendor or credential is not a reason to place unrelated
 optional methods on one provider interface.
 
+## Separate native inference from managed agent runtimes
+
+A provider that generates the next conversational message is not the same as
+a foreign runtime that owns an agent loop, tools, sandbox, approvals, account,
+and history. Share model-selection and frontend concepts where semantics align,
+but keep ownership explicit and never add an invisible outer model call merely
+to make the two paths look uniform.
+
+## Delegate vendor credentials to their owner
+
+Static API keys use one explicitly declared environment or OS credential-store
+source. When a vendor-owned local runtime supplies subscription login and token
+refresh, integrate through that runtime instead of copying its credentials or
+reimplementing private auth/backend protocols. No missing source silently falls
+back to another credential.
+
 ## Keep media durable by reference
 
 Large media belongs to an owner and lifecycle. Internal models, persisted

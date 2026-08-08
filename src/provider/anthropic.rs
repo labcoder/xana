@@ -4,13 +4,12 @@
 //! shape, and typed SSE events stay private here. The runtime only receives
 //! the provider-neutral message model and normalized stream deltas.
 
-#![allow(dead_code)]
-
 use crate::{
-    agent::{ChatError, ChatTransport, DeltaSink},
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
+    provider::{ConversationalProvider, DeltaSink, ProviderError},
     tool::ToolDefinition,
+    vision::MediaResolver,
 };
 use futures::{StreamExt, future::BoxFuture};
 use reqwest::Client;
@@ -18,7 +17,11 @@ use serde::Serialize;
 use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
-use std::{collections::BTreeMap, error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
@@ -51,6 +54,8 @@ struct WireMessage {
 enum WireContent {
     #[serde(rename = "text")]
     Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: WireImageSource },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -64,6 +69,14 @@ enum WireContent {
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         is_error: bool,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WireImageSource {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: String,
+    data: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +103,7 @@ fn convert_messages<'a>(
     tools: &[&'a ToolDefinition],
     model: &'a str,
     max_tokens: usize,
+    media: Option<&MediaResolver>,
 ) -> Result<WireRequest<'a>, AnthropicConversionError> {
     let mut system = Vec::new();
     let mut converted = Vec::new();
@@ -100,9 +114,7 @@ fn convert_messages<'a>(
                     match block {
                         ContentBlock::Text(text) => system.push(text.as_str()),
                         ContentBlock::Image(_) => {
-                            return Err(AnthropicConversionError::UnsupportedBlock(
-                                "image (Anthropic image stretch is not enabled)",
-                            ));
+                            return Err(AnthropicConversionError::UnsupportedBlock("system image"));
                         }
                         _ => return Err(AnthropicConversionError::MissingSystemText),
                     }
@@ -119,7 +131,7 @@ fn convert_messages<'a>(
                     content: message
                         .content
                         .iter()
-                        .map(convert_content)
+                        .map(|block| convert_content(block, media))
                         .collect::<Result<Vec<_>, _>>()?,
                 });
             }
@@ -157,12 +169,27 @@ fn convert_messages<'a>(
     })
 }
 
-fn convert_content(block: &ContentBlock) -> Result<WireContent, AnthropicConversionError> {
+fn convert_content(
+    block: &ContentBlock,
+    media: Option<&MediaResolver>,
+) -> Result<WireContent, AnthropicConversionError> {
     match block {
         ContentBlock::Text(text) => Ok(WireContent::Text { text: text.clone() }),
-        ContentBlock::Image(_) => Err(AnthropicConversionError::UnsupportedBlock(
-            "image (Anthropic image stretch is not enabled)",
-        )),
+        ContentBlock::Image(image) => {
+            let resolver = media.ok_or(AnthropicConversionError::UnsupportedBlock(
+                "image without a media resolver",
+            ))?;
+            let data = resolver
+                .resolve_base64(image)
+                .map_err(|_| AnthropicConversionError::UnsupportedBlock("unresolvable image"))?;
+            Ok(WireContent::Image {
+                source: WireImageSource {
+                    kind: "base64",
+                    media_type: image.media_type.clone(),
+                    data,
+                },
+            })
+        }
         ContentBlock::ToolCall(ToolCall {
             id,
             name,
@@ -180,7 +207,6 @@ fn convert_content(block: &ContentBlock) -> Result<WireContent, AnthropicConvers
 
 #[derive(Debug)]
 pub(crate) enum AnthropicError {
-    Conversion(AnthropicConversionError),
     Transport(reqwest::Error),
     Http(reqwest::Error),
     Stream(String),
@@ -188,20 +214,27 @@ pub(crate) enum AnthropicError {
 impl fmt::Display for AnthropicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Conversion(error) => error.fmt(f),
             Self::Transport(_) => f.write_str("could not reach Anthropic Messages API"),
             Self::Http(_) => f.write_str("Anthropic Messages API rejected the request"),
             Self::Stream(message) => write!(f, "invalid Anthropic stream: {message}"),
         }
     }
 }
-impl Error for AnthropicError {}
+impl Error for AnthropicError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport(source) | Self::Http(source) => Some(source),
+            Self::Stream(_) => None,
+        }
+    }
+}
 
 pub(crate) struct AnthropicClient {
     client: Client,
     endpoint: String,
     api_key: String,
     default_model: String,
+    media: Option<MediaResolver>,
 }
 
 impl AnthropicClient {
@@ -215,7 +248,17 @@ impl AnthropicClient {
             endpoint: format!("{}/v1/messages", base_url.into().trim_end_matches('/')),
             api_key: api_key.into(),
             default_model: model.into(),
+            media: None,
         }
+    }
+
+    pub(crate) fn with_media_resolver(mut self, media: MediaResolver) -> Self {
+        self.media = Some(media);
+        self
+    }
+
+    pub(crate) fn endpoint(&self) -> &str {
+        &self.endpoint
     }
 
     async fn stream_message_inner(
@@ -251,20 +294,26 @@ impl AnthropicClient {
     }
 }
 
-impl ChatTransport for AnthropicClient {
+impl ConversationalProvider for AnthropicClient {
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
         tools: &'a [&'a ToolDefinition],
         step_id: StepId,
         deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
         Box::pin(async move {
-            let request = convert_messages(messages, tools, &self.default_model, 4096)
-                .map_err(|error| ChatError::new(error.to_string()))?;
+            let request = convert_messages(
+                messages,
+                tools,
+                &self.default_model,
+                4096,
+                self.media.as_ref(),
+            )
+            .map_err(|error| ProviderError::new(error.to_string()))?;
             self.stream_message_inner(request, step_id, deltas)
                 .await
-                .map_err(|error| ChatError::new(error.to_string()))
+                .map_err(|error| ProviderError::new(error.to_string()))
         })
     }
 }
@@ -303,11 +352,24 @@ impl AnthropicSseDecoder {
     }
 }
 
+const MAX_STREAMED_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_STREAMED_TOOL_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Default)]
 struct AnthropicAccumulator {
-    text: String,
-    tool_calls: BTreeMap<usize, PartialAnthropicTool>,
+    message_started: bool,
+    message_stopped: bool,
+    blocks: BTreeMap<usize, PartialAnthropicBlock>,
+    stopped_blocks: BTreeSet<usize>,
+    stop_reason: Option<String>,
 }
+
+#[derive(Debug)]
+enum PartialAnthropicBlock {
+    Text(String),
+    Tool(PartialAnthropicTool),
+}
+
 #[derive(Debug, Default)]
 struct PartialAnthropicTool {
     id: String,
@@ -327,7 +389,16 @@ impl AnthropicAccumulator {
             .and_then(Value::as_str)
             .ok_or("event missing type")?;
         match kind {
+            "message_start" => {
+                if self.message_started {
+                    return Err("received duplicate message_start".into());
+                }
+                self.message_started = true;
+            }
             "content_block_start" => {
+                if !self.message_started || self.message_stopped {
+                    return Err("content block started outside an active message".into());
+                }
                 let index = event
                     .get("index")
                     .and_then(Value::as_u64)
@@ -335,82 +406,148 @@ impl AnthropicAccumulator {
                 let block = event
                     .get("content_block")
                     .ok_or("content block missing body")?;
-                match block.get("type").and_then(Value::as_str) {
-                    Some("text") => {}
-                    Some("tool_use") => {
-                        self.tool_calls.insert(
-                            index,
-                            PartialAnthropicTool {
-                                id: block
-                                    .get("id")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .into(),
-                                name: block
-                                    .get("name")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default()
-                                    .into(),
-                                input_json: String::new(),
-                            },
-                        );
-                    }
+                let partial = match block.get("type").and_then(Value::as_str) {
+                    Some("text") => PartialAnthropicBlock::Text(
+                        block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                    ),
+                    Some("tool_use") => PartialAnthropicBlock::Tool(PartialAnthropicTool {
+                        id: block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .into(),
+                        name: block
+                            .get("name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .into(),
+                        input_json: String::new(),
+                    }),
                     Some(other) => return Err(format!("unsupported content block {other}")),
                     None => return Err("content block missing type".into()),
+                };
+                if self.blocks.insert(index, partial).is_some() {
+                    return Err(format!("content block {index} started more than once"));
                 }
             }
             "content_block_delta" => {
+                if !self.message_started || self.message_stopped {
+                    return Err("content delta arrived outside an active message".into());
+                }
                 let index = event
                     .get("index")
                     .and_then(Value::as_u64)
                     .ok_or("content delta missing index")? as usize;
                 let delta = event.get("delta").ok_or("content delta missing body")?;
-                match delta.get("type").and_then(Value::as_str) {
-                    Some("text_delta") => {
+                if self.stopped_blocks.contains(&index) {
+                    return Err(format!("content delta arrived after block {index} stopped"));
+                }
+                let block = self
+                    .blocks
+                    .get_mut(&index)
+                    .ok_or_else(|| format!("content delta arrived before block {index} started"))?;
+                match (block, delta.get("type").and_then(Value::as_str)) {
+                    (PartialAnthropicBlock::Text(complete), Some("text_delta")) => {
                         let text = delta
                             .get("text")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
-                        self.text.push_str(text);
+                        if complete.len().saturating_add(text.len()) > MAX_STREAMED_TEXT_BYTES {
+                            return Err("streamed Anthropic text exceeded its byte limit".into());
+                        }
+                        complete.push_str(text);
                         deltas.text_delta(step_id, text);
                     }
-                    Some("input_json_delta") => {
-                        self.tool_calls
-                            .entry(index)
-                            .or_default()
-                            .input_json
-                            .push_str(
-                                delta
-                                    .get("partial_json")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or_default(),
+                    (PartialAnthropicBlock::Tool(tool), Some("input_json_delta")) => {
+                        let fragment = delta
+                            .get("partial_json")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default();
+                        if tool.input_json.len().saturating_add(fragment.len())
+                            > MAX_STREAMED_TOOL_BYTES
+                        {
+                            return Err(
+                                "streamed Anthropic tool input exceeded its byte limit".into()
                             );
+                        }
+                        tool.input_json.push_str(fragment);
                     }
-                    Some(other) => return Err(format!("unsupported content delta {other}")),
-                    None => return Err("content delta missing type".into()),
+                    (_, Some(other)) => {
+                        return Err(format!(
+                            "content delta {other} does not match block {index}"
+                        ));
+                    }
+                    (_, None) => return Err("content delta missing type".into()),
                 }
             }
-            "message_start" | "content_block_stop" | "message_delta" | "message_stop" | "ping" => {}
+            "content_block_stop" => {
+                let index = event
+                    .get("index")
+                    .and_then(Value::as_u64)
+                    .ok_or("content block stop missing index")?
+                    as usize;
+                if !self.blocks.contains_key(&index) {
+                    return Err(format!("content block {index} stopped before it started"));
+                }
+                if !self.stopped_blocks.insert(index) {
+                    return Err(format!("content block {index} stopped more than once"));
+                }
+            }
+            "message_delta" => {
+                self.stop_reason = event
+                    .pointer("/delta/stop_reason")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
+            }
+            "message_stop" => {
+                if !self.message_started || self.message_stopped {
+                    return Err("message_stop arrived outside an active message".into());
+                }
+                if self.stopped_blocks.len() != self.blocks.len() {
+                    return Err("message_stop arrived while a content block was active".into());
+                }
+                self.message_stopped = true;
+            }
+            "ping" => {}
             other => return Err(format!("unsupported Anthropic event {other}")),
         }
         Ok(())
     }
     fn finish(self) -> Result<Message, String> {
-        let mut content = Vec::new();
-        if !self.text.is_empty() {
-            content.push(ContentBlock::Text(self.text));
+        if !self.message_stopped {
+            return Err("Anthropic stream ended before message_stop".into());
         }
-        for (index, tool) in self.tool_calls {
-            if tool.id.is_empty() || tool.name.is_empty() {
-                return Err(format!("tool block {index} is missing id or name"));
+        let mut content = Vec::new();
+        for (expected, (index, block)) in self.blocks.into_iter().enumerate() {
+            if index != expected {
+                return Err(format!(
+                    "content block {index} was not the expected contiguous index {expected}"
+                ));
             }
-            let arguments = serde_json::from_str(&tool.input_json)
-                .map_err(|_| format!("tool block {index} has invalid JSON input"))?;
-            content.push(ContentBlock::ToolCall(ToolCall {
-                id: tool.id,
-                name: tool.name,
-                arguments,
-            }));
+            match block {
+                PartialAnthropicBlock::Text(text) => content.push(ContentBlock::Text(text)),
+                PartialAnthropicBlock::Tool(tool) => {
+                    if tool.id.is_empty() || tool.name.is_empty() {
+                        return Err(format!("tool block {index} is missing id or name"));
+                    }
+                    let input = if tool.input_json.is_empty() {
+                        "{}"
+                    } else {
+                        &tool.input_json
+                    };
+                    let arguments = serde_json::from_str(input)
+                        .map_err(|_| format!("tool block {index} has invalid JSON input"))?;
+                    content.push(ContentBlock::ToolCall(ToolCall {
+                        id: tool.id,
+                        name: tool.name,
+                        arguments,
+                    }));
+                }
+            }
         }
         Ok(Message {
             role: Role::Assistant,
@@ -422,7 +559,12 @@ impl AnthropicAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::ToolResult;
+    use crate::{
+        artifact::ArtifactStore,
+        identity::PrincipalId,
+        message::ToolResult,
+        vision::{ImageRef, MediaResolver},
+    };
 
     fn tool() -> ToolDefinition {
         ToolDefinition {
@@ -455,13 +597,38 @@ mod tests {
             }),
         ];
         let definition = tool();
-        let request = convert_messages(&messages, &[&definition], "claude", 1024).unwrap();
+        let request = convert_messages(&messages, &[&definition], "claude", 1024, None).unwrap();
         assert_eq!(request.system.as_deref(), Some("system"));
         assert!(matches!(
             request.messages[1].content[0],
             WireContent::ToolUse { .. }
         ));
         assert_eq!(request.messages[2].role, "user");
+    }
+
+    #[test]
+    fn image_content_uses_anthropic_base64_source_without_a_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(directory.path().join("artifacts"));
+        let (artifact, _) = store
+            .put(b"image", "image/png", PrincipalId::new())
+            .unwrap();
+        let messages = [Message {
+            role: Role::User,
+            content: vec![ContentBlock::Image(ImageRef {
+                artifact,
+                media_type: "image/png".into(),
+                byte_len: 5,
+                width: Some(1),
+                height: Some(1),
+            })],
+        }];
+        let resolver = MediaResolver::new(store, 64);
+        let request = convert_messages(&messages, &[], "claude", 1024, Some(&resolver)).unwrap();
+        let encoded = serde_json::to_string(&request).unwrap();
+        assert!(encoded.contains("\"type\":\"image\""));
+        assert!(encoded.contains("\"data\":\"aW1hZ2U=\""));
+        assert!(!encoded.contains(directory.path().to_str().unwrap()));
     }
 
     #[test]
@@ -474,11 +641,15 @@ mod tests {
         let sink = Sink;
         let step = StepId::new();
         for event in [
+            json!({"type":"message_start","message":{}}),
             json!({"type":"content_block_start","index":0,"content_block":{"type":"text"}}),
             json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hello"}}),
+            json!({"type":"content_block_stop","index":0}),
             json!({"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"c","name":"lookup","input":{}}}),
             json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"q\":"}}),
             json!({"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"x\"}"}}),
+            json!({"type":"content_block_stop","index":1}),
+            json!({"type":"message_delta","delta":{"stop_reason":"tool_use"}}),
             json!({"type":"message_stop"}),
         ] {
             accumulator.apply(&event, step, &sink).unwrap();
@@ -488,5 +659,32 @@ mod tests {
         assert!(
             matches!(&message.content[1], ContentBlock::ToolCall(call) if call.arguments == json!({"q":"x"}))
         );
+    }
+
+    #[test]
+    fn truncated_or_out_of_order_stream_never_returns_a_message() {
+        struct Sink;
+        impl DeltaSink for Sink {
+            fn text_delta(&self, _: StepId, _: &str) {}
+        }
+        let mut accumulator = AnthropicAccumulator::default();
+        let error = accumulator
+            .apply(
+                &json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"early"}}),
+                StepId::new(),
+                &Sink,
+            )
+            .unwrap_err();
+        assert!(error.contains("outside an active message"));
+
+        let mut accumulator = AnthropicAccumulator::default();
+        accumulator
+            .apply(
+                &json!({"type":"message_start","message":{}}),
+                StepId::new(),
+                &Sink,
+            )
+            .unwrap();
+        assert!(accumulator.finish().unwrap_err().contains("message_stop"));
     }
 }

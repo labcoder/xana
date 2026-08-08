@@ -184,6 +184,7 @@ pub(super) enum StreamError {
     InvalidUtf8(std::str::Utf8Error),
     InvalidJson(serde_json::Error),
     MissingChoice,
+    MissingDone,
     TextAfterToolCall,
     NonContiguousToolIndex {
         expected: usize,
@@ -212,6 +213,7 @@ impl fmt::Display for StreamError {
             Self::InvalidUtf8(_) => write!(f, "stream frame is not valid UTF-8"),
             Self::InvalidJson(_) => write!(f, "stream data is not valid response JSON"),
             Self::MissingChoice => write!(f, "stream response contained no choice"),
+            Self::MissingDone => write!(f, "stream ended before the [DONE] marker"),
             Self::TextAfterToolCall => write!(
                 f,
                 "streamed text after a tool call cannot preserve internal content order"
@@ -238,6 +240,7 @@ impl Error for StreamError {
             Self::FrameTooLarge { .. }
             | Self::IncompleteFrame { .. }
             | Self::MissingChoice
+            | Self::MissingDone
             | Self::TextAfterToolCall
             | Self::NonContiguousToolIndex { .. }
             | Self::MissingToolField { .. } => None,

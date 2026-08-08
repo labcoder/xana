@@ -1,34 +1,35 @@
 # Phase 3 composition services
 
-Audience: contributors and coding agents. Authority: descriptive.
+> Audience: Contributors and coding agents
+> Authority: Descriptive
 
-The precise implemented subset and its deliberate gates are recorded in
-[proposal 0014](../proposals/0014-phase3-implemented-subset.md).
+Xana is a Cargo workspace with dependency direction `xana-cli` ->
+`xana-runtime` -> `xana-core`. Core contains headless semantic contracts;
+runtime owns configuration, policy, persistence, provider and managed-runtime
+adapters, and built-in effects; CLI owns the installed binary facade.
 
-Xana is a Cargo workspace with three packages:
+The capability resolver separates installed descriptors, enabled/selected
+capabilities, dependency availability, logical tool conflicts, and the final
+immutable snapshot. Production built-ins are first resolved as capabilities;
+only the resulting logical tool names are instantiated in the runtime registry.
+Authorization remains an invocation-time permission-broker decision and is
+never implied by discovery.
 
-- `xana-core` contains provider-neutral messages, stable capability/tool ids,
-  image references, model capability checks, and headless service contracts.
-- `xana-runtime` owns configuration, policy, persistence, document extraction,
-  self-documentation, provider adapters, and the foreground runtime.
-- `xana-cli` owns the installed `xana` binary facade and delegates process
-  argument/environment handling to the runtime runner.
+The production snapshot currently exposes `read_file`, `list_files`,
+`edit_file`, `run_command`, `read_document`, and `xana_docs` in deterministic
+order. Adding or removing a capability requires a new agent composition; a
+model's schema does not mutate during a native turn.
 
-The runtime capability resolver accepts installed descriptors, enabled ids, and
-selected ids. It sorts provider and tool identities, rejects duplicate
-capabilities or logical tools, reports missing required dependencies and cycles,
-and freezes a `xana-core::AgentCapabilitySnapshot`. Authorization is still
-performed by the permission broker when a tool is invoked; discovery does not
-grant access.
+`self_docs` is a curated `include_str!` catalog with logical ids, audience,
+authority, lifecycle, topics, product version, traversal rejection, and an
+independent 32 KiB read limit. The system prompt lists available logical ids
+but does not inject all documentation. `xana_docs` performs bounded list/read
+operations so users can ask Xana about its own configuration and architecture.
 
-`xana-runtime::self_docs` is an explicit `include_str!` catalog. Logical ids,
-audience, authority, lifecycle status, and topics are compiled into the binary,
-and reads have independent byte and UTF-8 boundary checks. The catalog exposes
-the bounded `xana_docs` core tool. It describes Xana, not the current project.
-
-Document extraction is content-first and bytes-based. The runtime performs the
-checked file read and then sends bounded bytes to `DocumentExtractor`. The
-default `documents-anydoc` feature supports text and CSV-to-Markdown conversion;
-minimal builds can disable that feature while retaining the contract and text
-path. No parser receives a filesystem path, executes a helper, follows links,
-or persists secrets.
+Document extraction is content-first and bytes-based. `read_document` performs
+one checked, bounded workspace read, passes bytes rather than a path to the
+extractor, and returns bounded JSON. The default feature supports UTF-8 text
+and CSV-to-Markdown with independent input, cell-work, and output limits.
+Structured formats not implemented by this build fail explicitly; the parser
+does not execute helpers, follow links, perform network access, or persist
+secrets.

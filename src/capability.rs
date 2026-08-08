@@ -12,6 +12,15 @@ use std::{
 
 use xana_core::{AgentCapabilitySnapshot, CapabilityId, LogicalToolId, Tool, ToolRegistry};
 
+const BUILTIN_CAPABILITIES: &[(&str, &str)] = &[
+    ("fs.read", "read_file"),
+    ("fs.list", "list_files"),
+    ("fs.write", "edit_file"),
+    ("process.execute", "run_command"),
+    ("document.extract", "read_document"),
+    ("xana.docs.read", "xana_docs"),
+];
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProviderId(String);
 
@@ -314,6 +323,71 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
     })
 }
 
+/// Resolve the capabilities shipped in the Xana executable before concrete
+/// runtime tools are constructed. The returned names are the only built-ins
+/// exposed in the production tool registry.
+pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, ResolutionError> {
+    let provider_id = ProviderId::parse("xana.builtins")
+        .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
+    let mut capabilities = Vec::new();
+    let mut tools = Vec::new();
+    for (capability, tool) in BUILTIN_CAPABILITIES {
+        let capability = CapabilityId::parse(*capability)
+            .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
+        let tool_id = LogicalToolId::parse(*tool)
+            .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
+        capabilities.push(CapabilityDescriptor {
+            id: capability.clone(),
+            required: Vec::new(),
+            optional: Vec::new(),
+        });
+        tools.push(ToolContribution {
+            id: tool_id.clone(),
+            capability,
+            implementation: Arc::new(BuiltinMarkerTool { id: tool_id }),
+        });
+    }
+    let resolved = resolve(ResolutionInput {
+        providers: vec![ProviderDescriptor {
+            provider_id,
+            capabilities,
+            tools,
+        }],
+        enabled: BTreeSet::new(),
+        selected: BTreeSet::new(),
+    })?;
+    Ok(resolved
+        .snapshot
+        .tool_definitions()
+        .into_iter()
+        .map(|definition| definition.name.to_string())
+        .collect())
+}
+
+struct BuiltinMarkerTool {
+    id: LogicalToolId,
+}
+
+impl Tool for BuiltinMarkerTool {
+    fn definition(&self) -> xana_core::ToolDefinition {
+        xana_core::ToolDefinition {
+            name: self.id.clone(),
+            contract_version: 1,
+            description: "runtime-owned built-in capability marker".into(),
+            parameters: serde_json::json!({"type":"object"}),
+            effect_class: xana_core::EffectClass::Read,
+            replay_safety: xana_core::ReplaySafety::Safe,
+        }
+    }
+
+    fn invoke<'a>(
+        &'a self,
+        _: &'a serde_json::Value,
+    ) -> futures::future::BoxFuture<'a, Result<String, String>> {
+        Box::pin(async { Err("capability markers are not executable".into()) })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -469,5 +543,16 @@ mod tests {
             selected: BTreeSet::new(),
         });
         assert!(matches!(result, Err(ResolutionError::DuplicateTool { .. })));
+    }
+
+    #[test]
+    fn production_builtin_names_are_resolved_from_capability_descriptors() {
+        assert_eq!(
+            resolve_builtin_tool_names().unwrap(),
+            crate::tool::BUILTIN_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
+        );
     }
 }

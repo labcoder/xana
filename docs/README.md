@@ -29,6 +29,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
+- [Connections, models, and managed runtimes](architecture/models-and-managed-runtimes.md)
+  describes native providers, Codex delegation, catalogs, selection, and
+  credential ownership.
 - [Design Principles](principles.md) defines the durable constraints future
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their
@@ -37,6 +40,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   policy for modules, tests, comments, formatting, and tooling.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
   authority and audience terms.
+- [Architecture decisions](adr/README.md) contains sparse rationale for
+  consequential choices.
 
 Architecture Decision Records are created under `docs/adr/` only when a choice
 is costly to reverse, surprising without context, and the result of a genuine

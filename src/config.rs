@@ -14,10 +14,12 @@ use std::{
     collections::BTreeMap,
     error::Error,
     fmt, fs, io,
+    io::Write as _,
     path::{Path, PathBuf},
 };
 
-const CONFIG_VERSION: u32 = 1;
+const CONFIG_VERSION: u32 = 2;
+const MIN_CONFIG_VERSION: u32 = 1;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_MAX_TOOL_ROUNDS: usize = 64;
 
@@ -26,7 +28,7 @@ struct VersionHeader {
     version: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigDocument {
     version: u32,
@@ -40,10 +42,33 @@ struct ConfigDocument {
     profiles: BTreeMap<String, AgentProfile>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub(crate) enum ProviderKind {
     #[serde(rename = "openai_compat")]
     OpenAiCompat,
+    #[serde(rename = "ollama")]
+    Ollama,
+    #[serde(rename = "openai")]
+    OpenAi,
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    #[serde(rename = "anthropic")]
+    Anthropic,
+    #[serde(rename = "codex")]
+    Codex,
+}
+
+impl ProviderKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::OpenAiCompat => "openai_compat",
+            Self::Ollama => "ollama",
+            Self::OpenAi => "openai",
+            Self::OpenRouter => "openrouter",
+            Self::Anthropic => "anthropic",
+            Self::Codex => "codex",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,14 +89,41 @@ impl From<PermissionMode> for PolicyDecision {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum CredentialReference {
+    Environment { variable: String },
+    Stored { id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ModelOverride {
+    #[serde(default)]
+    pub(crate) input_modalities: Vec<String>,
+    pub(crate) tools: Option<bool>,
+    pub(crate) reasoning: Option<bool>,
+    pub(crate) context_tokens: Option<usize>,
+    pub(crate) max_output_tokens: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProviderConnection {
     kind: ProviderKind,
-    base_url: String,
+    #[serde(default)]
+    base_url: Option<String>,
+    #[serde(default)]
+    credential: Option<CredentialReference>,
+    #[serde(default)]
+    models: BTreeMap<String, ModelOverride>,
+    #[serde(default)]
+    codex_program: Option<String>,
+    #[serde(default)]
+    codex_home: Option<PathBuf>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentProfile {
     provider: String,
@@ -89,11 +141,51 @@ pub(crate) struct XanaConfig {
     pub(crate) provider_name: String,
     pub(crate) provider_kind: ProviderKind,
     pub(crate) base_url: String,
+    pub(crate) credential: Option<CredentialReference>,
+    pub(crate) codex_program: Option<String>,
+    pub(crate) codex_home: Option<PathBuf>,
     pub(crate) model: String,
     pub(crate) permission_mode: PermissionMode,
     pub(crate) permission_rules: Vec<PermissionRule>,
     pub(crate) shell: ShellConfig,
     pub(crate) max_tool_rounds: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConnectionConfig {
+    pub(crate) id: String,
+    pub(crate) kind: ProviderKind,
+    pub(crate) base_url: Option<String>,
+    pub(crate) credential: Option<CredentialReference>,
+    pub(crate) models: BTreeMap<String, ModelOverride>,
+    pub(crate) codex_program: Option<String>,
+    pub(crate) codex_home: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProfileConfig {
+    pub(crate) id: String,
+    pub(crate) connection: String,
+    pub(crate) model: String,
+    pub(crate) max_tool_rounds: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConnectionRegistry {
+    pub(crate) default_profile: String,
+    pub(crate) connections: BTreeMap<String, ConnectionConfig>,
+    pub(crate) profiles: BTreeMap<String, ProfileConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewConnection {
+    pub(crate) id: String,
+    pub(crate) kind: ProviderKind,
+    pub(crate) base_url: Option<String>,
+    pub(crate) credential: Option<CredentialReference>,
+    pub(crate) model: String,
+    pub(crate) codex_program: Option<String>,
+    pub(crate) codex_home: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -138,6 +230,30 @@ pub(crate) enum ConfigError {
     InvalidBaseUrl {
         provider: String,
         reason: &'static str,
+    },
+    InvalidCredential {
+        provider: String,
+        reason: &'static str,
+    },
+    InvalidCodexHome {
+        provider: String,
+    },
+    InvalidCodexConfiguration {
+        provider: String,
+        reason: &'static str,
+    },
+    InvalidModelModality {
+        provider: String,
+        model: String,
+        modality: String,
+    },
+    Edit(String),
+    ConnectionAlreadyExists {
+        name: String,
+    },
+    ConnectionReferenced {
+        name: String,
+        profiles: Vec<String>,
     },
     InvalidToolRoundLimit {
         profile: String,
@@ -185,6 +301,39 @@ impl fmt::Display for ConfigError {
             Self::InvalidBaseUrl { provider, reason } => {
                 write!(f, "provider {provider:?} has an invalid base URL: {reason}")
             }
+            Self::InvalidCredential { provider, reason } => {
+                write!(
+                    f,
+                    "provider {provider:?} has an invalid credential reference: {reason}"
+                )
+            }
+            Self::InvalidCodexHome { provider } => write!(
+                f,
+                "provider {provider:?} must use an absolute codex_home and only Codex connections may set it"
+            ),
+            Self::InvalidCodexConfiguration { provider, reason } => {
+                write!(
+                    f,
+                    "provider {provider:?} has invalid Codex configuration: {reason}"
+                )
+            }
+            Self::InvalidModelModality {
+                provider,
+                model,
+                modality,
+            } => write!(
+                f,
+                "provider {provider:?} model {model:?} declares unknown input modality {modality:?}"
+            ),
+            Self::Edit(reason) => write!(f, "could not edit config.toml: {reason}"),
+            Self::ConnectionAlreadyExists { name } => {
+                write!(f, "provider connection {name:?} already exists")
+            }
+            Self::ConnectionReferenced { name, profiles } => write!(
+                f,
+                "provider connection {name:?} is still referenced by profile(s): {}",
+                profiles.join(", ")
+            ),
             Self::InvalidToolRoundLimit { profile, value } => write!(
                 f,
                 "profile {profile:?} has max_tool_rounds = {value}; expected 1..={MAX_MAX_TOOL_ROUNDS}"
@@ -212,6 +361,13 @@ impl Error for ConfigError {
             | Self::UnknownProvider { .. }
             | Self::EmptyModel { .. }
             | Self::InvalidBaseUrl { .. }
+            | Self::InvalidCredential { .. }
+            | Self::InvalidCodexHome { .. }
+            | Self::InvalidCodexConfiguration { .. }
+            | Self::InvalidModelModality { .. }
+            | Self::Edit(_)
+            | Self::ConnectionAlreadyExists { .. }
+            | Self::ConnectionReferenced { .. }
             | Self::InvalidToolRoundLimit { .. } => None,
         }
     }
@@ -255,7 +411,7 @@ impl XanaConfig {
     pub(crate) fn parse(input: &str) -> Result<Self, ConfigError> {
         let header: VersionHeader = toml::from_str(input).map_err(ConfigError::Decode)?;
 
-        if header.version != CONFIG_VERSION {
+        if !(MIN_CONFIG_VERSION..=CONFIG_VERSION).contains(&header.version) {
             return Err(ConfigError::UnsupportedVersion {
                 found: header.version,
             });
@@ -281,7 +437,11 @@ impl XanaConfig {
             provider_name.clone(),
             ProviderConnection {
                 kind: ProviderKind::OpenAiCompat,
-                base_url,
+                base_url: Some(base_url),
+                credential: None,
+                models: BTreeMap::new(),
+                codex_program: None,
+                codex_home: None,
             },
         );
 
@@ -310,6 +470,133 @@ impl XanaConfig {
 
         Ok(rendered)
     }
+
+    pub(crate) fn load_registry_from(path: &Path) -> Result<ConnectionRegistry, ConfigError> {
+        let input = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let header: VersionHeader = toml::from_str(&input).map_err(ConfigError::Decode)?;
+        if !(MIN_CONFIG_VERSION..=CONFIG_VERSION).contains(&header.version) {
+            return Err(ConfigError::UnsupportedVersion {
+                found: header.version,
+            });
+        }
+        let document: ConfigDocument = toml::from_str(&input).map_err(ConfigError::Decode)?;
+        validate_document(&document)?;
+        Ok(registry_from_document(document))
+    }
+
+    pub(crate) fn add_connection(path: &Path, input: NewConnection) -> Result<(), ConfigError> {
+        validate_name("provider", &input.id)?;
+        if input.model.trim().is_empty() {
+            return Err(ConfigError::EmptyModel {
+                profile: format!("provider {} model", input.id),
+            });
+        }
+        let source = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let providers = document
+            .get_mut("providers")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?;
+        if providers.contains_key(&input.id) {
+            return Err(ConfigError::ConnectionAlreadyExists { name: input.id });
+        }
+        let mut connection = toml_edit::Table::new();
+        connection["kind"] = toml_edit::value(input.kind.as_str());
+        if let Some(base_url) = input.base_url {
+            connection["base_url"] = toml_edit::value(base_url);
+        }
+        if let Some(reference) = input.credential {
+            let mut credential = toml_edit::InlineTable::new();
+            match reference {
+                CredentialReference::Environment { variable } => {
+                    credential.insert("source", "environment".into());
+                    credential.insert("variable", variable.into());
+                }
+                CredentialReference::Stored { id } => {
+                    credential.insert("source", "stored".into());
+                    credential.insert("id", id.into());
+                }
+            }
+            connection["credential"] =
+                toml_edit::Item::Value(toml_edit::Value::InlineTable(credential));
+        }
+        if let Some(program) = input.codex_program {
+            connection["codex_program"] = toml_edit::value(program);
+        }
+        if let Some(home) = input.codex_home {
+            connection["codex_home"] = toml_edit::value(home.to_string_lossy().into_owned());
+        }
+        let mut models = toml_edit::Table::new();
+        models[&input.model] = toml_edit::Item::Table(toml_edit::Table::new());
+        connection["models"] = toml_edit::Item::Table(models);
+        providers[&input.id] = toml_edit::Item::Table(connection);
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        Self::parse(&rendered)?;
+        atomic_config_write(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let registry = Self::load_registry_from(path)?;
+        if !registry.connections.contains_key(id) {
+            return Err(ConfigError::UnknownProvider {
+                profile: "connection remove".into(),
+                provider: id.to_owned(),
+            });
+        }
+        let profiles = registry
+            .profiles
+            .values()
+            .filter(|profile| profile.connection == id)
+            .map(|profile| profile.id.clone())
+            .collect::<Vec<_>>();
+        if !profiles.is_empty() {
+            return Err(ConfigError::ConnectionReferenced {
+                name: id.to_owned(),
+                profiles,
+            });
+        }
+        let source = fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        document
+            .get_mut("providers")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?
+            .remove(id);
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        Self::parse(&rendered)?;
+        atomic_config_write(path, rendered.as_bytes())
+    }
+}
+
+fn atomic_config_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    let mut file =
+        atomic_write_file::AtomicWriteFile::open(path).map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    file.write_all(bytes).map_err(|source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    file.commit().map_err(|source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    })
 }
 
 impl ConfigError {
@@ -321,16 +608,85 @@ impl ConfigError {
     }
 }
 
-fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, ConfigError> {
-    debug_assert_eq!(document.version, CONFIG_VERSION);
-
+fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
     Shell::resolve(document.shell.clone()).map_err(ConfigError::InvalidShell)?;
     PermissionPolicy::validate_rules(&document.permission_rules)
         .map_err(ConfigError::InvalidPermissionPolicy)?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
-        validate_base_url(name, &provider.base_url)?;
+        if provider.kind == ProviderKind::Codex && provider.base_url.is_some() {
+            return Err(ConfigError::InvalidCodexConfiguration {
+                provider: name.clone(),
+                reason: "Codex app-server uses stdio and does not accept base_url",
+            });
+        }
+        if provider.kind != ProviderKind::Codex && provider.codex_program.is_some() {
+            return Err(ConfigError::InvalidCodexConfiguration {
+                provider: name.clone(),
+                reason: "only Codex connections may set codex_program",
+            });
+        }
+        if provider
+            .codex_program
+            .as_deref()
+            .is_some_and(|program| program.trim().is_empty())
+        {
+            return Err(ConfigError::InvalidCodexConfiguration {
+                provider: name.clone(),
+                reason: "codex_program cannot be blank",
+            });
+        }
+        if let Some(base_url) = provider.base_url.as_deref() {
+            validate_base_url(name, base_url)?;
+        } else if default_base_url(provider.kind).is_none() {
+            return Err(ConfigError::InvalidBaseUrl {
+                provider: name.clone(),
+                reason: "this provider kind requires base_url",
+            });
+        }
+        if provider.kind == ProviderKind::Codex && provider.credential.is_some() {
+            return Err(ConfigError::InvalidCredential {
+                provider: name.clone(),
+                reason: "Codex app-server owns its account credentials",
+            });
+        }
+        if matches!(
+            provider.kind,
+            ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
+        ) && provider.credential.is_none()
+        {
+            return Err(ConfigError::InvalidCredential {
+                provider: name.clone(),
+                reason: "an API connection requires a credential reference",
+            });
+        }
+        if let Some(credential) = &provider.credential {
+            validate_credential(name, credential)?;
+        }
+        if let Some(home) = &provider.codex_home
+            && (!home.is_absolute() || provider.kind != ProviderKind::Codex)
+        {
+            return Err(ConfigError::InvalidCodexHome {
+                provider: name.clone(),
+            });
+        }
+        for (model, descriptor) in &provider.models {
+            if model.trim().is_empty() {
+                return Err(ConfigError::EmptyModel {
+                    profile: format!("provider {name} model override"),
+                });
+            }
+            for modality in &descriptor.input_modalities {
+                if !matches!(modality.as_str(), "text" | "image") {
+                    return Err(ConfigError::InvalidModelModality {
+                        provider: name.clone(),
+                        model: model.clone(),
+                        modality: modality.clone(),
+                    });
+                }
+            }
+        }
     }
 
     for (name, profile) in &document.profiles {
@@ -359,6 +715,18 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
 
     validate_name("default profile", &document.default_profile)?;
 
+    if !document.profiles.contains_key(&document.default_profile) {
+        return Err(ConfigError::MissingDefaultProfile {
+            name: document.default_profile.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, ConfigError> {
+    validate_document(&document)?;
+
     let default_profile_name = document.default_profile;
     let profile = document.profiles.remove(&default_profile_name).ok_or(
         ConfigError::MissingDefaultProfile {
@@ -372,16 +740,109 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         .remove(&provider_name)
         .expect("all profile provider references were validated");
 
+    let base_url = provider
+        .base_url
+        .clone()
+        .or_else(|| default_base_url(provider.kind).map(str::to_owned))
+        .expect("provider base URL requirements were validated");
+
     Ok(XanaConfig {
         provider_name,
         provider_kind: provider.kind,
-        base_url: provider.base_url,
+        base_url,
+        credential: provider.credential,
+        codex_program: provider.codex_program,
+        codex_home: provider.codex_home,
         model: profile.model,
         permission_mode: document.permission_mode,
         permission_rules: document.permission_rules,
         shell: document.shell,
         max_tool_rounds: profile.max_tool_rounds,
     })
+}
+
+fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
+    let mut connections = document
+        .providers
+        .into_iter()
+        .map(|(id, provider)| {
+            let connection = ConnectionConfig {
+                id: id.clone(),
+                kind: provider.kind,
+                base_url: provider
+                    .base_url
+                    .or_else(|| default_base_url(provider.kind).map(str::to_owned)),
+                credential: provider.credential,
+                models: provider.models,
+                codex_program: provider.codex_program,
+                codex_home: provider.codex_home,
+            };
+            (id, connection)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let profiles = document
+        .profiles
+        .into_iter()
+        .map(|(id, profile)| {
+            connections
+                .get_mut(&profile.provider)
+                .expect("profile references were validated")
+                .models
+                .entry(profile.model.clone())
+                .or_default();
+            (
+                id.clone(),
+                ProfileConfig {
+                    id,
+                    connection: profile.provider,
+                    model: profile.model,
+                    max_tool_rounds: profile.max_tool_rounds,
+                },
+            )
+        })
+        .collect();
+    ConnectionRegistry {
+        default_profile: document.default_profile,
+        connections,
+        profiles,
+    }
+}
+
+fn default_base_url(kind: ProviderKind) -> Option<&'static str> {
+    match kind {
+        ProviderKind::OpenAiCompat => None,
+        ProviderKind::Ollama => Some("http://localhost:11434/v1"),
+        ProviderKind::OpenAi => Some("https://api.openai.com/v1"),
+        ProviderKind::OpenRouter => Some("https://openrouter.ai/api/v1"),
+        ProviderKind::Anthropic => Some("https://api.anthropic.com"),
+        ProviderKind::Codex => Some("codex-app-server://stdio"),
+    }
+}
+
+fn validate_credential(provider: &str, reference: &CredentialReference) -> Result<(), ConfigError> {
+    match reference {
+        CredentialReference::Environment { variable } => {
+            let mut bytes = variable.bytes();
+            let valid = bytes
+                .next()
+                .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+            if !valid {
+                return Err(ConfigError::InvalidCredential {
+                    provider: provider.to_owned(),
+                    reason: "environment variable names must use ASCII letters, digits, and underscores",
+                });
+            }
+        }
+        CredentialReference::Stored { id } if !valid_name(id) => {
+            return Err(ConfigError::InvalidCredential {
+                provider: provider.to_owned(),
+                reason: "stored credential ids use the same syntax as provider names",
+            });
+        }
+        CredentialReference::Stored { .. } => {}
+    }
+    Ok(())
 }
 
 fn validate_name(section: &'static str, name: &str) -> Result<(), ConfigError> {

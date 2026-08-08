@@ -1,6 +1,5 @@
 use super::*;
 use crate::{
-    agent::{ChatError, ChatTransport, DeltaSink},
     context::ContextBudget,
     identity::{StepId, ToolInvocationId},
     message::{ContentBlock, Role, ToolResult},
@@ -10,6 +9,7 @@ use crate::{
         PermissionScope, PolicyDecision,
     },
     prompt::{PromptAssembler, PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    provider::{ConversationalProvider, DeltaSink, ProviderError},
     session::{DurableSession, SessionStore, reduce},
     tool::{ToolDefinition, ToolRegistry},
 };
@@ -34,14 +34,14 @@ struct QueueTransport {
     deltas: Vec<String>,
 }
 
-impl ChatTransport for QueueTransport {
+impl ConversationalProvider for QueueTransport {
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
         _tools: &'a [&'a ToolDefinition],
         step_id: StepId,
         deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
         Box::pin(async move {
             self.requests
                 .lock()
@@ -56,7 +56,7 @@ impl ChatTransport for QueueTransport {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .pop_front()
                 .unwrap_or_else(|| Err("script exhausted".to_owned()))
-                .map_err(ChatError::new);
+                .map_err(ProviderError::new);
             self.completed.store(true, Ordering::SeqCst);
             result
         })
@@ -68,14 +68,14 @@ struct BlockingTransport {
     release: Arc<Notify>,
 }
 
-impl ChatTransport for BlockingTransport {
+impl ConversationalProvider for BlockingTransport {
     fn stream_message<'a>(
         &'a self,
         _messages: &'a [Message],
         _tools: &'a [&'a ToolDefinition],
         _step_id: StepId,
         _deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
@@ -84,7 +84,7 @@ impl ChatTransport for BlockingTransport {
     }
 }
 
-fn make_agent(provider: Box<dyn ChatTransport>) -> Agent {
+fn make_agent(provider: Box<dyn ConversationalProvider>) -> Agent {
     let tools = ToolRegistry::new();
     let definitions = tools.definitions();
     let workspace = std::env::current_dir().expect("current directory");
@@ -131,7 +131,7 @@ fn queue_agent(
 }
 
 fn persistent_agent(
-    provider: Box<dyn ChatTransport>,
+    provider: Box<dyn ConversationalProvider>,
     workspace: std::path::PathBuf,
 ) -> (Agent, PromptAssembler) {
     let tools = ToolRegistry::new();

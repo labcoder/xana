@@ -1,7 +1,5 @@
 //! Artifact-backed image input and bounded provider media resolution.
 
-#![allow(dead_code)]
-
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore, MAX_ARTIFACT_BYTES},
     identity::PrincipalId,
@@ -228,6 +226,7 @@ fn inspect_image(bytes: &[u8], limits: ImageLimits) -> Result<ImageMetadata, Ima
     Err(ImageError::UnsupportedFormat)
 }
 
+#[derive(Clone)]
 pub(crate) struct MediaResolver {
     store: ArtifactStore,
     max_bytes: usize,
@@ -237,12 +236,22 @@ impl MediaResolver {
         Self { store, max_bytes }
     }
     pub(crate) fn resolve_openai_data_url(&self, image: &ImageRef) -> Result<String, ImageError> {
-        let bytes = self.store.read_bounded(&image.artifact, self.max_bytes)?;
+        let bytes = self.resolve_bytes(image)?;
         Ok(format!(
             "data:{};base64,{}",
             image.media_type,
             STANDARD.encode(bytes)
         ))
+    }
+
+    pub(crate) fn resolve_base64(&self, image: &ImageRef) -> Result<String, ImageError> {
+        Ok(STANDARD.encode(self.resolve_bytes(image)?))
+    }
+
+    fn resolve_bytes(&self, image: &ImageRef) -> Result<Vec<u8>, ImageError> {
+        self.store
+            .read_bounded(&image.artifact, self.max_bytes)
+            .map_err(Into::into)
     }
 }
 

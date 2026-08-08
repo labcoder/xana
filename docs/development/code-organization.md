@@ -3,8 +3,9 @@
 > Audience: Contributors and coding agents  
 > Authority: Repository policy
 
-Xana is one binary crate. Its modules separate responsibilities and I/O
-boundaries without assuming which proposals will be accepted later.
+Xana is a Cargo workspace: `xana-cli` depends on `xana-runtime`, which depends
+on headless `xana-core`. Modules within the runtime continue to separate
+responsibility, ownership, and I/O boundaries.
 
 ## Module boundaries
 
@@ -16,10 +17,14 @@ boundaries without assuming which proposals will be accepted later.
   introduce new `mod.rs` files.
 - Keep items private by default. Expose the smallest useful `pub(crate)`
   surface from each facade.
-- Keep `main.rs` as the process composition root. Application command routing
-  belongs in `app`, and terminal interaction belongs in `terminal`.
+- Keep the CLI `main.rs` thin. Runtime application routing belongs in `app`;
+  native and managed terminal interaction belongs in `terminal` and
+  `managed_terminal`.
 - Do not move configuration, environment reads, provider wire types, or
   terminal rendering into the headless agent loop.
+- Keep native generation in `provider`, connection-owned catalog/selection in
+  `model`, static API-key ownership in `credential`, and foreign agent
+  protocols beneath `managed`.
 
 ## Tests
 

@@ -1,15 +1,16 @@
 //! Asynchronous streaming HTTP transport and structured adapter errors.
 
 use super::{
-    convert::MessageConversionError,
+    convert::{MessageConversionError, convert_message},
     stream::{SseDecoder, SseItem, StreamAccumulator, StreamError},
     wire::{WireChatRequest, WireMessage, WireStreamResponse, WireToolDefinition},
 };
 use crate::{
-    agent::{ChatError, ChatTransport, DeltaSink},
     identity::StepId,
     message::Message,
+    provider::{ConversationalProvider, DeltaSink, ProviderError},
     tool::ToolDefinition,
+    vision::MediaResolver,
 };
 use futures::{StreamExt, future::BoxFuture};
 use reqwest::Client;
@@ -102,6 +103,7 @@ pub(crate) struct OpenAiCompatClient {
     model: String,
     bearer_token: Option<String>,
     attribution: Vec<(String, String)>,
+    media: Option<MediaResolver>,
 }
 
 impl OpenAiCompatClient {
@@ -114,10 +116,10 @@ impl OpenAiCompatClient {
             model,
             bearer_token: None,
             attribution: Vec::new(),
+            media: None,
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn with_bearer_and_attribution(
         base_url: String,
         model: String,
@@ -138,6 +140,11 @@ impl OpenAiCompatClient {
         client
     }
 
+    pub(crate) fn with_media_resolver(mut self, media: MediaResolver) -> Self {
+        self.media = Some(media);
+        self
+    }
+
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -152,7 +159,17 @@ impl OpenAiCompatClient {
     ) -> Result<Message, OpenAiCompatError> {
         let wire_messages = messages
             .iter()
-            .map(WireMessage::try_from)
+            .map(|message| {
+                if message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, crate::message::ContentBlock::Image(_)))
+                {
+                    convert_message(message, self.media.as_ref())
+                } else {
+                    WireMessage::try_from(message)
+                }
+            })
             .collect::<Result<Vec<_>, _>>()
             .map_err(|source| OpenAiCompatError::conversion(&self.endpoint, source))?;
 
@@ -242,10 +259,14 @@ impl OpenAiCompatClient {
             }
         }
 
+        decoder
+            .finish()
+            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
         if !done {
-            decoder
-                .finish()
-                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
+            return Err(OpenAiCompatError::stream(
+                &self.endpoint,
+                StreamError::MissingDone,
+            ));
         }
         accumulator
             .finish()
@@ -266,33 +287,20 @@ impl OpenAiCompatClient {
         self.stream_message_inner(messages, tools, None, StepId::new(), &IgnoreDeltas)
             .await
     }
-
-    #[allow(dead_code)]
-    pub(crate) async fn stream_message_with_options(
-        &self,
-        messages: &[Message],
-        tools: &[&ToolDefinition],
-        max_output_tokens: Option<usize>,
-        step_id: StepId,
-        deltas: &dyn DeltaSink,
-    ) -> Result<Message, OpenAiCompatError> {
-        self.stream_message_inner(messages, tools, max_output_tokens, step_id, deltas)
-            .await
-    }
 }
 
-impl ChatTransport for OpenAiCompatClient {
+impl ConversationalProvider for OpenAiCompatClient {
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
         tools: &'a [&'a ToolDefinition],
         step_id: StepId,
         deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
         Box::pin(async move {
             self.stream_message_inner(messages, tools, None, step_id, deltas)
                 .await
-                .map_err(|error| ChatError::new(error.to_string()))
+                .map_err(|error| ProviderError::new(error.to_string()))
         })
     }
 }

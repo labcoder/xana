@@ -169,10 +169,20 @@ static USER_AUDIENCE: &[DocAudience] = &[DocAudience::User, DocAudience::Agent];
 static CONTRIBUTOR_AUDIENCE: &[DocAudience] = &[DocAudience::Contributor, DocAudience::Agent];
 static USER_TOPICS: &[&str] = &["configuration", "installation", "usage"];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
+static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
 static ENTRIES: &[BundledDoc] = &[
+    BundledDoc {
+        id: "architecture.connections",
+        title: "Connections, models, and managed runtimes",
+        audience: CONTRIBUTOR_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: MODEL_TOPICS,
+        body: include_str!("../docs/architecture/models-and-managed-runtimes.md"),
+    },
     BundledDoc {
         id: "architecture.overview",
         title: "Xana architecture",
@@ -181,6 +191,24 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: ARCH_TOPICS,
         body: include_str!("../docs/architecture/README.md"),
+    },
+    BundledDoc {
+        id: "architecture.providers",
+        title: "Provider contracts",
+        audience: CONTRIBUTOR_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: MODEL_TOPICS,
+        body: include_str!("../docs/architecture/providers.md"),
+    },
+    BundledDoc {
+        id: "architecture.vision",
+        title: "Image input and media resolution",
+        audience: CONTRIBUTOR_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["images", "artifacts", "providers"],
+        body: include_str!("../docs/architecture/vision.md"),
     },
     BundledDoc {
         id: "engineering.principles",

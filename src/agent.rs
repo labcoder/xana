@@ -13,12 +13,12 @@ use crate::{
     },
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
+    provider::{ConversationalProvider, DeltaSink},
     runtime::AgentEvent,
-    tool::{ToolContext, ToolDefinition, ToolRegistry},
+    tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
-use futures::future::BoxFuture;
-use std::{error::Error, fmt, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone)]
@@ -79,43 +79,8 @@ impl ConversationCommitSender {
     }
 }
 
-pub(crate) trait ChatTransport: Send + Sync {
-    fn stream_message<'a>(
-        &'a self,
-        messages: &'a [Message],
-        tools: &'a [&'a ToolDefinition],
-        step_id: StepId,
-        deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>>;
-}
-
-pub(crate) trait DeltaSink: Send + Sync {
-    fn text_delta(&self, step_id: StepId, text: &str);
-}
-
-#[derive(Debug)]
-pub(crate) struct ChatError {
-    message: String,
-}
-
-impl ChatError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for ChatError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.message)
-    }
-}
-
-impl Error for ChatError {}
-
 pub(crate) struct Agent {
-    provider: Box<dyn ChatTransport>,
+    provider: Box<dyn ConversationalProvider>,
     tools: ToolRegistry,
     workspace_root: PathBuf,
     prompt: PromptSnapshot,
@@ -125,7 +90,7 @@ pub(crate) struct Agent {
 
 impl Agent {
     pub(crate) fn new(
-        provider: Box<dyn ChatTransport>,
+        provider: Box<dyn ConversationalProvider>,
         tools: ToolRegistry,
         workspace_root: PathBuf,
         prompt: PromptSnapshot,

@@ -2,11 +2,14 @@
 
 > Audience: People using Xana in a project or inspecting what enters a model request.
 
-Xana builds one provider-neutral system-prompt snapshot when a root turn is
-accepted. The assembly contract is versioned as `xana-prompt-v1`, and the
+For native connections, Xana builds one provider-neutral system-prompt snapshot
+when a root turn is accepted. The assembly contract is versioned as
+`xana-prompt-v1`, and the
 resulting bytes remain frozen across that turn's provider calls and tool
 rounds. The next root turn refreshes project context and may receive a new
 snapshot. Merely opening or resuming a session never reads project files.
+Managed Codex builds its own prompt and discovers context according to the
+installed Codex runtime; Xana does not inject a second outer prompt.
 
 ## Prompt layers
 
@@ -23,10 +26,10 @@ Xana assembles available layers in this order:
 6. the active CLI surface; and
 7. a bounded preview of root `AGENTS.md`, when present.
 
-The default foreground composition does not yet advertise the bundled
-documentation capability in layer 3. The runtime catalog itself is bounded and
-explicit; it never walks the filesystem or claims to describe the user's
-project.
+Native foreground composition advertises `xana_docs` and the curated logical
+ids in layer 3. The runtime catalog itself is bounded and explicit; it never
+walks the filesystem or claims to describe the user's project. Document bodies
+are read only when the model calls the tool.
 
 Exact machine-readable tool schemas remain a separate provider request field.
 The human-readable catalog and schemas both come from the same immutable tool
@@ -47,9 +50,9 @@ pending turn. `/clear` also clears pending attachments and reports how many it
 removed. Sending a turn consumes staged attachments exactly once.
 
 The model must advertise image input support before media can cross a provider
-boundary. The bounded OpenAI-compatible resolver is available at the wire edge
-but is not enabled by the default provider composition yet; the current
-Anthropic adapter rejects images explicitly. Xana does not fetch image URLs,
+boundary. OpenAI-compatible and Anthropic adapters resolve verified artifact
+bytes only at the wire edge. Managed Codex receives canonical local paths that
+were checked beneath the selected workspace. Xana does not fetch image URLs,
 run OCR, generate images, or display terminal graphics.
 
 ## Root `AGENTS.md`

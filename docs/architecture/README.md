@@ -10,19 +10,23 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 ## System overview
 
 Xana is a Cargo workspace running on Tokio's multi-thread runtime with a
-terminal frontend and one in-process foreground runtime. `xana-cli` is the
+terminal frontend. Native connections use one in-process foreground runtime;
+the Codex connection supervises a vendor-owned app-server process. `xana-cli` is the
 process composition root and delegates command execution to `xana-runtime`.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. `xana-core` remains headless and has no
 filesystem, terminal, HTTP, or process dependencies. See
 [Phase 3 composition services](phase3-composition.md) for the capability,
 self-documentation, and document-extraction boundaries.
+[Connections, models, and managed runtimes](models-and-managed-runtimes.md)
+describes native inference, Codex delegation, catalogs, selection, and
+credential ownership.
 
 ```mermaid
 flowchart LR
     MAIN["main<br/>process composition"] --> APP["app<br/>command orchestration"]
     APP --> INIT["init<br/>configuration planning and creation"]
-    APP --> TERMINAL["terminal<br/>runtime protocol client"]
+    APP --> TERMINAL["terminal<br/>native and managed clients"]
     APP --> CONFIG["config + paths"]
     APP --> SESSION["durable session<br/>JSONL owner"]
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
@@ -31,8 +35,9 @@ flowchart LR
     CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
-    RUNTIME --> AGENT["Agent<br/>bounded async headless loop"]
-    AGENT --> PROVIDER["provider adapter"]
+    RUNTIME --> AGENT["Agent<br/>bounded native loop"]
+    AGENT --> PROVIDER["ConversationalProvider"]
+    APP --> MANAGED["Codex app-server<br/>managed inner loop"]
     AGENT --> OPERATION
     OPERATION --> TOOLS["tool registry<br/>plan + invoke"]
     TOOLS --> BROKER["permission broker<br/>policy + grants + pending"]
@@ -69,7 +74,7 @@ treated as a replay log.
 
 ## Agent and conversation boundary
 
-`Agent` owns one asynchronous conversational transport, a deterministic tool
+`Agent` owns one asynchronous `ConversationalProvider`, a deterministic tool
 registry, the session workspace, a base `PromptSnapshot`, and a configured
 tool-round limit. The runtime supplies a project-context-aware snapshot for
 each accepted root turn; that snapshot is unchanged across the turn's provider
@@ -79,12 +84,13 @@ requested tools serially, appends correlated results, and returns the final
 assistant message. The foreground runtime commits immutable user, assistant,
 and tool-result entries and moves the thread head separately.
 
-The provider-neutral conversation model carries ordered text, tool-call, and
-tool-result content. Provider request and response shapes remain private to
-their adapter. The OpenAI-compatible adapter separates its wire structs,
-conversion rules, asynchronous streaming HTTP client, and captured response
-and stream fixtures. The focused OpenRouter and Anthropic Messages contracts
-and their private wire adapters are described in [Provider contracts](providers.md).
+The provider-neutral conversation model carries ordered text, image,
+tool-call, and tool-result content. Provider request and response shapes remain
+private to their adapter. The native generation boundary is the focused
+`ConversationalProvider`; account control, catalog discovery, credential
+storage, and managed agent runtimes remain outside it. Native and managed
+composition are described in [Provider contracts](providers.md) and
+[Connections, models, and managed runtimes](models-and-managed-runtimes.md).
 
 The OpenAI-compatible adapter incrementally decodes bounded SSE bytes. It
 supports arbitrary chunk boundaries, LF and CRLF frames, comments, multi-line
@@ -109,9 +115,9 @@ non-replaceable identity and guideline files; a concise tool catalog derived
 from the immutable registry; owned operating-system, canonical session
 workspace, configured-shell, and CLI-surface values; and fixed budgets. When a
 root turn is accepted, the runtime refreshes durable project context and
-assembles one `xana-prompt-v1` snapshot. A product-documentation layer exists
-only when the runtime supplies readable logical references or a capability;
-normal composition omits it.
+assembles one `xana-prompt-v1` snapshot. Native composition supplies a concise
+product-documentation layer that names the readable logical ids exposed by the
+bounded `xana_docs` tool; documentation bodies are fetched only when needed.
 
 Layers have transient ids, purpose, origin, trust, provenance, estimated cost,
 and deterministic order. Dynamic layer text and attributes are XML-escaped,
@@ -143,23 +149,26 @@ artifact bytes. Only the resulting bounded text can enter a prompt.
 Root context refresh occurs only when a new turn is accepted. Unchanged bytes
 reuse the version; changed bytes append one artifact/context version; a missing
 live source does not erase the prior version. Opening or inspecting a session
-does not read live project files. Xana has no general context service, native
-context plan, or prompt compaction. The bounded catalog and `xana_docs` tool
-exist as runtime composition services; the default foreground composition does
-not yet advertise them in the prompt.
+does not read live project files. Xana has no general native context plan or
+prompt compaction. The bounded catalog and `xana_docs` tool are included in the
+resolved production tool snapshot.
 
 Image attachments are reference-based and artifact-backed; see
-[Image input and media resolution](vision.md). The current Anthropic adapter
-rejects image blocks until its provider-specific conversion is accepted.
+[Image input and media resolution](vision.md). OpenAI-compatible and Anthropic
+adapters resolve bytes only at the wire edge; Codex receives checked local
+paths under the managed workspace.
 
 ## Session and artifact boundary
 
-Bare chat creates `data/sessions/<SessionId>.jsonl` and one thread before any
+Native bare chat creates `data/sessions/<SessionId>.jsonl` and one thread before any
 conversation entry. `xana --resume SESSION_ID` performs bounded read-only
 inspection and pure ordered reduction, explicitly opens the verified file for
 append, and restores the selected conversation path. The optional `xana
 session inspect SESSION_ID` reports bounded metadata without conversation
 content and never opens for writing.
+
+Managed Codex threads remain Codex-owned and are not mirrored into Xana's
+native session log. `--resume` therefore applies only to native conversations.
 
 Every compact newline-terminated envelope has format version 1, record id,
 session id, and one typed record. The initial record owns the thread and
@@ -208,8 +217,9 @@ the effect and before the correlated conversation result. An append failure
 before intent performs no effect; an intent without result means the external
 outcome is unknown.
 
-Built-in tool contract version starts at 1. `read_file` and `list_files`
-declare `ReplaySafety::Safe`; `edit_file` and `run_command` declare `Never`.
+Built-in tool contract version starts at 1. `read_file`, `list_files`,
+`read_document`, and `xana_docs` declare `ReplaySafety::Safe`; `edit_file` and
+`run_command` declare `Never`.
 Recovery never infers safety from a tool name or effect class: an exact
 invocation is eligible only when saved and current declarations are both
 `Safe`, the installed name/version still matches, replanning produces the same
@@ -234,8 +244,8 @@ not power loss, filesystem transactions, effect idempotency, containment, or
 
 ## Tool boundary
 
-Xana exposes four host tools through an object-safe `Tool` trait and a
-provider-neutral registry:
+Xana exposes six tools through a capability-resolved, provider-neutral
+registry:
 
 - `read_file` reads bounded UTF-8 content with an optional inclusive line
   range.
@@ -244,6 +254,10 @@ provider-neutral registry:
 - `run_command` executes one command string through a configured shell in an
   existing workspace directory after runtime authorization. It returns status
   plus independently bounded stdout and stderr.
+- `read_document` performs one bounded workspace read and extracts bounded
+  UTF-8 text or CSV-as-Markdown without executing or fetching content.
+- `xana_docs` lists and reads Xana's curated, version-matched documentation by
+  logical id.
 
 All tool paths are relative to Xana's launch workspace and must remain beneath
 that workspace after lexical and canonical resolution. Reads and resulting
@@ -291,29 +305,25 @@ does not claim atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
-Bare `xana` creates a session and starts terminal chat; `xana --resume
-SESSION_ID` resumes only that session. The typed command boundary also exposes
-`xana init`, `xana config path`, `xana config check`, and read-only `xana
-session inspect SESSION_ID`. Recovery adds read-only `xana operation plan
---session SESSION_ID OPERATION_ID` and effectful, explicit `xana operation
-resume --session SESSION_ID OPERATION_ID`.
+Bare `xana` starts the selected native or managed route. Native chat creates a
+session; `xana --resume SESSION_ID` resumes only a native session. The typed
+command boundary exposes initialization/configuration, session inspection,
+explicit operation recovery, unified `xana model`, and advanced `xana
+connection` commands for static keys and Codex account control.
 
 Initialization collects interactive or explicit noninteractive answers,
 builds a configuration draft without filesystem effects, renders the version
-1 TOML shape, validates it through the production configuration loader, and
+2 TOML shape, validates it through the production configuration loader, and
 creates `config.toml` without replacing an existing file. Path and
 configuration diagnostics do not construct an agent.
 
-Xana loads a strict, versioned `config.toml`. It validates named
-OpenAI-compatible provider connections and agent profiles, then resolves the
-required default profile and shell configuration into owned values before
-constructing `Agent`. Interactive initialization collects a platform shell
-choice and defaults human setup to `ask`; noninteractive initialization
-requires an explicit permission mode and accepts explicit shell kind and
-program flags. Existing version 1 documents with explicit `allow` retain
-automatic tool authority. The document also accepts default-empty permission
-rules with tool, effect, workspace, and exact-command matchers. Existing
-documents without `[shell]` use `platform`.
+Xana loads a strict version 1-or-2 `config.toml`. It validates named native and
+managed connections, tagged credential references, connection-owned model
+overrides, profiles, Codex-only fields, shell policy, and permission rules.
+Model selection and bounded non-secret catalogs are stored separately so the
+control plane does not rewrite a user's normal selection into TOML. Structured
+connection add/remove edits preserve comments and validate the complete
+result. Existing version 1 documents retain their behavior.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
@@ -335,6 +345,10 @@ An unset or empty `XANA_HOME` uses those platform defaults. A non-empty
 override must be an absolute native path and maps Xana's backend state beneath
 one portable root. Path resolution is pure policy; it does not create or
 canonicalize the returned directories.
+
+Static stored API keys remain in the operating-system credential service and
+are not redirected by `XANA_HOME`. Codex credentials remain in Codex's owned
+home unless the connection explicitly sets an absolute `codex_home`.
 
 ## Distribution boundary
 
@@ -359,12 +373,11 @@ accidental registry upload.
 
 ## Source organization
 
-The crate establishes responsibility and I/O boundaries before it needs
-physical package boundaries:
+The workspace and runtime modules establish responsibility and I/O boundaries:
 
 - `main.rs` composes the process.
 - `app` owns command routing and dependency construction.
-- `terminal` and `presentation` own frontend behavior.
+- `terminal`, `managed_terminal`, and `presentation` own frontend behavior.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `operation` owns invocation intent/result ordering, bounded durable values,
@@ -380,8 +393,9 @@ physical package boundaries:
 - `prompt` and `context` own per-turn versioned assembly, transient prompt
   selection, durable context records, provenance, previewing, and input-budget
   enforcement.
-- `provider` and `tool` are narrow facades over private adapter and tool
-  implementations.
+- `provider`, `model`, `credential`, and `managed` separate native generation,
+  catalogs/selection, static secret ownership, and foreign runtime control.
+- `tool` is a narrow facade over capability-composed private implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
   the application edge.
 
@@ -394,8 +408,8 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no sandbox, background runtime, workspace crate split, runtime
-profile switching, multi-client attachment, event replay, persistent grants,
+Xana has no Xana-owned sandbox, background runtime, multi-client attachment,
+event replay, persistent grants,
 remote controller authentication, general context service, nested
 project-instruction or skill discovery, prompt compaction, artifact/session
 garbage collection, automatic/background operation replay, generalized

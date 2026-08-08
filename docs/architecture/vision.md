@@ -1,22 +1,28 @@
 # Image input and media resolution
 
-Audience: contributors and coding agents. Authority: descriptive.
+> Audience: Contributors and coding agents
+> Authority: Descriptive
 
-Image input is reference-based. `/attach WORKSPACE_RELATIVE_PATH` performs one
-bounded, regular-file read after workspace and symlink checks, validates a
-small set of image headers and pixel limits, and publishes immutable bytes to
-the artifact store. The pending attachment queue is separate from durable
-conversation history: `/clear` removes pending attachments with a visible
-confirmation, and accepting a turn consumes the queue exactly once.
+`/attach WORKSPACE_RELATIVE_PATH` performs a bounded regular-file read after
+workspace and symlink checks, validates PNG/JPEG/GIF content and pixel limits,
+and publishes immutable bytes to Xana's artifact store. The pending queue
+preserves attachment order, accepts at most eight images and 20 MiB per turn,
+is cleared visibly by `/clear`, and is consumed when a turn is submitted.
 
 The internal message model carries `ContentBlock::Image` references rather
-than bytes. `xana-core::ModelCapabilities` provides pre-transport checks for
-input modality, image count, image-byte budget, context limit, and tool support.
-`MediaResolver` reads a verified artifact only at the provider wire edge and
-can produce a bounded OpenAI-compatible data URL; it never persists that
-encoded representation.
+than paths or base64. Before native provider I/O, Xana requires the selected
+model descriptor to contain the `image` input modality. Every artifact is
+read through its declared bound and verified content hash only at the wire
+edge:
 
-The current Anthropic adapter rejects image blocks explicitly until the
-provider's image block conversion is accepted and covered by the shared media
-suite. There is no URL fetching, image generation, OCR, Files API, automatic
-model routing, or terminal graphics path.
+- OpenAI-compatible, OpenAI, and OpenRouter use ordered `image_url` data-URL
+  content parts;
+- Anthropic uses ordered base64 image source blocks; and
+- managed Codex receives canonical local image paths already proven to remain
+  below the selected workspace. Codex retains responsibility for its provider
+  encoding.
+
+Encoded bytes and source paths are not written into Xana's native conversation
+records. Image capabilities fail closed when catalog evidence or an explicit
+override is absent. There is no URL fetching, OCR, image generation, Files API
+upload, or terminal image rendering.
