@@ -307,7 +307,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
     }
 
     let tools = ToolRegistry::new(tool_impls.into_values().collect())
-        .map_err(|message| ResolutionError::InvalidProvider(message))?;
+        .map_err(ResolutionError::InvalidProvider)?;
     Ok(ResolvedCapabilities {
         snapshot: AgentCapabilitySnapshot::new(resolved, tools),
         unavailable,

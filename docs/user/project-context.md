@@ -47,9 +47,10 @@ pending turn. `/clear` also clears pending attachments and reports how many it
 removed. Sending a turn consumes staged attachments exactly once.
 
 The model must advertise image input support before media can cross a provider
-boundary. OpenAI-compatible image encoding is bounded and performed at the
-wire edge; the current Anthropic adapter rejects images explicitly. Xana does
-not fetch image URLs, run OCR, generate images, or display terminal graphics.
+boundary. The bounded OpenAI-compatible resolver is available at the wire edge
+but is not enabled by the default provider composition yet; the current
+Anthropic adapter rejects images explicitly. Xana does not fetch image URLs,
+run OCR, generate images, or display terminal graphics.
 
 ## Root `AGENTS.md`
 
