@@ -17,6 +17,7 @@ use std::{
     fmt, fs, io,
     io::Write as _,
     path::{Path, PathBuf},
+    str::FromStr,
 };
 
 const CATALOG_VERSION: u32 = 1;
@@ -44,6 +45,10 @@ pub(crate) struct ModelDescriptor {
     pub(crate) input_modalities: BTreeSet<String>,
     pub(crate) tools: Option<bool>,
     pub(crate) reasoning: Option<bool>,
+    #[serde(default)]
+    pub(crate) reasoning_efforts: Vec<ReasoningEffort>,
+    #[serde(default)]
+    pub(crate) default_reasoning_effort: Option<String>,
     pub(crate) context_tokens: Option<usize>,
     pub(crate) max_output_tokens: Option<usize>,
     pub(crate) source: DescriptorSource,
@@ -63,10 +68,65 @@ impl ModelDescriptor {
             },
             tools: value.tools,
             reasoning: value.reasoning,
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
             context_tokens: value.context_tokens,
             max_output_tokens: value.max_output_tokens,
             source: DescriptorSource::Configured,
             is_default: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReasoningEffort {
+    pub(crate) id: String,
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReasoningSummary {
+    Auto,
+    Concise,
+    Detailed,
+    Off,
+}
+
+impl ReasoningSummary {
+    pub(crate) fn as_wire(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+            Self::Off => "none",
+        }
+    }
+}
+
+impl fmt::Display for ReasoningSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Auto => "auto",
+            Self::Concise => "concise",
+            Self::Detailed => "detailed",
+            Self::Off => "off",
+        })
+    }
+}
+
+impl FromStr for ReasoningSummary {
+    type Err = ModelError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "auto" => Ok(Self::Auto),
+            "concise" => Ok(Self::Concise),
+            "detailed" => Ok(Self::Detailed),
+            "off" | "none" => Ok(Self::Off),
+            _ => Err(ModelError::InvalidOption(format!(
+                "unknown reasoning summary {value:?}; expected auto, concise, detailed, or off"
+            ))),
         }
     }
 }
@@ -84,6 +144,8 @@ pub(crate) struct ConnectionSummary {
 pub(crate) struct ModelSelection {
     pub(crate) connection: String,
     pub(crate) model: String,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) reasoning_summary: Option<ReasoningSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -92,6 +154,10 @@ struct SelectionDocument {
     version: u32,
     connection: String,
     model: String,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_summary: Option<ReasoningSummary>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -111,6 +177,7 @@ pub(crate) enum ModelError {
     Transport(String),
     Rejected(String),
     Decode(String),
+    InvalidOption(String),
     Io { path: PathBuf, source: io::Error },
 }
 
@@ -126,6 +193,7 @@ impl fmt::Display for ModelError {
             Self::Transport(reason) => write!(f, "could not reach model catalog: {reason}"),
             Self::Rejected(reason) => write!(f, "model catalog rejected the request: {reason}"),
             Self::Decode(reason) => write!(f, "invalid model catalog response: {reason}"),
+            Self::InvalidOption(reason) => write!(f, "invalid model option: {reason}"),
             Self::Io { path, source } => write!(f, "could not access {}: {source}", path.display()),
         }
     }
@@ -168,17 +236,19 @@ impl ModelManager {
             Ok(input) => {
                 let document: SelectionDocument = toml::from_str(&input)
                     .map_err(|error| ModelError::Decode(error.to_string()))?;
-                if document.version != 1 {
+                if !matches!(document.version, 1 | 2) {
                     return Err(ModelError::Decode(format!(
                         "unsupported selection version {}",
                         document.version
                     )));
                 }
-                self.validate_selection(&document.connection, &document.model)?;
-                Ok(ModelSelection {
+                let selection = ModelSelection {
                     connection: document.connection,
                     model: document.model,
-                })
+                    reasoning_effort: document.reasoning_effort,
+                    reasoning_summary: document.reasoning_summary,
+                };
+                self.normalize_and_validate_selection(selection)
             }
             Err(source) if source.kind() == io::ErrorKind::NotFound => {
                 let profile = self
@@ -186,9 +256,11 @@ impl ModelManager {
                     .profiles
                     .get(&self.registry.default_profile)
                     .expect("configuration validation requires the default profile");
-                Ok(ModelSelection {
+                self.normalize_and_validate_selection(ModelSelection {
                     connection: profile.connection.clone(),
                     model: profile.model.clone(),
+                    reasoning_effort: None,
+                    reasoning_summary: None,
                 })
             }
             Err(source) => Err(ModelError::Io {
@@ -203,19 +275,64 @@ impl ModelManager {
         connection: &str,
         model: &str,
     ) -> Result<ModelSelection, ModelError> {
-        self.validate_selection(connection, model)?;
-        let document = SelectionDocument {
-            version: 1,
+        self.select_with_options(connection, model, None, None)
+    }
+
+    pub(crate) fn select_with_options(
+        &self,
+        connection: &str,
+        model: &str,
+        reasoning_effort: Option<String>,
+        reasoning_summary: Option<ReasoningSummary>,
+    ) -> Result<ModelSelection, ModelError> {
+        let selection = self.normalize_and_validate_selection(ModelSelection {
             connection: connection.to_owned(),
             model: model.to_owned(),
+            reasoning_effort,
+            reasoning_summary,
+        })?;
+        self.write_selection(&selection)?;
+        Ok(selection)
+    }
+
+    pub(crate) fn update_reasoning_effort(
+        &self,
+        effort: Option<String>,
+    ) -> Result<ModelSelection, ModelError> {
+        let mut selection = self.selected()?;
+        selection.reasoning_effort = effort.or_else(|| {
+            self.descriptor(&selection.connection, &selection.model)
+                .ok()
+                .and_then(|descriptor| descriptor.default_reasoning_effort)
+        });
+        let selection = self.normalize_and_validate_selection(selection)?;
+        self.write_selection(&selection)?;
+        Ok(selection)
+    }
+
+    pub(crate) fn update_reasoning_summary(
+        &self,
+        summary: ReasoningSummary,
+    ) -> Result<ModelSelection, ModelError> {
+        let mut selection = self.selected()?;
+        selection.reasoning_summary = Some(summary);
+        let selection = self.normalize_and_validate_selection(selection)?;
+        self.write_selection(&selection)?;
+        Ok(selection)
+    }
+
+    fn write_selection(&self, selection: &ModelSelection) -> Result<(), ModelError> {
+        let document = SelectionDocument {
+            version: 2,
+            connection: selection.connection.clone(),
+            model: selection.model.clone(),
+            reasoning_effort: selection.reasoning_effort.clone(),
+            reasoning_summary: selection.reasoning_summary,
         };
         let rendered = toml::to_string_pretty(&document)
             .map_err(|error| ModelError::Decode(error.to_string()))?;
         atomic_write(&self.selection_path, rendered.as_bytes())?;
-        Ok(ModelSelection {
-            connection: connection.to_owned(),
-            model: model.to_owned(),
-        })
+        Ok(())
     }
 
     pub(crate) fn connection(&self, id: &str) -> Result<&ConnectionConfig, ModelError> {
@@ -352,6 +469,73 @@ impl ModelManager {
         }
     }
 
+    fn normalize_and_validate_selection(
+        &self,
+        mut selection: ModelSelection,
+    ) -> Result<ModelSelection, ModelError> {
+        self.validate_selection(&selection.connection, &selection.model)?;
+        let connection = self.connection(&selection.connection)?;
+        let descriptor = self.descriptor(&selection.connection, &selection.model)?;
+
+        if connection.kind != ProviderKind::Codex
+            && (selection.reasoning_effort.is_some() || selection.reasoning_summary.is_some())
+        {
+            return Err(ModelError::InvalidOption(
+                "reasoning options are currently implemented only for managed Codex models".into(),
+            ));
+        }
+
+        if connection.kind == ProviderKind::Codex {
+            if let Some(effort) = &selection.reasoning_effort
+                && (effort.is_empty() || effort.len() > 64)
+            {
+                return Err(ModelError::InvalidOption(
+                    "reasoning effort must contain 1 to 64 bytes".into(),
+                ));
+            }
+            if selection.reasoning_effort.is_none() {
+                selection.reasoning_effort = descriptor.default_reasoning_effort.clone();
+            }
+            if selection.reasoning_summary.is_none() && descriptor.reasoning == Some(true) {
+                selection.reasoning_summary = Some(ReasoningSummary::Auto);
+            }
+            if let Some(effort) = &selection.reasoning_effort
+                && !descriptor.reasoning_efforts.is_empty()
+                && !descriptor
+                    .reasoning_efforts
+                    .iter()
+                    .any(|candidate| candidate.id == *effort)
+            {
+                let available = descriptor
+                    .reasoning_efforts
+                    .iter()
+                    .map(|candidate| candidate.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(ModelError::InvalidOption(format!(
+                    "model {:?} does not advertise effort {effort:?}; available: {}",
+                    descriptor.id,
+                    if available.is_empty() {
+                        "none (refresh the Codex catalog)"
+                    } else {
+                        &available
+                    }
+                )));
+            }
+            if selection
+                .reasoning_summary
+                .is_some_and(|summary| summary != ReasoningSummary::Off)
+                && descriptor.reasoning == Some(false)
+            {
+                return Err(ModelError::InvalidOption(format!(
+                    "model {:?} does not advertise reasoning summaries",
+                    descriptor.id
+                )));
+            }
+        }
+        Ok(selection)
+    }
+
     fn cache_path(&self, id: &str) -> PathBuf {
         self.cache_root.join("models").join(format!("{id}.json"))
     }
@@ -446,6 +630,15 @@ fn merge_remote(configured: &mut ModelDescriptor, remote: &ModelDescriptor) {
     }
     configured.tools = configured.tools.or(remote.tools);
     configured.reasoning = configured.reasoning.or(remote.reasoning);
+    if configured.reasoning != Some(false) && configured.reasoning_efforts.is_empty() {
+        configured.reasoning_efforts = remote.reasoning_efforts.clone();
+    }
+    if configured.reasoning != Some(false) {
+        configured.default_reasoning_effort = configured
+            .default_reasoning_effort
+            .clone()
+            .or_else(|| remote.default_reasoning_effort.clone());
+    }
     configured.context_tokens = configured.context_tokens.or(remote.context_tokens);
     configured.max_output_tokens = configured.max_output_tokens.or(remote.max_output_tokens);
     configured.display_name = remote.display_name.clone();
@@ -536,6 +729,8 @@ fn parse_catalog(kind: ProviderKind, value: &Value) -> Result<Vec<ModelDescripto
                 .iter()
                 .any(|parameter| parameter.contains("reason"))
                 .then_some(true),
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
             context_tokens: value
                 .get("context_length")
                 .and_then(Value::as_u64)
@@ -589,6 +784,64 @@ mod tests {
         }
     }
 
+    fn codex_registry() -> ConnectionRegistry {
+        ConnectionRegistry {
+            default_profile: "default".into(),
+            connections: BTreeMap::from([(
+                "codex".into(),
+                ConnectionConfig {
+                    id: "codex".into(),
+                    kind: ProviderKind::Codex,
+                    base_url: None,
+                    credential: None,
+                    models: BTreeMap::from([(
+                        "gpt-5.6-sol".into(),
+                        ModelOverride {
+                            reasoning: Some(true),
+                            ..ModelOverride::default()
+                        },
+                    )]),
+                    codex_program: Some("codex".into()),
+                    codex_home: None,
+                },
+            )]),
+            profiles: BTreeMap::from([(
+                "default".into(),
+                crate::config::ProfileConfig {
+                    id: "default".into(),
+                    connection: "codex".into(),
+                    model: "gpt-5.6-sol".into(),
+                    max_tool_rounds: 8,
+                },
+            )]),
+        }
+    }
+
+    fn codex_descriptor() -> ModelDescriptor {
+        ModelDescriptor {
+            id: "gpt-5.6-sol".into(),
+            display_name: "GPT-5.6-Sol".into(),
+            input_modalities: ["text".into(), "image".into()].into_iter().collect(),
+            tools: Some(true),
+            reasoning: Some(true),
+            reasoning_efforts: vec![
+                ReasoningEffort {
+                    id: "low".into(),
+                    description: "Fast".into(),
+                },
+                ReasoningEffort {
+                    id: "xhigh".into(),
+                    description: "Deep".into(),
+                },
+            ],
+            default_reasoning_effort: Some("low".into()),
+            context_tokens: None,
+            max_output_tokens: None,
+            source: DescriptorSource::ManagedRuntime,
+            is_default: true,
+        }
+    }
+
     #[test]
     fn selection_defaults_to_profile_then_persists_separately() {
         let directory = tempdir().unwrap();
@@ -600,6 +853,59 @@ mod tests {
         assert_eq!(manager.selected().unwrap().model, "qwen");
         manager.select("local", "qwen").unwrap();
         assert!(directory.path().join("selection.toml").is_file());
+    }
+
+    #[test]
+    fn managed_selection_persists_validated_model_options_and_reads_legacy_v1() {
+        let directory = tempdir().unwrap();
+        let selection_path = directory.path().join("selection.toml");
+        let manager = ModelManager::new(
+            codex_registry(),
+            directory.path().join("cache"),
+            selection_path.clone(),
+        );
+        manager
+            .write_managed_cache("codex", &[codex_descriptor()])
+            .unwrap();
+        let selected = manager
+            .select_with_options(
+                "codex",
+                "gpt-5.6-sol",
+                Some("xhigh".into()),
+                Some(ReasoningSummary::Detailed),
+            )
+            .unwrap();
+        assert_eq!(selected.reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(selected.reasoning_summary, Some(ReasoningSummary::Detailed));
+        let persisted = fs::read_to_string(&selection_path).unwrap();
+        assert!(persisted.contains("version = 2"));
+        assert!(persisted.contains("reasoning_effort = \"xhigh\""));
+
+        fs::write(
+            &selection_path,
+            "version = 1\nconnection = \"codex\"\nmodel = \"gpt-5.6-sol\"\n",
+        )
+        .unwrap();
+        let legacy = manager.selected().unwrap();
+        assert_eq!(legacy.reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(legacy.reasoning_summary, Some(ReasoningSummary::Auto));
+    }
+
+    #[test]
+    fn managed_selection_rejects_an_effort_not_advertised_by_the_model() {
+        let directory = tempdir().unwrap();
+        let manager = ModelManager::new(
+            codex_registry(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        manager
+            .write_managed_cache("codex", &[codex_descriptor()])
+            .unwrap();
+        assert!(matches!(
+            manager.select_with_options("codex", "gpt-5.6-sol", Some("ultra".into()), None,),
+            Err(ModelError::InvalidOption(_))
+        ));
     }
 
     #[test]

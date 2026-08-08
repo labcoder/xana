@@ -400,17 +400,38 @@ async fn run_model_command<W: Write>(
     output: &mut W,
 ) -> Result<()> {
     match command {
-        Some(ModelCommand::Use { selection }) => {
+        Some(ModelCommand::Use {
+            selection,
+            effort,
+            summary,
+        }) => {
             let (connection, model) = selection
                 .split_once('/')
                 .context("model selection must be CONNECTION/MODEL")?;
             let manager = model_manager(paths)?;
-            let selected = manager.select(connection, model)?;
+            let effort = effort.and_then(|value| (value != "auto").then_some(value));
+            let summary = summary
+                .map(|value| value.parse::<crate::model::ReasoningSummary>())
+                .transpose()?;
+            let selected = manager.select_with_options(connection, model, effort, summary)?;
             writeln!(
                 output,
                 "selected {}/{} for the next conversation",
                 selected.connection, selected.model
             )?;
+            if selected.reasoning_effort.is_some() || selected.reasoning_summary.is_some() {
+                writeln!(
+                    output,
+                    "reasoning effort: {}; summary: {}",
+                    selected
+                        .reasoning_effort
+                        .as_deref()
+                        .unwrap_or("model default"),
+                    selected
+                        .reasoning_summary
+                        .map_or_else(|| "provider default".into(), |value| value.to_string())
+                )?;
+            }
             Ok(())
         }
         Some(ModelCommand::Refresh { connection }) => {
@@ -455,10 +476,28 @@ fn list_models<W: Write>(paths: &XanaPaths, only: Option<&str>, output: &mut W) 
                 .into_iter()
                 .collect::<Vec<_>>()
                 .join(",");
+            let efforts = model
+                .reasoning_efforts
+                .iter()
+                .map(|effort| effort.id.as_str())
+                .collect::<Vec<_>>()
+                .join(",");
+            let reasoning = if efforts.is_empty() {
+                "-".to_owned()
+            } else {
+                format!(
+                    "{} (default {})",
+                    efforts,
+                    model
+                        .default_reasoning_effort
+                        .as_deref()
+                        .unwrap_or("unspecified")
+                )
+            };
             writeln!(
                 output,
-                "  {marker} {}\t{}\t{}",
-                model.id, modalities, model.display_name
+                "  {marker} {}\t{}\t{}\t{}",
+                model.id, modalities, reasoning, model.display_name
             )?;
         }
     }
@@ -680,6 +719,7 @@ async fn run_default(
                 connection: provider_name,
                 model,
                 workspace: workspace_root,
+                data_root: paths.data_dir().to_owned(),
                 artifact_store,
                 owner: crate::identity::PrincipalId::new(),
             },

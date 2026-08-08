@@ -17,8 +17,9 @@ loop, tools, sandbox, approvals, and history.
 Xana launches the vendor-owned Codex app-server and uses its local JSON-RPC
 contract. Codex owns login, token storage and refresh, inference, and the inner
 agent runtime. Xana owns connection/model selection, process supervision, CLI
-projection, and approval interaction. Xana does not read or copy Codex
-credentials and does not wrap direct Codex turns in a second model call.
+projection, approval interaction, and a local opaque thread-handle reference.
+Xana does not read or copy Codex credentials or history and does not wrap
+direct Codex turns in a second model call.
 
 ## Consequences
 
@@ -26,6 +27,10 @@ credentials and does not wrap direct Codex turns in a second model call.
 - Authentication can complete through Codex's local browser or device-code
   flow; Xana needs no hosted OAuth callback server.
 - A selected Codex turn has no automatic model-to-model token overhead.
+- Xana may persist an opaque Codex thread id so a later local process can ask
+  Codex to resume its owned context; the handle is not a transcript or token.
+- Xana can expose only the typed activity, reasoning summaries, and reasoning
+  blocks that app-server emits, never private hidden chain-of-thought.
 - Native and managed execution remain distinct and history is not silently
   transferred between them.
 - App-server protocol changes are an adapter compatibility concern.

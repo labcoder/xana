@@ -168,7 +168,12 @@ session inspect SESSION_ID` reports bounded metadata without conversation
 content and never opens for writing.
 
 Managed Codex threads remain Codex-owned and are not mirrored into Xana's
-native session log. `--resume` therefore applies only to native conversations.
+native session log. Xana stores only an opaque thread id per connection and
+canonical workspace, then delegates `thread/resume` to Codex on the next
+process's first turn. The bounded, atomically written handle is neither
+history nor a credential. `--resume` therefore applies only to native
+conversations; managed resumption is automatic and `/clear` replaces the
+saved handle.
 
 Every compact newline-terminated envelope has format version 1, record id,
 session id, and one typed record. The initial record owns the thread and
@@ -311,6 +316,12 @@ command boundary exposes initialization/configuration, session inspection,
 explicit operation recovery, unified `xana model`, and advanced `xana
 connection` commands for static keys and Codex account control.
 
+Managed chat also exposes `/reasoning`, `/reasoning-summary`, `/activity`, and
+`/details`. Model, effort, and summary selections persist separately from
+human-authored configuration and apply to subsequent turns without replacing
+the Codex thread. Activity level is process-local presentation of typed
+runtime events and never changes model effort.
+
 Initialization collects interactive or explicit noninteractive answers,
 builds a configuration draft without filesystem effects, renders the version
 2 TOML shape, validates it through the production configuration loader, and
@@ -378,6 +389,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `main.rs` composes the process.
 - `app` owns command routing and dependency construction.
 - `terminal`, `managed_terminal`, and `presentation` own frontend behavior.
+  Managed terminal activity filtering/retention is isolated in
+  `managed_terminal/activity` so display policy does not enter the process or
+  conversation loop.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `operation` owns invocation intent/result ordering, bounded durable values,
@@ -395,6 +409,8 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   enforcement.
 - `provider`, `model`, `credential`, and `managed` separate native generation,
   catalogs/selection, static secret ownership, and foreign runtime control.
+  `managed/codex/events` is the bounded wire-to-domain event normalizer;
+  `managed/thread_store` owns only opaque managed thread handles.
 - `tool` is a narrow facade over capability-composed private implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
   the application edge.
@@ -409,7 +425,7 @@ that maintains these boundaries.
 ## Deliberate absences
 
 Xana has no Xana-owned sandbox, background runtime, multi-client attachment,
-event replay, persistent grants,
+durable event replay, persistent grants,
 remote controller authentication, general context service, nested
 project-instruction or skill discovery, prompt compaction, artifact/session
 garbage collection, automatic/background operation replay, generalized

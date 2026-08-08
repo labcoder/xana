@@ -181,7 +181,15 @@ pub(crate) enum ModelCommand {
         connection: Option<String>,
     },
     /// Persist the next-conversation selection as CONNECTION/MODEL.
-    Use { selection: String },
+    Use {
+        selection: String,
+        /// Managed Codex reasoning effort advertised by the selected model.
+        #[arg(long)]
+        effort: Option<String>,
+        /// Managed Codex reasoning summary: auto, concise, detailed, or off.
+        #[arg(long)]
+        summary: Option<String>,
+    },
     /// Explicitly refresh one connection's catalog.
     Refresh { connection: String },
 }
@@ -352,6 +360,29 @@ mod tests {
             Some(Command::Model(ModelArgs {
                 command: Some(ModelCommand::Use {
                     selection: "openrouter/openai/gpt-4.1".into(),
+                    effort: None,
+                    summary: None,
+                })
+            }))
+        );
+        assert_eq!(
+            Cli::try_parse_from([
+                "xana",
+                "model",
+                "use",
+                "codex/gpt-5.6-sol",
+                "--effort",
+                "xhigh",
+                "--summary",
+                "detailed",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Model(ModelArgs {
+                command: Some(ModelCommand::Use {
+                    selection: "codex/gpt-5.6-sol".into(),
+                    effort: Some("xhigh".into()),
+                    summary: Some("detailed".into()),
                 })
             }))
         );

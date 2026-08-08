@@ -40,10 +40,13 @@ xana model
 xana model list --connection openrouter
 xana model refresh openrouter
 xana model use openrouter/openai/gpt-4.1
+xana model use codex/gpt-5.3-codex --effort high --summary auto
 ```
 
 Catalog refresh is explicit and caches only bounded non-secret metadata.
-Startup never refreshes a catalog. `/model` lists models during chat;
+Native startup never refreshes a catalog. Starting managed Codex chat performs
+a bounded live `model/list` compatibility check before the first prompt.
+`/model` lists models during chat;
 `/model CONNECTION/MODEL` persists a selection and starts a new conversation
 when runtime ownership changes.
 
@@ -128,6 +131,30 @@ refresh, inference, tools, sandbox, approvals, and inner thread history. Xana
 never reads or copies Codex's auth file and needs no hosted OAuth callback
 server.
 
+Codex model discovery retains the reasoning efforts and default advertised by
+each model. Use `--effort auto` or a value listed by `xana model`; Xana does
+not hard-code a vendor effort enum. `--summary` accepts `auto`, `concise`,
+`detailed`, or `off`. The equivalent in-chat controls are:
+
+```text
+/model codex/MODEL
+/reasoning
+/reasoning auto
+/reasoning ADVERTISED_EFFORT
+/reasoning-summary auto|concise|detailed|off
+/activity quiet|normal|verbose
+/details
+```
+
+Model, reasoning-effort, and summary changes apply to later turns while
+retaining the same Codex thread and context. `/activity` is session-only and
+changes presentation, not model compute. The normal view shows concise
+reasoning summaries, plans, and work progress. Verbose also shows command
+output, full diffs, and raw reasoning text when Codex emits it. `/details`
+replays bounded verbose activity from the last turn. Xana cannot display
+private hidden chain-of-thought, and these views do not make another model
+request.
+
 By default Xana shares the installed Codex home. `xana connection logout codex
 --yes` can therefore affect other Codex clients using that home. For an
 isolated account, set an absolute `--codex-home` when adding the connection.
@@ -174,7 +201,10 @@ max_tool_rounds = 8
 
 Version 1 documents remain readable. The first connection edit writes version
 2 while preserving TOML comments. Model selection is stored separately in
-`data/selection.toml`, so choosing a model does not rewrite this file.
+`data/selection.toml`, so choosing a model does not rewrite this file. The
+selection document is version 2 and may include non-secret `reasoning_effort`
+and `reasoning_summary` fields for Codex. Legacy version 1 selections remain
+readable.
 
 ### Field reference
 

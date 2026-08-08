@@ -95,7 +95,7 @@ xana connection status codex
 xana connection login codex
 xana connection refresh codex
 xana model
-xana model use codex/gpt-5.3-codex
+xana model use codex/gpt-5.3-codex --effort high --summary auto
 xana
 ```
 
@@ -103,6 +103,15 @@ The exact model names come from `codex app-server` and can change with account
 access; select one shown by `xana model list --connection codex`. Login also
 supports `--device-code`. Xana delegates the local OAuth completion to Codex;
 it needs no hosted callback server and never reads Codex's auth file.
+
+During a managed turn Xana projects the activity that Codex app-server emits:
+reasoning summaries, plans, command and tool progress, file changes, context
+compaction, Codex-owned subagent activity, model reroutes, and approval
+requests. The default `normal` view is concise. Use
+`/activity quiet|normal|verbose` to change the presentation for
+the current CLI process and `/details` to replay the bounded details retained
+for the last turn. `verbose` can show raw reasoning text only when Codex
+actually emits it; Xana cannot expose private hidden chain-of-thought.
 
 ## Models and connections
 
@@ -113,11 +122,16 @@ xana model
 xana model list --connection CONNECTION
 xana model refresh CONNECTION
 xana model use CONNECTION/MODEL
+xana model use codex/MODEL --effort auto|EFFORT --summary auto|concise|detailed|off
 ```
 
 Inside chat, `/model` lists models and `/model CONNECTION/MODEL` selects one.
 Switching between Xana's native loop and a managed runtime starts a new
-conversation rather than silently translating history.
+conversation rather than silently translating history. Within managed Codex
+chat, `/model codex/MODEL`, `/reasoning EFFORT`, and `/reasoning-summary MODE`
+apply to subsequent turns without starting a new Codex thread or discarding
+its context. `/reasoning auto` restores the selected model's advertised
+default.
 
 Use `xana connection list|add|status|set-key|delete-key|login|logout|refresh|remove`
 for advanced connection and credential control. See
@@ -130,6 +144,11 @@ Bare `xana` starts terminal chat. Native conversations create a durable JSONL
 session; resume one explicitly with `xana --resume SESSION_ID`. `/clear` moves
 to a new empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF
 shut down the foreground runtime.
+
+For Codex, Xana stores only an opaque thread id keyed by the connection and
+canonical workspace. The next Xana process resumes that Codex-owned thread on
+its first turn. It does not copy the conversation, tool state, or credentials;
+`/clear` replaces the saved handle with a new Codex thread.
 
 The capability-resolved native tool snapshot contains:
 
