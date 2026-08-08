@@ -18,7 +18,11 @@ the canonical workspace stored when the session was created and reports that
 choice.
 
 Managed Codex owns its thread history. Xana does not duplicate that history in
-native session JSONL, and `--resume` is rejected for a Codex selection.
+native session JSONL, and `--resume` is rejected for a Codex selection. Xana
+does persist one opaque Codex thread id for each connection and canonical
+workspace. A later Xana process automatically asks Codex to resume that thread
+on the first turn. `/clear` discards the active handle and starts a new thread;
+model or reasoning changes retain it.
 
 ## Storage
 
@@ -28,11 +32,20 @@ Sessions and artifacts use Xana's durable data category:
 data/
   sessions/<session-uuid>.jsonl
   sessions/<session-uuid>.jsonl.lock
+  managed-threads/<blake3-route-key>.json
+  managed-threads/<blake3-route-key>.lock
   artifacts/<64-character-blake3-hex>
 ```
 
 With `XANA_HOME`, `data/` is beneath that absolute root. Otherwise the platform
 data directory described in [Configuration](configuration.md) applies.
+
+A managed-thread document contains only a format version, connection id,
+canonical workspace, and optional opaque thread id. It contains no transcript,
+model context, tool state, credential, or token. Its companion lock permits
+one Xana writer for the same managed route while allowing different
+workspaces. Writes are atomic and bounded. Codex remains the authority for
+whether a saved id can be resumed.
 
 Every compact JSONL envelope has format version `1`, a unique record id, the
 session id, and one typed record. Conversation entries are immutable and name
@@ -94,6 +107,11 @@ Stop Xana before copying a session and its referenced `artifacts/` directory.
 The runtime owns one writer and rejects a second writer through the companion
 lock. Keep the JSONL, its lock companion, and artifacts together; copying only
 the session metadata can leave context references unreadable.
+
+Copying `managed-threads/` does not copy a Codex conversation. A handle is
+useful only while the corresponding Codex-owned thread remains available to
+the same Codex account/home and workspace identity. Otherwise resume fails
+visibly and `/clear` starts a new thread.
 
 There is no session deletion, garbage collection, automatic latest-session
 selection, portable-workspace rewrite, durable session grant, invocation

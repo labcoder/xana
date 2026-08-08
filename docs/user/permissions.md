@@ -85,6 +85,17 @@ Blank input, EOF, an unknown or stale decision, controller loss, and an
 unattended ask all deny. A pending request is correlated by operation and tool
 invocation ids. `allow once` never authorizes a later invocation.
 
+## Managed Codex approvals
+
+A Codex connection owns its inner tool loop, sandbox policy, and approval
+semantics. Xana translates the command-execution and file-change approval
+requests emitted by app-server into an explicit terminal choice and returns
+the correlated decision. Rendering a plan, reasoning summary, command output,
+diff, or other managed activity is observation only and never grants
+authority. Xana's native permission rules and session grants do not silently
+authorize Codex actions, and Codex approval decisions do not become native
+Xana grants.
+
 ## Scope and audit facts
 
 File tools bind permission to the canonical target path beneath the canonical

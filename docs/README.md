@@ -30,8 +30,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
 - [Connections, models, and managed runtimes](architecture/models-and-managed-runtimes.md)
-  describes native providers, Codex delegation, catalogs, selection, and
-  credential ownership.
+  describes native providers, Codex delegation, catalogs, model/reasoning
+  selection, typed activity, opaque managed-thread resumption, and credential
+  ownership.
 - [Design Principles](principles.md) defines the durable constraints future
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their

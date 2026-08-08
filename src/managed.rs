@@ -5,3 +5,4 @@
 //! supervision, UI projection, selection, and explicit handoff boundaries.
 
 pub(crate) mod codex;
+pub(crate) mod thread_store;

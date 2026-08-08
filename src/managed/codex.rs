@@ -1,9 +1,12 @@
 //! Codex app-server adapter using the vendor-owned JSONL protocol.
 
-use crate::model::{DescriptorSource, ModelDescriptor};
+mod events;
+
+use crate::model::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary};
+use events::normalize_notification;
 use serde_json::{Value, json};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashSet},
     error::Error,
     fmt,
     path::{Path, PathBuf},
@@ -21,6 +24,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+const MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
+const MAX_ITEM_DETAIL_BYTES: usize = 16 * 1024;
+const MAX_MODELS: usize = 1024;
+const MAX_MODEL_PAGES: usize = 32;
+const MAX_PLAN_STEPS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexLaunchConfig {
@@ -71,22 +79,81 @@ pub(crate) struct ManagedTurnResult {
     pub(crate) final_text: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedTurnOptions {
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) reasoning_summary: Option<ReasoningSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedItem {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) status: Option<String>,
+    pub(crate) phase: Option<String>,
+    pub(crate) label: String,
+    pub(crate) details: String,
+    pub(crate) text: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedPlanStep {
+    pub(crate) step: String,
+    pub(crate) status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedNotification {
-    TextDelta(String),
-    ItemStarted {
-        item_id: String,
-        kind: String,
-        summary: String,
+    AssistantDelta {
+        item_id: Option<String>,
+        delta: String,
+    },
+    ReasoningSummaryDelta {
+        item_id: Option<String>,
+        summary_index: Option<usize>,
+        delta: String,
+    },
+    ReasoningSummaryPartAdded {
+        item_id: Option<String>,
+        summary_index: Option<usize>,
+    },
+    ReasoningDelta {
+        item_id: Option<String>,
+        delta: String,
+    },
+    PlanDelta {
+        item_id: Option<String>,
+        delta: String,
+    },
+    PlanUpdated {
+        explanation: Option<String>,
+        steps: Vec<ManagedPlanStep>,
+    },
+    CommandOutputDelta {
+        item_id: Option<String>,
+        delta: String,
+    },
+    DiffUpdated(String),
+    ItemStarted(ManagedItem),
+    ItemCompleted(ManagedItem),
+    ModelRerouted {
+        from_model: String,
+        to_model: String,
+        reason: String,
     },
     TurnCompleted {
         turn_id: String,
         status: String,
+        error: Option<String>,
     },
     Warning(String),
+    LoginCompleted {
+        login_id: String,
+        success: bool,
+        error: Option<String>,
+    },
     Other {
         method: String,
-        params: Value,
     },
 }
 
@@ -360,49 +427,136 @@ fn approval_response<H: ManagedEventHandler>(
     }
 }
 
-fn normalize_notification(
-    method: String,
-    params: Value,
-) -> Result<ManagedNotification, CodexError> {
-    Ok(match method.as_str() {
-        "item/agentMessage/delta" => ManagedNotification::TextDelta(
-            params
-                .get("delta")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-        ),
-        "item/started" => {
-            let item = params
-                .get("item")
-                .ok_or_else(|| CodexError::Protocol("item/started omitted item".into()))?;
-            ManagedNotification::ItemStarted {
-                item_id: required_string(item, "id")?,
-                kind: required_string(item, "type")?,
-                summary: bounded_json_summary(item),
+fn thread_start_params(model: &str, workspace: &Path) -> Value {
+    json!({
+        "model": model,
+        "cwd": workspace,
+        "approvalPolicy": "on-request",
+        "sandbox": "workspaceWrite",
+        "ephemeral": false,
+        "serviceName": "xana"
+    })
+}
+
+fn thread_resume_params(thread_id: &str, model: &str, workspace: &Path) -> Value {
+    json!({
+        "threadId": thread_id,
+        "model": model,
+        "cwd": workspace,
+        "approvalPolicy": "on-request",
+        "sandbox": "workspaceWrite"
+    })
+}
+
+fn turn_start_params(
+    thread_id: &str,
+    model: &str,
+    options: &ManagedTurnOptions,
+    input: Vec<Value>,
+) -> Value {
+    let mut params = serde_json::Map::from_iter([
+        ("threadId".into(), Value::String(thread_id.to_owned())),
+        ("input".into(), Value::Array(input)),
+        ("model".into(), Value::String(model.to_owned())),
+    ]);
+    if let Some(effort) = &options.reasoning_effort {
+        params.insert("effort".into(), Value::String(effort.clone()));
+    }
+    if let Some(summary) = options.reasoning_summary {
+        params.insert(
+            "summary".into(),
+            Value::String(summary.as_wire().to_owned()),
+        );
+    }
+    Value::Object(params)
+}
+
+fn thread_id_from_result(result: &Value, method: &str) -> Result<String, CodexError> {
+    let id = result
+        .pointer("/thread/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CodexError::Protocol(format!("{method} omitted thread id")))?;
+    if id.is_empty() || id.len() > 4096 {
+        return Err(CodexError::Protocol(format!(
+            "{method} returned an invalid thread id"
+        )));
+    }
+    Ok(id.to_owned())
+}
+
+fn model_descriptor_from_wire(value: &Value) -> Result<ModelDescriptor, CodexError> {
+    let id = required_string(value, "id")?;
+    let input_modalities = value
+        .get("inputModalities")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|value| matches!(*value, "text" | "image"))
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_else(|| {
+            ["text".to_owned(), "image".to_owned()]
+                .into_iter()
+                .collect()
+        });
+    let mut seen_efforts = BTreeSet::new();
+    let reasoning_efforts = value
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .take(32)
+        .filter_map(|effort| {
+            let id = bounded_text(effort.get("reasoningEffort")?.as_str()?, 64);
+            if !seen_efforts.insert(id.clone()) {
+                return None;
             }
-        }
-        "turn/completed" => ManagedNotification::TurnCompleted {
-            turn_id: params
-                .pointer("/turn/id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned(),
-            status: params
-                .pointer("/turn/status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown")
-                .to_owned(),
-        },
-        "warning" | "error" => ManagedNotification::Warning(bounded_text(
-            params
-                .get("message")
-                .or_else(|| params.pointer("/error/message"))
-                .and_then(Value::as_str)
-                .unwrap_or("Codex reported a warning"),
-            4096,
-        )),
-        _ => ManagedNotification::Other { method, params },
+            Some(ReasoningEffort {
+                id,
+                description: bounded_text(
+                    effort
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default(),
+                    1024,
+                ),
+            })
+        })
+        .collect::<Vec<_>>();
+    let default_reasoning_effort = value
+        .get("defaultReasoningEffort")
+        .and_then(Value::as_str)
+        .map(|value| bounded_text(value, 64));
+    if let Some(default) = &default_reasoning_effort
+        && !reasoning_efforts.is_empty()
+        && !reasoning_efforts.iter().any(|effort| effort.id == *default)
+    {
+        return Err(CodexError::Protocol(format!(
+            "model {id:?} names an unsupported default reasoning effort {default:?}"
+        )));
+    }
+    Ok(ModelDescriptor {
+        display_name: value
+            .get("displayName")
+            .and_then(Value::as_str)
+            .unwrap_or(&id)
+            .to_owned(),
+        id,
+        input_modalities,
+        tools: Some(true),
+        reasoning: Some(!reasoning_efforts.is_empty()),
+        reasoning_efforts,
+        default_reasoning_effort,
+        context_tokens: None,
+        max_output_tokens: None,
+        source: DescriptorSource::ManagedRuntime,
+        is_default: value
+            .get("isDefault")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
     })
 }
 
@@ -539,24 +693,18 @@ impl CodexAppServer {
             LOGIN_TIMEOUT,
             self.peer.wait_for(
                 |notification| {
-                    let ManagedNotification::Other { method, params } = notification else {
+                    let ManagedNotification::LoginCompleted {
+                        login_id: completed_login_id,
+                        success: completed_success,
+                        error,
+                    } = notification
+                    else {
                         return false;
                     };
-                    if method != "account/login/completed"
-                        || params.get("loginId").and_then(Value::as_str) != Some(login_id)
-                    {
+                    if completed_login_id != login_id {
                         return false;
                     }
-                    success = Some((
-                        params
-                            .get("success")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false),
-                        params
-                            .get("error")
-                            .and_then(Value::as_str)
-                            .map(|error| bounded_text(error, 4096)),
-                    ));
+                    success = Some((*completed_success, error.clone()));
                     true
                 },
                 &mut handler,
@@ -589,7 +737,8 @@ impl CodexAppServer {
     pub(crate) async fn models(&mut self) -> Result<Vec<ModelDescriptor>, CodexError> {
         let mut cursor = None::<String>;
         let mut models = Vec::new();
-        loop {
+        let mut seen_cursors = HashSet::new();
+        for _ in 0..MAX_MODEL_PAGES {
             let mut handler = RejectingHandler;
             let result = self
                 .request(
@@ -603,84 +752,74 @@ impl CodexAppServer {
                 .and_then(Value::as_array)
                 .ok_or_else(|| CodexError::Protocol("model/list omitted data".into()))?;
             for value in data {
-                let id = required_string(value, "id")?;
-                let input_modalities = value
-                    .get("inputModalities")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(Value::as_str)
-                    .filter(|value| matches!(*value, "text" | "image"))
-                    .map(str::to_owned)
-                    .collect::<BTreeSet<_>>();
-                models.push(ModelDescriptor {
-                    display_name: value
-                        .get("displayName")
-                        .and_then(Value::as_str)
-                        .unwrap_or(&id)
-                        .to_owned(),
-                    id,
-                    input_modalities,
-                    tools: Some(true),
-                    reasoning: Some(
-                        value
-                            .get("supportedReasoningEfforts")
-                            .and_then(Value::as_array)
-                            .is_some_and(|values| !values.is_empty()),
-                    ),
-                    context_tokens: None,
-                    max_output_tokens: None,
-                    source: DescriptorSource::ManagedRuntime,
-                    is_default: value
-                        .get("isDefault")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false),
-                });
+                if models.len() >= MAX_MODELS {
+                    return Err(CodexError::Protocol(format!(
+                        "model/list exceeds the {MAX_MODELS}-model limit"
+                    )));
+                }
+                models.push(model_descriptor_from_wire(value)?);
             }
             cursor = result
                 .get("nextCursor")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             if cursor.is_none() {
-                break;
+                models.sort_by(|left, right| left.id.cmp(&right.id));
+                models.dedup_by(|left, right| left.id == right.id);
+                return Ok(models);
+            }
+            if !seen_cursors.insert(cursor.clone().expect("cursor was checked above")) {
+                return Err(CodexError::Protocol(
+                    "model/list repeated a pagination cursor".into(),
+                ));
             }
         }
-        models.sort_by(|left, right| left.id.cmp(&right.id));
-        models.dedup_by(|left, right| left.id == right.id);
-        Ok(models)
+        Err(CodexError::Protocol(format!(
+            "model/list exceeds the {MAX_MODEL_PAGES}-page limit"
+        )))
+    }
+
+    pub(crate) async fn start_thread<H: ManagedEventHandler>(
+        &mut self,
+        model: &str,
+        workspace: &Path,
+        handler: &mut H,
+    ) -> Result<String, CodexError> {
+        let result = self
+            .request(
+                "thread/start",
+                thread_start_params(model, workspace),
+                handler,
+            )
+            .await?;
+        thread_id_from_result(&result, "thread/start")
+    }
+
+    pub(crate) async fn resume_thread<H: ManagedEventHandler>(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        workspace: &Path,
+        handler: &mut H,
+    ) -> Result<String, CodexError> {
+        let result = self
+            .request(
+                "thread/resume",
+                thread_resume_params(thread_id, model, workspace),
+                handler,
+            )
+            .await?;
+        thread_id_from_result(&result, "thread/resume")
     }
 
     pub(crate) async fn run_turn<H: ManagedEventHandler>(
         &mut self,
+        thread_id: &str,
         model: &str,
-        workspace: &Path,
-        thread_id: Option<&str>,
+        options: &ManagedTurnOptions,
         input: ManagedTurnInput,
         handler: &mut H,
     ) -> Result<ManagedTurnResult, CodexError> {
-        let thread_id = match thread_id {
-            Some(id) => id.to_owned(),
-            None => {
-                let result = self
-                    .request(
-                        "thread/start",
-                        json!({
-                            "model": model,
-                            "cwd": workspace,
-                            "approvalPolicy": "on-request",
-                            "sandbox": "workspace-write",
-                            "ephemeral": false
-                        }),
-                        handler,
-                    )
-                    .await?;
-                result
-                    .pointer("/thread/id")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| CodexError::Protocol("thread/start omitted thread id".into()))?
-                    .to_owned()
-            }
-        };
         let mut user_input = vec![json!({"type": "text", "text": input.text})];
         user_input.extend(
             input
@@ -691,7 +830,7 @@ impl CodexAppServer {
         let result = self
             .request(
                 "turn/start",
-                json!({"threadId": thread_id, "input": user_input, "model": model}),
+                turn_start_params(thread_id, model, options, user_input),
                 handler,
             )
             .await?;
@@ -700,21 +839,34 @@ impl CodexAppServer {
             .and_then(Value::as_str)
             .ok_or_else(|| CodexError::Protocol("turn/start omitted turn id".into()))?
             .to_owned();
-        let mut final_text = String::new();
+        let mut streamed_text = String::new();
+        let mut final_text = None::<String>;
         let mut completed_status = None;
+        let mut completed_error = None;
         timeout(
             TURN_TIMEOUT,
             self.peer.wait_for(
                 |notification| match notification {
-                    ManagedNotification::TextDelta(delta) => {
-                        final_text.push_str(delta);
+                    ManagedNotification::AssistantDelta { delta, .. } => {
+                        streamed_text.push_str(delta);
+                        false
+                    }
+                    ManagedNotification::ItemCompleted(item)
+                        if item.kind == "agentMessage"
+                            && item.phase.as_deref() != Some("commentary") =>
+                    {
+                        if let Some(text) = &item.text {
+                            final_text = Some(text.clone());
+                        }
                         false
                     }
                     ManagedNotification::TurnCompleted {
                         turn_id: completed,
                         status,
+                        error,
                     } if completed == &turn_id => {
                         completed_status = Some(status.clone());
+                        completed_error = error.clone();
                         true
                     }
                     _ => false,
@@ -728,13 +880,14 @@ impl CodexAppServer {
         if status != "completed" {
             return Err(CodexError::Remote {
                 code: None,
-                message: format!("turn {turn_id} ended with status {status}"),
+                message: completed_error
+                    .unwrap_or_else(|| format!("turn {turn_id} ended with status {status}")),
             });
         }
         Ok(ManagedTurnResult {
-            thread_id,
+            thread_id: thread_id.to_owned(),
             turn_id,
-            final_text,
+            final_text: final_text.unwrap_or(streamed_text),
         })
     }
 
@@ -802,16 +955,15 @@ fn required_string(value: &Value, field: &str) -> Result<String, CodexError> {
 }
 
 fn bounded_json_summary(value: &Value) -> String {
-    const MAX_SUMMARY_BYTES: usize = 16 * 1024;
     let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| "<unavailable>".into());
-    if rendered.len() <= MAX_SUMMARY_BYTES {
+    if rendered.len() <= MAX_ITEM_DETAIL_BYTES {
         return rendered;
     }
-    let mut end = MAX_SUMMARY_BYTES;
+    let mut end = MAX_ITEM_DETAIL_BYTES;
     while !rendered.is_char_boundary(end) {
         end -= 1;
     }
-    format!("{}\n… [proposal truncated]", &rendered[..end])
+    format!("{}\n… [details truncated]", &rendered[..end])
 }
 
 fn bounded_text(value: &str, max_bytes: usize) -> String {
@@ -847,137 +999,4 @@ impl ManagedEventHandler for CapturingHandler {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tokio::io::{BufReader, duplex, sink, split};
-
-    #[derive(Default)]
-    struct TestHandler {
-        notifications: Vec<ManagedNotification>,
-        approvals: usize,
-    }
-    impl ManagedEventHandler for TestHandler {
-        fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
-            self.notifications.push(notification);
-            Ok(())
-        }
-        fn approve(&mut self, _: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
-            self.approvals += 1;
-            Ok(ApprovalDecision::AcceptOnce)
-        }
-    }
-
-    #[tokio::test]
-    async fn fake_jsonl_child_maps_notification_and_approval() {
-        let (client, server) = duplex(16 * 1024);
-        let (client_read, client_write) = split(client);
-        let (server_read, mut server_write) = split(server);
-        let server_task = tokio::spawn(async move {
-            let mut lines = BufReader::new(server_read).lines();
-            let request: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            let id = request["id"].clone();
-            server_write
-                .write_all(
-                    b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"delta\":\"hi\"}}\n",
-                )
-                .await
-                .unwrap();
-            server_write.write_all(b"{\"method\":\"item/commandExecution/requestApproval\",\"id\":99,\"params\":{\"command\":\"echo hi\"}}\n").await.unwrap();
-            let approval: Value =
-                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-            assert_eq!(approval["result"]["decision"], "accept");
-            server_write
-                .write_all(format!("{{\"id\":{id},\"result\":{{\"ok\":true}}}}\n").as_bytes())
-                .await
-                .unwrap();
-        });
-        let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
-        let mut handler = TestHandler::default();
-        let result = peer.request("test", json!({}), &mut handler).await.unwrap();
-        assert_eq!(result["ok"], true);
-        assert_eq!(handler.approvals, 1);
-        assert_eq!(
-            handler.notifications,
-            vec![ManagedNotification::TextDelta("hi".into())]
-        );
-        server_task.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn oversized_incoming_frame_fails_before_json_decoding() {
-        let bytes = vec![b'x'; MAX_FRAME_BYTES + 1];
-        let reader = BufReader::new(bytes.as_slice());
-        let mut peer = JsonLinePeer::new(reader, sink());
-
-        assert!(matches!(
-            peer.receive().await,
-            Err(CodexError::FrameTooLarge)
-        ));
-    }
-
-    #[tokio::test]
-    async fn remote_error_response_is_typed_and_bounded_by_the_frame_reader() {
-        let input = br#"{"id":1,"error":{"code":401,"message":"authentication failed"}}
-"#;
-        let mut peer = JsonLinePeer::new(BufReader::new(input.as_slice()), sink());
-        let mut handler = TestHandler::default();
-
-        let error = peer
-            .request("account/read", json!({}), &mut handler)
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error,
-            CodexError::Remote {
-                code: Some(401),
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn item_started_keeps_a_bounded_approval_summary() {
-        let notification = normalize_notification(
-            "item/started".into(),
-            json!({
-                "item": {
-                    "id": "item-1",
-                    "type": "fileChange",
-                    "changes": [{"path": "src/lib.rs", "kind": "update"}]
-                }
-            }),
-        )
-        .unwrap();
-
-        let ManagedNotification::ItemStarted {
-            item_id,
-            kind,
-            summary,
-        } = notification
-        else {
-            panic!("expected item-start notification");
-        };
-        assert_eq!(item_id, "item-1");
-        assert_eq!(kind, "fileChange");
-        assert!(summary.contains("src/lib.rs"));
-        assert!(summary.len() <= 16 * 1024 + 64);
-    }
-
-    #[test]
-    fn account_and_error_debug_paths_contain_no_tokens() {
-        let error = CodexError::Remote {
-            code: Some(401),
-            message: "authentication failed".into(),
-        };
-        assert!(!format!("{error:?}").contains("access_token"));
-        assert_eq!(
-            AccountStatus::ChatGpt {
-                plan: "plus".into()
-            },
-            AccountStatus::ChatGpt {
-                plan: "plus".into()
-            }
-        );
-    }
-}
+mod tests;

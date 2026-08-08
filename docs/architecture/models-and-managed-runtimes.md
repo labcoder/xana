@@ -31,8 +31,11 @@ A **connection** is a named configured route. It owns a provider or runtime
 kind, endpoint/process policy, credential owner, configured model overrides,
 and cached model catalog. A **model descriptor** is owned by one connection and
 records its id, display name, known modalities, tool/reasoning support, limits,
-source, and default status. A **selection** is the pair
-`(connection_id, model_id)` stored outside the human-authored configuration.
+source, and default status. Managed descriptors also retain the reasoning
+efforts advertised by the runtime, their descriptions, and the model default.
+A **selection** contains `(connection_id, model_id)` plus route-specific model
+options. Today those options are Codex reasoning effort and summary mode. The
+selection is stored outside the human-authored configuration.
 
 ```mermaid
 flowchart TD
@@ -40,14 +43,17 @@ flowchart TD
     CONNECTION --> OWNER["Credential owner"]
     CONNECTION --> CATALOG["Configured + cached model catalog"]
     CATALOG --> MODEL["Connection-owned model descriptor"]
-    MODEL --> SELECTION["Persisted connection/model selection"]
+    MODEL --> SELECTION["Persisted connection, model, and model options"]
     SELECTION --> RESOLVE{"Execution kind"}
     RESOLVE -->|"native"| NATIVE_ROUTE["Native provider route"]
     RESOLVE -->|"managed"| MANAGED_ROUTE["Managed runtime route"]
 ```
 
-Catalog refresh is explicit. Startup reads only configured and cached
-non-secret metadata. Implemented sources are Ollama `/api/tags`, OpenAI and
+Control-plane catalog refresh is explicit. Native startup reads only configured
+and cached non-secret metadata. A managed Codex chat performs a bounded live
+`model/list` negotiation before accepting turns so the selected model and its
+reasoning options match the running app-server/account. Implemented sources
+are Ollama `/api/tags`, OpenAI and
 custom `/v1/models`, OpenRouter `/api/v1/models/user`, Anthropic `/v1/models`,
 and Codex `model/list`. Remote claims and explicit overrides are merged by
 field; unknown capabilities remain unknown and image input fails closed.
@@ -58,7 +64,9 @@ CONNECTION/MODEL` persists the next-conversation selection. `/model` lists or
 selects from chat. Native selection restarts Xana's foreground conversation;
 switching between native and managed execution never copies history silently.
 Within one Codex process, selecting another advertised Codex model keeps the
-managed thread and applies the model to subsequent turns.
+managed thread and applies the model to subsequent turns. Reasoning effort and
+summary mode behave the same way. Xana validates effort against that model's
+live advertised choices rather than maintaining a vendor-specific enum.
 
 ## Native conversational providers
 
@@ -79,10 +87,13 @@ wire edge.
 
 The Codex connection launches the installed `codex app-server --stdio` and
 speaks bounded JSONL JSON-RPC. Xana initializes the process, projects account
-status and rate limits, pages `model/list`, starts threads and turns, streams
-assistant deltas, and responds to command/file-change approvals. It supervises
-process lifetime and rejects oversized, malformed, unsupported, or timed-out
-protocol exchanges.
+status and rate limits, pages `model/list`, starts or resumes threads, and
+starts turns with the selected model options. It normalizes assistant text,
+reasoning summaries and provider-exposed reasoning text, plans, command/tool
+activity, file changes, diffs, context compaction, collaboration items, model
+reroutes, warnings, completion, and approvals into typed managed events. It
+supervises process lifetime and rejects oversized, malformed, unsupported, or
+timed-out protocol exchanges.
 
 Codex owns its OAuth flow, access and refresh tokens, model backend, inner
 history, tools, sandbox, and approval semantics. Xana never reads or copies
@@ -95,19 +106,65 @@ installed Codex default is shared. Logout therefore requires confirmation.
 sequenceDiagram
     participant U as User
     participant X as Xana CLI
+    participant H as Opaque handle store
     participant C as Codex app-server
     participant O as Codex model service
     U->>X: prompt and optional local image
-    X->>C: turn/start on selected thread and model
+    X->>H: load handle for connection + workspace
+    alt saved handle exists
+        X->>C: thread/resume
+    else no saved handle
+        X->>C: thread/start
+        X->>H: atomically save opaque thread id
+    end
+    X->>C: turn/start with model, effort, and summary
     C->>O: Codex-owned inference and tool loop
     O-->>C: model output and tool decisions
-    C-->>X: deltas, items, approvals, completion
-    X-->>U: rendered output and approval UI
+    C-->>X: typed activity, approvals, and completion
+    X-->>U: policy-filtered activity and approval UI
 ```
 
 This is a direct control handoff, not an agent-to-agent conversation. Only the
 Codex-owned service request consumes model tokens; Xana does not ask a second
 model to summarize, route, or relay the turn.
+
+Xana stores the opaque managed thread id beneath `data/managed-threads/`,
+keyed by connection and canonical workspace. A companion lock gives one local
+writer ownership of that route. The handle lets a later Xana process ask Codex
+to resume its own thread; it is not a transcript, portable session, auth token,
+or claim that Xana owns the inner state. `/clear` atomically records an empty
+handle and creates a new thread on the next prompt. Native `--resume` remains a
+separate session protocol.
+
+## Managed activity and reasoning controls
+
+Managed activity is a typed event stream, not assistant prose. The append-only
+terminal projects that stream through three session-only display levels:
+
+- `quiet` shows assistant output, approvals, reroutes, warnings, and failures;
+- `normal` additionally shows summaries, plans, and concise work lifecycle
+  updates; and
+- `verbose` additionally shows provider-emitted reasoning text, command
+  output, complete diffs, plan deltas, and unknown event method names.
+
+`/details` replays a byte- and event-bounded verbose projection of the last
+turn. Assistant text is not duplicated in that buffer. These controls only
+filter already-emitted events and therefore make no extra model request.
+Because the current terminal is append-only, it cannot retroactively collapse
+or expand sections; a future TUI may present the same events interactively.
+
+Reasoning effort and reasoning-summary mode are model options, not display
+options. `/reasoning` and `/reasoning-summary` persist the selection and send
+the values on later `turn/start` calls. Changing either, or changing to another
+advertised Codex model, retains the same thread. Xana displays only summaries
+or reasoning blocks that Codex exposes through its protocol and does not claim
+access to hidden chain-of-thought.
+
+Collaboration and subagent activity in this stream describes work supervised
+inside the Codex-owned loop. Xana renders that progress but does not inject an
+extra prompt, copy context between two agents, or turn a Codex child into a
+Xana-native child handle. Xana-owned subagent admission, budgets, context
+handoff, and collection remain separate orchestration functionality.
 
 ```mermaid
 flowchart LR
@@ -117,12 +174,14 @@ flowchart LR
     MC --> TURN["Managed turns"]
     MC --> EVENTS["Event projection"]
     MC --> APPROVALS["Approval bridge"]
+    MC --> HANDLES["Opaque thread handles"]
     LIFE --> ADAPTER["Codex app-server adapter"]
     ACCOUNT --> ADAPTER
     MODELS --> ADAPTER
     TURN --> ADAPTER
     EVENTS --> ADAPTER
     APPROVALS --> ADAPTER
+    HANDLES --> ADAPTER
 ```
 
 These are intentionally narrow responsibilities even though the first adapter
@@ -150,3 +209,8 @@ OpenRouter is treated as an API/credit provider; an OAuth-created OpenRouter
 key, if obtained outside Xana, is still just an API key from Xana's
 perspective. Direct reimplementation of ChatGPT/Codex OAuth or backend
 transport is not shipped.
+
+The native OpenAI connection still uses Chat Completions. Managed Codex is the
+only current route with first-class reasoning effort and summary controls; a
+future native OpenAI Responses adapter must add its own wire mapping before
+Xana can truthfully expose equivalent controls there.

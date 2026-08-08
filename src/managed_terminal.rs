@@ -1,29 +1,35 @@
 //! Terminal projection for a foreign managed-agent runtime.
 
+mod activity;
+
 use crate::{
     artifact::ArtifactStore,
     identity::PrincipalId,
-    managed::codex::{
-        AccountStatus, ApprovalDecision, ApprovalRequest, CodexAppServer, CodexError,
-        ManagedEventHandler, ManagedNotification, ManagedTurnInput,
+    managed::{
+        codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
+        thread_store::ManagedThreadStore,
     },
-    model::ModelManager,
+    model::{ModelManager, ReasoningSummary},
     vision::{ImageIngestor, ImageLimits, PendingImages},
 };
+use activity::{ActivityLevel, RetainedActivity, TerminalManagedHandler, render_retained_activity};
 use anyhow::{Context, Result};
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::{
-    collections::BTreeMap,
-    io::{self, IsTerminal, Write},
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 pub(crate) struct ManagedChatConfig {
     pub(crate) connection: String,
     pub(crate) model: String,
     pub(crate) workspace: PathBuf,
+    pub(crate) data_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
+}
+
+enum ManagedThreadState {
+    New,
+    NeedsResume(String),
+    Loaded(String),
 }
 
 pub(crate) async fn run_codex_chat(
@@ -46,17 +52,40 @@ pub(crate) async fn run_codex_chat(
         );
     }
     models.write_managed_cache(&config.connection, &available)?;
+    let mut selection = models.selected()?;
+    config.model = selection.model.clone();
+
+    let mut thread_store =
+        ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)?;
+    let mut thread = thread_store
+        .thread_id()
+        .map(|id| ManagedThreadState::NeedsResume(id.to_owned()))
+        .unwrap_or(ManagedThreadState::New);
+    let mut activity = ActivityLevel::Normal;
+    let mut last_activity = RetainedActivity::default();
 
     println!("provider connection: {}", config.connection);
     println!("execution: managed Codex app-server ({})", server.version);
     println!("model: {}", config.model);
-    println!("workspace: {}", config.workspace.display());
     println!(
-        "/model lists or switches Codex models; /attach adds an image; /clear starts a new Codex thread; /quit exits"
+        "reasoning: {} (summary: {})",
+        selection
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or("model default"),
+        selection
+            .reasoning_summary
+            .map_or_else(|| "provider default".into(), |value| value.to_string())
+    );
+    println!("workspace: {}", config.workspace.display());
+    if let ManagedThreadState::NeedsResume(id) = &thread {
+        println!("managed thread: {id} (will resume on the first turn)");
+    }
+    println!(
+        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /clear starts a new Codex thread; /quit exits"
     );
 
     let mut editor = DefaultEditor::new().context("could not initialize terminal editor")?;
-    let mut thread_id = None::<String>;
     let mut pending = PendingImages::default();
     let ingestor = ImageIngestor::new(config.artifact_store.clone(), ImageLimits::default());
 
@@ -78,9 +107,74 @@ pub(crate) async fn run_codex_chat(
             break;
         }
         if input == "/clear" {
-            thread_id = None;
+            thread_store.set_thread_id(None)?;
+            thread = ManagedThreadState::New;
+            last_activity = RetainedActivity::default();
             let cleared = pending.clear();
             println!("xana> new managed thread will start; cleared {cleared} pending image(s)");
+            continue;
+        }
+        if input == "/details" {
+            render_retained_activity(&last_activity)?;
+            continue;
+        }
+        if let Some(value) = input.strip_prefix("/activity").map(str::trim) {
+            if value.is_empty() {
+                println!("xana> activity display: {activity}");
+            } else {
+                match value.parse::<ActivityLevel>() {
+                    Ok(level) => {
+                        activity = level;
+                        println!("xana> activity display: {activity} (session only)");
+                    }
+                    Err(error) => println!("xana> usage: /activity quiet|normal|verbose ({error})"),
+                }
+            }
+            continue;
+        }
+        if let Some(value) = input.strip_prefix("/reasoning-summary").map(str::trim) {
+            if value.is_empty() {
+                println!(
+                    "xana> reasoning summary: {}",
+                    selection
+                        .reasoning_summary
+                        .map_or_else(|| "provider default".into(), |value| value.to_string())
+                );
+            } else {
+                match value.parse::<ReasoningSummary>() {
+                    Ok(summary) => match models.update_reasoning_summary(summary) {
+                        Ok(updated) => {
+                            selection = updated;
+                            println!(
+                                "xana> reasoning summary: {summary}; the Codex thread and context are unchanged"
+                            );
+                        }
+                        Err(error) => println!("xana> could not set reasoning summary: {error}"),
+                    },
+                    Err(error) => println!("xana> {error}"),
+                }
+            }
+            continue;
+        }
+        if let Some(value) = input.strip_prefix("/reasoning").map(str::trim) {
+            if value.is_empty() {
+                print_reasoning_status(&selection, &available, &config.model);
+            } else {
+                let requested = (value != "auto").then(|| value.to_owned());
+                match models.update_reasoning_effort(requested) {
+                    Ok(updated) => {
+                        selection = updated;
+                        println!(
+                            "xana> reasoning effort: {}; the Codex thread and context are unchanged",
+                            selection
+                                .reasoning_effort
+                                .as_deref()
+                                .unwrap_or("model default")
+                        );
+                    }
+                    Err(error) => println!("xana> could not set reasoning effort: {error}"),
+                }
+            }
             continue;
         }
         if let Some(path) = input.strip_prefix("/attach").map(str::trim) {
@@ -102,30 +196,20 @@ pub(crate) async fn run_codex_chat(
             }
             continue;
         }
-        if let Some(selection) = input.strip_prefix("/model").map(str::trim) {
-            if selection.is_empty() {
+        if let Some(requested) = input.strip_prefix("/model").map(str::trim) {
+            if requested.is_empty() {
                 available = server.models().await?;
                 models.write_managed_cache(&config.connection, &available)?;
-                for descriptor in &available {
-                    let marker = if descriptor.id == config.model {
-                        "*"
-                    } else {
-                        " "
-                    };
-                    println!(
-                        "xana> {marker} {} - {}",
-                        descriptor.id, descriptor.display_name
-                    );
-                }
+                print_models(&available, &config.model);
                 continue;
             }
-            let (connection, requested_model) = selection.split_once('/').map_or(
-                (config.connection.as_str(), selection),
+            let (connection, requested_model) = requested.split_once('/').map_or(
+                (config.connection.as_str(), requested),
                 |(connection, model)| (connection, model),
             );
             if connection != config.connection {
                 println!(
-                    "xana> switching between native and managed runtimes starts a new conversation; run `xana model use {selection}` and restart Xana"
+                    "xana> switching between native and managed runtimes starts a new conversation; run `xana model use {requested}` and restart Xana"
                 );
                 continue;
             }
@@ -135,9 +219,16 @@ pub(crate) async fn run_codex_chat(
                 println!("xana> Codex does not advertise model {requested_model:?}");
                 continue;
             }
-            models.select(&config.connection, requested_model)?;
+            selection = models.select(&config.connection, requested_model)?;
             config.model = requested_model.to_owned();
-            println!("xana> selected {} for subsequent turns", config.model);
+            println!(
+                "xana> selected {} with {} reasoning for subsequent turns; the Codex thread and context are unchanged",
+                config.model,
+                selection
+                    .reasoning_effort
+                    .as_deref()
+                    .unwrap_or("model-default")
+            );
             continue;
         }
 
@@ -183,12 +274,37 @@ pub(crate) async fn run_codex_chat(
                 continue;
             }
         };
-        let mut handler = TerminalManagedHandler::default();
+
+        let mut handler = TerminalManagedHandler::new(activity);
+        let loaded_thread_id = match ensure_thread_loaded(
+            &mut server,
+            &mut thread,
+            &mut thread_store,
+            &config,
+            &mut handler,
+        )
+        .await
+        {
+            Ok(id) => id,
+            Err(error) => {
+                for attachment in attachments {
+                    pending.push(attachment);
+                }
+                println!("xana> could not open managed thread: {error}");
+                if matches!(thread, ManagedThreadState::NeedsResume(_)) {
+                    println!("xana> use /clear to explicitly start a new Codex thread");
+                }
+                continue;
+            }
+        };
         let result = server
             .run_turn(
+                &loaded_thread_id,
                 &config.model,
-                &config.workspace,
-                thread_id.as_deref(),
+                &ManagedTurnOptions {
+                    reasoning_effort: selection.reasoning_effort.clone(),
+                    reasoning_summary: selection.reasoning_summary,
+                },
                 ManagedTurnInput {
                     text: input.to_owned(),
                     local_images,
@@ -196,13 +312,12 @@ pub(crate) async fn run_codex_chat(
                 &mut handler,
             )
             .await;
+        handler.finish_stream()?;
+        last_activity = handler.into_retained();
         match result {
             Ok(result) => {
-                thread_id = Some(result.thread_id);
-                if !handler.streamed && !result.final_text.is_empty() {
+                if !last_activity.assistant_streamed && !result.final_text.is_empty() {
                     println!("xana> {}", result.final_text);
-                } else if handler.streamed {
-                    println!();
                 }
             }
             Err(error) => println!("xana> managed turn failed: {error}"),
@@ -210,6 +325,95 @@ pub(crate) async fn run_codex_chat(
     }
     server.shutdown().await?;
     Ok(())
+}
+
+async fn ensure_thread_loaded(
+    server: &mut CodexAppServer,
+    thread: &mut ManagedThreadState,
+    store: &mut ManagedThreadStore,
+    config: &ManagedChatConfig,
+    handler: &mut TerminalManagedHandler,
+) -> Result<String, CodexError> {
+    let id = match thread {
+        ManagedThreadState::New => {
+            server
+                .start_thread(&config.model, &config.workspace, handler)
+                .await?
+        }
+        ManagedThreadState::NeedsResume(id) => {
+            server
+                .resume_thread(id, &config.model, &config.workspace, handler)
+                .await?
+        }
+        ManagedThreadState::Loaded(id) => return Ok(id.clone()),
+    };
+    store
+        .set_thread_id(Some(id.clone()))
+        .map_err(|error| CodexError::Io(error.to_string()))?;
+    *thread = ManagedThreadState::Loaded(id.clone());
+    Ok(id)
+}
+
+fn print_models(models: &[crate::model::ModelDescriptor], selected: &str) {
+    for descriptor in models {
+        let marker = if descriptor.id == selected { "*" } else { " " };
+        let efforts = descriptor
+            .reasoning_efforts
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        let reasoning = if efforts.is_empty() {
+            "reasoning: unspecified".to_owned()
+        } else {
+            format!(
+                "reasoning: {efforts}; default {}",
+                descriptor
+                    .default_reasoning_effort
+                    .as_deref()
+                    .unwrap_or("unspecified")
+            )
+        };
+        println!(
+            "xana> {marker} {} - {} ({reasoning})",
+            descriptor.id, descriptor.display_name
+        );
+    }
+}
+
+fn print_reasoning_status(
+    selection: &crate::model::ModelSelection,
+    models: &[crate::model::ModelDescriptor],
+    model: &str,
+) {
+    println!(
+        "xana> reasoning effort: {}",
+        selection
+            .reasoning_effort
+            .as_deref()
+            .unwrap_or("model default")
+    );
+    if let Some(descriptor) = models.iter().find(|descriptor| descriptor.id == model) {
+        let options = descriptor
+            .reasoning_efforts
+            .iter()
+            .map(|effort| effort.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "xana> advertised efforts: {}",
+            if options.is_empty() {
+                "none; refresh the Codex catalog"
+            } else {
+                &options
+            }
+        );
+        for effort in &descriptor.reasoning_efforts {
+            if !effort.description.is_empty() {
+                println!("  {}: {}", effort.id, effort.description);
+            }
+        }
+    }
 }
 
 fn checked_original_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
@@ -224,112 +428,4 @@ fn checked_original_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
         anyhow::bail!("attached image resolves outside the managed workspace")
     }
     Ok(path)
-}
-
-#[derive(Default)]
-struct TerminalManagedHandler {
-    streamed: bool,
-    pending_items: BTreeMap<String, (String, String)>,
-}
-
-impl ManagedEventHandler for TerminalManagedHandler {
-    fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
-        match notification {
-            ManagedNotification::TextDelta(delta) => {
-                if !self.streamed {
-                    print!("xana> ");
-                    self.streamed = true;
-                }
-                print!("{delta}");
-                io::stdout()
-                    .flush()
-                    .map_err(|error| CodexError::Io(error.to_string()))?;
-            }
-            ManagedNotification::Warning(message) => {
-                if self.streamed {
-                    println!();
-                    self.streamed = false;
-                }
-                println!("xana> Codex warning: {message}");
-            }
-            ManagedNotification::ItemStarted {
-                item_id,
-                kind,
-                summary,
-            } => {
-                self.pending_items.insert(item_id, (kind, summary));
-            }
-            ManagedNotification::TurnCompleted { status, .. } if status != "completed" => {
-                println!("xana> Codex turn ended with status {status}");
-            }
-            ManagedNotification::TurnCompleted { .. } | ManagedNotification::Other { .. } => {}
-        }
-        Ok(())
-    }
-
-    fn approve(&mut self, request: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
-        if self.streamed {
-            println!();
-            self.streamed = false;
-        }
-        println!("xana> Codex requests approval");
-        println!("request: {}", request.method);
-        if let Some(item_id) = &request.item_id
-            && let Some((kind, summary)) = self.pending_items.remove(item_id)
-        {
-            println!("proposed {kind}:");
-            println!("{summary}");
-        }
-        if let Some(command) = request.command {
-            println!("command: {command}");
-        }
-        if let Some(cwd) = request.cwd {
-            println!("cwd: {cwd}");
-        }
-        if let Some(reason) = request.reason {
-            println!("reason: {reason}");
-        }
-        let safe_rejection = if request.available_decisions.contains("decline") {
-            Some(ApprovalDecision::Decline)
-        } else if request.available_decisions.contains("cancel") {
-            Some(ApprovalDecision::Cancel)
-        } else {
-            None
-        };
-        if !io::stdin().is_terminal() {
-            return safe_rejection.ok_or_else(|| {
-                CodexError::Protocol(
-                    "approval request offered no supported fail-closed decision".into(),
-                )
-            });
-        }
-        let once_allowed = request.available_decisions.contains("accept");
-        let session_allowed = request.available_decisions.contains("acceptForSession");
-        if once_allowed && session_allowed {
-            print!("Allow? [y] once, [a] session, [n] decline, [c] cancel: ");
-        } else if once_allowed {
-            print!("Allow? [y] once, [n] decline, [c] cancel: ");
-        } else {
-            print!("Xana cannot grant the advertised amendment safely; [n] decline, [c] cancel: ");
-        }
-        io::stdout()
-            .flush()
-            .map_err(|error| CodexError::Io(error.to_string()))?;
-        let mut answer = String::new();
-        io::stdin()
-            .read_line(&mut answer)
-            .map_err(|error| CodexError::Io(error.to_string()))?;
-        Ok(match answer.trim().to_ascii_lowercase().as_str() {
-            "y" | "yes" if once_allowed => ApprovalDecision::AcceptOnce,
-            "a" | "session" if session_allowed => ApprovalDecision::AcceptForSession,
-            "c" | "cancel" if request.available_decisions.contains("cancel") => {
-                ApprovalDecision::Cancel
-            }
-            _ => safe_rejection.ok_or_else(|| {
-                CodexError::Protocol(
-                    "approval request offered no supported fail-closed decision".into(),
-                )
-            })?,
-        })
-    }
 }
