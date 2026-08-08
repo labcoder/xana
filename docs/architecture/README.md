@@ -9,11 +9,14 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 
 ## System overview
 
-Xana is one Rust binary crate running on Tokio's multi-thread runtime with a
-terminal frontend and one in-process foreground runtime. `main.rs` is the
-process composition root: it parses the optional `XANA_HOME` override and
-delegates command execution to `app`. The application edge resolves paths,
-loads configuration, initializes dependencies, and routes CLI commands.
+Xana is a Cargo workspace running on Tokio's multi-thread runtime with a
+terminal frontend and one in-process foreground runtime. `xana-cli` is the
+process composition root and delegates command execution to `xana-runtime`.
+The application edge resolves paths, loads configuration, initializes
+dependencies, and routes CLI commands. `xana-core` remains headless and has no
+filesystem, terminal, HTTP, or process dependencies. See
+[Phase 3 composition services](phase3-composition.md) for the capability,
+self-documentation, and document-extraction boundaries.
 
 ```mermaid
 flowchart LR
