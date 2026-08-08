@@ -29,6 +29,7 @@ mod session;
 mod shell;
 mod terminal;
 mod tool;
+mod vision;
 
 use anyhow::{Context, Result};
 use clap::Parser;

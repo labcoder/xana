@@ -19,7 +19,7 @@ alternatives.
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
-cargo install --path . --locked
+cargo install --path crates/xana-cli --locked
 ```
 
 `--locked` uses Xana's checked-in application dependency graph. Repeating the

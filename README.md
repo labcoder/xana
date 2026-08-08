@@ -12,7 +12,7 @@ a checkout:
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
-cargo install --path . --locked
+cargo install --path crates/xana-cli --locked
 xana --version
 xana init
 xana config check
