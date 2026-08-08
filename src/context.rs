@@ -5,7 +5,6 @@
 
 pub(crate) mod persisted;
 mod preview;
-#[cfg(test)]
 mod source;
 
 use std::{collections::HashSet, error::Error, fmt, io, path::PathBuf, string::FromUtf8Error};
@@ -13,6 +12,9 @@ use std::{collections::HashSet, error::Error, fmt, io, path::PathBuf, string::Fr
 pub(crate) use preview::{canonical_text, estimate_tokens, preview};
 #[cfg(test)]
 pub(crate) use source::load_project_sources;
+pub(crate) use source::{
+    MAX_PROJECT_SOURCE_BYTES, PROJECT_INSTRUCTIONS, read_project_instructions,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct TransientSourceId(String);

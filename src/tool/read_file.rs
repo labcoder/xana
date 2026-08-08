@@ -1,4 +1,6 @@
-use super::workspace_path::{WorkspacePathError, resolve_existing};
+use super::workspace_path::{
+    FileIdentity, WorkspacePathError, resolve_existing, revalidate_path, verify_open_file,
+};
 use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
 use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
@@ -116,6 +118,7 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
         resolve_existing(args.path.clone(), workspace_root).map_err(ReadFileError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
+    let identity = resolved.identity;
 
     let metadata = canonical_path
         .metadata()
@@ -132,6 +135,7 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
         args,
         requested_path,
         canonical_path,
+        identity,
     })
 }
 
@@ -140,10 +144,13 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
     let end_line = plan.args.end_line;
     let requested_path = plan.requested_path.clone();
 
+    revalidate_path(&requested_path, &plan.canonical_path, &plan.identity)
+        .map_err(ReadFileError::Path)?;
     let file = File::open(&plan.canonical_path).map_err(|source| ReadFileError::Unavailable {
         requested_path: requested_path.clone(),
         source,
     })?;
+    verify_open_file(&requested_path, &file, &plan.identity).map_err(ReadFileError::Path)?;
 
     let mut reader = BufReader::new(file);
     let mut selected = Vec::new();
@@ -257,6 +264,7 @@ struct ReadFilePlan {
     args: ReadFileArgs,
     requested_path: String,
     canonical_path: PathBuf,
+    identity: FileIdentity,
 }
 
 #[cfg(test)]

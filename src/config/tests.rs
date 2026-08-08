@@ -37,6 +37,18 @@ fn minimal_v1_resolves_default_profile_and_default_round_limit() {
 }
 
 #[test]
+fn oversized_configuration_is_rejected_before_toml_decoding() {
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("config.toml");
+    fs::write(&path, vec![b'x'; MAX_CONFIG_BYTES + 1]).expect("oversized config");
+
+    assert!(matches!(
+        XanaConfig::load_from(&path),
+        Err(ConfigError::TooLarge { .. })
+    ));
+}
+
+#[test]
 fn explicit_round_limit_overrides_the_default() {
     let input = MINIMAL.replace(
         "model = \"qwen3:1.7b\"",

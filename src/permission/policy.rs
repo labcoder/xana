@@ -191,8 +191,24 @@ pub(super) struct SessionGrants {
     next_id: usize,
 }
 
+pub(super) const MAX_SESSION_GRANTS: usize = 256;
+
 impl SessionGrants {
-    pub(super) fn insert(&mut self, request: &PermissionRequest, scope: PermissionScope) -> String {
+    pub(super) fn insert(
+        &mut self,
+        request: &PermissionRequest,
+        scope: PermissionScope,
+    ) -> Result<String, ()> {
+        if let Some(existing) = self.grants.iter().find(|grant| {
+            grant.tool_name == request.tool_name
+                && grant.effect_class == request.effect_class
+                && grant.scope == scope
+        }) {
+            return Ok(existing.id.clone());
+        }
+        if self.grants.len() >= MAX_SESSION_GRANTS {
+            return Err(());
+        }
         self.next_id += 1;
         let id = format!("session-grant-{}", self.next_id);
         self.grants.push(SessionGrant {
@@ -201,7 +217,7 @@ impl SessionGrants {
             effect_class: request.effect_class,
             scope,
         });
-        id
+        Ok(id)
     }
 
     fn matching_grant(&self, request: &PermissionRequest) -> Option<&SessionGrant> {

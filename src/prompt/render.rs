@@ -35,9 +35,7 @@ pub(super) fn estimate_message_tokens(message: &Message) -> usize {
     for block in &message.content {
         tokens += match block {
             ContentBlock::Text(text) => estimate_tokens(text),
-            ContentBlock::Image(image) => {
-                estimate_tokens(&format!("[image:{} bytes]", image.byte_len))
-            }
+            ContentBlock::Image(image) => estimate_image_tokens(image),
             ContentBlock::ToolCall(call) => {
                 estimate_tokens(&call.id)
                     + estimate_tokens(&call.name)
@@ -55,6 +53,21 @@ pub(super) fn estimate_message_tokens(message: &Message) -> usize {
         };
     }
     tokens
+}
+
+fn estimate_image_tokens(image: &crate::vision::ImageRef) -> usize {
+    // Vision pricing/tokenization is provider-specific. Reserving roughly one
+    // token per 750 pixels is deliberately conservative for current native
+    // providers and prevents an image from being counted as a tiny filename-
+    // sized placeholder. Byte length is the fallback for legacy metadata.
+    let units = image
+        .width
+        .zip(image.height)
+        .map(|(width, height)| u64::from(width).saturating_mul(u64::from(height)))
+        .unwrap_or(image.byte_len);
+    usize::try_from(units.saturating_add(749) / 750)
+        .unwrap_or(usize::MAX)
+        .max(256)
 }
 
 pub(super) fn refresh_layer_costs(layers: &mut [PromptLayer]) {
@@ -144,5 +157,36 @@ fn origin_name(origin: SourceOrigin) -> &'static str {
         SourceOrigin::RuntimeEnvironment => "runtime_environment",
         SourceOrigin::ProductDocumentation => "product_documentation",
         SourceOrigin::ProjectFile => "project_file",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        artifact::{ArtifactRecord, ArtifactRef, ContentHash},
+        identity::{ArtifactId, PrincipalId},
+        vision::ImageRef,
+    };
+
+    #[test]
+    fn image_cost_uses_pixels_instead_of_a_tiny_text_placeholder() {
+        let image = ImageRef {
+            artifact: ArtifactRecord {
+                reference: ArtifactRef {
+                    id: ArtifactId::new(),
+                    content_hash: ContentHash::for_bytes(b"image"),
+                },
+                media_type: "image/png".into(),
+                byte_len: 5,
+                owner: PrincipalId::new(),
+            },
+            media_type: "image/png".into(),
+            byte_len: 5,
+            width: Some(1500),
+            height: Some(1000),
+        };
+
+        assert_eq!(estimate_image_tokens(&image), 2000);
     }
 }

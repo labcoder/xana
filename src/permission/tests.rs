@@ -67,6 +67,30 @@ fn configured_default_applies_when_no_rule_matches() {
 }
 
 #[test]
+fn session_grants_deduplicate_and_enforce_the_memory_bound() {
+    let mut grants = policy::SessionGrants::default();
+    let first = workspace_request(Path::new("/workspace/first"));
+    let first_id = grants
+        .insert(&first, first.scope.clone())
+        .expect("first grant");
+    assert_eq!(
+        grants
+            .insert(&first, first.scope.clone())
+            .expect("duplicate grant"),
+        first_id
+    );
+
+    for index in 1..policy::MAX_SESSION_GRANTS {
+        let request = workspace_request(&PathBuf::from(format!("/workspace/{index}")));
+        grants
+            .insert(&request, request.scope.clone())
+            .expect("grant within limit");
+    }
+    let overflow = workspace_request(Path::new("/workspace/overflow"));
+    assert!(grants.insert(&overflow, overflow.scope.clone()).is_err());
+}
+
+#[test]
 fn deny_then_ask_then_allow_precedence_ignores_rule_order() {
     let workspace = tempdir().expect("workspace");
     let request = workspace_request(workspace.path());
@@ -397,7 +421,9 @@ async fn explicit_deny_cannot_be_overridden_by_a_session_grant() {
 
     // Pure evaluator proof: matching deny is selected before grant lookup.
     let mut grants = policy::SessionGrants::default();
-    grants.insert(&first, first.scope.clone());
+    grants
+        .insert(&first, first.scope.clone())
+        .expect("session grant");
     let deny_policy = policy(
         PolicyDecision::Ask,
         vec![rule("never-read", PolicyDecision::Deny)],

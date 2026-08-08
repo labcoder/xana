@@ -1,6 +1,9 @@
 //! Immutable content-addressed artifact bytes and logical registrations.
 
-use crate::identity::{ArtifactId, PrincipalId};
+use crate::{
+    bounded_file,
+    identity::{ArtifactId, PrincipalId},
+};
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{
     error::Error,
@@ -212,9 +215,13 @@ impl ArtifactStore {
                 path: path.to_owned(),
             });
         }
-        let bytes = fs::read(path).map_err(|source| ArtifactError::Io {
-            path: path.to_owned(),
-            source,
+        let bytes = bounded_file::read(path, MAX_ARTIFACT_BYTES).map_err(|error| match error {
+            bounded_file::BoundedReadError::TooLarge { .. } => ArtifactError::CorruptContent {
+                path: path.to_owned(),
+            },
+            bounded_file::BoundedReadError::Io { path, source } => {
+                ArtifactError::Io { path, source }
+            }
         })?;
         if bytes.len() != expected_len || ContentHash::for_bytes(&bytes) != *expected_hash {
             return Err(ArtifactError::CorruptContent {

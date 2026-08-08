@@ -5,6 +5,7 @@ use super::{
 };
 use crate::{
     permission::PermissionScope,
+    process_capture,
     shell::{ProcessPlan, Shell, display_argv},
 };
 use futures::future::BoxFuture;
@@ -27,6 +28,7 @@ struct RunCommandPlan {
     args: RunCommandArgs,
     process: ProcessPlan,
     canonical_cwd: PathBuf,
+    cwd_identity: workspace_path::FileIdentity,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -92,48 +94,47 @@ impl RunCommand {
         }
 
         let process = self.shell.plan(&args.command);
+        let cwd_identity = resolved_cwd.identity;
         Ok(RunCommandPlan {
             args,
             process,
             canonical_cwd: resolved_cwd.canonical_path,
+            cwd_identity,
         })
     }
 
     async fn execute_inner(&self, plan: &RunCommandPlan) -> Result<CommandResult, RunCommandError> {
+        workspace_path::revalidate_path(&plan.args.cwd, &plan.canonical_cwd, &plan.cwd_identity)
+            .map_err(|source| RunCommandError::InvalidCwd {
+                requested: plan.args.cwd.clone(),
+                source,
+            })?;
         let mut command = Command::new(&plan.process.program);
         command
             .args(&plan.process.args)
-            .current_dir(&plan.canonical_cwd)
-            .kill_on_drop(true);
-        let output = command
-            .output()
+            .current_dir(&plan.canonical_cwd);
+        let output = process_capture::run(&mut command, MAX_STREAM_BYTES)
             .await
             .map_err(|source| RunCommandError::Process {
                 plan: plan.process.clone(),
                 source,
             })?;
-        let (stdout, stdout_truncated) = bounded_text(&output.stdout, MAX_STREAM_BYTES);
-        let (stderr, stderr_truncated) = bounded_text(&output.stderr, MAX_STREAM_BYTES);
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
         Ok(CommandResult {
             success: output.status.success(),
             exit_code: output.status.code(),
             stdout,
             stderr,
-            stdout_truncated,
-            stderr_truncated,
+            stdout_truncated: output.stdout_truncated,
+            stderr_truncated: output.stderr_truncated,
         })
     }
 }
 
 fn default_cwd() -> String {
     ".".to_owned()
-}
-
-fn bounded_text(bytes: &[u8], limit: usize) -> (String, bool) {
-    let truncated = bytes.len() > limit;
-    let selected = &bytes[..bytes.len().min(limit)];
-    (String::from_utf8_lossy(selected).into_owned(), truncated)
 }
 
 impl Tool for RunCommand {

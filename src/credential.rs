@@ -6,14 +6,17 @@
 
 use crate::config::CredentialReference;
 use std::{error::Error, ffi::OsString, fmt};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 const KEYRING_SERVICE: &str = "dev.xana.credentials";
 
+#[derive(Zeroize, ZeroizeOnDrop)]
 pub(crate) struct SecretString(String);
 
 impl SecretString {
-    pub(crate) fn new(value: String) -> Result<Self, CredentialError> {
+    pub(crate) fn new(mut value: String) -> Result<Self, CredentialError> {
         if value.trim().is_empty() {
+            value.zeroize();
             return Err(CredentialError::Empty);
         }
         Ok(Self(value))
@@ -182,11 +185,11 @@ impl<E: Environment, S: SecretStore> CredentialResolver<E, S> {
                 .environment
                 .get(variable)
                 .and_then(|value| value.into_string().ok())
-                .is_some_and(|value| !value.trim().is_empty()),
+                .is_some_and(|value| SecretString::new(value).is_ok()),
             CredentialReference::Stored { id } => self
                 .store
                 .get(id)?
-                .is_some_and(|value| !value.trim().is_empty()),
+                .is_some_and(|value| SecretString::new(value).is_ok()),
         };
         Ok(if available {
             CredentialAvailability::Available
@@ -196,8 +199,8 @@ impl<E: Environment, S: SecretStore> CredentialResolver<E, S> {
     }
 }
 
-pub(crate) fn store_secret(id: &str, secret: &str) -> Result<(), CredentialError> {
-    OsSecretStore.set(id, secret)
+pub(crate) fn store_secret(id: &str, secret: &SecretString) -> Result<(), CredentialError> {
+    OsSecretStore.set(id, secret.expose())
 }
 
 pub(crate) fn delete_secret(id: &str) -> Result<bool, CredentialError> {

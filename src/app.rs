@@ -13,7 +13,7 @@ use crate::{
     },
     config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
-    credential::{CredentialResolver, delete_secret, store_secret},
+    credential::{CredentialResolver, SecretString, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
     managed_terminal::{ManagedChatConfig, run_codex_chat},
@@ -263,12 +263,15 @@ async fn run_connection_command<W: Write>(
                 if input.len() > MAX_CREDENTIAL_BYTES {
                     anyhow::bail!("credential exceeds the {MAX_CREDENTIAL_BYTES}-byte limit")
                 }
-                input.trim_end_matches(['\r', '\n']).to_owned()
+                while input.ends_with(['\r', '\n']) {
+                    input.pop();
+                }
+                SecretString::new(input)?
             } else {
                 if !io::stdin().is_terminal() {
                     anyhow::bail!("hidden key entry requires a terminal; use --from-stdin")
                 }
-                rpassword::prompt_password(format!("API key for {id}: "))?
+                SecretString::new(rpassword::prompt_password(format!("API key for {id}: "))?)?
             };
             store_secret(credential_id, &secret)?;
             writeln!(
@@ -743,7 +746,7 @@ async fn run_default(
                         OpenAiCompatClient::with_bearer_and_attribution(
                             base_url,
                             model.clone(),
-                            secret.expose().to_owned(),
+                            secret,
                             None,
                             None,
                         )
@@ -763,7 +766,7 @@ async fn run_default(
                 let client = OpenAiCompatClient::with_bearer_and_attribution(
                     base_url,
                     model.clone(),
-                    secret.expose().to_owned(),
+                    secret,
                     None,
                     (provider_kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
                 )
@@ -777,7 +780,7 @@ async fn run_default(
                     .as_ref()
                     .context("selected Anthropic connection has no credential reference")?;
                 let secret = credentials.resolve(reference)?;
-                let client = AnthropicClient::new(base_url, secret.expose(), model.clone())
+                let client = AnthropicClient::new(base_url, secret, model.clone())
                     .with_media_resolver(media);
                 let endpoint = client.endpoint().to_owned();
                 (Box::new(client), endpoint)

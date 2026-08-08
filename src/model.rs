@@ -4,6 +4,7 @@
 //! cached non-secret metadata only; it never performs discovery implicitly.
 
 use crate::{
+    bounded_file,
     config::{ConnectionConfig, ConnectionRegistry, ModelOverride, ProviderKind},
     credential::{CredentialResolver, SecretString},
 };
@@ -22,6 +23,7 @@ use std::{
 
 const CATALOG_VERSION: u32 = 1;
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SELECTION_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -171,14 +173,25 @@ struct CatalogDocument {
 #[derive(Debug)]
 pub(crate) enum ModelError {
     UnknownConnection(String),
-    UnknownModel { connection: String, model: String },
+    UnknownModel {
+        connection: String,
+        model: String,
+    },
     MissingCredential(String),
     InvalidEndpoint(String),
     Transport(String),
     Rejected(String),
     Decode(String),
     InvalidOption(String),
-    Io { path: PathBuf, source: io::Error },
+    StateTooLarge {
+        kind: &'static str,
+        actual: u64,
+        limit: usize,
+    },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for ModelError {
@@ -194,6 +207,14 @@ impl fmt::Display for ModelError {
             Self::Rejected(reason) => write!(f, "model catalog rejected the request: {reason}"),
             Self::Decode(reason) => write!(f, "invalid model catalog response: {reason}"),
             Self::InvalidOption(reason) => write!(f, "invalid model option: {reason}"),
+            Self::StateTooLarge {
+                kind,
+                actual,
+                limit,
+            } => write!(
+                f,
+                "{kind} contains {actual} bytes, exceeding the {limit}-byte limit"
+            ),
             Self::Io { path, source } => write!(f, "could not access {}: {source}", path.display()),
         }
     }
@@ -232,7 +253,7 @@ impl ModelManager {
     }
 
     pub(crate) fn selected(&self) -> Result<ModelSelection, ModelError> {
-        match fs::read_to_string(&self.selection_path) {
+        match bounded_file::read_to_string(&self.selection_path, MAX_SELECTION_BYTES) {
             Ok(input) => {
                 let document: SelectionDocument = toml::from_str(&input)
                     .map_err(|error| ModelError::Decode(error.to_string()))?;
@@ -250,7 +271,9 @@ impl ModelManager {
                 };
                 self.normalize_and_validate_selection(selection)
             }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            Err(bounded_file::BoundedReadError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
                 let profile = self
                     .registry
                     .profiles
@@ -263,10 +286,16 @@ impl ModelManager {
                     reasoning_summary: None,
                 })
             }
-            Err(source) => Err(ModelError::Io {
-                path: self.selection_path.clone(),
-                source,
-            }),
+            Err(bounded_file::BoundedReadError::Io { path, source }) => {
+                Err(ModelError::Io { path, source })
+            }
+            Err(bounded_file::BoundedReadError::TooLarge { actual, limit, .. }) => {
+                Err(ModelError::StateTooLarge {
+                    kind: "model selection",
+                    actual,
+                    limit,
+                })
+            }
         }
     }
 
@@ -542,19 +571,21 @@ impl ModelManager {
 
     fn read_cache(&self, id: &str) -> Result<Vec<ModelDescriptor>, ModelError> {
         let path = self.cache_path(id);
-        let metadata = fs::metadata(&path).map_err(|source| ModelError::Io {
-            path: path.clone(),
-            source,
-        })?;
-        if metadata.len() > MAX_CATALOG_BYTES as u64 {
-            return Err(ModelError::Decode(format!(
-                "catalog cache exceeds the {MAX_CATALOG_BYTES}-byte limit"
-            )));
-        }
-        let input = fs::read_to_string(&path).map_err(|source| ModelError::Io {
-            path: path.clone(),
-            source,
-        })?;
+        let input =
+            bounded_file::read_to_string(&path, MAX_CATALOG_BYTES).map_err(
+                |error| match error {
+                    bounded_file::BoundedReadError::TooLarge { actual, limit, .. } => {
+                        ModelError::StateTooLarge {
+                            kind: "catalog cache",
+                            actual,
+                            limit,
+                        }
+                    }
+                    bounded_file::BoundedReadError::Io { path, source } => {
+                        ModelError::Io { path, source }
+                    }
+                },
+            )?;
         let document: CatalogDocument =
             serde_json::from_str(&input).map_err(|error| ModelError::Decode(error.to_string()))?;
         if document.version != CATALOG_VERSION || document.connection != id {
@@ -853,6 +884,22 @@ mod tests {
         assert_eq!(manager.selected().unwrap().model, "qwen");
         manager.select("local", "qwen").unwrap();
         assert!(directory.path().join("selection.toml").is_file());
+    }
+
+    #[test]
+    fn oversized_selection_is_rejected_before_toml_decoding() {
+        let directory = tempdir().unwrap();
+        let selection_path = directory.path().join("selection.toml");
+        fs::write(&selection_path, vec![b'x'; MAX_SELECTION_BYTES + 1]).unwrap();
+        let manager = ModelManager::new(registry(), directory.path().join("cache"), selection_path);
+
+        assert!(matches!(
+            manager.selected(),
+            Err(ModelError::StateTooLarge {
+                kind: "model selection",
+                ..
+            })
+        ));
     }
 
     #[test]

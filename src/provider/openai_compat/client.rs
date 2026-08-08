@@ -6,6 +6,7 @@ use super::{
     wire::{WireChatRequest, WireMessage, WireStreamResponse, WireToolDefinition},
 };
 use crate::{
+    credential::SecretString,
     identity::StepId,
     message::Message,
     provider::{ConversationalProvider, DeltaSink, ProviderError},
@@ -101,7 +102,7 @@ pub(crate) struct OpenAiCompatClient {
     client: Client,
     endpoint: String,
     model: String,
-    bearer_token: Option<String>,
+    bearer_token: Option<SecretString>,
     attribution: Vec<(String, String)>,
     media: Option<MediaResolver>,
 }
@@ -123,7 +124,7 @@ impl OpenAiCompatClient {
     pub(crate) fn with_bearer_and_attribution(
         base_url: String,
         model: String,
-        bearer_token: String,
+        bearer_token: SecretString,
         referer: Option<String>,
         title: Option<String>,
     ) -> Self {
@@ -184,27 +185,14 @@ impl OpenAiCompatClient {
                 .collect(),
         };
 
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .headers({
-                let mut headers = reqwest::header::HeaderMap::new();
-                if let Some(token) = &self.bearer_token
-                    && let Ok(value) =
-                        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
-                {
-                    headers.insert(reqwest::header::AUTHORIZATION, value);
-                }
-                for (name, value) in &self.attribution {
-                    if let (Ok(name), Ok(value)) = (
-                        reqwest::header::HeaderName::from_bytes(name.as_bytes()),
-                        reqwest::header::HeaderValue::from_str(value),
-                    ) {
-                        headers.insert(name, value);
-                    }
-                }
-                headers
-            })
+        let mut builder = self.client.post(&self.endpoint);
+        if let Some(token) = &self.bearer_token {
+            builder = builder.bearer_auth(token.expose());
+        }
+        for (name, value) in &self.attribution {
+            builder = builder.header(name, value);
+        }
+        let response = builder
             .json(&request)
             .send()
             .await

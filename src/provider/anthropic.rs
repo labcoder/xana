@@ -5,9 +5,10 @@
 //! the provider-neutral message model and normalized stream deltas.
 
 use crate::{
+    credential::SecretString,
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
-    provider::{ConversationalProvider, DeltaSink, ProviderError},
+    provider::{ConversationalProvider, DeltaSink, ProviderError, sse::SseDecoder},
     tool::ToolDefinition,
     vision::MediaResolver,
 };
@@ -232,7 +233,7 @@ impl Error for AnthropicError {
 pub(crate) struct AnthropicClient {
     client: Client,
     endpoint: String,
-    api_key: String,
+    api_key: SecretString,
     default_model: String,
     media: Option<MediaResolver>,
 }
@@ -240,13 +241,13 @@ pub(crate) struct AnthropicClient {
 impl AnthropicClient {
     pub(crate) fn new(
         base_url: impl Into<String>,
-        api_key: impl Into<String>,
+        api_key: SecretString,
         model: impl Into<String>,
     ) -> Self {
         Self {
             client: Client::new(),
             endpoint: format!("{}/v1/messages", base_url.into().trim_end_matches('/')),
-            api_key: api_key.into(),
+            api_key,
             default_model: model.into(),
             media: None,
         }
@@ -270,7 +271,7 @@ impl AnthropicClient {
         let response = self
             .client
             .post(&self.endpoint)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", self.api_key.expose())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .json(&request)
             .send()
@@ -279,17 +280,27 @@ impl AnthropicClient {
             .error_for_status()
             .map_err(AnthropicError::Http)?;
         let mut stream = response.bytes_stream();
-        let mut decoder = AnthropicSseDecoder::default();
+        let mut decoder = SseDecoder::default();
         let mut accumulator = AnthropicAccumulator::default();
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(AnthropicError::Transport)?;
-            for event in decoder.push(&chunk).map_err(AnthropicError::Stream)? {
+            for event in decoder
+                .push(&chunk)
+                .map_err(|error| AnthropicError::Stream(error.to_string()))?
+            {
+                if event.data.is_empty() {
+                    continue;
+                }
+                let event = serde_json::from_slice(&event.data)
+                    .map_err(|_| AnthropicError::Stream("SSE data is not JSON".into()))?;
                 accumulator
                     .apply(&event, step_id, deltas)
                     .map_err(AnthropicError::Stream)?;
             }
         }
-        decoder.finish().map_err(AnthropicError::Stream)?;
+        decoder
+            .finish()
+            .map_err(|error| AnthropicError::Stream(error.to_string()))?;
         accumulator.finish().map_err(AnthropicError::Stream)
     }
 }
@@ -318,42 +329,9 @@ impl ConversationalProvider for AnthropicClient {
     }
 }
 
-#[derive(Debug, Default)]
-struct AnthropicSseDecoder {
-    buffer: Vec<u8>,
-}
-impl AnthropicSseDecoder {
-    fn push(&mut self, bytes: &[u8]) -> Result<Vec<Value>, String> {
-        self.buffer.extend_from_slice(bytes);
-        let mut events = Vec::new();
-        while let Some(end) = self.buffer.windows(2).position(|pair| pair == b"\n\n") {
-            let frame = self.buffer.drain(..end + 2).collect::<Vec<_>>();
-            let text = std::str::from_utf8(&frame).map_err(|_| "SSE frame is not UTF-8")?;
-            let data = text
-                .lines()
-                .filter_map(|line| line.strip_prefix("data:").map(str::trim_start))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if !data.is_empty() {
-                events.push(serde_json::from_str(&data).map_err(|_| "SSE data is not JSON")?);
-            }
-        }
-        if self.buffer.len() > 256 * 1024 {
-            return Err("SSE frame exceeds 256 KiB".into());
-        }
-        Ok(events)
-    }
-    fn finish(self) -> Result<(), String> {
-        if self.buffer.iter().all(u8::is_ascii_whitespace) {
-            Ok(())
-        } else {
-            Err("stream ended with an incomplete SSE frame".into())
-        }
-    }
-}
-
 const MAX_STREAMED_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_STREAMED_TOOL_BYTES: usize = 256 * 1024;
+const MAX_CONTENT_BLOCKS: usize = 64;
 
 #[derive(Debug, Default)]
 struct AnthropicAccumulator {
@@ -362,6 +340,8 @@ struct AnthropicAccumulator {
     blocks: BTreeMap<usize, PartialAnthropicBlock>,
     stopped_blocks: BTreeSet<usize>,
     stop_reason: Option<String>,
+    streamed_text_bytes: usize,
+    streamed_tool_bytes: usize,
 }
 
 #[derive(Debug)]
@@ -406,27 +386,51 @@ impl AnthropicAccumulator {
                 let block = event
                     .get("content_block")
                     .ok_or("content block missing body")?;
+                if self.blocks.len() >= MAX_CONTENT_BLOCKS {
+                    return Err(format!(
+                        "Anthropic response exceeded the {MAX_CONTENT_BLOCKS}-block limit"
+                    ));
+                }
                 let partial = match block.get("type").and_then(Value::as_str) {
-                    Some("text") => PartialAnthropicBlock::Text(
-                        block
+                    Some("text") => {
+                        let text = block
                             .get("text")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
-                            .to_owned(),
-                    ),
-                    Some("tool_use") => PartialAnthropicBlock::Tool(PartialAnthropicTool {
-                        id: block
+                            .to_owned();
+                        if self.streamed_text_bytes.saturating_add(text.len())
+                            > MAX_STREAMED_TEXT_BYTES
+                        {
+                            return Err("streamed Anthropic text exceeded its byte limit".into());
+                        }
+                        self.streamed_text_bytes += text.len();
+                        PartialAnthropicBlock::Text(text)
+                    }
+                    Some("tool_use") => {
+                        let id = block
                             .get("id")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
-                            .into(),
-                        name: block
+                            .to_owned();
+                        let name = block
                             .get("name")
                             .and_then(Value::as_str)
                             .unwrap_or_default()
-                            .into(),
-                        input_json: String::new(),
-                    }),
+                            .to_owned();
+                        let bytes = id.len().saturating_add(name.len());
+                        if self.streamed_tool_bytes.saturating_add(bytes) > MAX_STREAMED_TOOL_BYTES
+                        {
+                            return Err(
+                                "streamed Anthropic tool data exceeded its byte limit".into()
+                            );
+                        }
+                        self.streamed_tool_bytes += bytes;
+                        PartialAnthropicBlock::Tool(PartialAnthropicTool {
+                            id,
+                            name,
+                            input_json: String::new(),
+                        })
+                    }
                     Some(other) => return Err(format!("unsupported content block {other}")),
                     None => return Err("content block missing type".into()),
                 };
@@ -456,9 +460,12 @@ impl AnthropicAccumulator {
                             .get("text")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
-                        if complete.len().saturating_add(text.len()) > MAX_STREAMED_TEXT_BYTES {
+                        if self.streamed_text_bytes.saturating_add(text.len())
+                            > MAX_STREAMED_TEXT_BYTES
+                        {
                             return Err("streamed Anthropic text exceeded its byte limit".into());
                         }
+                        self.streamed_text_bytes += text.len();
                         complete.push_str(text);
                         deltas.text_delta(step_id, text);
                     }
@@ -467,13 +474,14 @@ impl AnthropicAccumulator {
                             .get("partial_json")
                             .and_then(Value::as_str)
                             .unwrap_or_default();
-                        if tool.input_json.len().saturating_add(fragment.len())
+                        if self.streamed_tool_bytes.saturating_add(fragment.len())
                             > MAX_STREAMED_TOOL_BYTES
                         {
                             return Err(
                                 "streamed Anthropic tool input exceeded its byte limit".into()
                             );
                         }
+                        self.streamed_tool_bytes += fragment.len();
                         tool.input_json.push_str(fragment);
                     }
                     (_, Some(other)) => {

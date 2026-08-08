@@ -51,6 +51,10 @@ tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt-mu
 toml = "1.1.4"
 toml_edit = "0.25.13"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
+zeroize = { version = "=1.8.2", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+same-file = "1.0.6"
 
 [dev-dependencies]
 tempfile = "3.27.0"

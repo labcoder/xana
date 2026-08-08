@@ -1,4 +1,4 @@
-use super::workspace_path::{WorkspacePathError, resolve_existing};
+use super::workspace_path::{FileIdentity, WorkspacePathError, resolve_existing, revalidate_path};
 use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
 use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
@@ -25,6 +25,7 @@ struct ListFilesPlan {
     args: ListFilesArgs,
     requested_path: String,
     canonical_path: PathBuf,
+    identity: FileIdentity,
 }
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -147,6 +148,7 @@ fn plan_list_files(
         resolve_existing(args.path.clone(), workspace_root).map_err(ListFilesError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
+    let identity = resolved.identity;
 
     if !canonical_path.is_dir() {
         return Err(ListFilesError::NotDirectory { requested_path });
@@ -156,11 +158,14 @@ fn plan_list_files(
         args,
         requested_path,
         canonical_path,
+        identity,
     })
 }
 
 fn execute_list_files(plan: &ListFilesPlan) -> Result<String, ListFilesError> {
     let requested_path = plan.requested_path.clone();
+    revalidate_path(&requested_path, &plan.canonical_path, &plan.identity)
+        .map_err(ListFilesError::Path)?;
 
     let directory =
         fs::read_dir(&plan.canonical_path).map_err(|source| ListFilesError::ReadDirectory {

@@ -5,6 +5,7 @@
 //! invent initializer-specific validation.
 
 use crate::{
+    bounded_file,
     permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
     shell::{Shell, ShellConfig, ShellError},
 };
@@ -22,6 +23,7 @@ const CONFIG_VERSION: u32 = 2;
 const MIN_CONFIG_VERSION: u32 = 1;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_MAX_TOOL_ROUNDS: usize = 64;
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct VersionHeader {
@@ -206,6 +208,10 @@ pub(crate) enum ConfigError {
     },
     Decode(toml::de::Error),
     Encode(toml::ser::Error),
+    TooLarge {
+        actual: u64,
+        limit: usize,
+    },
     LegacyConfigFound {
         legacy_path: PathBuf,
         config_path: PathBuf,
@@ -271,6 +277,10 @@ impl fmt::Display for ConfigError {
             }
             Self::Decode(source) => write!(f, "could not decode config.toml: {source}"),
             Self::Encode(source) => write!(f, "could not encode config.toml: {source}"),
+            Self::TooLarge { actual, limit } => write!(
+                f,
+                "config.toml contains {actual} bytes, exceeding the {limit}-byte limit"
+            ),
             Self::LegacyConfigFound {
                 legacy_path,
                 config_path,
@@ -355,6 +365,7 @@ impl Error for ConfigError {
             Self::InvalidShell(source) => Some(source),
             Self::InvalidPermissionPolicy(source) => Some(source),
             Self::LegacyConfigFound { .. }
+            | Self::TooLarge { .. }
             | Self::UnsupportedVersion { .. }
             | Self::InvalidName { .. }
             | Self::MissingDefaultProfile { .. }
@@ -375,13 +386,10 @@ impl Error for ConfigError {
 
 impl XanaConfig {
     pub(crate) fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        match fs::read_to_string(path) {
+        match read_config(path) {
             Ok(input) => Self::parse(&input),
-            Err(source) if source.kind() != io::ErrorKind::NotFound => Err(ConfigError::Io {
-                path: path.to_owned(),
-                source,
-            }),
-            Err(not_found) => {
+            Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                let not_found = source;
                 let legacy_path = path.with_file_name("config.kv");
 
                 match fs::metadata(&legacy_path) {
@@ -405,6 +413,7 @@ impl XanaConfig {
                     }),
                 }
             }
+            Err(error) => Err(error),
         }
     }
 
@@ -472,10 +481,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn load_registry_from(path: &Path) -> Result<ConnectionRegistry, ConfigError> {
-        let input = fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        let input = read_config(path)?;
         let header: VersionHeader = toml::from_str(&input).map_err(ConfigError::Decode)?;
         if !(MIN_CONFIG_VERSION..=CONFIG_VERSION).contains(&header.version) {
             return Err(ConfigError::UnsupportedVersion {
@@ -494,10 +500,7 @@ impl XanaConfig {
                 profile: format!("provider {} model", input.id),
             });
         }
-        let source = fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| ConfigError::Edit(error.to_string()))?;
@@ -564,10 +567,7 @@ impl XanaConfig {
                 profiles,
             });
         }
-        let source = fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| ConfigError::Edit(error.to_string()))?;
@@ -581,6 +581,15 @@ impl XanaConfig {
         Self::parse(&rendered)?;
         atomic_config_write(path, rendered.as_bytes())
     }
+}
+
+fn read_config(path: &Path) -> Result<String, ConfigError> {
+    bounded_file::read_to_string(path, MAX_CONFIG_BYTES).map_err(|error| match error {
+        bounded_file::BoundedReadError::TooLarge { actual, limit, .. } => {
+            ConfigError::TooLarge { actual, limit }
+        }
+        bounded_file::BoundedReadError::Io { path, source } => ConfigError::Io { path, source },
+    })
 }
 
 fn atomic_config_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
