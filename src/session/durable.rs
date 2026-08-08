@@ -1,6 +1,6 @@
 use super::{
     ConversationEntry, LoadedSession, RecordEnvelope, RestoredSession, SessionRecord, SessionStore,
-    reduce,
+    apply_validated, reduce, validate_envelope,
 };
 use crate::{
     artifact::{ArtifactStore, ContentHash},
@@ -11,6 +11,7 @@ use crate::{
             ContextKind, ContextRecord, ContextViewRecord, MaterializationBudget, Provenance,
             TrustClass, ViewSelector,
         },
+        read_project_instructions,
     },
     identity::{
         AgentId, ContextId, ContextViewId, ConversationEntryId, OperationId, PrincipalId,
@@ -23,14 +24,14 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use std::{
-    fs::{self, File},
-    io::Read,
+    collections::HashSet,
+    fs,
     path::{Path, PathBuf},
 };
 
 const PROJECT_CONTEXT_NAME: &str = "project:AGENTS.md";
-const PROJECT_INSTRUCTIONS: &str = "AGENTS.md";
-const MAX_PROJECT_SOURCE_BYTES: usize = 64 * 1024;
+const PROJECT_INSTRUCTIONS: &str = crate::context::PROJECT_INSTRUCTIONS;
+const MAX_PROJECT_SOURCE_BYTES: usize = crate::context::MAX_PROJECT_SOURCE_BYTES;
 const PROJECT_VIEW_BUDGET: MaterializationBudget = MaterializationBudget {
     max_bytes: 16 * 1024,
     max_estimated_tokens: 1_024,
@@ -39,6 +40,7 @@ const PROJECT_VIEW_BUDGET: MaterializationBudget = MaterializationBudget {
 pub(crate) struct DurableSession {
     store: SessionStore,
     records: Vec<RecordEnvelope>,
+    record_ids: HashSet<crate::identity::RecordId>,
     restored: RestoredSession,
     artifacts: ArtifactStore,
     agent_id: AgentId,
@@ -109,9 +111,11 @@ impl DurableSession {
         records: Vec<RecordEnvelope>,
     ) -> Result<Self> {
         let restored = reduce(&records).context("could not reduce durable session")?;
+        let record_ids = records.iter().map(|record| record.record_id).collect();
         Ok(Self {
             store,
             records,
+            record_ids,
             restored,
             artifacts: ArtifactStore::new(data_dir.join("artifacts")),
             agent_id: AgentId::new(),
@@ -326,11 +330,19 @@ impl DurableSession {
 
     fn append(&mut self, record: SessionRecord) -> Result<()> {
         let envelope = RecordEnvelope::new(self.store.session_id(), record);
+        validate_envelope(
+            &self.restored,
+            &self.record_ids,
+            &envelope,
+            self.records.len(),
+        )
+        .context("new session record failed validation")?;
         self.store
             .append(&envelope)
             .context("could not append durable session record")?;
+        apply_validated(&mut self.restored, &envelope.record);
+        self.record_ids.insert(envelope.record_id);
         self.records.push(envelope);
-        self.restored = reduce(&self.records).context("new session record failed reduction")?;
         Ok(())
     }
 
@@ -358,37 +370,6 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
             .sum(),
         context_versions,
     })
-}
-
-fn read_project_instructions(workspace_root: &Path) -> Result<Option<Vec<u8>>> {
-    let path = workspace_root.join(PROJECT_INSTRUCTIONS);
-    let metadata = match fs::symlink_metadata(&path) {
-        Ok(metadata) => metadata,
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(source) => {
-            return Err(source).with_context(|| format!("could not inspect {}", path.display()));
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        bail!(
-            "project context source {} must be a regular file and not a symlink",
-            path.display()
-        );
-    }
-    let mut bytes = Vec::with_capacity(MAX_PROJECT_SOURCE_BYTES.min(metadata.len() as usize));
-    File::open(&path)
-        .with_context(|| format!("could not open {}", path.display()))?
-        .take((MAX_PROJECT_SOURCE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .with_context(|| format!("could not read {}", path.display()))?;
-    if bytes.len() > MAX_PROJECT_SOURCE_BYTES {
-        bail!(
-            "project context source {} exceeds the {}-byte limit",
-            path.display(),
-            MAX_PROJECT_SOURCE_BYTES
-        );
-    }
-    Ok(Some(bytes))
 }
 
 fn select_text(source: &str, selector: &ViewSelector) -> Result<String> {

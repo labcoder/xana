@@ -1,5 +1,6 @@
 //! Durable, non-secret handles for externally owned managed threads.
 
+use crate::bounded_file;
 use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
@@ -9,7 +10,7 @@ use std::{
 };
 
 const DOCUMENT_VERSION: u32 = 1;
-const MAX_DOCUMENT_BYTES: u64 = 64 * 1024;
+const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_THREAD_ID_BYTES: usize = 4096;
 
 #[derive(Debug)]
@@ -103,19 +104,8 @@ impl ManagedThreadStore {
             }
         }
 
-        let thread_id = match fs::metadata(&state_path) {
-            Ok(metadata) => {
-                if metadata.len() > MAX_DOCUMENT_BYTES {
-                    return Err(ManagedThreadStoreError::Invalid(format!(
-                        "{} exceeds the {MAX_DOCUMENT_BYTES}-byte limit",
-                        state_path.display()
-                    )));
-                }
-                let bytes =
-                    fs::read(&state_path).map_err(|source| ManagedThreadStoreError::Io {
-                        path: state_path.clone(),
-                        source,
-                    })?;
+        let thread_id = match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
+            Ok(bytes) => {
                 let document: ManagedThreadDocument = serde_json::from_slice(&bytes)
                     .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
                 if document.version != DOCUMENT_VERSION
@@ -128,12 +118,19 @@ impl ManagedThreadStore {
                 }
                 document.thread_id
             }
-            Err(source) if source.kind() == io::ErrorKind::NotFound => None,
-            Err(source) => {
-                return Err(ManagedThreadStoreError::Io {
-                    path: state_path.clone(),
-                    source,
-                });
+            Err(bounded_file::BoundedReadError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                None
+            }
+            Err(bounded_file::BoundedReadError::Io { path, source }) => {
+                return Err(ManagedThreadStoreError::Io { path, source });
+            }
+            Err(bounded_file::BoundedReadError::TooLarge { actual, limit, .. }) => {
+                return Err(ManagedThreadStoreError::Invalid(format!(
+                    "{} contains {actual} bytes, exceeding the {limit}-byte limit",
+                    state_path.display()
+                )));
             }
         };
 
@@ -170,7 +167,7 @@ impl ManagedThreadStore {
         };
         let bytes = serde_json::to_vec_pretty(&document)
             .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
-        if bytes.len() as u64 > MAX_DOCUMENT_BYTES {
+        if bytes.len() > MAX_DOCUMENT_BYTES {
             return Err(ManagedThreadStoreError::Invalid(format!(
                 "managed thread state exceeds the {MAX_DOCUMENT_BYTES}-byte limit"
             )));
@@ -249,5 +246,24 @@ mod tests {
             Err(ManagedThreadStoreError::Invalid(_))
         ));
         assert!(!store.state_path.is_file());
+    }
+
+    #[test]
+    fn oversized_state_file_is_rejected_before_json_decoding() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let state_path = {
+            let mut store =
+                ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+            store.set_thread_id(Some("thr_123".into())).unwrap();
+            store.state_path.clone()
+        };
+        fs::write(&state_path, vec![b'x'; MAX_DOCUMENT_BYTES + 1]).unwrap();
+
+        assert!(matches!(
+            ManagedThreadStore::open(directory.path(), "codex", &workspace),
+            Err(ManagedThreadStoreError::Invalid(reason)) if reason.contains("exceeding")
+        ));
     }
 }

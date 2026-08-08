@@ -1,4 +1,6 @@
-use super::workspace_path::{WorkspacePathError, resolve_existing};
+use super::workspace_path::{
+    FileIdentity, WorkspacePathError, resolve_existing, revalidate_path, verify_open_file,
+};
 use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
 use crate::permission::PermissionScope;
 use futures::future::BoxFuture;
@@ -6,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::error::Error;
 use std::fmt;
-use std::fs::{self, File};
-use std::io::{self, Read};
+use std::fs::OpenOptions;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
@@ -128,6 +130,7 @@ fn plan_edit_file(arguments: &Value, workspace_root: &Path) -> Result<EditFilePl
         resolve_existing(args.path.clone(), workspace_root).map_err(EditFileError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
+    let identity = resolved.identity;
     let metadata = canonical_path
         .metadata()
         .map_err(|source| EditFileError::Read {
@@ -150,6 +153,7 @@ fn plan_edit_file(arguments: &Value, workspace_root: &Path) -> Result<EditFilePl
         args,
         requested_path,
         canonical_path,
+        identity,
     })
 }
 
@@ -157,12 +161,20 @@ fn execute_edit_file(plan: &EditFilePlan) -> Result<String, EditFileError> {
     let args = &plan.args;
     let requested_path = plan.requested_path.clone();
 
-    let file = File::open(&plan.canonical_path).map_err(|source| EditFileError::Read {
-        requested_path: requested_path.clone(),
-        source,
-    })?;
+    revalidate_path(&requested_path, &plan.canonical_path, &plan.identity)
+        .map_err(EditFileError::Path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&plan.canonical_path)
+        .map_err(|source| EditFileError::Read {
+            requested_path: requested_path.clone(),
+            source,
+        })?;
+    verify_open_file(&requested_path, &file, &plan.identity).map_err(EditFileError::Path)?;
     let mut bytes = Vec::with_capacity(MAX_EDIT_BYTES + 1);
-    file.take(MAX_EDIT_BYTES as u64 + 1)
+    (&mut file)
+        .take(MAX_EDIT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|source| EditFileError::Read {
             requested_path: requested_path.clone(),
@@ -198,10 +210,16 @@ fn execute_edit_file(plan: &EditFilePlan) -> Result<String, EditFileError> {
         });
     }
 
-    fs::write(&plan.canonical_path, updated.as_bytes()).map_err(|source| EditFileError::Write {
-        requested_path: requested_path.clone(),
-        source,
-    })?;
+    revalidate_path(&requested_path, &plan.canonical_path, &plan.identity)
+        .map_err(EditFileError::Path)?;
+    file.seek(SeekFrom::Start(0))
+        .and_then(|_| file.set_len(0))
+        .and_then(|_| file.write_all(updated.as_bytes()))
+        .and_then(|_| file.flush())
+        .map_err(|source| EditFileError::Write {
+            requested_path: requested_path.clone(),
+            source,
+        })?;
 
     Ok(format!("edited {requested_path:?}"))
 }
@@ -270,11 +288,13 @@ struct EditFilePlan {
     args: EditFileArgs,
     requested_path: String,
     canonical_path: PathBuf,
+    identity: FileIdentity,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     fn fixture(contents: &[u8]) -> (tempfile::TempDir, std::path::PathBuf) {
@@ -482,6 +502,33 @@ mod tests {
             }) if requested_path == "state.txt" && limit == MAX_EDIT_BYTES
         ));
         assert_eq!(fs::read(path).expect("unchanged fixture"), original);
+    }
+
+    #[test]
+    fn rejects_file_replacement_after_permission_planning() {
+        let (workspace, path) = fixture(b"status=rough\n");
+        let plan = plan_edit_file(
+            &json!({
+                "path": "state.txt",
+                "old_text": "status=rough",
+                "new_text": "status=ready"
+            }),
+            workspace.path(),
+        )
+        .expect("edit plan");
+        fs::remove_file(&path).expect("remove planned file");
+        fs::write(&path, b"replacement with different identity\n").expect("replacement file");
+
+        assert!(matches!(
+            execute_edit_file(&plan),
+            Err(EditFileError::Path(
+                WorkspacePathError::ChangedSincePlanning { .. }
+            ))
+        ));
+        assert_eq!(
+            fs::read(&path).expect("replacement remains unchanged"),
+            b"replacement with different identity\n"
+        );
     }
 
     #[test]

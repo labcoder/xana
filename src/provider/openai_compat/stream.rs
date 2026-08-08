@@ -1,14 +1,21 @@
-//! Incremental SSE framing and provider-delta accumulation.
+//! Provider-delta accumulation above the shared bounded SSE framing module.
 
 use super::wire::{WireDelta, WireToolCallDelta};
-use crate::message::{ContentBlock, Message, Role, ToolCall};
+use crate::{
+    message::{ContentBlock, Message, Role, ToolCall},
+    provider::sse,
+};
 use std::{collections::BTreeMap, error::Error, fmt};
 
-const MAX_UNDECODED_BYTES: usize = 256 * 1024;
+const MAX_STREAMED_TEXT_BYTES: usize = 2 * 1024 * 1024;
+const MAX_STREAMED_TOOL_BYTES: usize = 256 * 1024;
+const MAX_STREAMED_TOOL_CALLS: usize = 64;
+#[cfg(test)]
+const MAX_UNDECODED_BYTES: usize = sse::MAX_FRAME_BYTES;
 
 #[derive(Debug, Default)]
 pub(super) struct SseDecoder {
-    buffer: Vec<u8>,
+    decoder: sse::SseDecoder,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -19,75 +26,23 @@ pub(super) enum SseItem {
 
 impl SseDecoder {
     pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseItem>, StreamError> {
-        self.buffer.extend_from_slice(chunk);
-        let mut items = Vec::new();
-
-        while let Some((frame_end, delimiter_len)) = next_frame(&self.buffer) {
-            if frame_end > MAX_UNDECODED_BYTES {
-                return Err(StreamError::FrameTooLarge {
-                    limit: MAX_UNDECODED_BYTES,
-                });
-            }
-            let frame = self.buffer[..frame_end].to_vec();
-            self.buffer.drain(..frame_end + delimiter_len);
-            if let Some(item) = parse_frame(&frame)? {
-                items.push(item);
-            }
-        }
-
-        if self.buffer.len() > MAX_UNDECODED_BYTES {
-            return Err(StreamError::FrameTooLarge {
-                limit: MAX_UNDECODED_BYTES,
-            });
-        }
-        Ok(items)
+        self.decoder
+            .push(chunk)
+            .map_err(StreamError::from_sse)?
+            .into_iter()
+            .map(|event| {
+                let text = std::str::from_utf8(&event.data).map_err(StreamError::InvalidUtf8)?;
+                Ok(if text.trim() == "[DONE]" {
+                    SseItem::Done
+                } else {
+                    SseItem::Data(event.data)
+                })
+            })
+            .collect()
     }
 
     pub(super) fn finish(self) -> Result<(), StreamError> {
-        if self.buffer.iter().all(u8::is_ascii_whitespace) {
-            Ok(())
-        } else {
-            Err(StreamError::IncompleteFrame {
-                remaining_bytes: self.buffer.len(),
-            })
-        }
-    }
-}
-
-fn next_frame(bytes: &[u8]) -> Option<(usize, usize)> {
-    let lf = bytes.windows(2).position(|window| window == b"\n\n");
-    let crlf = bytes.windows(4).position(|window| window == b"\r\n\r\n");
-    match (lf, crlf) {
-        (Some(left), Some(right)) if left <= right => Some((left, 2)),
-        (Some(_), Some(right)) => Some((right, 4)),
-        (Some(left), None) => Some((left, 2)),
-        (None, Some(right)) => Some((right, 4)),
-        (None, None) => None,
-    }
-}
-
-fn parse_frame(frame: &[u8]) -> Result<Option<SseItem>, StreamError> {
-    let text = std::str::from_utf8(frame).map_err(StreamError::InvalidUtf8)?;
-    let mut data = Vec::new();
-
-    for line in text.split('\n') {
-        let line = line.strip_suffix('\r').unwrap_or(line);
-        if line.starts_with(':') {
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("data:") {
-            data.push(value.strip_prefix(' ').unwrap_or(value));
-        }
-    }
-
-    if data.is_empty() {
-        return Ok(None);
-    }
-    let data = data.join("\n");
-    if data.trim() == "[DONE]" {
-        Ok(Some(SseItem::Done))
-    } else {
-        Ok(Some(SseItem::Data(data.into_bytes())))
+        self.decoder.finish().map_err(StreamError::from_sse)
     }
 }
 
@@ -95,6 +50,7 @@ fn parse_frame(frame: &[u8]) -> Result<Option<SseItem>, StreamError> {
 pub(super) struct StreamAccumulator {
     text: String,
     tool_calls: BTreeMap<usize, PartialToolCall>,
+    tool_bytes: usize,
 }
 
 #[derive(Debug, Default)]
@@ -111,16 +67,46 @@ impl StreamAccumulator {
             if !self.tool_calls.is_empty() {
                 return Err(StreamError::TextAfterToolCall);
             }
+            if self.text.len().saturating_add(text.len()) > MAX_STREAMED_TEXT_BYTES {
+                return Err(StreamError::ResponseTextTooLarge {
+                    limit: MAX_STREAMED_TEXT_BYTES,
+                });
+            }
             self.text.push_str(&text);
             fragments.push(text);
         }
         for tool_call in delta.tool_calls.unwrap_or_default() {
-            self.apply_tool_call(tool_call);
+            self.apply_tool_call(tool_call)?;
         }
         Ok(fragments)
     }
 
-    fn apply_tool_call(&mut self, delta: WireToolCallDelta) {
+    fn apply_tool_call(&mut self, delta: WireToolCallDelta) -> Result<(), StreamError> {
+        if !self.tool_calls.contains_key(&delta.index)
+            && self.tool_calls.len() >= MAX_STREAMED_TOOL_CALLS
+        {
+            return Err(StreamError::TooManyToolCalls {
+                limit: MAX_STREAMED_TOOL_CALLS,
+            });
+        }
+        let additional = delta.id.as_ref().map_or(0, String::len)
+            + delta
+                .function
+                .as_ref()
+                .and_then(|function| function.name.as_ref())
+                .map_or(0, String::len)
+            + delta
+                .function
+                .as_ref()
+                .and_then(|function| function.arguments.as_ref())
+                .map_or(0, String::len);
+        if self.tool_bytes.saturating_add(additional) > MAX_STREAMED_TOOL_BYTES {
+            return Err(StreamError::ToolDataTooLarge {
+                limit: MAX_STREAMED_TOOL_BYTES,
+            });
+        }
+        self.tool_bytes += additional;
+
         let partial = self.tool_calls.entry(delta.index).or_default();
         if let Some(id) = delta.id {
             partial.id.push_str(&id);
@@ -133,6 +119,7 @@ impl StreamAccumulator {
                 partial.arguments.push_str(&arguments);
             }
         }
+        Ok(())
     }
 
     pub(super) fn finish(self) -> Result<Message, StreamError> {
@@ -186,6 +173,15 @@ pub(super) enum StreamError {
     MissingChoice,
     MissingDone,
     TextAfterToolCall,
+    ResponseTextTooLarge {
+        limit: usize,
+    },
+    ToolDataTooLarge {
+        limit: usize,
+    },
+    TooManyToolCalls {
+        limit: usize,
+    },
     NonContiguousToolIndex {
         expected: usize,
         found: usize,
@@ -198,6 +194,17 @@ pub(super) enum StreamError {
         index: usize,
         source: serde_json::Error,
     },
+}
+
+impl StreamError {
+    fn from_sse(error: sse::SseError) -> Self {
+        match error {
+            sse::SseError::FrameTooLarge { limit } => Self::FrameTooLarge { limit },
+            sse::SseError::IncompleteFrame { remaining_bytes } => {
+                Self::IncompleteFrame { remaining_bytes }
+            }
+        }
+    }
 }
 
 impl fmt::Display for StreamError {
@@ -218,6 +225,15 @@ impl fmt::Display for StreamError {
                 f,
                 "streamed text after a tool call cannot preserve internal content order"
             ),
+            Self::ResponseTextTooLarge { limit } => {
+                write!(f, "streamed response text exceeds the {limit}-byte limit")
+            }
+            Self::ToolDataTooLarge { limit } => {
+                write!(f, "streamed tool data exceeds the {limit}-byte limit")
+            }
+            Self::TooManyToolCalls { limit } => {
+                write!(f, "stream contains more than {limit} tool calls")
+            }
             Self::NonContiguousToolIndex { expected, found } => write!(
                 f,
                 "streamed tool index {found} was not the expected contiguous index {expected}"
@@ -242,6 +258,9 @@ impl Error for StreamError {
             | Self::MissingChoice
             | Self::MissingDone
             | Self::TextAfterToolCall
+            | Self::ResponseTextTooLarge { .. }
+            | Self::ToolDataTooLarge { .. }
+            | Self::TooManyToolCalls { .. }
             | Self::NonContiguousToolIndex { .. }
             | Self::MissingToolField { .. } => None,
         }

@@ -249,6 +249,12 @@ impl PermissionBroker {
             });
         }
 
+        if let ControllerDecision::AllowSession { scope } = &decision {
+            self.grants
+                .insert(&pending.request, scope.clone())
+                .map_err(|()| DecisionError::GrantLimit)?;
+        }
+
         let pending = self
             .pending
             .remove(&key)
@@ -256,10 +262,7 @@ impl PermissionBroker {
         let effective = match &decision {
             ControllerDecision::Deny => PolicyDecision::Deny,
             ControllerDecision::AllowOnce => PolicyDecision::Allow,
-            ControllerDecision::AllowSession { scope } => {
-                self.grants.insert(&pending.request, scope.clone());
-                PolicyDecision::Allow
-            }
+            ControllerDecision::AllowSession { .. } => PolicyDecision::Allow,
         };
         let _ = self.events.send(AgentEvent::OperationStateChanged {
             operation_id,
@@ -396,6 +399,7 @@ pub(crate) enum DecisionError {
         invocation_id: ToolInvocationId,
     },
     BrokerUnavailable,
+    GrantLimit,
 }
 
 impl fmt::Display for DecisionError {
@@ -416,6 +420,7 @@ impl fmt::Display for DecisionError {
                 "session permission {operation_id}/{invocation_id} must use the requested scope exactly"
             ),
             Self::BrokerUnavailable => write!(f, "permission broker is unavailable"),
+            Self::GrantLimit => write!(f, "session permission grant limit has been reached"),
         }
     }
 }

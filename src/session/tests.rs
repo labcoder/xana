@@ -547,6 +547,24 @@ fn append_rejection_does_not_change_the_committed_file() {
 }
 
 #[test]
+fn semantically_invalid_append_never_reaches_the_journal() {
+    let directory = tempdir().expect("session tempdir");
+    let mut session =
+        DurableSession::create(directory.path(), PathBuf::from("/workspace")).expect("session");
+    let before = fs::read(session.path()).expect("committed bytes");
+
+    let error = session
+        .append_record(SessionRecord::ThreadHeadMoved {
+            thread_id: session.thread_id(),
+            head: Some(ConversationEntryId::new()),
+        })
+        .expect_err("unknown head must be rejected");
+
+    assert!(error.to_string().contains("failed validation"));
+    assert_eq!(fs::read(session.path()).expect("unchanged bytes"), before);
+}
+
+#[test]
 fn empty_and_oversized_sessions_are_rejected() {
     let directory = tempdir().expect("session tempdir");
     let path = directory.path().join("empty.jsonl");

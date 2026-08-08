@@ -1,5 +1,5 @@
 use super::record::{RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord};
-use crate::identity::SessionId;
+use crate::{bounded_file, identity::SessionId};
 use serde_json::Value;
 use std::{
     collections::HashSet,
@@ -18,6 +18,9 @@ pub(crate) struct SessionStore {
     path: PathBuf,
     file: fs::File,
     _writer_lock: fs::File,
+    committed_bytes: u64,
+    committed_records: usize,
+    writable: bool,
 }
 
 #[derive(Debug)]
@@ -65,27 +68,17 @@ impl SessionStore {
             path,
             file,
             _writer_lock: writer_lock,
+            committed_bytes: 0,
+            committed_records: 0,
+            writable: true,
         };
         store.append(&created)?;
         Ok(store)
     }
 
     pub(crate) fn inspect(path: &Path) -> Result<LoadedSession, SessionError> {
-        let metadata = fs::metadata(path).map_err(|source| SessionError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
-        let inspected_len = metadata.len();
-        if inspected_len > MAX_SESSION_BYTES as u64 {
-            return Err(SessionError::SessionTooLarge {
-                actual: inspected_len,
-                limit: MAX_SESSION_BYTES,
-            });
-        }
-        let bytes = fs::read(path).map_err(|source| SessionError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        let bytes = read_session(path)?;
+        let inspected_len = bytes.len() as u64;
         let inspected_hash = blake3::hash(&bytes).to_hex().to_string();
         let mut records = Vec::new();
         let mut record_ids = HashSet::new();
@@ -146,10 +139,10 @@ impl SessionStore {
         path: &Path,
         loaded: LoadedSession,
     ) -> Result<Self, SessionError> {
-        let bytes = fs::read(path).map_err(|source| SessionError::Io {
-            path: path.to_owned(),
-            source,
-        })?;
+        // Revalidation and torn-tail repair must be serialized with writers;
+        // otherwise recovery could truncate a concurrently committed append.
+        let writer_lock = acquire_writer_lock(path)?;
+        let bytes = read_session(path)?;
         let actual_hash = blake3::hash(&bytes).to_hex().to_string();
         if bytes.len() as u64 != loaded.inspected_len || actual_hash != loaded.inspected_hash {
             return Err(SessionError::ChangedAfterInspection {
@@ -169,14 +162,16 @@ impl SessionStore {
                 path: path.to_owned(),
                 source,
             })?;
-        let writer_lock = acquire_writer_lock(path)?;
-        if let Some(repair) = loaded.repair {
+        let committed_bytes = if let Some(repair) = loaded.repair {
             file.set_len(repair.truncate_to)
                 .map_err(|source| SessionError::Io {
                     path: path.to_owned(),
                     source,
                 })?;
-        }
+            repair.truncate_to
+        } else {
+            loaded.inspected_len
+        };
         file.seek(SeekFrom::End(0))
             .map_err(|source| SessionError::Io {
                 path: path.to_owned(),
@@ -187,10 +182,18 @@ impl SessionStore {
             path: path.to_owned(),
             file,
             _writer_lock: writer_lock,
+            committed_bytes,
+            committed_records: loaded.records.len(),
+            writable: true,
         })
     }
 
     pub(crate) fn append(&mut self, record: &RecordEnvelope) -> Result<(), SessionError> {
+        if !self.writable {
+            return Err(SessionError::WriterPoisoned {
+                path: self.path.clone(),
+            });
+        }
         if record.version != SESSION_RECORD_VERSION {
             return Err(SessionError::UnsupportedVersion {
                 version: record.version,
@@ -208,13 +211,36 @@ impl SessionStore {
             });
         }
         encoded.push(b'\n');
-        self.file
+        let next_records = self.committed_records.saturating_add(1);
+        if next_records > MAX_SESSION_RECORDS {
+            return Err(SessionError::TooManyRecords {
+                limit: MAX_SESSION_RECORDS,
+            });
+        }
+        let next_bytes = self.committed_bytes.saturating_add(encoded.len() as u64);
+        if next_bytes > MAX_SESSION_BYTES as u64 {
+            return Err(SessionError::SessionTooLarge {
+                actual: next_bytes,
+                limit: MAX_SESSION_BYTES,
+            });
+        }
+        if let Err(source) = self
+            .file
             .write_all(&encoded)
             .and_then(|()| self.file.flush())
-            .map_err(|source| SessionError::Io {
+        {
+            // A failed write may have left an uncommitted physical tail. Do
+            // not append behind it and turn recoverable tail damage into
+            // interior corruption.
+            self.writable = false;
+            return Err(SessionError::Io {
                 path: self.path.clone(),
                 source,
-            })
+            });
+        }
+        self.committed_bytes = next_bytes;
+        self.committed_records = next_records;
+        Ok(())
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
@@ -224,6 +250,15 @@ impl SessionStore {
     pub(crate) fn path(&self) -> &Path {
         &self.path
     }
+}
+
+fn read_session(path: &Path) -> Result<Vec<u8>, SessionError> {
+    bounded_file::read(path, MAX_SESSION_BYTES).map_err(|error| match error {
+        bounded_file::BoundedReadError::TooLarge { actual, limit, .. } => {
+            SessionError::SessionTooLarge { actual, limit }
+        }
+        bounded_file::BoundedReadError::Io { path, source } => SessionError::Io { path, source },
+    })
 }
 
 fn acquire_writer_lock(session_path: &Path) -> Result<fs::File, SessionError> {
@@ -314,6 +349,9 @@ pub(crate) enum SessionError {
     WriterBusy {
         path: PathBuf,
     },
+    WriterPoisoned {
+        path: PathBuf,
+    },
     Encode(serde_json::Error),
     Io {
         path: PathBuf,
@@ -367,6 +405,11 @@ impl fmt::Display for SessionError {
                 "session {} already has an active writer or recovery controller",
                 path.display()
             ),
+            Self::WriterPoisoned { path } => write!(
+                formatter,
+                "session {} cannot accept another append after a prior I/O failure",
+                path.display()
+            ),
             Self::Encode(source) => write!(formatter, "could not encode session record: {source}"),
             Self::Io { path, source } => write!(
                 formatter,
@@ -384,5 +427,44 @@ impl Error for SessionError {
             Self::Io { source, .. } => Some(source),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::ThreadId;
+
+    fn creation(session_id: SessionId) -> RecordEnvelope {
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::SessionCreated {
+                thread_id: ThreadId::new(),
+                workspace_root: PathBuf::from("/workspace"),
+            },
+        )
+    }
+
+    #[test]
+    fn append_enforces_active_session_record_and_byte_limits() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let session_id = SessionId::new();
+        let mut store =
+            SessionStore::create(directory.path(), creation(session_id)).expect("session store");
+        let before = fs::read(store.path()).expect("committed bytes");
+
+        store.committed_records = MAX_SESSION_RECORDS;
+        assert!(matches!(
+            store.append(&creation(session_id)),
+            Err(SessionError::TooManyRecords { .. })
+        ));
+
+        store.committed_records = 1;
+        store.committed_bytes = MAX_SESSION_BYTES as u64;
+        assert!(matches!(
+            store.append(&creation(session_id)),
+            Err(SessionError::SessionTooLarge { .. })
+        ));
+        assert_eq!(fs::read(store.path()).expect("unchanged bytes"), before);
     }
 }

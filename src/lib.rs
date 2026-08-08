@@ -8,6 +8,7 @@
 mod agent;
 mod app;
 mod artifact;
+mod bounded_file;
 pub mod capability;
 mod cli;
 mod config;
@@ -24,6 +25,7 @@ mod operation;
 mod paths;
 mod permission;
 mod presentation;
+mod process_capture;
 mod prompt;
 mod provider;
 mod runtime;

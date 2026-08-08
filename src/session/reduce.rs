@@ -79,364 +79,456 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
     let mut record_ids = HashSet::new();
 
     for (index, envelope) in records.iter().enumerate() {
-        if envelope.version != SESSION_RECORD_VERSION {
-            return Err(ReductionError::UnsupportedVersion(envelope.version));
-        }
-        if envelope.session_id != state.session_id {
-            return Err(ReductionError::WrongSession { index });
-        }
-        if !record_ids.insert(envelope.record_id) {
-            return Err(ReductionError::DuplicateRecord { index });
-        }
-        if index == 0 {
-            continue;
-        }
-
-        match &envelope.record {
-            SessionRecord::SessionCreated { .. } => {
-                return Err(ReductionError::SecondCreation { index });
-            }
-            SessionRecord::ConversationEntryAppended { entry } => {
-                if entry
-                    .parent
-                    .is_some_and(|parent| !state.entries.contains_key(&parent))
-                {
-                    return Err(ReductionError::UnknownParent { entry: entry.id });
-                }
-                if state.entries.insert(entry.id, entry.clone()).is_some() {
-                    return Err(ReductionError::DuplicateEntry { entry: entry.id });
-                }
-            }
-            SessionRecord::ThreadHeadMoved { thread_id, head } => {
-                if *thread_id != state.thread_id {
-                    return Err(ReductionError::UnknownThread { thread: *thread_id });
-                }
-                if head.is_some_and(|entry| !state.entries.contains_key(&entry)) {
-                    return Err(ReductionError::UnknownHead { head: *head });
-                }
-                state.head = *head;
-            }
-            SessionRecord::OperationStateChanged {
-                operation_id,
-                state: next,
-            } => {
-                let previous = state.operations.get(operation_id).copied();
-                if !valid_operation_transition(previous, *next) {
-                    return Err(ReductionError::InvalidOperationTransition {
-                        operation: *operation_id,
-                        previous,
-                        next: *next,
-                    });
-                }
-                state.operations.insert(*operation_id, *next);
-            }
-            SessionRecord::PermissionAudited { fact } => state.audits.push(fact.clone()),
-            SessionRecord::ArtifactRegistered { artifact } => {
-                if state
-                    .artifacts
-                    .insert(artifact.reference.id, artifact.clone())
-                    .is_some()
-                {
-                    return Err(ReductionError::DuplicateArtifact {
-                        artifact: artifact.reference.id,
-                    });
-                }
-            }
-            SessionRecord::ContextRegistered { context } => {
-                let Some(artifact) = state.artifacts.get(&context.artifact.id) else {
-                    return Err(ReductionError::UnknownArtifact {
-                        artifact: context.artifact.id,
-                    });
-                };
-                if artifact.reference.content_hash != context.content_hash
-                    || context.artifact.content_hash != context.content_hash
-                    || artifact.byte_len != context.logical_size
-                {
-                    return Err(ReductionError::ContextArtifactMismatch {
-                        context: context.id,
-                    });
-                }
-                let expected = state
-                    .contexts
-                    .keys()
-                    .filter_map(|(id, version)| (*id == context.id).then_some(*version))
-                    .max()
-                    .map_or(1, |version| version + 1);
-                if context.version != expected {
-                    return Err(ReductionError::NonMonotonicContext {
-                        context: context.id,
-                        expected,
-                        actual: context.version,
-                    });
-                }
-                if state
-                    .contexts
-                    .insert((context.id, context.version), context.clone())
-                    .is_some()
-                {
-                    return Err(ReductionError::DuplicateContext {
-                        context: context.id,
-                        version: context.version,
-                    });
-                }
-            }
-            SessionRecord::ContextViewRegistered { view } => {
-                if !state
-                    .contexts
-                    .contains_key(&(view.source, view.source_version))
-                {
-                    return Err(ReductionError::UnknownContextVersion {
-                        context: view.source,
-                        version: view.source_version,
-                    });
-                }
-                if state.views.insert(view.id, view.clone()).is_some() {
-                    return Err(ReductionError::DuplicateView { view: view.id });
-                }
-            }
-            SessionRecord::NamedContextSet {
-                name,
-                context_id,
-                version,
-            } => {
-                if name.trim().is_empty() {
-                    return Err(ReductionError::InvalidContextName);
-                }
-                if !state.contexts.contains_key(&(*context_id, *version)) {
-                    return Err(ReductionError::UnknownContextVersion {
-                        context: *context_id,
-                        version: *version,
-                    });
-                }
-                state
-                    .named_context
-                    .insert(name.clone(), (*context_id, *version));
-            }
-            SessionRecord::OperationAccepted {
-                operation_id,
-                thread_id,
-                input_entry_id,
-            } => {
-                if *thread_id != state.thread_id {
-                    return Err(ReductionError::UnknownThread { thread: *thread_id });
-                }
-                if !state.entries.contains_key(input_entry_id) {
-                    return Err(ReductionError::UnknownOperationInput {
-                        entry: *input_entry_id,
-                    });
-                }
-                if state.operations.contains_key(operation_id)
-                    || state
-                        .operation_details
-                        .insert(
-                            *operation_id,
-                            RestoredOperation {
-                                operation_id: *operation_id,
-                                thread_id: *thread_id,
-                                input_entry_id: *input_entry_id,
-                                step_order: Vec::new(),
-                                steps: BTreeMap::new(),
-                                invocation_order: Vec::new(),
-                                intents: BTreeMap::new(),
-                                results: BTreeMap::new(),
-                                recovery_decisions: Vec::new(),
-                                finished: None,
-                            },
-                        )
-                        .is_some()
-                {
-                    return Err(ReductionError::DuplicateOperation {
-                        operation: *operation_id,
-                    });
-                }
-                state
-                    .operations
-                    .insert(*operation_id, OperationState::Running);
-            }
-            SessionRecord::StepStarted {
-                operation_id,
-                step_id,
-                assistant_entry_id,
-            } => {
-                if !state.entries.contains_key(assistant_entry_id) {
-                    return Err(ReductionError::UnknownStepEntry {
-                        entry: *assistant_entry_id,
-                    });
-                }
-                let operation = state.operation_details.get_mut(operation_id).ok_or(
-                    ReductionError::UnknownOperation {
-                        operation: *operation_id,
-                    },
-                )?;
-                if operation.finished.is_some()
-                    || operation
-                        .steps
-                        .insert(*step_id, *assistant_entry_id)
-                        .is_some()
-                {
-                    return Err(ReductionError::DuplicateOrFinishedStep { step: *step_id });
-                }
-                operation.step_order.push(*step_id);
-            }
-            SessionRecord::InvocationIntentAppended { intent } => {
-                if intent.permission.request.operation_id != intent.operation_id
-                    || intent.permission.request.invocation_id != intent.invocation_id
-                    || intent.permission.request.final_arguments != intent.final_arguments
-                {
-                    return Err(ReductionError::IntentPermissionMismatch {
-                        invocation: intent.invocation_id,
-                    });
-                }
-                if state.operation_details.values().any(|operation| {
-                    operation.intents.contains_key(&intent.invocation_id)
-                        || operation
-                            .intents
-                            .values()
-                            .any(|existing| existing.result_id == intent.result_id)
-                }) {
-                    return Err(ReductionError::DuplicateInvocationIdentity {
-                        invocation: intent.invocation_id,
-                    });
-                }
-                let operation = state
-                    .operation_details
-                    .get_mut(&intent.operation_id)
-                    .ok_or(ReductionError::UnknownOperation {
-                        operation: intent.operation_id,
-                    })?;
-                if operation.finished.is_some() || !operation.steps.contains_key(&intent.step_id) {
-                    return Err(ReductionError::UnknownStep {
-                        step: intent.step_id,
-                    });
-                }
-                operation.invocation_order.push(intent.invocation_id);
-                operation
-                    .intents
-                    .insert(intent.invocation_id, intent.clone());
-            }
-            SessionRecord::InvocationResultAppended { result } => {
-                let operation = state
-                    .operation_details
-                    .get_mut(&result.operation_id)
-                    .ok_or(ReductionError::UnknownOperation {
-                        operation: result.operation_id,
-                    })?;
-                let intent = operation.intents.get(&result.invocation_id).ok_or(
-                    ReductionError::UnknownInvocation {
-                        invocation: result.invocation_id,
-                    },
-                )?;
-                if intent.result_id != result.result_id || operation.finished.is_some() {
-                    return Err(ReductionError::ResultMismatch {
-                        invocation: result.invocation_id,
-                    });
-                }
-                if operation
-                    .results
-                    .insert(result.invocation_id, result.clone())
-                    .is_some()
-                {
-                    return Err(ReductionError::DuplicateResult {
-                        invocation: result.invocation_id,
-                    });
-                }
-            }
-            SessionRecord::OperationSuspended { operation_id, .. } => {
-                let operation = state.operation_details.get(operation_id).ok_or(
-                    ReductionError::UnknownOperation {
-                        operation: *operation_id,
-                    },
-                )?;
-                if operation.finished.is_some() {
-                    return Err(ReductionError::OperationAlreadyFinished {
-                        operation: *operation_id,
-                    });
-                }
-                let previous = state.operations.get(operation_id).copied();
-                if !valid_operation_transition(previous, OperationState::Suspended) {
-                    return Err(ReductionError::InvalidOperationTransition {
-                        operation: *operation_id,
-                        previous,
-                        next: OperationState::Suspended,
-                    });
-                }
-                state
-                    .operations
-                    .insert(*operation_id, OperationState::Suspended);
-            }
-            SessionRecord::OperationFinished {
-                operation_id,
-                outcome,
-            } => {
-                let operation = state.operation_details.get_mut(operation_id).ok_or(
-                    ReductionError::UnknownOperation {
-                        operation: *operation_id,
-                    },
-                )?;
-                if operation.finished.is_some() {
-                    return Err(ReductionError::OperationAlreadyFinished {
-                        operation: *operation_id,
-                    });
-                }
-                if operation
-                    .invocation_order
-                    .iter()
-                    .any(|id| !operation.results.contains_key(id))
-                {
-                    return Err(ReductionError::PendingInvocationAtFinish {
-                        operation: *operation_id,
-                    });
-                }
-                operation.finished = Some(*outcome);
-                let next = OperationState::Finished(*outcome);
-                let previous = state.operations.get(operation_id).copied();
-                if !valid_operation_transition(previous, next) {
-                    return Err(ReductionError::InvalidOperationTransition {
-                        operation: *operation_id,
-                        previous,
-                        next,
-                    });
-                }
-                state.operations.insert(*operation_id, next);
-            }
-            SessionRecord::RecoveryDecisionAppended {
-                operation_id,
-                invocation_id,
-                decision,
-            } => {
-                let operation = state.operation_details.get_mut(operation_id).ok_or(
-                    ReductionError::UnknownOperation {
-                        operation: *operation_id,
-                    },
-                )?;
-                if !operation.intents.contains_key(invocation_id)
-                    || operation.results.contains_key(invocation_id)
-                    || operation.finished.is_some()
-                {
-                    return Err(ReductionError::InvalidRecoveryDecision {
-                        invocation: *invocation_id,
-                    });
-                }
-                operation
-                    .recovery_decisions
-                    .push((*invocation_id, decision.clone()));
-            }
-            SessionRecord::NamedValueSet { value } => {
-                if value.name.trim().is_empty()
-                    || !state.operation_details.contains_key(&value.operation_id)
-                    || !durable_value_exists(&state, &value.value)
-                {
-                    return Err(ReductionError::InvalidNamedValue { value: value.id });
-                }
-                if state.named_values.insert(value.id, value.clone()).is_some() {
-                    return Err(ReductionError::DuplicateNamedValue { value: value.id });
-                }
-            }
+        validate_envelope(&state, &record_ids, envelope, index)?;
+        record_ids.insert(envelope.record_id);
+        if index != 0 {
+            apply_validated(&mut state, &envelope.record);
         }
     }
 
     state.validate_conversation_path()?;
     Ok(state)
+}
+
+pub(crate) fn validate_envelope(
+    state: &RestoredSession,
+    record_ids: &HashSet<RecordId>,
+    envelope: &RecordEnvelope,
+    index: usize,
+) -> Result<(), ReductionError> {
+    if envelope.version != SESSION_RECORD_VERSION {
+        return Err(ReductionError::UnsupportedVersion(envelope.version));
+    }
+    if envelope.session_id != state.session_id {
+        return Err(ReductionError::WrongSession { index });
+    }
+    if record_ids.contains(&envelope.record_id) {
+        return Err(ReductionError::DuplicateRecord { index });
+    }
+    if index == 0 {
+        return Ok(());
+    }
+
+    match &envelope.record {
+        SessionRecord::SessionCreated { .. } => Err(ReductionError::SecondCreation { index }),
+        SessionRecord::ConversationEntryAppended { entry } => {
+            if state.entries.contains_key(&entry.id) {
+                Err(ReductionError::DuplicateEntry { entry: entry.id })
+            } else if entry
+                .parent
+                .is_some_and(|parent| !state.entries.contains_key(&parent))
+            {
+                Err(ReductionError::UnknownParent { entry: entry.id })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::ThreadHeadMoved { thread_id, head } => {
+            if *thread_id != state.thread_id {
+                Err(ReductionError::UnknownThread { thread: *thread_id })
+            } else if head.is_some_and(|entry| !state.entries.contains_key(&entry)) {
+                Err(ReductionError::UnknownHead { head: *head })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::OperationStateChanged {
+            operation_id,
+            state: next,
+        } => {
+            let previous = state.operations.get(operation_id).copied();
+            valid_operation_transition(previous, *next)
+                .then_some(())
+                .ok_or(ReductionError::InvalidOperationTransition {
+                    operation: *operation_id,
+                    previous,
+                    next: *next,
+                })
+        }
+        SessionRecord::PermissionAudited { .. } => Ok(()),
+        SessionRecord::ArtifactRegistered { artifact } => {
+            (!state.artifacts.contains_key(&artifact.reference.id))
+                .then_some(())
+                .ok_or(ReductionError::DuplicateArtifact {
+                    artifact: artifact.reference.id,
+                })
+        }
+        SessionRecord::ContextRegistered { context } => {
+            let Some(artifact) = state.artifacts.get(&context.artifact.id) else {
+                return Err(ReductionError::UnknownArtifact {
+                    artifact: context.artifact.id,
+                });
+            };
+            if artifact.reference.content_hash != context.content_hash
+                || context.artifact.content_hash != context.content_hash
+                || artifact.byte_len != context.logical_size
+            {
+                return Err(ReductionError::ContextArtifactMismatch {
+                    context: context.id,
+                });
+            }
+            let expected = state
+                .contexts
+                .range((context.id, 0)..=(context.id, u64::MAX))
+                .next_back()
+                .map_or(1, |((_, version), _)| version + 1);
+            if context.version != expected {
+                Err(ReductionError::NonMonotonicContext {
+                    context: context.id,
+                    expected,
+                    actual: context.version,
+                })
+            } else if state.contexts.contains_key(&(context.id, context.version)) {
+                Err(ReductionError::DuplicateContext {
+                    context: context.id,
+                    version: context.version,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::ContextViewRegistered { view } => {
+            if !state
+                .contexts
+                .contains_key(&(view.source, view.source_version))
+            {
+                Err(ReductionError::UnknownContextVersion {
+                    context: view.source,
+                    version: view.source_version,
+                })
+            } else if state.views.contains_key(&view.id) {
+                Err(ReductionError::DuplicateView { view: view.id })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::NamedContextSet {
+            name,
+            context_id,
+            version,
+        } => {
+            if name.trim().is_empty() {
+                Err(ReductionError::InvalidContextName)
+            } else if !state.contexts.contains_key(&(*context_id, *version)) {
+                Err(ReductionError::UnknownContextVersion {
+                    context: *context_id,
+                    version: *version,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::OperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+        } => {
+            if *thread_id != state.thread_id {
+                Err(ReductionError::UnknownThread { thread: *thread_id })
+            } else if !state.entries.contains_key(input_entry_id) {
+                Err(ReductionError::UnknownOperationInput {
+                    entry: *input_entry_id,
+                })
+            } else if state.operations.contains_key(operation_id)
+                || state.operation_details.contains_key(operation_id)
+            {
+                Err(ReductionError::DuplicateOperation {
+                    operation: *operation_id,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::StepStarted {
+            operation_id,
+            step_id,
+            assistant_entry_id,
+        } => {
+            if !state.entries.contains_key(assistant_entry_id) {
+                return Err(ReductionError::UnknownStepEntry {
+                    entry: *assistant_entry_id,
+                });
+            }
+            let operation = state.operation_details.get(operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: *operation_id,
+                },
+            )?;
+            if operation.finished.is_some() || operation.steps.contains_key(step_id) {
+                Err(ReductionError::DuplicateOrFinishedStep { step: *step_id })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::InvocationIntentAppended { intent } => {
+            if intent.permission.request.operation_id != intent.operation_id
+                || intent.permission.request.invocation_id != intent.invocation_id
+                || intent.permission.request.final_arguments != intent.final_arguments
+            {
+                return Err(ReductionError::IntentPermissionMismatch {
+                    invocation: intent.invocation_id,
+                });
+            }
+            if state.operation_details.values().any(|operation| {
+                operation.intents.contains_key(&intent.invocation_id)
+                    || operation
+                        .intents
+                        .values()
+                        .any(|existing| existing.result_id == intent.result_id)
+            }) {
+                return Err(ReductionError::DuplicateInvocationIdentity {
+                    invocation: intent.invocation_id,
+                });
+            }
+            let operation = state.operation_details.get(&intent.operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: intent.operation_id,
+                },
+            )?;
+            if operation.finished.is_some() || !operation.steps.contains_key(&intent.step_id) {
+                Err(ReductionError::UnknownStep {
+                    step: intent.step_id,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::InvocationResultAppended { result } => {
+            let operation = state.operation_details.get(&result.operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: result.operation_id,
+                },
+            )?;
+            let intent = operation.intents.get(&result.invocation_id).ok_or(
+                ReductionError::UnknownInvocation {
+                    invocation: result.invocation_id,
+                },
+            )?;
+            if intent.result_id != result.result_id || operation.finished.is_some() {
+                Err(ReductionError::ResultMismatch {
+                    invocation: result.invocation_id,
+                })
+            } else if operation.results.contains_key(&result.invocation_id) {
+                Err(ReductionError::DuplicateResult {
+                    invocation: result.invocation_id,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::OperationSuspended { operation_id, .. } => {
+            let operation = state.operation_details.get(operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: *operation_id,
+                },
+            )?;
+            if operation.finished.is_some() {
+                return Err(ReductionError::OperationAlreadyFinished {
+                    operation: *operation_id,
+                });
+            }
+            let previous = state.operations.get(operation_id).copied();
+            valid_operation_transition(previous, OperationState::Suspended)
+                .then_some(())
+                .ok_or(ReductionError::InvalidOperationTransition {
+                    operation: *operation_id,
+                    previous,
+                    next: OperationState::Suspended,
+                })
+        }
+        SessionRecord::OperationFinished {
+            operation_id,
+            outcome,
+        } => {
+            let operation = state.operation_details.get(operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: *operation_id,
+                },
+            )?;
+            if operation.finished.is_some() {
+                return Err(ReductionError::OperationAlreadyFinished {
+                    operation: *operation_id,
+                });
+            }
+            if operation
+                .invocation_order
+                .iter()
+                .any(|id| !operation.results.contains_key(id))
+            {
+                return Err(ReductionError::PendingInvocationAtFinish {
+                    operation: *operation_id,
+                });
+            }
+            let next = OperationState::Finished(*outcome);
+            let previous = state.operations.get(operation_id).copied();
+            valid_operation_transition(previous, next)
+                .then_some(())
+                .ok_or(ReductionError::InvalidOperationTransition {
+                    operation: *operation_id,
+                    previous,
+                    next,
+                })
+        }
+        SessionRecord::RecoveryDecisionAppended {
+            operation_id,
+            invocation_id,
+            ..
+        } => {
+            let operation = state.operation_details.get(operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: *operation_id,
+                },
+            )?;
+            if !operation.intents.contains_key(invocation_id)
+                || operation.results.contains_key(invocation_id)
+                || operation.finished.is_some()
+            {
+                Err(ReductionError::InvalidRecoveryDecision {
+                    invocation: *invocation_id,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::NamedValueSet { value } => {
+            if value.name.trim().is_empty()
+                || !state.operation_details.contains_key(&value.operation_id)
+                || !durable_value_exists(state, &value.value)
+            {
+                Err(ReductionError::InvalidNamedValue { value: value.id })
+            } else if state.named_values.contains_key(&value.id) {
+                Err(ReductionError::DuplicateNamedValue { value: value.id })
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecord) {
+    match record {
+        SessionRecord::SessionCreated { .. } => unreachable!("creation is never appended"),
+        SessionRecord::ConversationEntryAppended { entry } => {
+            state.entries.insert(entry.id, entry.clone());
+        }
+        SessionRecord::ThreadHeadMoved { head, .. } => state.head = *head,
+        SessionRecord::OperationStateChanged {
+            operation_id,
+            state: next,
+        } => {
+            state.operations.insert(*operation_id, *next);
+        }
+        SessionRecord::PermissionAudited { fact } => state.audits.push(fact.clone()),
+        SessionRecord::ArtifactRegistered { artifact } => {
+            state
+                .artifacts
+                .insert(artifact.reference.id, artifact.clone());
+        }
+        SessionRecord::ContextRegistered { context } => {
+            state
+                .contexts
+                .insert((context.id, context.version), context.clone());
+        }
+        SessionRecord::ContextViewRegistered { view } => {
+            state.views.insert(view.id, view.clone());
+        }
+        SessionRecord::NamedContextSet {
+            name,
+            context_id,
+            version,
+        } => {
+            state
+                .named_context
+                .insert(name.clone(), (*context_id, *version));
+        }
+        SessionRecord::OperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+        } => {
+            state.operation_details.insert(
+                *operation_id,
+                RestoredOperation {
+                    operation_id: *operation_id,
+                    thread_id: *thread_id,
+                    input_entry_id: *input_entry_id,
+                    step_order: Vec::new(),
+                    steps: BTreeMap::new(),
+                    invocation_order: Vec::new(),
+                    intents: BTreeMap::new(),
+                    results: BTreeMap::new(),
+                    recovery_decisions: Vec::new(),
+                    finished: None,
+                },
+            );
+            state
+                .operations
+                .insert(*operation_id, OperationState::Running);
+        }
+        SessionRecord::StepStarted {
+            operation_id,
+            step_id,
+            assistant_entry_id,
+        } => {
+            let operation = state
+                .operation_details
+                .get_mut(operation_id)
+                .expect("validated operation exists");
+            operation.steps.insert(*step_id, *assistant_entry_id);
+            operation.step_order.push(*step_id);
+        }
+        SessionRecord::InvocationIntentAppended { intent } => {
+            let operation = state
+                .operation_details
+                .get_mut(&intent.operation_id)
+                .expect("validated operation exists");
+            operation.invocation_order.push(intent.invocation_id);
+            operation
+                .intents
+                .insert(intent.invocation_id, intent.clone());
+        }
+        SessionRecord::InvocationResultAppended { result } => {
+            state
+                .operation_details
+                .get_mut(&result.operation_id)
+                .expect("validated operation exists")
+                .results
+                .insert(result.invocation_id, result.clone());
+        }
+        SessionRecord::OperationSuspended { operation_id, .. } => {
+            state
+                .operations
+                .insert(*operation_id, OperationState::Suspended);
+        }
+        SessionRecord::OperationFinished {
+            operation_id,
+            outcome,
+        } => {
+            state
+                .operation_details
+                .get_mut(operation_id)
+                .expect("validated operation exists")
+                .finished = Some(*outcome);
+            state
+                .operations
+                .insert(*operation_id, OperationState::Finished(*outcome));
+        }
+        SessionRecord::RecoveryDecisionAppended {
+            operation_id,
+            invocation_id,
+            decision,
+        } => {
+            state
+                .operation_details
+                .get_mut(operation_id)
+                .expect("validated operation exists")
+                .recovery_decisions
+                .push((*invocation_id, decision.clone()));
+        }
+        SessionRecord::NamedValueSet { value } => {
+            state.named_values.insert(value.id, value.clone());
+        }
+    }
 }
 
 fn durable_value_exists(state: &RestoredSession, value: &DurableValueRef) -> bool {

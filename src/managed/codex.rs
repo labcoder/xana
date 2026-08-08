@@ -2,7 +2,10 @@
 
 mod events;
 
-use crate::model::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary};
+use crate::{
+    model::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary},
+    process_capture,
+};
 use events::normalize_notification;
 use serde_json::{Value, json};
 use std::{
@@ -24,7 +27,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+const MAX_VERSION_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
+const MAX_TURN_TEXT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_ITEM_DETAIL_BYTES: usize = 16 * 1024;
 const MAX_MODELS: usize = 1024;
 const MAX_MODEL_PAGES: usize = 32;
@@ -334,7 +339,7 @@ where
 
     async fn wait_for<H: ManagedEventHandler>(
         &mut self,
-        mut complete: impl FnMut(&ManagedNotification) -> bool,
+        mut complete: impl FnMut(&ManagedNotification) -> Result<bool, CodexError>,
         handler: &mut H,
     ) -> Result<(), CodexError> {
         loop {
@@ -354,7 +359,7 @@ where
                 method,
                 message.get("params").cloned().unwrap_or(Value::Null),
             )?;
-            let done = complete(&notification);
+            let done = complete(&notification)?;
             handler.notification(notification)?;
             if done {
                 return Ok(());
@@ -565,6 +570,7 @@ pub(crate) struct CodexAppServer {
     peer: JsonLinePeer<BufReader<ChildStdout>, BufWriter<ChildStdin>>,
     pub(crate) version: String,
     pub(crate) codex_home: PathBuf,
+    protocol_usable: bool,
 }
 
 impl CodexAppServer {
@@ -623,6 +629,7 @@ impl CodexAppServer {
             peer,
             version,
             codex_home,
+            protocol_usable: true,
         })
     }
 
@@ -689,7 +696,12 @@ impl CodexAppServer {
     ) -> Result<AccountStatus, CodexError> {
         let mut success = None;
         let mut handler = CapturingHandler;
-        timeout(
+        if !self.protocol_usable {
+            return Err(CodexError::Protocol(
+                "app-server connection is unavailable after a prior timeout".into(),
+            ));
+        }
+        let completion = timeout(
             LOGIN_TIMEOUT,
             self.peer.wait_for(
                 |notification| {
@@ -699,19 +711,29 @@ impl CodexAppServer {
                         error,
                     } = notification
                     else {
-                        return false;
+                        return Ok(false);
                     };
                     if completed_login_id != login_id {
-                        return false;
+                        return Ok(false);
                     }
                     success = Some((*completed_success, error.clone()));
-                    true
+                    Ok(true)
                 },
                 &mut handler,
             ),
         )
-        .await
-        .map_err(|_| CodexError::Timeout("login completion"))??;
+        .await;
+        let completion = match completion {
+            Ok(completion) => completion,
+            Err(_) => {
+                self.protocol_usable = false;
+                return Err(CodexError::Timeout("login completion"));
+            }
+        };
+        if let Err(error) = completion {
+            self.protocol_usable = false;
+            return Err(error);
+        }
         let (ok, reason) = success.unwrap_or((false, Some("missing completion state".into())));
         if !ok {
             return Err(CodexError::LoginFailed(
@@ -843,13 +865,23 @@ impl CodexAppServer {
         let mut final_text = None::<String>;
         let mut completed_status = None;
         let mut completed_error = None;
-        timeout(
+        if !self.protocol_usable {
+            return Err(CodexError::Protocol(
+                "app-server connection is unavailable after a prior timeout".into(),
+            ));
+        }
+        let completion = timeout(
             TURN_TIMEOUT,
             self.peer.wait_for(
                 |notification| match notification {
                     ManagedNotification::AssistantDelta { delta, .. } => {
+                        if streamed_text.len().saturating_add(delta.len()) > MAX_TURN_TEXT_BYTES {
+                            return Err(CodexError::Protocol(format!(
+                                "assistant output exceeds the {MAX_TURN_TEXT_BYTES}-byte turn limit"
+                            )));
+                        }
                         streamed_text.push_str(delta);
-                        false
+                        Ok(false)
                     }
                     ManagedNotification::ItemCompleted(item)
                         if item.kind == "agentMessage"
@@ -858,7 +890,7 @@ impl CodexAppServer {
                         if let Some(text) = &item.text {
                             final_text = Some(text.clone());
                         }
-                        false
+                        Ok(false)
                     }
                     ManagedNotification::TurnCompleted {
                         turn_id: completed,
@@ -867,15 +899,25 @@ impl CodexAppServer {
                     } if completed == &turn_id => {
                         completed_status = Some(status.clone());
                         completed_error = error.clone();
-                        true
+                        Ok(true)
                     }
-                    _ => false,
+                    _ => Ok(false),
                 },
                 handler,
             ),
         )
-        .await
-        .map_err(|_| CodexError::Timeout("turn completion"))??;
+        .await;
+        let completion = match completion {
+            Ok(completion) => completion,
+            Err(_) => {
+                self.protocol_usable = false;
+                return Err(CodexError::Timeout("turn completion"));
+            }
+        };
+        if let Err(error) = completion {
+            self.protocol_usable = false;
+            return Err(error);
+        }
         let status = completed_status.unwrap_or_else(|| "unknown".into());
         if status != "completed" {
             return Err(CodexError::Remote {
@@ -897,9 +939,18 @@ impl CodexAppServer {
         params: Value,
         handler: &mut H,
     ) -> Result<Value, CodexError> {
-        timeout(REQUEST_TIMEOUT, self.peer.request(method, params, handler))
-            .await
-            .map_err(|_| CodexError::Timeout(method))?
+        if !self.protocol_usable {
+            return Err(CodexError::Protocol(
+                "app-server connection is unavailable after a prior timeout".into(),
+            ));
+        }
+        match timeout(REQUEST_TIMEOUT, self.peer.request(method, params, handler)).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.protocol_usable = false;
+                Err(CodexError::Timeout(method))
+            }
+        }
     }
 
     pub(crate) async fn shutdown(mut self) -> Result<(), CodexError> {
@@ -918,21 +969,26 @@ impl CodexAppServer {
 
 async fn probe_version(config: &CodexLaunchConfig) -> Result<String, CodexError> {
     let mut command = Command::new(&config.program);
-    command
-        .arg("--version")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+    command.arg("--version");
     if let Some(home) = &config.home {
         command.env("CODEX_HOME", home);
     }
-    let output = timeout(STARTUP_TIMEOUT, command.output())
-        .await
-        .map_err(|_| CodexError::Timeout("version probe"))?
-        .map_err(|error| CodexError::Spawn(error.to_string()))?;
+    let output = timeout(
+        STARTUP_TIMEOUT,
+        process_capture::run(&mut command, MAX_VERSION_OUTPUT_BYTES),
+    )
+    .await
+    .map_err(|_| CodexError::Timeout("version probe"))?
+    .map_err(|error| CodexError::Spawn(error.to_string()))?;
     if !output.status.success() {
         return Err(CodexError::Spawn(format!(
             "version probe exited with {}",
             output.status
+        )));
+    }
+    if output.stdout_truncated {
+        return Err(CodexError::Protocol(format!(
+            "version output exceeds the {MAX_VERSION_OUTPUT_BYTES}-byte limit"
         )));
     }
     let version = String::from_utf8(output.stdout)

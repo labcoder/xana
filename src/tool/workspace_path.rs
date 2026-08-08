@@ -5,8 +5,11 @@
 
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+#[cfg(windows)]
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub(super) enum WorkspacePathError {
@@ -21,6 +24,9 @@ pub(super) enum WorkspacePathError {
         source: io::Error,
     },
     OutsideWorkspace {
+        requested_path: String,
+    },
+    ChangedSincePlanning {
         requested_path: String,
     },
 }
@@ -41,6 +47,10 @@ impl fmt::Display for WorkspacePathError {
             Self::OutsideWorkspace { requested_path } => {
                 write!(f, "path {requested_path:?} resolves outside the workspace")
             }
+            Self::ChangedSincePlanning { requested_path } => write!(
+                f,
+                "path {requested_path:?} changed after permission planning"
+            ),
         }
     }
 }
@@ -51,7 +61,9 @@ impl Error for WorkspacePathError {
             Self::WorkspaceUnavailable { source } | Self::Unavailable { source, .. } => {
                 Some(source)
             }
-            Self::InvalidPath { .. } | Self::OutsideWorkspace { .. } => None,
+            Self::InvalidPath { .. }
+            | Self::OutsideWorkspace { .. }
+            | Self::ChangedSincePlanning { .. } => None,
         }
     }
 }
@@ -60,6 +72,24 @@ impl Error for WorkspacePathError {
 pub(super) struct ResolvedPath {
     pub(super) requested_path: String,
     pub(super) canonical_path: PathBuf,
+    pub(super) identity: FileIdentity,
+}
+
+#[cfg(unix)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FileIdentity(Arc<same_file::Handle>);
+
+#[cfg(not(any(unix, windows)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct FileIdentity {
+    len: u64,
 }
 
 pub(super) fn resolve_existing(
@@ -93,10 +123,133 @@ pub(super) fn resolve_existing(
         return Err(WorkspacePathError::OutsideWorkspace { requested_path });
     }
 
+    let identity = file_identity(&canonical_path, &requested_path)?;
     Ok(ResolvedPath {
         requested_path,
         canonical_path,
+        identity,
     })
+}
+
+pub(super) fn revalidate_path(
+    requested_path: &str,
+    canonical_path: &Path,
+    expected_identity: &FileIdentity,
+) -> Result<(), WorkspacePathError> {
+    let current =
+        canonical_path
+            .canonicalize()
+            .map_err(|source| WorkspacePathError::Unavailable {
+                requested_path: requested_path.to_owned(),
+                source,
+            })?;
+    let current_identity = file_identity(canonical_path, requested_path)?;
+    if current != canonical_path || &current_identity != expected_identity {
+        return Err(WorkspacePathError::ChangedSincePlanning {
+            requested_path: requested_path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+pub(super) fn verify_open_file(
+    requested_path: &str,
+    file: &fs::File,
+    expected_identity: &FileIdentity,
+) -> Result<(), WorkspacePathError> {
+    let current_identity = identity_from_file(file, requested_path)?;
+    if &current_identity != expected_identity {
+        return Err(WorkspacePathError::ChangedSincePlanning {
+            requested_path: requested_path.to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn file_identity(path: &Path, requested_path: &str) -> Result<FileIdentity, WorkspacePathError> {
+    #[cfg(unix)]
+    {
+        let metadata = fs::metadata(path).map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })?;
+        Ok(unix_identity(&metadata))
+    }
+    #[cfg(windows)]
+    {
+        same_file::Handle::from_path(path)
+            .map(|handle| FileIdentity(Arc::new(handle)))
+            .map_err(|source| WorkspacePathError::Unavailable {
+                requested_path: requested_path.to_owned(),
+                source,
+            })
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let metadata = fs::metadata(path).map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })?;
+        Ok(FileIdentity {
+            len: metadata.len(),
+        })
+    }
+}
+
+#[cfg(unix)]
+fn identity_from_file(
+    file: &fs::File,
+    requested_path: &str,
+) -> Result<FileIdentity, WorkspacePathError> {
+    file.metadata()
+        .map(|metadata| unix_identity(&metadata))
+        .map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })
+}
+
+#[cfg(unix)]
+fn unix_identity(metadata: &fs::Metadata) -> FileIdentity {
+    use std::os::unix::fs::MetadataExt as _;
+    FileIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
+}
+
+#[cfg(windows)]
+fn identity_from_file(
+    file: &fs::File,
+    requested_path: &str,
+) -> Result<FileIdentity, WorkspacePathError> {
+    let handle = file
+        .try_clone()
+        .map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })?;
+    same_file::Handle::from_file(handle)
+        .map(|handle| FileIdentity(Arc::new(handle)))
+        .map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn identity_from_file(
+    file: &fs::File,
+    requested_path: &str,
+) -> Result<FileIdentity, WorkspacePathError> {
+    file.metadata()
+        .map(|metadata| FileIdentity {
+            len: metadata.len(),
+        })
+        .map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.to_owned(),
+            source,
+        })
 }
 
 #[cfg(test)]

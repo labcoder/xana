@@ -9,6 +9,7 @@ use std::{error::Error, fmt};
 
 pub(crate) mod anthropic;
 pub(crate) mod openai_compat;
+mod sse;
 
 /// The provider-neutral generation boundary used by Xana's native agent loop.
 ///

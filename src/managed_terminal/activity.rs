@@ -13,6 +13,7 @@ use std::{
 
 const MAX_RETAINED_ACTIVITY_BYTES: usize = 256 * 1024;
 const MAX_RETAINED_ACTIVITY_EVENTS: usize = 512;
+const MAX_PENDING_ITEMS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActivityLevel {
@@ -159,7 +160,7 @@ impl ManagedEventHandler for TerminalManagedHandler {
         self.retained.push(&notification);
         match notification {
             ManagedNotification::AssistantDelta { delta, .. } => {
-                self.retained.assistant_streamed = true;
+                self.retained.assistant_streamed |= !delta.is_empty();
                 self.write_delta(StreamKind::Assistant, "xana>", &delta)?;
             }
             ManagedNotification::ReasoningSummaryDelta { delta, .. }
@@ -209,6 +210,13 @@ impl ManagedEventHandler for TerminalManagedHandler {
             }
             ManagedNotification::ItemStarted(item) => {
                 self.render_item("started", &item)?;
+                if !self.pending_items.contains_key(&item.id)
+                    && self.pending_items.len() >= MAX_PENDING_ITEMS
+                {
+                    return Err(CodexError::Protocol(format!(
+                        "managed runtime exceeds the {MAX_PENDING_ITEMS}-item pending limit"
+                    )));
+                }
                 self.pending_items.insert(item.id.clone(), item);
             }
             ManagedNotification::ItemCompleted(item) => {
@@ -448,5 +456,48 @@ mod tests {
         assert!(is_visible_work_item("subAgentActivity"));
         assert!(!is_visible_work_item("agentMessage"));
         assert!(!is_visible_work_item("reasoning"));
+    }
+
+    #[test]
+    fn empty_assistant_delta_does_not_hide_the_completed_answer() {
+        let mut handler = TerminalManagedHandler::new(ActivityLevel::Quiet);
+        handler
+            .notification(ManagedNotification::AssistantDelta {
+                item_id: None,
+                delta: String::new(),
+            })
+            .expect("empty delta");
+
+        assert!(!handler.into_retained().assistant_streamed);
+    }
+
+    #[test]
+    fn pending_item_tracking_is_bounded() {
+        let mut handler = TerminalManagedHandler::new(ActivityLevel::Quiet);
+        for index in 0..MAX_PENDING_ITEMS {
+            handler
+                .notification(ManagedNotification::ItemStarted(ManagedItem {
+                    id: format!("item-{index}"),
+                    kind: "commandExecution".into(),
+                    status: None,
+                    phase: None,
+                    label: "command".into(),
+                    details: String::new(),
+                    text: None,
+                }))
+                .expect("pending item within limit");
+        }
+        let error = handler
+            .notification(ManagedNotification::ItemStarted(ManagedItem {
+                id: "overflow".into(),
+                kind: "commandExecution".into(),
+                status: None,
+                phase: None,
+                label: "command".into(),
+                details: String::new(),
+                text: None,
+            }))
+            .expect_err("pending item overflow");
+        assert!(error.to_string().contains("pending limit"));
     }
 }
