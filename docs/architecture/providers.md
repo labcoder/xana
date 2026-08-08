@@ -2,6 +2,10 @@
 
 Audience: contributors and coding agents. Authority: descriptive.
 
+This page describes the implemented subset recorded in
+[proposal 0014](../proposals/0014-phase3-implemented-subset.md); the broader
+provider proposals remain non-authoritative until separately accepted.
+
 The runtime normalizes conversational providers behind a focused request:
 borrowed model id, ordered provider-neutral messages, tool schemas, an output
 token bound, and a streaming delta sink. Provider-specific request, response,
