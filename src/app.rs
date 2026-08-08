@@ -6,7 +6,7 @@
 
 use crate::{
     agent::Agent,
-    cli::{self, Cli, Command, ConfigCommand, OperationCommand, SessionCommand},
+    cli::{self, AuthCommand, Cli, Command, ConfigCommand, OperationCommand, SessionCommand},
     config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
     init::{self, InitPlan, WriteOutcome},
@@ -58,7 +58,27 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_operation_command(args.command, &paths, &mut stdout.lock()).await
         }
+        Some(Command::Auth(args)) => {
+            let stdout = io::stdout();
+            run_auth_command(args.command, &mut stdout.lock())
+        }
     }
+}
+
+fn run_auth_command<W: Write>(command: AuthCommand, output: &mut W) -> Result<()> {
+    let provider = match &command {
+        AuthCommand::Login { provider }
+        | AuthCommand::Status { provider }
+        | AuthCommand::Logout { provider } => provider,
+    };
+    if provider != "codex-oauth" {
+        anyhow::bail!("unknown credential provider {provider:?}");
+    }
+    writeln!(
+        output,
+        "codex-oauth is unavailable: Xana is waiting for an official supported protocol authority (endpoints, client identity, scopes, audience, refresh, and revocation)."
+    )?;
+    Ok(())
 }
 
 async fn run_operation_command<W: Write>(
