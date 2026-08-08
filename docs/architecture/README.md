@@ -341,10 +341,13 @@ the Codex thread. Activity level is process-local presentation of typed
 runtime events and never changes model effort.
 
 Initialization collects interactive or explicit noninteractive answers,
-builds a configuration draft without filesystem effects, renders the version
-2 TOML shape, validates it through the production configuration loader, and
-creates `config.toml` without replacing an existing file. Path and
-configuration diagnostics do not construct an agent.
+builds a typed Ollama, OpenAI-compatible, or managed Codex connection draft
+without filesystem effects, renders the version 2 TOML shape, validates it
+through the production configuration loader, and creates `config.toml`
+without replacing an existing file. The variants keep HTTP provider fields
+out of managed-runtime drafts and Codex process fields out of native-provider
+drafts. Codex authentication remains an explicit subsequent action delegated
+to app-server. Path and configuration diagnostics do not construct an agent.
 
 Xana loads a strict version 1-or-2 `config.toml`, capped at 1 MiB. It validates
 named native and managed connections, tagged credential references, connection-owned model

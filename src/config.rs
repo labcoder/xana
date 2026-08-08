@@ -191,9 +191,39 @@ pub(crate) struct NewConnection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InitialConnection {
+    Ollama {
+        name: String,
+        base_url: String,
+    },
+    OpenAiCompatible {
+        name: String,
+        base_url: String,
+    },
+    Codex {
+        name: String,
+        program: String,
+        home: Option<PathBuf>,
+    },
+}
+
+impl InitialConnection {
+    pub(crate) fn name(&self) -> &str {
+        match self {
+            Self::Ollama { name, .. }
+            | Self::OpenAiCompatible { name, .. }
+            | Self::Codex { name, .. } => name,
+        }
+    }
+
+    pub(crate) fn is_codex(&self) -> bool {
+        matches!(self, Self::Codex { .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InitialConfig {
-    pub(crate) provider_name: String,
-    pub(crate) base_url: String,
+    pub(crate) connection: InitialConnection,
     pub(crate) model: String,
     pub(crate) max_tool_rounds: usize,
     pub(crate) shell: ShellConfig,
@@ -433,32 +463,61 @@ impl XanaConfig {
 
     pub(crate) fn render_initial(input: InitialConfig) -> Result<String, ConfigError> {
         let InitialConfig {
-            provider_name,
-            base_url,
+            connection,
             model,
             max_tool_rounds,
             shell,
             permission_mode,
         } = input;
 
+        let (connection_name, connection) = match connection {
+            InitialConnection::Ollama { name, base_url } => (
+                name,
+                ProviderConnection {
+                    kind: ProviderKind::Ollama,
+                    base_url: Some(base_url),
+                    credential: None,
+                    models: BTreeMap::new(),
+                    codex_program: None,
+                    codex_home: None,
+                },
+            ),
+            InitialConnection::OpenAiCompatible { name, base_url } => (
+                name,
+                ProviderConnection {
+                    kind: ProviderKind::OpenAiCompat,
+                    base_url: Some(base_url),
+                    credential: None,
+                    models: BTreeMap::new(),
+                    codex_program: None,
+                    codex_home: None,
+                },
+            ),
+            InitialConnection::Codex {
+                name,
+                program,
+                home,
+            } => (
+                name,
+                ProviderConnection {
+                    kind: ProviderKind::Codex,
+                    base_url: None,
+                    credential: None,
+                    models: BTreeMap::new(),
+                    codex_program: Some(program),
+                    codex_home: home,
+                },
+            ),
+        };
+
         let mut providers = BTreeMap::new();
-        providers.insert(
-            provider_name.clone(),
-            ProviderConnection {
-                kind: ProviderKind::OpenAiCompat,
-                base_url: Some(base_url),
-                credential: None,
-                models: BTreeMap::new(),
-                codex_program: None,
-                codex_home: None,
-            },
-        );
+        providers.insert(connection_name.clone(), connection);
 
         let mut profiles = BTreeMap::new();
         profiles.insert(
             "default".to_owned(),
             AgentProfile {
-                provider: provider_name,
+                provider: connection_name,
                 model,
                 max_tool_rounds,
             },

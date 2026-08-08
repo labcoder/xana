@@ -54,6 +54,7 @@ temporary or dedicated install prefix:
 scripts/run-isolated.sh /tmp/xana-install --version
 scripts/run-isolated.sh /tmp/xana-install init \
   --non-interactive \
+  --kind ollama \
   --provider-name ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
@@ -108,6 +109,7 @@ For a disposable noninteractive local Ollama setup:
 
 ```bash
 xana init --non-interactive \
+  --kind ollama \
   --provider-name ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
@@ -115,6 +117,12 @@ xana init --non-interactive \
   --permission-mode ask
 xana config check
 ```
+
+Interactive setup can instead create a managed Codex connection for a
+ChatGPT subscription. Install the Codex CLI, choose that option, then follow
+the printed status, login, model refresh, and model list commands. Xana
+delegates OAuth and credential storage to Codex; it does not need a hosted
+callback server.
 
 See [Configuration](configuration.md) for paths and schema,
 [Permissions](permissions.md) for host authority, [Project context and system

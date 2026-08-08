@@ -43,9 +43,11 @@ Use `--rev COMMIT_SHA` for a repeatable build. Xana is not published to
 crates.io and has no prebuilt installer or automatic updater. See
 [Source installation](docs/user/installation.md).
 
-## Start locally with Ollama
+## Choose a first connection
 
-`xana init` creates and validates the first local/custom connection. A minimal
+`xana init` offers local Ollama, a ChatGPT subscription through the managed
+Codex runtime, or a custom OpenAI-compatible endpoint. It creates and validates
+the selected connection without storing a plaintext secret. A minimal Ollama
 document is:
 
 ```toml
@@ -87,7 +89,12 @@ Anthropic is API-key-only; Xana does not offer Claude subscription OAuth.
 
 ## Use a ChatGPT subscription through Codex
 
-Install a compatible Codex CLI, then:
+On a fresh installation, install a compatible Codex CLI and choose
+`ChatGPT subscription through Codex` in `xana init`. Xana creates the managed
+connection and prints the status, login, catalog-refresh, and model-discovery
+commands to run next.
+
+To add Codex to an existing Xana configuration instead:
 
 ```bash
 xana connection add codex --kind codex --model gpt-5.3-codex

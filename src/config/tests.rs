@@ -468,8 +468,10 @@ fn missing_configuration_reports_the_config_toml_path() {
 
 fn initial_config() -> InitialConfig {
     InitialConfig {
-        provider_name: "ollama".to_owned(),
-        base_url: "http://localhost:11434/v1".to_owned(),
+        connection: InitialConnection::Ollama {
+            name: "ollama".to_owned(),
+            base_url: "http://localhost:11434/v1".to_owned(),
+        },
         model: "qwen3:1.7b".to_owned(),
         max_tool_rounds: 12,
         shell: crate::shell::ShellConfig::default(),
@@ -486,7 +488,7 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
         parsed,
         XanaConfig {
             provider_name: "ollama".to_owned(),
-            provider_kind: ProviderKind::OpenAiCompat,
+            provider_kind: ProviderKind::Ollama,
             base_url: "http://localhost:11434/v1".to_owned(),
             credential: None,
             codex_program: None,
@@ -537,7 +539,10 @@ fn rendered_initial_config_escapes_model_text_as_toml() {
 #[test]
 fn invalid_initial_provider_name_uses_the_existing_validation_error() {
     let mut input = initial_config();
-    input.provider_name = "Bad Provider".to_owned();
+    let InitialConnection::Ollama { name, .. } = &mut input.connection else {
+        unreachable!("fixture uses Ollama")
+    };
+    *name = "Bad Provider".to_owned();
 
     let error = XanaConfig::render_initial(input).expect_err("invalid provider should fail");
 
@@ -553,7 +558,10 @@ fn invalid_initial_provider_name_uses_the_existing_validation_error() {
 #[test]
 fn invalid_initial_url_uses_the_existing_validation_error() {
     let mut input = initial_config();
-    input.base_url = "/v1".to_owned();
+    let InitialConnection::Ollama { base_url, .. } = &mut input.connection else {
+        unreachable!("fixture uses Ollama")
+    };
+    *base_url = "/v1".to_owned();
 
     let error = XanaConfig::render_initial(input).expect_err("invalid URL should fail");
 
@@ -561,6 +569,27 @@ fn invalid_initial_url_uses_the_existing_validation_error() {
         error,
         ConfigError::InvalidBaseUrl { provider, .. } if provider == "ollama"
     ));
+}
+
+#[test]
+fn rendered_initial_codex_config_has_no_http_or_credential_fields() {
+    let mut input = initial_config();
+    input.connection = InitialConnection::Codex {
+        name: "codex".to_owned(),
+        program: "codex-preview".to_owned(),
+        home: None,
+    };
+    input.model = "gpt-5.6-sol".to_owned();
+
+    let rendered = XanaConfig::render_initial(input).expect("render Codex config");
+    let parsed = XanaConfig::parse(&rendered).expect("parse Codex config");
+
+    assert_eq!(parsed.provider_kind, ProviderKind::Codex);
+    assert_eq!(parsed.codex_program.as_deref(), Some("codex-preview"));
+    assert_eq!(parsed.base_url, "codex-app-server://stdio");
+    assert!(parsed.credential.is_none());
+    assert!(!rendered.contains("base_url"));
+    assert!(!rendered.contains("credential"));
 }
 
 #[test]
