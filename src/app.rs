@@ -1038,7 +1038,22 @@ fn run_init_with_io<R: BufRead, W: Write>(
                     "  4. xana model list --connection {}",
                     initial.connection.name()
                 )?;
-                writeln!(output, "  5. xana")?;
+                writeln!(
+                    output,
+                    "  5. xana model use {}/MODEL",
+                    initial.connection.name()
+                )?;
+                writeln!(output, "  6. xana")?;
+                writeln!(output)?;
+                writeln!(
+                    output,
+                    "Running from this source checkout? Replace `xana` with `cargo run --`,"
+                )?;
+                writeln!(
+                    output,
+                    "for example: cargo run -- connection status {}",
+                    initial.connection.name()
+                )?;
             } else {
                 writeln!(output, "Next: xana")?;
             }
@@ -1217,6 +1232,8 @@ mod tests {
         assert!(transcript.contains("xana connection status codex"));
         assert!(transcript.contains("xana connection login codex"));
         assert!(transcript.contains("xana model list --connection codex"));
+        assert!(transcript.contains("xana model use codex/MODEL"));
+        assert!(transcript.contains("cargo run -- connection status codex"));
     }
 
     #[test]

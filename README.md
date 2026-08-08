@@ -97,17 +97,18 @@ commands to run next.
 To add Codex to an existing Xana configuration instead:
 
 ```bash
-xana connection add codex --kind codex --model gpt-5.3-codex
+xana connection add codex --kind codex --model ADVERTISED_MODEL_ID
 xana connection status codex
 xana connection login codex
 xana connection refresh codex
 xana model
-xana model use codex/gpt-5.3-codex --effort high --summary auto
+xana model use codex/ADVERTISED_MODEL_ID --effort high --summary auto
 xana
 ```
 
 The exact model names come from `codex app-server` and can change with account
-access; select one shown by `xana model list --connection codex`. Login also
+access; replace `ADVERTISED_MODEL_ID` with one shown by `xana model list
+--connection codex`. No static model example is authoritative. Login also
 supports `--device-code`. Xana delegates the local OAuth completion to Codex;
 it needs no hosted callback server and never reads Codex's auth file.
 

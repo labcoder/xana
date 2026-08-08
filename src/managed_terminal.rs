@@ -9,7 +9,7 @@ use crate::{
         codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
         thread_store::ManagedThreadStore,
     },
-    model::{ModelManager, ReasoningSummary},
+    model::{ModelDescriptor, ModelManager, ReasoningSummary},
     vision::{ImageIngestor, ImageLimits, PendingImages},
 };
 use activity::{ActivityLevel, RetainedActivity, TerminalManagedHandler, render_retained_activity};
@@ -44,14 +44,14 @@ pub(crate) async fn run_codex_chat(
         );
     }
     let mut available = server.models().await?;
-    if !available.iter().any(|model| model.id == config.model) {
-        anyhow::bail!(
-            "Codex does not advertise model {:?}; run `xana model refresh {}`",
-            config.model,
-            config.connection
-        );
-    }
     models.write_managed_cache(&config.connection, &available)?;
+    if !available.iter().any(|model| model.id == config.model) {
+        anyhow::bail!(unavailable_model_message(
+            &config.connection,
+            &config.model,
+            &available
+        ));
+    }
     let mut selection = models.selected()?;
     config.model = selection.model.clone();
 
@@ -327,6 +327,39 @@ pub(crate) async fn run_codex_chat(
     Ok(())
 }
 
+fn unavailable_model_message(
+    connection: &str,
+    requested: &str,
+    available: &[ModelDescriptor],
+) -> String {
+    const MAX_SHOWN: usize = 8;
+
+    let mut advertised = available
+        .iter()
+        .take(MAX_SHOWN)
+        .map(|model| {
+            if model.is_default {
+                format!("{} (default)", model.id)
+            } else {
+                model.id.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if available.len() > MAX_SHOWN {
+        advertised.push_str(&format!(", and {} more", available.len() - MAX_SHOWN));
+    }
+    if advertised.is_empty() {
+        advertised.push_str("none");
+    }
+
+    format!(
+        "Codex does not advertise model {requested:?}. Advertised models: {advertised}. \
+Select one with `xana model use {connection}/MODEL` (from a source checkout: \
+`cargo run -- model use {connection}/MODEL`)"
+    )
+}
+
 async fn ensure_thread_loaded(
     server: &mut CodexAppServer,
     thread: &mut ManagedThreadState,
@@ -428,4 +461,41 @@ fn checked_original_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
         anyhow::bail!("attached image resolves outside the managed workspace")
     }
     Ok(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::DescriptorSource;
+    use std::collections::BTreeSet;
+
+    fn model(id: &str, is_default: bool) -> ModelDescriptor {
+        ModelDescriptor {
+            id: id.to_owned(),
+            display_name: id.to_owned(),
+            input_modalities: BTreeSet::new(),
+            tools: Some(true),
+            reasoning: None,
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            context_tokens: None,
+            max_output_tokens: None,
+            source: DescriptorSource::ManagedRuntime,
+            is_default,
+        }
+    }
+
+    #[test]
+    fn unavailable_model_guidance_names_live_choices_and_both_launch_forms() {
+        let message = unavailable_model_message(
+            "codex",
+            "not-advertised",
+            &[model("model-a", false), model("model-b", true)],
+        );
+
+        assert!(message.contains("model-a, model-b (default)"));
+        assert!(message.contains("xana model use codex/MODEL"));
+        assert!(message.contains("cargo run -- model use codex/MODEL"));
+        assert!(!message.contains("model refresh"));
+    }
 }
