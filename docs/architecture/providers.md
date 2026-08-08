@@ -13,23 +13,28 @@ composition concerns.
 
 Ollama, custom OpenAI-compatible endpoints, the OpenAI API, and OpenRouter use
 the same private Chat Completions wire adapter. Connection policy supplies the
-base URL, optional bearer key, and OpenRouter's `X-Title` attribution. The SSE
-decoder bounds frames, accepts platform-independent chunking, requires the
-`[DONE]` marker, and assembles tool arguments before exposing an internal tool
-call. Unsupported internal message shapes fail before HTTP.
+base URL, optional bearer key, and OpenRouter's `X-Title` attribution. The
+shared SSE decoder bounds frames, accepts platform-independent chunking,
+requires the `[DONE]` marker for this family, and assembles tool arguments
+before exposing an internal tool call. Complete-response accumulation is
+bounded independently for text, tool bytes, and tool-call count. Unsupported
+internal message shapes fail before HTTP.
 
 OpenAI and OpenRouter require a declared static credential reference. Ollama
 and custom endpoints may be unauthenticated or use a declared bearer
-credential. A missing declared credential never falls back silently.
+credential. A missing declared credential never falls back silently. Bearer
+and attribution headers use the HTTP client's validated request builder;
+malformed values fail the request instead of silently removing authentication.
 
 ## Anthropic Messages
 
 Anthropic uses its own private adapter and `x-api-key`. Leading system content
 maps once to the top-level `system` field. Ordered text, image, tool-use, and
 correlated tool-result blocks map to the Messages API without adding vendor
-types to Xana's internal model. The typed stream accumulator enforces message
-and content-block order, independent text/tool-input bounds, complete tool
-JSON, and a final `message_stop`.
+types to Xana's internal model. The typed stream accumulator uses the same SSE
+framing and enforces message and content-block order, per-block and aggregate
+text/tool-input bounds, a bounded block count, complete tool JSON, and a final
+`message_stop`.
 
 Xana supports Anthropic API keys only. It does not offer Claude Free/Pro/Max
 subscription OAuth.

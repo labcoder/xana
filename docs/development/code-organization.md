@@ -4,8 +4,10 @@
 > Authority: Repository policy
 
 Xana is a Cargo workspace: `xana-cli` depends on `xana-runtime`, which depends
-on headless `xana-core`. Modules within the runtime continue to separate
-responsibility, ownership, and I/O boundaries.
+on the small, headless `xana-core` capability-vocabulary crate. `xana-core`
+contains validated capability/tool identifiers and immutable snapshots, not a
+second tool or message domain model. Modules within the runtime continue to
+separate responsibility, ownership, and I/O boundaries.
 
 ## Module boundaries
 

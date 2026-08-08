@@ -93,7 +93,11 @@ reasoning summaries and provider-exposed reasoning text, plans, command/tool
 activity, file changes, diffs, context compaction, collaboration items, model
 reroutes, warnings, completion, and approvals into typed managed events. It
 supervises process lifetime and rejects oversized, malformed, unsupported, or
-timed-out protocol exchanges.
+timed-out protocol exchanges. Version-probe stdout is drained with fixed
+retention, turn-level assistant accumulation and pending activity items are
+bounded, and a timed-out or interrupted exchange poisons that process
+connection rather than allowing a later request to consume an ambiguous
+response.
 
 Codex owns its OAuth flow, access and refresh tokens, model backend, inner
 history, tools, sandbox, and approval semantics. Xana never reads or copies
@@ -202,7 +206,10 @@ Static stored keys use the OS credential service `dev.xana.credentials`:
 Windows Credential Manager, macOS Keychain, or Linux Secret Service. There is
 no plaintext fallback. Resolution uses exactly the declared source and never
 silently falls back to another key. Deleting a Xana API key and logging out of
-Codex are separate operations.
+Codex are separate operations. Xana's owned Rust secret buffers zeroize on
+drop and move directly into native provider clients; operating-system,
+environment, allocator, and HTTP-library internals remain outside that narrow
+guarantee.
 
 Anthropic is API-key-only in Xana. Claude subscription OAuth is not offered.
 OpenRouter is treated as an API/credit provider; an OAuth-created OpenRouter
