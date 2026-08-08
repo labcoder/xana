@@ -5,10 +5,7 @@
 
 use std::{fmt, ops::Range};
 
-use futures::future::BoxFuture;
 use serde::Serialize;
-use serde_json::json;
-use xana_core::{LogicalToolId, Tool, ToolDefinition};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocAudience {
@@ -250,87 +247,6 @@ static ENTRIES: &[BundledDoc] = &[
 
 pub fn default_catalog() -> ProductDocCatalog {
     ProductDocCatalog::new(env!("CARGO_PKG_VERSION"), ENTRIES, 32 * 1024)
-}
-
-/// One bounded model-facing tool for the explicit product catalog.
-#[derive(Debug, Clone, Copy)]
-pub struct XanaDocsTool {
-    catalog: ProductDocCatalog,
-}
-
-impl XanaDocsTool {
-    pub fn new(catalog: ProductDocCatalog) -> Self {
-        Self { catalog }
-    }
-}
-
-impl Tool for XanaDocsTool {
-    fn definition(&self) -> ToolDefinition {
-        ToolDefinition {
-            name: LogicalToolId::parse("xana_docs").expect("static tool id"),
-            contract_version: 1,
-            description: "Read bounded documentation about Xana itself; this is not the user's project documentation.".to_owned(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "op": { "type": "string", "enum": ["list", "read"] },
-                    "id": { "type": "string" },
-                    "topic": { "type": "string" },
-                    "start": { "type": "integer", "minimum": 0 },
-                    "max_bytes": { "type": "integer", "minimum": 1 }
-                },
-                "required": ["op"]
-            }),
-            effect_class: xana_core::EffectClass::Read,
-            replay_safety: xana_core::ReplaySafety::Safe,
-        }
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        arguments: &'a serde_json::Value,
-    ) -> BoxFuture<'a, Result<String, String>> {
-        Box::pin(async move {
-            let op = arguments
-                .get("op")
-                .and_then(serde_json::Value::as_str)
-                .ok_or_else(|| "xana_docs requires op=list or op=read".to_owned())?;
-            match op {
-                "list" => serde_json::to_string(
-                    &self
-                        .catalog
-                        .list(arguments.get("topic").and_then(serde_json::Value::as_str)),
-                )
-                .map_err(|error| error.to_string()),
-                "read" => {
-                    let id = arguments
-                        .get("id")
-                        .and_then(serde_json::Value::as_str)
-                        .ok_or_else(|| "xana_docs read requires id".to_owned())?;
-                    let range = arguments
-                        .get("start")
-                        .or_else(|| arguments.get("max_bytes"))
-                        .map(|_| DocRange {
-                            start: arguments
-                                .get("start")
-                                .and_then(serde_json::Value::as_u64)
-                                .unwrap_or(0) as usize,
-                            max_bytes: arguments
-                                .get("max_bytes")
-                                .and_then(serde_json::Value::as_u64)
-                                .unwrap_or(32 * 1024)
-                                as usize,
-                        });
-                    let document = self
-                        .catalog
-                        .read(id, range)
-                        .map_err(|error| error.to_string())?;
-                    serde_json::to_string(&json!({ "id": document.id, "text": document.text, "start": document.range.start, "end": document.range.end, "truncated": document.truncated })).map_err(|error| error.to_string())
-                }
-                _ => Err(format!("unsupported xana_docs operation {op:?}")),
-            }
-        })
-    }
 }
 
 #[cfg(test)]

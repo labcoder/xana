@@ -2898,11 +2898,6 @@ dependencies = [
 [[package]]
 name = "xana-core"
 version = "0.2.0"
-dependencies = [
- "futures",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "xana-runtime"
