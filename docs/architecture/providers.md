@@ -1,35 +1,48 @@
 # Provider contracts
 
-Audience: contributors and coding agents. Authority: descriptive.
+> Audience: Contributors and coding agents
+> Authority: Descriptive
 
-This page describes the implemented subset recorded in
-[proposal 0014](../proposals/0014-phase3-implemented-subset.md); the broader
-provider proposals remain non-authoritative until separately accepted.
+Xana's native agent depends on one `ConversationalProvider` contract. It
+streams one provider-neutral assistant message from ordered internal messages,
+the frozen tool definitions, a step identity, and a delta sink. Authentication,
+catalog discovery, model selection, and managed agent runtimes are separate
+composition concerns.
 
-The runtime normalizes conversational providers behind a focused request:
-borrowed model id, ordered provider-neutral messages, tool schemas, an output
-token bound, and a streaming delta sink. Provider-specific request, response,
-and event shapes stay private in each adapter.
+## OpenAI-compatible family
 
-OpenRouter uses the OpenAI-compatible transport at its `/api/v1` base URL. Its
-bearer credential is supplied by the composition edge, never read during
-configuration parsing. Optional `HTTP-Referer` and `X-Title` attribution
-headers are explicit inputs. Model descriptors record text/image modalities,
-tool support, reasoning support, and optional context limits; remote model
-catalogues are not required during startup.
+Ollama, custom OpenAI-compatible endpoints, the OpenAI API, and OpenRouter use
+the same private Chat Completions wire adapter. Connection policy supplies the
+base URL, optional bearer key, and OpenRouter's `X-Title` attribution. The SSE
+decoder bounds frames, accepts platform-independent chunking, requires the
+`[DONE]` marker, and assembles tool arguments before exposing an internal tool
+call. Unsupported internal message shapes fail before HTTP.
 
-The Anthropic Messages adapter maps internal system content to the top-level
-`system` field, preserves ordered user/assistant blocks, converts tool use and
-tool results to their structured block forms, and sends the required
-`anthropic-version` header. Its SSE decoder accumulates text deltas and split
-tool JSON without exposing wire events to the runtime. Unsupported internal
-blocks fail before HTTP I/O.
+OpenAI and OpenRouter require a declared static credential reference. Ollama
+and custom endpoints may be unauthenticated or use a declared bearer
+credential. A missing declared credential never falls back silently.
 
-Optional subscription credentials use the runtime-only `CredentialId`,
-redacted secret, secure-store, device-code, status, logout, and refresh
-coordination contracts. The in-memory store exists for deterministic tests;
-production storage must be an OS credential store and must never be redirected
-into `config.toml`, sessions, artifacts, or `XANA_HOME` data. `xana auth
-login|status|logout codex-oauth` is intentionally unavailable until an official
-supported protocol authority supplies the endpoint, client identity, scopes,
-audience, refresh, and revocation rules.
+## Anthropic Messages
+
+Anthropic uses its own private adapter and `x-api-key`. Leading system content
+maps once to the top-level `system` field. Ordered text, image, tool-use, and
+correlated tool-result blocks map to the Messages API without adding vendor
+types to Xana's internal model. The typed stream accumulator enforces message
+and content-block order, independent text/tool-input bounds, complete tool
+JSON, and a final `message_stop`.
+
+Xana supports Anthropic API keys only. It does not offer Claude Free/Pro/Max
+subscription OAuth.
+
+## Model metadata
+
+Each model belongs to a connection. Descriptors retain display name, input
+modalities, tool and reasoning support, optional context/output limits,
+default status, and whether a field came from configuration, remote discovery,
+or a managed runtime. Configuration overrides and cached remote evidence merge
+per field. Unknown capability does not become an optimistic `true`.
+
+Catalog refresh is explicit and bounded; it writes non-secret JSON to the
+cache. Startup performs no catalog request. See
+[Connections, models, and managed runtimes](models-and-managed-runtimes.md) for
+selection and managed Codex behavior.

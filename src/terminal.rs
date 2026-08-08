@@ -7,6 +7,7 @@ use crate::{
     artifact::ArtifactStore,
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
+    model::{ExecutionKind, ModelManager},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
@@ -29,6 +30,13 @@ pub(crate) struct ChatHeader {
     pub(crate) workspace_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
+    pub(crate) models: ModelManager,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChatExit {
+    Quit,
+    Restart,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -36,6 +44,7 @@ enum InputAction<'a> {
     Quit,
     Clear,
     Attach(&'a str),
+    Model(&'a str),
     Ignore,
     Send(&'a str),
 }
@@ -44,6 +53,9 @@ fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
     if let Some(path) = trimmed.strip_prefix("/attach") {
         return InputAction::Attach(path.trim());
+    }
+    if let Some(selection) = trimmed.strip_prefix("/model") {
+        return InputAction::Model(selection.trim());
     }
     match trimmed {
         "/quit" => InputAction::Quit,
@@ -161,7 +173,7 @@ impl<W: Write> EventRenderer<W> {
     }
 }
 
-pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> Result<()> {
+pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
     println!("provider connection: {}", header.provider_name);
     println!("model: {}", header.model);
     println!("chat endpoint: {}", header.endpoint);
@@ -185,6 +197,7 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
     let stdout = anstream::stdout();
     let mut renderer = EventRenderer::new(stdout.lock());
     let mut pending_images = PendingImages::default();
+    let mut exit = ChatExit::Quit;
 
     loop {
         match editor.readline("you> ") {
@@ -219,6 +232,27 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
                         Err(error) => println!("xana> could not attach {path}: {error}"),
                     }
                 }
+                InputAction::Model(selection) => {
+                    if selection.is_empty() {
+                        write_models(&header.models)?;
+                        continue;
+                    }
+                    let Some((connection, model)) = selection.split_once('/') else {
+                        println!("xana> usage: /model CONNECTION/MODEL");
+                        continue;
+                    };
+                    match header.models.select(connection, model) {
+                        Ok(_) => {
+                            println!(
+                                "xana> selected {connection}/{model}; starting a new conversation so runtime ownership remains explicit"
+                            );
+                            runtime.send(RuntimeCommand::Shutdown).await?;
+                            exit = ChatExit::Restart;
+                            break;
+                        }
+                        Err(error) => println!("xana> could not select model: {error}"),
+                    }
+                }
                 InputAction::Ignore => {}
                 InputAction::Send(input) => {
                     editor
@@ -226,8 +260,35 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
                         .context("could not add input to editor history")?;
 
                     let operation_id = OperationId::new();
-                    let images = pending_images
-                        .take_for_turn()
+                    if pending_images.len() > 8 {
+                        println!("xana> at most 8 images may be sent in one turn");
+                        continue;
+                    }
+                    if pending_images.len() > 0 {
+                        let descriptor = header
+                            .models
+                            .descriptor(&header.provider_name, &header.model)?;
+                        if !descriptor.input_modalities.contains("image") {
+                            println!(
+                                "xana> {}/{} is not declared image-capable; refresh its catalog or add an explicit model override",
+                                header.provider_name, header.model
+                            );
+                            continue;
+                        }
+                    }
+                    let attachments = pending_images.take_for_turn();
+                    let total_image_bytes = attachments
+                        .iter()
+                        .map(|attachment| attachment.image.byte_len)
+                        .sum::<u64>();
+                    if total_image_bytes > 20 * 1024 * 1024 {
+                        for attachment in attachments {
+                            pending_images.push(attachment);
+                        }
+                        println!("xana> image attachments exceed the 20 MiB per-turn budget");
+                        continue;
+                    }
+                    let images = attachments
                         .into_iter()
                         .map(|attachment| attachment.image)
                         .collect::<Vec<_>>();
@@ -255,6 +316,26 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
         }
     }
 
+    Ok(exit)
+}
+
+fn write_models(models: &ModelManager) -> Result<()> {
+    let selected = models.selected()?;
+    for summary in models.summaries() {
+        let execution = match summary.execution {
+            ExecutionKind::Native => "native",
+            ExecutionKind::Managed => "managed",
+        };
+        println!("xana> {} ({execution})", summary.id);
+        for model in summary.models {
+            let marker = if summary.id == selected.connection && model.id == selected.model {
+                "*"
+            } else {
+                " "
+            };
+            println!("xana>   {marker} {} — {}", model.id, model.display_name);
+        }
+    }
     Ok(())
 }
 

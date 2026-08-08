@@ -1,5 +1,11 @@
 use super::*;
-use crate::message::ToolResult;
+use super::{convert::convert_message, wire::WireContentPart};
+use crate::{
+    artifact::ArtifactStore,
+    identity::PrincipalId,
+    message::{ContentBlock, ToolResult},
+    vision::{ImageRef, MediaResolver},
+};
 use std::error::Error;
 
 fn first_fixture_message(json: &str) -> WireMessage {
@@ -49,6 +55,46 @@ fn assert_wire_messages_match(expected: &WireMessage, actual: &WireMessage) {
 }
 
 #[test]
+fn image_content_is_resolved_only_at_the_wire_edge() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().join("artifacts"));
+    let (artifact, _) = store
+        .put(b"image", "image/png", PrincipalId::new())
+        .unwrap();
+    let message = Message {
+        role: Role::User,
+        content: vec![
+            ContentBlock::Text("before".into()),
+            ContentBlock::Image(ImageRef {
+                artifact,
+                media_type: "image/png".into(),
+                byte_len: 5,
+                width: Some(1),
+                height: Some(1),
+            }),
+            ContentBlock::Text("after".into()),
+        ],
+    };
+
+    let wire = convert_message(&message, Some(&MediaResolver::new(store, 64))).unwrap();
+    let WireMessageContent::Parts(parts) = wire.content.as_ref().unwrap() else {
+        panic!("image content must use structured parts");
+    };
+    assert!(matches!(&parts[0], WireContentPart::Text { text } if text == "before"));
+    assert!(matches!(
+        &parts[1],
+        WireContentPart::ImageUrl { image_url }
+            if image_url.url == "data:image/png;base64,aW1hZ2U="
+    ));
+    assert!(matches!(&parts[2], WireContentPart::Text { text } if text == "after"));
+    assert!(
+        !serde_json::to_string(&wire)
+            .unwrap()
+            .contains(directory.path().to_str().unwrap())
+    );
+}
+
+#[test]
 fn roles_convert_to_wire() {
     assert_eq!(WireRole::from(Role::System), WireRole::System);
     assert_eq!(WireRole::from(Role::User), WireRole::User);
@@ -63,7 +109,10 @@ fn system_role_serializes_at_the_wire_edge() {
     let value = serde_json::to_value(&wire).expect("wire JSON");
 
     assert_eq!(wire.role, WireRole::System);
-    assert_eq!(wire.content.as_deref(), Some("frozen system prompt"));
+    assert_eq!(
+        wire.content.as_ref().and_then(WireMessageContent::as_text),
+        Some("frozen system prompt")
+    );
     assert_eq!(value["role"], "system");
 }
 
@@ -76,9 +125,21 @@ fn tool_results_serialize_status_and_original_call_id() {
     let error_wire = WireMessage::try_from(&error).expect("error wire message");
 
     assert_eq!(success_wire.role, WireRole::Tool);
-    assert_eq!(success_wire.content.as_deref(), Some("contents"));
+    assert_eq!(
+        success_wire
+            .content
+            .as_ref()
+            .and_then(WireMessageContent::as_text),
+        Some("contents")
+    );
     assert_eq!(success_wire.tool_call_id.as_deref(), Some("call-ok"));
-    assert_eq!(error_wire.content.as_deref(), Some("ERROR: missing file"));
+    assert_eq!(
+        error_wire
+            .content
+            .as_ref()
+            .and_then(WireMessageContent::as_text),
+        Some("ERROR: missing file")
+    );
     assert_eq!(error_wire.tool_call_id.as_deref(), Some("call-err"));
 }
 
@@ -86,7 +147,7 @@ fn tool_results_serialize_status_and_original_call_id() {
 fn tool_role_from_provider_is_rejected_as_a_response() {
     let wire = WireMessage {
         role: WireRole::Tool,
-        content: Some("contents".to_owned()),
+        content: Some(WireMessageContent::Text("contents".to_owned())),
         tool_calls: None,
         tool_call_id: Some("call-1".to_owned()),
     };
@@ -204,7 +265,10 @@ fn text_and_tool_calls_use_the_wire_canonical_order() {
         Err(error) => panic!("expected message to convert: {error}"),
     };
 
-    assert_eq!(wire.content.as_deref(), Some("first second"));
+    assert_eq!(
+        wire.content.as_ref().and_then(WireMessageContent::as_text),
+        Some("first second")
+    );
     assert!(matches!(
         wire.tool_calls.as_deref(),
         Some([tool_call])
@@ -415,13 +479,20 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
     let value = serde_json::to_value(&request).expect("request JSON");
     let tools = value["tools"].as_array().expect("tool array");
 
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 6);
     assert_eq!(
         tools
             .iter()
             .map(|tool| tool["function"]["name"].as_str().expect("tool name"))
             .collect::<Vec<_>>(),
-        vec!["read_file", "list_files", "edit_file", "run_command"]
+        vec![
+            "read_file",
+            "list_files",
+            "edit_file",
+            "run_command",
+            "read_document",
+            "xana_docs",
+        ]
     );
 
     for tool in tools {
@@ -488,7 +559,10 @@ fn adjacent_text_blocks_normalize_to_one_wire_string() {
         Err(error) => panic!("expected adjacent text to convert: {error}"),
     };
 
-    assert_eq!(wire.content.as_deref(), Some("one two\nthree"));
+    assert_eq!(
+        wire.content.as_ref().and_then(WireMessageContent::as_text),
+        Some("one two\nthree")
+    );
     assert!(wire.tool_calls.is_none());
 
     let round_tripped = match Message::try_from(wire) {

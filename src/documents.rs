@@ -83,12 +83,12 @@ pub trait DocumentExtractor: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct AnyDocExtractor {
+pub struct BuiltinDocumentExtractor {
     pub max_input_bytes: usize,
     pub max_cells: usize,
 }
 
-impl Default for AnyDocExtractor {
+impl Default for BuiltinDocumentExtractor {
     fn default() -> Self {
         Self {
             max_input_bytes: 16 * 1024 * 1024,
@@ -97,7 +97,7 @@ impl Default for AnyDocExtractor {
     }
 }
 
-impl DocumentExtractor for AnyDocExtractor {
+impl DocumentExtractor for BuiltinDocumentExtractor {
     fn extract(&self, input: DocumentInput) -> Result<ExtractedDocument, DocumentError> {
         if input.bytes.len() > self.max_input_bytes {
             return Err(DocumentError::new(
@@ -111,7 +111,7 @@ impl DocumentExtractor for AnyDocExtractor {
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        #[cfg(feature = "documents-anydoc")]
+        #[cfg(feature = "documents-csv")]
         if extension == "csv" {
             return extract_csv(input, self.max_cells);
         }
@@ -153,7 +153,7 @@ fn bounded_output(
     })
 }
 
-#[cfg(feature = "documents-anydoc")]
+#[cfg(feature = "documents-csv")]
 fn extract_csv(input: DocumentInput, max_cells: usize) -> Result<ExtractedDocument, DocumentError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -198,7 +198,7 @@ fn extract_csv(input: DocumentInput, max_cells: usize) -> Result<ExtractedDocume
     bounded_output(markdown, "text/csv", input.max_output_bytes)
 }
 
-#[cfg(feature = "documents-anydoc")]
+#[cfg(feature = "documents-csv")]
 fn escape_cell(cell: &str) -> String {
     cell.replace('|', "\\|").replace('\n', " ")
 }
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn text_extraction_is_content_first() {
-        let result = AnyDocExtractor::default()
+        let result = BuiltinDocumentExtractor::default()
             .extract(DocumentInput {
                 source_name: Some("notes.weird".into()),
                 bytes: b"# Hello".to_vec(),
@@ -220,10 +220,10 @@ mod tests {
         assert_eq!(result.media_type, "text/plain");
     }
 
-    #[cfg(feature = "documents-anydoc")]
+    #[cfg(feature = "documents-csv")]
     #[test]
     fn csv_is_rendered_as_bounded_markdown() {
-        let result = AnyDocExtractor::default()
+        let result = BuiltinDocumentExtractor::default()
             .extract(DocumentInput {
                 source_name: Some("rows.csv".into()),
                 bytes: b"name,value\na,1\n".to_vec(),
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn output_limit_is_typed() {
-        let error = AnyDocExtractor::default()
+        let error = BuiltinDocumentExtractor::default()
             .extract(DocumentInput {
                 source_name: Some("notes.txt".into()),
                 bytes: b"hello".to_vec(),

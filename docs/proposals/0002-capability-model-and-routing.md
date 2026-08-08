@@ -11,6 +11,13 @@ configuration, focused services, and optional extension lifecycle. This
 proposal defines a common model without placing every vendor operation behind
 one conversational provider trait.
 
+The built-in capability resolver, named connections, connection-owned model
+descriptors, explicit cached catalog refresh, persistent selection, and the
+native-versus-managed execution boundary are implemented through historical
+[Proposal 0015](0015-connections-models-and-managed-runtimes.md). This proposal
+remains Proposed for task routes, package discovery/activation, lazy sidecars,
+and automatic capability routing.
+
 ## Proposed concepts
 
 - A **provider connection** describes a protocol, base URL, credential

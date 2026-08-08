@@ -242,7 +242,14 @@ fn builtins_have_deterministic_order_and_safety_metadata() {
 
     assert_eq!(
         definitions.iter().map(|item| item.name).collect::<Vec<_>>(),
-        vec!["read_file", "list_files", "edit_file", "run_command"]
+        vec![
+            "read_file",
+            "list_files",
+            "edit_file",
+            "run_command",
+            "read_document",
+            "xana_docs",
+        ]
     );
     assert_eq!(definitions[0].effect_class, EffectClass::Read);
     assert_eq!(definitions[0].replay_safety, ReplaySafety::Safe);
@@ -252,6 +259,10 @@ fn builtins_have_deterministic_order_and_safety_metadata() {
     assert_eq!(definitions[2].replay_safety, ReplaySafety::Never);
     assert_eq!(definitions[3].effect_class, EffectClass::Execute);
     assert_eq!(definitions[3].replay_safety, ReplaySafety::Never);
+    assert_eq!(definitions[4].effect_class, EffectClass::Read);
+    assert_eq!(definitions[4].replay_safety, ReplaySafety::Safe);
+    assert_eq!(definitions[5].effect_class, EffectClass::Read);
+    assert_eq!(definitions[5].replay_safety, ReplaySafety::Safe);
 }
 
 #[test]

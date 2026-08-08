@@ -2,36 +2,27 @@
 
 > Audience: People installing, configuring, or using Xana.
 
-Xana loads one human-authored, versioned TOML document at startup. Startup
-prints the resolved configuration path before loading the file.
+Xana loads one strict, versioned `config.toml`. Human-authored configuration
+declares connections and profiles; static secrets, cached catalogs, model
+selection, sessions, and artifacts live elsewhere.
 
-## First-time initialization
-
-From a source checkout, start the interactive initializer:
+## Initialize
 
 ```bash
-cargo run -- init
+xana init
+xana config path
+xana config check
 ```
 
-It offers two connection routes:
-
-- local Ollama, with provider name `ollama` and base URL
-  `http://localhost:11434/v1`; or
-- a custom unauthenticated OpenAI-compatible HTTP(S) endpoint.
-
-Both routes require a model. The prompt defaults the bounded tool-call limit
-to `8`, collects the shell used by `run_command`, explains `deny`, `ask`, and
-`allow`, defaults permission to `ask`, previews the selected values, and asks for final
-confirmation. The generated TOML is serialized through the version 1 schema
-and parsed back through the production validator before any directory or file
-is created.
-
-For automation, every provider/model value and the permission mode must be
-explicit:
+The initializer creates an unauthenticated local Ollama or custom
+OpenAI-compatible connection, asks for the model, shell, bounded tool rounds,
+and `deny`/`ask`/`allow` permission default, then validates before a create-new
+write. It never replaces an existing file. `--dry-run` renders without writing;
+`--non-interactive` requires provider, URL, model, and permission values and
+never reads stdin.
 
 ```bash
-cargo run -- init \
-  --non-interactive \
+xana init --non-interactive \
   --provider-name ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
@@ -40,62 +31,113 @@ cargo run -- init \
   --permission-mode ask
 ```
 
-Noninteractive setup never reads stdin. Omitting `--max-tool-rounds` uses `8`,
-and omitting `--shell` uses `platform`; the provider name, URL, model, and
-permission mode have no hidden defaults. `--shell-program PATH` explicitly
-overrides the program used by the selected shell.
+## Connections and models
 
-Add `--dry-run` to either route to render and validate the proposed document
-without creating its parent directory or `config.toml`. Interactive dry-run
-still asks the setup questions; a scripted dry-run uses the complete
-noninteractive command above plus `--dry-run`.
+`xana model` is the normal discovery and selection entry point:
 
-Initialization handles existing state conservatively:
-
-| State | Result |
-|---|---|
-| Valid `config.toml` | Reports that Xana is already initialized, exits successfully, and does not prompt or rewrite it |
-| Invalid `config.toml` | Reports the real validation error and leaves the bytes unchanged |
-| Legacy `config.kv` without `config.toml` | Reports the manual migration requirement and creates no new file |
-| Declined confirmation or EOF | Prints `No changes made.` and creates nothing |
-| Another process creates the target first | The create-new open fails and never overwrites the winner |
-
-Interactive setup requires a terminal. Piped input is rejected instead of
-hanging; use the explicit noninteractive route in scripts.
-
-## Configuration diagnostics
-
-These commands inspect the same active path used by startup and initialization:
-
-```bash
-cargo run -- config path
-cargo run -- config check
+```text
+xana model
+xana model list --connection openrouter
+xana model refresh openrouter
+xana model use openrouter/openai/gpt-4.1
 ```
 
-`config path` prints the resolved `config.toml` path without loading it.
-`config check` loads and validates the complete document without constructing
-an agent or contacting a provider. Bare `cargo run` remains normal chat; when
-the file is missing it points explicitly to `xana init`.
+Catalog refresh is explicit and caches only bounded non-secret metadata.
+Startup never refreshes a catalog. `/model` lists models during chat;
+`/model CONNECTION/MODEL` persists a selection and starts a new conversation
+when runtime ownership changes.
 
-## Optional provider credentials
+Advanced connection commands are:
 
-Credential lifecycle primitives are present for future subscription providers,
-but no vendor-specific OAuth protocol is shipped yet. Running
-
-```bash
-xana auth status codex-oauth
+```text
+xana connection list
+xana connection add ID --kind KIND --model MODEL [options]
+xana connection status ID
+xana connection set-key ID
+xana connection delete-key ID
+xana connection login ID [--device-code]
+xana connection logout ID --yes
+xana connection refresh ID
+xana connection remove ID --yes
 ```
 
-reports that the provider is unavailable rather than guessing a private
-endpoint or storing a secret in Xana's files. When an official protocol is
-accepted, login will use an explicit device-code flow and an OS credential
-store; credentials will not be written to `config.toml`, sessions, artifacts,
-or `XANA_HOME` data.
+`remove` rejects the selected connection and any connection referenced by a
+profile. Select another model and remove profile references first.
 
-## Complete version 1 example
+### API-key providers
+
+Add a connection, store its key in the operating-system credential store, and
+refresh models:
+
+```bash
+xana connection add openai --kind open-ai --model gpt-4.1
+xana connection set-key openai
+xana connection refresh openai
+
+xana connection add openrouter --kind open-router --model openai/gpt-4.1
+xana connection set-key openrouter
+xana connection refresh openrouter
+
+xana connection add anthropic --kind anthropic --model claude-sonnet-4-5
+xana connection set-key anthropic
+xana connection refresh anthropic
+```
+
+Use `--from-stdin` for a bounded noninteractive key read. Avoid putting a key
+directly in a command argument or shell history. To use a named environment
+variable instead of the OS store, add `--env VARIABLE`; Xana resolves exactly
+that source and never falls back to another credential.
+
+OpenAI and OpenRouter use bearer authentication. Anthropic uses `x-api-key`
+and supports API keys only; Xana does not offer Claude subscription OAuth.
+OpenRouter is an API/credit connection even if its key was created through an
+external OAuth flow.
+
+The default endpoints are:
+
+| Kind | Default | Catalog |
+|---|---|---|
+| `ollama` | `http://localhost:11434/v1` | `/api/tags` |
+| `open-ai` | `https://api.openai.com/v1` | `/v1/models` |
+| `open-router` | `https://openrouter.ai/api/v1` | `/api/v1/models/user` |
+| `anthropic` | `https://api.anthropic.com` | `/v1/models` |
+| `open-ai-compat` | requires `--base-url` | `/v1/models` |
+
+Custom OpenAI-compatible and Ollama connections may also declare a stored or
+environment bearer credential.
+
+### ChatGPT subscription through Codex
+
+Install the Codex CLI and log it in normally, or let Xana delegate login:
+
+```bash
+xana connection add codex --kind codex --model gpt-5.3-codex
+xana connection status codex
+xana connection login codex
+# Headless alternative:
+xana connection login codex --device-code
+xana connection refresh codex
+xana model use codex/gpt-5.3-codex
+xana
+```
+
+The exact model must be advertised by the installed Codex app-server; use
+`xana model list --connection codex` after refresh. Xana launches `codex
+app-server --stdio`. Codex owns browser/device login, token storage and
+refresh, inference, tools, sandbox, approvals, and inner thread history. Xana
+never reads or copies Codex's auth file and needs no hosted OAuth callback
+server.
+
+By default Xana shares the installed Codex home. `xana connection logout codex
+--yes` can therefore affect other Codex clients using that home. For an
+isolated account, set an absolute `--codex-home` when adding the connection.
+`--codex-program` selects a compatible executable. Codex connections do not
+accept `base_url` or a Xana credential reference.
+
+## Version 2 example
 
 ```toml
-version = 1
+version = 2
 default_profile = "default"
 permission_mode = "ask"
 
@@ -103,239 +145,122 @@ permission_mode = "ask"
 kind = "platform"
 
 [providers.ollama]
-kind = "openai_compat"
-base_url = "http://localhost:11434/v1"
+kind = "ollama"
+
+[providers.ollama.models."qwen3:1.7b"]
+input_modalities = ["text"]
+tools = true
+
+[providers.openrouter]
+kind = "openrouter"
+credential = { source = "environment", variable = "OPENROUTER_API_KEY" }
+
+[providers.openrouter.models."openai/gpt-4.1"]
+input_modalities = ["text", "image"]
+tools = true
+
+[providers.codex]
+kind = "codex"
+codex_program = "codex"
+# codex_home = "C:/absolute/isolated/codex-home"
+
+[providers.codex.models."gpt-5.3-codex"]
 
 [profiles.default]
 provider = "ollama"
 model = "qwen3:1.7b"
-# max_tool_rounds = 8
+max_tool_rounds = 8
 ```
 
-Change the URL and model to values supported by your provider. Provider and
-profile names such as `ollama` and `default` are user-chosen references.
+Version 1 documents remain readable. The first connection edit writes version
+2 while preserving TOML comments. Model selection is stored separately in
+`data/selection.toml`, so choosing a model does not rewrite this file.
 
-## Permission policy
+### Field reference
 
-Version 1 accepts `deny`, `ask`, and `allow` as the default
-`permission_mode`, plus an optional `permission_rules` array. Rules can match
-tool name, effect, relative workspace path, and exact command. All matching
-rules are combined with deny-before-ask-before-allow precedence, regardless of
-their TOML order. See [Permissions](permissions.md) for the complete schema,
-examples, scopes, session grants, and fail-closed behavior.
-
-Existing documents with `permission_mode = "allow"` remain compatible and
-authorize all built-in host-tool effects automatically unless a matching rule
-narrows them. New initialization defaults to `ask`.
-
-## Shell execution
-
-`run_command` interprets one command string through the configured shell. Its
-optional `cwd` is relative to Xana's launch workspace and must resolve to an
-existing directory beneath that workspace. Before a process spawn, Xana plans
-the selected shell, canonical working directory, and exact command and sends
-that immutable scope through the same permission broker as every file tool.
-An `ask` may be denied, allowed once, or allowed for the exact session command
-scope. EOF and blank input deny.
-
-The shell kinds are:
-
-| Kind | Availability | Default program and argv prefix |
-|---|---|---|
-| `platform` | All platforms | `sh -lc` on macOS/Linux; `powershell.exe -NoLogo -NoProfile -NonInteractive -Command` on Windows |
-| `posix` | macOS/Linux | `sh -lc` |
-| `git_bash` | Windows | `bash.exe -lc` |
-| `powershell` | Windows | `powershell.exe -NoLogo -NoProfile -NonInteractive -Command` |
-| `cmd` | Windows | `cmd.exe /D /S /C` |
-
-Set `program` only when the executable cannot be found by its default name or
-when selecting a specific compatible installation:
-
-```toml
-[shell]
-kind = "git_bash"
-program = "C:/Program Files/Git/bin/bash.exe"
-```
-
-Xana passes the program and argument vector separately to the operating
-system. It does not classify command text, create a sandbox, or provide a
-timeout, background process, PTY, persistent grant, or process containment.
-Stdout and stderr are captured independently; each is limited to 32 KiB and
-reports whether truncation occurred.
-
-## File location
-
-Path selection follows this precedence: a non-empty absolute `XANA_HOME` wins;
-otherwise Xana follows platform conventions through the stable application
-identity `io.github.labcoder.xana`:
-
-| Platform | Default `config.toml` location |
+| Field | Meaning |
 |---|---|
-| Linux | `$XDG_CONFIG_HOME/xana/config.toml`, or `~/.config/xana/config.toml` |
-| macOS | `~/Library/Application Support/io.github.labcoder.xana/config.toml` |
-| Windows | `%APPDATA%\labcoder\xana\config\config.toml` |
+| `version` | This build accepts schema 1 or 2 and writes 2 |
+| `default_profile` | Profile used when no separate selection exists |
+| `permission_mode` | `deny`, `ask`, or `allow` |
+| `permission_rules` | Optional scoped user authority rules |
+| `shell.kind` / `shell.program` | Platform shell policy for `run_command` |
+| `providers.<id>.kind` | `ollama`, `openai_compat`, `openai`, `openrouter`, `anthropic`, or `codex` |
+| `base_url` | Optional/defaulted HTTP(S) API base; required for custom compatible providers and forbidden for Codex |
+| `credential` | Tagged `environment` or `stored` reference; never the secret |
+| `models.<id>` | Optional capability/limit overrides for a connection-owned model |
+| `codex_program` / `codex_home` | Codex-only executable and absolute account-home override |
+| `profiles.<id>.provider` | Connection used by the profile |
+| `profiles.<id>.model` | Initial model id |
+| `max_tool_rounds` | Native loop limit, `1..=64`, default 8 |
 
-Xana prints the resolved path at startup because platform environment and user
-folders can change these defaults.
+Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
+`reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and
+unknown TOML fields are errors. Discovered capability metadata is cached and
+merged with explicit fields; unknown capabilities fail closed.
 
-The resolver keeps state categories separate:
+## Secret storage
 
-| Category | Platform default | With `XANA_HOME=/absolute/root` |
-|---|---|---|
-| Config file | platform config directory + `config.toml` | `/absolute/root/config.toml` |
-| Durable data | platform data directory | `/absolute/root/data/` |
-| Disposable cache | platform cache directory | `/absolute/root/cache/` |
-| Runtime coordination | platform runtime directory, or cache + `run/` | `/absolute/root/run/` |
+For `{ source = "stored", id = "openrouter" }`, Xana uses service
+`dev.xana.credentials` in Windows Credential Manager, macOS Keychain, or Linux
+Secret Service. There is no plaintext fallback. `{ source = "environment",
+variable = "OPENROUTER_API_KEY" }` reads only that process variable.
 
-Path resolution does not create these directories. The code that first writes
-a category is responsible for creating only the directory it owns.
+`config.toml`, model caches, selections, sessions, artifacts, logs, and
+`XANA_HOME` never store static key bytes. Deleting a Xana key is separate from
+logging out of Codex because the credential owners differ.
 
-Starting chat creates `data/sessions/` and `data/artifacts/`. Session JSONL,
-permission audits, context metadata, and immutable artifact bytes never belong
-in `config.toml`; see [Sessions](sessions.md).
+## Paths and `XANA_HOME`
 
-## `XANA_HOME`
+An explicitly non-empty `XANA_HOME` must be an absolute path. It maps
+`config.toml`, `data/`, `cache/`, and `run/` beneath one root, but does not
+redirect the operating-system credential store or Codex unless `codex_home` is
+also set.
 
-Set `XANA_HOME` to an absolute path to use one predictable portable root for
-Xana's shared backend locations. A missing or explicitly empty value uses the
-platform defaults. A non-empty relative value is rejected.
-
-The override does not redirect operating-system credential storage or
-frontend-local window and UI preferences.
-
-macOS or Linux:
+macOS/Linux:
 
 ```bash
 export XANA_HOME="$HOME/.xana"
-cargo run
-```
-
-Windows Git Bash:
-
-```bash
-export XANA_HOME="$(cygpath -m "$HOME/.xana")"
-cargo run
 ```
 
 Windows PowerShell:
 
 ```powershell
 $env:XANA_HOME = "$HOME\.xana"
-cargo run
 ```
 
-Windows Command Prompt:
+Windows Git Bash must translate the POSIX-looking path into a Windows absolute
+path before starting a Windows executable:
 
-```bat
-set "XANA_HOME=%USERPROFILE%\.xana"
-cargo run
+```bash
+export XANA_HOME="$(cygpath -m "$HOME/.xana")"
 ```
 
-These examples affect the active shell. Persistent setup belongs in the
-appropriate user-level shell or environment configuration for that platform.
-Xana reads `XANA_HOME`; `xana init` never writes it or edits a shell profile.
+`/c/Users/name/.xana` is absolute to Git Bash but not to Rust's Windows path
+parser, because `xana.exe` receives it as a Windows path. `~` is expanded only
+when unquoted by a shell; Xana does not perform tilde expansion.
 
-## Terminal presentation
+Without the override, Xana uses platform application directories:
 
-Bare interactive startup and interactive initialization show Xana's static
-terminal portrait and wordmark. Redirected output, configuration diagnostics,
-noninteractive setup, and dry-run omit it. Use `--no-banner` to suppress it;
-setting `NO_COLOR` retains the mark without ANSI color. A dumb terminal also
-receives plain operational output without the mark.
+| Platform | Configuration |
+|---|---|
+| Linux | `$XDG_CONFIG_HOME/xana/config.toml` or `~/.config/xana/config.toml` |
+| macOS | `~/Library/Application Support/io.github.labcoder.xana/config.toml` |
+| Windows | `%APPDATA%\labcoder\xana\config\config.toml` |
 
-## Version 1 field reference
+`xana config path` is the authority for the current process.
 
-| Field | Type | Required? | Default | Meaning |
-|---|---|---:|---|---|
-| `version` | integer | Yes | None | Configuration schema version; this build accepts `1` |
-| `default_profile` | string | Yes | None | Name beneath `[profiles]` selected at startup |
-| `permission_mode` | string enum | Yes | None | Default tool authority: `deny`, `ask`, or `allow`; new initialization selects `ask` |
-| `permission_rules` | array of tables | No | Empty | User-owned rules with id, decision, and tool/effect/workspace/command matchers |
-| `shell.kind` | string enum | No | `platform` | `platform`, `posix`, `git_bash`, `powershell`, or `cmd`, subject to platform support |
-| `shell.program` | path | No | Selected kind's program | Explicit executable used for the selected shell |
-| `providers.<name>.kind` | string enum | Yes | None | Provider adapter kind; version 1 accepts `openai_compat` |
-| `providers.<name>.base_url` | string | Yes | None | Absolute HTTP(S) provider base URL |
-| `profiles.<name>.provider` | string | Yes | None | Name beneath `[providers]` |
-| `profiles.<name>.model` | string | Yes | None | Non-blank model identifier sent to the provider |
-| `profiles.<name>.max_tool_rounds` | integer | No | `8` | Bounded agent tool rounds; accepted range is `1..=64` |
+## Shell and permission policy
 
-Unknown fields are errors. This keeps misspellings and unsupported settings
-from being silently ignored.
+`run_command` supports `platform`, `posix`, `git_bash`, `powershell`, and
+`cmd` where appropriate. Program and arguments are passed separately. Xana
+does not classify shell text or claim OS containment. `permission_mode` and
+rules govern Xana's runtime authorization; see [Permissions](permissions.md).
 
-## Name and URL rules
+## Deliberate limits
 
-Provider and profile names must begin with a lowercase ASCII letter or digit.
-Remaining characters may be lowercase ASCII letters, digits, `_`, or `-`.
-
-Valid examples: `ollama`, `local_qwen`, `fast-worker`, `worker2`.
-
-Invalid examples: `Ollama`, `worker.dev`, an empty name, or a name containing
-spaces.
-
-A provider base URL must:
-
-- be an absolute `http` or `https` URL with a host;
-- be usable as a base URL;
-- contain no username or password;
-- contain no query string; and
-- contain no fragment.
-
-A path component such as `/v1` is valid.
-
-## What does not belong in `config.toml`
-
-Do not store plaintext credentials, OAuth sessions, conversation or operation
-records, artifacts, cache data, audit records, logs, or frontend-local UI
-preferences in this file.
-
-Version 1 does not support credential fields or authenticated-provider setup.
-An unknown field such as `api_key` is rejected.
-
-## Migrating from `config.kv`
-
-Xana does not rewrite the legacy `config.kv` file automatically. An old file:
-
-```text
-model=qwen3:1.7b
-base_url=http://localhost:11434/v1
-```
-
-can become:
-
-```toml
-version = 1
-default_profile = "default"
-permission_mode = "allow"
-
-[shell]
-kind = "platform"
-
-[providers.ollama]
-kind = "openai_compat"
-base_url = "http://localhost:11434/v1"
-
-[profiles.default]
-provider = "ollama"
-model = "qwen3:1.7b"
-```
-
-Choose the `ollama` and `default` names yourself, and confirm that automatic
-host-tool `allow` behavior is your intent. Use `ask` instead for the new
-initializer default. The platform shell default is
-portable; select another supported shell explicitly if needed. Write the
-result to `config.toml` beside the old file. When both files exist, Xana uses
-`config.toml`; remove or archive `config.kv` after verifying startup.
-
-## Limitations
-
-- Permission audit facts are appended to the durable session, while session
-  grants remain memory-only. There are no persistent grants, remote controller
-  roles, or permission-derived process containment.
-- Multiple named providers and profiles are validated, but the executable
-  selects only `default_profile`.
-- Version 1 has one provider kind, `openai_compat`, and no plaintext credential
-  fields.
-- Initialization does not collect credentials or onboard authenticated remote
-  providers.
-- There is no `--force`, automatic repair, automatic legacy migration, project
-  initialization, shell-profile editing, or general configuration editor.
+Initialization does not yet provide the full connection/model manager; add
+authenticated and Codex connections afterward. Xana has no hosted OAuth
+service, direct ChatGPT backend transport, Claude subscription login,
+automatic catalog refresh, automatic model routing, plaintext secret fallback,
+`--force`, or automatic legacy repair.

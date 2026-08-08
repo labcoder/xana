@@ -60,8 +60,8 @@ else permission_mode
 ```
 
 Supported effects are `read`, `write`, `execute`, `network`, and `external`.
-Current tool names are `read_file`, `list_files`, `edit_file`, and
-`run_command`. Workspace matchers are relative to Xana's launch workspace;
+Current tool names are `read_file`, `list_files`, `edit_file`, `run_command`,
+`read_document`, and `xana_docs`. Workspace matchers are relative to Xana's launch workspace;
 they are resolved to existing canonical paths when chat starts. Absolute,
 missing, escaping, and parent-traversing workspace rules fail startup. Command
 matching is an exact string comparison, not shell parsing or wildcard syntax.

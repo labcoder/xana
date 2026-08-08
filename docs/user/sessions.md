@@ -2,8 +2,9 @@
 
 > Audience: People using, resuming, inspecting, or backing up Xana sessions.
 
-Xana persists every chat as one append-only session. Bare `xana` creates a new
-session and prints its UUID and file path. Resume only an explicit id:
+Xana persists every native-provider chat as one append-only session. Bare
+`xana` with a native selection creates a new session and prints its UUID and
+file path. Resume only an explicit id:
 
 ```text
 xana --resume SESSION_ID
@@ -15,6 +16,9 @@ but opening performs no provider call, tool execution, project-file refresh,
 or unfinished-operation replay. If the current directory differs, Xana uses
 the canonical workspace stored when the session was created and reports that
 choice.
+
+Managed Codex owns its thread history. Xana does not duplicate that history in
+native session JSONL, and `--resume` is rejected for a Codex selection.
 
 ## Storage
 

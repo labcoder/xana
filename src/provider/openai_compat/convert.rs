@@ -1,12 +1,13 @@
 //! Conversion between Xana's conversation model and private wire values.
 
 use super::wire::{
-    WireFunctionCall, WireFunctionDefinition, WireMessage, WireRole, WireToolCall,
-    WireToolDefinition, WireToolKind,
+    WireContentPart, WireFunctionCall, WireFunctionDefinition, WireImageUrl, WireMessage,
+    WireMessageContent, WireRole, WireToolCall, WireToolDefinition, WireToolKind,
 };
 use crate::{
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
     tool::ToolDefinition,
+    vision::MediaResolver,
 };
 use std::{error::Error, fmt};
 
@@ -140,8 +141,22 @@ impl TryFrom<WireMessage> for Message {
 
         let mut content = Vec::new();
 
-        if let Some(text) = wire.content {
-            content.push(ContentBlock::Text(text));
+        if let Some(wire_content) = wire.content {
+            match wire_content {
+                WireMessageContent::Text(text) => content.push(ContentBlock::Text(text)),
+                WireMessageContent::Parts(parts) => {
+                    for part in parts {
+                        match part {
+                            WireContentPart::Text { text } => {
+                                content.push(ContentBlock::Text(text));
+                            }
+                            WireContentPart::ImageUrl { .. } => {
+                                return Err(MessageConversionError::UnsupportedImage);
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         for tool_call in wire.tool_calls.unwrap_or_default() {
@@ -169,7 +184,7 @@ impl TryFrom<&Message> for WireMessage {
 
                     Ok(Self {
                         role: WireRole::Tool,
-                        content: Some(content),
+                        content: Some(WireMessageContent::Text(content)),
                         tool_calls: None,
                         tool_call_id: Some(result.call_id.clone()),
                     })
@@ -181,41 +196,68 @@ impl TryFrom<&Message> for WireMessage {
             };
         }
 
-        let mut text: Option<String> = None;
-        let mut tool_calls = Vec::new();
-        let mut saw_tool_call = false;
+        convert_message(message, None)
+    }
+}
 
-        for block in &message.content {
-            match block {
-                ContentBlock::Text(part) => {
-                    if saw_tool_call {
-                        return Err(MessageConversionError::TextAfterToolCall);
-                    }
+pub(super) fn convert_message(
+    message: &Message,
+    media: Option<&MediaResolver>,
+) -> Result<WireMessage, MessageConversionError> {
+    let mut text: Option<String> = None;
+    let mut parts = Vec::new();
+    let mut tool_calls = Vec::new();
+    let mut saw_tool_call = false;
 
-                    match &mut text {
-                        Some(existing) => existing.push_str(part),
-                        None => text = Some(part.clone()),
-                    }
+    for block in &message.content {
+        match block {
+            ContentBlock::Text(part) => {
+                if saw_tool_call {
+                    return Err(MessageConversionError::TextAfterToolCall);
                 }
-                ContentBlock::ToolCall(tool_call) => {
-                    saw_tool_call = true;
-                    tool_calls.push(WireToolCall::from(tool_call));
+
+                match &mut text {
+                    Some(existing) => existing.push_str(part),
+                    None => text = Some(part.clone()),
                 }
-                ContentBlock::Image(_) => return Err(MessageConversionError::UnsupportedImage),
-                ContentBlock::ToolResult(_) => {
-                    return Err(MessageConversionError::InvalidMessageShape {
-                        role: message.role,
-                        detail: "user and assistant messages cannot contain tool results",
-                    });
+                parts.push(WireContentPart::Text { text: part.clone() });
+            }
+            ContentBlock::ToolCall(tool_call) => {
+                saw_tool_call = true;
+                tool_calls.push(WireToolCall::from(tool_call));
+            }
+            ContentBlock::Image(image) => {
+                if message.role != Role::User || saw_tool_call {
+                    return Err(MessageConversionError::UnsupportedImage);
                 }
+                let resolver = media.ok_or(MessageConversionError::UnsupportedImage)?;
+                let url = resolver
+                    .resolve_openai_data_url(image)
+                    .map_err(|_| MessageConversionError::UnsupportedImage)?;
+                parts.push(WireContentPart::ImageUrl {
+                    image_url: WireImageUrl { url },
+                });
+            }
+            ContentBlock::ToolResult(_) => {
+                return Err(MessageConversionError::InvalidMessageShape {
+                    role: message.role,
+                    detail: "user and assistant messages cannot contain tool results",
+                });
             }
         }
-
-        Ok(Self {
-            role: message.role.into(),
-            content: text,
-            tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
-            tool_call_id: None,
-        })
     }
+
+    let has_image = parts
+        .iter()
+        .any(|part| matches!(part, WireContentPart::ImageUrl { .. }));
+    Ok(WireMessage {
+        role: message.role.into(),
+        content: if has_image {
+            Some(WireMessageContent::Parts(parts))
+        } else {
+            text.map(WireMessageContent::Text)
+        },
+        tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+        tool_call_id: None,
+    })
 }

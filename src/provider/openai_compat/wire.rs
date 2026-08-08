@@ -49,11 +49,54 @@ pub(super) struct WireFunctionDefinition<'a> {
 pub(super) struct WireMessage {
     pub(super) role: WireRole,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) content: Option<String>,
+    pub(super) content: Option<WireMessageContent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tool_calls: Option<Vec<WireToolCall>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub(super) enum WireMessageContent {
+    Text(String),
+    Parts(Vec<WireContentPart>),
+}
+
+impl WireMessageContent {
+    #[cfg(test)]
+    pub(super) fn as_text(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Parts(_) => None,
+        }
+    }
+}
+
+impl From<String> for WireMessageContent {
+    fn from(value: String) -> Self {
+        Self::Text(value)
+    }
+}
+
+impl From<&str> for WireMessageContent {
+    fn from(value: &str) -> Self {
+        Self::Text(value.to_owned())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub(super) enum WireContentPart {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: WireImageUrl },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(super) struct WireImageUrl {
+    pub(super) url: String,
 }
 
 #[derive(Debug, Serialize)]

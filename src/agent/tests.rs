@@ -4,8 +4,11 @@ use crate::{
     message::{Role, ToolResultStatus},
     permission::{PermissionBroker, PermissionPolicy, PolicyDecision},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    provider::{ConversationalProvider, DeltaSink, ProviderError},
     shell::{Shell, ShellConfig},
+    tool::ToolDefinition,
 };
+use futures::future::BoxFuture;
 use std::{
     collections::VecDeque,
     fs,
@@ -37,14 +40,14 @@ impl ScriptedChatTransport {
     }
 }
 
-impl ChatTransport for ScriptedChatTransport {
+impl ConversationalProvider for ScriptedChatTransport {
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
         _tools: &'a [&'a ToolDefinition],
         step_id: StepId,
         deltas: &'a dyn DeltaSink,
-    ) -> BoxFuture<'a, Result<Message, ChatError>> {
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
         Box::pin(async move {
             self.requests
                 .lock()
@@ -55,7 +58,7 @@ impl ChatTransport for ScriptedChatTransport {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .pop_front()
-                .ok_or_else(|| ChatError::new("script exhausted"))?;
+                .ok_or_else(|| ProviderError::new("script exhausted"))?;
             for text in &response.deltas {
                 deltas.text_delta(step_id, text);
             }

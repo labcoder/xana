@@ -72,8 +72,118 @@ pub(crate) enum Command {
     Session(SessionArgs),
     /// Inspect or explicitly reconcile interrupted operations.
     Operation(OperationArgs),
-    /// Inspect or manage optional provider credentials.
+    /// Inspect or manage model-provider connections.
+    Connection(ConnectionArgs),
+    /// List, refresh, and select connection-owned models.
+    Model(ModelArgs),
+    /// Deprecated compatibility alias for connection login/status/logout.
+    #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ConnectionKindChoice {
+    Ollama,
+    #[value(name = "openai_compat")]
+    OpenAiCompat,
+    OpenAi,
+    OpenRouter,
+    Anthropic,
+    Codex,
+}
+
+impl From<ConnectionKindChoice> for crate::config::ProviderKind {
+    fn from(value: ConnectionKindChoice) -> Self {
+        match value {
+            ConnectionKindChoice::Ollama => Self::Ollama,
+            ConnectionKindChoice::OpenAiCompat => Self::OpenAiCompat,
+            ConnectionKindChoice::OpenAi => Self::OpenAi,
+            ConnectionKindChoice::OpenRouter => Self::OpenRouter,
+            ConnectionKindChoice::Anthropic => Self::Anthropic,
+            ConnectionKindChoice::Codex => Self::Codex,
+        }
+    }
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ConnectionArgs {
+    #[command(subcommand)]
+    pub(crate) command: ConnectionCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ConnectionCommand {
+    /// List configured native providers and managed runtimes.
+    List,
+    /// Add a connection declaration without storing plaintext credentials.
+    Add {
+        id: String,
+        #[arg(long, value_enum)]
+        kind: ConnectionKindChoice,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(long, conflicts_with = "credential_id")]
+        env: Option<String>,
+        #[arg(long, conflicts_with = "env")]
+        credential_id: Option<String>,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        codex_program: Option<String>,
+        #[arg(long)]
+        codex_home: Option<PathBuf>,
+    },
+    /// Show credential/account and runtime status for one connection.
+    Status { id: String },
+    /// Store an API key in the operating-system credential store.
+    SetKey {
+        id: String,
+        /// Read the key from stdin instead of a hidden terminal prompt.
+        #[arg(long)]
+        from_stdin: bool,
+    },
+    /// Start an explicit managed-runtime login.
+    Login {
+        id: String,
+        /// Use a headless-friendly device-code flow.
+        #[arg(long)]
+        device_code: bool,
+    },
+    /// Log out of a managed account. This may affect other Codex clients using the same CODEX_HOME.
+    Logout {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete an API key from the operating-system credential store.
+    DeleteKey { id: String },
+    /// Refresh and cache non-secret model metadata.
+    Refresh { id: String },
+    /// Remove an unreferenced connection declaration.
+    Remove {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ModelArgs {
+    #[command(subcommand)]
+    pub(crate) command: Option<ModelCommand>,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ModelCommand {
+    /// List models, optionally for only one connection.
+    List {
+        #[arg(long)]
+        connection: Option<String>,
+    },
+    /// Persist the next-conversation selection as CONNECTION/MODEL.
+    Use { selection: String },
+    /// Explicitly refresh one connection's catalog.
+    Refresh { connection: String },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -196,13 +306,53 @@ mod tests {
     #[test]
     fn parses_auth_lifecycle_commands() {
         assert_eq!(
-            Cli::try_parse_from(["xana", "auth", "status", "codex-oauth"])
+            Cli::try_parse_from(["xana", "auth", "status", "codex"])
                 .expect("auth status")
                 .command,
             Some(Command::Auth(AuthArgs {
                 command: AuthCommand::Status {
-                    provider: "codex-oauth".to_owned(),
+                    provider: "codex".to_owned(),
                 },
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_connection_and_model_control_plane() {
+        assert_eq!(
+            Cli::try_parse_from([
+                "xana",
+                "connection",
+                "add",
+                "codex",
+                "--kind",
+                "codex",
+                "--model",
+                "gpt-5.3-codex",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::Connection(ConnectionArgs {
+                command: ConnectionCommand::Add {
+                    id: "codex".into(),
+                    kind: ConnectionKindChoice::Codex,
+                    base_url: None,
+                    env: None,
+                    credential_id: None,
+                    model: "gpt-5.3-codex".into(),
+                    codex_program: None,
+                    codex_home: None,
+                }
+            }))
+        );
+        assert_eq!(
+            Cli::try_parse_from(["xana", "model", "use", "openrouter/openai/gpt-4.1"])
+                .unwrap()
+                .command,
+            Some(Command::Model(ModelArgs {
+                command: Some(ModelCommand::Use {
+                    selection: "openrouter/openai/gpt-4.1".into(),
+                })
             }))
         );
     }

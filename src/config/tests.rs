@@ -82,6 +82,89 @@ fn unknown_nested_field_and_plaintext_api_key_are_rejected() {
 }
 
 #[test]
+fn codex_connection_delegates_credentials_and_requires_local_runtime_fields() {
+    let valid = MINIMAL.replace(
+        "kind = \"openai_compat\"\nbase_url = \"http://localhost:11434/v1\"",
+        "kind = \"codex\"\ncodex_program = \"codex\"",
+    );
+    assert_eq!(parse_ok(&valid).provider_kind, ProviderKind::Codex);
+
+    let with_credential = valid.replace(
+        "codex_program = \"codex\"",
+        "codex_program = \"codex\"\ncredential = { source = \"stored\", id = \"codex\" }",
+    );
+    assert!(matches!(
+        parse_error(&with_credential),
+        ConfigError::InvalidCredential { .. }
+    ));
+
+    let with_relative_home = valid.replace(
+        "codex_program = \"codex\"",
+        "codex_program = \"codex\"\ncodex_home = \"relative/home\"",
+    );
+    assert!(matches!(
+        parse_error(&with_relative_home),
+        ConfigError::InvalidCodexHome { .. }
+    ));
+}
+
+#[test]
+fn api_connections_require_explicit_non_secret_credential_references() {
+    let missing = MINIMAL.replace(
+        "kind = \"openai_compat\"\nbase_url = \"http://localhost:11434/v1\"",
+        "kind = \"openrouter\"",
+    );
+    assert!(matches!(
+        parse_error(&missing),
+        ConfigError::InvalidCredential { .. }
+    ));
+
+    let stored = missing.replace(
+        "kind = \"openrouter\"",
+        "kind = \"openrouter\"\ncredential = { source = \"stored\", id = \"openrouter\" }",
+    );
+    let parsed = parse_ok(&stored);
+    assert_eq!(
+        parsed.credential,
+        Some(CredentialReference::Stored {
+            id: "openrouter".into()
+        })
+    );
+    assert!(!stored.contains("api_key"));
+}
+
+#[test]
+fn connection_edits_preserve_comments_and_validate_the_complete_document() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(
+        &path,
+        MINIMAL.replace("version = 1", "# keep me\nversion = 1"),
+    )
+    .unwrap();
+
+    XanaConfig::add_connection(
+        &path,
+        NewConnection {
+            id: "codex".into(),
+            kind: ProviderKind::Codex,
+            base_url: None,
+            credential: None,
+            model: "gpt-5.3-codex".into(),
+            codex_program: Some("codex".into()),
+            codex_home: None,
+        },
+    )
+    .unwrap();
+
+    let edited = fs::read_to_string(&path).unwrap();
+    assert!(edited.contains("# keep me"));
+    assert!(edited.contains("version = 2"));
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert_eq!(registry.connections["codex"].kind, ProviderKind::Codex);
+}
+
+#[test]
 fn future_version_is_reported_before_future_fields() {
     let input = MINIMAL.replace("version = 1", "version = 9\nfuture_schema_field = true");
 
@@ -393,6 +476,9 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
             provider_name: "ollama".to_owned(),
             provider_kind: ProviderKind::OpenAiCompat,
             base_url: "http://localhost:11434/v1".to_owned(),
+            credential: None,
+            codex_program: None,
+            codex_home: None,
             model: "qwen3:1.7b".to_owned(),
             permission_mode: PermissionMode::Ask,
             permission_rules: Vec::new(),

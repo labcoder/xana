@@ -21,6 +21,13 @@ implemented separately through historical
 [Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
 Proposed for the other state and configuration contracts.
 
+The version 2 connection/model subset is implemented through historical
+[Proposal 0015](0015-connections-models-and-managed-runtimes.md):
+comment-preserving connection edits, separate selection and non-secret cache
+files, environment/OS credential references, and external Codex credential
+ownership. This proposal remains Proposed for extension/package state, task
+routes, frontend preferences, and the broader structured editor.
+
 ## Proposed state ownership
 
 | State | Platform location | Portable-home location | Owner | Lifecycle |

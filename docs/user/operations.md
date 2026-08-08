@@ -47,6 +47,8 @@ Current built-ins use this matrix:
 | `list_files` | `Safe` | eligible for one explicit, reauthorized replay |
 | `edit_file` | `Never` | record interruption; never repeat automatically |
 | `run_command` | `Never` | record interruption; never repeat automatically |
+| `read_document` | `Safe` | eligible for one explicit, reauthorized replay |
+| `xana_docs` | `Safe` | eligible for one explicit, reauthorized replay |
 
 A missing tool, changed contract, changed scope, current `Never` declaration,
 saved `Never` declaration, or current denial prevents execution. Xana records

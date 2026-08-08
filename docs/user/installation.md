@@ -14,6 +14,10 @@ inside a checkout. Platform-default shell execution also requires `sh` on
 macOS/Linux or PowerShell on Windows. Git Bash and `cmd` are explicit Windows
 alternatives.
 
+ChatGPT subscription access additionally requires a compatible `codex`
+executable on `PATH` (or an explicit connection `codex_program`). API-key and
+Ollama connections do not require Codex.
+
 ## Install from a checkout
 
 ```bash
@@ -83,11 +87,12 @@ $env:XANA_HOME = 'C:\Users\you\.xana'
 Windows Git Bash:
 
 ```bash
-export XANA_HOME='C:/Users/you/.xana'
+export XANA_HOME="$(cygpath -m "$HOME/.xana")"
 ```
 
-The shell expands `$HOME` in the first example before Xana starts. Prefer the
-native `C:/...` form in Git Bash; do not pass `/c/...` or a literal `~/.xana`.
+The shell expands `$HOME` before Xana starts. On Git Bash, `cygpath` converts
+the shell path to a Windows absolute path; do not pass `/c/...` or a literal
+`~/.xana` to the Windows executable.
 
 ## Initialize and verify
 
@@ -124,7 +129,7 @@ install ... --locked` command. This source channel does not update itself.
 Remove the Cargo-installed binary with:
 
 ```bash
-cargo uninstall xana
+cargo uninstall xana-cli
 ```
 
 Uninstalling the binary does not delete Xana's configuration, sessions, or

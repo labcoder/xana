@@ -7,27 +7,36 @@
 use crate::{
     agent::Agent,
     artifact::ArtifactStore,
-    cli::{self, AuthCommand, Cli, Command, ConfigCommand, OperationCommand, SessionCommand},
-    config::{ProviderKind, XanaConfig},
+    cli::{
+        self, AuthCommand, Cli, Command, ConfigCommand, ConnectionCommand, ModelCommand,
+        OperationCommand, SessionCommand,
+    },
+    config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
+    credential::{CredentialResolver, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
+    managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
+    managed_terminal::{ManagedChatConfig, run_codex_chat},
+    model::{ExecutionKind, ModelManager},
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
     presentation::{self, BannerMode},
-    prompt::{PromptAssembler, PromptEnvironment, PromptSurface},
-    provider::openai_compat::OpenAiCompatClient,
+    prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
+    provider::{anthropic::AnthropicClient, openai_compat::OpenAiCompatClient},
     runtime::{RuntimeCommand, RuntimeHandle},
     session::{DurableSession, RestoredOperation},
     shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
+    vision::MediaResolver,
 };
 use anyhow::{Context, Result};
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal, Read, Write};
 
 const PROMPT_TOTAL_TOKENS: usize = 32_768;
 const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
+const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
 
 pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
@@ -59,26 +68,400 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_operation_command(args.command, &paths, &mut stdout.lock()).await
         }
+        Some(Command::Connection(args)) => {
+            let stdout = io::stdout();
+            run_connection_command(args.command, &paths, &mut stdout.lock()).await
+        }
+        Some(Command::Model(args)) => {
+            let stdout = io::stdout();
+            run_model_command(args.command, &paths, &mut stdout.lock()).await
+        }
         Some(Command::Auth(args)) => {
             let stdout = io::stdout();
-            run_auth_command(args.command, &mut stdout.lock())
+            run_auth_command(args.command, &paths, &mut stdout.lock()).await
         }
     }
 }
 
-fn run_auth_command<W: Write>(command: AuthCommand, output: &mut W) -> Result<()> {
+async fn run_auth_command<W: Write>(
+    command: AuthCommand,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
     let provider = match &command {
         AuthCommand::Login { provider }
         | AuthCommand::Status { provider }
-        | AuthCommand::Logout { provider } => provider,
+        | AuthCommand::Logout { provider } => provider.clone(),
     };
-    if provider != "codex-oauth" {
-        anyhow::bail!("unknown credential provider {provider:?}");
+    writeln!(output, "`xana auth` is deprecated; use `xana connection`.")?;
+    let translated = match command {
+        AuthCommand::Login { .. } => ConnectionCommand::Login {
+            id: provider.clone(),
+            device_code: false,
+        },
+        AuthCommand::Status { .. } => ConnectionCommand::Status {
+            id: provider.clone(),
+        },
+        AuthCommand::Logout { .. } => ConnectionCommand::Logout {
+            id: provider.clone(),
+            yes: false,
+        },
+    };
+    run_connection_command(translated, paths, output).await
+}
+
+fn model_manager(paths: &XanaPaths) -> Result<ModelManager> {
+    let registry = XanaConfig::load_registry_from(paths.config_file())
+        .context("could not load connection registry")?;
+    Ok(ModelManager::new(
+        registry,
+        paths.cache_dir().to_owned(),
+        paths.data_dir().join("selection.toml"),
+    ))
+}
+
+fn codex_launch(connection: &crate::config::ConnectionConfig) -> CodexLaunchConfig {
+    CodexLaunchConfig {
+        program: connection
+            .codex_program
+            .clone()
+            .unwrap_or_else(|| "codex".into()),
+        home: connection.codex_home.clone(),
     }
-    writeln!(
-        output,
-        "codex-oauth is unavailable: Xana is waiting for an official supported protocol authority (endpoints, client identity, scopes, audience, refresh, and revocation)."
-    )?;
+}
+
+async fn run_connection_command<W: Write>(
+    command: ConnectionCommand,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    match command {
+        ConnectionCommand::Add {
+            id,
+            kind,
+            base_url,
+            env,
+            credential_id,
+            model,
+            codex_program,
+            codex_home,
+        } => {
+            let kind = kind.into();
+            let credential = match (env, credential_id) {
+                (Some(variable), None) => Some(CredentialReference::Environment { variable }),
+                (None, Some(id)) => Some(CredentialReference::Stored { id }),
+                (None, None)
+                    if matches!(
+                        kind,
+                        ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
+                    ) =>
+                {
+                    Some(CredentialReference::Stored { id: id.clone() })
+                }
+                (None, None) => None,
+                (Some(_), Some(_)) => unreachable!("clap rejects conflicting flags"),
+            };
+            XanaConfig::add_connection(
+                paths.config_file(),
+                NewConnection {
+                    id: id.clone(),
+                    kind,
+                    base_url,
+                    credential,
+                    model: model.clone(),
+                    codex_program,
+                    codex_home,
+                },
+            )?;
+            writeln!(output, "connection added: {id} ({})", kind.as_str())?;
+            writeln!(output, "model declared: {id}/{model}")?;
+            if matches!(
+                kind,
+                ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
+            ) {
+                writeln!(output, "next: xana connection set-key {id}")?;
+            } else if kind == ProviderKind::Codex {
+                writeln!(output, "next: xana connection status {id}")?;
+            }
+            Ok(())
+        }
+        ConnectionCommand::List => {
+            let manager = model_manager(paths)?;
+            let selected = manager.selected()?;
+            for summary in manager.summaries() {
+                let marker = if summary.id == selected.connection {
+                    "*"
+                } else {
+                    " "
+                };
+                writeln!(
+                    output,
+                    "{marker} {}\t{}\t{}\t{} model(s)",
+                    summary.id,
+                    summary.kind.as_str(),
+                    summary.credential,
+                    summary.models.len()
+                )?;
+            }
+            Ok(())
+        }
+        ConnectionCommand::Status { id } => {
+            let manager = model_manager(paths)?;
+            let connection = manager.connection(&id)?;
+            if connection.kind == ProviderKind::Codex {
+                let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
+                writeln!(output, "connection: {id}")?;
+                writeln!(output, "kind: managed codex app-server")?;
+                writeln!(output, "runtime: {}", server.version)?;
+                writeln!(output, "codex home: {}", server.codex_home.display())?;
+                let account = server.account_status().await?;
+                write_account_status(output, &account)?;
+                if matches!(account, AccountStatus::ChatGpt { .. }) {
+                    let limits = server.rate_limits().await?;
+                    for (name, pointer) in [
+                        ("primary", "/rateLimits/primary/usedPercent"),
+                        ("secondary", "/rateLimits/secondary/usedPercent"),
+                    ] {
+                        if let Some(percent) =
+                            limits.pointer(pointer).and_then(serde_json::Value::as_f64)
+                        {
+                            writeln!(output, "{name} usage: {percent:.0}%")?;
+                        }
+                    }
+                }
+                server.shutdown().await?;
+            } else {
+                let summary = manager
+                    .summaries()
+                    .into_iter()
+                    .find(|summary| summary.id == id)
+                    .expect("connection was resolved");
+                writeln!(output, "connection: {id}")?;
+                writeln!(output, "kind: native {}", summary.kind.as_str())?;
+                writeln!(output, "credential: {}", summary.credential)?;
+                writeln!(output, "cached/configured models: {}", summary.models.len())?;
+            }
+            Ok(())
+        }
+        ConnectionCommand::SetKey { id, from_stdin } => {
+            let manager = model_manager(paths)?;
+            let connection = manager.connection(&id)?;
+            let CredentialReference::Stored { id: credential_id } = connection
+                .credential
+                .as_ref()
+                .context("connection does not declare a stored credential")?
+            else {
+                anyhow::bail!(
+                    "connection {id:?} uses an environment credential; set that variable instead"
+                )
+            };
+            let secret = if from_stdin {
+                let mut input = String::new();
+                io::stdin()
+                    .take((MAX_CREDENTIAL_BYTES as u64).saturating_add(1))
+                    .read_to_string(&mut input)?;
+                if input.len() > MAX_CREDENTIAL_BYTES {
+                    anyhow::bail!("credential exceeds the {MAX_CREDENTIAL_BYTES}-byte limit")
+                }
+                input.trim_end_matches(['\r', '\n']).to_owned()
+            } else {
+                if !io::stdin().is_terminal() {
+                    anyhow::bail!("hidden key entry requires a terminal; use --from-stdin")
+                }
+                rpassword::prompt_password(format!("API key for {id}: "))?
+            };
+            store_secret(credential_id, &secret)?;
+            writeln!(
+                output,
+                "credential stored in the operating-system credential store for {id}"
+            )?;
+            Ok(())
+        }
+        ConnectionCommand::DeleteKey { id } => {
+            let manager = model_manager(paths)?;
+            let connection = manager.connection(&id)?;
+            let CredentialReference::Stored { id: credential_id } = connection
+                .credential
+                .as_ref()
+                .context("connection does not declare a stored credential")?
+            else {
+                anyhow::bail!("connection {id:?} uses an environment credential")
+            };
+            let deleted = delete_secret(credential_id)?;
+            writeln!(
+                output,
+                "credential {} for {id}",
+                if deleted {
+                    "deleted"
+                } else {
+                    "was already absent"
+                }
+            )?;
+            Ok(())
+        }
+        ConnectionCommand::Login { id, device_code } => {
+            let manager = model_manager(paths)?;
+            let connection = manager.connection(&id)?;
+            if connection.kind != ProviderKind::Codex {
+                anyhow::bail!("connection {id:?} uses an API key, not managed login")
+            }
+            let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
+            if !matches!(server.account_status().await?, AccountStatus::LoggedOut) {
+                writeln!(output, "Codex is already logged in.")?;
+                server.shutdown().await?;
+                return Ok(());
+            }
+            let instructions = server
+                .begin_login(if device_code {
+                    LoginMode::DeviceCode
+                } else {
+                    LoginMode::Browser
+                })
+                .await?;
+            writeln!(output, "Open this URL to authorize Codex:")?;
+            writeln!(output, "{}", instructions.url)?;
+            if let Some(code) = &instructions.user_code {
+                writeln!(output, "Code: {code}")?;
+            }
+            writeln!(output, "Waiting for authorization...")?;
+            let status = server.wait_for_login(&instructions.login_id).await?;
+            write_account_status(output, &status)?;
+            server.shutdown().await?;
+            Ok(())
+        }
+        ConnectionCommand::Logout { id, yes } => {
+            if !yes {
+                anyhow::bail!(
+                    "logout changes the shared Codex account for this CODEX_HOME and may affect other Codex clients; rerun with --yes"
+                )
+            }
+            let manager = model_manager(paths)?;
+            let connection = manager.connection(&id)?;
+            if connection.kind != ProviderKind::Codex {
+                anyhow::bail!("use `xana connection delete-key {id}` for API-key connections")
+            }
+            let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
+            if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
+                writeln!(output, "Codex was already logged out.")?;
+            } else {
+                server.logout().await?;
+                writeln!(output, "Codex account logged out for this CODEX_HOME.")?;
+            }
+            server.shutdown().await?;
+            Ok(())
+        }
+        ConnectionCommand::Refresh { id } => refresh_models(paths, &id, output).await,
+        ConnectionCommand::Remove { id, yes } => {
+            if !yes {
+                anyhow::bail!("connection removal requires --yes")
+            }
+            let selected = model_manager(paths)?.selected()?;
+            if selected.connection == id {
+                anyhow::bail!(
+                    "connection {id:?} is selected; select another model before removing it"
+                )
+            }
+            XanaConfig::remove_connection(paths.config_file(), &id)?;
+            writeln!(output, "connection removed: {id}")?;
+            Ok(())
+        }
+    }
+}
+
+fn write_account_status<W: Write>(output: &mut W, status: &AccountStatus) -> Result<()> {
+    match status {
+        AccountStatus::LoggedOut => writeln!(output, "account: logged out")?,
+        AccountStatus::ApiKey => writeln!(output, "account: Codex-managed API key")?,
+        AccountStatus::ChatGpt { plan } => writeln!(output, "account: ChatGPT ({plan})")?,
+        AccountStatus::Other { kind } => writeln!(output, "account: {kind}")?,
+    }
+    Ok(())
+}
+
+async fn refresh_models<W: Write>(paths: &XanaPaths, id: &str, output: &mut W) -> Result<()> {
+    let manager = model_manager(paths)?;
+    let connection = manager.connection(id)?;
+    let models = if connection.kind == ProviderKind::Codex {
+        let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
+        let models = server.models().await?;
+        manager.write_managed_cache(id, &models)?;
+        server.shutdown().await?;
+        models
+    } else {
+        manager.refresh_native(id).await?
+    };
+    writeln!(output, "cached {} model(s) for {id}", models.len())?;
+    Ok(())
+}
+
+async fn run_model_command<W: Write>(
+    command: Option<ModelCommand>,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    match command {
+        Some(ModelCommand::Use { selection }) => {
+            let (connection, model) = selection
+                .split_once('/')
+                .context("model selection must be CONNECTION/MODEL")?;
+            let manager = model_manager(paths)?;
+            let selected = manager.select(connection, model)?;
+            writeln!(
+                output,
+                "selected {}/{} for the next conversation",
+                selected.connection, selected.model
+            )?;
+            Ok(())
+        }
+        Some(ModelCommand::Refresh { connection }) => {
+            refresh_models(paths, &connection, output).await
+        }
+        Some(ModelCommand::List { connection }) => {
+            list_models(paths, connection.as_deref(), output)
+        }
+        None => {
+            list_models(paths, None, output)?;
+            writeln!(output, "select with: xana model use CONNECTION/MODEL")?;
+            Ok(())
+        }
+    }
+}
+
+fn list_models<W: Write>(paths: &XanaPaths, only: Option<&str>, output: &mut W) -> Result<()> {
+    let manager = model_manager(paths)?;
+    let selected = manager.selected()?;
+    for summary in manager.summaries() {
+        if only.is_some_and(|only| only != summary.id) {
+            continue;
+        }
+        let execution = match summary.execution {
+            ExecutionKind::Native => "native",
+            ExecutionKind::Managed => "managed",
+        };
+        writeln!(
+            output,
+            "{} ({execution}, {})",
+            summary.id,
+            summary.kind.as_str()
+        )?;
+        for model in summary.models {
+            let marker = if summary.id == selected.connection && model.id == selected.model {
+                "*"
+            } else {
+                " "
+            };
+            let modalities = model
+                .input_modalities
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(",");
+            writeln!(
+                output,
+                "  {marker} {}\t{}\t{}",
+                model.id, modalities, model.display_name
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -261,28 +644,107 @@ async fn run_default(
         }
     };
 
+    let manager = model_manager(paths)?;
+    let selected = manager.selected()?;
+    let selected_connection = manager.connection(&selected.connection)?.clone();
+
     let XanaConfig {
-        provider_name,
-        provider_kind,
-        base_url,
-        model,
         permission_mode,
         permission_rules,
         shell,
         max_tool_rounds,
+        ..
     } = config;
-
-    let provider = match provider_kind {
-        ProviderKind::OpenAiCompat => OpenAiCompatClient::new(base_url, model.clone()),
-    };
-    let endpoint = provider.endpoint().to_owned();
+    let provider_name = selected.connection;
+    let provider_kind = selected_connection.kind;
+    let model = selected.model;
     let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
     let configured_shell = shell.prompt_description();
-    let tools = ToolRegistry::builtins(shell).context("could not build tool registry")?;
     let workspace_root = std::env::current_dir()
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
+    let artifact_store = ArtifactStore::new(paths.data_dir().join("artifacts"));
+
+    if provider_kind == ProviderKind::Codex {
+        if resume.is_some() {
+            anyhow::bail!(
+                "Xana durable --resume applies to native conversations; Codex owns managed thread resume"
+            )
+        }
+        let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
+        return run_codex_chat(
+            server,
+            manager,
+            ManagedChatConfig {
+                connection: provider_name,
+                model,
+                workspace: workspace_root,
+                artifact_store,
+                owner: crate::identity::PrincipalId::new(),
+            },
+        )
+        .await;
+    }
+
+    let base_url = selected_connection
+        .base_url
+        .clone()
+        .context("selected native connection has no endpoint")?;
+
+    let media = MediaResolver::new(artifact_store.clone(), crate::artifact::MAX_ARTIFACT_BYTES);
+    let credentials = CredentialResolver::default();
+    let (provider, endpoint): (Box<dyn crate::provider::ConversationalProvider>, String) =
+        match provider_kind {
+            ProviderKind::OpenAiCompat | ProviderKind::Ollama => {
+                let client = match selected_connection.credential.as_ref() {
+                    Some(reference) => {
+                        let secret = credentials.resolve(reference)?;
+                        OpenAiCompatClient::with_bearer_and_attribution(
+                            base_url,
+                            model.clone(),
+                            secret.expose().to_owned(),
+                            None,
+                            None,
+                        )
+                    }
+                    None => OpenAiCompatClient::new(base_url, model.clone()),
+                }
+                .with_media_resolver(media);
+                let endpoint = client.endpoint().to_owned();
+                (Box::new(client), endpoint)
+            }
+            ProviderKind::OpenAi | ProviderKind::OpenRouter => {
+                let reference = selected_connection
+                    .credential
+                    .as_ref()
+                    .context("selected API connection has no credential reference")?;
+                let secret = credentials.resolve(reference)?;
+                let client = OpenAiCompatClient::with_bearer_and_attribution(
+                    base_url,
+                    model.clone(),
+                    secret.expose().to_owned(),
+                    None,
+                    (provider_kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
+                )
+                .with_media_resolver(media);
+                let endpoint = client.endpoint().to_owned();
+                (Box::new(client), endpoint)
+            }
+            ProviderKind::Anthropic => {
+                let reference = selected_connection
+                    .credential
+                    .as_ref()
+                    .context("selected Anthropic connection has no credential reference")?;
+                let secret = credentials.resolve(reference)?;
+                let client = AnthropicClient::new(base_url, secret.expose(), model.clone())
+                    .with_media_resolver(media);
+                let endpoint = client.endpoint().to_owned();
+                (Box::new(client), endpoint)
+            }
+            ProviderKind::Codex => unreachable!("managed Codex was composed above"),
+        };
+    let tools = ToolRegistry::builtins(shell).context("could not build tool registry")?;
     let (session, permission_policy, resumed, repair_truncate_to, unfinished) = match resume {
         Some(session_id) => {
             let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
@@ -333,7 +795,14 @@ async fn run_default(
     let prompt_assembler = PromptAssembler::new(
         definitions,
         environment,
-        None,
+        Some(ProductDocumentationHint {
+            capability: "xana_docs".to_owned(),
+            references: crate::self_docs::default_catalog()
+                .list(None)
+                .into_iter()
+                .map(|entry| entry.id.to_owned())
+                .collect(),
+        }),
         ContextBudget {
             total_tokens: PROMPT_TOTAL_TOKENS,
             conversation_reserve_tokens: PROMPT_CONVERSATION_RESERVE_TOKENS,
@@ -346,7 +815,7 @@ async fn run_default(
         .as_str()
         .to_owned();
     let agent = Agent::new(
-        Box::new(provider),
+        provider,
         tools,
         workspace_root.clone(),
         prompt,
@@ -367,11 +836,15 @@ async fn run_default(
         repair_truncate_to,
         unfinished,
         workspace_root: workspace_root.clone(),
-        artifact_store: ArtifactStore::new(paths.data_dir().join("artifacts")),
+        artifact_store,
         owner: crate::identity::PrincipalId::new(),
+        models: manager,
     };
 
-    terminal::run_chat(runtime, header).await
+    match terminal::run_chat(runtime, header).await? {
+        terminal::ChatExit::Quit => Ok(()),
+        terminal::ChatExit::Restart => Box::pin(run_default(paths, BannerMode::Hidden, None)).await,
+    }
 }
 
 fn run_session_command<W: Write>(

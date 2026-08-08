@@ -22,6 +22,14 @@ The internal conversation model continues to carry ordered content blocks.
 Image input can join text and tool blocks without exposing a provider wire
 format to the engine.
 
+The first image-input and bounded text/CSV document-extraction slices are
+implemented through historical
+[Proposal 0015](0015-connections-models-and-managed-runtimes.md):
+artifact-backed image references, native OpenAI-compatible and Anthropic wire
+encoding, checked Codex paths, `/attach`, `read_document`, and independent
+resource limits. This proposal remains Proposed for audio, generation, OCR,
+broader structured formats, parser isolation, and focused media services.
+
 Large binary content is not repeated in session records or command/event
 protocols. A runtime-owned store gives durable or disposable media an explicit
 lifecycle and exposes a typed `ArtifactRef`. Provider adapters resolve and
@@ -47,10 +55,12 @@ A focused `DocumentExtractor` service supplies the logical capability
 The bounded UTF-8 `read_file` tool remains extension-agnostic and continues to
 handle ordinary source and text.
 
-AnyDoc is proposed as the first default-bundled extractor, registered outside
-the headless engine. A minimal build may omit it. OCR, isolated parsers, and
-other providers can implement the same logical capability so downstream
-vision, skills, and ingestion do not depend on one concrete crate.
+The current default extractor is registered outside the headless engine and
+supports bounded UTF-8 plus CSV-to-Markdown; a minimal build may omit CSV.
+AnyDoc or another broader parser remains a future adapter rather than an
+implemented dependency. OCR and isolated parsers can implement the same
+logical capability so downstream vision, skills, and ingestion do not depend
+on one concrete crate.
 
 ## Untrusted extraction flow
 

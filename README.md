@@ -2,12 +2,26 @@
 
 # Xana
 
-Xana is a small, extensible personal AI agent harness written in Rust. Its name comes from Asturian folklore: a xana is a mysterious guide associated with water, forests, and hidden places. The project reinterprets that idea as a guide within the system, making complex paths understandable without becoming a source of hidden authority.
+Xana is a small, extensible personal AI agent harness written in Rust. It can
+chat, inspect and edit a workspace, run commands with explicit permission,
+read text and CSV documents, answer questions about its own bundled
+documentation, and send local image attachments to capable models.
+
+Xana currently supports:
+
+- local Ollama and custom OpenAI-compatible servers;
+- the OpenAI API and OpenRouter with API keys;
+- Anthropic Messages with an API key; and
+- ChatGPT Plus/Pro through a locally installed Codex app-server, with Codex
+  owning login, token refresh, inference, tools, sandbox, and inner history.
+
+Native connections run Xana's own agent loop. Codex is a managed runtime: Xana
+provides the CLI and process/event/approval bridge but does not wrap the turn
+in a second model call or copy Codex credentials.
 
 ## Install from source
 
-Xana's developer preview is built locally with the pinned Rust toolchain. From
-a checkout:
+Xana uses the pinned Rust toolchain:
 
 ```bash
 git clone https://github.com/labcoder/xana.git
@@ -19,30 +33,23 @@ xana config check
 xana
 ```
 
-Install directly from the Git repository with:
+Git installation is also supported:
 
 ```bash
 cargo install --git https://github.com/labcoder/xana.git --locked
 ```
 
-Use `--rev COMMIT_SHA` for a reviewed, repeatable Git build. Xana is not
-published to crates.io and does not provide prebuilt binaries, an installer,
-or automatic updates. See [Source installation](docs/user/installation.md) for
-Rust and shell prerequisites, platform-correct `XANA_HOME` examples, updates,
-and uninstall instructions.
+Use `--rev COMMIT_SHA` for a repeatable build. Xana is not published to
+crates.io and has no prebuilt installer or automatic updater. See
+[Source installation](docs/user/installation.md).
 
-The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint, asks which shell `run_command` should use, and selects `deny`, `ask`, or `allow` permission behavior with `ask` as the human default. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
+## Start locally with Ollama
 
-The workspace also contains the focused `xana-core` contracts and the
-`xana-cli` package. Provider adapters keep OpenRouter and Anthropic wire
-formats private; their credentials are injected by the runtime edge.
-
-## Configuration
-
-Xana loads a strict, versioned `config.toml` at startup. A minimal local Ollama configuration is:
+`xana init` creates and validates the first local/custom connection. A minimal
+document is:
 
 ```toml
-version = 1
+version = 2
 default_profile = "default"
 permission_mode = "ask"
 
@@ -50,63 +57,124 @@ permission_mode = "ask"
 kind = "platform"
 
 [providers.ollama]
-kind = "openai_compat"
-base_url = "http://localhost:11434/v1"
+kind = "ollama"
+
+[providers.ollama.models."qwen3:1.7b"]
+input_modalities = ["text"]
+tools = true
 
 [profiles.default]
 provider = "ollama"
 model = "qwen3:1.7b"
-# max_tool_rounds = 8
+max_tool_rounds = 8
 ```
 
-See [Configuration](docs/user/configuration.md) for initialization, diagnostics, platform paths, `XANA_HOME`, validation rules, and legacy `config.kv` migration.
+## Add a remote API provider
 
-## CLI and tools
+Keys can be stored in the OS credential manager or referenced through one
+named environment variable. Plaintext keys never belong in `config.toml`.
 
-Bare `xana` creates a durable session and starts multi-turn terminal chat through a configured OpenAI-compatible endpoint. Xana prints the session id and JSONL path. Resume that exact history with `xana --resume SESSION_ID`; Xana never guesses the latest session or replays unfinished work. `/clear` commits an empty thread head without deleting earlier entries, while `/quit`, Ctrl-C, and EOF shut down the foreground runtime. The configured model must support native tool calling to use Xana's tool path.
+```bash
+xana connection add openrouter --kind open-router --model openai/gpt-4.1
+xana connection set-key openrouter
+xana connection refresh openrouter
+xana model use openrouter/openai/gpt-4.1
+xana
+```
 
-For each accepted root turn Xana freezes one `xana-prompt-v1` snapshot: its built-in identity and operating guidelines, a summary of the tools actually registered for that agent, owned runtime and CLI context, and a bounded materialization of a durable root `AGENTS.md` version when present. The snapshot stays fixed across that turn's tool rounds; changed project instructions become a new version on the next root turn. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or plugins yet. See [Project context and system prompt](docs/user/project-context.md).
+Use `--kind open-ai` for the OpenAI API or `--kind anthropic` for Anthropic.
+Anthropic is API-key-only; Xana does not offer Claude subscription OAuth.
 
-The command boundary also provides `xana init`, `xana config path`, `xana config check`, and the read-only `xana session inspect SESSION_ID`. Interrupted effects have a separate read-only `xana operation plan --session SESSION_ID OPERATION_ID` command and explicit `xana operation resume --session SESSION_ID OPERATION_ID` reconciliation command. Opening or resuming chat never triggers recovery. Interactive startup and setup show Xana's terminal mark; `--no-banner` suppresses it, and `NO_COLOR` keeps a monochrome version.
+## Use a ChatGPT subscription through Codex
 
-Xana advertises four workspace tools:
+Install a compatible Codex CLI, then:
 
-- `read_file` reads a regular UTF-8 file or an inclusive one-based line range.
-- `list_files` lists one directory non-recursively as sorted JSON, with limits of 256 entries and 64 KiB of output.
-- `edit_file` replaces exactly one occurrence of text in an existing regular UTF-8 file.
-- `run_command` runs one command through the configured shell from an existing workspace directory. Its permission scope binds the selected shell, exact command, and canonical working directory. Stdout and stderr are each limited to 32 KiB.
+```bash
+xana connection add codex --kind codex --model gpt-5.3-codex
+xana connection status codex
+xana connection login codex
+xana connection refresh codex
+xana model
+xana model use codex/gpt-5.3-codex
+xana
+```
 
-Tool paths must be relative to Xana's launch directory and remain beneath it after resolution. Reads and resulting edits are capped at 64 KiB. The agent loop is bounded to eight model/tool rounds per turn.
+The exact model names come from `codex app-server` and can change with account
+access; select one shown by `xana model list --connection codex`. Login also
+supports `--device-code`. Xana delegates the local OAuth completion to Codex;
+it needs no hosted callback server and never reads Codex's auth file.
 
-Every built-in tool crosses one runtime-owned permission broker. `permission_mode` sets the default to `deny`, `ask`, or `allow`; matching rules use deny-before-ask-before-allow precedence. An ask can be denied, allowed once, or allowed for the exact current-session scope. Decisions bind the final arguments and canonical scope to the active operation and tool invocation, and losing the controlling terminal fails closed. See [Permissions](docs/user/permissions.md).
+## Models and connections
 
-Permission is not containment. Allowed tools use the Xana process's ordinary host access, and policy, path checks, effect classification, and replay-safety metadata are not OS-level isolation. Permission audit facts are durable session records, but grants remain memory-only; `edit_file` does not claim atomic or crash-safe writes.
+The normal model UX is intentionally shallow:
 
-Tool effects are bracketed by durable intent and result records. If Xana stops
-after intent but before result, the outcome is unknown. Only `read_file` and
-`list_files` are eligible for an explicit, currently authorized replay;
-`edit_file` and `run_command` are interrupted without repetition. Recovery may
-prompt again and may require manual reconciliation. It provides process-crash
-record boundaries, not power-loss durability, automatic retry, idempotency, or
-containment. See [Operation recovery](docs/user/operations.md).
+```text
+xana model
+xana model list --connection CONNECTION
+xana model refresh CONNECTION
+xana model use CONNECTION/MODEL
+```
 
-## Documentation
+Inside chat, `/model` lists models and `/model CONNECTION/MODEL` selects one.
+Switching between Xana's native loop and a managed runtime starts a new
+conversation rather than silently translating history.
 
-- [Source installation](docs/user/installation.md) explains supported Cargo
-  installation routes, prerequisites, platform homes, updates, and uninstall.
-- [Configuration](docs/user/configuration.md) is the user reference.
-- [Project context and system prompt](docs/user/project-context.md) explains root `AGENTS.md`, prompt layers, budgets, and trust boundaries.
-- [Permissions](docs/user/permissions.md) explains policy precedence, scopes, controller decisions, and host-access limits.
-- [Sessions](docs/user/sessions.md) explains durable history, explicit resume, artifact paths, inspection, corruption, and backup limits.
-- [Operation recovery](docs/user/operations.md) explains crash-safe intent,
-  read-only plans, explicit replay, and interruption behavior.
-- [Documentation index](docs/README.md) separates user and engineering material and explains its authority model.
-- [Architecture](docs/architecture/README.md) describes what Xana is and how the implemented system works.
-- [Design Principles](docs/principles.md) defines durable constraints for future changes.
+Use `xana connection list|add|status|set-key|delete-key|login|logout|refresh|remove`
+for advanced connection and credential control. See
+[Configuration](docs/user/configuration.md) for exact commands, provider kinds,
+catalogs, OS credential storage, and `XANA_HOME`.
 
-## Development
+## Chat, tools, and images
 
-Install the stable Rust toolchain, then run:
+Bare `xana` starts terminal chat. Native conversations create a durable JSONL
+session; resume one explicitly with `xana --resume SESSION_ID`. `/clear` moves
+to a new empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF
+shut down the foreground runtime.
+
+The capability-resolved native tool snapshot contains:
+
+- `read_file`: bounded UTF-8 file/range reads;
+- `list_files`: bounded sorted non-recursive listings;
+- `edit_file`: one exact replacement in an existing bounded UTF-8 file;
+- `run_command`: configured-shell execution with independently bounded stdout
+  and stderr;
+- `read_document`: bounded UTF-8 or CSV-to-Markdown extraction; and
+- `xana_docs`: bounded reads from Xana's curated, version-matched docs.
+
+Every effect crosses Xana's permission broker. Permission is not containment:
+allowed native tools use the process's ordinary host access. Codex-managed
+turns use Codex's own tools/sandbox and Xana projects command/file approval
+requests into the terminal.
+
+Use `/attach WORKSPACE_RELATIVE_IMAGE` to stage PNG, JPEG, or GIF input. Xana
+keeps immutable artifact references, enforces file/pixel/count/aggregate
+budgets, preserves attachment order, and fails closed unless the selected
+model advertises image input. OpenAI-compatible and Anthropic bytes are
+resolved only at the provider wire edge; Codex receives checked workspace
+paths.
+
+## Prompt, context, and recovery
+
+Each native root turn freezes one versioned system-prompt snapshot containing
+Xana's built-in identity/guidelines, the actual tool catalog, runtime context,
+a concise reference to `xana_docs`, and a bounded durable root `AGENTS.md` view
+when present. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or
+plugins yet.
+
+Native tool intents and results are durably bracketed. Session resume performs
+no automatic recovery; use `xana operation plan` and explicit `xana operation
+resume` for eligible safe reads. See [Project context](docs/user/project-context.md),
+[Permissions](docs/user/permissions.md), [Sessions](docs/user/sessions.md), and
+[Operation recovery](docs/user/operations.md).
+
+## Documentation and development
+
+- [Documentation index](docs/README.md)
+- [Architecture](docs/architecture/README.md)
+- [Connections, models, and managed runtimes](docs/architecture/models-and-managed-runtimes.md)
+- [Design principles](docs/principles.md)
+
+Required checks:
 
 ```text
 cargo fmt --all --check
@@ -114,8 +182,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets --all-features
 ```
 
-See [Code organization](docs/development/code-organization.md) for repository policy.
-
 ## License
 
-MIT — see [LICENSE](./LICENSE).
+MIT - see [LICENSE](./LICENSE).

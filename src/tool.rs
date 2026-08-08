@@ -6,9 +6,11 @@
 
 mod edit_file;
 mod list_files;
+mod read_document;
 mod read_file;
 mod run_command;
 mod workspace_path;
+mod xana_docs;
 
 use crate::identity::{OperationId, ToolInvocationId};
 use crate::message::{ToolCall, ToolResult};
@@ -24,8 +26,14 @@ use std::error::Error;
 use std::fmt;
 use std::path::Path;
 
-pub(crate) const BUILTIN_TOOL_NAMES: &[&str] =
-    &["read_file", "list_files", "edit_file", "run_command"];
+pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "list_files",
+    "edit_file",
+    "run_command",
+    "read_document",
+    "xana_docs",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +151,7 @@ pub(crate) struct ToolContext<'a> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RegistryError {
     DuplicateName { name: &'static str },
+    Composition(String),
 }
 
 impl fmt::Display for RegistryError {
@@ -151,6 +160,7 @@ impl fmt::Display for RegistryError {
             Self::DuplicateName { name } => {
                 write!(f, "tool {name:?} is already registered")
             }
+            Self::Composition(reason) => write!(f, "could not compose tool capabilities: {reason}"),
         }
     }
 }
@@ -254,11 +264,27 @@ impl ToolRegistry {
     }
 
     pub(crate) fn builtins(shell: Shell) -> Result<Self, RegistryError> {
+        let exposed = crate::capability::resolve_builtin_tool_names()
+            .map_err(|error| RegistryError::Composition(error.to_string()))?;
         let mut registry = Self::new();
-        registry.register(read_file::ReadFile)?;
-        registry.register(list_files::ListFiles)?;
-        registry.register(edit_file::EditFile)?;
-        registry.register(run_command::RunCommand::new(shell))?;
+        if exposed.contains("read_file") {
+            registry.register(read_file::ReadFile)?;
+        }
+        if exposed.contains("list_files") {
+            registry.register(list_files::ListFiles)?;
+        }
+        if exposed.contains("edit_file") {
+            registry.register(edit_file::EditFile)?;
+        }
+        if exposed.contains("run_command") {
+            registry.register(run_command::RunCommand::new(shell))?;
+        }
+        if exposed.contains("read_document") {
+            registry.register(read_document::ReadDocument::default())?;
+        }
+        if exposed.contains("xana_docs") {
+            registry.register(xana_docs::XanaDocs)?;
+        }
         Ok(registry)
     }
 
