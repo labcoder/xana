@@ -52,7 +52,10 @@ flowchart TD
 Control-plane catalog refresh is explicit. Native startup reads only configured
 and cached non-secret metadata. A managed Codex chat performs a bounded live
 `model/list` negotiation before accepting turns so the selected model and its
-reasoning options match the running app-server/account. Implemented sources
+reasoning options match the running app-server/account. Xana caches that
+bounded non-secret live result before compatibility validation. An unavailable
+selection therefore fails with bounded advertised choices and can be repaired
+immediately with `model use`, without a redundant refresh. Implemented sources
 are Ollama `/api/tags`, OpenAI and
 custom `/v1/models`, OpenRouter `/api/v1/models/user`, Anthropic `/v1/models`,
 and Codex `model/list`. Remote claims and explicit overrides are merged by

@@ -46,16 +46,18 @@ accepted:
 xana init --non-interactive \
   --kind codex \
   --provider-name codex \
-  --model gpt-5.6-sol \
+  --model ADVERTISED_MODEL_ID \
   --permission-mode ask
 ```
 
 `--codex-program PROGRAM` overrides the executable; `--codex-home PATH`
 selects an absolute isolated `CODEX_HOME`. Otherwise Xana launches `codex` and
 shares the normal Codex home. After interactive setup, use the printed
-`connection status`, `connection login`, `connection refresh`, and `model
-list` commands. Status is the first executable/runtime check; login remains an
-explicit account-changing action delegated to Codex.
+`connection status`, `connection login`, `connection refresh`, `model list`,
+and `model use` commands. The initial ID is verified against Codex's live
+catalog before managed chat; replace it with an advertised ID when necessary.
+Status is the first executable/runtime check; login remains an explicit
+account-changing action delegated to Codex.
 
 ## Connections and models
 
@@ -66,7 +68,7 @@ xana model
 xana model list --connection openrouter
 xana model refresh openrouter
 xana model use openrouter/openai/gpt-4.1
-xana model use codex/gpt-5.3-codex --effort high --summary auto
+xana model use codex/ADVERTISED_MODEL_ID --effort high --summary auto
 ```
 
 Catalog refresh is explicit and caches only bounded non-secret metadata.
@@ -140,18 +142,19 @@ environment bearer credential.
 Install the Codex CLI and log it in normally, or let Xana delegate login:
 
 ```bash
-xana connection add codex --kind codex --model gpt-5.3-codex
+xana connection add codex --kind codex --model ADVERTISED_MODEL_ID
 xana connection status codex
 xana connection login codex
 # Headless alternative:
 xana connection login codex --device-code
 xana connection refresh codex
-xana model use codex/gpt-5.3-codex
+xana model use codex/ADVERTISED_MODEL_ID
 xana
 ```
 
-The exact model must be advertised by the installed Codex app-server; use
-`xana model list --connection codex` after refresh. Xana launches `codex
+Replace `ADVERTISED_MODEL_ID` with an exact ID advertised by the installed
+Codex app-server; use `xana model list --connection codex` after refresh. No
+model name in this document is an availability promise. Xana launches `codex
 app-server --stdio`. Codex owns browser/device login, token storage and
 refresh, inference, tools, sandbox, approvals, and inner thread history. Xana
 never reads or copies Codex's auth file and needs no hosted OAuth callback
@@ -217,7 +220,7 @@ kind = "codex"
 codex_program = "codex"
 # codex_home = "C:/absolute/isolated/codex-home"
 
-[providers.codex.models."gpt-5.3-codex"]
+[providers.codex.models."ADVERTISED_MODEL_ID"]
 
 [profiles.default]
 provider = "ollama"

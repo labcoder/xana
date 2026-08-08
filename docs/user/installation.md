@@ -120,9 +120,25 @@ xana config check
 
 Interactive setup can instead create a managed Codex connection for a
 ChatGPT subscription. Install the Codex CLI, choose that option, then follow
-the printed status, login, model refresh, and model list commands. Xana
-delegates OAuth and credential storage to Codex; it does not need a hosted
-callback server.
+the printed status, login, model refresh, model list, and model use commands.
+Codex model IDs depend on the installed runtime and account, so the initial ID
+is provisional until that live check. Xana delegates OAuth and credential
+storage to Codex; it does not need a hosted callback server.
+
+When developing from this checkout, pass Xana arguments after Cargo's `--`:
+
+```bash
+cargo run -- connection status codex
+cargo run -- connection login codex
+cargo run -- connection refresh codex
+cargo run -- model list --connection codex
+cargo run -- model use codex/ADVERTISED_MODEL_ID
+cargo run
+```
+
+Alternatively, `cargo install --path crates/xana-cli --locked` installs the
+`xana` command used throughout the documentation. `cargo init` is Cargo's
+command for creating a new Rust package; it does not initialize Xana.
 
 See [Configuration](configuration.md) for paths and schema,
 [Permissions](permissions.md) for host authority, [Project context and system

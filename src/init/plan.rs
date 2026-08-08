@@ -272,7 +272,7 @@ fn plan_interactive<R: BufRead, W: Write>(
     };
 
     let model_prompt = if connection.is_codex() {
-        "Model (for example gpt-5.6-sol): "
+        "Initial model ID (verified against Codex after setup): "
     } else {
         "Model (for example qwen3:1.7b): "
     };
@@ -652,7 +652,7 @@ mod tests {
     #[test]
     fn interactive_codex_flow_builds_a_managed_connection() {
         let (plan, transcript) =
-            scripted_plan("2\n\n\ngpt-5.6-sol\n\n\n\n\ny\n").expect("Codex setup plan");
+            scripted_plan("2\n\n\nadvertised-model\n\n\n\n\ny\n").expect("Codex setup plan");
 
         assert_eq!(
             plan,
@@ -662,7 +662,7 @@ mod tests {
                     program: "codex".to_owned(),
                     home: None,
                 },
-                model: "gpt-5.6-sol".to_owned(),
+                model: "advertised-model".to_owned(),
                 max_tool_rounds: 8,
                 shell: ShellConfig::default(),
                 permission_mode: PermissionMode::Ask,
@@ -670,6 +670,8 @@ mod tests {
         );
         assert!(transcript.contains("ChatGPT subscription through Codex"));
         assert!(transcript.contains("Codex executable [codex]:"));
+        assert!(transcript.contains("Initial model ID (verified against Codex after setup):"));
+        assert!(!transcript.contains("for example gpt-"));
         assert!(transcript.contains("Kind:                managed Codex"));
     }
 
