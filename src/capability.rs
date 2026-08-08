@@ -7,10 +7,9 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    sync::Arc,
 };
 
-use xana_core::{AgentCapabilitySnapshot, CapabilityId, LogicalToolId, Tool, ToolRegistry};
+use xana_core::{AgentCapabilitySnapshot, CapabilityId, LogicalToolId};
 
 const BUILTIN_CAPABILITIES: &[(&str, &str)] = &[
     ("fs.read", "read_file"),
@@ -81,7 +80,6 @@ pub struct CapabilityDescriptor {
 pub struct ToolContribution {
     pub id: LogicalToolId,
     pub capability: CapabilityId,
-    pub implementation: Arc<dyn Tool>,
 }
 
 #[derive(Clone)]
@@ -291,7 +289,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
     }
 
     let mut tool_providers = BTreeMap::<LogicalToolId, Vec<ProviderId>>::new();
-    let mut tool_impls = BTreeMap::<LogicalToolId, Arc<dyn Tool>>::new();
+    let mut tool_ids = BTreeSet::<LogicalToolId>::new();
     for provider in &providers {
         for tool in &provider.tools {
             if !resolved.contains(&tool.capability) {
@@ -301,9 +299,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
                 .entry(tool.id.clone())
                 .or_default()
                 .push(provider.provider_id.clone());
-            tool_impls
-                .entry(tool.id.clone())
-                .or_insert_with(|| Arc::clone(&tool.implementation));
+            tool_ids.insert(tool.id.clone());
         }
     }
     for (id, providers) in &tool_providers {
@@ -315,10 +311,8 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
         }
     }
 
-    let tools = ToolRegistry::new(tool_impls.into_values().collect())
-        .map_err(ResolutionError::InvalidProvider)?;
     Ok(ResolvedCapabilities {
-        snapshot: AgentCapabilitySnapshot::new(resolved, tools),
+        snapshot: AgentCapabilitySnapshot::new(resolved, tool_ids),
         unavailable,
     })
 }
@@ -342,9 +336,8 @@ pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, Resolutio
             optional: Vec::new(),
         });
         tools.push(ToolContribution {
-            id: tool_id.clone(),
+            id: tool_id,
             capability,
-            implementation: Arc::new(BuiltinMarkerTool { id: tool_id }),
         });
     }
     let resolved = resolve(ResolutionInput {
@@ -358,60 +351,15 @@ pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, Resolutio
     })?;
     Ok(resolved
         .snapshot
-        .tool_definitions()
-        .into_iter()
-        .map(|definition| definition.name.to_string())
+        .tool_ids()
+        .iter()
+        .map(ToString::to_string)
         .collect())
-}
-
-struct BuiltinMarkerTool {
-    id: LogicalToolId,
-}
-
-impl Tool for BuiltinMarkerTool {
-    fn definition(&self) -> xana_core::ToolDefinition {
-        xana_core::ToolDefinition {
-            name: self.id.clone(),
-            contract_version: 1,
-            description: "runtime-owned built-in capability marker".into(),
-            parameters: serde_json::json!({"type":"object"}),
-            effect_class: xana_core::EffectClass::Read,
-            replay_safety: xana_core::ReplaySafety::Safe,
-        }
-    }
-
-    fn invoke<'a>(
-        &'a self,
-        _: &'a serde_json::Value,
-    ) -> futures::future::BoxFuture<'a, Result<String, String>> {
-        Box::pin(async { Err("capability markers are not executable".into()) })
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::future::BoxFuture;
-    use serde_json::json;
-
-    struct FakeTool {
-        id: LogicalToolId,
-    }
-    impl Tool for FakeTool {
-        fn definition(&self) -> xana_core::ToolDefinition {
-            xana_core::ToolDefinition {
-                name: self.id.clone(),
-                contract_version: 1,
-                description: "fake".into(),
-                parameters: json!({"type":"object"}),
-                effect_class: xana_core::EffectClass::Read,
-                replay_safety: xana_core::ReplaySafety::Safe,
-            }
-        }
-        fn invoke<'a>(&'a self, _: &'a serde_json::Value) -> BoxFuture<'a, Result<String, String>> {
-            Box::pin(async { Ok("ok".into()) })
-        }
-    }
     fn id(value: &str) -> CapabilityId {
         CapabilityId::parse(value).unwrap()
     }
@@ -532,9 +480,6 @@ mod tests {
             tools: vec![ToolContribution {
                 id: tool_id.clone(),
                 capability: id(capability_name),
-                implementation: Arc::new(FakeTool {
-                    id: tool_id.clone(),
-                }),
             }],
         };
         let result = resolve(ResolutionInput {
