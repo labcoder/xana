@@ -43,6 +43,25 @@ xana --version
 xana --help
 ```
 
+For a repeatable isolated smoke test, use the repository helper with a
+temporary or dedicated install prefix:
+
+```bash
+scripts/run-isolated.sh /tmp/xana-install --version
+scripts/run-isolated.sh /tmp/xana-install init \
+  --non-interactive \
+  --provider-name ollama \
+  --base-url http://localhost:11434/v1 \
+  --model qwen3:1.7b \
+  --permission-mode ask
+```
+
+The helper installs from the checkout with `--locked`, runs the installed
+binary from an empty temporary workspace, and supplies a temporary
+`XANA_HOME`. Its temporary configuration, sessions, artifacts, and workspace
+are removed when the command exits. The install prefix is retained so a later
+invocation can rebuild it; it is safe to remove that prefix when finished.
+
 ## Choose Xana's home
 
 An unset `XANA_HOME` uses platform-standard directories. When set, it must be
