@@ -83,7 +83,8 @@ The provider-neutral conversation model carries ordered text, tool-call, and
 tool-result content. Provider request and response shapes remain private to
 their adapter. The OpenAI-compatible adapter separates its wire structs,
 conversion rules, asynchronous streaming HTTP client, and captured response
-and stream fixtures.
+and stream fixtures. The focused OpenRouter and Anthropic Messages contracts
+and their private wire adapters are described in [Provider contracts](providers.md).
 
 The OpenAI-compatible adapter incrementally decodes bounded SSE bytes. It
 supports arbitrary chunk boundaries, LF and CRLF frames, comments, multi-line

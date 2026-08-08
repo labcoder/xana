@@ -200,6 +200,7 @@ fn captured_tool_stream_can_be_followed_by_a_tool_result_request() {
             .collect::<Result<Vec<_>, _>>()
             .expect("representable tool-result history"),
         stream: true,
+        max_output_tokens: None,
         tools: Vec::new(),
     };
     let value = serde_json::to_value(request).expect("request JSON");

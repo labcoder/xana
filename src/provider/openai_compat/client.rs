@@ -100,6 +100,8 @@ pub(crate) struct OpenAiCompatClient {
     client: Client,
     endpoint: String,
     model: String,
+    bearer_token: Option<String>,
+    attribution: Vec<(String, String)>,
 }
 
 impl OpenAiCompatClient {
@@ -110,7 +112,30 @@ impl OpenAiCompatClient {
             client: Client::new(),
             endpoint,
             model,
+            bearer_token: None,
+            attribution: Vec::new(),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn with_bearer_and_attribution(
+        base_url: String,
+        model: String,
+        bearer_token: String,
+        referer: Option<String>,
+        title: Option<String>,
+    ) -> Self {
+        let mut client = Self::new(base_url, model);
+        client.bearer_token = Some(bearer_token);
+        if let Some(referer) = referer {
+            client
+                .attribution
+                .push(("HTTP-Referer".to_owned(), referer));
+        }
+        if let Some(title) = title {
+            client.attribution.push(("X-Title".to_owned(), title));
+        }
+        client
     }
 
     pub(crate) fn endpoint(&self) -> &str {
@@ -121,6 +146,7 @@ impl OpenAiCompatClient {
         &self,
         messages: &[Message],
         tools: &[&ToolDefinition],
+        max_output_tokens: Option<usize>,
         step_id: StepId,
         deltas: &dyn DeltaSink,
     ) -> Result<Message, OpenAiCompatError> {
@@ -134,6 +160,7 @@ impl OpenAiCompatClient {
             model: &self.model,
             messages: wire_messages,
             stream: true,
+            max_output_tokens,
             tools: tools
                 .iter()
                 .map(|definition| WireToolDefinition::from(*definition))
@@ -143,6 +170,24 @@ impl OpenAiCompatClient {
         let response = self
             .client
             .post(&self.endpoint)
+            .headers({
+                let mut headers = reqwest::header::HeaderMap::new();
+                if let Some(token) = &self.bearer_token
+                    && let Ok(value) =
+                        reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))
+                {
+                    headers.insert(reqwest::header::AUTHORIZATION, value);
+                }
+                for (name, value) in &self.attribution {
+                    if let (Ok(name), Ok(value)) = (
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes()),
+                        reqwest::header::HeaderValue::from_str(value),
+                    ) {
+                        headers.insert(name, value);
+                    }
+                }
+                headers
+            })
             .json(&request)
             .send()
             .await
@@ -218,7 +263,20 @@ impl OpenAiCompatClient {
             fn text_delta(&self, _step_id: StepId, _text: &str) {}
         }
 
-        self.stream_message_inner(messages, tools, StepId::new(), &IgnoreDeltas)
+        self.stream_message_inner(messages, tools, None, StepId::new(), &IgnoreDeltas)
+            .await
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn stream_message_with_options(
+        &self,
+        messages: &[Message],
+        tools: &[&ToolDefinition],
+        max_output_tokens: Option<usize>,
+        step_id: StepId,
+        deltas: &dyn DeltaSink,
+    ) -> Result<Message, OpenAiCompatError> {
+        self.stream_message_inner(messages, tools, max_output_tokens, step_id, deltas)
             .await
     }
 }
@@ -232,7 +290,7 @@ impl ChatTransport for OpenAiCompatClient {
         deltas: &'a dyn DeltaSink,
     ) -> BoxFuture<'a, Result<Message, ChatError>> {
         Box::pin(async move {
-            self.stream_message_inner(messages, tools, step_id, deltas)
+            self.stream_message_inner(messages, tools, None, step_id, deltas)
                 .await
                 .map_err(|error| ChatError::new(error.to_string()))
         })

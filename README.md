@@ -13,6 +13,7 @@ a checkout:
 git clone https://github.com/labcoder/xana.git
 cd xana
 cargo install --path . --locked
+xana --version
 xana init
 xana config check
 xana
@@ -31,6 +32,10 @@ Rust and shell prerequisites, platform-correct `XANA_HOME` examples, updates,
 and uninstall instructions.
 
 The initializer offers local Ollama or a custom unauthenticated OpenAI-compatible endpoint, asks which shell `run_command` should use, and selects `deny`, `ask`, or `allow` permission behavior with `ask` as the human default. It validates the resulting document and creates `config.toml` without replacing an existing file. Before writing, it explains that tools use the user's host permissions and asks for confirmation.
+
+The workspace also contains the focused `xana-core` contracts and the
+`xana-cli` package. Provider adapters keep OpenRouter and Anthropic wire
+formats private; their credentials are injected by the runtime edge.
 
 ## Configuration
 
