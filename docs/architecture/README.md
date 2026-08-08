@@ -144,8 +144,13 @@ Root context refresh occurs only when a new turn is accepted. Unchanged bytes
 reuse the version; changed bytes append one artifact/context version; a missing
 live source does not erase the prior version. Opening or inspecting a session
 does not read live project files. Xana has no general context service, native
-context plan, or prompt compaction. The logical `xana.docs.read` capability
-and `xana_docs` tool are also absent.
+context plan, or prompt compaction. The bounded catalog and `xana_docs` tool
+exist as runtime composition services; the default foreground composition does
+not yet advertise them in the prompt.
+
+Image attachments are reference-based and artifact-backed; see
+[Image input and media resolution](vision.md). The current Anthropic adapter
+rejects image blocks until its provider-specific conversion is accepted.
 
 ## Session and artifact boundary
 

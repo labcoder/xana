@@ -2122,6 +2122,7 @@ version = "0.2.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "base64",
  "blake3",
  "clap",
  "csv",

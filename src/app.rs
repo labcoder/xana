@@ -6,6 +6,7 @@
 
 use crate::{
     agent::Agent,
+    artifact::ArtifactStore,
     cli::{self, AuthCommand, Cli, Command, ConfigCommand, OperationCommand, SessionCommand},
     config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
@@ -162,6 +163,7 @@ async fn execute_recovery_command<W: Write>(
             write_recovery_plan(output, session_id, &operation, &actions)
         }
         RuntimeCommand::SubmitTurn { .. }
+        | RuntimeCommand::SubmitTurnWithImages { .. }
         | RuntimeCommand::ClearConversation
         | RuntimeCommand::DecidePermission { .. }
         | RuntimeCommand::Shutdown => {
@@ -346,7 +348,7 @@ async fn run_default(
     let agent = Agent::new(
         Box::new(provider),
         tools,
-        workspace_root,
+        workspace_root.clone(),
         prompt,
         max_tool_rounds,
     );
@@ -364,6 +366,9 @@ async fn run_default(
         resumed,
         repair_truncate_to,
         unfinished,
+        workspace_root: workspace_root.clone(),
+        artifact_store: ArtifactStore::new(paths.data_dir().join("artifacts")),
+        owner: crate::identity::PrincipalId::new(),
     };
 
     terminal::run_chat(runtime, header).await

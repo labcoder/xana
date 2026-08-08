@@ -35,6 +35,9 @@ pub(super) fn estimate_message_tokens(message: &Message) -> usize {
     for block in &message.content {
         tokens += match block {
             ContentBlock::Text(text) => estimate_tokens(text),
+            ContentBlock::Image(image) => {
+                estimate_tokens(&format!("[image:{} bytes]", image.byte_len))
+            }
             ContentBlock::ToolCall(call) => {
                 estimate_tokens(&call.id)
                     + estimate_tokens(&call.name)

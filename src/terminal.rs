@@ -4,10 +4,12 @@
 //! does not own conversation history or call providers and tools directly.
 
 use crate::{
-    identity::{OperationId, SessionId, ToolInvocationId},
+    artifact::ArtifactStore,
+    identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
+    vision::{ImageIngestor, ImageLimits, PendingImages},
 };
 use anyhow::{Context, Result, bail};
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -24,18 +26,26 @@ pub(crate) struct ChatHeader {
     pub(crate) resumed: bool,
     pub(crate) repair_truncate_to: Option<u64>,
     pub(crate) unfinished: Vec<(OperationId, OperationState)>,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) artifact_store: ArtifactStore,
+    pub(crate) owner: PrincipalId,
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum InputAction<'a> {
     Quit,
     Clear,
+    Attach(&'a str),
     Ignore,
     Send(&'a str),
 }
 
 fn classify_input(line: &str) -> InputAction<'_> {
-    match line.trim() {
+    let trimmed = line.trim();
+    if let Some(path) = trimmed.strip_prefix("/attach") {
+        return InputAction::Attach(path.trim());
+    }
+    match trimmed {
         "/quit" => InputAction::Quit,
         "/clear" => InputAction::Clear,
         "" => InputAction::Ignore,
@@ -48,6 +58,9 @@ fn write_assistant<W: Write>(output: &mut W, message: &Message) -> io::Result<()
     for block in &message.content {
         match block {
             ContentBlock::Text(text) => write!(output, "{text}")?,
+            ContentBlock::Image(image) => {
+                write!(output, "[image attached: {} bytes]", image.byte_len)?
+            }
             ContentBlock::ToolCall(tool_call) => {
                 write!(output, "[tool call requested: {}]", tool_call.name)?;
             }
@@ -171,6 +184,7 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let stdout = anstream::stdout();
     let mut renderer = EventRenderer::new(stdout.lock());
+    let mut pending_images = PendingImages::default();
 
     loop {
         match editor.readline("you> ") {
@@ -180,8 +194,30 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
                     break;
                 }
                 InputAction::Clear => {
+                    let cleared_images = pending_images.clear();
+                    if cleared_images > 0 {
+                        println!("xana> cleared {cleared_images} pending image attachment(s)");
+                    }
                     runtime.send(RuntimeCommand::ClearConversation).await?;
                     render_until_clear_result(&mut runtime, &mut renderer).await?;
+                }
+                InputAction::Attach(path) => {
+                    if path.is_empty() {
+                        println!("xana> usage: /attach WORKSPACE_RELATIVE_IMAGE_PATH");
+                        continue;
+                    }
+                    match ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
+                        .ingest_path(&header.workspace_root, path, header.owner)
+                    {
+                        Ok(attachment) => {
+                            pending_images.push(attachment);
+                            println!(
+                                "xana> staged image {path} ({} pending)",
+                                pending_images.len()
+                            );
+                        }
+                        Err(error) => println!("xana> could not attach {path}: {error}"),
+                    }
                 }
                 InputAction::Ignore => {}
                 InputAction::Send(input) => {
@@ -190,12 +226,24 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
                         .context("could not add input to editor history")?;
 
                     let operation_id = OperationId::new();
-                    runtime
-                        .send(RuntimeCommand::SubmitTurn {
+                    let images = pending_images
+                        .take_for_turn()
+                        .into_iter()
+                        .map(|attachment| attachment.image)
+                        .collect::<Vec<_>>();
+                    let command = if images.is_empty() {
+                        RuntimeCommand::SubmitTurn {
                             operation_id,
                             input: input.to_owned(),
-                        })
-                        .await?;
+                        }
+                    } else {
+                        RuntimeCommand::SubmitTurnWithImages {
+                            operation_id,
+                            input: input.to_owned(),
+                            images,
+                        }
+                    };
+                    runtime.send(command).await?;
                     render_operation(&mut runtime, &mut renderer, operation_id).await?;
                 }
             },
@@ -334,6 +382,11 @@ mod tests {
             InputAction::Send("hello Xana")
         );
         assert_eq!(classify_input("clear"), InputAction::Send("clear"));
+        assert_eq!(
+            classify_input("/attach assets/photo.png"),
+            InputAction::Attach("assets/photo.png")
+        );
+        assert_eq!(classify_input("/attach"), InputAction::Attach(""));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! Provider adapters translate these ordered content blocks at their private
 //! wire boundary. Durable sessions will also record these internal types.
 
+use crate::vision::ImageRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -54,6 +55,7 @@ impl ToolResult {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ContentBlock {
     Text(String),
+    Image(ImageRef),
     ToolCall(ToolCall),
     ToolResult(ToolResult),
 }

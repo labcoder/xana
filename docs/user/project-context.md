@@ -23,10 +23,10 @@ Xana assembles available layers in this order:
 6. the active CLI surface; and
 7. a bounded preview of root `AGENTS.md`, when present.
 
-The normal developer preview has no bundled product-documentation capability,
-so layer 3 is omitted. Xana does not claim it can read its installed
-documentation. A bounded `xana.docs.read` capability and its `xana_docs` tool
-are not implemented yet.
+The default foreground composition does not yet advertise the bundled
+documentation capability in layer 3. The runtime catalog itself is bounded and
+explicit; it never walks the filesystem or claims to describe the user's
+project.
 
 Exact machine-readable tool schemas remain a separate provider request field.
 The human-readable catalog and schemas both come from the same immutable tool
@@ -37,6 +37,19 @@ display name, kind, origin, trust class, optional relative path, and truncation
 flag. Dynamic attributes and bodies are XML-escaped so project text cannot
 forge another source boundary. The labels make provenance legible; they are
 not a security boundary.
+
+## Image attachments
+
+Use `/attach WORKSPACE_RELATIVE_IMAGE_PATH` before a turn to stage a PNG, JPEG,
+or GIF image. Xana validates the path, file type, byte limit, and pixel limit,
+then stores immutable artifact bytes and keeps only an image reference in the
+pending turn. `/clear` also clears pending attachments and reports how many it
+removed. Sending a turn consumes staged attachments exactly once.
+
+The model must advertise image input support before media can cross a provider
+boundary. OpenAI-compatible image encoding is bounded and performed at the
+wire edge; the current Anthropic adapter rejects images explicitly. Xana does
+not fetch image URLs, run OCR, generate images, or display terminal graphics.
 
 ## Root `AGENTS.md`
 

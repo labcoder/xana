@@ -187,6 +187,16 @@ impl Runtime {
                 operation_id,
                 input,
             } => {
+                self.start_turn(operation_id, input, Vec::new()).await;
+            }
+            RuntimeCommand::SubmitTurnWithImages {
+                operation_id,
+                input,
+                images,
+            } => {
+                self.start_turn(operation_id, input, images).await;
+            }
+            /*
                 if input.trim().is_empty() {
                     self.emit(AgentEvent::CommandRejected {
                         reason: "turn input must not be blank".to_owned(),
@@ -300,6 +310,7 @@ impl Runtime {
                     task,
                 });
             }
+            */
             RuntimeCommand::ClearConversation => {
                 if self.active.is_some() {
                     self.emit(AgentEvent::CommandRejected {
@@ -346,6 +357,129 @@ impl Runtime {
             }
         }
         false
+    }
+
+    async fn start_turn(
+        &mut self,
+        operation_id: OperationId,
+        input: String,
+        images: Vec<crate::vision::ImageRef>,
+    ) {
+        if input.trim().is_empty() {
+            self.emit(AgentEvent::CommandRejected {
+                reason: "turn input must not be blank".to_owned(),
+            });
+            return;
+        }
+        if let Some(active) = &self.active {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!(
+                    "operation {} is already active; only one root turn may run",
+                    active.operation_id
+                ),
+            });
+            return;
+        }
+
+        let agent = Arc::clone(&self.agent);
+        let permissions = self.permissions.clone();
+        let events = self.events.clone();
+        let completions = self.completion_sender.clone();
+        let conversation_committer = self.conversation_committer.clone();
+        let durable_operation_sender = self.durable_operation_sender.clone();
+        let prompt = match self.prepare_turn_prompt() {
+            Ok(prompt) => prompt,
+            Err(reason) => {
+                self.emit(AgentEvent::CommandRejected { reason });
+                return;
+            }
+        };
+        let mut content = vec![crate::message::ContentBlock::Text(input)];
+        content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
+        let user_message = Message {
+            role: Role::User,
+            content,
+        };
+        let input_entry_id = if let Some(session) = &mut self.session {
+            match session.append_message(user_message.clone()) {
+                Ok(entry_id) => Some(entry_id),
+                Err(error) => {
+                    self.emit(AgentEvent::CommandRejected {
+                        reason: format!("could not commit user conversation entry: {error:#}"),
+                    });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.history.push(user_message);
+        let mut history = self.history.clone();
+        if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
+            if let Err(error) = session.append_record(SessionRecord::OperationAccepted {
+                operation_id,
+                thread_id: session.thread_id(),
+                input_entry_id,
+            }) {
+                self.emit(AgentEvent::CommandRejected {
+                    reason: format!("could not commit operation acceptance: {error:#}"),
+                });
+                return;
+            }
+            if let Err(error) = self
+                .agent
+                .observe_boundary(CrashSite::AfterOperationAccepted)
+            {
+                self.emit(AgentEvent::CommandRejected {
+                    reason: format!("operation stopped at accepted boundary: {error:#}"),
+                });
+                return;
+            }
+        }
+        self.emit(AgentEvent::OperationStateChanged {
+            operation_id,
+            state: OperationState::Running,
+        });
+        let persist_from = history.len();
+        let task = tokio::spawn(async move {
+            let result = match prompt {
+                Some(prompt) => {
+                    agent
+                        .run_turn_with_prompt(
+                            operation_id,
+                            &mut history,
+                            &prompt,
+                            permissions,
+                            events,
+                            Some(DurableTurnServices::new(
+                                conversation_committer,
+                                durable_operation_sender,
+                            )),
+                        )
+                        .await
+                }
+                None => {
+                    agent
+                        .run_turn(operation_id, &mut history, permissions, events)
+                        .await
+                }
+            }
+            .map_err(|error| error.to_string());
+            if let Ok(message) = &result {
+                history.push(message.clone());
+            }
+            let _ = completions.send(OperationCompletion {
+                operation_id,
+                history,
+                result,
+            });
+        });
+        self.active = Some(ActiveOperation {
+            operation_id,
+            persist_from,
+            progress_committed: self.session.is_some(),
+            task,
+        });
     }
 
     fn handle_completion(&mut self, completion: OperationCompletion) {

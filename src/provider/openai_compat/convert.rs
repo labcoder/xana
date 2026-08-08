@@ -13,6 +13,7 @@ use std::{error::Error, fmt};
 #[derive(Debug)]
 pub(super) enum MessageConversionError {
     TextAfterToolCall,
+    UnsupportedImage,
     InvalidToolArguments {
         tool_call_id: String,
         source: serde_json::Error,
@@ -32,6 +33,9 @@ impl fmt::Display for MessageConversionError {
                     f,
                     "text after a tool call cannot be represented by this adapter"
                 )
+            }
+            Self::UnsupportedImage => {
+                f.write_str("image input requires a media resolver at the wire edge")
             }
             Self::InvalidToolArguments {
                 tool_call_id,
@@ -57,6 +61,7 @@ impl Error for MessageConversionError {
         match self {
             Self::InvalidToolArguments { source, .. } => Some(source),
             Self::TextAfterToolCall
+            | Self::UnsupportedImage
             | Self::UnexpectedResponseRole(_)
             | Self::InvalidMessageShape { .. } => None,
         }
@@ -196,6 +201,7 @@ impl TryFrom<&Message> for WireMessage {
                     saw_tool_call = true;
                     tool_calls.push(WireToolCall::from(tool_call));
                 }
+                ContentBlock::Image(_) => return Err(MessageConversionError::UnsupportedImage),
                 ContentBlock::ToolResult(_) => {
                     return Err(MessageConversionError::InvalidMessageShape {
                         role: message.role,

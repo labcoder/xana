@@ -12,6 +12,11 @@ pub(crate) enum RuntimeCommand {
         operation_id: OperationId,
         input: String,
     },
+    SubmitTurnWithImages {
+        operation_id: OperationId,
+        input: String,
+        images: Vec<crate::vision::ImageRef>,
+    },
     ClearConversation,
     ResumeOperation {
         session_id: SessionId,

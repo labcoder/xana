@@ -99,6 +99,11 @@ fn convert_messages<'a>(
                 for block in &message.content {
                     match block {
                         ContentBlock::Text(text) => system.push(text.as_str()),
+                        ContentBlock::Image(_) => {
+                            return Err(AnthropicConversionError::UnsupportedBlock(
+                                "image (Anthropic image stretch is not enabled)",
+                            ));
+                        }
                         _ => return Err(AnthropicConversionError::MissingSystemText),
                     }
                 }
@@ -155,6 +160,9 @@ fn convert_messages<'a>(
 fn convert_content(block: &ContentBlock) -> Result<WireContent, AnthropicConversionError> {
     match block {
         ContentBlock::Text(text) => Ok(WireContent::Text { text: text.clone() }),
+        ContentBlock::Image(_) => Err(AnthropicConversionError::UnsupportedBlock(
+            "image (Anthropic image stretch is not enabled)",
+        )),
         ContentBlock::ToolCall(ToolCall {
             id,
             name,

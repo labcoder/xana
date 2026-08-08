@@ -297,7 +297,7 @@ fn requested_tools(message: &Message) -> Vec<ToolCall> {
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolCall(call) => Some(call.clone()),
-            ContentBlock::Text(_) | ContentBlock::ToolResult(_) => None,
+            ContentBlock::Text(_) | ContentBlock::Image(_) | ContentBlock::ToolResult(_) => None,
         })
         .collect()
 }
