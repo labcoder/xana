@@ -303,3 +303,39 @@ pub enum ContextServiceError {
     InvalidRequest(String),
     LimitExceeded,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn image(bytes: u64) -> ImageRef {
+        ImageRef {
+            artifact_id: "artifact-1".into(),
+            media_type: "image/png".into(),
+            byte_len: bytes,
+            width: Some(2),
+            height: Some(2),
+        }
+    }
+
+    #[test]
+    fn model_capabilities_reject_image_before_transport() {
+        let text_only = ModelCapabilities::text_only();
+        assert_eq!(
+            text_only.validate_images(&[image(4)]),
+            Err(CapabilityError::UnsupportedModality("image".into()))
+        );
+        let vision = ModelCapabilities {
+            input_modalities: ["text".into(), "image".into()].into_iter().collect(),
+            max_images: 1,
+            max_image_bytes: 8,
+            max_context_tokens: 128,
+            tools: true,
+        };
+        assert!(vision.validate_images(&[image(4)]).is_ok());
+        assert!(matches!(
+            vision.validate_images(&[image(4), image(4)]),
+            Err(CapabilityError::TooManyImages { .. })
+        ));
+    }
+}
