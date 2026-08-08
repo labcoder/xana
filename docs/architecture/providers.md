@@ -20,3 +20,12 @@ tool results to their structured block forms, and sends the required
 `anthropic-version` header. Its SSE decoder accumulates text deltas and split
 tool JSON without exposing wire events to the runtime. Unsupported internal
 blocks fail before HTTP I/O.
+
+Optional subscription credentials use the runtime-only `CredentialId`,
+redacted secret, secure-store, device-code, status, logout, and refresh
+coordination contracts. The in-memory store exists for deterministic tests;
+production storage must be an OS credential store and must never be redirected
+into `config.toml`, sessions, artifacts, or `XANA_HOME` data. `xana auth
+login|status|logout codex-oauth` is intentionally unavailable until an official
+supported protocol authority supplies the endpoint, client identity, scopes,
+audience, refresh, and revocation rules.

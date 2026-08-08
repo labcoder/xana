@@ -72,6 +72,24 @@ pub(crate) enum Command {
     Session(SessionArgs),
     /// Inspect or explicitly reconcile interrupted operations.
     Operation(OperationArgs),
+    /// Inspect or manage optional provider credentials.
+    Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct AuthArgs {
+    #[command(subcommand)]
+    pub(crate) command: AuthCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum AuthCommand {
+    /// Start device authorization for a named provider.
+    Login { provider: String },
+    /// Show bounded credential status without printing secrets.
+    Status { provider: String },
+    /// Remove a stored credential.
+    Logout { provider: String },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -173,6 +191,20 @@ mod tests {
         assert!(!cli.no_banner);
         assert_eq!(cli.resume, None);
         assert_eq!(cli.command, None);
+    }
+
+    #[test]
+    fn parses_auth_lifecycle_commands() {
+        assert_eq!(
+            Cli::try_parse_from(["xana", "auth", "status", "codex-oauth"])
+                .expect("auth status")
+                .command,
+            Some(Command::Auth(AuthArgs {
+                command: AuthCommand::Status {
+                    provider: "codex-oauth".to_owned(),
+                },
+            }))
+        );
     }
 
     #[test]

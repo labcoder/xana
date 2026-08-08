@@ -77,6 +77,21 @@ cargo run -- config check
 an agent or contacting a provider. Bare `cargo run` remains normal chat; when
 the file is missing it points explicitly to `xana init`.
 
+## Optional provider credentials
+
+Credential lifecycle primitives are present for future subscription providers,
+but no vendor-specific OAuth protocol is shipped yet. Running
+
+```bash
+xana auth status codex-oauth
+```
+
+reports that the provider is unavailable rather than guessing a private
+endpoint or storing a secret in Xana's files. When an official protocol is
+accepted, login will use an explicit device-code flow and an OS credential
+store; credentials will not be written to `config.toml`, sessions, artifacts,
+or `XANA_HOME` data.
+
 ## Complete version 1 example
 
 ```toml

@@ -8,6 +8,7 @@
 mod agent;
 mod app;
 mod artifact;
+pub mod auth;
 pub mod capability;
 mod cli;
 mod config;
