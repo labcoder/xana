@@ -360,6 +360,7 @@ fn request_serializes_internal_history_at_the_wire_edge() {
         model: "qwen2.5-coder:7b",
         messages: wire_messages,
         stream: false,
+        max_output_tokens: None,
         tools: Vec::new(),
     };
 
@@ -404,6 +405,7 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
         model: "test-model",
         messages: Vec::new(),
         stream: false,
+        max_output_tokens: None,
         tools: definitions
             .iter()
             .map(|definition| WireToolDefinition::from(*definition))

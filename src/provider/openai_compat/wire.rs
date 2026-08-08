@@ -61,6 +61,8 @@ pub(super) struct WireChatRequest<'a> {
     pub(super) model: &'a str,
     pub(super) messages: Vec<WireMessage>,
     pub(super) stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) tools: Vec<WireToolDefinition<'a>>,
 }
