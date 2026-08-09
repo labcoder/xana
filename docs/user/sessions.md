@@ -57,6 +57,34 @@ conversations may reference the same workspace, which is useful outside code,
 but parallel code edits can conflict. Prefer separate Git worktrees when work
 may overlap; Xana does not create them automatically.
 
+## TUI navigation
+
+The wide TUI projects the bounded host snapshot into a session rail. Use
+`/sessions` or the command palette to open the searchable conversation picker
+at any width. Every row includes text—not color alone—for active, controlled,
+inactive, unread, error, observable, or unavailable state. Native rows show a
+bounded title derived from retained user text after inspection, execution
+owner, known connection/model facts, record count, and stored modification
+time. Older native sessions do not durably retain their historical model, so
+Xana says `not retained` instead of guessing. Managed rows retain connection
+and opaque thread identity but no transcript or reliable recency.
+
+Selecting an inactive native row opens its committed transcript read-only.
+Selecting a managed row explains that Codex still owns the transcript. This is
+view focus only: it does not transfer controller ownership, cancel the active
+root, change the model, or send a draft. Incoming completion/error state for
+the runtime conversation remains visible as a text indicator. A draft may be
+edited while viewing another transcript, but submission is refused and the
+draft retained until the runtime conversation is selected or the user exits
+and uses exact `--resume SESSION_ID`.
+
+`/sessions expanded` and `/sessions collapsed` persist the default wide rail
+state in a version-1 workspace/frontend preference beneath
+`data/frontend/workspaces/`. The file stores only the Boolean layout choice;
+active work, selection, unread/error state, transcript data, and controller
+ownership are always recomputed from runtime/host truth. Medium and narrow
+layouts use the picker overlay regardless of the saved rail choice.
+
 ## Storage
 
 Sessions and artifacts use Xana's durable data category:
@@ -69,6 +97,7 @@ data/
   managed-threads/<blake3-route-key>.lock
   workspace-hosts/<blake3-workspace-key>.json
   workspace-hosts/<blake3-workspace-key>.lock
+  frontend/workspaces/<blake3-workspace-key>.toml
   artifacts/<64-character-blake3-hex>
 ```
 

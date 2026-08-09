@@ -161,6 +161,7 @@ explicit-server shutdown, and the TUI's remaining managed/rich interaction
 slices remain unimplemented. The native TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,
 image staging, ordered follow-ups, exact interruption, owner-gated steering,
-one command registry/palette, model selection, and independent activity
-visibility. Managed activity/approvals, complete session navigation, and rich
-content remain later slices. This proposal therefore remains Accepted.
+one command registry/palette, model selection, independent activity visibility,
+and bounded session rail/picker inspection with workspace-local rail
+preference. Managed activity/approvals and rich content remain later slices.
+This proposal therefore remains Accepted.

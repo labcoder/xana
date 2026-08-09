@@ -266,6 +266,11 @@ terminal/attach guidance. Xana does not lock the workspace filesystem: use
 separate worktrees when parallel conversations might edit the same files.
 Retained Codex handles can be selected with
 `xana session select-managed CONNECTION THREAD_ID`.
+In the full-screen client, `/sessions` opens the same bounded workspace catalog
+for searchable read-only history navigation. Wide terminals also show a
+session rail; `/sessions expanded` or `/sessions collapsed` persists only that
+workspace-local layout preference. Viewing another transcript never transfers
+the active root or submits its local draft.
 
 Run exactly one turn with `xana -p "PROMPT"` or pipe one prompt into
 `xana --print`. Final text is the only stdout payload; activity and diagnostics

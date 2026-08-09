@@ -6,6 +6,7 @@
 mod command;
 mod lifecycle;
 mod model;
+mod session;
 mod view;
 
 use crate::{
@@ -73,7 +74,15 @@ pub(crate) async fn run_native(
         children: header.children.clone(),
     };
     let mut client = EmbeddedClient::from_runtime(runtime, seed);
-    let mut state = TuiState::from_client(&client, prepared.composer_preset);
+    let mut state = TuiState::from_client(&client, prepared.composer_preset, conversation.clone());
+    let frontend_dir = prepared
+        .preferences_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut session_preferences =
+        session::SessionPreferenceStore::load(frontend_dir, &header.workspace_root);
+    state.set_rail_expanded(session_preferences.rail_expanded());
+    state.refresh_sessions(workspace_host.snapshot()?);
     let mut events = EventStream::new();
     let mut _active_root: Option<ActiveRootLease> = None;
 
@@ -88,6 +97,7 @@ pub(crate) async fn run_native(
                 &conversation,
                 &mut _active_root,
                 &prepared.preferences_path,
+                &mut session_preferences,
             )
             .await?
         {
@@ -117,6 +127,7 @@ pub(crate) async fn run_native(
                         &conversation,
                         &mut _active_root,
                         &prepared.preferences_path,
+                        &mut session_preferences,
                     )
                     .await?
                     {
@@ -140,6 +151,9 @@ pub(crate) async fn run_native(
                 if terminal {
                     _active_root = None;
                 }
+                if let Ok(snapshot) = workspace_host.snapshot() {
+                    state.refresh_sessions(snapshot);
+                }
             }
         }
     }
@@ -155,6 +169,7 @@ async fn dispatch_effect(
     conversation: &ConversationRef,
     active_root: &mut Option<ActiveRootLease>,
     preferences_path: &std::path::Path,
+    session_preferences: &mut session::SessionPreferenceStore,
 ) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
@@ -349,6 +364,18 @@ async fn dispatch_effect(
                 })
                 .unwrap_or_default();
             state.open_reasoning_picker(choices);
+        }
+        UpdateEffect::OpenSessionPicker => state.open_session_picker(),
+        UpdateEffect::ViewSession(conversation) => {
+            match workspace_host.conversation_history(&conversation) {
+                Ok(history) => state.view_session(conversation, history),
+                Err(error) => state.set_status(format!("could not inspect conversation: {error}")),
+            }
+        }
+        UpdateEffect::PersistRail(expanded) => {
+            if let Err(error) = session_preferences.set_rail_expanded(expanded) {
+                state.set_status(format!("could not save session rail preference: {error}"));
+            }
         }
     }
     Ok(None)
@@ -615,7 +642,8 @@ mod tests {
     #[tokio::test]
     async fn scripted_turn_crosses_the_real_embedded_client_and_finishes_in_view_state() {
         let mut client = scripted_client(Box::new(ScriptedProvider));
-        let mut state = TuiState::from_client(&client, ComposerPreset::Submit);
+        let mut state =
+            TuiState::from_client(&client, ComposerPreset::Submit, ConversationRef::NewNative);
         state.update_input(InputAction::Insert("hi".to_owned()));
         let UpdateEffect::Submit {
             operation_id,
@@ -661,7 +689,8 @@ mod tests {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         }));
-        let mut state = TuiState::from_client(&client, ComposerPreset::Submit);
+        let mut state =
+            TuiState::from_client(&client, ComposerPreset::Submit, ConversationRef::NewNative);
         state.update_input(InputAction::Insert("wait".to_owned()));
         let UpdateEffect::Submit {
             operation_id,

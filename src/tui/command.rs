@@ -9,6 +9,7 @@ pub(super) enum CommandId {
     Steer,
     Model,
     Reasoning,
+    Sessions,
     Activity,
     Attach,
     Queue,
@@ -97,6 +98,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "send",
         usage: "/send [MESSAGE]",
         summary: "Send the current draft or the provided message",
+    },
+    CommandSpec {
+        id: CommandId::Sessions,
+        name: "sessions",
+        usage: "/sessions [expanded|collapsed]",
+        summary: "Search conversations or persist the wide session rail",
     },
     CommandSpec {
         id: CommandId::Steer,
