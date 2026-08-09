@@ -21,7 +21,7 @@ a shared slash-command/command-palette registry, model selection, activity
 visibility, streamed output, and adaptive layouts. Ctrl+C interrupts the exact
 active turn and Ctrl+Q shuts down. Managed Codex chat uses plain mode until its
 full-screen event and approval projection is attached. See the
-[full-screen TUI guide](tui.md) for portable keys and current approval limits.
+[full-screen TUI guide](tui.md) for portable keys and interactive approvals.
 
 `--tui` requires interactive stdin and stdout and a successful terminal
 initialization; it restores partial terminal state and exits nonzero instead

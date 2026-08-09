@@ -4,6 +4,7 @@ use super::session::{self, SessionRow};
 use super::{
     activity::{self, ActivityCard, ActivityKind, ActivityState, ApprovalPrompt, ApprovalTarget},
     command::{self, CommandId, CommandSpec, ParsedCommand},
+    rich_text::{ArtifactView, RichDocument},
 };
 use crate::{
     frontend::{EmbeddedClient, ManagedClientEvent},
@@ -58,6 +59,7 @@ pub(super) enum MessageKind {
 pub(super) struct VisibleMessage {
     pub(super) kind: MessageKind,
     pub(super) text: String,
+    pub(super) document: RichDocument,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,8 +173,13 @@ pub(super) enum UpdateEffect {
     OpenReasoningPicker,
     OpenSessionPicker,
     ViewSession(ConversationRef),
+    LoadOlder(ConversationRef),
     PersistRail(bool),
     PersistActivity(ActivityPaneChoice),
+    ArtifactAction {
+        record: crate::artifact::ArtifactRecord,
+        action: ArtifactAction,
+    },
     DecideNativeApproval {
         operation_id: OperationId,
         invocation_id: ToolInvocationId,
@@ -186,6 +193,14 @@ pub(super) enum UpdateEffect {
     },
     DecideManagedApproval(crate::managed::codex::ApprovalDecision),
     Quit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ArtifactAction {
+    Preview,
+    InsertReference,
+    Reveal,
+    Open,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -326,6 +341,11 @@ pub(super) enum Overlay {
         prompt: Box<ApprovalPrompt>,
         selected: usize,
     },
+    Artifact {
+        artifact: Box<ArtifactView>,
+        selected: usize,
+        preview: Option<String>,
+    },
 }
 
 pub(super) struct TuiState {
@@ -351,6 +371,8 @@ pub(super) struct TuiState {
     capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
     background_messages: Option<VecDeque<VisibleMessage>>,
+    history_start: usize,
+    history_has_older: bool,
 }
 
 impl TuiState {
@@ -364,6 +386,9 @@ impl TuiState {
             messages: VecDeque::from([VisibleMessage {
                 kind: MessageKind::System,
                 text: "Xana is preparing the workspace runtime. The interface is ready.".to_owned(),
+                document: RichDocument::plain(
+                    "Xana is preparing the workspace runtime. The interface is ready.",
+                ),
             }]),
             activity: VecDeque::from([ActivityCard::new(
                 "Xana",
@@ -388,6 +413,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             background_messages: None,
+            history_start: 0,
+            history_has_older: false,
         }
     }
 
@@ -427,6 +454,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             background_messages: None,
+            history_start: 0,
+            history_has_older: false,
         };
         if snapshot.conversation_truncated {
             state.push_activity("older conversation content is outside the bounded snapshot");
@@ -451,6 +480,9 @@ impl TuiState {
             messages: VecDeque::from([VisibleMessage {
                 kind: MessageKind::System,
                 text: "Codex owns this managed thread and inner loop; Xana projects its emitted activity and approvals.".to_owned(),
+                document: RichDocument::plain(
+                    "Codex owns this managed thread and inner loop; Xana projects its emitted activity and approvals.",
+                ),
             }]),
             activity: VecDeque::new(),
             busy: false,
@@ -468,6 +500,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
             background_messages: None,
+            history_start: 0,
+            history_has_older: false,
         }
     }
 
@@ -526,11 +560,18 @@ impl TuiState {
             InputAction::Interrupt => self.interrupt(),
             InputAction::Scroll(delta) => {
                 self.scroll = if delta.is_negative() {
-                    self.scroll.saturating_sub(delta.unsigned_abs())
+                    self.scroll.saturating_add(delta.unsigned_abs())
                 } else {
-                    self.scroll.saturating_add(delta as u16)
+                    self.scroll.saturating_sub(delta as u16)
                 };
-                UpdateEffect::None
+                if delta.is_negative()
+                    && self.history_has_older
+                    && usize::from(self.scroll) >= self.messages.len().saturating_sub(1)
+                {
+                    UpdateEffect::LoadOlder(self.viewed_conversation.clone())
+                } else {
+                    UpdateEffect::None
+                }
             }
             InputAction::Cancel => {
                 self.composer.anchor = None;
@@ -597,6 +638,7 @@ impl TuiState {
             Some(Overlay::Approval { prompt, selected }) => {
                 (selected, approval_choice_count(prompt))
             }
+            Some(Overlay::Artifact { selected, .. }) => (selected, 4),
             Some(Overlay::SessionPicker {
                 query,
                 choices,
@@ -664,6 +706,22 @@ impl TuiState {
                     UpdateEffect::ViewSession(row.conversation)
                 }),
             Overlay::Approval { prompt, selected } => self.confirm_approval(*prompt, selected),
+            Overlay::Artifact {
+                artifact, selected, ..
+            } => {
+                let action = [
+                    ArtifactAction::Preview,
+                    ArtifactAction::InsertReference,
+                    ArtifactAction::Reveal,
+                    ArtifactAction::Open,
+                ]
+                .get(selected)
+                .copied();
+                action.map_or(UpdateEffect::None, |action| UpdateEffect::ArtifactAction {
+                    record: artifact.record.clone(),
+                    action,
+                })
+            }
             Overlay::Help | Overlay::Queue => UpdateEffect::None,
         }
     }
@@ -795,6 +853,32 @@ impl TuiState {
                 };
                 self.status = format!("Activity display: {:?}", self.activity_visibility);
                 UpdateEffect::PersistActivity(self.activity_visibility.into())
+            }
+            CommandId::Artifact => {
+                self.composer.take();
+                let requested = command.arguments.trim();
+                if requested.is_empty() {
+                    self.status = command_usage(CommandId::Artifact);
+                    return UpdateEffect::None;
+                }
+                let artifact = self.messages.iter().rev().find_map(|message| {
+                    message
+                        .document
+                        .artifacts
+                        .iter()
+                        .find(|artifact| artifact.record.reference.id.to_string() == requested)
+                });
+                if let Some(artifact) = artifact.cloned() {
+                    self.overlay = Some(Overlay::Artifact {
+                        artifact: Box::new(artifact),
+                        selected: 0,
+                        preview: None,
+                    });
+                } else {
+                    self.status =
+                        "Artifact is not visible in the bounded conversation view".to_owned();
+                }
+                UpdateEffect::None
             }
             CommandId::Attach => {
                 self.composer.take();
@@ -1019,11 +1103,27 @@ impl TuiState {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn view_session(
         &mut self,
         conversation: ConversationRef,
         history: Option<Vec<Message>>,
     ) {
+        let page = history.map(|messages| crate::session::ConversationPage {
+            start: 0,
+            total: messages.len(),
+            has_older: false,
+            messages,
+        });
+        self.view_session_page(conversation, page);
+    }
+
+    pub(super) fn view_session_page(
+        &mut self,
+        conversation: ConversationRef,
+        page: Option<crate::session::ConversationPage>,
+    ) {
+        let history = page.as_ref().map(|page| page.messages.as_slice());
         if conversation == self.runtime_conversation {
             if self.viewed_conversation != self.runtime_conversation
                 && let Some(messages) = self.background_messages.take()
@@ -1036,11 +1136,14 @@ impl TuiState {
             if self.viewed_conversation == self.runtime_conversation {
                 self.background_messages = Some(std::mem::take(&mut self.messages));
             }
-            self.messages = history.as_ref().map_or_else(
+            self.messages = history.map_or_else(
                 || {
                     VecDeque::from([VisibleMessage {
                         kind: MessageKind::System,
                         text: "Managed transcript remains owned by its runtime and is unavailable to this local history viewer".to_owned(),
+                        document: RichDocument::plain(
+                            "Managed transcript remains owned by its runtime and is unavailable to this local history viewer",
+                        ),
                     }])
                 },
                 |history| {
@@ -1059,6 +1162,8 @@ impl TuiState {
                 "Inspecting retained history; use exact resume to continue it".to_owned()
             };
         }
+        self.history_start = page.as_ref().map_or(0, |page| page.start);
+        self.history_has_older = page.as_ref().is_some_and(|page| page.has_older);
         self.scroll = 0;
         if let Some(row) = self
             .sessions
@@ -1067,8 +1172,30 @@ impl TuiState {
         {
             row.unread = false;
             row.error = false;
-            row.title = session::preview_title(history.as_deref().unwrap_or_default(), &row.title);
+            row.title = session::preview_title(history.unwrap_or_default(), &row.title);
         }
+    }
+
+    pub(super) fn prepend_history_page(&mut self, page: crate::session::ConversationPage) {
+        let added = page.messages.len();
+        let mut older = page
+            .messages
+            .iter()
+            .map(message_projection)
+            .collect::<VecDeque<_>>();
+        older.append(&mut self.messages);
+        trim_front(&mut older, MAX_VISIBLE_MESSAGES);
+        self.messages = older;
+        self.history_start = page.start;
+        self.history_has_older = page.has_older;
+        self.status = format!(
+            "Loaded {} older message(s); {} remain outside the viewport",
+            added, self.history_start
+        );
+    }
+
+    pub(super) fn history_before(&self) -> Option<usize> {
+        self.history_has_older.then_some(self.history_start)
     }
 
     pub(super) fn set_rail_expanded(&mut self, expanded: bool) {
@@ -1296,6 +1423,7 @@ impl TuiState {
         }
         if let Some(message) = self.messages.back_mut() {
             append_bounded(&mut message.text, text, MAX_MESSAGE_BYTES);
+            message.document.stream_append(text);
         }
     }
 
@@ -1308,15 +1436,23 @@ impl TuiState {
                 *message = final_message;
             }
         } else {
+            if self.scroll > 0 {
+                self.scroll = self.scroll.saturating_add(1);
+            }
             self.messages.push_back(final_message);
             trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
         }
     }
 
     fn push_message(&mut self, kind: MessageKind, text: impl Into<String>) {
+        let text = bounded(text.into(), MAX_MESSAGE_BYTES);
+        if self.scroll > 0 {
+            self.scroll = self.scroll.saturating_add(1);
+        }
         self.messages.push_back(VisibleMessage {
             kind,
-            text: bounded(text.into(), MAX_MESSAGE_BYTES),
+            document: RichDocument::plain(&text),
+            text,
         });
         trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
     }
@@ -1469,6 +1605,28 @@ impl TuiState {
         self.status = "Model updated for subsequent turns; managed context is unchanged".to_owned();
     }
 
+    pub(super) fn show_artifact_preview(
+        &mut self,
+        record: crate::artifact::ArtifactRecord,
+        preview: String,
+    ) {
+        let label = format!("{} · {} bytes", record.media_type, record.byte_len);
+        self.overlay = Some(Overlay::Artifact {
+            artifact: Box::new(ArtifactView { record, label }),
+            selected: 0,
+            preview: Some(bounded(preview, 64 * 1024)),
+        });
+    }
+
+    pub(super) fn insert_artifact_reference(&mut self, record: &crate::artifact::ArtifactRecord) {
+        let reference = format!("artifact:{}", record.reference.id);
+        if let Err(reason) = self.composer.insert(&reference) {
+            self.status = reason;
+        } else {
+            self.status = "Artifact reference inserted into the draft".to_owned();
+        }
+    }
+
     fn apply_managed_activity(&mut self, owner: String, event: &ManagedClientEvent) {
         if let Some(mut card) = activity::from_managed(event) {
             card.owner = owner;
@@ -1575,12 +1733,16 @@ fn message_projection(message: &Message) -> VisibleMessage {
         Role::System => MessageKind::System,
     };
     let mut text = String::new();
+    let mut artifacts = Vec::new();
     for block in &message.content {
         match block {
             ContentBlock::Text(value) => append_bounded(&mut text, value, MAX_MESSAGE_BYTES),
             ContentBlock::Image(image) => append_bounded(
                 &mut text,
-                &format!("[image: {} bytes]", image.byte_len),
+                &format!(
+                    "[image artifact: {} · {} · {} bytes]",
+                    image.artifact.reference.id, image.media_type, image.byte_len
+                ),
                 MAX_MESSAGE_BYTES,
             ),
             ContentBlock::ToolCall(call) => append_bounded(
@@ -1593,7 +1755,20 @@ fn message_projection(message: &Message) -> VisibleMessage {
             }
         }
     }
-    VisibleMessage { kind, text }
+    for block in &message.content {
+        if let ContentBlock::Image(image) = block {
+            artifacts.push(ArtifactView {
+                record: image.artifact.clone(),
+                label: format!("image · {} · {} bytes", image.media_type, image.byte_len),
+            });
+        }
+    }
+    let document = RichDocument::parse(&text, artifacts);
+    VisibleMessage {
+        kind,
+        text,
+        document,
+    }
 }
 
 fn sanitize_input(value: &str) -> String {
@@ -1908,6 +2083,24 @@ mod tests {
                 .any(|card| { card.kind == ActivityKind::Tool && card.identity == "command-1" })
         );
         assert_eq!(state.messages.back().unwrap().kind, MessageKind::Assistant);
+    }
+
+    #[test]
+    fn streaming_at_bottom_and_scrolled_history_preserve_the_expected_anchor() {
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.messages.clear();
+        for index in 0..20 {
+            state.push_message(MessageKind::Assistant, format!("message {index}"));
+        }
+        assert_eq!(state.scroll, 0);
+        state.update_input(InputAction::Scroll(-6));
+        assert_eq!(state.scroll, 6);
+        state.push_message(MessageKind::Assistant, "late message");
+        assert_eq!(state.scroll, 7, "distance from the newest edge is anchored");
+        state.update_input(InputAction::Scroll(7));
+        assert_eq!(state.scroll, 0);
+        state.push_message(MessageKind::Assistant, "newest message");
+        assert_eq!(state.scroll, 0, "the newest edge stays anchored");
     }
 
     #[test]

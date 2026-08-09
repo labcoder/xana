@@ -1,10 +1,11 @@
 //! Process-owned, canonical-workspace conversation and root-turn ownership.
 
+#[cfg(test)]
+use crate::message::Message;
 use crate::{
     bounded_file,
     identity::SessionId,
     managed::thread_store::{ManagedConversationHandle, ManagedThreadStore},
-    message::Message,
     session::{DurableSession, NativeConversationHandle},
 };
 use serde::{Deserialize, Serialize};
@@ -266,6 +267,7 @@ impl WorkspaceHost {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn conversation_history(
         &self,
         conversation: &ConversationRef,
@@ -281,6 +283,30 @@ impl WorkspaceHost {
             }
             ConversationRef::Managed { .. } => Ok(None),
             ConversationRef::NewNative | ConversationRef::NewManaged { .. } => Ok(Some(Vec::new())),
+        }
+    }
+
+    pub(crate) fn conversation_history_page(
+        &self,
+        conversation: &ConversationRef,
+        before: Option<usize>,
+        limit: usize,
+    ) -> Result<Option<crate::session::ConversationPage>, WorkspaceHostError> {
+        match conversation {
+            ConversationRef::Native { session_id } => {
+                DurableSession::conversation_page(&self.data_root, *session_id, before, limit)
+                    .map(Some)
+                    .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))
+            }
+            ConversationRef::Managed { .. } => Ok(None),
+            ConversationRef::NewNative | ConversationRef::NewManaged { .. } => {
+                Ok(Some(crate::session::ConversationPage {
+                    messages: Vec::new(),
+                    start: 0,
+                    total: 0,
+                    has_older: false,
+                }))
+            }
         }
     }
 

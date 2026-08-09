@@ -590,6 +590,22 @@ The actor keeps event delivery bounded, routes approval replies exactly once,
 supports exact cancellation and in-thread advertised model/reasoning changes,
 and shuts app-server down with the embedded frontend.
 
+Rich conversation presentation is derivative frontend state. A bounded
+Rust-native parser sanitizes terminal controls and bidi controls, retains only
+supported Markdown/link metadata, and produces semantic lines for the current
+viewport. The renderer visits a height-derived window (never more than 128
+messages), not the complete projected transcript. Historical native sessions
+use a two-pass journal index: the first bounded scan retains entry ancestry and
+byte offsets, and the second reads only the requested page of at most 128
+messages. The TUI retains at most 512 projected messages and preserves the
+scroll anchor when prepending a page. Durable records remain authoritative.
+
+Artifacts stay immutable content-addressed records. A visible reference may
+open an explicit action card for bounded preview, draft-reference insertion,
+OS reveal, or OS open. Rendering has no side effect. Before an OS action the
+artifact store re-verifies declared size, content location, and digest; raw
+artifact paths and bytes never enter frontend snapshots.
+
 ```mermaid
 flowchart LR
     NATIVE["Native runtime events"] --> NORMAL["Provider-neutral event projection"]

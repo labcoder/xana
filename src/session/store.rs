@@ -1,11 +1,15 @@
 use super::record::{RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord};
-use crate::{bounded_file, identity::SessionId};
+use crate::{
+    bounded_file,
+    identity::{ConversationEntryId, SessionId, ThreadId},
+    message::Message,
+};
 use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     error::Error,
     fmt, fs,
-    io::{self, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -29,6 +33,21 @@ pub(crate) struct LoadedSession {
     pub(crate) repair: Option<TornTailRepair>,
     pub(crate) inspected_len: u64,
     pub(crate) inspected_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ConversationPage {
+    pub(crate) messages: Vec<Message>,
+    pub(crate) start: usize,
+    pub(crate) total: usize,
+    pub(crate) has_older: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ConversationEntryIndex {
+    parent: Option<ConversationEntryId>,
+    offset: u64,
+    line_len: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +151,162 @@ impl SessionStore {
             repair,
             inspected_len,
             inspected_hash,
+        })
+    }
+
+    pub(crate) fn conversation_page(
+        path: &Path,
+        before: Option<usize>,
+        limit: usize,
+    ) -> Result<ConversationPage, SessionError> {
+        const MAX_PAGE_MESSAGES: usize = 128;
+        let limit = limit.clamp(1, MAX_PAGE_MESSAGES);
+        let file = fs::File::open(path).map_err(|source| SessionError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+        let mut reader = BufReader::new(file);
+        let mut entries = HashMap::<ConversationEntryId, ConversationEntryIndex>::new();
+        let mut record_ids = HashSet::new();
+        let mut root_thread = None::<ThreadId>;
+        let mut root_head = None::<ConversationEntryId>;
+        let mut session_id = None::<SessionId>;
+        let mut offset = 0_u64;
+        let mut records = 0_usize;
+        loop {
+            let mut line = Vec::new();
+            let line_len =
+                reader
+                    .read_until(b'\n', &mut line)
+                    .map_err(|source| SessionError::Io {
+                        path: path.to_owned(),
+                        source,
+                    })?;
+            if line_len == 0 {
+                break;
+            }
+            if line_len > MAX_RECORD_BYTES.saturating_add(1) {
+                return Err(SessionError::RecordTooLarge {
+                    offset,
+                    actual: line_len.saturating_sub(1),
+                    limit: MAX_RECORD_BYTES,
+                });
+            }
+            let next_offset = offset.saturating_add(line_len as u64);
+            if next_offset > MAX_SESSION_BYTES as u64 {
+                return Err(SessionError::SessionTooLarge {
+                    actual: next_offset,
+                    limit: MAX_SESSION_BYTES,
+                });
+            }
+            if line.last() != Some(&b'\n') {
+                break;
+            }
+            line.pop();
+            let envelope = decode_record(&line, offset)?;
+            if !record_ids.insert(envelope.record_id) {
+                return Err(SessionError::DuplicateRecordId {
+                    record_id: envelope.record_id.to_string(),
+                });
+            }
+            records = records.saturating_add(1);
+            if records > MAX_SESSION_RECORDS {
+                return Err(SessionError::TooManyRecords {
+                    limit: MAX_SESSION_RECORDS,
+                });
+            }
+            if records == 1 && !matches!(&envelope.record, SessionRecord::SessionCreated { .. }) {
+                return Err(SessionError::InvalidCreationRecord);
+            }
+            if let Some(expected) = session_id {
+                if envelope.session_id != expected {
+                    return Err(SessionError::WrongSessionId);
+                }
+            } else {
+                session_id = Some(envelope.session_id);
+            }
+            match envelope.record {
+                SessionRecord::SessionCreated { thread_id, .. } => {
+                    root_thread.get_or_insert(thread_id);
+                }
+                SessionRecord::ConversationEntryAppended { entry } => {
+                    entries.insert(
+                        entry.id,
+                        ConversationEntryIndex {
+                            parent: entry.parent,
+                            offset,
+                            line_len,
+                        },
+                    );
+                }
+                SessionRecord::ThreadHeadMoved { thread_id, head }
+                    if Some(thread_id) == root_thread =>
+                {
+                    root_head = head;
+                }
+                _ => {}
+            }
+            offset = next_offset;
+        }
+        if root_thread.is_none() {
+            return Err(SessionError::MissingCreationRecord);
+        }
+        let mut chain = Vec::new();
+        let mut seen = HashSet::new();
+        let mut cursor = root_head;
+        while let Some(entry_id) = cursor {
+            if !seen.insert(entry_id) {
+                return Err(SessionError::CorruptRecord {
+                    offset: 0,
+                    reason: "conversation ancestry contains a cycle".to_owned(),
+                });
+            }
+            let entry =
+                entries
+                    .get(&entry_id)
+                    .copied()
+                    .ok_or_else(|| SessionError::CorruptRecord {
+                        offset: 0,
+                        reason: format!("conversation head references missing entry {entry_id}"),
+                    })?;
+            chain.push(entry);
+            cursor = entry.parent;
+        }
+        chain.reverse();
+        let total = chain.len();
+        let end = before.unwrap_or(total).min(total);
+        let start = end.saturating_sub(limit);
+        let mut file = reader.into_inner();
+        let mut messages = Vec::with_capacity(end - start);
+        for entry in &chain[start..end] {
+            file.seek(SeekFrom::Start(entry.offset))
+                .map_err(|source| SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            let mut line = vec![0_u8; entry.line_len];
+            file.read_exact(&mut line)
+                .map_err(|source| SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            if line.last() == Some(&b'\n') {
+                line.pop();
+            }
+            let envelope = decode_record(&line, entry.offset)?;
+            let SessionRecord::ConversationEntryAppended { entry } = envelope.record else {
+                return Err(SessionError::CorruptRecord {
+                    offset: entry.offset,
+                    reason: "indexed conversation record changed kind".to_owned(),
+                });
+            };
+            messages.push(entry.message);
+        }
+        Ok(ConversationPage {
+            messages,
+            start,
+            total,
+            has_older: start > 0,
         })
     }
 
@@ -433,7 +608,11 @@ impl Error for SessionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::identity::ThreadId;
+    use crate::{
+        identity::{AgentId, ConversationEntryId, ThreadId},
+        message::{ContentBlock, Message, Role},
+        session::ConversationEntry,
+    };
 
     fn creation(session_id: SessionId) -> RecordEnvelope {
         RecordEnvelope::new(
@@ -466,5 +645,67 @@ mod tests {
             Err(SessionError::SessionTooLarge { .. })
         ));
         assert_eq!(fs::read(store.path()).expect("unchanged bytes"), before);
+    }
+
+    #[test]
+    fn conversation_pages_index_metadata_then_read_only_requested_messages() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let session_id = SessionId::new();
+        let thread_id = ThreadId::new();
+        let created = RecordEnvelope::new(
+            session_id,
+            SessionRecord::SessionCreated {
+                thread_id,
+                workspace_root: PathBuf::from("/workspace"),
+            },
+        );
+        let mut store = SessionStore::create(directory.path(), created).expect("session store");
+        let agent_id = AgentId::new();
+        let mut parent = None;
+        for index in 0..300 {
+            let id = ConversationEntryId::new();
+            store
+                .append(&RecordEnvelope::new(
+                    session_id,
+                    SessionRecord::ConversationEntryAppended {
+                        entry: ConversationEntry {
+                            id,
+                            parent,
+                            agent_id,
+                            message: Message::text(Role::User, format!("message {index}")),
+                        },
+                    },
+                ))
+                .expect("append conversation entry");
+            store
+                .append(&RecordEnvelope::new(
+                    session_id,
+                    SessionRecord::ThreadHeadMoved {
+                        thread_id,
+                        head: Some(id),
+                    },
+                ))
+                .expect("move thread head");
+            parent = Some(id);
+        }
+
+        let latest = SessionStore::conversation_page(store.path(), None, 128).expect("latest page");
+        assert_eq!(latest.total, 300);
+        assert_eq!(latest.start, 172);
+        assert_eq!(latest.messages.len(), 128);
+        assert!(latest.has_older);
+        assert!(matches!(
+            latest.messages[0].content.as_slice(),
+            [ContentBlock::Text(text)] if text == "message 172"
+        ));
+
+        let older = SessionStore::conversation_page(store.path(), Some(latest.start), 128)
+            .expect("older page");
+        assert_eq!(older.start, 44);
+        assert_eq!(older.messages.len(), 128);
+        assert!(matches!(
+            older.messages[0].content.as_slice(),
+            [ContentBlock::Text(text)] if text == "message 44"
+        ));
     }
 }

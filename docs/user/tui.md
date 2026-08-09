@@ -80,6 +80,11 @@ bounded artifact ingestion. It refuses traversal, symlink escape, unsupported
 formats, oversized images, more than eight images, more than 20 MiB per turn,
 or a selected model not declared image-capable.
 
+Assistant Markdown, code, diffs, tables, inert links, images, and immutable
+artifacts use a bounded terminal-native renderer. `/artifact ARTIFACT_ID`
+opens an explicit action card; rendering alone never opens a link, file, or OS
+application. See [Rich terminal content and artifacts](rich-content.md).
+
 ## Conversation navigation
 
 `/sessions` opens a searchable, keyboard-complete picker backed by the bounded
@@ -90,6 +95,8 @@ inspection while leaving an active root attached to its original conversation;
 managed history remains owned by Codex. Drafting remains local, but Xana will
 not submit a draft from a read-only historical view. Return to the runtime
 conversation or use the exact resume command shown in [Sessions](sessions.md).
+Native history initially loads at most 128 messages; scrolling to the older
+edge requests another bounded page while preserving the current anchor.
 
 ## Layout and accessibility
 

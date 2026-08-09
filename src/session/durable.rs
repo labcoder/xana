@@ -1,6 +1,6 @@
 use super::{
-    ConversationEntry, LoadedSession, RecordEnvelope, RestoredSession, SessionRecord, SessionStore,
-    apply_validated, reduce, validate_envelope,
+    ConversationEntry, ConversationPage, LoadedSession, RecordEnvelope, RestoredSession,
+    SessionRecord, SessionStore, apply_validated, reduce, validate_envelope,
 };
 use crate::{
     artifact::{ArtifactStore, ContentHash},
@@ -112,6 +112,17 @@ impl DurableSession {
         let summary = summary_from_loaded(&path, &loaded)?;
         let restored = reduce(&loaded.records).context("could not reduce inspected session")?;
         Ok((summary, restored))
+    }
+
+    pub(crate) fn conversation_page(
+        data_dir: &Path,
+        session_id: SessionId,
+        before: Option<usize>,
+        limit: usize,
+    ) -> Result<ConversationPage> {
+        let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
+        SessionStore::conversation_page(&path, before, limit)
+            .context("could not page durable conversation")
     }
 
     pub(crate) fn latest_for_workspace(
