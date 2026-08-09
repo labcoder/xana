@@ -112,6 +112,12 @@ access; replace `ADVERTISED_MODEL_ID` with one shown by `xana model list
 supports `--device-code`. Xana delegates the local OAuth completion to Codex;
 it needs no hosted callback server and never reads Codex's auth file.
 
+Xana launches the configured Codex CLI, not the Codex desktop process. The
+desktop app and CLI binaries update separately even when they share account
+state. Use `codex --version` and `xana connection status codex` to confirm the
+runtime Xana is actually supervising; update or rebuild both sides when the
+experimental app-server protocol changes.
+
 During a managed turn Xana projects the activity that Codex app-server emits:
 reasoning summaries, plans, command and tool progress, file changes, context
 compaction, Codex-owned subagent activity, model reroutes, and approval

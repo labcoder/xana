@@ -102,6 +102,14 @@ bounded, and a timed-out or interrupted exchange poisons that process
 connection rather than allowing a later request to consume an ambiguous
 response.
 
+Thread start and resume use the app-server request-form `workspace-write`
+sandbox preset. Codex's response policy is a different tagged shape whose
+`type` may be `workspaceWrite`; Xana does not reuse that response spelling in
+requests. Protocol tests cover both lifecycle request builders. Connection
+status reports the exact Codex CLI executable version that Xana launched so a
+wire-compatibility failure can be distinguished from the separately updated
+desktop application.
+
 Codex owns its OAuth flow, access and refresh tokens, model backend, inner
 history, tools, sandbox, and approval semantics. Xana never reads or copies
 `auth.json`. `xana connection login codex` delegates browser or device-code
