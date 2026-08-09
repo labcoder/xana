@@ -19,11 +19,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 3;
 const MIN_CONFIG_VERSION: u32 = 1;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_MAX_TOOL_ROUNDS: usize = 64;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_ROUTE_FAN_OUT: usize = 64;
+const MAX_ROUTE_DESCENDANTS: usize = 256;
+const MAX_ROUTE_CONCURRENCY: usize = 32;
+const MAX_ROUTE_DEADLINE_SECONDS: u64 = 24 * 60 * 60;
+const MAX_ROUTE_CONTEXT_TOKENS: usize = 1_000_000;
+const MAX_ROUTE_REPORT_BYTES: usize = 1024 * 1024;
+const MAX_ROUTE_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 struct VersionHeader {
@@ -35,6 +42,8 @@ struct VersionHeader {
 struct ConfigDocument {
     version: u32,
     default_profile: String,
+    #[serde(default)]
+    default_child_route: Option<String>,
     permission_mode: PermissionMode,
     #[serde(default)]
     permission_rules: Vec<PermissionRule>,
@@ -42,6 +51,8 @@ struct ConfigDocument {
     shell: ShellConfig,
     providers: BTreeMap<String, ProviderConnection>,
     profiles: BTreeMap<String, AgentProfile>,
+    #[serde(default)]
+    routes: BTreeMap<String, TaskRoute>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -91,6 +102,16 @@ impl From<PermissionMode> for PolicyDecision {
     }
 }
 
+impl PermissionMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Ask => "ask",
+            Self::Allow => "allow",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum CredentialReference {
@@ -128,10 +149,88 @@ struct ProviderConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentProfile {
-    provider: String,
+    #[serde(alias = "provider")]
+    connection: String,
     model: String,
     #[serde(default = "default_max_tool_rounds")]
     max_tool_rounds: usize,
+    #[serde(default)]
+    reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_summary: Option<String>,
+    #[serde(default)]
+    capabilities: Option<Vec<String>>,
+    #[serde(default)]
+    permission_mode: Option<PermissionMode>,
+    #[serde(default)]
+    orchestration: OrchestrationLimits,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TaskRoute {
+    profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OrchestrationLimits {
+    #[serde(default = "default_max_fan_out")]
+    pub(crate) max_fan_out: usize,
+    #[serde(default = "default_max_descendants")]
+    pub(crate) max_descendants: usize,
+    #[serde(default = "default_max_concurrency")]
+    pub(crate) max_concurrency: usize,
+    #[serde(default = "default_deadline_seconds")]
+    pub(crate) deadline_seconds: u64,
+    #[serde(default = "default_max_context_tokens")]
+    pub(crate) max_context_tokens: usize,
+    #[serde(default = "default_max_report_bytes")]
+    pub(crate) max_report_bytes: usize,
+    #[serde(default = "default_max_artifact_bytes")]
+    pub(crate) max_artifact_bytes: usize,
+}
+
+impl Default for OrchestrationLimits {
+    fn default() -> Self {
+        Self {
+            max_fan_out: default_max_fan_out(),
+            max_descendants: default_max_descendants(),
+            max_concurrency: default_max_concurrency(),
+            deadline_seconds: default_deadline_seconds(),
+            max_context_tokens: default_max_context_tokens(),
+            max_report_bytes: default_max_report_bytes(),
+            max_artifact_bytes: default_max_artifact_bytes(),
+        }
+    }
+}
+
+fn default_max_fan_out() -> usize {
+    4
+}
+
+fn default_max_descendants() -> usize {
+    8
+}
+
+fn default_max_concurrency() -> usize {
+    2
+}
+
+fn default_deadline_seconds() -> u64 {
+    300
+}
+
+fn default_max_context_tokens() -> usize {
+    8_192
+}
+
+fn default_max_report_bytes() -> usize {
+    32 * 1024
+}
+
+fn default_max_artifact_bytes() -> usize {
+    8 * 1024 * 1024
 }
 
 fn default_max_tool_rounds() -> usize {
@@ -170,13 +269,27 @@ pub(crate) struct ProfileConfig {
     pub(crate) connection: String,
     pub(crate) model: String,
     pub(crate) max_tool_rounds: usize,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) reasoning_summary: Option<String>,
+    pub(crate) capabilities: Option<Vec<String>>,
+    pub(crate) permission_mode: Option<PermissionMode>,
+    pub(crate) orchestration: OrchestrationLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RouteConfig {
+    pub(crate) id: String,
+    pub(crate) profile: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectionRegistry {
     pub(crate) default_profile: String,
+    pub(crate) default_child_route: Option<String>,
+    pub(crate) permission_mode: PermissionMode,
     pub(crate) connections: BTreeMap<String, ConnectionConfig>,
     pub(crate) profiles: BTreeMap<String, ProfileConfig>,
+    pub(crate) routes: BTreeMap<String, RouteConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +373,13 @@ pub(crate) enum ConfigError {
         profile: String,
         provider: String,
     },
+    UnknownProfile {
+        route: String,
+        profile: String,
+    },
+    MissingDefaultChildRoute {
+        route: String,
+    },
     EmptyModel {
         profile: String,
     },
@@ -294,6 +414,25 @@ pub(crate) enum ConfigError {
     InvalidToolRoundLimit {
         profile: String,
         value: usize,
+    },
+    InvalidProfileOption {
+        profile: String,
+        option: &'static str,
+        reason: &'static str,
+    },
+    InvalidCapability {
+        profile: String,
+        capability: String,
+    },
+    DuplicateCapability {
+        profile: String,
+        capability: String,
+    },
+    InvalidOrchestrationLimit {
+        profile: String,
+        field: &'static str,
+        value: u64,
+        maximum: u64,
     },
     InvalidShell(ShellError),
     InvalidPermissionPolicy(PolicyError),
@@ -335,6 +474,12 @@ impl fmt::Display for ConfigError {
                 f,
                 "profile {profile:?} references unknown provider {provider:?}"
             ),
+            Self::UnknownProfile { route, profile } => {
+                write!(f, "route {route:?} references unknown profile {profile:?}")
+            }
+            Self::MissingDefaultChildRoute { route } => {
+                write!(f, "default child route {route:?} does not exist")
+            }
             Self::EmptyModel { profile } => {
                 write!(f, "profile {profile:?} must name a non-blank model")
             }
@@ -378,6 +523,34 @@ impl fmt::Display for ConfigError {
                 f,
                 "profile {profile:?} has max_tool_rounds = {value}; expected 1..={MAX_MAX_TOOL_ROUNDS}"
             ),
+            Self::InvalidProfileOption {
+                profile,
+                option,
+                reason,
+            } => write!(f, "profile {profile:?} has invalid {option}: {reason}"),
+            Self::InvalidCapability {
+                profile,
+                capability,
+            } => write!(
+                f,
+                "profile {profile:?} contains invalid capability id {capability:?}"
+            ),
+            Self::DuplicateCapability {
+                profile,
+                capability,
+            } => write!(
+                f,
+                "profile {profile:?} selects capability {capability:?} more than once"
+            ),
+            Self::InvalidOrchestrationLimit {
+                profile,
+                field,
+                value,
+                maximum,
+            } => write!(
+                f,
+                "profile {profile:?} has {field} = {value}; expected 1..={maximum}"
+            ),
             Self::InvalidShell(source) => write!(f, "invalid shell configuration: {source}"),
             Self::InvalidPermissionPolicy(source) => {
                 write!(f, "invalid permission policy: {source}")
@@ -400,6 +573,8 @@ impl Error for ConfigError {
             | Self::InvalidName { .. }
             | Self::MissingDefaultProfile { .. }
             | Self::UnknownProvider { .. }
+            | Self::UnknownProfile { .. }
+            | Self::MissingDefaultChildRoute { .. }
             | Self::EmptyModel { .. }
             | Self::InvalidBaseUrl { .. }
             | Self::InvalidCredential { .. }
@@ -409,7 +584,11 @@ impl Error for ConfigError {
             | Self::Edit(_)
             | Self::ConnectionAlreadyExists { .. }
             | Self::ConnectionReferenced { .. }
-            | Self::InvalidToolRoundLimit { .. } => None,
+            | Self::InvalidToolRoundLimit { .. }
+            | Self::InvalidProfileOption { .. }
+            | Self::InvalidCapability { .. }
+            | Self::DuplicateCapability { .. }
+            | Self::InvalidOrchestrationLimit { .. } => None,
         }
     }
 }
@@ -517,20 +696,35 @@ impl XanaConfig {
         profiles.insert(
             "default".to_owned(),
             AgentProfile {
-                provider: connection_name,
+                connection: connection_name,
                 model,
                 max_tool_rounds,
+                reasoning_effort: None,
+                reasoning_summary: None,
+                capabilities: None,
+                permission_mode: None,
+                orchestration: OrchestrationLimits::default(),
+            },
+        );
+
+        let mut routes = BTreeMap::new();
+        routes.insert(
+            "default".to_owned(),
+            TaskRoute {
+                profile: "default".to_owned(),
             },
         );
 
         let document = ConfigDocument {
             version: CONFIG_VERSION,
             default_profile: "default".to_owned(),
+            default_child_route: Some("default".to_owned()),
             permission_mode,
             permission_rules: Vec::new(),
             shell,
             providers,
             profiles,
+            routes,
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -600,6 +794,7 @@ impl XanaConfig {
         models[&input.model] = toml_edit::Item::Table(toml_edit::Table::new());
         connection["models"] = toml_edit::Item::Table(models);
         providers[&input.id] = toml_edit::Item::Table(connection);
+        migrate_profile_connection_keys(&mut document)?;
         document["version"] = toml_edit::value(CONFIG_VERSION as i64);
         let rendered = document.to_string();
         Self::parse(&rendered)?;
@@ -635,11 +830,35 @@ impl XanaConfig {
             .and_then(toml_edit::Item::as_table_mut)
             .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?
             .remove(id);
+        migrate_profile_connection_keys(&mut document)?;
         document["version"] = toml_edit::value(CONFIG_VERSION as i64);
         let rendered = document.to_string();
         Self::parse(&rendered)?;
         atomic_config_write(path, rendered.as_bytes())
     }
+}
+
+fn migrate_profile_connection_keys(
+    document: &mut toml_edit::DocumentMut,
+) -> Result<(), ConfigError> {
+    let profiles = document
+        .get_mut("profiles")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| ConfigError::Edit("profiles must be a table".into()))?;
+    for (name, item) in profiles.iter_mut() {
+        let profile = item
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit(format!("profile {name:?} must be a table")))?;
+        if profile.contains_key("provider") && profile.contains_key("connection") {
+            return Err(ConfigError::Edit(format!(
+                "profile {name:?} cannot contain both provider and connection"
+            )));
+        }
+        if let Some(connection) = profile.remove("provider") {
+            profile.insert("connection", connection);
+        }
+    }
+    Ok(())
 }
 
 fn read_config(path: &Path) -> Result<String, ConfigError> {
@@ -760,10 +979,10 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
     for (name, profile) in &document.profiles {
         validate_name("profile", name)?;
 
-        if !document.providers.contains_key(&profile.provider) {
+        if !document.providers.contains_key(&profile.connection) {
             return Err(ConfigError::UnknownProvider {
                 profile: name.clone(),
-                provider: profile.provider.clone(),
+                provider: profile.connection.clone(),
             });
         }
 
@@ -779,6 +998,57 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
                 value: profile.max_tool_rounds,
             });
         }
+
+        if profile
+            .reasoning_effort
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 64)
+        {
+            return Err(ConfigError::InvalidProfileOption {
+                profile: name.clone(),
+                option: "reasoning_effort",
+                reason: "expected 1 to 64 non-blank bytes",
+            });
+        }
+        if profile
+            .reasoning_summary
+            .as_deref()
+            .is_some_and(|value| !matches!(value, "auto" | "concise" | "detailed" | "off" | "none"))
+        {
+            return Err(ConfigError::InvalidProfileOption {
+                profile: name.clone(),
+                option: "reasoning_summary",
+                reason: "expected auto, concise, detailed, or off",
+            });
+        }
+        if let Some(capabilities) = &profile.capabilities {
+            let mut unique = std::collections::BTreeSet::new();
+            for capability in capabilities {
+                if !valid_stable_id(capability) {
+                    return Err(ConfigError::InvalidCapability {
+                        profile: name.clone(),
+                        capability: capability.clone(),
+                    });
+                }
+                if !unique.insert(capability) {
+                    return Err(ConfigError::DuplicateCapability {
+                        profile: name.clone(),
+                        capability: capability.clone(),
+                    });
+                }
+            }
+        }
+        validate_orchestration_limits(name, &profile.orchestration)?;
+    }
+
+    for (name, route) in &document.routes {
+        validate_name("route", name)?;
+        if !document.profiles.contains_key(&route.profile) {
+            return Err(ConfigError::UnknownProfile {
+                route: name.clone(),
+                profile: route.profile.clone(),
+            });
+        }
     }
 
     validate_name("default profile", &document.default_profile)?;
@@ -787,6 +1057,15 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
         return Err(ConfigError::MissingDefaultProfile {
             name: document.default_profile.clone(),
         });
+    }
+
+    if let Some(route) = &document.default_child_route {
+        validate_name("default child route", route)?;
+        if !document.routes.contains_key(route) {
+            return Err(ConfigError::MissingDefaultChildRoute {
+                route: route.clone(),
+            });
+        }
     }
 
     Ok(())
@@ -802,7 +1081,7 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         },
     )?;
 
-    let provider_name = profile.provider;
+    let provider_name = profile.connection;
     let provider = document
         .providers
         .remove(&provider_name)
@@ -853,7 +1132,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         .into_iter()
         .map(|(id, profile)| {
             connections
-                .get_mut(&profile.provider)
+                .get_mut(&profile.connection)
                 .expect("profile references were validated")
                 .models
                 .entry(profile.model.clone())
@@ -862,17 +1141,38 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
                 id.clone(),
                 ProfileConfig {
                     id,
-                    connection: profile.provider,
+                    connection: profile.connection,
                     model: profile.model,
                     max_tool_rounds: profile.max_tool_rounds,
+                    reasoning_effort: profile.reasoning_effort,
+                    reasoning_summary: profile.reasoning_summary,
+                    capabilities: profile.capabilities,
+                    permission_mode: profile.permission_mode,
+                    orchestration: profile.orchestration,
+                },
+            )
+        })
+        .collect();
+    let routes = document
+        .routes
+        .into_iter()
+        .map(|(id, route)| {
+            (
+                id.clone(),
+                RouteConfig {
+                    id,
+                    profile: route.profile,
                 },
             )
         })
         .collect();
     ConnectionRegistry {
         default_profile: document.default_profile,
+        default_child_route: document.default_child_route,
+        permission_mode: document.permission_mode,
         connections,
         profiles,
+        routes,
     }
 }
 
@@ -935,6 +1235,87 @@ fn valid_name(name: &str) -> bool {
         && bytes.all(|byte| {
             byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_' || byte == b'-'
         })
+}
+
+fn valid_stable_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || byte == b'_'
+                        || byte == b'-'
+                })
+        })
+}
+
+fn validate_orchestration_limits(
+    profile: &str,
+    limits: &OrchestrationLimits,
+) -> Result<(), ConfigError> {
+    let check = |field, value: u64, maximum: u64| {
+        if value == 0 || value > maximum {
+            Err(ConfigError::InvalidOrchestrationLimit {
+                profile: profile.to_owned(),
+                field,
+                value,
+                maximum,
+            })
+        } else {
+            Ok(())
+        }
+    };
+    check(
+        "max_fan_out",
+        limits.max_fan_out as u64,
+        MAX_ROUTE_FAN_OUT as u64,
+    )?;
+    check(
+        "max_descendants",
+        limits.max_descendants as u64,
+        MAX_ROUTE_DESCENDANTS as u64,
+    )?;
+    check(
+        "max_concurrency",
+        limits.max_concurrency as u64,
+        MAX_ROUTE_CONCURRENCY as u64,
+    )?;
+    if limits.max_concurrency > limits.max_descendants {
+        return Err(ConfigError::InvalidProfileOption {
+            profile: profile.to_owned(),
+            option: "orchestration.max_concurrency",
+            reason: "cannot exceed max_descendants",
+        });
+    }
+    if limits.max_fan_out > limits.max_descendants {
+        return Err(ConfigError::InvalidProfileOption {
+            profile: profile.to_owned(),
+            option: "orchestration.max_fan_out",
+            reason: "cannot exceed max_descendants",
+        });
+    }
+    check(
+        "deadline_seconds",
+        limits.deadline_seconds,
+        MAX_ROUTE_DEADLINE_SECONDS,
+    )?;
+    check(
+        "max_context_tokens",
+        limits.max_context_tokens as u64,
+        MAX_ROUTE_CONTEXT_TOKENS as u64,
+    )?;
+    check(
+        "max_report_bytes",
+        limits.max_report_bytes as u64,
+        MAX_ROUTE_REPORT_BYTES as u64,
+    )?;
+    check(
+        "max_artifact_bytes",
+        limits.max_artifact_bytes as u64,
+        MAX_ROUTE_ARTIFACT_BYTES as u64,
+    )?;
+    Ok(())
 }
 
 fn validate_base_url(provider: &str, base_url: &str) -> Result<(), ConfigError> {

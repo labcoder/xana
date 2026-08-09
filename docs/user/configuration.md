@@ -125,6 +125,26 @@ xana connection remove ID --yes
 `remove` rejects the selected connection and any connection referenced by a
 profile. Select another model and remove profile references first.
 
+### Child task routes
+
+Task routes are exact names for reusable child profiles. They are independent
+of the model selected for the interactive foreground conversation. Inspect
+them without starting a provider, opening a network connection, or launching
+Codex:
+
+```text
+xana route list
+xana route check worker
+```
+
+`route list` is bounded and marks the configured default with `*`. It shows
+locally unavailable routes inline. `route check` exits nonzero for an unknown
+route, missing credential, absent configured/cached model, unsupported model
+option, unknown capability, or a model that explicitly rejects the selected
+tools. Diagnostics identify the route, profile, connection, and model without
+printing secret values. The current commands are read-only diagnostics; this
+release does not yet start a child from a route.
+
 ### API-key providers
 
 Add a connection, store its key in the operating-system credential store, and
@@ -243,11 +263,12 @@ isolated account, set an absolute `--codex-home` when adding the connection.
 `--codex-program` selects a compatible executable. Codex connections do not
 accept `base_url` or a Xana credential reference.
 
-## Version 2 example
+## Version 3 example
 
 ```toml
-version = 2
+version = 3
 default_profile = "default"
+default_child_route = "worker"
 permission_mode = "ask"
 
 [shell]
@@ -276,13 +297,34 @@ codex_program = "codex"
 [providers.codex.models."ADVERTISED_MODEL_ID"]
 
 [profiles.default]
-provider = "ollama"
+connection = "ollama"
 model = "qwen3:1.7b"
 max_tool_rounds = 8
+
+[profiles.worker]
+connection = "openrouter"
+model = "openai/gpt-4.1"
+capabilities = ["fs.read", "fs.list", "xana.docs.read"]
+permission_mode = "ask"
+max_tool_rounds = 4
+
+[profiles.worker.orchestration]
+max_fan_out = 4
+max_descendants = 8
+max_concurrency = 2
+deadline_seconds = 300
+max_context_tokens = 8192
+max_report_bytes = 32768
+max_artifact_bytes = 8388608
+
+[routes.worker]
+profile = "worker"
 ```
 
-Version 1 documents remain readable. The first connection edit writes version
-2 while preserving TOML comments. Model selection is stored separately in
+Version 1 and 2 documents remain readable. Their legacy
+`profiles.<id>.provider` input maps to `connection`; specifying both is an
+error. The first structured connection edit writes version 3 and the canonical
+key while preserving TOML comments. Model selection is stored separately in
 `data/selection.toml`, so choosing a model does not rewrite this file. The
 selection document is version 2 and may include non-secret `reasoning_effort`
 and `reasoning_summary` fields for Codex. Legacy version 1 selections remain
@@ -292,8 +334,9 @@ readable.
 
 | Field | Meaning |
 |---|---|
-| `version` | This build accepts schema 1 or 2 and writes 2 |
+| `version` | This build accepts schema 1, 2, or 3 and writes 3 |
 | `default_profile` | Profile used when no separate selection exists |
+| `default_child_route` | Optional exact route used when child work omits a route name |
 | `permission_mode` | `deny`, `ask`, or `allow` |
 | `permission_rules` | Optional scoped user authority rules |
 | `shell.kind` / `shell.program` | Platform shell policy for `run_command` |
@@ -302,9 +345,14 @@ readable.
 | `credential` | Tagged `environment` or `stored` reference; never the secret |
 | `models.<id>` | Optional capability/limit overrides for a connection-owned model |
 | `codex_program` / `codex_home` | Codex-only executable and absolute account-home override |
-| `profiles.<id>.provider` | Connection used by the profile |
-| `profiles.<id>.model` | Initial model id |
+| `profiles.<id>.connection` | Exact connection used by the profile; legacy `provider` remains read-only migration input |
+| `profiles.<id>.model` | Exact configured/cached model id |
+| `reasoning_effort` / `reasoning_summary` | Optional managed Codex model options validated against local catalog metadata |
+| `capabilities` | Optional exact built-in logical capability ids; omitted means all built-ins and `[]` means none |
+| `profiles.<id>.permission_mode` | Optional ceiling that can narrow but never widen the global policy |
 | `max_tool_rounds` | Native loop limit, `1..=64`, default 8 |
+| `profiles.<id>.orchestration` | Bounded fan-out, descendants, concurrency, deadline, context, report, and artifact defaults |
+| `routes.<id>.profile` | Exact profile selected by a child task route; no fallback |
 
 Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
 `reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and

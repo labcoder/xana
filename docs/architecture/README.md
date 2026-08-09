@@ -332,7 +332,11 @@ Bare `xana` starts the selected native or managed route. Native chat creates a
 session; `xana --resume SESSION_ID` resumes only a native session. The typed
 command boundary exposes initialization/configuration, session inspection,
 explicit operation recovery, unified `xana model`, and advanced `xana
-connection` commands for static keys and Codex account control.
+connection` commands for static keys and Codex account control. Read-only
+`xana route list` and `xana route check NAME` resolve exact child profile,
+connection, configured/cached model, capabilities, permission ceiling, and
+limits without provider network access or managed-process startup. This
+diagnostic slice does not start children yet.
 
 Managed chat also exposes `/reasoning`, `/reasoning-summary`, `/activity`, and
 `/details`. Model, effort, and summary selections persist separately from
@@ -342,7 +346,7 @@ runtime events and never changes model effort.
 
 Initialization collects interactive or explicit noninteractive answers,
 builds a typed Ollama, OpenAI-compatible, or managed Codex connection draft
-without filesystem effects, renders the version 2 TOML shape, validates it
+without filesystem effects, renders the version 3 TOML shape, validates it
 through the production configuration loader, and creates `config.toml`
 without replacing an existing file. The variants keep HTTP provider fields
 out of managed-runtime drafts and Codex process fields out of native-provider
@@ -359,14 +363,17 @@ and externally owned Codex state. Interactive reset requires confirmation and
 noninteractive reset requires `--yes`; a partial derived-state failure leaves
 the current configuration in place whenever possible.
 
-Xana loads a strict version 1-or-2 `config.toml`, capped at 1 MiB. It validates
-named native and managed connections, tagged credential references, connection-owned model
-overrides, profiles, Codex-only fields, shell policy, and permission rules.
+Xana loads a strict version 1, 2, or 3 `config.toml`, capped at 1 MiB. It validates
+named native and managed connections, tagged credential references,
+connection-owned model overrides, complete agent profiles, exact task routes,
+Codex-only fields, shell policy, permission rules, and bounded orchestration
+limits.
 Model selection (64 KiB maximum) and bounded non-secret catalogs (8 MiB each)
 are stored separately so the control plane does not rewrite a user's normal
 selection into TOML. Structured
-connection add/remove edits preserve comments and validate the complete
-result. Existing version 1 documents retain their behavior.
+connection add/remove edits preserve comments, migrate legacy profile
+`provider` keys to canonical `connection`, write version 3, and validate the
+complete result. Existing version 1 and 2 documents remain readable.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.

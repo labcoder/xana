@@ -117,6 +117,34 @@ pub enum ResolutionError {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BuiltinCapabilityError {
+    InvalidId(String),
+    Unknown(String),
+    Resolution(String),
+}
+
+impl fmt::Display for BuiltinCapabilityError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidId(id) => write!(f, "invalid capability id {id:?}"),
+            Self::Unknown(id) => write!(f, "unknown built-in capability {id:?}"),
+            Self::Resolution(reason) => write!(f, "could not resolve capabilities: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for BuiltinCapabilityError {}
+
+impl BuiltinCapabilityError {
+    pub(crate) fn capability(&self) -> Option<&str> {
+        match self {
+            Self::InvalidId(id) | Self::Unknown(id) => Some(id),
+            Self::Resolution(_) => None,
+        }
+    }
+}
+
 impl fmt::Display for ResolutionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -321,15 +349,44 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
 /// runtime tools are constructed. The returned names are the only built-ins
 /// exposed in the production tool registry.
 pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, ResolutionError> {
+    Ok(resolve_builtin_capability_snapshot(None)
+        .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?
+        .tool_ids()
+        .iter()
+        .map(ToString::to_string)
+        .collect())
+}
+
+pub(crate) fn resolve_builtin_capability_snapshot(
+    selection: Option<&[String]>,
+) -> Result<AgentCapabilitySnapshot, BuiltinCapabilityError> {
     let provider_id = ProviderId::parse("xana.builtins")
-        .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
+        .map_err(|error| BuiltinCapabilityError::InvalidId(error.to_string()))?;
     let mut capabilities = Vec::new();
     let mut tools = Vec::new();
-    for (capability, tool) in BUILTIN_CAPABILITIES {
-        let capability = CapabilityId::parse(*capability)
-            .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
-        let tool_id = LogicalToolId::parse(*tool)
-            .map_err(|error| ResolutionError::InvalidProvider(error.to_string()))?;
+    let known = BUILTIN_CAPABILITIES
+        .iter()
+        .map(|(capability, _)| *capability)
+        .collect::<BTreeSet<_>>();
+    let selected = selection
+        .map(|values| {
+            values
+                .iter()
+                .map(|value| {
+                    if !known.contains(value.as_str()) {
+                        return Err(BuiltinCapabilityError::Unknown(value.clone()));
+                    }
+                    CapabilityId::parse(value.clone())
+                        .map_err(|_| BuiltinCapabilityError::InvalidId(value.clone()))
+                })
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .transpose()?;
+    for (capability_name, tool_name) in BUILTIN_CAPABILITIES {
+        let capability = CapabilityId::parse(*capability_name)
+            .map_err(|_| BuiltinCapabilityError::InvalidId((*capability_name).to_owned()))?;
+        let tool_id = LogicalToolId::parse(*tool_name)
+            .map_err(|_| BuiltinCapabilityError::InvalidId((*tool_name).to_owned()))?;
         capabilities.push(CapabilityDescriptor {
             id: capability.clone(),
             required: Vec::new(),
@@ -340,6 +397,12 @@ pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, Resolutio
             capability,
         });
     }
+    if selected.as_ref().is_some_and(BTreeSet::is_empty) {
+        return Ok(AgentCapabilitySnapshot::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+        ));
+    }
     let resolved = resolve(ResolutionInput {
         providers: vec![ProviderDescriptor {
             provider_id,
@@ -347,14 +410,10 @@ pub(crate) fn resolve_builtin_tool_names() -> Result<BTreeSet<String>, Resolutio
             tools,
         }],
         enabled: BTreeSet::new(),
-        selected: BTreeSet::new(),
-    })?;
-    Ok(resolved
-        .snapshot
-        .tool_ids()
-        .iter()
-        .map(ToString::to_string)
-        .collect())
+        selected: selected.unwrap_or_default(),
+    })
+    .map_err(|error| BuiltinCapabilityError::Resolution(error.to_string()))?;
+    Ok(resolved.snapshot)
 }
 
 #[cfg(test)]
@@ -499,5 +558,30 @@ mod tests {
                 .map(|name| (*name).to_owned())
                 .collect()
         );
+    }
+
+    #[test]
+    fn builtin_profile_selection_distinguishes_all_none_and_unknown() {
+        let all = resolve_builtin_capability_snapshot(None).expect("all built-ins");
+        assert_eq!(all.tool_ids().len(), BUILTIN_CAPABILITIES.len());
+
+        let none = resolve_builtin_capability_snapshot(Some(&[])).expect("no built-ins");
+        assert!(none.capabilities().is_empty());
+        assert!(none.tool_ids().is_empty());
+
+        let selected = resolve_builtin_capability_snapshot(Some(&["fs.read".into()]))
+            .expect("selected built-in");
+        assert_eq!(
+            selected
+                .capabilities()
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["fs.read"]
+        );
+        assert!(matches!(
+            resolve_builtin_capability_snapshot(Some(&["future.missing".into()])),
+            Err(BuiltinCapabilityError::Unknown(id)) if id == "future.missing"
+        ));
     }
 }

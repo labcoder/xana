@@ -22,6 +22,7 @@ mod managed_terminal;
 mod message;
 mod model;
 mod operation;
+mod orchestration;
 mod paths;
 mod permission;
 mod presentation;

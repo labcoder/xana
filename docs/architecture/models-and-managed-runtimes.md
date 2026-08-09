@@ -11,11 +11,11 @@ which path is composed for a new conversation.
 ```mermaid
 flowchart LR
     USER["User"] --> CLI["Xana CLI"]
-    CLI --> ROUTE["Selected route"]
-    ROUTE -->|"native"| AGENT["Xana Agent"]
+    CLI --> OWNER["Selected foreground execution"]
+    OWNER -->|"native"| AGENT["Xana Agent"]
     AGENT --> PROVIDER["ConversationalProvider"]
     PROVIDER --> NATIVE["Ollama / OpenAI API / OpenRouter / Anthropic / custom"]
-    ROUTE -->|"managed"| CODEX["Codex app-server"]
+    OWNER -->|"managed"| CODEX["Codex app-server"]
     CODEX --> INNER["Codex-owned agent loop, tools, sandbox, approvals, and account"]
 ```
 
@@ -27,7 +27,7 @@ protocol, not A2A.
 
 ## Domain model
 
-A **connection** is a named configured route. It owns a provider or runtime
+A **connection** is a named provider or managed-runtime configuration. It owns a
 kind, endpoint/process policy, credential owner, configured model overrides,
 and cached model catalog. A **model descriptor** is owned by one connection and
 records its id, display name, known modalities, tool/reasoning support, limits,
@@ -36,6 +36,15 @@ efforts advertised by the runtime, their descriptions, and the model default.
 A **selection** contains `(connection_id, model_id)` plus route-specific model
 options. Today those options are Codex reasoning effort and summary mode. The
 selection is stored outside the human-authored configuration.
+
+An **agent profile** is a named immutable configuration template for an exact
+connection/model/options pair, logical capability selection, permission
+ceiling, tool-round limit, and orchestration limits. A **task route** maps one
+stable child-task name to exactly one profile. `xana route list` and `xana
+route check NAME` resolve configured/cached metadata, local credential
+availability, model options, and built-in capabilities without network or
+process activation. They do not yet start a child. Interactive foreground
+model selection remains separate and cannot mutate a task route.
 
 ```mermaid
 flowchart TD
@@ -47,6 +56,9 @@ flowchart TD
     SELECTION --> RESOLVE{"Execution kind"}
     RESOLVE -->|"native"| NATIVE_ROUTE["Native provider route"]
     RESOLVE -->|"managed"| MANAGED_ROUTE["Managed runtime route"]
+    REGISTRY --> PROFILE["Named agent profile"]
+    PROFILE --> TASK_ROUTE["Exact child task route"]
+    TASK_ROUTE --> SNAPSHOT["ResolvedAgentConfig diagnostic"]
 ```
 
 Control-plane catalog refresh is explicit. Native startup reads only configured

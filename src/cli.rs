@@ -87,6 +87,8 @@ pub(crate) enum Command {
     Connection(ConnectionArgs),
     /// List, refresh, and select connection-owned models.
     Model(ModelArgs),
+    /// Inspect exact child task routes without starting work.
+    Route(RouteArgs),
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
@@ -210,6 +212,20 @@ pub(crate) enum ModelCommand {
     },
     /// Explicitly refresh one connection's catalog.
     Refresh { connection: String },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct RouteArgs {
+    #[command(subcommand)]
+    pub(crate) command: RouteCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum RouteCommand {
+    /// List configured routes and local availability.
+    List,
+    /// Resolve one route into its immutable child configuration.
+    Check { route: String },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -414,6 +430,28 @@ mod tests {
                     effort: Some("xhigh".into()),
                     summary: Some("detailed".into()),
                 })
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_read_only_route_diagnostics() {
+        assert_eq!(
+            Cli::try_parse_from(["xana", "route", "list"])
+                .expect("route list")
+                .command,
+            Some(Command::Route(RouteArgs {
+                command: RouteCommand::List,
+            }))
+        );
+        assert_eq!(
+            Cli::try_parse_from(["xana", "route", "check", "worker"])
+                .expect("route check")
+                .command,
+            Some(Command::Route(RouteArgs {
+                command: RouteCommand::Check {
+                    route: "worker".into(),
+                },
             }))
         );
     }
