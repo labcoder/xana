@@ -796,6 +796,8 @@ async fn run_default(
                 data_root: paths.data_dir().to_owned(),
                 artifact_store,
                 owner: crate::identity::PrincipalId::new(),
+                developer_instructions: crate::prompt::xana_identity(),
+                identity_version: crate::prompt::XANA_IDENTITY_VERSION,
             },
         )
         .await;

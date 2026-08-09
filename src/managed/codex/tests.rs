@@ -180,17 +180,22 @@ fn reasoning_plan_tool_and_completion_events_are_typed() {
 }
 
 #[test]
-fn thread_lifecycle_uses_current_app_server_request_enums() {
+fn thread_lifecycle_preserves_codex_base_and_supplies_xana_identity() {
     let workspace = Path::new("C:/work");
-    let start = thread_start_params("gpt-5.6-sol", workspace);
+    let developer_instructions = "You are Xana, a personal AI agent.";
+    let start = thread_start_params("gpt-5.6-sol", workspace, developer_instructions);
     assert_eq!(start["sandbox"], "workspace-write");
     assert_eq!(start["approvalPolicy"], "on-request");
     assert_eq!(start["serviceName"], "xana");
+    assert_eq!(start["developerInstructions"], developer_instructions);
+    assert!(start.get("baseInstructions").is_none());
 
-    let resume = thread_resume_params("thr_123", "gpt-5.6-sol", workspace);
+    let resume = thread_resume_params("thr_123", "gpt-5.6-sol", workspace, developer_instructions);
     assert_eq!(resume["threadId"], "thr_123");
     assert_eq!(resume["model"], "gpt-5.6-sol");
     assert_eq!(resume["sandbox"], "workspace-write");
+    assert_eq!(resume["developerInstructions"], developer_instructions);
+    assert!(resume.get("baseInstructions").is_none());
 
     let turn = turn_start_params(
         "thr_123",

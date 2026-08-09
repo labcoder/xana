@@ -9,9 +9,12 @@ resulting bytes remain frozen across that turn's provider calls and tool
 rounds. The next root turn refreshes project context and may receive a new
 snapshot. Merely opening or resuming a session never reads project files.
 Managed Codex builds its own prompt and discovers context according to the
-installed Codex runtime; Xana does not inject a second outer prompt.
+installed Codex runtime. When it creates a thread, Xana supplies only its
+canonical built-in identity from the native layers below as a developer
+instruction. This makes the managed assistant present itself as Xana without
+replacing Codex's base instructions or creating a second outer model call.
 
-## Prompt layers
+## Native prompt layers
 
 Xana assembles available layers in this order:
 
@@ -41,6 +44,22 @@ flag. Dynamic attributes and bodies are XML-escaped so project text cannot
 forge another source boundary. The labels make provenance legible; they are
 not a security boundary.
 
+## Managed Codex context
+
+Managed Codex receives Xana's identity, selected workspace, model, and runtime
+options at the app-server boundary. Codex still owns its operating guidelines,
+tool descriptions, sandbox and approval behavior, conversation context, and
+project-instruction discovery. Xana does not duplicate the native tool catalog
+or the bounded native `AGENTS.md` preview into that prompt. Project files such
+as `AGENTS.md` are interpreted according to the installed Codex runtime when
+this route is active.
+
+Codex retains the identity established when a thread was created. It does not
+replace that identity when Xana resumes or forks an older rollout. If Xana
+reports that a saved handle predates the current managed identity, enter
+`/clear` before your next prompt. The next prompt creates an identity-aware
+thread; the previous Codex-owned thread is left intact in Codex history.
+
 ## Image attachments
 
 Use `/attach WORKSPACE_RELATIVE_IMAGE_PATH` before a turn to stage a PNG, JPEG,
@@ -56,6 +75,8 @@ were checked beneath the selected workspace. Xana does not fetch image URLs,
 run OCR, generate images, or display terminal graphics.
 
 ## Root `AGENTS.md`
+
+This section describes Xana's native prompt assembly.
 
 Xana checks only this path relative to the directory where it starts:
 

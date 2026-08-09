@@ -102,6 +102,27 @@ bounded, and a timed-out or interrupted exchange poisons that process
 connection rather than allowing a later request to consume an ambiguous
 response.
 
+Application composition passes Xana's canonical, versioned built-in identity
+to every thread start and delegated resume as `developerInstructions`. The
+adapter intentionally does not set `baseInstructions`: Codex retains its
+vendor-owned base behavior, tools, sandbox, approvals, and project-context
+discovery while presenting a newly created managed assistant as Xana. Xana
+does not send its native guidelines, native tool catalog, or native
+project-context snapshot through this boundary. The handoff adds one
+instruction layer to the same managed request; it does not create an outer
+model turn.
+
+Codex fixes the effective developer identity when it creates the rollout. A
+resume override does not retrofit a different identity onto a thread created
+without it, and a fork preserves that original identity with the copied
+history. Xana therefore records the creating identity version beside its local
+opaque handle. A missing or mismatched version is treated as a detectable
+legacy handle: Xana warns before the first prompt and requires an explicit
+`/clear` to start a new identity-aware thread. It does not silently discard,
+translate, summarize, fork, or delete the old Codex-owned conversation. Threads
+created with the current identity retain it across process restarts, model
+changes, and later resumes.
+
 Thread start and resume use the app-server request-form `workspace-write`
 sandbox preset. Codex's response policy is a different tagged shape whose
 `type` may be `workspaceWrite`; Xana does not reuse that response spelling in
@@ -127,9 +148,9 @@ sequenceDiagram
     U->>X: prompt and optional local image
     X->>H: load handle for connection + workspace
     alt saved handle exists
-        X->>C: thread/resume
+        X->>C: thread/resume + Xana identity
     else no saved handle
-        X->>C: thread/start
+        X->>C: thread/start + Xana identity
         X->>H: atomically save opaque thread id
     end
     X->>C: turn/start with model, effort, and summary
@@ -143,13 +164,14 @@ This is a direct control handoff, not an agent-to-agent conversation. Only the
 Codex-owned service request consumes model tokens; Xana does not ask a second
 model to summarize, route, or relay the turn.
 
-Xana stores the opaque managed thread id beneath `data/managed-threads/`,
-keyed by connection and canonical workspace. A companion lock gives one local
-writer ownership of that route. The handle lets a later Xana process ask Codex
-to resume its own thread; it is not a transcript, portable session, auth token,
-or claim that Xana owns the inner state. `/clear` atomically records an empty
-handle and creates a new thread on the next prompt. Native `--resume` remains a
-separate session protocol.
+Xana stores the opaque managed thread id and non-secret creating identity
+version beneath `data/managed-threads/`, keyed by connection and canonical
+workspace. A companion lock gives one local writer ownership of that route.
+The handle lets a later Xana process ask Codex to resume its own thread; it is
+not a transcript, portable session, auth token, or claim that Xana owns the
+inner state. `/clear` atomically records an empty handle and creates a new
+thread on the next prompt. It does not delete the external Codex thread. Native
+`--resume` remains a separate session protocol.
 
 ## Managed activity and reasoning controls
 

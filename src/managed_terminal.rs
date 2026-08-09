@@ -24,11 +24,16 @@ pub(crate) struct ManagedChatConfig {
     pub(crate) data_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
+    pub(crate) developer_instructions: &'static str,
+    pub(crate) identity_version: &'static str,
 }
 
 enum ManagedThreadState {
     New,
-    NeedsResume(String),
+    NeedsResume {
+        thread_id: String,
+        identity_is_current: bool,
+    },
     Loaded(String),
 }
 
@@ -59,7 +64,10 @@ pub(crate) async fn run_codex_chat(
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)?;
     let mut thread = thread_store
         .thread_id()
-        .map(|id| ManagedThreadState::NeedsResume(id.to_owned()))
+        .map(|id| ManagedThreadState::NeedsResume {
+            thread_id: id.to_owned(),
+            identity_is_current: thread_store.identity_version() == Some(config.identity_version),
+        })
         .unwrap_or(ManagedThreadState::New);
     let mut activity = ActivityLevel::Normal;
     let mut last_activity = RetainedActivity::default();
@@ -78,8 +86,20 @@ pub(crate) async fn run_codex_chat(
             .map_or_else(|| "provider default".into(), |value| value.to_string())
     );
     println!("workspace: {}", config.workspace.display());
-    if let ManagedThreadState::NeedsResume(id) = &thread {
-        println!("managed thread: {id} (will resume on the first turn)");
+    if let ManagedThreadState::NeedsResume {
+        thread_id,
+        identity_is_current,
+    } = &thread
+    {
+        println!("managed thread: {thread_id} (will resume on the first turn)");
+        if !identity_is_current {
+            println!(
+                "xana> this thread predates Xana's current managed identity; Codex cannot replace its identity while preserving the thread"
+            );
+            println!(
+                "xana> enter /clear before your first prompt to start as Xana; the old Codex-owned thread will not be deleted"
+            );
+        }
     }
     println!(
         "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /clear starts a new Codex thread; /quit exits"
@@ -107,7 +127,7 @@ pub(crate) async fn run_codex_chat(
             break;
         }
         if input == "/clear" {
-            thread_store.set_thread_id(None)?;
+            thread_store.set_thread(None, None)?;
             thread = ManagedThreadState::New;
             last_activity = RetainedActivity::default();
             let cleared = pending.clear();
@@ -291,7 +311,7 @@ pub(crate) async fn run_codex_chat(
                     pending.push(attachment);
                 }
                 println!("xana> could not open managed thread: {error}");
-                if matches!(thread, ManagedThreadState::NeedsResume(_)) {
+                if matches!(thread, ManagedThreadState::NeedsResume { .. }) {
                     println!("xana> use /clear to explicitly start a new Codex thread");
                 }
                 continue;
@@ -369,20 +389,32 @@ async fn ensure_thread_loaded(
 ) -> Result<String, CodexError> {
     let id = match thread {
         ManagedThreadState::New => {
-            server
-                .start_thread(&config.model, &config.workspace, handler)
-                .await?
+            let id = server
+                .start_thread(
+                    &config.model,
+                    &config.workspace,
+                    config.developer_instructions,
+                    handler,
+                )
+                .await?;
+            store
+                .set_thread(Some(id.clone()), Some(config.identity_version))
+                .map_err(|error| CodexError::Io(error.to_string()))?;
+            id
         }
-        ManagedThreadState::NeedsResume(id) => {
+        ManagedThreadState::NeedsResume { thread_id, .. } => {
             server
-                .resume_thread(id, &config.model, &config.workspace, handler)
+                .resume_thread(
+                    thread_id,
+                    &config.model,
+                    &config.workspace,
+                    config.developer_instructions,
+                    handler,
+                )
                 .await?
         }
         ManagedThreadState::Loaded(id) => return Ok(id.clone()),
     };
-    store
-        .set_thread_id(Some(id.clone()))
-        .map_err(|error| CodexError::Io(error.to_string()))?;
     *thread = ManagedThreadState::Loaded(id.clone());
     Ok(id)
 }

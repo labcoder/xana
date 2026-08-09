@@ -57,7 +57,7 @@ fn system_text(snapshot: &PromptSnapshot) -> &str {
 
 #[test]
 fn approved_identity_matches_v1_fixture() {
-    assert_eq!(IDENTITY, include_str!("fixtures/identity-v1.md"));
+    assert_eq!(xana_identity(), include_str!("fixtures/identity-v1.md"));
 }
 
 #[test]
