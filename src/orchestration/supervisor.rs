@@ -2,17 +2,21 @@ use super::{
     AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, BudgetError, BudgetLedger,
     BudgetReservation, ChildActivity, ChildAdmission, ChildAttribution, ChildCancellationReceipt,
     ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildInspection,
-    ChildLifecycle, ChildReport, OrchestrationBudget, PreparedChild, ReservationRequest,
-    SpawnAgentRequest, truncate_utf8, validate_spawn_request,
+    ChildLifecycle, ChildReport, CollectAgentsOptions, CollectionFailurePolicy,
+    CollectionObservation, CollectionResult, MAX_COLLECTION_HANDLES, MaterializedChildReport,
+    OrchestrationBudget, PreparedChild, ReservationRequest, SpawnAgentRequest,
+    build_collection_result, materialize_completed_report, truncate_utf8, validate_spawn_request,
 };
 use crate::{
+    artifact::ArtifactStore,
     identity::{AgentId, OperationId, ThreadId, ToolInvocationId},
     permission::{ControllerDecision, PermissionBroker, PermissionBrokerHandle},
     runtime::{AgentEvent, OperationState},
     session::SessionRecord,
 };
+use futures::{StreamExt, stream::FuturesUnordered};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt,
     sync::Arc,
 };
@@ -71,6 +75,7 @@ impl ChildCommitSender {
 #[derive(Clone)]
 pub(crate) struct ChildSupervisorHandle {
     commands: mpsc::Sender<SupervisorCommand>,
+    artifact_store: ArtifactStore,
 }
 
 pub(crate) struct ChildSupervisor {
@@ -82,6 +87,8 @@ pub(crate) struct ChildSupervisor {
     completion_sender: mpsc::UnboundedSender<ChildCompletion>,
     ledger: BudgetLedger,
     admission_queue: VecDeque<AgentId>,
+    artifact_store: ArtifactStore,
+    artifact_owner: crate::identity::PrincipalId,
 }
 
 struct ActiveChild {
@@ -128,6 +135,10 @@ enum SupervisorCommand {
         agent_id: AgentId,
         reply: oneshot::Sender<Result<ChildInspection, SupervisorError>>,
     },
+    SnapshotMany {
+        agent_ids: Vec<AgentId>,
+        reply: oneshot::Sender<Result<Vec<ChildInspection>, SupervisorError>>,
+    },
     Cancel {
         agent_id: AgentId,
         reply: oneshot::Sender<Result<ChildCancellationReceipt, SupervisorError>>,
@@ -146,7 +157,7 @@ enum SupervisorCommand {
 
 struct ChildCompletion {
     agent_id: AgentId,
-    outcome: ChildExecutionOutcome,
+    materialized: MaterializedChildReport,
 }
 
 struct RunningChild {
@@ -158,6 +169,10 @@ struct RunningChild {
     broker_task: JoinHandle<()>,
     outer_events: mpsc::UnboundedSender<AgentEvent>,
     completions: mpsc::UnboundedSender<ChildCompletion>,
+    report_schema: super::ChildResultSchema,
+    report_limits: crate::config::OrchestrationLimits,
+    artifact_store: ArtifactStore,
+    artifact_owner: crate::identity::PrincipalId,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,6 +183,9 @@ pub(crate) enum SupervisorError {
     Admission(String),
     UnknownAgent(AgentId),
     TooManyWaiters(AgentId),
+    DuplicateAgent(AgentId),
+    TooManyCollectionHandles { requested: usize, maximum: usize },
+    Collection(String),
     Permission(String),
     Durability(String),
 }
@@ -184,6 +202,14 @@ impl fmt::Display for SupervisorError {
                 formatter,
                 "child agent {agent_id} already has the maximum number of waiters"
             ),
+            Self::DuplicateAgent(agent_id) => {
+                write!(formatter, "child collection repeats agent {agent_id}")
+            }
+            Self::TooManyCollectionHandles { requested, maximum } => write!(
+                formatter,
+                "child collection requests {requested} handles, exceeding maximum {maximum}"
+            ),
+            Self::Collection(reason) => write!(formatter, "child collection failed: {reason}"),
             Self::Permission(reason) => {
                 write!(formatter, "child permission decision failed: {reason}")
             }
@@ -207,6 +233,8 @@ impl ChildSupervisor {
             factory,
             Vec::new(),
             OrchestrationBudget::new(crate::config::OrchestrationLimits::default(), 8),
+            test_artifact_store(),
+            crate::identity::PrincipalId::new(),
         )
     }
 
@@ -216,7 +244,32 @@ impl ChildSupervisor {
         factory: Arc<dyn ChildExecutionFactory>,
         budget: OrchestrationBudget,
     ) -> (ChildSupervisorHandle, Self) {
-        Self::with_restored(parent, factory, Vec::new(), budget)
+        Self::with_restored(
+            parent,
+            factory,
+            Vec::new(),
+            budget,
+            test_artifact_store(),
+            crate::identity::PrincipalId::new(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_budget_and_artifacts(
+        parent: ParentExecution,
+        factory: Arc<dyn ChildExecutionFactory>,
+        budget: OrchestrationBudget,
+        artifact_store: ArtifactStore,
+        artifact_owner: crate::identity::PrincipalId,
+    ) -> (ChildSupervisorHandle, Self) {
+        Self::with_restored(
+            parent,
+            factory,
+            Vec::new(),
+            budget,
+            artifact_store,
+            artifact_owner,
+        )
     }
 
     pub(crate) fn with_restored(
@@ -224,9 +277,12 @@ impl ChildSupervisor {
         factory: Arc<dyn ChildExecutionFactory>,
         restored: Vec<ChildInspection>,
         budget: OrchestrationBudget,
+        artifact_store: ArtifactStore,
+        artifact_owner: crate::identity::PrincipalId,
     ) -> (ChildSupervisorHandle, Self) {
         let (command_sender, commands) = mpsc::channel(SUPERVISOR_COMMAND_CAPACITY);
         let (completion_sender, completions) = mpsc::unbounded_channel();
+        let handle_artifact_store = artifact_store.clone();
         let children = restored
             .into_iter()
             .map(|inspection| {
@@ -253,6 +309,7 @@ impl ChildSupervisor {
         (
             ChildSupervisorHandle {
                 commands: command_sender,
+                artifact_store: handle_artifact_store,
             },
             Self {
                 parent,
@@ -263,6 +320,8 @@ impl ChildSupervisor {
                 completion_sender,
                 ledger: BudgetLedger::new(budget),
                 admission_queue: VecDeque::new(),
+                artifact_store,
+                artifact_owner,
             },
         )
     }
@@ -359,6 +418,22 @@ impl ChildSupervisor {
                     .get(&agent_id)
                     .map(child_inspection)
                     .ok_or(SupervisorError::UnknownAgent(agent_id));
+                let _ = reply.send(result);
+            }
+            SupervisorCommand::SnapshotMany { agent_ids, reply } => {
+                let mut seen = BTreeSet::new();
+                let result = agent_ids
+                    .into_iter()
+                    .map(|agent_id| {
+                        if !seen.insert(agent_id) {
+                            return Err(SupervisorError::DuplicateAgent(agent_id));
+                        }
+                        self.children
+                            .get(&agent_id)
+                            .map(child_inspection)
+                            .ok_or(SupervisorError::UnknownAgent(agent_id))
+                    })
+                    .collect();
                 let _ = reply.send(result);
             }
             SupervisorCommand::Cancel { agent_id, reply } => {
@@ -560,7 +635,12 @@ impl ChildSupervisor {
             self.parent.thread_id,
             &prepared.resolved,
         );
-        let admission = ChildAdmission::new(attribution, &request.task, &prepared.resolved);
+        let admission = ChildAdmission::new(
+            attribution,
+            &request.task,
+            request.result_schema,
+            &prepared.resolved,
+        );
         let reservation = ReservationRequest {
             tool_rounds: prepared.resolved.max_tool_rounds,
             context_tokens: prepared.resolved.orchestration.max_context_tokens,
@@ -651,6 +731,10 @@ impl ChildSupervisor {
                 broker_task,
                 outer_events: events.clone(),
                 completions: self.completion_sender.clone(),
+                report_schema: child.snapshot.admission.result_schema,
+                report_limits: child.snapshot.admission.limits.clone(),
+                artifact_store: self.artifact_store.clone(),
+                artifact_owner: self.artifact_owner,
             })));
         }
     }
@@ -669,35 +753,25 @@ impl ChildSupervisor {
         }
         let attribution = child.snapshot.admission.attribution.clone();
         let max_bytes = child.snapshot.admission.limits.max_report_bytes;
-        let report = if child.cancellation_requested {
-            ChildReport::cancelled(
-                attribution.clone(),
-                "child cancellation was requested and observed".to_owned(),
-                max_bytes,
-            )
-        } else {
-            match completion.outcome {
-                ChildExecutionOutcome::Completed(output) if output.text.len() <= max_bytes => {
-                    ChildReport::completed(attribution.clone(), output.text, output.usage)
-                }
-                ChildExecutionOutcome::Completed(output) => ChildReport::failed(
+        let schema = child.snapshot.admission.result_schema;
+        let MaterializedChildReport {
+            report: materialized_report,
+            artifact,
+        } = completion.materialized;
+        let (report, artifact) = if child.cancellation_requested {
+            (
+                ChildReport::cancelled_with_schema(
                     attribution.clone(),
-                    format!(
-                        "child output contains {} bytes, exceeding the {}-byte inline report limit",
-                        output.text.len(),
-                        max_bytes
-                    ),
+                    schema,
+                    "child cancellation was requested and observed".to_owned(),
                     max_bytes,
                 ),
-                ChildExecutionOutcome::Failed(reason) => {
-                    ChildReport::failed(attribution.clone(), reason, max_bytes)
-                }
-                ChildExecutionOutcome::Cancelled(reason) => {
-                    ChildReport::cancelled(attribution.clone(), reason, max_bytes)
-                }
-            }
+                None,
+            )
+        } else {
+            (materialized_report, artifact)
         };
-        self.commit_terminal_report(completion.agent_id, report, commits, events)
+        self.commit_terminal_report(completion.agent_id, report, artifact, commits, events)
             .await;
     }
 
@@ -753,6 +827,7 @@ impl ChildSupervisor {
         &mut self,
         agent_id: AgentId,
         report: ChildReport,
+        artifact: Option<crate::artifact::ArtifactRecord>,
         commits: &ChildCommitSender,
         events: &mpsc::UnboundedSender<AgentEvent>,
     ) {
@@ -760,6 +835,24 @@ impl ChildSupervisor {
             return;
         };
         if child.report.is_some() || child.terminal_error.is_some() {
+            return;
+        }
+        if let Some(artifact) = artifact
+            && let Err(error) = commits
+                .append(SessionRecord::ArtifactRegistered { artifact })
+                .await
+        {
+            child.snapshot.apply_lifecycle(ChildLifecycle::Interrupted);
+            child.terminal_error = Some(error.clone());
+            child
+                .permissions
+                .take()
+                .inspect(|permissions| permissions.shutdown());
+            child.task.take();
+            for waiter in child.waiters.drain(..) {
+                let _ = waiter.send(Err(error.clone()));
+            }
+            self.release_child_capacity(agent_id);
             return;
         }
         if let Err(error) = commits
@@ -819,8 +912,9 @@ impl ChildSupervisor {
                     permissions.shutdown();
                 }
                 (child.snapshot.lifecycle == ChildLifecycle::Queued).then(|| {
-                    ChildReport::cancelled(
+                    ChildReport::cancelled_with_schema(
                         child.snapshot.admission.attribution.clone(),
+                        child.snapshot.admission.result_schema,
                         "queued child cancellation was requested and observed".to_owned(),
                         child.snapshot.admission.limits.max_report_bytes,
                     )
@@ -831,7 +925,7 @@ impl ChildSupervisor {
             (newly_requested, queued_report)
         };
         if let Some(report) = queued_report {
-            self.commit_terminal_report(agent_id, report, commits, events)
+            self.commit_terminal_report(agent_id, report, None, commits, events)
                 .await;
         }
         let handle = self
@@ -900,8 +994,9 @@ impl ChildSupervisor {
             task.abort();
             let _ = task.await;
         }
-        let report = ChildReport::interrupted(
+        let report = ChildReport::interrupted_with_schema(
             child.snapshot.admission.attribution.clone(),
+            child.snapshot.admission.result_schema,
             "child did not stop within the runtime shutdown grace period".to_owned(),
             child.snapshot.admission.limits.max_report_bytes,
         );
@@ -937,6 +1032,15 @@ async fn wait_for_deadline(deadline: Option<time::Instant>) {
         Some(deadline) => time::sleep_until(deadline).await,
         None => std::future::pending().await,
     }
+}
+
+#[cfg(test)]
+fn test_artifact_store() -> ArtifactStore {
+    ArtifactStore::new(
+        std::env::temp_dir()
+            .join("xana-supervisor-tests")
+            .join(uuid::Uuid::new_v4().to_string()),
+    )
 }
 
 fn validate_child_ceiling(
@@ -1011,7 +1115,10 @@ impl ChildSupervisorHandle {
     pub(crate) fn closed_for_test() -> Self {
         let (commands, receiver) = mpsc::channel(1);
         drop(receiver);
-        Self { commands }
+        Self {
+            commands,
+            artifact_store: test_artifact_store(),
+        }
     }
 
     pub(crate) async fn spawn_agent(
@@ -1120,6 +1227,119 @@ impl ChildSupervisorHandle {
         response.await.map_err(|_| SupervisorError::Unavailable)?
     }
 
+    async fn snapshot_many(
+        &self,
+        agent_ids: Vec<AgentId>,
+    ) -> Result<Vec<ChildInspection>, SupervisorError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(SupervisorCommand::SnapshotMany { agent_ids, reply })
+            .await
+            .map_err(|_| SupervisorError::Unavailable)?;
+        response.await.map_err(|_| SupervisorError::Unavailable)?
+    }
+
+    pub(crate) async fn collect_agents(
+        &self,
+        agent_ids: Vec<AgentId>,
+        options: CollectAgentsOptions,
+    ) -> Result<CollectionResult, SupervisorError> {
+        if agent_ids.is_empty() {
+            return Err(SupervisorError::InvalidRequest(
+                "collect_agents requires at least one child handle".to_owned(),
+            ));
+        }
+        if agent_ids.len() > MAX_COLLECTION_HANDLES {
+            return Err(SupervisorError::TooManyCollectionHandles {
+                requested: agent_ids.len(),
+                maximum: MAX_COLLECTION_HANDLES,
+            });
+        }
+
+        let inspections = self.snapshot_many(agent_ids.clone()).await?;
+        let mut observations = BTreeMap::new();
+        let mut pending = FuturesUnordered::new();
+        let mut stop_after_failure = false;
+        for inspection in &inspections {
+            let agent_id = inspection.handle.admission.attribution.agent_id;
+            if let Some(report) = inspection.report.clone() {
+                stop_after_failure |= options.failure_policy == CollectionFailurePolicy::FailFast
+                    && report.status != super::ChildTerminalStatus::Completed;
+                observations.insert(agent_id, CollectionObservation::Terminal(Box::new(report)));
+            } else if !stop_after_failure {
+                let handle = self.clone();
+                pending.push(async move { (agent_id, handle.await_agent(agent_id).await) });
+            }
+        }
+
+        let deadline = options
+            .timeout
+            .map(|timeout| time::Instant::now() + timeout);
+        let mut timed_out = false;
+        while !stop_after_failure && !pending.is_empty() {
+            tokio::select! {
+                biased;
+                observation = pending.next() => {
+                    let Some((agent_id, report)) = observation else { break };
+                    match report {
+                        Ok(report) => {
+                            stop_after_failure = options.failure_policy
+                                == CollectionFailurePolicy::FailFast
+                                && report.status != super::ChildTerminalStatus::Completed;
+                            observations.insert(
+                                agent_id,
+                                CollectionObservation::Terminal(Box::new(report)),
+                            );
+                        }
+                        Err(error) => {
+                            stop_after_failure = options.failure_policy
+                                == CollectionFailurePolicy::FailFast;
+                            observations.insert(agent_id, CollectionObservation::Error(error.to_string()));
+                        }
+                    }
+                }
+                _ = wait_for_deadline(deadline) => {
+                    timed_out = true;
+                    break;
+                }
+            }
+        }
+
+        for agent_id in agent_ids {
+            if observations.contains_key(&agent_id) {
+                continue;
+            }
+            let should_cancel = (timed_out && options.cancel_on_timeout)
+                || (stop_after_failure && options.cancel_remaining);
+            let cancellation_requested = if should_cancel {
+                self.cancel_agent(agent_id)
+                    .await
+                    .map(|receipt| receipt.newly_requested)
+                    .unwrap_or(false)
+            } else {
+                false
+            };
+            let observation = if timed_out {
+                CollectionObservation::TimedOut {
+                    cancellation_requested,
+                }
+            } else {
+                CollectionObservation::SkippedAfterFailure {
+                    cancellation_requested,
+                }
+            };
+            observations.insert(agent_id, observation);
+        }
+
+        build_collection_result(
+            inspections,
+            &mut observations,
+            options.failure_policy,
+            &self.artifact_store,
+        )
+        .map_err(SupervisorError::Collection)
+    }
+
     pub(crate) async fn cancel_agent(
         &self,
         agent_id: AgentId,
@@ -1188,6 +1408,10 @@ async fn run_child_execution(child: RunningChild) {
         broker_task,
         outer_events,
         completions,
+        report_schema,
+        report_limits,
+        artifact_store,
+        artifact_owner,
     } = child;
     let cancellation = context.cancellation.clone();
     let run = execution.run(context);
@@ -1221,7 +1445,42 @@ async fn run_child_execution(child: RunningChild) {
     }
     broker_task.abort();
     let _ = broker_task.await;
-    let _ = completions.send(ChildCompletion { agent_id, outcome });
+    let materialized = match outcome {
+        ChildExecutionOutcome::Completed(output) => {
+            materialize_completed_report(
+                attribution.clone(),
+                report_schema,
+                output.text,
+                output.usage,
+                report_limits.clone(),
+                artifact_store,
+                artifact_owner,
+            )
+            .await
+        }
+        ChildExecutionOutcome::Failed(reason) => MaterializedChildReport {
+            report: ChildReport::failed_with_schema(
+                attribution.clone(),
+                report_schema,
+                reason,
+                report_limits.max_report_bytes,
+            ),
+            artifact: None,
+        },
+        ChildExecutionOutcome::Cancelled(reason) => MaterializedChildReport {
+            report: ChildReport::cancelled_with_schema(
+                attribution,
+                report_schema,
+                reason,
+                report_limits.max_report_bytes,
+            ),
+            artifact: None,
+        },
+    };
+    let _ = completions.send(ChildCompletion {
+        agent_id,
+        materialized,
+    });
 }
 
 fn child_activity(event: AgentEvent) -> Option<ChildActivity> {

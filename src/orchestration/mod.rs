@@ -5,8 +5,10 @@
 //! later modules without moving provider or frontend policy into this domain.
 
 mod budget;
+mod collection;
 mod execution;
 mod native;
+mod report;
 mod routing;
 mod supervisor;
 mod types;
@@ -14,11 +16,13 @@ mod types;
 pub(crate) use budget::{
     BudgetError, BudgetLedger, BudgetReservation, OrchestrationBudget, ReservationRequest,
 };
+pub(crate) use collection::{CollectionObservation, build_collection_result};
 pub(crate) use execution::{
     ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
     ChildExecutionOutput, PreparedChild,
 };
 pub(crate) use native::NativeChildFactory;
+pub(crate) use report::{MaterializedChildReport, materialize_completed_report};
 pub(crate) use routing::{
     EnforcementCapabilities, ExecutionOwner, ResolvedAgentConfig, RouteResolver,
     apply_spawn_restrictions,
@@ -32,8 +36,12 @@ pub(crate) use supervisor::{
 pub(crate) use types::{
     AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, ChildActivity, ChildAdmission,
     ChildAttribution, ChildCancellationReceipt, ChildInspection, ChildLifecycle, ChildReport,
-    ChildReportReference, ChildRestrictions, ChildTerminalStatus, ChildUsage, SpawnAgentRequest,
+    ChildReportReference, ChildRestrictions, ChildResultSchema, ChildTerminalStatus, ChildUsage,
+    CollectAgentsOptions, CollectedChildResult, CollectedValue, CollectionEntryState,
+    CollectionFailurePolicy, CollectionResult, SpawnAgentRequest,
 };
 pub(crate) use types::{
-    CHILD_REPORT_VERSION, MAX_CHILD_TASK_PREVIEW_BYTES, truncate_utf8, validate_spawn_request,
+    CHILD_REPORT_VERSION, COLLECTION_RESULT_VERSION, MAX_CHILD_TASK_PREVIEW_BYTES,
+    MAX_COLLECTION_HANDLES, MAX_COLLECTION_PREVIEW_BYTES, MAX_COLLECTION_RESULT_BYTES,
+    truncate_utf8, validate_spawn_request,
 };

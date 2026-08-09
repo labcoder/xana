@@ -138,6 +138,10 @@ impl DurableSession {
         self.agent_id
     }
 
+    pub(crate) fn artifact_owner(&self) -> PrincipalId {
+        self.owner
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.store.path()
     }

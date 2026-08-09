@@ -154,6 +154,57 @@ impl ArtifactStore {
         Ok(bytes)
     }
 
+    pub(crate) fn verify_reference(
+        &self,
+        reference: &ArtifactRef,
+        declared_len: u64,
+        max_bytes: usize,
+    ) -> Result<(), ArtifactError> {
+        if declared_len > max_bytes as u64 {
+            return Err(ArtifactError::TooLarge {
+                actual: usize::try_from(declared_len).unwrap_or(usize::MAX),
+                limit: max_bytes,
+            });
+        }
+        let path = self.path_for(&reference.content_hash);
+        let mut file = fs::File::open(&path).map_err(|source| ArtifactError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        let actual_len = file
+            .metadata()
+            .map_err(|source| ArtifactError::Io {
+                path: path.clone(),
+                source,
+            })?
+            .len();
+        if actual_len != declared_len {
+            return Err(ArtifactError::CorruptContent { path });
+        }
+        let mut hasher = blake3::Hasher::new();
+        let mut remaining = declared_len;
+        let mut chunk = [0_u8; 16 * 1024];
+        while remaining > 0 {
+            let limit =
+                usize::try_from(remaining.min(chunk.len() as u64)).expect("chunk limit fits usize");
+            let read = file
+                .read(&mut chunk[..limit])
+                .map_err(|source| ArtifactError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            if read == 0 {
+                return Err(ArtifactError::CorruptContent { path });
+            }
+            hasher.update(&chunk[..read]);
+            remaining -= read as u64;
+        }
+        if hasher.finalize().to_hex().as_str() != reference.content_hash.as_str() {
+            return Err(ArtifactError::CorruptContent { path });
+        }
+        Ok(())
+    }
+
     fn path_for(&self, content_hash: &ContentHash) -> PathBuf {
         self.root.join(content_hash.as_str())
     }

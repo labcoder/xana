@@ -179,7 +179,7 @@ xana route check default
 ```
 
 During a native conversation, Xana exposes `spawn_agent`, atomic `spawn_many`,
-`await_agent`, `cancel_agent`, and the efficient `delegate_agent` composition
+`await_agent`, bounded `collect_agents`, `cancel_agent`, and the efficient `delegate_agent` composition
 when at least one child route is configured. The model can give one task or a
 fixed independent batch to exact routes (or the explicit default), while Xana
 prints each child id, route, connection/model, lifecycle, activity, and
@@ -190,8 +190,10 @@ in input order up to the root profile's concurrency limit, and fail atomically
 when any member or aggregate bound is invalid. Use `/agents`,
 `/agent AGENT_ID`, and `/cancel-agent AGENT_ID` for active-process inspection
 and cooperative cancellation; `xana session inspect SESSION_ID` is read-only
-after restart. Artifact-backed overflow, multi-result collection, plans, and
-managed Codex children arrive in the remaining Phase 4 work. See
+after restart. Typed summary/JSON reports overflow to immutable artifacts, and
+multi-result collection preserves caller order, partial failures, and explicit
+timeout/cancellation policy without loading artifact bodies. Plans and managed
+Codex children arrive in the remaining Phase 4 work. See
 [Child orchestration](docs/user/orchestration.md).
 
 ## Start first-run setup again

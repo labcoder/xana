@@ -4,8 +4,8 @@ use super::{
 use crate::{
     identity::AgentId,
     orchestration::{
-        AwaitAgentOptions, AwaitAgentOutcome, ChildRestrictions, ChildSupervisorHandle,
-        SpawnAgentRequest,
+        AwaitAgentOptions, AwaitAgentOutcome, ChildRestrictions, ChildResultSchema,
+        ChildSupervisorHandle, CollectAgentsOptions, CollectionFailurePolicy, SpawnAgentRequest,
     },
     permission::PermissionScope,
 };
@@ -32,12 +32,18 @@ pub(super) struct CancelAgent {
     supervisor: ChildSupervisorHandle,
 }
 
+pub(super) struct CollectAgents {
+    supervisor: ChildSupervisorHandle,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SpawnArgs {
     #[serde(default)]
     route: Option<String>,
     task: String,
+    #[serde(default)]
+    result_schema: ChildResultSchema,
     #[serde(default)]
     restrictions: ChildRestrictions,
 }
@@ -64,6 +70,20 @@ struct AgentArgs {
     agent_id: AgentId,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CollectArgs {
+    agent_ids: Vec<AgentId>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    failure_policy: CollectionFailurePolicy,
+    #[serde(default)]
+    cancel_remaining: bool,
+    #[serde(default)]
+    cancel_on_timeout: bool,
+}
+
 impl SpawnAgent {
     pub(super) fn new(supervisor: ChildSupervisorHandle) -> Self {
         Self { supervisor }
@@ -83,6 +103,12 @@ impl AwaitAgent {
 }
 
 impl CancelAgent {
+    pub(super) fn new(supervisor: ChildSupervisorHandle) -> Self {
+        Self { supervisor }
+    }
+}
+
+impl CollectAgents {
     pub(super) fn new(supervisor: ChildSupervisorHandle) -> Self {
         Self { supervisor }
     }
@@ -120,6 +146,7 @@ impl Tool for SpawnAgent {
                     SpawnAgentRequest {
                         route: args.route.clone(),
                         task: args.task.clone(),
+                        result_schema: args.result_schema,
                         restrictions: args.restrictions.clone(),
                     },
                 )
@@ -176,6 +203,7 @@ impl Tool for SpawnMany {
                 .map(|request| SpawnAgentRequest {
                     route: request.route.clone(),
                     task: request.task.clone(),
+                    result_schema: request.result_schema,
                     restrictions: request.restrictions.clone(),
                 })
                 .collect();
@@ -301,6 +329,88 @@ impl Tool for CancelAgent {
     }
 }
 
+impl Tool for CollectAgents {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "collect_agents",
+            contract_version: 1,
+            description: "Collect a bounded set of Xana child reports in requested handle order with explicit timeout and failure policy",
+            parameters: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["agent_ids"],
+                "properties":{
+                    "agent_ids":{
+                        "type":"array",
+                        "minItems":1,
+                        "maxItems":64,
+                        "uniqueItems":true,
+                        "items":{"type":"string","format":"uuid"}
+                    },
+                    "timeout_ms":{"type":"integer","minimum":1,"maximum":MAX_AWAIT_TIMEOUT_MS},
+                    "failure_policy":{
+                        "type":"string",
+                        "enum":["continue_on_error","fail_fast"],
+                        "default":"continue_on_error"
+                    },
+                    "cancel_remaining":{"type":"boolean","default":false},
+                    "cancel_on_timeout":{"type":"boolean","default":false}
+                }
+            }),
+            effect_class: EffectClass::External,
+            replay_safety: ReplaySafety::Never,
+        }
+    }
+
+    fn plan(&self, arguments: &Value, _: &Path) -> Result<PlannedToolInvocation, String> {
+        let args: CollectArgs = serde_json::from_value(arguments.clone())
+            .map_err(|_| "collect_agents arguments are invalid".to_owned())?;
+        if args.agent_ids.is_empty() || args.agent_ids.len() > 64 {
+            return Err("collect_agents requires between 1 and 64 child handles".to_owned());
+        }
+        let unique = args
+            .agent_ids
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>();
+        if unique.len() != args.agent_ids.len() {
+            return Err("collect_agents child handles must be unique".to_owned());
+        }
+        if args
+            .timeout_ms
+            .is_some_and(|value| value == 0 || value > MAX_AWAIT_TIMEOUT_MS)
+        {
+            return Err(format!(
+                "collect_agents timeout_ms must be within 1..={MAX_AWAIT_TIMEOUT_MS}"
+            ));
+        }
+        planned(args)
+    }
+
+    fn execute<'a>(
+        &'a self,
+        planned: &'a PlannedToolInvocation,
+        _: ToolExecutionContext,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let args = planned.executable::<CollectArgs>("collect_agents")?;
+            let result = self
+                .supervisor
+                .collect_agents(
+                    args.agent_ids.clone(),
+                    CollectAgentsOptions {
+                        timeout: args.timeout_ms.map(Duration::from_millis),
+                        failure_policy: args.failure_policy,
+                        cancel_remaining: args.cancel_remaining,
+                        cancel_on_timeout: args.cancel_on_timeout,
+                    },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&result).map_err(|error| error.to_string())
+        })
+    }
+}
+
 fn spawn_parameters() -> Value {
     json!({
         "type":"object",
@@ -309,6 +419,7 @@ fn spawn_parameters() -> Value {
         "properties":{
             "route":{"type":"string","minLength":1,"maxLength":128},
             "task":{"type":"string","minLength":1,"maxLength":262144},
+            "result_schema":{"type":"string","enum":["summary","json"],"default":"summary"},
             "restrictions":restriction_schema()
         }
     })
@@ -354,11 +465,13 @@ mod tests {
         let spawn_many = SpawnMany::new(supervisor.clone()).definition();
         let await_agent = AwaitAgent::new(supervisor.clone()).definition();
         let cancel = CancelAgent::new(supervisor).definition();
+        let collect = CollectAgents::new(ChildSupervisorHandle::closed_for_test()).definition();
 
         assert_eq!(spawn.name, "spawn_agent");
         assert_eq!(spawn_many.name, "spawn_many");
         assert_eq!(await_agent.name, "await_agent");
         assert_eq!(cancel.name, "cancel_agent");
+        assert_eq!(collect.name, "collect_agents");
         assert!(spawn.parameters["properties"].get("wait").is_none());
         assert_eq!(
             await_agent.parameters["properties"]["cancel_on_timeout"]["default"],

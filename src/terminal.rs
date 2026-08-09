@@ -756,6 +756,7 @@ mod tests {
                 attribution,
                 task_preview: "review".to_owned(),
                 task_hash: blake3::hash(b"review").to_hex().to_string(),
+                result_schema: crate::orchestration::ChildResultSchema::Summary,
                 capabilities: Vec::new(),
                 permission_mode: crate::config::PermissionMode::Deny,
                 max_tool_rounds: 1,

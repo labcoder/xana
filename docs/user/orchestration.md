@@ -65,8 +65,8 @@ managed process. An unavailable route fails rather than choosing a fallback.
 ## Delegate during native chat
 
 When at least one route exists, the native root tool catalog includes the
-explicit `spawn_agent`, `spawn_many`, `await_agent`, and `cancel_agent`
-operations plus `delegate_agent`. You can ask naturally, for example:
+explicit `spawn_agent`, `spawn_many`, `await_agent`, `collect_agents`, and
+`cancel_agent` operations plus `delegate_agent`. You can ask naturally, for example:
 
 ```text
 Please delegate a focused review of the configuration parser to the worker
@@ -101,6 +101,15 @@ request receipt, not a fictional terminal success.
 Xana validates and reserves the complete batch before one handle or event is
 visible. A bad member or aggregate limit rejects the entire batch. Accepted
 children queue in input order and run fairly up to `max_concurrency`.
+
+Each request can ask for a plain `summary` (the default) or a JSON result.
+JSON must parse successfully and is stored in canonical form; an unknown schema
+is rejected before admission. `collect_agents` takes 1–64 unique child handles,
+returns entries in that same order, and supports a shared `timeout_ms` plus
+`continue_on_error` (default) or `fail_fast`. Stopping a fail-fast wait does not
+discard earlier reports. Remaining work is cancelled only when
+`cancel_remaining` is explicit; collection timeout similarly cancels only with
+`cancel_on_timeout`.
 
 ## Context, identity, and reports
 
@@ -151,6 +160,15 @@ request is rejected unless its execution owner exposes enforceable
 pre-request control or an interruptible live meter. Subscription rate-limit
 state is not monetary spend.
 
+Completed output one byte beyond the inline limit is stored as an immutable
+artifact when it fits `max_artifact_bytes`. The report contains a bounded
+preview, content-addressed reference, and exact byte length. Collection does
+not load artifact bodies into the model-facing result; it verifies the stored
+length and digest and reports missing or corrupt bytes on that child entry.
+The complete collection JSON is independently capped at 256 KiB, with each
+model-facing preview capped at 2 KiB. Repeating an await or collection after
+terminal state returns the same durable report evidence.
+
 ## Current limits
 
 - Native children run up to the root profile's `max_concurrency`; additional
@@ -159,8 +177,8 @@ state is not monetary spend.
   rounds, context bounds, inline report bytes, and artifact bytes. A child's
   wall-clock deadline begins at admission, including queue time.
 - There is no detach or background continuation.
-- Artifact-backed report overflow, multi-result collection, orchestration
-  plans, and managed Codex children are not implemented in this slice.
+- Orchestration plans and managed Codex children are not implemented in this
+  slice.
 - Runtime shutdown cooperatively cancels queued and running children, closes
   pending permission requests, waits for their durable terminal outcomes, and
   uses a bounded interrupted fallback only for an unresponsive execution.

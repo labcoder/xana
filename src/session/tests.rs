@@ -65,6 +65,7 @@ fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapsh
         },
         task_preview: "bounded task".to_owned(),
         task_hash: blake3::hash(b"bounded task").to_hex().to_string(),
+        result_schema: crate::orchestration::ChildResultSchema::Summary,
         capabilities: Vec::new(),
         permission_mode: PermissionMode::Deny,
         max_tool_rounds: 1,
@@ -84,6 +85,7 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
         version: crate::orchestration::CHILD_REPORT_VERSION,
         attribution: handle.admission.attribution.clone(),
         status: ChildTerminalStatus::Completed,
+        schema: crate::orchestration::ChildResultSchema::Summary,
         output: Some("done".to_owned()),
         error: None,
         usage: ChildUsage::Unknown,
@@ -130,6 +132,89 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
             serde_json::from_slice(&encoded).expect("decode child record");
         assert_eq!(decoded, record);
     }
+}
+
+#[test]
+fn artifact_backed_child_report_requires_a_matching_prior_registration() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let handle = child_handle(session_id, thread_id);
+    let agent_id = handle.admission.attribution.agent_id;
+    let byte_len = handle.admission.limits.max_report_bytes as u64 + 1;
+    let artifact = ArtifactRecord {
+        reference: ArtifactRef {
+            id: ArtifactId::new(),
+            content_hash: ContentHash::for_bytes(b"fixture identity only"),
+        },
+        media_type: "text/plain; charset=utf-8".to_owned(),
+        byte_len,
+        owner: PrincipalId::new(),
+    };
+    let report = ChildReport {
+        version: crate::orchestration::CHILD_REPORT_VERSION,
+        attribution: handle.admission.attribution.clone(),
+        status: ChildTerminalStatus::Completed,
+        schema: crate::orchestration::ChildResultSchema::Summary,
+        output: Some("preview".to_owned()),
+        error: None,
+        usage: ChildUsage::Unknown,
+        reference: ChildReportReference::Artifact {
+            artifact: artifact.reference.clone(),
+            byte_len,
+            preview_byte_len: "preview".len(),
+        },
+    };
+    let base = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildAdmitted {
+                handle: handle.clone(),
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildLifecycleChanged {
+                agent_id,
+                lifecycle: ChildLifecycle::Queued,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildLifecycleChanged {
+                agent_id,
+                lifecycle: ChildLifecycle::Running,
+            },
+        ),
+    ];
+    let mut missing = base.clone();
+    missing.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildReportCommitted {
+            report: report.clone(),
+        },
+    ));
+    assert!(matches!(
+        reduce(&missing),
+        Err(crate::session::reduce::ReductionError::InvalidChildReport { agent: actual })
+            if actual == agent_id
+    ));
+
+    let mut registered = base;
+    registered.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ArtifactRegistered {
+            artifact: artifact.clone(),
+        },
+    ));
+    registered.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildReportCommitted {
+            report: report.clone(),
+        },
+    ));
+    let restored = reduce(&registered).expect("registered artifact report");
+    assert_eq!(restored.children[&agent_id].report.as_ref(), Some(&report));
 }
 
 #[test]

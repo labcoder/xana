@@ -1026,6 +1026,7 @@ async fn run_default(
             }
         };
     let workspace_root = session.workspace_root().to_owned();
+    let artifact_owner = session.artifact_owner();
     let child_supervisor = if child_registry.routes.is_empty() {
         None
     } else {
@@ -1053,6 +1054,8 @@ async fn run_default(
             Arc::new(factory),
             restored_children.clone(),
             budget,
+            artifact_store.clone(),
+            artifact_owner,
         );
         tools
             .enable_child_delegation(handle.clone())
@@ -1128,7 +1131,7 @@ async fn run_default(
         children: restored_children,
         workspace_root: workspace_root.clone(),
         artifact_store,
-        owner: crate::identity::PrincipalId::new(),
+        owner: artifact_owner,
         models: manager,
     };
 
