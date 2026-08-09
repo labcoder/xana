@@ -18,6 +18,7 @@ pub mod documents;
 mod frontend;
 mod identity;
 mod init;
+mod local_host;
 mod managed;
 mod managed_terminal;
 mod message;

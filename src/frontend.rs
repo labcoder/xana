@@ -11,6 +11,6 @@ mod protocol;
 
 pub(crate) use embedded::EmbeddedClient;
 pub(crate) use managed::{ManagedClientEvent, ManagedClientItem};
-pub(crate) use protocol::ClientSnapshotSeed;
 #[cfg(test)]
-pub(crate) use protocol::{ClientCommand, ClientEvent, FRONTEND_PROTOCOL_VERSION};
+pub(crate) use protocol::FRONTEND_PROTOCOL_VERSION;
+pub(crate) use protocol::{ClientCommand, ClientCommandResult, ClientEvent, ClientSnapshotSeed};

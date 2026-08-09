@@ -251,7 +251,7 @@ pub(crate) struct ClientCommandResult {
 }
 
 impl ClientCommandResult {
-    pub(super) fn accepted(command_id: ClientCommandId) -> Self {
+    pub(crate) fn accepted(command_id: ClientCommandId) -> Self {
         Self {
             version: FRONTEND_PROTOCOL_VERSION,
             command_id,
@@ -260,7 +260,7 @@ impl ClientCommandResult {
         }
     }
 
-    pub(super) fn rejected(command_id: ClientCommandId, reason: impl Into<String>) -> Self {
+    pub(crate) fn rejected(command_id: ClientCommandId, reason: impl Into<String>) -> Self {
         Self {
             version: FRONTEND_PROTOCOL_VERSION,
             command_id,
@@ -376,7 +376,7 @@ pub(crate) enum ClientEvent {
 }
 
 impl ClientEvent {
-    pub(super) fn bounded(event: AgentEvent) -> Self {
+    pub(crate) fn bounded(event: AgentEvent) -> Self {
         let kind = event_kind(&event);
         let redacted = serde_json::to_value(event).and_then(|mut value| {
             redact_sensitive_fields(&mut value);

@@ -254,6 +254,15 @@ failure restores the terminal, warns, and falls back to plain, while explicit
 Rich content, link safety, paging, and artifact actions are documented in
 [Rich terminal content and artifacts](docs/user/rich-content.md).
 
+Run `xana serve` to start an explicit loopback-only foreground host for the
+canonical current workspace, then run `xana attach` from that workspace to
+observe it. The capability is discovered through a user-scoped runtime
+descriptor and never appears in argv, URLs, or shell history. The currently
+shipped attached role is passive: it receives one atomic bounded JSON snapshot
+and a gap-free ordered stream, but cannot submit work, cancel, configure, or
+answer approvals. From a source checkout, use `cargo run -- serve` and `cargo
+run -- attach`. See [Local foreground host](docs/user/local-host.md).
+
 Native
 conversations use the latest compatible inactive session or create a new one;
 `--continue` selects the latest
