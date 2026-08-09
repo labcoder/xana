@@ -15,10 +15,13 @@ cargo run -- --tui
 
 Plain mode retains interactive commands, approvals, activity, and cancellation.
 On exit it prints the native session id and exact installed/source-checkout
-resume commands. The TUI currently supports native conversations with a
-bounded one-line composer, pasted text, streamed assistant output, adaptive
-wide/medium/narrow layouts, and Ctrl+C/Ctrl+Q shutdown. Managed Codex chat uses
-plain mode until its full-screen event and approval projection is attached.
+resume commands. The native TUI supports a bounded multiline composer, safe
+paste preview, attachments, ordered busy follow-ups, correlated interruption,
+a shared slash-command/command-palette registry, model selection, activity
+visibility, streamed output, and adaptive layouts. Ctrl+C interrupts the exact
+active turn and Ctrl+Q shuts down. Managed Codex chat uses plain mode until its
+full-screen event and approval projection is attached. See the
+[full-screen TUI guide](tui.md) for portable keys and current approval limits.
 
 `--tui` requires interactive stdin and stdout and a successful terminal
 initialization; it restores partial terminal state and exits nonzero instead

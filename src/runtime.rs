@@ -304,6 +304,27 @@ impl Runtime {
                         .to_owned(),
                 });
             }
+            RuntimeCommand::InterruptOperation { operation_id } => {
+                match self.active.as_ref().map(|active| active.operation_id) {
+                    Some(active) if active == operation_id => self.interrupt_active(),
+                    Some(active) => self.emit(AgentEvent::CommandRejected {
+                        reason: format!(
+                            "cannot interrupt operation {operation_id}; active operation is {active}"
+                        ),
+                    }),
+                    None => self.emit(AgentEvent::CommandRejected {
+                        reason: format!("cannot interrupt operation {operation_id}; no root turn is active"),
+                    }),
+                }
+            }
+            RuntimeCommand::SteerOperation {
+                operation_id,
+                input: _,
+            } => self.emit(AgentEvent::CommandRejected {
+                reason: format!(
+                    "native operation {operation_id} does not support same-turn steering; submit a queued follow-up instead"
+                ),
+            }),
             RuntimeCommand::DecidePermission {
                 operation_id,
                 invocation_id,

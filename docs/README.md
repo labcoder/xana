@@ -22,6 +22,9 @@ engineering contracts used to change it.
 - [Terminal presentation](user/presentation.md) explains semantic styling,
   terminal fallbacks, `NO_COLOR`, reduced motion, and machine-local
   preferences.
+- [Full-screen terminal UI](user/tui.md) explains composer presets, portable
+  keys, safe paste, follow-ups, command/model controls, and owner-specific
+  limitations.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
 - [Child orchestration](user/orchestration.md) explains exact native routes,

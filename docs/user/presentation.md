@@ -25,9 +25,8 @@ Xana uses these conservative inputs at process startup:
   as an explicit override.
 - `COLUMNS` selects the wide, compact, or narrow banner layout when it is a
   plausible value. An unavailable width uses 80 columns.
-- A truthy `XANA_REDUCED_MOTION` selects reduced motion. Phase 5's TUI will
-  consume this resolved value; the current append-only surface has no
-  animation.
+- A truthy `XANA_REDUCED_MOTION` selects reduced motion. The TUI consumes this
+  resolved value; the append-only surface has no animation.
 
 These checks are local and immediate. Xana does not issue terminal capability
 queries that could delay or hang startup.
@@ -46,6 +45,7 @@ theme = "auto"       # auto, dark, light, monochrome
 glyphs = "auto"      # auto, unicode, ascii
 motion = "auto"      # auto, full, reduced
 density = "auto"     # auto, comfortable, compact
+composer = "submit"  # submit, newline
 ```
 
 The file is read with a 32 KiB limit and rejects unknown fields or unsupported
@@ -57,3 +57,7 @@ Xana owns semantic presentation tokens for accent, muted, success, warning,
 danger, user, assistant, summary, reasoning, tool, child, focus, approval, and
 diff additions/removals. Frontends choose concrete colors from the resolved
 profile rather than embedding presentation codes in runtime or domain logic.
+
+The `composer` preference is also presentation-owned machine-local state. Use
+`/composer submit` or `/composer newline` in the TUI to persist it atomically;
+see [Full-screen terminal UI](tui.md) for the portable Ctrl+J alternate.

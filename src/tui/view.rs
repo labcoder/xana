@@ -1,13 +1,13 @@
 //! Pure Ratatui rendering for the adaptive shell.
 
-use super::model::{LayoutClass, MessageKind, TuiState};
+use super::model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState};
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
@@ -17,6 +17,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedP
         LayoutClass::Medium => render_medium(frame, area, state, profile),
         LayoutClass::Narrow => render_narrow(frame, area, state, profile),
     }
+    render_overlay(frame, area, state, profile);
 }
 
 fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: ResolvedPresentation) {
@@ -47,13 +48,7 @@ fn render_medium(
     render_header(frame, rows[0], state, profile, false);
     frame.render_widget(conversation(state, profile), rows[1]);
     render_composer(frame, rows[2], state, profile);
-    render_footer(
-        frame,
-        rows[3],
-        state,
-        profile,
-        "medium · sessions/activity in drawers",
-    );
+    render_footer(frame, rows[3], state, profile, "medium");
 }
 
 fn render_narrow(
@@ -67,7 +62,7 @@ fn render_narrow(
         .constraints([
             Constraint::Length(2),
             Constraint::Min(4),
-            Constraint::Length(3),
+            Constraint::Length(4),
             Constraint::Length(1),
         ])
         .split(area);
@@ -83,7 +78,7 @@ fn shell_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(5),
-            Constraint::Length(3),
+            Constraint::Length(5),
             Constraint::Length(1),
         ])
         .split(area)
@@ -108,7 +103,7 @@ fn render_header(
         format!("{} · {}", state.connection, state.status)
     } else {
         format!(
-            "{} / {}  ·  session {}  ·  {}",
+            "{} / {} · session {} · {}",
             state.connection, state.model, state.session, state.status
         )
     };
@@ -128,12 +123,13 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
         Line::raw(state.session.clone()),
         Line::raw(""),
         Line::styled(
-            "Workspace conversations",
+            "Conversation controls",
             semantic_style(profile, SemanticToken::Muted),
         ),
-        Line::raw("Session picker lands in P5-08"),
+        Line::raw(format!("{} queued follow-up(s)", state.followups.len())),
+        Line::raw(format!("{} staged image(s)", state.pending_image_count())),
     ]))
-    .block(Block::default().title(" Sessions ").borders(Borders::ALL))
+    .block(Block::default().title(" Session ").borders(Borders::ALL))
     .wrap(Wrap { trim: false })
 }
 
@@ -167,11 +163,17 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
                 .title(" Conversation ")
                 .borders(Borders::ALL),
         )
+        .scroll((state.scroll, 0))
         .wrap(Wrap { trim: false })
 }
 
 fn activity(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
-    let lines = if state.activity.is_empty() {
+    let lines = if state.activity_visibility == ActivityVisibility::Quiet {
+        vec![Line::styled(
+            "Activity hidden (/activity normal)",
+            semantic_style(profile, SemanticToken::Muted),
+        )]
+    } else if state.activity.is_empty() {
         vec![Line::styled(
             "No activity yet",
             semantic_style(profile, SemanticToken::Muted),
@@ -200,12 +202,17 @@ fn render_composer(
     profile: ResolvedPresentation,
 ) {
     let title = if state.busy {
-        " Working — Ctrl+C exits and interrupts "
+        " Working - submit queues; Ctrl+C interrupts "
     } else {
-        " Message — Enter sends "
+        " Message - Enter/Ctrl+J use composer preset "
+    };
+    let attachment_note = if state.pending_image_count() == 0 {
+        String::new()
+    } else {
+        format!("\n[{} image(s) staged]", state.pending_image_count())
     };
     frame.render_widget(
-        Paragraph::new(state.input.clone())
+        Paragraph::new(format!("{}{}", state.composer.text, attachment_note))
             .style(semantic_style(profile, SemanticToken::User))
             .block(
                 Block::default()
@@ -215,6 +222,26 @@ fn render_composer(
             ),
         area,
     );
+
+    let before_cursor = &state.composer.text[..state.composer.cursor];
+    let row = before_cursor
+        .chars()
+        .filter(|character| *character == '\n')
+        .count() as u16;
+    let column = before_cursor
+        .rsplit('\n')
+        .next()
+        .map_or(0, |line| line.chars().count()) as u16;
+    frame.set_cursor_position((
+        area.x
+            .saturating_add(1)
+            .saturating_add(column)
+            .min(area.right().saturating_sub(2)),
+        area.y
+            .saturating_add(1)
+            .saturating_add(row)
+            .min(area.bottom().saturating_sub(2)),
+    ));
 }
 
 fn render_footer(
@@ -231,12 +258,128 @@ fn render_footer(
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "Ctrl+C quit · {layout} · {motion} · {}",
+            "Ctrl+P commands | Ctrl+Q quit | {layout} | {motion} | {} queued | {}",
+            state.followups.len(),
             state.status
         ))
         .style(semantic_style(profile, SemanticToken::Muted)),
         area,
     );
+}
+
+fn render_overlay(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &TuiState,
+    profile: ResolvedPresentation,
+) {
+    let Some(overlay) = &state.overlay else {
+        return;
+    };
+    let popup = centered(
+        area,
+        72.min(area.width.saturating_sub(2)),
+        16.min(area.height.saturating_sub(2)),
+    );
+    let (title, lines) = match overlay {
+        Overlay::Palette { query, selected } => {
+            let mut lines = vec![Line::from(vec![
+                Span::styled("> ", semantic_style(profile, SemanticToken::Focus)),
+                Span::raw(query.clone()),
+            ])];
+            for (index, command) in state.palette_entries().into_iter().enumerate() {
+                let marker = if index == *selected { ">" } else { " " };
+                let style = if index == *selected {
+                    semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::styled(
+                    format!("{marker} {:<13} {}", command.usage, command.summary),
+                    style,
+                ));
+            }
+            (" Commands ", lines)
+        }
+        Overlay::PastePreview { text } => (
+            " Confirm pasted draft ",
+            vec![
+                Line::styled(
+                    "Paste is untrusted text. Enter inserts it; Esc discards it.",
+                    semantic_style(profile, SemanticToken::Warning),
+                ),
+                Line::raw(""),
+                Line::raw(text.clone()),
+            ],
+        ),
+        Overlay::Help => (
+            " Keyboard help ",
+            vec![
+                Line::raw("Ctrl+P commands   Ctrl+Q quit   Ctrl+C interrupt"),
+                Line::raw("Enter primary     Ctrl+J alternate     Shift+Enter newline"),
+                Line::raw("Ctrl+Enter submit   arrows move/select   mouse wheel scrolls"),
+                Line::raw("Slash commands and palette entries share one registry."),
+            ],
+        ),
+        Overlay::Queue => {
+            let mut lines = vec![Line::raw(
+                "Follow-ups run in order. /queue edit N or /queue remove N.",
+            )];
+            lines.extend(state.followups.iter().enumerate().map(|(index, turn)| {
+                Line::raw(format!("{}. {}", index + 1, turn.input.replace('\n', " ")))
+            }));
+            (" Follow-up queue ", lines)
+        }
+        Overlay::ModelPicker { choices, selected } => (
+            " Select model (starts a new conversation) ",
+            choice_lines(choices, *selected, profile),
+        ),
+        Overlay::ReasoningPicker { choices, selected } => (
+            " Select reasoning effort ",
+            choice_lines(choices, *selected, profile),
+        ),
+    };
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(
+                Block::default()
+                    .title(title)
+                    .border_style(semantic_style(profile, SemanticToken::Focus))
+                    .borders(Borders::ALL),
+            )
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+fn choice_lines(
+    choices: &[String],
+    selected: usize,
+    profile: ResolvedPresentation,
+) -> Vec<Line<'static>> {
+    choices
+        .iter()
+        .enumerate()
+        .map(|(index, choice)| {
+            let marker = if index == selected { ">" } else { " " };
+            let style = if index == selected {
+                semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            Line::styled(format!("{marker} {choice}"), style)
+        })
+        .collect()
+}
+
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width.max(1),
+        height.max(1),
+    )
 }
 
 fn semantic_style(profile: ResolvedPresentation, token: SemanticToken) -> Style {
@@ -261,19 +404,19 @@ fn to_color(color: PresentationColor) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presentation::ResolvedPresentation;
+    use crate::presentation::{ComposerPreset, ResolvedPresentation};
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn wide_medium_and_narrow_buffers_keep_the_conversation_usable() {
         for (width, expected, absent) in [
-            (130, "Sessions", "drawers"),
-            (90, "drawers", "Session picker lands"),
-            (50, "narrow", "Session picker lands"),
+            (130, "Session", "medium"),
+            (90, "medium", "Conversation controls"),
+            (50, "narrow", "Conversation controls"),
         ] {
             let backend = TestBackend::new(width, 24);
             let mut terminal = Terminal::new(backend).unwrap();
-            let mut state = TuiState::starting();
+            let mut state = TuiState::starting(ComposerPreset::Submit);
             state.busy = false;
             terminal
                 .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
@@ -284,6 +427,26 @@ mod tests {
             assert!(rendered.contains(expected));
             assert!(!rendered.contains(absent));
         }
+    }
+
+    #[test]
+    fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.busy = false;
+        state.update_input(super::super::model::InputAction::OpenPalette);
+        state.update_input(super::super::model::InputAction::Insert("mod".to_owned()));
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("/model"));
+
+        state.open_model_picker(vec!["openai/gpt-test".to_owned()]);
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("openai/gpt-test"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

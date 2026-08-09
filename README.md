@@ -240,19 +240,22 @@ different: it clears only the current conversation.
 Bare `xana` starts the adaptive full-screen TUI when stdin and stdout are
 interactive; redirected launches remain control-free plain output. Use
 `xana --plain` for the permanent append-only interface or `xana --tui` to
-require full-screen initialization. The current TUI handles native streamed
-turns and adaptive wide/medium/narrow layouts; managed Codex chat temporarily
-uses the plain renderer until its full activity and approval projection is
-attached. An implicit initialization failure restores the terminal, warns,
-and falls back to plain, while explicit `--tui` exits nonzero.
+require full-screen initialization. The native TUI has a bounded multiline
+composer, confirmed paste, ordered follow-ups, exact interruption, a shared
+slash-command/command palette, model picker, image staging, streamed turns,
+and adaptive wide/medium/narrow layouts. Ctrl+C interrupts the active turn;
+Ctrl+Q exits. Managed Codex chat temporarily uses the plain renderer until its
+full activity and approval projection is attached. An implicit initialization
+failure restores the terminal, warns, and falls back to plain, while explicit
+`--tui` exits nonzero. See [Full-screen terminal UI](docs/user/tui.md).
 
 Native
 conversations use the latest compatible inactive session or create a new one;
 `--continue` selects the latest
 compatible conversation in the canonical workspace, while
 `--resume SESSION_ID` selects one exact native session. `/clear` moves to a new
-empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF shut down
-the foreground runtime and print a compact native resume receipt in plain mode.
+empty native history or a new Codex thread. In plain mode, `/quit`, Ctrl-C, and
+EOF shut down the foreground runtime and print a compact native resume receipt.
 
 `xana session list` shows the bounded native and managed conversation catalog
 for the canonical current workspace, including active ownership. A single

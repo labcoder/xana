@@ -158,8 +158,9 @@ injected terminal facts into semantic dark, light, monochrome, color-depth,
 glyph, width, and motion policy; redirected output remains control-free.
 Network projection, attached controller/observer leases, setup, complete
 explicit-server shutdown, and the TUI's remaining managed/rich interaction
-slices remain unimplemented. The native TUI already owns adaptive
-state/update/view rendering and terminal restoration; managed
-activity/approvals, complete session navigation, rich content, and advanced
-composer behavior remain later slices. This proposal therefore remains
-Accepted.
+slices remain unimplemented. The native TUI now owns adaptive state/update/view
+rendering, terminal restoration, a bounded multiline composer, safe paste,
+image staging, ordered follow-ups, exact interruption, owner-gated steering,
+one command registry/palette, model selection, and independent activity
+visibility. Managed activity/approvals, complete session navigation, and rich
+content remain later slices. This proposal therefore remains Accepted.

@@ -166,6 +166,14 @@ static USER_AUDIENCE: &[DocAudience] = &[DocAudience::User, DocAudience::Agent];
 static CONTRIBUTOR_AUDIENCE: &[DocAudience] = &[DocAudience::Contributor, DocAudience::Agent];
 static USER_TOPICS: &[&str] = &["configuration", "installation", "usage"];
 static AUTOMATION_TOPICS: &[&str] = &["usage", "cli", "automation", "json", "sessions"];
+static TUI_TOPICS: &[&str] = &[
+    "usage",
+    "cli",
+    "tui",
+    "commands",
+    "composer",
+    "accessibility",
+];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
@@ -271,6 +279,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: &["terminal", "theme", "color", "accessibility", "preferences"],
         body: include_str!("../docs/user/presentation.md"),
+    },
+    BundledDoc {
+        id: "user.tui",
+        title: "Full-screen terminal UI",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: TUI_TOPICS,
+        body: include_str!("../docs/user/tui.md"),
     },
     BundledDoc {
         id: "proposal.media",

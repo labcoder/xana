@@ -35,6 +35,11 @@ fn commands_and_events_round_trip_through_json() {
             session_id: crate::identity::SessionId::new(),
             operation_id,
         },
+        RuntimeCommand::InterruptOperation { operation_id },
+        RuntimeCommand::SteerOperation {
+            operation_id,
+            input: "focus on tests".to_owned(),
+        },
         RuntimeCommand::DecidePermission {
             operation_id,
             invocation_id,
@@ -505,7 +510,7 @@ async fn clear_resets_runtime_history() {
 }
 
 #[tokio::test]
-async fn active_root_turn_rejects_a_second_submission_and_shutdown_interrupts() {
+async fn active_root_turn_rejects_competition_and_honors_only_correlated_interrupts() {
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let agent = make_agent(Box::new(BlockingTransport {
@@ -541,10 +546,35 @@ async fn active_root_turn_rejects_a_second_submission_and_shutdown_interrupts() 
         runtime.next_event().await,
         Some(AgentEvent::CommandRejected { reason }) if reason.contains("already active")
     ));
+
     runtime
-        .send(RuntimeCommand::Shutdown)
+        .send(RuntimeCommand::SteerOperation {
+            operation_id: active,
+            input: "focus".to_owned(),
+        })
         .await
-        .expect("shutdown command");
+        .expect("steer command transport");
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::CommandRejected { reason }) if reason.contains("does not support same-turn steering")
+    ));
+
+    runtime
+        .send(RuntimeCommand::InterruptOperation {
+            operation_id: OperationId::new(),
+        })
+        .await
+        .expect("mismatched interrupt transport");
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::CommandRejected { reason }) if reason.contains("active operation is")
+    ));
+    runtime
+        .send(RuntimeCommand::InterruptOperation {
+            operation_id: active,
+        })
+        .await
+        .expect("correlated interrupt command");
     assert_eq!(
         runtime.next_event().await,
         Some(AgentEvent::OperationStateChanged {
@@ -552,6 +582,10 @@ async fn active_root_turn_rejects_a_second_submission_and_shutdown_interrupts() 
             state: OperationState::Finished(OperationOutcome::Interrupted),
         })
     );
+    runtime
+        .send(RuntimeCommand::Shutdown)
+        .await
+        .expect("shutdown command");
 }
 
 #[tokio::test]

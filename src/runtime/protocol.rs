@@ -31,6 +31,13 @@ pub(crate) enum RuntimeCommand {
         session_id: SessionId,
         operation_id: OperationId,
     },
+    InterruptOperation {
+        operation_id: OperationId,
+    },
+    SteerOperation {
+        operation_id: OperationId,
+        input: String,
+    },
     DecidePermission {
         operation_id: OperationId,
         invocation_id: ToolInvocationId,

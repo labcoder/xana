@@ -82,6 +82,14 @@ pub(crate) enum DensityChoice {
     Compact,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ComposerPreset {
+    #[default]
+    Submit,
+    Newline,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PresentationPreferences {
@@ -94,6 +102,8 @@ pub(crate) struct PresentationPreferences {
     pub(crate) motion: MotionChoice,
     #[serde(default)]
     pub(crate) density: DensityChoice,
+    #[serde(default)]
+    pub(crate) composer: ComposerPreset,
 }
 
 impl Default for PresentationPreferences {
@@ -104,6 +114,7 @@ impl Default for PresentationPreferences {
             glyphs: GlyphChoice::Auto,
             motion: MotionChoice::Auto,
             density: DensityChoice::Auto,
+            composer: ComposerPreset::Submit,
         }
     }
 }
@@ -146,7 +157,6 @@ impl PresentationPreferences {
         }
     }
 
-    #[cfg(test)]
     fn store(&self, path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -155,6 +165,12 @@ impl PresentationPreferences {
         let mut file = atomic_write_file::AtomicWriteFile::open(path)?;
         file.write_all(rendered.as_bytes())?;
         file.commit()
+    }
+
+    pub(crate) fn set_composer(path: &Path, composer: ComposerPreset) -> io::Result<()> {
+        let mut preferences = Self::load(path).preferences;
+        preferences.composer = composer;
+        preferences.store(path)
     }
 }
 
