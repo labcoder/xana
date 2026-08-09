@@ -76,7 +76,7 @@ the committed terminal lifecycle/report is the stop acknowledgement.
 
 When a native root has configured task routes, the application creates one
 `ChildSupervisor` actor and registers `spawn_agent`, `spawn_many`,
-`await_agent`, `cancel_agent`, and `delegate_agent` only in the root tool
+`await_agent`, `collect_agents`, `cancel_agent`, and `delegate_agent` only in the root tool
 registry. The
 model-facing convenience calls the supervisor's distinct `spawn_agent` and
 `await_agent` operations in one tool execution, so no outer model response is
@@ -106,6 +106,15 @@ is committed before completed/failed/cancelled/interrupted events and contains
 typed attribution. Usage is represented as measured, estimated, or unknown;
 unknown is never treated as zero.
 
+Each admission fixes a result schema (`summary` or canonical JSON). Completed
+output at or below `max_report_bytes` stays inline. Larger output is written to
+the immutable content-addressed artifact store, with `ArtifactRegistered`
+committed before the child report that references it; the handle and collection
+surface retain only a bounded preview and reference. Persistence or validation
+failure becomes a bounded attributed failed report, never an unregistered
+reference. Collection verifies artifact length and digest by streaming bytes
+without loading artifact bodies into model context.
+
 ```mermaid
 sequenceDiagram
     participant Root as "root Agent"
@@ -121,11 +130,11 @@ sequenceDiagram
     Supervisor-->>Tool: AgentHandleSnapshot
     Supervisor->>Session: commit running as capacity opens
     Supervisor->>Child: fresh bounded prompt and tool snapshot
-    Tool->>Supervisor: await_agent(handle)
+    Tool->>Supervisor: await_agent(handle) or collect_agents(handles)
     Child-->>Supervisor: direct result or attributed failure
-    Supervisor->>Session: commit ChildReport
-    Supervisor-->>Tool: bounded report
-    Tool-->>Root: handle + report JSON
+    Supervisor->>Session: commit artifact if needed, then ChildReport
+    Supervisor-->>Tool: bounded report(s) in requested order
+    Tool-->>Root: versioned bounded JSON
 ```
 
 Native cancellation is structured: the supervisor marks the request, closes
@@ -150,8 +159,13 @@ bounded root `AGENTS.md`, environment facts, and only the tools selected by its
 profile. It receives no parent transcript and its registry never contains
 orchestration tools, so child depth is structurally one. Native children run
 in stable admission order up to the root profile's bounded concurrency.
-Artifact overflow, multi-result collection, plans, and managed Codex children
-are not yet implemented.
+`collect_agents` snapshots a fixed set of unique handles atomically, returns
+entries in caller order regardless of completion timing, and preserves each
+terminal status, attribution, typed usage, and report reference. Its explicit
+continue-on-error or fail-fast policy never erases results already observed;
+timeout and cancellation are separate choices. Collection serialization has a
+hard bound independent of durable artifact size and makes no model call.
+Plans and managed Codex children are not yet implemented.
 
 `OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
 are distinct UUID v4 newtypes.

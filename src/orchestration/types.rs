@@ -1,5 +1,6 @@
 use super::{ExecutionOwner, ResolvedAgentConfig};
 use crate::{
+    artifact::ArtifactRef,
     config::{OrchestrationLimits, PermissionMode},
     identity::{AgentId, OperationId, StepId, ThreadId, ToolInvocationId},
     message::Message,
@@ -11,6 +12,10 @@ use std::time::Duration;
 pub(crate) const CHILD_REPORT_VERSION: u32 = 1;
 pub(crate) const MAX_CHILD_TASK_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_CHILD_TASK_PREVIEW_BYTES: usize = 512;
+pub(crate) const COLLECTION_RESULT_VERSION: u32 = 1;
+pub(crate) const MAX_COLLECTION_HANDLES: usize = 64;
+pub(crate) const MAX_COLLECTION_RESULT_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_COLLECTION_PREVIEW_BYTES: usize = 2 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +24,17 @@ pub(crate) struct SpawnAgentRequest {
     pub(crate) route: Option<String>,
     pub(crate) task: String,
     #[serde(default)]
+    pub(crate) result_schema: ChildResultSchema,
+    #[serde(default)]
     pub(crate) restrictions: ChildRestrictions,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ChildResultSchema {
+    #[default]
+    Summary,
+    Json,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +186,14 @@ pub(crate) enum ChildUsage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ChildReportReference {
-    Inline { byte_len: usize },
+    Inline {
+        byte_len: usize,
+    },
+    Artifact {
+        artifact: ArtifactRef,
+        byte_len: u64,
+        preview_byte_len: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +202,8 @@ pub(crate) struct ChildReport {
     pub(crate) version: u32,
     pub(crate) attribution: ChildAttribution,
     pub(crate) status: ChildTerminalStatus,
+    #[serde(default)]
+    pub(crate) schema: ChildResultSchema,
     pub(crate) output: Option<String>,
     pub(crate) error: Option<String>,
     pub(crate) usage: ChildUsage,
@@ -187,6 +211,7 @@ pub(crate) struct ChildReport {
 }
 
 impl ChildReport {
+    #[cfg(test)]
     pub(crate) fn completed(
         attribution: ChildAttribution,
         output: String,
@@ -197,6 +222,7 @@ impl ChildReport {
             version: CHILD_REPORT_VERSION,
             attribution,
             status: ChildTerminalStatus::Completed,
+            schema: ChildResultSchema::Summary,
             output: Some(output),
             error: None,
             usage,
@@ -204,31 +230,65 @@ impl ChildReport {
         }
     }
 
-    pub(crate) fn failed(attribution: ChildAttribution, reason: String, max_bytes: usize) -> Self {
-        Self::terminal_error(attribution, ChildTerminalStatus::Failed, reason, max_bytes)
+    pub(crate) fn completed_with_reference(
+        attribution: ChildAttribution,
+        schema: ChildResultSchema,
+        output: String,
+        usage: ChildUsage,
+        reference: ChildReportReference,
+    ) -> Self {
+        Self {
+            version: CHILD_REPORT_VERSION,
+            attribution,
+            status: ChildTerminalStatus::Completed,
+            schema,
+            output: Some(output),
+            error: None,
+            usage,
+            reference,
+        }
     }
 
-    pub(crate) fn cancelled(
+    pub(crate) fn failed_with_schema(
         attribution: ChildAttribution,
+        schema: ChildResultSchema,
+        reason: String,
+        max_bytes: usize,
+    ) -> Self {
+        Self::terminal_error(
+            attribution,
+            ChildTerminalStatus::Failed,
+            schema,
+            reason,
+            max_bytes,
+        )
+    }
+
+    pub(crate) fn cancelled_with_schema(
+        attribution: ChildAttribution,
+        schema: ChildResultSchema,
         reason: String,
         max_bytes: usize,
     ) -> Self {
         Self::terminal_error(
             attribution,
             ChildTerminalStatus::Cancelled,
+            schema,
             reason,
             max_bytes,
         )
     }
 
-    pub(crate) fn interrupted(
+    pub(crate) fn interrupted_with_schema(
         attribution: ChildAttribution,
+        schema: ChildResultSchema,
         reason: String,
         max_bytes: usize,
     ) -> Self {
         Self::terminal_error(
             attribution,
             ChildTerminalStatus::Interrupted,
+            schema,
             reason,
             max_bytes,
         )
@@ -237,6 +297,7 @@ impl ChildReport {
     fn terminal_error(
         attribution: ChildAttribution,
         status: ChildTerminalStatus,
+        schema: ChildResultSchema,
         reason: String,
         max_bytes: usize,
     ) -> Self {
@@ -246,6 +307,7 @@ impl ChildReport {
             version: CHILD_REPORT_VERSION,
             attribution,
             status,
+            schema,
             output: None,
             error: Some(error),
             usage: ChildUsage::Unknown,
@@ -296,6 +358,8 @@ pub(crate) struct ChildAdmission {
     pub(crate) attribution: ChildAttribution,
     pub(crate) task_preview: String,
     pub(crate) task_hash: String,
+    #[serde(default)]
+    pub(crate) result_schema: ChildResultSchema,
     pub(crate) capabilities: Vec<String>,
     pub(crate) permission_mode: PermissionMode,
     pub(crate) max_tool_rounds: usize,
@@ -310,12 +374,14 @@ impl ChildAdmission {
     pub(crate) fn new(
         attribution: ChildAttribution,
         task: &str,
+        result_schema: ChildResultSchema,
         resolved: &ResolvedAgentConfig,
     ) -> Self {
         Self {
             attribution,
             task_preview: truncate_utf8(task, MAX_CHILD_TASK_PREVIEW_BYTES),
             task_hash: blake3::hash(task.as_bytes()).to_hex().to_string(),
+            result_schema,
             capabilities: resolved
                 .capabilities
                 .capabilities()
@@ -329,6 +395,87 @@ impl ChildAdmission {
             hard_spend_microusd: resolved.hard_spend_microusd,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CollectionFailurePolicy {
+    #[default]
+    ContinueOnError,
+    FailFast,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CollectAgentsOptions {
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) failure_policy: CollectionFailurePolicy,
+    pub(crate) cancel_remaining: bool,
+    pub(crate) cancel_on_timeout: bool,
+}
+
+impl Default for CollectAgentsOptions {
+    fn default() -> Self {
+        Self {
+            timeout: None,
+            failure_policy: CollectionFailurePolicy::ContinueOnError,
+            cancel_remaining: false,
+            cancel_on_timeout: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum CollectedValue {
+    Summary {
+        text: String,
+    },
+    Json {
+        value: serde_json::Value,
+    },
+    Preview {
+        schema: ChildResultSchema,
+        text: String,
+        truncated: bool,
+    },
+    ArtifactPreview {
+        schema: ChildResultSchema,
+        preview: String,
+        artifact: ArtifactRef,
+        byte_len: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CollectionEntryState {
+    Terminal,
+    TimedOut,
+    SkippedAfterFailure,
+    ArtifactUnavailable,
+    CollectionError,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CollectedChildResult {
+    pub(crate) attribution: ChildAttribution,
+    pub(crate) state: CollectionEntryState,
+    pub(crate) status: Option<ChildTerminalStatus>,
+    pub(crate) usage: ChildUsage,
+    pub(crate) reference: Option<ChildReportReference>,
+    pub(crate) value: Option<CollectedValue>,
+    pub(crate) error: Option<String>,
+    pub(crate) cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CollectionResult {
+    pub(crate) version: u32,
+    pub(crate) failure_policy: CollectionFailurePolicy,
+    pub(crate) entries: Vec<CollectedChildResult>,
+    pub(crate) complete: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -410,6 +557,7 @@ mod tests {
             validate_spawn_request(&SpawnAgentRequest {
                 route: None,
                 task: "  ".to_owned(),
+                result_schema: ChildResultSchema::Summary,
                 restrictions: ChildRestrictions::default(),
             }),
             Err("child task must not be blank")
@@ -439,6 +587,7 @@ mod tests {
             attribution: attribution.clone(),
             task_preview: "task".to_owned(),
             task_hash: blake3::hash(b"task").to_hex().to_string(),
+            result_schema: ChildResultSchema::Summary,
             capabilities: Vec::new(),
             permission_mode: PermissionMode::Deny,
             max_tool_rounds: 1,
@@ -497,5 +646,14 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn unknown_result_schemas_are_rejected_during_request_decoding() {
+        let request = serde_json::json!({
+            "task": "bounded task",
+            "result_schema": "xml"
+        });
+        assert!(serde_json::from_value::<SpawnAgentRequest>(request).is_err());
     }
 }

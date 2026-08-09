@@ -56,8 +56,9 @@ impl RestoredChild {
             };
         }
         let mut handle = self.handle.clone();
-        let report = ChildReport::interrupted(
+        let report = ChildReport::interrupted_with_schema(
             handle.admission.attribution.clone(),
+            handle.admission.result_schema,
             "child work was interrupted when its owning Xana runtime stopped".to_owned(),
             handle.admission.limits.max_report_bytes,
         );
@@ -488,8 +489,14 @@ pub(crate) fn validate_envelope(
             }
             if report.version != CHILD_REPORT_VERSION
                 || report.attribution != child.handle.admission.attribution
+                || report.schema != child.handle.admission.result_schema
                 || !valid_child_terminal_source(child.handle.lifecycle)
-                || !valid_child_report(report, child.handle.admission.limits.max_report_bytes)
+                || !valid_child_report(
+                    state,
+                    report,
+                    child.handle.admission.limits.max_report_bytes,
+                    child.handle.admission.limits.max_artifact_bytes,
+                )
             {
                 Err(ReductionError::InvalidChildReport { agent: agent_id })
             } else {
@@ -714,7 +721,12 @@ fn valid_child_terminal_source(previous: ChildLifecycle) -> bool {
     )
 }
 
-fn valid_child_report(report: &ChildReport, max_bytes: usize) -> bool {
+fn valid_child_report(
+    state: &RestoredSession,
+    report: &ChildReport,
+    max_inline_bytes: usize,
+    max_artifact_bytes: usize,
+) -> bool {
     let content = match report.status {
         ChildTerminalStatus::Completed if report.error.is_none() => report.output.as_deref(),
         ChildTerminalStatus::Failed
@@ -729,9 +741,40 @@ fn valid_child_report(report: &ChildReport, max_bytes: usize) -> bool {
     let Some(content) = content else {
         return false;
     };
-    match report.reference {
+    match &report.reference {
         ChildReportReference::Inline { byte_len } => {
-            byte_len == content.len() && byte_len <= max_bytes
+            *byte_len == content.len()
+                && *byte_len <= max_inline_bytes
+                && valid_result_schema(report, content)
+        }
+        ChildReportReference::Artifact {
+            artifact,
+            byte_len,
+            preview_byte_len,
+        } => {
+            report.status == ChildTerminalStatus::Completed
+                && *preview_byte_len == content.len()
+                && *preview_byte_len <= max_inline_bytes
+                && usize::try_from(*byte_len)
+                    .is_ok_and(|size| size > max_inline_bytes && size <= max_artifact_bytes)
+                && state.artifacts.get(&artifact.id).is_some_and(|record| {
+                    record.reference == *artifact && record.byte_len == *byte_len
+                })
+        }
+    }
+}
+
+fn valid_result_schema(report: &ChildReport, content: &str) -> bool {
+    if report.status != ChildTerminalStatus::Completed {
+        return true;
+    }
+    match report.schema {
+        crate::orchestration::ChildResultSchema::Summary => true,
+        crate::orchestration::ChildResultSchema::Json => {
+            serde_json::from_str::<serde_json::Value>(content)
+                .ok()
+                .and_then(|value| serde_json::to_string(&value).ok())
+                .is_some_and(|canonical| canonical == content)
         }
     }
 }

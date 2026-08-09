@@ -9,7 +9,8 @@ use crate::{
     orchestration::{
         AwaitAgentOptions, AwaitAgentOutcome, ChildAttribution, ChildExecution,
         ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildExecutionOutput,
-        ChildLifecycle, ChildReport, ChildSupervisor, ChildTerminalStatus, ChildUsage,
+        ChildLifecycle, ChildReport, ChildResultSchema, ChildSupervisor, ChildTerminalStatus,
+        ChildUsage, CollectAgentsOptions, CollectionEntryState, CollectionFailurePolicy,
         EnforcementCapabilities, ExecutionOwner, OrchestrationBudget, ParentExecution,
         PreparedChild, ResolvedAgentConfig, SpawnAgentRequest, apply_spawn_restrictions,
     },
@@ -204,6 +205,7 @@ async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_tur
         &[SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: "inspect the bounded seam".to_owned(),
+            result_schema: Default::default(),
             restrictions: Default::default(),
         }]
     );
@@ -286,6 +288,14 @@ struct PermissionChildExecution {
     effect_ran: Arc<AtomicBool>,
 }
 
+struct ScriptedOutcomeChildFactory {
+    workspace: std::path::PathBuf,
+}
+
+struct ScriptedOutcomeChildExecution {
+    task: String,
+}
+
 impl ChildExecutionFactory for ImmediateChildFactory {
     fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
         self.requests
@@ -344,6 +354,20 @@ impl ChildExecutionFactory for PermissionChildFactory {
             policy,
             Box::new(PermissionChildExecution {
                 effect_ran: Arc::clone(&self.effect_ran),
+            }),
+        ))
+    }
+}
+
+impl ChildExecutionFactory for ScriptedOutcomeChildFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            restricted_scripted_child_config(request)?,
+            policy,
+            Box::new(ScriptedOutcomeChildExecution {
+                task: request.task.clone(),
             }),
         ))
     }
@@ -416,6 +440,41 @@ impl ChildExecution for PermissionChildExecution {
                 text: "permission resolved".to_owned(),
                 usage: ChildUsage::Unknown,
             })
+        })
+    }
+}
+
+impl ChildExecution for ScriptedOutcomeChildExecution {
+    fn run(
+        self: Box<Self>,
+        _context: ChildExecutionContext,
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
+        Box::pin(async move {
+            let Some((kind, value)) = self.task.split_once(':') else {
+                return ChildExecutionOutcome::Failed("invalid test script".to_owned());
+            };
+            match kind {
+                "complete" => ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                    text: value.to_owned(),
+                    usage: ChildUsage::Unknown,
+                }),
+                "delay" => {
+                    let (milliseconds, output) = value
+                        .split_once(':')
+                        .expect("delay test script contains output");
+                    tokio::time::sleep(Duration::from_millis(
+                        milliseconds.parse().expect("delay is an integer"),
+                    ))
+                    .await;
+                    ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                        text: output.to_owned(),
+                        usage: ChildUsage::Unknown,
+                    })
+                }
+                "fail" => ChildExecutionOutcome::Failed(value.to_owned()),
+                "pending" => std::future::pending().await,
+                other => ChildExecutionOutcome::Failed(format!("unknown test outcome {other}")),
+            }
         })
     }
 }
@@ -621,6 +680,7 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "wait at the barrier".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -687,6 +747,7 @@ async fn running_cancellation_is_observed_once_and_repeated_reads_are_idempotent
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "cancel at the barrier".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -781,6 +842,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "occupy the only running slot".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -793,6 +855,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "remain queued".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -886,6 +949,7 @@ async fn atomic_batch_runs_in_input_order_without_exceeding_parallel_capacity() 
         .map(|index| SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: format!("parallel child {index}"),
+            result_schema: Default::default(),
             restrictions: Default::default(),
         })
         .collect::<Vec<_>>();
@@ -938,6 +1002,219 @@ async fn atomic_batch_runs_in_input_order_without_exceeding_parallel_capacity() 
 }
 
 #[tokio::test]
+async fn collection_preserves_input_order_mixed_failures_and_fail_fast_evidence() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(ScriptedOutcomeChildFactory { workspace }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let request = |task: &str| SpawnAgentRequest {
+        route: Some("worker".to_owned()),
+        task: task.to_owned(),
+        result_schema: ChildResultSchema::Summary,
+        restrictions: Default::default(),
+    };
+    let children = handle
+        .spawn_many(
+            OperationId::new(),
+            vec![
+                request("delay:30:first"),
+                request("fail:second failed"),
+                request("delay:10:third"),
+            ],
+        )
+        .await
+        .expect("mixed batch");
+    let ids = children
+        .iter()
+        .map(|child| child.admission.attribution.agent_id)
+        .collect::<Vec<_>>();
+    let result = handle
+        .collect_agents(ids.clone(), CollectAgentsOptions::default())
+        .await
+        .expect("continue-on-error collection");
+    assert_eq!(
+        result
+            .entries
+            .iter()
+            .map(|entry| entry.attribution.agent_id)
+            .collect::<Vec<_>>(),
+        ids
+    );
+    assert_eq!(
+        result
+            .entries
+            .iter()
+            .map(|entry| entry.status)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(ChildTerminalStatus::Completed),
+            Some(ChildTerminalStatus::Failed),
+            Some(ChildTerminalStatus::Completed),
+        ]
+    );
+    assert!(result.complete);
+    assert!(
+        result
+            .entries
+            .iter()
+            .all(|entry| entry.usage == ChildUsage::Unknown)
+    );
+    assert_eq!(
+        handle
+            .collect_agents(ids, CollectAgentsOptions::default())
+            .await
+            .expect("idempotent repeat"),
+        result
+    );
+
+    let fail_fast = handle
+        .spawn_many(
+            OperationId::new(),
+            vec![
+                request("fail:stop now"),
+                request("pending:one"),
+                request("pending:two"),
+            ],
+        )
+        .await
+        .expect("fail-fast batch");
+    let failed_id = fail_fast[0].admission.attribution.agent_id;
+    let _ = handle
+        .await_agent(failed_id)
+        .await
+        .expect("failed child report");
+    let fail_fast_ids = fail_fast
+        .iter()
+        .map(|child| child.admission.attribution.agent_id)
+        .collect::<Vec<_>>();
+    let result = handle
+        .collect_agents(
+            fail_fast_ids,
+            CollectAgentsOptions {
+                failure_policy: CollectionFailurePolicy::FailFast,
+                cancel_remaining: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("fail-fast collection");
+    assert_eq!(result.entries[0].status, Some(ChildTerminalStatus::Failed));
+    assert!(result.entries[1..].iter().all(|entry| {
+        entry.state == CollectionEntryState::SkippedAfterFailure && entry.cancellation_requested
+    }));
+    assert!(!result.complete);
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn report_overflow_is_registered_before_commit_and_missing_bytes_are_attributed() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let artifact_root = directory.path().join("artifacts");
+    let artifacts = crate::artifact::ArtifactStore::new(artifact_root.clone());
+    let (handle, supervisor) = ChildSupervisor::new_with_budget_and_artifacts(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(ImmediateChildFactory {
+            workspace,
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }),
+        OrchestrationBudget::new(OrchestrationLimits::default(), 8),
+        artifacts,
+        crate::identity::PrincipalId::new(),
+    );
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let committed = Arc::clone(&records);
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            committed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(command.record);
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let child = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "overflow report".to_owned(),
+                result_schema: ChildResultSchema::Summary,
+                restrictions: crate::orchestration::ChildRestrictions {
+                    max_report_bytes: Some("child result".len() - 1),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .expect("overflow child");
+    let child_id = child.admission.attribution.agent_id;
+    let report = handle.await_agent(child_id).await.expect("artifact report");
+    let crate::orchestration::ChildReportReference::Artifact { artifact, .. } = &report.reference
+    else {
+        panic!("one byte over the inline limit must use an artifact");
+    };
+    let artifact_path = {
+        let records = records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let artifact_index = records
+            .iter()
+            .position(|record| matches!(record, SessionRecord::ArtifactRegistered { .. }))
+            .expect("artifact registration");
+        let report_index = records
+            .iter()
+            .position(|record| matches!(record, SessionRecord::ChildReportCommitted { .. }))
+            .expect("report commit");
+        assert!(artifact_index < report_index);
+        artifact_root.join(artifact.content_hash.as_str())
+    };
+    std::fs::remove_file(artifact_path).expect("remove artifact bytes");
+
+    let collected = handle
+        .collect_agents(vec![child_id], CollectAgentsOptions::default())
+        .await
+        .expect("attributed collection result");
+    assert_eq!(
+        collected.entries[0].state,
+        CollectionEntryState::ArtifactUnavailable
+    );
+    assert_eq!(collected.entries[0].attribution.agent_id, child_id);
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
 async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
     let directory = tempdir().expect("temporary directory");
     let workspace = directory
@@ -980,6 +1257,7 @@ async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
         .map(|index| SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: format!("too many {index}"),
+            result_schema: Default::default(),
             restrictions: Default::default(),
         })
         .collect();
@@ -997,11 +1275,13 @@ async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
                     SpawnAgentRequest {
                         route: Some("worker".to_owned()),
                         task: "valid first member".to_owned(),
+                        result_schema: Default::default(),
                         restrictions: Default::default(),
                     },
                     SpawnAgentRequest {
                         route: Some("worker".to_owned()),
                         task: "  ".to_owned(),
+                        result_schema: Default::default(),
                         restrictions: Default::default(),
                     },
                 ],
@@ -1074,6 +1354,7 @@ async fn competing_batch_callers_share_one_atomic_descendant_ledger() {
             .map(|index| SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: format!("{label} {index}"),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             })
             .collect::<Vec<_>>()
@@ -1153,6 +1434,7 @@ async fn admission_deadline_cancels_running_work_and_releases_its_reservation() 
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "observe the admission deadline".to_owned(),
+                result_schema: Default::default(),
                 restrictions: crate::orchestration::ChildRestrictions {
                     deadline_seconds: Some(1),
                     ..Default::default()
@@ -1178,6 +1460,7 @@ async fn admission_deadline_cancels_running_work_and_releases_its_reservation() 
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "reuse released reservation".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -1233,6 +1516,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "time out without cancelling".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -1240,6 +1524,21 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
         .expect("first child");
     started.notified().await;
     let first_id = first.admission.attribution.agent_id;
+    let collected_timeout = handle
+        .collect_agents(
+            vec![first_id],
+            CollectAgentsOptions {
+                timeout: Some(Duration::ZERO),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("collection timeout");
+    assert_eq!(
+        collected_timeout.entries[0].state,
+        CollectionEntryState::TimedOut
+    );
+    assert!(!collected_timeout.entries[0].cancellation_requested);
     assert_eq!(
         handle
             .await_agent_with(
@@ -1281,6 +1580,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "time out and cancel".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -1350,6 +1650,7 @@ async fn cancelling_a_child_closes_pending_permission_before_any_effect() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "request one effect".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -1447,6 +1748,7 @@ async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "stop with the runtime".to_owned(),
+                result_schema: Default::default(),
                 restrictions: Default::default(),
             },
         )
@@ -1518,6 +1820,7 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                 SpawnAgentRequest {
                     route: Some("worker".to_owned()),
                     task: "commit ordering".to_owned(),
+                    result_schema: Default::default(),
                     restrictions: Default::default(),
                 },
             )
@@ -1572,6 +1875,7 @@ fn commands_and_events_round_trip_through_json() {
         &scripted_child_config(&SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: "task".to_owned(),
+            result_schema: Default::default(),
             restrictions: Default::default(),
         }),
     );
