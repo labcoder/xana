@@ -146,6 +146,23 @@ for advanced connection and credential control. See
 [Configuration](docs/user/configuration.md) for exact commands, provider kinds,
 catalogs, OS credential storage, and `XANA_HOME`.
 
+## Start first-run setup again
+
+`xana reset` (alias: `xana clean`) previews the narrow setup state it will
+remove and asks for confirmation. Use `--yes` for an explicit noninteractive
+reset:
+
+```bash
+xana reset --yes
+xana init
+```
+
+From this source checkout, use `cargo run -- reset --yes` followed by `cargo
+run -- init`. Reset removes configuration, model selection/catalog caches, and
+managed-thread handles. It preserves native sessions, artifacts, stored API
+keys, Codex authentication, and Codex-owned conversations. `/clear` is
+different: it clears only the current conversation.
+
 ## Chat, tools, and images
 
 Bare `xana` starts terminal chat. Native conversations create a durable JSONL

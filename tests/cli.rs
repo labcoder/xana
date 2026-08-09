@@ -122,3 +122,58 @@ fn noninteractive_codex_init_creates_a_valid_managed_connection() {
         .expect("check managed Codex configuration");
     assert_success(&check);
 }
+
+#[test]
+fn reset_requires_confirmation_preserves_history_and_allows_reinitialization() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let init_args = [
+        "init",
+        "--non-interactive",
+        "--kind",
+        "ollama",
+        "--provider-name",
+        "ollama",
+        "--model",
+        "qwen3:1.7b",
+        "--permission-mode",
+        "ask",
+    ];
+    let initialized = xana(&home)
+        .args(init_args)
+        .output()
+        .expect("initialize Xana");
+    assert_success(&initialized);
+    for path in [
+        home.join("data/selection.toml"),
+        home.join("data/managed-threads/route.json"),
+        home.join("cache/models/ollama.json"),
+        home.join("data/sessions/keep.jsonl"),
+    ] {
+        std::fs::create_dir_all(path.parent().expect("fixture parent"))
+            .expect("create fixture parent");
+        std::fs::write(path, b"fixture").expect("write fixture");
+    }
+
+    let refused = xana(&home).arg("reset").output().expect("refuse reset");
+    assert!(!refused.status.success());
+    assert!(home.join("config.toml").is_file());
+
+    let reset = xana(&home)
+        .args(["clean", "--yes"])
+        .output()
+        .expect("reset Xana");
+    assert_success(&reset);
+    assert!(!home.join("config.toml").exists());
+    assert!(!home.join("data/selection.toml").exists());
+    assert!(!home.join("data/managed-threads").exists());
+    assert!(!home.join("cache/models").exists());
+    assert!(home.join("data/sessions/keep.jsonl").is_file());
+
+    let reinitialized = xana(&home)
+        .args(init_args)
+        .output()
+        .expect("reinitialize Xana");
+    assert_success(&reinitialized);
+    assert!(home.join("config.toml").is_file());
+}

@@ -351,6 +351,14 @@ to app-server, and first-run guidance requires live catalog discovery followed
 by explicit selection of an advertised model. Path and configuration
 diagnostics do not construct an agent.
 
+The guarded `reset`/`clean` boundary removes configuration last, after
+configuration-derived selection, catalog, and managed-thread-handle state.
+It enumerates exact Xana-owned targets, unlinks symlinks instead of following
+them, and preserves session journals, artifacts, credential-manager entries,
+and externally owned Codex state. Interactive reset requires confirmation and
+noninteractive reset requires `--yes`; a partial derived-state failure leaves
+the current configuration in place whenever possible.
+
 Xana loads a strict version 1-or-2 `config.toml`, capped at 1 MiB. It validates
 named native and managed connections, tagged credential references, connection-owned model
 overrides, profiles, Codex-only fields, shell policy, and permission rules.

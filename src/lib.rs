@@ -28,6 +28,7 @@ mod presentation;
 mod process_capture;
 mod prompt;
 mod provider;
+mod reset;
 mod runtime;
 pub mod self_docs;
 mod session;
