@@ -52,7 +52,6 @@ impl EmbeddedClient {
         self.observer.snapshot()
     }
 
-    #[cfg(test)]
     pub(crate) fn into_parts(self) -> (EmbeddedOwner, EmbeddedObserver) {
         (self.owner, self.observer)
     }

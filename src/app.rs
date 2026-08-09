@@ -15,7 +15,7 @@ use crate::{
     context::{ContextBudget, ContextPlanReport},
     credential::{CredentialResolver, SecretString, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
-    local_host::{HostSnapshotSeed, LocalHostError, LocalHostServer, connect_observer},
+    local_host::{LocalHostError, connect_observer, reconnect_controller},
     managed::{
         codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
         thread_store::ManagedThreadStore,
@@ -62,6 +62,11 @@ enum ChatSurface {
         prepared: tui::PreparedTui,
         required: bool,
     },
+    Hosted {
+        bind: std::net::IpAddr,
+        port: u16,
+        presentation: presentation::ResolvedPresentation,
+    },
 }
 
 impl ChatSurface {
@@ -69,6 +74,7 @@ impl ChatSurface {
         match self {
             Self::Plain(mode) => mode.profile(),
             Self::Tui { prepared, .. } => prepared.profile(),
+            Self::Hosted { presentation, .. } => *presentation,
         }
     }
 }
@@ -140,7 +146,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Serve(args)) => run_serve_command(&args, &paths).await,
-        Some(Command::Attach) => run_attach_command(&paths).await,
+        Some(Command::Attach(args)) => run_attach_command(&args, &paths).await,
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
@@ -174,51 +180,71 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
 }
 
 async fn run_serve_command(args: &cli::ServeArgs, paths: &XanaPaths) -> Result<()> {
-    let workspace = std::env::current_dir()
-        .context("could not resolve Xana workspace root")?
-        .canonicalize()
-        .context("could not canonicalize Xana workspace root")?;
-    let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
-    let seed = HostSnapshotSeed::from_workspace(&host.snapshot()?);
-    let server =
-        LocalHostServer::bind(paths.runtime_dir(), &workspace, args.bind, args.port, seed).await?;
-    let shutdown = server.shutdown_token();
-    writeln!(
-        anstream::stderr().lock(),
-        "xana serve: foreground loopback host ready\n  endpoint: {}\n  workspace: {}\n  descriptor: {}\n  clients: 0\nattach from this workspace with: xana attach",
-        server.endpoint(),
-        serde_json::to_string(
-            workspace
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("workspace")
-        )?,
-        server.descriptor_path().display(),
-    )?;
-    let signal = shutdown.clone();
-    let signal_task = tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            signal.cancel();
-        }
-    });
-    let result = server.run().await;
-    signal_task.abort();
-    writeln!(anstream::stderr().lock(), "xana serve: stopped")?;
-    result.map_err(anyhow::Error::new)
+    if !args.bind.is_loopback() {
+        anyhow::bail!("Course 1 `xana serve` accepts only loopback bind addresses");
+    }
+    let presentation = banner_mode(paths, false, false, false, true).profile();
+    run_default(
+        paths,
+        ChatSurface::Hosted {
+            bind: args.bind,
+            port: args.port,
+            presentation,
+        },
+        None,
+        false,
+        None,
+    )
+    .await
+    .map(|_| ())
 }
 
-async fn run_attach_command(paths: &XanaPaths) -> Result<()> {
+async fn run_attach_command(args: &cli::AttachArgs, paths: &XanaPaths) -> Result<()> {
     let workspace = std::env::current_dir()
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
+    let mut reconnect = None;
     loop {
-        let mut observer = connect_observer(paths.runtime_dir(), &workspace).await?;
+        let mut observer = match reconnect.take() {
+            Some(capability) => {
+                reconnect_controller(paths.runtime_dir(), &workspace, capability).await?
+            }
+            None => connect_observer(paths.runtime_dir(), &workspace).await?,
+        };
+        if args.control && !observer.is_controller() {
+            let conversation = observer
+                .snapshot()
+                .controllable_conversation
+                .clone()
+                .context("foreground host has no controllable conversation")?;
+            observer
+                .acquire_control(conversation, args.takeover)
+                .await?;
+            eprintln!("xana attach: controller authority acquired");
+            if let Some(prompt) = &args.prompt {
+                let result = observer
+                    .send_command(crate::runtime::RuntimeCommand::SubmitTurn {
+                        operation_id: crate::identity::OperationId::new(),
+                        input: prompt.clone(),
+                    })
+                    .await?;
+                if !result.accepted {
+                    anyhow::bail!(
+                        "hosted prompt was rejected: {}",
+                        result.reason.as_deref().unwrap_or("no reason provided")
+                    );
+                }
+            }
+        }
         println!("{}", serde_json::to_string(observer.snapshot())?);
         loop {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
                     signal.context("could not listen for attach cancellation")?;
+                    if args.control {
+                        observer.release_control().await?;
+                    }
                     return Ok(());
                 }
                 observation = observer.next() => {
@@ -226,9 +252,15 @@ async fn run_attach_command(paths: &XanaPaths) -> Result<()> {
                         Ok(observation) => println!("{}", serde_json::to_string(&observation)?),
                         Err(LocalHostError::SequenceGap { .. }) => {
                             eprintln!("xana attach: observation gap; reconnecting for a fresh snapshot");
+                            reconnect = observer.take_controller_reconnect();
                             break;
                         }
                         Err(LocalHostError::Closed) => {
+                            reconnect = observer.take_controller_reconnect();
+                            if reconnect.is_some() {
+                                eprintln!("xana attach: controller disconnected; reconnecting within grace");
+                                break;
+                            }
                             eprintln!("xana attach: foreground host closed");
                             return Ok(());
                         }
@@ -1280,6 +1312,20 @@ async fn run_default(
                 )
                 .await
                 .map(|_| None),
+                ChatSurface::Hosted { bind, port, .. } => crate::local_host::run_managed_host(
+                    paths.runtime_dir(),
+                    bind,
+                    port,
+                    crate::local_host::ManagedHostExecution {
+                        server,
+                        models: manager,
+                        config: managed_config,
+                        workspace_host,
+                        conversation,
+                    },
+                )
+                .await
+                .map(|()| None),
             },
         };
     }
@@ -1527,6 +1573,19 @@ async fn run_default(
         }
         ChatSurface::Tui { prepared, .. } => {
             tui::run_native(prepared, runtime, &header, workspace_host, conversation).await?
+        }
+        ChatSurface::Hosted { bind, port, .. } => {
+            crate::local_host::run_native_host(
+                paths.runtime_dir(),
+                bind,
+                port,
+                runtime,
+                header,
+                workspace_host,
+                conversation,
+            )
+            .await?;
+            terminal::ChatExit::Quit
         }
     };
     match exit {

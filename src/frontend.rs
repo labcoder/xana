@@ -9,8 +9,11 @@ mod embedded;
 mod managed;
 mod protocol;
 
-pub(crate) use embedded::EmbeddedClient;
+pub(crate) use embedded::{EmbeddedClient, EmbeddedObserver, EmbeddedOwner};
 pub(crate) use managed::{ManagedClientEvent, ManagedClientItem};
 #[cfg(test)]
 pub(crate) use protocol::FRONTEND_PROTOCOL_VERSION;
-pub(crate) use protocol::{ClientCommand, ClientCommandResult, ClientEvent, ClientSnapshotSeed};
+pub(crate) use protocol::{
+    ClientCommand, ClientCommandResult, ClientCommandValue, ClientEvent, ClientSnapshot,
+    ClientSnapshotSeed,
+};

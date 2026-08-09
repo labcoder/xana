@@ -156,13 +156,16 @@ and uses an OS-authoritative per-turn gate so embedded processes cannot run
 competing roots. Presentation resolves a versioned bounded preference file and
 injected terminal facts into semantic dark, light, monochrome, color-depth,
 glyph, width, and motion policy; redirected output remains control-free.
-The loopback observer projection is implemented: explicit foreground
+The loopback observer and single-controller projection is implemented: explicit foreground
 `xana serve` publishes a protected per-workspace capability descriptor,
 validates generation/workspace/version/capability and browser Origin before
 data, then provides an atomic bounded snapshot and ordered passive stream.
 Observer commands are correlated rejections and cannot reach runtime control.
-Attached controller leases, hosted turn execution, setup, and complete
-explicit-server shutdown remain unimplemented. The TUI now owns adaptive state/update/view
+One explicit controller lease routes correlated native and managed Codex turns
+and exact approval decisions. Release, takeover, reconnect grace, and expiry
+are sequenced host facts; controller loss fails pending approvals closed and
+interrupts the root without promoting an observer. Transactional setup and
+complete explicit-server shutdown remain unimplemented. The TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,
 image staging, ordered follow-ups, exact interruption, owner-gated steering,
 one command registry/palette, model selection, independent activity visibility,
