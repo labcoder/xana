@@ -4,6 +4,7 @@
 //! registry exposes stable definitions and dispatches model requests without
 //! treating effect metadata as permission or containment.
 
+mod delegate_agent;
 mod edit_file;
 mod list_files;
 mod read_document;
@@ -76,7 +77,13 @@ pub(crate) trait Tool: Send + Sync {
     fn execute<'a>(
         &'a self,
         planned: &'a PlannedToolInvocation,
+        context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ToolExecutionContext {
+    pub(crate) operation_id: OperationId,
 }
 
 pub(crate) struct PlannedToolInvocation {
@@ -116,8 +123,8 @@ impl PreparedToolInvocation<'_> {
         }
     }
 
-    pub(crate) async fn execute(&self) -> Result<String, String> {
-        self.implementation.execute(&self.planned).await
+    pub(crate) async fn execute(&self, context: ToolExecutionContext) -> Result<String, String> {
+        self.implementation.execute(&self.planned, context).await
     }
 }
 
@@ -229,7 +236,12 @@ impl ToolRegistry {
             );
         }
 
-        match planned.execute().await {
+        match planned
+            .execute(ToolExecutionContext {
+                operation_id: context.operation_id,
+            })
+            .await
+        {
             Ok(output) => ToolResult::success(call.id.clone(), output),
             Err(error) => ToolResult::error(call.id.clone(), error),
         }
@@ -266,6 +278,25 @@ impl ToolRegistry {
     pub(crate) fn builtins(shell: Shell) -> Result<Self, RegistryError> {
         let exposed = crate::capability::resolve_builtin_tool_names()
             .map_err(|error| RegistryError::Composition(error.to_string()))?;
+        Self::builtins_from_names(shell, &exposed)
+    }
+
+    pub(crate) fn builtins_for_snapshot(
+        shell: Shell,
+        snapshot: &xana_core::AgentCapabilitySnapshot,
+    ) -> Result<Self, RegistryError> {
+        let exposed = snapshot
+            .tool_ids()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<std::collections::BTreeSet<_>>();
+        Self::builtins_from_names(shell, &exposed)
+    }
+
+    fn builtins_from_names(
+        shell: Shell,
+        exposed: &std::collections::BTreeSet<String>,
+    ) -> Result<Self, RegistryError> {
         let mut registry = Self::new();
         if exposed.contains("read_file") {
             registry.register(read_file::ReadFile)?;
@@ -286,6 +317,13 @@ impl ToolRegistry {
             registry.register(xana_docs::XanaDocs)?;
         }
         Ok(registry)
+    }
+
+    pub(crate) fn enable_child_delegation(
+        &mut self,
+        supervisor: crate::orchestration::ChildSupervisorHandle,
+    ) -> Result<(), RegistryError> {
+        self.register(delegate_agent::DelegateAgent::new(supervisor))
     }
 
     #[cfg(test)]

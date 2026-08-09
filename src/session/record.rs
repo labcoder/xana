@@ -7,6 +7,7 @@ use crate::{
         InvocationIntent, InvocationResultRecord, NamedValueRecord, RecoveryDecision,
         SuspensionReason,
     },
+    orchestration::{AgentHandleSnapshot, ChildLifecycle, ChildReport},
     permission::PermissionAuditFact,
     runtime::OperationState,
 };
@@ -101,6 +102,16 @@ pub(crate) enum SessionRecord {
     },
     NamedValueSet {
         value: NamedValueRecord,
+    },
+    ChildAdmitted {
+        handle: AgentHandleSnapshot,
+    },
+    ChildLifecycleChanged {
+        agent_id: AgentId,
+        lifecycle: ChildLifecycle,
+    },
+    ChildReportCommitted {
+        report: ChildReport,
     },
 }
 

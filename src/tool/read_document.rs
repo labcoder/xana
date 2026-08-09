@@ -104,6 +104,7 @@ impl Tool for ReadDocument {
     fn execute<'a>(
         &'a self,
         planned: &'a PlannedToolInvocation,
+        _context: super::ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let plan = planned.executable::<Plan>("read_document")?;

@@ -1,7 +1,8 @@
 use crate::{
-    identity::{OperationId, SessionId, StepId, ToolInvocationId},
+    identity::{AgentId, OperationId, SessionId, StepId, ToolInvocationId},
     message::Message,
     operation::{InvocationIntent, InvocationResultRecord},
+    orchestration::{ChildActivity, ChildAttribution, ChildLifecycle, ChildReport},
     permission::{ControllerDecision, PermissionAuditFact, PermissionRequest},
 };
 use serde::{Deserialize, Serialize};
@@ -23,6 +24,12 @@ pub(crate) enum RuntimeCommand {
         operation_id: OperationId,
     },
     DecidePermission {
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+        decision: ControllerDecision,
+    },
+    DecideChildPermission {
+        agent_id: AgentId,
         operation_id: OperationId,
         invocation_id: ToolInvocationId,
         decision: ControllerDecision,
@@ -84,5 +91,16 @@ pub(crate) enum AgentEvent {
     ConversationCleared,
     CommandRejected {
         reason: String,
+    },
+    ChildLifecycleChanged {
+        attribution: ChildAttribution,
+        lifecycle: ChildLifecycle,
+    },
+    ChildActivity {
+        attribution: ChildAttribution,
+        activity: ChildActivity,
+    },
+    ChildReportCommitted {
+        report: ChildReport,
     },
 }

@@ -63,6 +63,7 @@ impl Tool for CountedTool {
     fn execute<'a>(
         &'a self,
         _planned: &'a PlannedToolInvocation,
+        _context: crate::tool::ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             self.effects.fetch_add(1, Ordering::SeqCst);

@@ -43,8 +43,12 @@ ceiling, tool-round limit, and orchestration limits. A **task route** maps one
 stable child-task name to exactly one profile. `xana route list` and `xana
 route check NAME` resolve configured/cached metadata, local credential
 availability, model options, and built-in capabilities without network or
-process activation. They do not yet start a child. Interactive foreground
-model selection remains separate and cannot mutate a task route.
+process activation. The commands do not start a child. Native chat uses the
+same resolver before its runtime admits one supervised native child; the
+immutable result drives provider, prompt, tool, permission, and budget
+composition for that execution. Interactive foreground model selection
+remains separate and cannot mutate a task route. Managed Codex children and
+parallel admission are not implemented yet.
 
 ```mermaid
 flowchart TD
@@ -58,7 +62,7 @@ flowchart TD
     RESOLVE -->|"managed"| MANAGED_ROUTE["Managed runtime route"]
     REGISTRY --> PROFILE["Named agent profile"]
     PROFILE --> TASK_ROUTE["Exact child task route"]
-    TASK_ROUTE --> SNAPSHOT["ResolvedAgentConfig diagnostic"]
+    TASK_ROUTE --> SNAPSHOT["ResolvedAgentConfig<br/>diagnostic or admission snapshot"]
 ```
 
 Control-plane catalog refresh is explicit. Native startup reads only configured

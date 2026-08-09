@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     artifact::{ArtifactRecord, ArtifactRef, ContentHash},
+    config::{OrchestrationLimits, PermissionMode},
     context::persisted::{
         ContextKind, ContextRecord, ContextViewRecord, MaterializationBudget, Provenance,
         TrustClass, ViewSelector,
@@ -10,6 +11,10 @@ use crate::{
     operation::{
         DurableValueRef, InvocationIntent, InvocationOutcome, InvocationResultRecord,
         InvocationTarget, NamedValueRecord, RecoveryDecision, SuspensionReason,
+    },
+    orchestration::{
+        AgentHandleSnapshot, ChildAdmission, ChildAttribution, ChildLifecycle, ChildReport,
+        ChildReportReference, ChildTerminalStatus, ChildUsage, ExecutionOwner,
     },
     permission::{PermissionAuditFact, PermissionRequest, PermissionScope, PolicyDecision},
     runtime::{OperationOutcome, OperationState},
@@ -42,6 +47,111 @@ fn audit(operation_id: OperationId) -> PermissionAuditFact {
         controller_decision: None,
         effective: PolicyDecision::Allow,
     }
+}
+
+fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapshot {
+    AgentHandleSnapshot::admitted(ChildAdmission {
+        attribution: ChildAttribution {
+            agent_id: AgentId::new(),
+            parent_agent_id: AgentId::for_session(session_id),
+            operation_id: OperationId::new(),
+            parent_operation_id: OperationId::new(),
+            thread_id,
+            route: "worker".to_owned(),
+            profile: "worker".to_owned(),
+            owner: ExecutionOwner::Native,
+            connection: "local".to_owned(),
+            model: "small".to_owned(),
+        },
+        task_preview: "bounded task".to_owned(),
+        task_hash: blake3::hash(b"bounded task").to_hex().to_string(),
+        capabilities: Vec::new(),
+        permission_mode: PermissionMode::Deny,
+        max_tool_rounds: 1,
+        limits: OrchestrationLimits::default(),
+    })
+}
+
+#[test]
+fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let handle = child_handle(session_id, thread_id);
+    let agent_id = handle.admission.attribution.agent_id;
+    let report = ChildReport {
+        version: crate::orchestration::CHILD_REPORT_VERSION,
+        attribution: handle.admission.attribution.clone(),
+        status: ChildTerminalStatus::Completed,
+        output: Some("done".to_owned()),
+        error: None,
+        usage: ChildUsage::Unknown,
+        reference: ChildReportReference::Inline { byte_len: 4 },
+    };
+    let records = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildAdmitted {
+                handle: handle.clone(),
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildLifecycleChanged {
+                agent_id,
+                lifecycle: ChildLifecycle::Queued,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildLifecycleChanged {
+                agent_id,
+                lifecycle: ChildLifecycle::Running,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildReportCommitted {
+                report: report.clone(),
+            },
+        ),
+    ];
+
+    let restored = reduce(&records).expect("reduce child records");
+    let child = restored.children.get(&agent_id).expect("restored child");
+    assert_eq!(child.handle.lifecycle, ChildLifecycle::Completed);
+    assert_eq!(child.report.as_ref(), Some(&report));
+
+    for record in records.into_iter().skip(1) {
+        let encoded = serde_json::to_vec(&record).expect("encode child record");
+        let decoded: RecordEnvelope =
+            serde_json::from_slice(&encoded).expect("decode child record");
+        assert_eq!(decoded, record);
+    }
+}
+
+#[test]
+fn child_reducer_rejects_skipped_and_duplicate_terminal_transitions() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let handle = child_handle(session_id, thread_id);
+    let agent_id = handle.admission.attribution.agent_id;
+    let skipped = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(session_id, SessionRecord::ChildAdmitted { handle }),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildLifecycleChanged {
+                agent_id,
+                lifecycle: ChildLifecycle::Running,
+            },
+        ),
+    ];
+
+    assert!(matches!(
+        reduce(&skipped),
+        Err(crate::session::reduce::ReductionError::InvalidChildTransition { .. })
+    ));
 }
 
 #[test]

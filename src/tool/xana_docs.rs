@@ -60,6 +60,7 @@ impl Tool for XanaDocs {
     fn execute<'a>(
         &'a self,
         planned: &'a PlannedToolInvocation,
+        _context: super::ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let args = planned.executable::<Args>("xana_docs")?;

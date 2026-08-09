@@ -19,6 +19,9 @@ engineering contracts used to change it.
   immutable artifacts, inspection, corruption handling, and backup limits.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
+- [Child orchestration](user/orchestration.md) explains exact native routes,
+  one runtime-owned child, attributed lifecycle, bounded reports, and current
+  limits.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 
@@ -38,8 +41,10 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Proposals](proposals/) contains particular future designs and their
   lifecycle status.
 - [Accepted Phase 4 orchestration](proposals/0016-bounded-child-orchestration-and-task-routes.md)
-  defines the approved but unimplemented bounded child, exact-route, report,
-  budget, native/managed owner, and orchestration-plan contract.
+  defines the active bounded child, exact-route, report, budget,
+  native/managed owner, and orchestration-plan contract. Exact routing and the
+  first supervised native-child slice are implemented; the proposal remains
+  Accepted until its complete contract ships.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation

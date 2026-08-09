@@ -8,6 +8,7 @@ use crate::{
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     model::{ExecutionKind, ModelManager},
+    orchestration::ChildActivity,
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
@@ -158,6 +159,66 @@ impl<W: Write> EventRenderer<W> {
             }
             AgentEvent::CommandRejected { reason } => {
                 writeln!(self.output, "xana> command rejected: {reason}")?;
+            }
+            AgentEvent::ChildLifecycleChanged {
+                attribution,
+                lifecycle,
+            } => {
+                self.finish_stream()?;
+                writeln!(
+                    self.output,
+                    "xana> child {} [{} via {}/{}]: {:?}",
+                    attribution.agent_id,
+                    attribution.route,
+                    attribution.connection,
+                    attribution.model,
+                    lifecycle
+                )?;
+            }
+            AgentEvent::ChildActivity {
+                attribution,
+                activity,
+            } => match activity {
+                ChildActivity::AssistantTextDelta { text, .. } => {
+                    self.finish_stream()?;
+                    writeln!(
+                        self.output,
+                        "xana> child {} [{}]: {text}",
+                        attribution.agent_id, attribution.route
+                    )?;
+                }
+                ChildActivity::PermissionRequested { request } => {
+                    self.finish_stream()?;
+                    writeln!(
+                        self.output,
+                        "xana> child {} [{}] requires permission\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
+                        attribution.agent_id,
+                        attribution.route,
+                        request.tool_name,
+                        request.effect_class,
+                        display_scope(&request.scope),
+                        request.final_arguments
+                    )?;
+                }
+                ChildActivity::PermissionAudited { .. }
+                | ChildActivity::ToolFinished { .. }
+                | ChildActivity::Suspended => {}
+                ChildActivity::Warning { message } => {
+                    self.finish_stream()?;
+                    writeln!(
+                        self.output,
+                        "xana> child {} [{}] warning: {message}",
+                        attribution.agent_id, attribution.route
+                    )?;
+                }
+            },
+            AgentEvent::ChildReportCommitted { report } => {
+                self.finish_stream()?;
+                writeln!(
+                    self.output,
+                    "xana> child {} report: {:?}",
+                    report.attribution.agent_id, report.status
+                )?;
             }
         }
         Ok(())
@@ -372,6 +433,20 @@ async fn render_operation<W: Write>(
             AgentEvent::PermissionRequested { request } if request.operation_id == operation_id => {
                 let decision = prompt_permission_decision(&request)?;
                 send_permission_decision(runtime, operation_id, request.invocation_id, decision)
+                    .await?;
+            }
+            AgentEvent::ChildActivity {
+                attribution,
+                activity: ChildActivity::PermissionRequested { request },
+            } if attribution.parent_operation_id == operation_id => {
+                let decision = prompt_permission_decision(&request)?;
+                runtime
+                    .send(RuntimeCommand::DecideChildPermission {
+                        agent_id: attribution.agent_id,
+                        operation_id: request.operation_id,
+                        invocation_id: request.invocation_id,
+                        decision,
+                    })
                     .await?;
             }
             AgentEvent::OperationStateChanged {
