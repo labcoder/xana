@@ -2,7 +2,7 @@ use super::{
     EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition, ToolExecutionContext,
 };
 use crate::{
-    orchestration::{ChildSupervisorHandle, SpawnAgentRequest},
+    orchestration::{ChildRestrictions, ChildSupervisorHandle, SpawnAgentRequest},
     permission::PermissionScope,
 };
 use futures::future::BoxFuture;
@@ -20,6 +20,8 @@ struct Args {
     #[serde(default)]
     route: Option<String>,
     task: String,
+    #[serde(default)]
+    restrictions: ChildRestrictions,
 }
 
 impl DelegateAgent {
@@ -40,7 +42,8 @@ impl Tool for DelegateAgent {
                 "required":["task"],
                 "properties":{
                     "route":{"type":"string","minLength":1,"maxLength":128},
-                    "task":{"type":"string","minLength":1,"maxLength":262144}
+                    "task":{"type":"string","minLength":1,"maxLength":262144},
+                    "restrictions":super::child_agent::restriction_schema()
                 }
             }),
             effect_class: EffectClass::External,
@@ -73,6 +76,7 @@ impl Tool for DelegateAgent {
                     SpawnAgentRequest {
                         route: args.route.clone(),
                         task: args.task.clone(),
+                        restrictions: args.restrictions.clone(),
                     },
                 )
                 .await

@@ -20,8 +20,8 @@ use crate::{
     model::{ExecutionKind, ModelManager},
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     orchestration::{
-        ChildSupervisor, ExecutionOwner, NativeChildFactory, ParentExecution, ResolvedAgentConfig,
-        RouteResolver,
+        ChildSupervisor, ExecutionOwner, NativeChildFactory, OrchestrationBudget, ParentExecution,
+        ResolvedAgentConfig, RouteResolver,
     },
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
@@ -1029,6 +1029,14 @@ async fn run_default(
     let child_supervisor = if child_registry.routes.is_empty() {
         None
     } else {
+        let root_profile = child_registry
+            .profiles
+            .get(&child_registry.default_profile)
+            .context("validated configuration lost its default profile")?;
+        let budget = OrchestrationBudget::new(
+            root_profile.orchestration.clone(),
+            root_profile.max_tool_rounds,
+        );
         let factory = NativeChildFactory::new(
             child_registry,
             model_manager(paths)?,
@@ -1044,6 +1052,7 @@ async fn run_default(
             },
             Arc::new(factory),
             restored_children.clone(),
+            budget,
         );
         tools
             .enable_child_delegation(handle.clone())

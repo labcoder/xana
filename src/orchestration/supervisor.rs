@@ -1,7 +1,8 @@
 use super::{
-    AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, ChildActivity, ChildAdmission,
-    ChildAttribution, ChildCancellationReceipt, ChildExecutionContext, ChildExecutionFactory,
-    ChildExecutionOutcome, ChildInspection, ChildLifecycle, ChildReport, PreparedChild,
+    AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, BudgetError, BudgetLedger,
+    BudgetReservation, ChildActivity, ChildAdmission, ChildAttribution, ChildCancellationReceipt,
+    ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildInspection,
+    ChildLifecycle, ChildReport, OrchestrationBudget, PreparedChild, ReservationRequest,
     SpawnAgentRequest, truncate_utf8, validate_spawn_request,
 };
 use crate::{
@@ -10,7 +11,11 @@ use crate::{
     runtime::{AgentEvent, OperationState},
     session::SessionRecord,
 };
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fmt,
+    sync::Arc,
+};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -75,6 +80,8 @@ pub(crate) struct ChildSupervisor {
     children: BTreeMap<AgentId, ActiveChild>,
     completions: mpsc::UnboundedReceiver<ChildCompletion>,
     completion_sender: mpsc::UnboundedSender<ChildCompletion>,
+    ledger: BudgetLedger,
+    admission_queue: VecDeque<AgentId>,
 }
 
 struct ActiveChild {
@@ -87,6 +94,16 @@ struct ActiveChild {
     cancellation: CancellationToken,
     cancellation_requested: bool,
     task: Option<JoinHandle<()>>,
+    reservation: Option<BudgetReservation>,
+    running_reserved: bool,
+    deadline: Option<time::Instant>,
+}
+
+struct AdmissionCandidate {
+    snapshot: AgentHandleSnapshot,
+    prepared: PreparedChild,
+    reservation: ReservationRequest,
+    deadline: time::Instant,
 }
 
 enum SupervisorCommand {
@@ -94,6 +111,11 @@ enum SupervisorCommand {
         parent_operation_id: OperationId,
         request: SpawnAgentRequest,
         reply: oneshot::Sender<Result<AgentHandleSnapshot, SupervisorError>>,
+    },
+    SpawnMany {
+        parent_operation_id: OperationId,
+        requests: Vec<SpawnAgentRequest>,
+        reply: oneshot::Sender<Result<Vec<AgentHandleSnapshot>, SupervisorError>>,
     },
     Await {
         agent_id: AgentId,
@@ -142,7 +164,7 @@ struct RunningChild {
 pub(crate) enum SupervisorError {
     Unavailable,
     InvalidRequest(String),
-    Busy,
+    Budget(BudgetError),
     Admission(String),
     UnknownAgent(AgentId),
     TooManyWaiters(AgentId),
@@ -155,7 +177,7 @@ impl fmt::Display for SupervisorError {
         match self {
             Self::Unavailable => formatter.write_str("child supervisor is unavailable"),
             Self::InvalidRequest(reason) => write!(formatter, "invalid child request: {reason}"),
-            Self::Busy => formatter.write_str("the child descendant capacity is exhausted"),
+            Self::Budget(error) => write!(formatter, "child budget rejected admission: {error}"),
             Self::Admission(reason) => write!(formatter, "child admission failed: {reason}"),
             Self::UnknownAgent(agent_id) => write!(formatter, "unknown child agent {agent_id}"),
             Self::TooManyWaiters(agent_id) => write!(
@@ -180,13 +202,28 @@ impl ChildSupervisor {
         parent: ParentExecution,
         factory: Arc<dyn ChildExecutionFactory>,
     ) -> (ChildSupervisorHandle, Self) {
-        Self::with_restored(parent, factory, Vec::new())
+        Self::with_restored(
+            parent,
+            factory,
+            Vec::new(),
+            OrchestrationBudget::new(crate::config::OrchestrationLimits::default(), 8),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_budget(
+        parent: ParentExecution,
+        factory: Arc<dyn ChildExecutionFactory>,
+        budget: OrchestrationBudget,
+    ) -> (ChildSupervisorHandle, Self) {
+        Self::with_restored(parent, factory, Vec::new(), budget)
     }
 
     pub(crate) fn with_restored(
         parent: ParentExecution,
         factory: Arc<dyn ChildExecutionFactory>,
         restored: Vec<ChildInspection>,
+        budget: OrchestrationBudget,
     ) -> (ChildSupervisorHandle, Self) {
         let (command_sender, commands) = mpsc::channel(SUPERVISOR_COMMAND_CAPACITY);
         let (completion_sender, completions) = mpsc::unbounded_channel();
@@ -206,6 +243,9 @@ impl ChildSupervisor {
                         cancellation: CancellationToken::new(),
                         cancellation_requested: false,
                         task: None,
+                        reservation: None,
+                        running_reserved: false,
+                        deadline: None,
                     },
                 )
             })
@@ -221,6 +261,8 @@ impl ChildSupervisor {
                 children,
                 completions,
                 completion_sender,
+                ledger: BudgetLedger::new(budget),
+                admission_queue: VecDeque::new(),
             },
         )
     }
@@ -231,6 +273,7 @@ impl ChildSupervisor {
         events: mpsc::UnboundedSender<AgentEvent>,
     ) {
         loop {
+            let next_deadline = self.next_deadline();
             tokio::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else {
@@ -244,8 +287,12 @@ impl ChildSupervisor {
                 completion = self.completions.recv() => {
                     if let Some(completion) = completion {
                         self.handle_completion(completion, &commits, &events).await;
-                        self.start_queued_child(&commits, &events).await;
+                        self.start_queued_children(&commits, &events).await;
                     }
+                }
+                _ = wait_for_deadline(next_deadline) => {
+                    self.expire_deadlines(&commits, &events).await;
+                    self.start_queued_children(&commits, &events).await;
                 }
             }
         }
@@ -267,7 +314,18 @@ impl ChildSupervisor {
                     .spawn_child(parent_operation_id, request, commits, events)
                     .await;
                 let _ = reply.send(result);
-                self.start_queued_child(commits, events).await;
+                self.start_queued_children(commits, events).await;
+            }
+            SupervisorCommand::SpawnMany {
+                parent_operation_id,
+                requests,
+                reply,
+            } => {
+                let result = self
+                    .spawn_many_children(parent_operation_id, requests, commits, events)
+                    .await;
+                let _ = reply.send(result);
+                self.start_queued_children(commits, events).await;
             }
             SupervisorCommand::Await { agent_id, reply } => {
                 let Some(child) = self.children.get_mut(&agent_id) else {
@@ -306,7 +364,7 @@ impl ChildSupervisor {
             SupervisorCommand::Cancel { agent_id, reply } => {
                 let result = self.request_cancellation(agent_id, commits, events).await;
                 let _ = reply.send(result);
-                self.start_queued_child(commits, events).await;
+                self.start_queued_children(commits, events).await;
             }
             SupervisorCommand::DecidePermission {
                 agent_id,
@@ -345,38 +403,38 @@ impl ChildSupervisor {
         commits: &ChildCommitSender,
         events: &mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<AgentHandleSnapshot, SupervisorError> {
-        validate_spawn_request(&request)
-            .map_err(|reason| SupervisorError::InvalidRequest(reason.to_owned()))?;
-        let prepared = self
-            .factory
-            .prepare(&request)
-            .map_err(SupervisorError::Admission)?;
-        if self.children.len() >= prepared.resolved.orchestration.max_descendants {
-            return Err(SupervisorError::Busy);
-        }
-        let attribution = ChildAttribution::new(
-            AgentId::new(),
-            self.parent.agent_id,
-            parent_operation_id,
-            self.parent.thread_id,
-            &prepared.resolved,
-        );
-        let admission = ChildAdmission::new(attribution.clone(), &request.task, &prepared.resolved);
-        let mut snapshot = AgentHandleSnapshot::admitted(admission);
+        let candidate = self.prepare_candidate(parent_operation_id, request)?;
+        let mut reservations = self
+            .ledger
+            .reserve_batch(std::slice::from_ref(&candidate.reservation))
+            .map_err(SupervisorError::Budget)?;
+        let reservation = reservations
+            .pop()
+            .expect("a one-child reservation returns one token");
+        let mut snapshot = candidate.snapshot;
+        let attribution = snapshot.admission.attribution.clone();
 
-        commits
+        if let Err(error) = commits
             .append(SessionRecord::ChildAdmitted {
                 handle: snapshot.clone(),
             })
-            .await?;
+            .await
+        {
+            self.ledger.release(reservation);
+            return Err(error);
+        }
         emit_lifecycle(events, &attribution, ChildLifecycle::Admitted);
 
-        commits
+        if let Err(error) = commits
             .append(SessionRecord::ChildLifecycleChanged {
                 agent_id: attribution.agent_id,
                 lifecycle: ChildLifecycle::Queued,
             })
-            .await?;
+            .await
+        {
+            self.ledger.release(reservation);
+            return Err(error);
+        }
         snapshot.apply_lifecycle(ChildLifecycle::Queued);
         emit_lifecycle(events, &attribution, ChildLifecycle::Queued);
 
@@ -389,79 +447,212 @@ impl ChildSupervisor {
                 report: None,
                 terminal_error: None,
                 waiters: Vec::new(),
-                prepared: Some(prepared),
+                prepared: Some(candidate.prepared),
                 permissions: None,
                 cancellation,
                 cancellation_requested: false,
                 task: None,
+                reservation: Some(reservation),
+                running_reserved: false,
+                deadline: Some(candidate.deadline),
             },
         );
+        self.admission_queue.push_back(agent_id);
         Ok(snapshot)
     }
 
-    async fn start_queued_child(
+    async fn spawn_many_children(
+        &mut self,
+        parent_operation_id: OperationId,
+        requests: Vec<SpawnAgentRequest>,
+        commits: &ChildCommitSender,
+        events: &mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<Vec<AgentHandleSnapshot>, SupervisorError> {
+        if requests.is_empty() {
+            return Err(SupervisorError::Budget(BudgetError::EmptyBatch));
+        }
+        let maximum_fan_out = self.ledger.budget().limits.max_fan_out;
+        if requests.len() > maximum_fan_out {
+            return Err(SupervisorError::Budget(BudgetError::FanOut {
+                requested: requests.len(),
+                maximum: maximum_fan_out,
+            }));
+        }
+        let mut candidates = Vec::with_capacity(requests.len());
+        for request in requests {
+            candidates.push(self.prepare_candidate(parent_operation_id, request)?);
+        }
+        let reservation_requests = candidates
+            .iter()
+            .map(|candidate| candidate.reservation.clone())
+            .collect::<Vec<_>>();
+        let reservations = self
+            .ledger
+            .reserve_batch(&reservation_requests)
+            .map_err(SupervisorError::Budget)?;
+
+        let mut snapshots = candidates
+            .iter()
+            .map(|candidate| candidate.snapshot.clone())
+            .collect::<Vec<_>>();
+        for snapshot in &mut snapshots {
+            snapshot.apply_lifecycle(ChildLifecycle::Queued);
+        }
+        if let Err(error) = commits
+            .append(SessionRecord::ChildrenBatchAdmitted {
+                handles: snapshots.clone(),
+            })
+            .await
+        {
+            for reservation in reservations {
+                self.ledger.release(reservation);
+            }
+            return Err(error);
+        }
+
+        for ((candidate, reservation), snapshot) in candidates
+            .into_iter()
+            .zip(reservations)
+            .zip(snapshots.iter())
+        {
+            let attribution = snapshot.admission.attribution.clone();
+            let agent_id = attribution.agent_id;
+            emit_lifecycle(events, &attribution, ChildLifecycle::Admitted);
+            emit_lifecycle(events, &attribution, ChildLifecycle::Queued);
+            self.children.insert(
+                agent_id,
+                ActiveChild {
+                    snapshot: snapshot.clone(),
+                    report: None,
+                    terminal_error: None,
+                    waiters: Vec::new(),
+                    prepared: Some(candidate.prepared),
+                    permissions: None,
+                    cancellation: CancellationToken::new(),
+                    cancellation_requested: false,
+                    task: None,
+                    reservation: Some(reservation),
+                    running_reserved: false,
+                    deadline: Some(candidate.deadline),
+                },
+            );
+            self.admission_queue.push_back(agent_id);
+        }
+        Ok(snapshots)
+    }
+
+    fn prepare_candidate(
+        &self,
+        parent_operation_id: OperationId,
+        request: SpawnAgentRequest,
+    ) -> Result<AdmissionCandidate, SupervisorError> {
+        validate_spawn_request(&request)
+            .map_err(|reason| SupervisorError::InvalidRequest(reason.to_owned()))?;
+        let prepared = self
+            .factory
+            .prepare(&request)
+            .map_err(SupervisorError::Admission)?;
+        validate_child_ceiling(&prepared, self.ledger.budget())?;
+        let attribution = ChildAttribution::new(
+            AgentId::new(),
+            self.parent.agent_id,
+            parent_operation_id,
+            self.parent.thread_id,
+            &prepared.resolved,
+        );
+        let admission = ChildAdmission::new(attribution, &request.task, &prepared.resolved);
+        let reservation = ReservationRequest {
+            tool_rounds: prepared.resolved.max_tool_rounds,
+            context_tokens: prepared.resolved.orchestration.max_context_tokens,
+            report_bytes: prepared.resolved.orchestration.max_report_bytes,
+            artifact_bytes: prepared.resolved.orchestration.max_artifact_bytes,
+        };
+        let deadline = time::Instant::now()
+            + std::time::Duration::from_secs(prepared.resolved.orchestration.deadline_seconds);
+        Ok(AdmissionCandidate {
+            snapshot: AgentHandleSnapshot::admitted(admission),
+            prepared,
+            reservation,
+            deadline,
+        })
+    }
+
+    async fn start_queued_children(
         &mut self,
         commits: &ChildCommitSender,
         events: &mpsc::UnboundedSender<AgentEvent>,
     ) {
-        if self.children.values().any(|child| {
-            child.snapshot.lifecycle == ChildLifecycle::Running
-                && child.report.is_none()
-                && child.terminal_error.is_none()
-        }) {
-            return;
-        }
-        let Some(agent_id) = self.children.iter().find_map(|(agent_id, child)| {
-            (child.snapshot.lifecycle == ChildLifecycle::Queued
-                && !child.cancellation_requested
-                && child.terminal_error.is_none())
-            .then_some(*agent_id)
-        }) else {
-            return;
-        };
-        let Some(child) = self.children.get_mut(&agent_id) else {
-            return;
-        };
-        let Some(prepared) = child.prepared.take() else {
-            return;
-        };
-        let attribution = child.snapshot.admission.attribution.clone();
-        if let Err(error) = commits
-            .append(SessionRecord::ChildLifecycleChanged {
-                agent_id,
-                lifecycle: ChildLifecycle::Running,
-            })
-            .await
-        {
-            child.terminal_error = Some(error.clone());
-            for waiter in child.waiters.drain(..) {
-                let _ = waiter.send(Err(error.clone()));
+        while self.ledger.can_start() {
+            let Some(agent_id) = self.admission_queue.pop_front() else {
+                break;
+            };
+            let eligible = self.children.get(&agent_id).is_some_and(|child| {
+                child.snapshot.lifecycle == ChildLifecycle::Queued
+                    && !child.cancellation_requested
+                    && child.terminal_error.is_none()
+                    && child.prepared.is_some()
+            });
+            if !eligible {
+                continue;
             }
-            return;
-        }
-        child.snapshot.apply_lifecycle(ChildLifecycle::Running);
-        emit_lifecycle(events, &attribution, ChildLifecycle::Running);
+            let attribution = self.children[&agent_id]
+                .snapshot
+                .admission
+                .attribution
+                .clone();
+            if let Err(error) = commits
+                .append(SessionRecord::ChildLifecycleChanged {
+                    agent_id,
+                    lifecycle: ChildLifecycle::Running,
+                })
+                .await
+            {
+                let child = self
+                    .children
+                    .get_mut(&agent_id)
+                    .expect("queued child remains supervised");
+                child.terminal_error = Some(error.clone());
+                for waiter in child.waiters.drain(..) {
+                    let _ = waiter.send(Err(error.clone()));
+                }
+                self.release_child_capacity(agent_id);
+                continue;
+            }
 
-        let (child_events, child_event_receiver) = mpsc::unbounded_channel();
-        let (permissions, broker_task) =
-            PermissionBroker::spawn(prepared.permission_policy, true, child_events.clone());
-        let execution_context = ChildExecutionContext {
-            operation_id: attribution.operation_id,
-            permissions: permissions.clone(),
-            events: child_events,
-            cancellation: child.cancellation.clone(),
-        };
-        child.permissions = Some(permissions);
-        child.task = Some(tokio::spawn(run_child_execution(RunningChild {
-            agent_id,
-            attribution,
-            execution: prepared.execution,
-            context: execution_context,
-            child_events: child_event_receiver,
-            broker_task,
-            outer_events: events.clone(),
-            completions: self.completion_sender.clone(),
-        })));
+            self.ledger.mark_started();
+            let child = self
+                .children
+                .get_mut(&agent_id)
+                .expect("queued child remains supervised");
+            let prepared = child
+                .prepared
+                .take()
+                .expect("eligible queued child has prepared execution");
+            child.running_reserved = true;
+            child.snapshot.apply_lifecycle(ChildLifecycle::Running);
+            emit_lifecycle(events, &attribution, ChildLifecycle::Running);
+
+            let (child_events, child_event_receiver) = mpsc::unbounded_channel();
+            let (permissions, broker_task) =
+                PermissionBroker::spawn(prepared.permission_policy, true, child_events.clone());
+            let execution_context = ChildExecutionContext {
+                operation_id: attribution.operation_id,
+                permissions: permissions.clone(),
+                events: child_events,
+                cancellation: child.cancellation.clone(),
+            };
+            child.permissions = Some(permissions);
+            child.task = Some(tokio::spawn(run_child_execution(RunningChild {
+                agent_id,
+                attribution,
+                execution: prepared.execution,
+                context: execution_context,
+                child_events: child_event_receiver,
+                broker_task,
+                outer_events: events.clone(),
+                completions: self.completion_sender.clone(),
+            })));
+        }
     }
 
     async fn handle_completion(
@@ -510,6 +701,54 @@ impl ChildSupervisor {
             .await;
     }
 
+    fn next_deadline(&self) -> Option<time::Instant> {
+        self.children
+            .values()
+            .filter(|child| {
+                !child.snapshot.lifecycle.is_terminal()
+                    && child.terminal_error.is_none()
+                    && !child.cancellation_requested
+            })
+            .filter_map(|child| child.deadline)
+            .min()
+    }
+
+    async fn expire_deadlines(
+        &mut self,
+        commits: &ChildCommitSender,
+        events: &mpsc::UnboundedSender<AgentEvent>,
+    ) {
+        let now = time::Instant::now();
+        let expired = self
+            .children
+            .iter()
+            .filter_map(|(agent_id, child)| {
+                (!child.snapshot.lifecycle.is_terminal()
+                    && child.terminal_error.is_none()
+                    && !child.cancellation_requested
+                    && child.deadline.is_some_and(|deadline| deadline <= now))
+                .then_some(*agent_id)
+            })
+            .collect::<Vec<_>>();
+        for agent_id in expired {
+            let _ = self.request_cancellation(agent_id, commits, events).await;
+        }
+    }
+
+    fn release_child_capacity(&mut self, agent_id: AgentId) {
+        let Some(child) = self.children.get_mut(&agent_id) else {
+            return;
+        };
+        if child.running_reserved {
+            self.ledger.mark_stopped();
+            child.running_reserved = false;
+        }
+        if let Some(reservation) = child.reservation.take() {
+            self.ledger.release(reservation);
+        }
+        child.deadline = None;
+    }
+
     async fn commit_terminal_report(
         &mut self,
         agent_id: AgentId,
@@ -539,6 +778,7 @@ impl ChildSupervisor {
             for waiter in child.waiters.drain(..) {
                 let _ = waiter.send(Err(error.clone()));
             }
+            self.release_child_capacity(agent_id);
             return;
         }
         child.snapshot.apply_report(&report);
@@ -555,6 +795,7 @@ impl ChildSupervisor {
         for waiter in child.waiters.drain(..) {
             let _ = waiter.send(Ok(report.clone()));
         }
+        self.release_child_capacity(agent_id);
     }
 
     async fn request_cancellation(
@@ -674,6 +915,7 @@ impl ChildSupervisor {
             for waiter in child.waiters.drain(..) {
                 let _ = waiter.send(Err(error.clone()));
             }
+            self.release_child_capacity(agent_id);
             return;
         }
         child.snapshot.apply_report(&report);
@@ -686,6 +928,62 @@ impl ChildSupervisor {
         for waiter in child.waiters.drain(..) {
             let _ = waiter.send(Ok(report.clone()));
         }
+        self.release_child_capacity(agent_id);
+    }
+}
+
+async fn wait_for_deadline(deadline: Option<time::Instant>) {
+    match deadline {
+        Some(deadline) => time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
+fn validate_child_ceiling(
+    prepared: &PreparedChild,
+    budget: &OrchestrationBudget,
+) -> Result<(), SupervisorError> {
+    let child = &prepared.resolved;
+    let parent = &budget.limits;
+    let invalid = if child.max_tool_rounds > budget.max_tool_rounds {
+        Some((
+            "max_tool_rounds",
+            child.max_tool_rounds as u64,
+            budget.max_tool_rounds as u64,
+        ))
+    } else if child.orchestration.deadline_seconds > parent.deadline_seconds {
+        Some((
+            "deadline_seconds",
+            child.orchestration.deadline_seconds,
+            parent.deadline_seconds,
+        ))
+    } else if child.orchestration.max_context_tokens > parent.max_context_tokens {
+        Some((
+            "max_context_tokens",
+            child.orchestration.max_context_tokens as u64,
+            parent.max_context_tokens as u64,
+        ))
+    } else if child.orchestration.max_report_bytes > parent.max_report_bytes {
+        Some((
+            "max_report_bytes",
+            child.orchestration.max_report_bytes as u64,
+            parent.max_report_bytes as u64,
+        ))
+    } else if child.orchestration.max_artifact_bytes > parent.max_artifact_bytes {
+        Some((
+            "max_artifact_bytes",
+            child.orchestration.max_artifact_bytes as u64,
+            parent.max_artifact_bytes as u64,
+        ))
+    } else {
+        None
+    };
+    if let Some((field, requested, maximum)) = invalid {
+        Err(SupervisorError::Admission(format!(
+            "resolved child {field}={requested} exceeds parent ceiling {maximum}"
+        )))
+    } else {
+        Ok(())
     }
 }
 
@@ -726,6 +1024,23 @@ impl ChildSupervisorHandle {
             .send(SupervisorCommand::Spawn {
                 parent_operation_id,
                 request,
+                reply,
+            })
+            .await
+            .map_err(|_| SupervisorError::Unavailable)?;
+        response.await.map_err(|_| SupervisorError::Unavailable)?
+    }
+
+    pub(crate) async fn spawn_many(
+        &self,
+        parent_operation_id: OperationId,
+        requests: Vec<SpawnAgentRequest>,
+    ) -> Result<Vec<AgentHandleSnapshot>, SupervisorError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(SupervisorCommand::SpawnMany {
+                parent_operation_id,
+                requests,
                 reply,
             })
             .await

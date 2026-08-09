@@ -106,6 +106,9 @@ pub(crate) enum SessionRecord {
     ChildAdmitted {
         handle: AgentHandleSnapshot,
     },
+    ChildrenBatchAdmitted {
+        handles: Vec<AgentHandleSnapshot>,
+    },
     ChildLifecycleChanged {
         agent_id: AgentId,
         lifecycle: ChildLifecycle,

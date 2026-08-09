@@ -69,6 +69,8 @@ fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapsh
         permission_mode: PermissionMode::Deny,
         max_tool_rounds: 1,
         limits: OrchestrationLimits::default(),
+        hard_token_limit: None,
+        hard_spend_microusd: None,
     })
 }
 
@@ -128,6 +130,57 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
             serde_json::from_slice(&encoded).expect("decode child record");
         assert_eq!(decoded, record);
     }
+}
+
+#[test]
+fn child_batch_admission_is_one_atomic_queued_fact() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let mut first = child_handle(session_id, thread_id);
+    first.apply_lifecycle(ChildLifecycle::Queued);
+    let mut second = child_handle(session_id, thread_id);
+    second.apply_lifecycle(ChildLifecycle::Queued);
+    let first_id = first.admission.attribution.agent_id;
+    let second_id = second.admission.attribution.agent_id;
+    let record = RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildrenBatchAdmitted {
+            handles: vec![first.clone(), second.clone()],
+        },
+    );
+
+    let restored = reduce(&[created(session_id, thread_id), record.clone()])
+        .expect("reduce atomic child batch");
+    assert_eq!(restored.children[&first_id].handle, first);
+    assert_eq!(restored.children[&second_id].handle, second);
+
+    let encoded = serde_json::to_vec(&record).expect("encode batch record");
+    let decoded: RecordEnvelope = serde_json::from_slice(&encoded).expect("decode batch record");
+    assert_eq!(decoded, record);
+}
+
+#[test]
+fn invalid_child_batch_member_rejects_the_whole_record() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let mut valid = child_handle(session_id, thread_id);
+    valid.apply_lifecycle(ChildLifecycle::Queued);
+    let mut duplicate = valid.clone();
+    duplicate.admission.task_preview = "different task".to_owned();
+    let records = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildrenBatchAdmitted {
+                handles: vec![valid, duplicate],
+            },
+        ),
+    ];
+
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::DuplicateChild { .. })
+    ));
 }
 
 #[test]

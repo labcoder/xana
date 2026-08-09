@@ -4,7 +4,8 @@ use super::{
 use crate::{
     identity::AgentId,
     orchestration::{
-        AwaitAgentOptions, AwaitAgentOutcome, ChildSupervisorHandle, SpawnAgentRequest,
+        AwaitAgentOptions, AwaitAgentOutcome, ChildRestrictions, ChildSupervisorHandle,
+        SpawnAgentRequest,
     },
     permission::PermissionScope,
 };
@@ -16,6 +17,10 @@ use std::{path::Path, time::Duration};
 const MAX_AWAIT_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 
 pub(super) struct SpawnAgent {
+    supervisor: ChildSupervisorHandle,
+}
+
+pub(super) struct SpawnMany {
     supervisor: ChildSupervisorHandle,
 }
 
@@ -33,6 +38,14 @@ struct SpawnArgs {
     #[serde(default)]
     route: Option<String>,
     task: String,
+    #[serde(default)]
+    restrictions: ChildRestrictions,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpawnManyArgs {
+    requests: Vec<SpawnArgs>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +65,12 @@ struct AgentArgs {
 }
 
 impl SpawnAgent {
+    pub(super) fn new(supervisor: ChildSupervisorHandle) -> Self {
+        Self { supervisor }
+    }
+}
+
+impl SpawnMany {
     pub(super) fn new(supervisor: ChildSupervisorHandle) -> Self {
         Self { supervisor }
     }
@@ -101,11 +120,71 @@ impl Tool for SpawnAgent {
                     SpawnAgentRequest {
                         route: args.route.clone(),
                         task: args.task.clone(),
+                        restrictions: args.restrictions.clone(),
                     },
                 )
                 .await
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&handle).map_err(|error| error.to_string())
+        })
+    }
+}
+
+impl Tool for SpawnMany {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: "spawn_many",
+            contract_version: 1,
+            description: "Atomically admit a fixed bounded list of independent Xana child tasks; either every queued handle is returned in input order or none exists",
+            parameters: json!({
+                "type":"object",
+                "additionalProperties":false,
+                "required":["requests"],
+                "properties":{
+                    "requests":{
+                        "type":"array",
+                        "minItems":1,
+                        "maxItems":64,
+                        "items":spawn_parameters()
+                    }
+                }
+            }),
+            effect_class: EffectClass::External,
+            replay_safety: ReplaySafety::Never,
+        }
+    }
+
+    fn plan(&self, arguments: &Value, _: &Path) -> Result<PlannedToolInvocation, String> {
+        let args: SpawnManyArgs = serde_json::from_value(arguments.clone())
+            .map_err(|_| "spawn_many arguments are invalid".to_owned())?;
+        if args.requests.is_empty() || args.requests.len() > 64 {
+            return Err("spawn_many requires between 1 and 64 child requests".to_owned());
+        }
+        planned(args)
+    }
+
+    fn execute<'a>(
+        &'a self,
+        planned: &'a PlannedToolInvocation,
+        context: ToolExecutionContext,
+    ) -> BoxFuture<'a, Result<String, String>> {
+        Box::pin(async move {
+            let args = planned.executable::<SpawnManyArgs>("spawn_many")?;
+            let requests = args
+                .requests
+                .iter()
+                .map(|request| SpawnAgentRequest {
+                    route: request.route.clone(),
+                    task: request.task.clone(),
+                    restrictions: request.restrictions.clone(),
+                })
+                .collect();
+            let handles = self
+                .supervisor
+                .spawn_many(context.operation_id, requests)
+                .await
+                .map_err(|error| error.to_string())?;
+            serde_json::to_string(&handles).map_err(|error| error.to_string())
         })
     }
 }
@@ -229,7 +308,25 @@ fn spawn_parameters() -> Value {
         "required":["task"],
         "properties":{
             "route":{"type":"string","minLength":1,"maxLength":128},
-            "task":{"type":"string","minLength":1,"maxLength":262144}
+            "task":{"type":"string","minLength":1,"maxLength":262144},
+            "restrictions":restriction_schema()
+        }
+    })
+}
+
+pub(super) fn restriction_schema() -> Value {
+    json!({
+        "type":"object",
+        "additionalProperties":false,
+        "properties":{
+            "permission_mode":{"type":"string","enum":["deny","ask","allow"]},
+            "max_tool_rounds":{"type":"integer","minimum":1},
+            "deadline_seconds":{"type":"integer","minimum":1},
+            "max_context_tokens":{"type":"integer","minimum":1},
+            "max_report_bytes":{"type":"integer","minimum":1},
+            "max_artifact_bytes":{"type":"integer","minimum":1},
+            "hard_token_limit":{"type":"integer","minimum":1},
+            "hard_spend_microusd":{"type":"integer","minimum":1}
         }
     })
 }
@@ -254,10 +351,12 @@ mod tests {
     fn definitions_keep_waiting_and_cancellation_explicit() {
         let supervisor = ChildSupervisorHandle::closed_for_test();
         let spawn = SpawnAgent::new(supervisor.clone()).definition();
+        let spawn_many = SpawnMany::new(supervisor.clone()).definition();
         let await_agent = AwaitAgent::new(supervisor.clone()).definition();
         let cancel = CancelAgent::new(supervisor).definition();
 
         assert_eq!(spawn.name, "spawn_agent");
+        assert_eq!(spawn_many.name, "spawn_many");
         assert_eq!(await_agent.name, "await_agent");
         assert_eq!(cancel.name, "cancel_agent");
         assert!(spawn.parameters["properties"].get("wait").is_none());

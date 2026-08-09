@@ -178,18 +178,20 @@ xana route list
 xana route check default
 ```
 
-During a native conversation, Xana exposes `spawn_agent`, `await_agent`,
-`cancel_agent`, and the efficient `delegate_agent` composition when at least
-one child route is configured. The model can give one explicit task to the exact
-route (or the explicit default), while Xana prints the child id, route,
-connection/model, lifecycle, activity, and terminal status. The child gets a
-fresh bounded prompt rather than the parent transcript, cannot delegate
-again, and returns a bounded report directly to the root turn. Use `/agents`,
+During a native conversation, Xana exposes `spawn_agent`, atomic `spawn_many`,
+`await_agent`, `cancel_agent`, and the efficient `delegate_agent` composition
+when at least one child route is configured. The model can give one task or a
+fixed independent batch to exact routes (or the explicit default), while Xana
+prints each child id, route, connection/model, lifecycle, activity, and
+terminal status. The child gets a fresh bounded prompt rather than the parent
+transcript, cannot delegate again, and returns a bounded report directly to the
+root turn. Batches reserve their complete budget before becoming visible, run
+in input order up to the root profile's concurrency limit, and fail atomically
+when any member or aggregate bound is invalid. Use `/agents`,
 `/agent AGENT_ID`, and `/cancel-agent AGENT_ID` for active-process inspection
 and cooperative cancellation; `xana session inspect SESSION_ID` is read-only
-after restart. This runtime slice runs one native child at a time and queues
-additional admitted work; atomic parallel batches and managed Codex children
-arrive in the remaining Phase 4 work. See
+after restart. Artifact-backed overflow, multi-result collection, plans, and
+managed Codex children arrive in the remaining Phase 4 work. See
 [Child orchestration](docs/user/orchestration.md).
 
 ## Start first-run setup again

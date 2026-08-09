@@ -1,7 +1,7 @@
 use super::{
     ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
-    ChildExecutionOutput, ChildUsage, ExecutionOwner, PreparedChild, RouteResolver,
-    SpawnAgentRequest,
+    ChildExecutionOutput, ChildUsage, EnforcementCapabilities, ExecutionOwner, PreparedChild,
+    RouteResolver, SpawnAgentRequest, apply_spawn_restrictions,
 };
 use crate::{
     agent::Agent,
@@ -61,7 +61,7 @@ impl NativeChildFactory {
 
 impl ChildExecutionFactory for NativeChildFactory {
     fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
-        let resolved = RouteResolver::new(&self.registry, &self.models)
+        let mut resolved = RouteResolver::new(&self.registry, &self.models)
             .resolve(request.route.as_deref())
             .map_err(|error| error.to_string())?;
         if resolved.owner != ExecutionOwner::Native {
@@ -71,6 +71,15 @@ impl ChildExecutionFactory for NativeChildFactory {
                 resolved.owner.as_str()
             ));
         }
+        apply_spawn_restrictions(
+            &mut resolved,
+            &request.restrictions,
+            EnforcementCapabilities {
+                hard_tokens: false,
+                hard_spend: false,
+            },
+        )
+        .map_err(|error| error.to_string())?;
         if estimate_tokens(&request.task) > resolved.orchestration.max_context_tokens {
             return Err(format!(
                 "child task exceeds route {:?}'s {}-token context bound",

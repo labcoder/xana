@@ -10,7 +10,8 @@ use crate::{
         AwaitAgentOptions, AwaitAgentOutcome, ChildAttribution, ChildExecution,
         ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildExecutionOutput,
         ChildLifecycle, ChildReport, ChildSupervisor, ChildTerminalStatus, ChildUsage,
-        ExecutionOwner, ParentExecution, PreparedChild, ResolvedAgentConfig, SpawnAgentRequest,
+        EnforcementCapabilities, ExecutionOwner, OrchestrationBudget, ParentExecution,
+        PreparedChild, ResolvedAgentConfig, SpawnAgentRequest, apply_spawn_restrictions,
     },
     permission::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
@@ -27,12 +28,12 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
 use tempfile::tempdir;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, Semaphore};
 
 type CapturedRequests = Arc<Mutex<Vec<Vec<Message>>>>;
 type CompletionFlag = Arc<AtomicBool>;
@@ -203,6 +204,7 @@ async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_tur
         &[SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: "inspect the bounded seam".to_owned(),
+            restrictions: Default::default(),
         }]
     );
     {
@@ -260,6 +262,21 @@ struct BarrierChildExecution {
     release: Arc<Notify>,
 }
 
+struct CountingBarrierChildFactory {
+    workspace: std::path::PathBuf,
+    started: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+    running: Arc<AtomicUsize>,
+    maximum_running: Arc<AtomicUsize>,
+}
+
+struct CountingBarrierChildExecution {
+    started: Arc<Semaphore>,
+    release: Arc<Semaphore>,
+    running: Arc<AtomicUsize>,
+    maximum_running: Arc<AtomicUsize>,
+}
+
 struct PermissionChildFactory {
     workspace: std::path::PathBuf,
     effect_ran: Arc<AtomicBool>,
@@ -275,7 +292,7 @@ impl ChildExecutionFactory for ImmediateChildFactory {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .push(request.clone());
-        let resolved = scripted_child_config(request);
+        let resolved = restricted_scripted_child_config(request)?;
         let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
             .map_err(|error| error.to_string())?;
         Ok(PreparedChild::new(
@@ -291,11 +308,28 @@ impl ChildExecutionFactory for BarrierChildFactory {
         let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
             .map_err(|error| error.to_string())?;
         Ok(PreparedChild::new(
-            scripted_child_config(request),
+            restricted_scripted_child_config(request)?,
             policy,
             Box::new(BarrierChildExecution {
                 started: Arc::clone(&self.started),
                 release: Arc::clone(&self.release),
+            }),
+        ))
+    }
+}
+
+impl ChildExecutionFactory for CountingBarrierChildFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            restricted_scripted_child_config(request)?,
+            policy,
+            Box::new(CountingBarrierChildExecution {
+                started: Arc::clone(&self.started),
+                release: Arc::clone(&self.release),
+                running: Arc::clone(&self.running),
+                maximum_running: Arc::clone(&self.maximum_running),
             }),
         ))
     }
@@ -306,7 +340,7 @@ impl ChildExecutionFactory for PermissionChildFactory {
         let policy = PermissionPolicy::new(PolicyDecision::Ask, Vec::new(), &self.workspace)
             .map_err(|error| error.to_string())?;
         Ok(PreparedChild::new(
-            scripted_child_config(request),
+            restricted_scripted_child_config(request)?,
             policy,
             Box::new(PermissionChildExecution {
                 effect_ran: Arc::clone(&self.effect_ran),
@@ -325,6 +359,30 @@ impl ChildExecution for BarrierChildExecution {
             self.release.notified().await;
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
                 text: "released child".to_owned(),
+                usage: ChildUsage::Unknown,
+            })
+        })
+    }
+}
+
+impl ChildExecution for CountingBarrierChildExecution {
+    fn run(
+        self: Box<Self>,
+        _context: ChildExecutionContext,
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
+        Box::pin(async move {
+            let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+            self.maximum_running.fetch_max(running, Ordering::SeqCst);
+            self.started.add_permits(1);
+            let permit = self
+                .release
+                .acquire()
+                .await
+                .expect("release semaphore open");
+            permit.forget();
+            self.running.fetch_sub(1, Ordering::SeqCst);
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                text: "released counted child".to_owned(),
                 usage: ChildUsage::Unknown,
             })
         })
@@ -388,7 +446,25 @@ fn scripted_child_config(request: &SpawnAgentRequest) -> ResolvedAgentConfig {
         permission_mode: PermissionMode::Allow,
         max_tool_rounds: 2,
         orchestration: OrchestrationLimits::default(),
+        hard_token_limit: None,
+        hard_spend_microusd: None,
     }
+}
+
+fn restricted_scripted_child_config(
+    request: &SpawnAgentRequest,
+) -> Result<ResolvedAgentConfig, String> {
+    let mut resolved = scripted_child_config(request);
+    apply_spawn_restrictions(
+        &mut resolved,
+        &request.restrictions,
+        EnforcementCapabilities {
+            hard_tokens: false,
+            hard_spend: false,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(resolved)
 }
 
 impl ChildExecution for ImmediateChildExecution {
@@ -515,7 +591,11 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
         .expect("canonical workspace");
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let (handle, supervisor) = ChildSupervisor::new(
+    let limits = OrchestrationLimits {
+        max_concurrency: 1,
+        ..Default::default()
+    };
+    let (handle, supervisor) = ChildSupervisor::new_with_budget(
         ParentExecution {
             agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
             thread_id: crate::identity::ThreadId::new(),
@@ -525,6 +605,7 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         }),
+        OrchestrationBudget::for_tests(limits, 8),
     );
     let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
     let commit_task = tokio::spawn(async move {
@@ -540,6 +621,7 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "wait at the barrier".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -605,6 +687,7 @@ async fn running_cancellation_is_observed_once_and_repeated_reads_are_idempotent
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "cancel at the barrier".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -668,7 +751,11 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
         .expect("canonical workspace");
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let (handle, supervisor) = ChildSupervisor::new(
+    let limits = OrchestrationLimits {
+        max_concurrency: 1,
+        ..Default::default()
+    };
+    let (handle, supervisor) = ChildSupervisor::new_with_budget(
         ParentExecution {
             agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
             thread_id: crate::identity::ThreadId::new(),
@@ -678,6 +765,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         }),
+        OrchestrationBudget::for_tests(limits, 8),
     );
     let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
     let commit_task = tokio::spawn(async move {
@@ -693,6 +781,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "occupy the only running slot".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -704,6 +793,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "remain queued".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -747,6 +837,369 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
 }
 
 #[tokio::test]
+async fn atomic_batch_runs_in_input_order_without_exceeding_parallel_capacity() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    let running = Arc::new(AtomicUsize::new(0));
+    let maximum_running = Arc::new(AtomicUsize::new(0));
+    let limits = OrchestrationLimits {
+        max_fan_out: 4,
+        max_descendants: 4,
+        max_concurrency: 2,
+        ..Default::default()
+    };
+    let (handle, supervisor) = ChildSupervisor::new_with_budget(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(CountingBarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            running: Arc::clone(&running),
+            maximum_running: Arc::clone(&maximum_running),
+        }),
+        OrchestrationBudget::for_tests(limits, 2),
+    );
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let committed = Arc::clone(&records);
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            committed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(command.record);
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let operation_id = OperationId::new();
+    let requests = (0..4)
+        .map(|index| SpawnAgentRequest {
+            route: Some("worker".to_owned()),
+            task: format!("parallel child {index}"),
+            restrictions: Default::default(),
+        })
+        .collect::<Vec<_>>();
+
+    let handles = handle
+        .spawn_many(operation_id, requests)
+        .await
+        .expect("admit full batch");
+    assert_eq!(handles.len(), 4);
+    assert!(
+        handles
+            .iter()
+            .all(|handle| handle.lifecycle == ChildLifecycle::Queued)
+    );
+    let first_starts = started.acquire_many(2).await.expect("two starts");
+    first_starts.forget();
+    assert_eq!(running.load(Ordering::SeqCst), 2);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), started.acquire())
+            .await
+            .is_err(),
+        "a third child must remain queued"
+    );
+
+    release.add_permits(4);
+    let remaining_starts = started.acquire_many(2).await.expect("remaining starts");
+    remaining_starts.forget();
+    for child in &handles {
+        let report = handle
+            .await_agent(child.admission.attribution.agent_id)
+            .await
+            .expect("collect child");
+        assert_eq!(report.status, ChildTerminalStatus::Completed);
+    }
+    assert_eq!(maximum_running.load(Ordering::SeqCst), 2);
+    assert_eq!(running.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|record| matches!(record, SessionRecord::ChildrenBatchAdmitted { .. }))
+            .count(),
+        1
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let requests_seen = Arc::new(Mutex::new(Vec::new()));
+    let limits = OrchestrationLimits {
+        max_fan_out: 2,
+        max_descendants: 2,
+        ..Default::default()
+    };
+    let (handle, supervisor) = ChildSupervisor::new_with_budget(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(ImmediateChildFactory {
+            workspace,
+            requests: Arc::clone(&requests_seen),
+        }),
+        OrchestrationBudget::for_tests(limits, 2),
+    );
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let committed = Arc::clone(&records);
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            committed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(command.record);
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+
+    let oversized = (0..3)
+        .map(|index| SpawnAgentRequest {
+            route: Some("worker".to_owned()),
+            task: format!("too many {index}"),
+            restrictions: Default::default(),
+        })
+        .collect();
+    assert!(matches!(
+        handle.spawn_many(OperationId::new(), oversized).await,
+        Err(crate::orchestration::SupervisorError::Budget(
+            crate::orchestration::BudgetError::FanOut { .. }
+        ))
+    ));
+    assert!(
+        handle
+            .spawn_many(
+                OperationId::new(),
+                vec![
+                    SpawnAgentRequest {
+                        route: Some("worker".to_owned()),
+                        task: "valid first member".to_owned(),
+                        restrictions: Default::default(),
+                    },
+                    SpawnAgentRequest {
+                        route: Some("worker".to_owned()),
+                        task: "  ".to_owned(),
+                        restrictions: Default::default(),
+                    },
+                ],
+            )
+            .await
+            .is_err()
+    );
+    tokio::task::yield_now().await;
+    assert!(
+        records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    );
+    assert!(event_receiver.try_recv().is_err());
+    assert!(
+        handle
+            .list_agents()
+            .await
+            .expect("list children")
+            .is_empty()
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn competing_batch_callers_share_one_atomic_descendant_ledger() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Semaphore::new(0));
+    let release = Arc::new(Semaphore::new(0));
+    let running = Arc::new(AtomicUsize::new(0));
+    let maximum_running = Arc::new(AtomicUsize::new(0));
+    let limits = OrchestrationLimits {
+        max_fan_out: 2,
+        max_descendants: 2,
+        max_concurrency: 1,
+        ..Default::default()
+    };
+    let (handle, supervisor) = ChildSupervisor::new_with_budget(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(CountingBarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            running,
+            maximum_running,
+        }),
+        OrchestrationBudget::for_tests(limits, 2),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let batch = |label: &str| {
+        (0..2)
+            .map(|index| SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: format!("{label} {index}"),
+                restrictions: Default::default(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let first_handle = handle.clone();
+    let second_handle = handle.clone();
+    let first = tokio::spawn(async move {
+        first_handle
+            .spawn_many(OperationId::new(), batch("first"))
+            .await
+    });
+    let second = tokio::spawn(async move {
+        second_handle
+            .spawn_many(OperationId::new(), batch("second"))
+            .await
+    });
+    let first = first.await.expect("first caller task");
+    let second = second.await.expect("second caller task");
+    let winner = match (first, second) {
+        (Ok(handles), Err(crate::orchestration::SupervisorError::Budget(_)))
+        | (Err(crate::orchestration::SupervisorError::Budget(_)), Ok(handles)) => handles,
+        outcomes => panic!("exactly one caller must reserve the shared ledger: {outcomes:?}"),
+    };
+    assert_eq!(winner.len(), 2);
+    let first_start = started.acquire().await.expect("one running child");
+    first_start.forget();
+    release.add_permits(2);
+    let second_start = started.acquire().await.expect("queued child starts fairly");
+    second_start.forget();
+    for child in winner {
+        assert_eq!(
+            handle
+                .await_agent(child.admission.attribution.agent_id)
+                .await
+                .expect("winner report")
+                .status,
+            ChildTerminalStatus::Completed
+        );
+    }
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn admission_deadline_cancels_running_work_and_releases_its_reservation() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let timed = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "observe the admission deadline".to_owned(),
+                restrictions: crate::orchestration::ChildRestrictions {
+                    deadline_seconds: Some(1),
+                    ..Default::default()
+                },
+            },
+        )
+        .await
+        .expect("admit timed child");
+    started.notified().await;
+    tokio::time::advance(Duration::from_secs(1)).await;
+    assert_eq!(
+        handle
+            .await_agent(timed.admission.attribution.agent_id)
+            .await
+            .expect("deadline report")
+            .status,
+        ChildTerminalStatus::Cancelled
+    );
+
+    let replacement = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "reuse released reservation".to_owned(),
+                restrictions: Default::default(),
+            },
+        )
+        .await
+        .expect("replacement admission");
+    started.notified().await;
+    release.notify_one();
+    assert_eq!(
+        handle
+            .await_agent(replacement.admission.attribution.agent_id)
+            .await
+            .expect("replacement report")
+            .status,
+        ChildTerminalStatus::Completed
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
 async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
     let directory = tempdir().expect("temporary directory");
     let workspace = directory
@@ -780,6 +1233,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "time out without cancelling".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -827,6 +1281,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "time out and cancel".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -895,6 +1350,7 @@ async fn cancelling_a_child_closes_pending_permission_before_any_effect() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "request one effect".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -991,6 +1447,7 @@ async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
             SpawnAgentRequest {
                 route: Some("worker".to_owned()),
                 task: "stop with the runtime".to_owned(),
+                restrictions: Default::default(),
             },
         )
         .await
@@ -1061,6 +1518,7 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                 SpawnAgentRequest {
                     route: Some("worker".to_owned()),
                     task: "commit ordering".to_owned(),
+                    restrictions: Default::default(),
                 },
             )
             .await;
@@ -1114,6 +1572,7 @@ fn commands_and_events_round_trip_through_json() {
         &scripted_child_config(&SpawnAgentRequest {
             route: Some("worker".to_owned()),
             task: "task".to_owned(),
+            restrictions: Default::default(),
         }),
     );
     let commands = vec![
