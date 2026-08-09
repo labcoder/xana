@@ -38,6 +38,7 @@ mod session;
 mod shell;
 mod terminal;
 mod tool;
+mod tui;
 mod vision;
 mod workspace_host;
 

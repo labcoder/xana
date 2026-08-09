@@ -282,6 +282,18 @@ pub(crate) enum SemanticToken {
     DiffRemove,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PresentationColor {
+    Rgb(u8, u8, u8),
+    Indexed(u8),
+    Red,
+    Green,
+    Yellow,
+    Magenta,
+    Cyan,
+    DarkGray,
+}
+
 impl SemanticToken {
     pub(crate) const fn all() -> [Self; 15] {
         [
@@ -305,8 +317,21 @@ impl SemanticToken {
 }
 
 impl ResolvedPresentation {
+    pub(crate) fn color(self, token: SemanticToken) -> Option<PresentationColor> {
+        let slot = token_slot(self.theme, token);
+        match self.color_depth {
+            ColorDepth::None => None,
+            ColorDepth::TrueColor => {
+                let (red, green, blue) = slot.rgb;
+                Some(PresentationColor::Rgb(red, green, blue))
+            }
+            ColorDepth::Ansi256 => Some(PresentationColor::Indexed(slot.ansi256)),
+            ColorDepth::Ansi16 => Some(slot.ansi16),
+        }
+    }
+
     pub(crate) fn paint(self, token: SemanticToken, text: &str) -> String {
-        let Some(code) = color_code(self, token) else {
+        let Some(code) = ansi_code(self.color(token)) else {
             return text.to_owned();
         };
         format!("\x1b[{code}m{text}\x1b[0m")
@@ -324,23 +349,23 @@ impl ResolvedPresentation {
     }
 }
 
-fn color_code(profile: ResolvedPresentation, token: SemanticToken) -> Option<String> {
-    let slot = token_slot(profile.theme, token);
-    match profile.color_depth {
-        ColorDepth::None => None,
-        ColorDepth::TrueColor => {
-            let (red, green, blue) = slot.rgb;
-            Some(format!("38;2;{red};{green};{blue}"))
-        }
-        ColorDepth::Ansi256 => Some(format!("38;5;{}", slot.ansi256)),
-        ColorDepth::Ansi16 => Some(slot.ansi16.to_owned()),
-    }
+fn ansi_code(color: Option<PresentationColor>) -> Option<String> {
+    Some(match color? {
+        PresentationColor::Rgb(red, green, blue) => format!("38;2;{red};{green};{blue}"),
+        PresentationColor::Indexed(index) => format!("38;5;{index}"),
+        PresentationColor::Red => "31".to_owned(),
+        PresentationColor::Green => "32".to_owned(),
+        PresentationColor::Yellow => "33".to_owned(),
+        PresentationColor::Magenta => "35".to_owned(),
+        PresentationColor::Cyan => "36".to_owned(),
+        PresentationColor::DarkGray => "90".to_owned(),
+    })
 }
 
 struct ColorSlot {
     rgb: (u8, u8, u8),
     ansi256: u8,
-    ansi16: &'static str,
+    ansi16: PresentationColor,
 }
 
 fn token_slot(theme: ResolvedTheme, token: SemanticToken) -> ColorSlot {
@@ -353,7 +378,7 @@ fn token_slot(theme: ResolvedTheme, token: SemanticToken) -> ColorSlot {
                 (255, 99, 125)
             },
             ansi256: if light { 125 } else { 204 },
-            ansi16: "35",
+            ansi16: PresentationColor::Magenta,
         },
         SemanticToken::Muted | SemanticToken::Summary | SemanticToken::Reasoning => ColorSlot {
             rgb: if light {
@@ -362,17 +387,17 @@ fn token_slot(theme: ResolvedTheme, token: SemanticToken) -> ColorSlot {
                 (156, 163, 175)
             },
             ansi256: if light { 59 } else { 247 },
-            ansi16: "90",
+            ansi16: PresentationColor::DarkGray,
         },
         SemanticToken::Success | SemanticToken::DiffAdd => ColorSlot {
             rgb: if light { (20, 120, 83) } else { (83, 208, 158) },
             ansi256: if light { 29 } else { 79 },
-            ansi16: "32",
+            ansi16: PresentationColor::Green,
         },
         SemanticToken::Warning | SemanticToken::Approval => ColorSlot {
             rgb: if light { (155, 91, 0) } else { (246, 193, 91) },
             ansi256: if light { 130 } else { 221 },
-            ansi16: "33",
+            ansi16: PresentationColor::Yellow,
         },
         SemanticToken::Danger | SemanticToken::DiffRemove => ColorSlot {
             rgb: if light {
@@ -381,7 +406,7 @@ fn token_slot(theme: ResolvedTheme, token: SemanticToken) -> ColorSlot {
                 (255, 111, 125)
             },
             ansi256: if light { 124 } else { 203 },
-            ansi16: "31",
+            ansi16: PresentationColor::Red,
         },
         SemanticToken::User | SemanticToken::Tool | SemanticToken::Child => ColorSlot {
             rgb: if light {
@@ -390,7 +415,7 @@ fn token_slot(theme: ResolvedTheme, token: SemanticToken) -> ColorSlot {
                 (101, 212, 222)
             },
             ansi256: if light { 30 } else { 80 },
-            ansi16: "36",
+            ansi16: PresentationColor::Cyan,
         },
     }
 }

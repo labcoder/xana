@@ -105,6 +105,12 @@ xana config check
 xana
 ```
 
+Bare interactive `xana` starts the full-screen terminal UI. Use `xana --plain`
+for append-only chat or when diagnosing terminal behavior, and `xana --tui` to
+require full-screen initialization. From a checkout the equivalents are
+`cargo run -- --plain` and `cargo run -- --tui`. Redirected stdin/stdout always
+uses plain mode; see [Terminal and one-shot modes](automation.md).
+
 For a disposable noninteractive local Ollama setup:
 
 ```bash

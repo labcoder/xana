@@ -159,6 +159,38 @@ fn config_path_honors_an_absolute_xana_home() {
 }
 
 #[test]
+fn redirected_bare_launch_stays_plain_and_explicit_tui_fails_cleanly() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+
+    let plain = xana(&home)
+        .stdin(Stdio::null())
+        .output()
+        .expect("run redirected bare Xana");
+    assert_success(&plain);
+    for stream in [&plain.stdout, &plain.stderr] {
+        assert!(
+            !stream.contains(&0x1b),
+            "redirected launch emitted controls"
+        );
+    }
+    assert!(String::from_utf8_lossy(&plain.stdout).contains("provider connection: test"));
+
+    let required = xana(&home)
+        .arg("--tui")
+        .stdin(Stdio::null())
+        .output()
+        .expect("require TUI without a terminal");
+    assert!(!required.status.success());
+    assert!(
+        String::from_utf8_lossy(&required.stderr)
+            .contains("--tui requires interactive stdin and stdout")
+    );
+    assert!(!required.stderr.contains(&0x1b));
+}
+
+#[test]
 fn noninteractive_init_creates_once_and_config_check_loads_it() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");

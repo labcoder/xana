@@ -42,6 +42,7 @@ use crate::{
     shell::Shell,
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
+    tui,
     vision::MediaResolver,
     workspace_host::{ConversationRef, ConversationState, WorkspaceHost, WorkspaceHostError},
 };
@@ -54,6 +55,23 @@ const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
 const MAX_ONE_SHOT_INPUT_BYTES: u64 = 1024 * 1024;
 
+enum ChatSurface {
+    Plain(BannerMode),
+    Tui {
+        prepared: tui::PreparedTui,
+        required: bool,
+    },
+}
+
+impl ChatSurface {
+    fn profile(&self) -> presentation::ResolvedPresentation {
+        match self {
+            Self::Plain(mode) => mode.profile(),
+            Self::Tui { prepared, .. } => prepared.profile(),
+        }
+    }
+}
+
 pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
 
@@ -64,10 +82,6 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             "chat surface, continuation, and one-shot options cannot be combined with a subcommand"
         );
     }
-    if cli.tui {
-        anyhow::bail!("the full-screen TUI is not available yet; use `xana --plain`");
-    }
-
     match cli.command {
         None => {
             if let Some(argument) = cli.print {
@@ -85,14 +99,38 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 )
                 .await;
             }
+            let input_is_terminal = io::stdin().is_terminal();
+            let output_is_terminal = io::stdout().is_terminal();
             let mode = banner_mode(
                 &paths,
                 true,
-                io::stdin().is_terminal(),
-                io::stdout().is_terminal(),
+                input_is_terminal,
+                output_is_terminal,
                 no_banner,
             );
-            run_default(&paths, mode, cli.resume, cli.continue_chat, None)
+            if cli.tui && !(input_is_terminal && output_is_terminal) {
+                anyhow::bail!("--tui requires interactive stdin and stdout; use `xana --plain`");
+            }
+            let surface = if cli.plain || !(input_is_terminal && output_is_terminal) {
+                ChatSurface::Plain(mode)
+            } else {
+                match tui::prepare(mode.profile()) {
+                    Ok(prepared) => ChatSurface::Tui {
+                        prepared,
+                        required: cli.tui,
+                    },
+                    Err(error) if !cli.tui => {
+                        eprintln!(
+                            "xana: could not initialize the full-screen terminal ({error}); falling back to --plain"
+                        );
+                        ChatSurface::Plain(mode)
+                    }
+                    Err(error) => {
+                        return Err(error).context("could not initialize the required Xana TUI");
+                    }
+                }
+            };
+            run_default(&paths, surface, cli.resume, cli.continue_chat, None)
                 .await
                 .map(|_| ())
         }
@@ -140,7 +178,7 @@ async fn run_and_render_one_shot(
     let result = match result {
         Ok(input) => run_default(
             paths,
-            banner_mode(paths, false, false, false, true),
+            ChatSurface::Plain(banner_mode(paths, false, false, false, true)),
             resume,
             continue_chat,
             Some(input),
@@ -985,15 +1023,18 @@ fn load_config(paths: &XanaPaths) -> Result<XanaConfig> {
 
 async fn run_default(
     paths: &XanaPaths,
-    banner_mode: BannerMode,
+    surface: ChatSurface,
     resume: Option<crate::identity::SessionId>,
     continue_chat: bool,
     one_shot: Option<String>,
 ) -> Result<Option<OneShotSuccess>> {
-    if one_shot.is_none() {
+    let presentation = surface.profile();
+    if one_shot.is_none() && matches!(&surface, ChatSurface::Plain(_)) {
         let mut output = anstream::stdout().lock();
-        presentation::write_banner(&mut output, banner_mode)
-            .context("could not write Xana banner")?;
+        if let ChatSurface::Plain(mode) = &surface {
+            presentation::write_banner(&mut output, *mode)
+                .context("could not write Xana banner")?;
+        }
         writeln!(
             output,
             "loading Xana config from {}",
@@ -1123,7 +1164,7 @@ async fn run_default(
             owner: crate::identity::PrincipalId::new(),
             developer_instructions: crate::prompt::xana_identity(),
             identity_version: crate::prompt::XANA_IDENTITY_VERSION,
-            presentation: banner_mode.profile(),
+            presentation,
         };
         return match one_shot {
             Some(input) => {
@@ -1144,15 +1185,28 @@ async fn run_default(
                 .map(Some)
                 .map_err(anyhow::Error::new)
             }
-            None => run_codex_chat(
-                server,
-                manager,
-                managed_config,
-                workspace_host,
-                conversation,
-            )
-            .await
-            .map(|()| None),
+            None => {
+                if let ChatSurface::Tui { prepared, required } = surface {
+                    drop(prepared);
+                    if required {
+                        anyhow::bail!(
+                            "the managed Codex TUI projection is not available yet; use `xana --plain`"
+                        );
+                    }
+                    eprintln!(
+                        "xana: managed Codex activity is using the plain terminal until its TUI projection is attached"
+                    );
+                }
+                run_codex_chat(
+                    server,
+                    manager,
+                    managed_config,
+                    workspace_host,
+                    conversation,
+                )
+                .await
+                .map(|()| None)
+            }
         };
     }
 
@@ -1369,7 +1423,7 @@ async fn run_default(
         artifact_store,
         owner: artifact_owner,
         models: manager,
-        presentation: banner_mode.profile(),
+        presentation,
     };
 
     if let Some(input) = one_shot {
@@ -1387,12 +1441,20 @@ async fn run_default(
         .map_err(anyhow::Error::new);
     }
 
-    match terminal::run_chat(runtime, header, workspace_host, conversation).await? {
+    let exit = match surface {
+        ChatSurface::Plain(_) => {
+            terminal::run_chat(runtime, header, workspace_host, conversation).await?
+        }
+        ChatSurface::Tui { prepared, .. } => {
+            tui::run_native(prepared, runtime, &header, workspace_host, conversation).await?
+        }
+    };
+    match exit {
         terminal::ChatExit::Quit => Ok(None),
         terminal::ChatExit::Restart => {
             Box::pin(run_default(
                 paths,
-                BannerMode::hidden(banner_mode.profile()),
+                ChatSurface::Plain(BannerMode::hidden(presentation)),
                 None,
                 false,
                 None,

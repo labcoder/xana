@@ -1,18 +1,32 @@
-# Plain and one-shot terminal modes
+# Terminal and one-shot modes
 
 > Audience: People using Xana interactively, from shell pipelines, or from scripts.
 
-Xana exposes two permanent append-only surfaces before the full-screen TUI:
+Bare `xana` selects the full-screen TUI when stdin and stdout are interactive.
+Redirected or piped launches select the permanent append-only surface and emit
+no terminal control sequences. Select either behavior explicitly with:
 
 ```text
 xana --plain
 cargo run -- --plain
+xana --tui
+cargo run -- --tui
 ```
 
 Plain mode retains interactive commands, approvals, activity, and cancellation.
 On exit it prints the native session id and exact installed/source-checkout
-resume commands. `--tui` is reserved for the adaptive full-screen surface and
-currently fails visibly rather than silently changing terminal behavior.
+resume commands. The TUI currently supports native conversations with a
+bounded one-line composer, pasted text, streamed assistant output, adaptive
+wide/medium/narrow layouts, and Ctrl+C/Ctrl+Q shutdown. Managed Codex chat uses
+plain mode until its full-screen event and approval projection is attached.
+
+`--tui` requires interactive stdin and stdout and a successful terminal
+initialization; it restores partial terminal state and exits nonzero instead
+of silently falling back. An implicit bare launch restores first, warns on
+stderr, and falls back to plain if the full-screen terminal cannot initialize.
+Raw mode, alternate screen, cursor, mouse capture, and bracketed paste have one
+idempotent cleanup owner for normal exit, error, EOF, cancellation, and panic
+unwinding.
 
 ## Exactly one turn
 
