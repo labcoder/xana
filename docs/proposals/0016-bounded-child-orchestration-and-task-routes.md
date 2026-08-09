@@ -1,8 +1,8 @@
 # Bounded child orchestration and exact task routes
 
 > Audience: Contributors and coding agents  
-> Authority: Prescriptive  
-> Status: Accepted
+> Authority: None
+> Status: Implemented
 
 ## Context
 
@@ -25,9 +25,17 @@ only the bounded Phase 4 subset of:
 - declarative child composition from
   [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
-Those broader proposals remain Proposed for their unaccepted scope. Where
-their sketches conflict with this proposal, this accepted proposal owns the
-Phase 4 contract.
+Those broader proposals remain Proposed for their unaccepted scope. At
+acceptance time, this proposal defined the Phase 4 contract wherever their
+sketches conflicted with it.
+
+## Implementation
+
+The bounded Phase 4 contract is implemented in Xana 0.4.0. Current
+[Architecture](../architecture/README.md) and [User Documentation](../user/orchestration.md)
+are authoritative for shipped behavior; this proposal remains as historical
+rationale and scope evidence. The broader proposals named above remain
+Proposed for their unaccepted scope.
 
 ## Decision
 
