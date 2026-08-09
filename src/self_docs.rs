@@ -165,6 +165,7 @@ impl ProductDocCatalog {
 static USER_AUDIENCE: &[DocAudience] = &[DocAudience::User, DocAudience::Agent];
 static CONTRIBUTOR_AUDIENCE: &[DocAudience] = &[DocAudience::Contributor, DocAudience::Agent];
 static USER_TOPICS: &[&str] = &["configuration", "installation", "usage"];
+static AUTOMATION_TOPICS: &[&str] = &["usage", "cli", "automation", "json", "sessions"];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
@@ -216,6 +217,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: PRINCIPLES_TOPICS,
         body: include_str!("../docs/principles.md"),
+    },
+    BundledDoc {
+        id: "user.automation",
+        title: "Plain and one-shot terminal modes",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: AUTOMATION_TOPICS,
+        body: include_str!("../docs/user/automation.md"),
     },
     BundledDoc {
         id: "user.configuration",

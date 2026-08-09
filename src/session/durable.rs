@@ -107,6 +107,61 @@ impl DurableSession {
         Ok((summary, restored))
     }
 
+    pub(crate) fn latest_for_workspace(
+        data_dir: &Path,
+        workspace_root: &Path,
+    ) -> Result<Option<SessionId>> {
+        const MAX_SESSION_FILES: usize = 10_000;
+
+        let sessions_dir = data_dir.join("sessions");
+        let entries = match fs::read_dir(&sessions_dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("could not list durable sessions"),
+        };
+        let mut latest = None;
+        for (index, entry) in entries.enumerate() {
+            if index >= MAX_SESSION_FILES {
+                bail!("session selection exceeds the {MAX_SESSION_FILES}-file limit");
+            }
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(_) => continue,
+            };
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("jsonl") {
+                continue;
+            }
+            let Some(session_id) = path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .and_then(|value| value.parse::<SessionId>().ok())
+            else {
+                continue;
+            };
+            let Ok(loaded) = SessionStore::inspect(&path) else {
+                continue;
+            };
+            let Ok(restored) = reduce(&loaded.records) else {
+                continue;
+            };
+            if restored.workspace_root != workspace_root {
+                continue;
+            }
+            let modified = entry
+                .metadata()
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            let key = (modified, session_id.to_string());
+            if latest.as_ref().is_none_or(
+                |(current, _): &((std::time::SystemTime, String), SessionId)| key > *current,
+            ) {
+                latest = Some((key, session_id));
+            }
+        }
+        Ok(latest.map(|(_, session_id)| session_id))
+    }
+
     fn from_open_store(
         data_dir: &Path,
         store: SessionStore,

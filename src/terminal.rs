@@ -9,6 +9,7 @@ use crate::{
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     model::{ExecutionKind, ModelManager},
+    oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
@@ -374,7 +375,7 @@ fn render_managed_child_activity(
     }
 }
 
-pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
+fn embedded_client(runtime: RuntimeHandle, header: &ChatHeader) -> EmbeddedClient {
     let seed = ClientSnapshotSeed {
         session_id: header.session_id,
         connection: header.provider_name.clone(),
@@ -383,7 +384,11 @@ pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Resu
         reasoning_effort: None,
         children: header.children.clone(),
     };
-    let mut runtime = EmbeddedClient::from_runtime(runtime, seed);
+    EmbeddedClient::from_runtime(runtime, seed)
+}
+
+pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
+    let mut runtime = embedded_client(runtime, &header);
     debug_assert_eq!(runtime.snapshot().session_id, header.session_id);
     println!("provider connection: {}", header.provider_name);
     println!("model: {}", header.model);
@@ -576,7 +581,142 @@ pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Resu
         }
     }
 
+    if exit == ChatExit::Quit {
+        println!("xana> session: {}", header.session_id);
+        println!("xana> resume: xana --plain --resume {}", header.session_id);
+        println!(
+            "xana> source checkout: cargo run -- --plain --resume {}",
+            header.session_id
+        );
+    }
+
     Ok(exit)
+}
+
+pub(crate) async fn run_one_shot(
+    runtime: RuntimeHandle,
+    header: &ChatHeader,
+    input: String,
+    activity: &mut impl Write,
+) -> Result<OneShotSuccess, OneShotFailure> {
+    let mut client = embedded_client(runtime, header);
+    let operation_id = OperationId::new();
+    client
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input,
+        })
+        .await
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+
+    let mut final_text = None;
+    let mut failure = None;
+    let mut approval_required = false;
+    while let Some(event) = client.next_event().await {
+        match event {
+            AgentEvent::PermissionRequested { request } if request.operation_id == operation_id => {
+                approval_required = true;
+                writeln!(activity, "approval required for {}", request.tool_name).map_err(
+                    |error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()),
+                )?;
+                client
+                    .send(RuntimeCommand::DecidePermission {
+                        operation_id,
+                        invocation_id: request.invocation_id,
+                        decision: ControllerDecision::Deny,
+                    })
+                    .await
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
+            }
+            AgentEvent::ChildActivity {
+                attribution,
+                activity: ChildActivity::PermissionRequested { request },
+            } if attribution.parent_operation_id == operation_id => {
+                approval_required = true;
+                writeln!(
+                    activity,
+                    "approval required for child {} tool {}",
+                    attribution.agent_id, request.tool_name
+                )
+                .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+                client
+                    .send(RuntimeCommand::DecideChildPermission {
+                        agent_id: attribution.agent_id,
+                        operation_id: request.operation_id,
+                        invocation_id: request.invocation_id,
+                        decision: ControllerDecision::Deny,
+                    })
+                    .await
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
+            }
+            AgentEvent::AssistantMessage { message, .. } => {
+                final_text = Some(message_text(&message));
+            }
+            AgentEvent::OperationFailed { reason, .. } => failure = Some(reason),
+            AgentEvent::CommandRejected { reason } => {
+                return Err(OneShotFailure::new(ExitCategory::Runtime, reason));
+            }
+            AgentEvent::ChildLifecycleChanged {
+                attribution,
+                lifecycle,
+            } => {
+                writeln!(
+                    activity,
+                    "child {} [{}]: {:?}",
+                    attribution.agent_id, attribution.route, lifecycle
+                )
+                .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(outcome),
+            } if actual == operation_id => {
+                return match outcome {
+                    OperationOutcome::Completed => Ok(OneShotSuccess {
+                        text: final_text.unwrap_or_default(),
+                        session_id: Some(header.session_id),
+                        execution_owner: "native",
+                    }),
+                    OperationOutcome::Declined if approval_required => Err(OneShotFailure::new(
+                        ExitCategory::Approval,
+                        "one-shot execution requires interactive approval and was denied",
+                    )),
+                    OperationOutcome::Interrupted => Err(OneShotFailure::new(
+                        ExitCategory::Interrupted,
+                        "one-shot execution was interrupted",
+                    )),
+                    OperationOutcome::Failed | OperationOutcome::Declined => {
+                        Err(OneShotFailure::new(
+                            ExitCategory::Runtime,
+                            failure.unwrap_or_else(|| "one-shot execution failed".to_owned()),
+                        ))
+                    }
+                };
+            }
+            _ => {}
+        }
+    }
+
+    Err(OneShotFailure::new(
+        ExitCategory::Runtime,
+        "Xana's embedded runtime stopped before the one-shot result",
+    ))
+}
+
+fn message_text(message: &Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            ContentBlock::Text(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("")
 }
 
 fn write_child_summary<W: Write>(output: &mut W, child: &ChildInspection) -> io::Result<()> {

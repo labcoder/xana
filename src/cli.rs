@@ -55,12 +55,42 @@ pub(crate) enum InitConnectionKindChoice {
     Codex,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum OutputChoice {
+    Text,
+    Json,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "xana", version, about = "A small personal AI agent harness")]
 pub(crate) struct Cli {
     /// Suppress Xana's terminal banner.
     #[arg(long, global = true)]
     pub(crate) no_banner: bool,
+
+    /// Use the permanent append-only terminal surface.
+    #[arg(long, conflicts_with = "tui")]
+    pub(crate) plain: bool,
+
+    /// Require the full-screen terminal surface.
+    #[arg(long, conflicts_with = "plain")]
+    pub(crate) tui: bool,
+
+    /// Perform exactly one turn. Pass PROMPT or omit it to read stdin.
+    #[arg(short = 'p', long = "print", num_args = 0..=1, value_name = "PROMPT")]
+    pub(crate) print: Option<Option<String>>,
+
+    /// Select the latest compatible conversation for this workspace and owner.
+    #[arg(long, conflicts_with = "resume")]
+    pub(crate) continue_chat: bool,
+
+    /// Select one-shot output encoding.
+    #[arg(long, value_enum, requires = "print")]
+    pub(crate) output: Option<OutputChoice>,
+
+    /// Alias for `--output json`.
+    #[arg(long, requires = "print", conflicts_with = "output")]
+    pub(crate) json: bool,
 
     /// Resume exactly one durable session instead of creating a new one.
     #[arg(long, value_name = "SESSION_ID")]
@@ -355,6 +385,31 @@ mod tests {
         assert!(!cli.no_banner);
         assert_eq!(cli.resume, None);
         assert_eq!(cli.command, None);
+    }
+
+    #[test]
+    fn parses_plain_tui_and_one_shot_surface_contracts() {
+        let plain = Cli::try_parse_from(["xana", "--plain"]).expect("plain surface");
+        assert!(plain.plain);
+        assert!(!plain.tui);
+
+        let tui = Cli::try_parse_from(["xana", "--tui"]).expect("TUI surface");
+        assert!(tui.tui);
+        assert!(!tui.plain);
+
+        let argument =
+            Cli::try_parse_from(["xana", "-p", "hello"]).expect("one-shot argument surface");
+        assert_eq!(argument.print, Some(Some("hello".to_owned())));
+
+        let stdin = Cli::try_parse_from(["xana", "--print"]).expect("one-shot stdin surface");
+        assert_eq!(stdin.print, Some(None));
+
+        let json = Cli::try_parse_from(["xana", "--json", "-p", "hello"]).expect("JSON alias");
+        assert!(json.json);
+        assert_eq!(json.output, None);
+
+        assert!(Cli::try_parse_from(["xana", "--plain", "--tui"]).is_err());
+        assert!(Cli::try_parse_from(["xana", "--resume", "bad", "--continue"]).is_err());
     }
 
     #[test]

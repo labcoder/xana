@@ -9,15 +9,18 @@ use crate::{
     artifact::ArtifactStore,
     cli::{
         self, AuthCommand, Cli, Command, ConfigCommand, ConnectionCommand, ModelCommand,
-        OperationCommand, RouteCommand, SessionCommand,
+        OperationCommand, OutputChoice, RouteCommand, SessionCommand,
     },
     config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
     credential::{CredentialResolver, SecretString, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
-    managed_terminal::{ManagedChatConfig, run_codex_chat},
+    managed_terminal::{ManagedChatConfig, run_codex_chat, run_codex_one_shot},
     model::{ExecutionKind, ModelManager},
+    oneshot::{
+        ExitCategory, OneShotFailure, OneShotOutput, OneShotSuccess, write_failure, write_success,
+    },
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     orchestration::{
         ChildExecutionOwnerFactory, ChildSupervisor, ExecutionOwner, OrchestrationBudget,
@@ -43,23 +46,48 @@ use std::sync::Arc;
 const PROMPT_TOTAL_TOKENS: usize = 32_768;
 const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
+const MAX_ONE_SHOT_INPUT_BYTES: u64 = 1024 * 1024;
 
 pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     let no_banner = cli.no_banner;
 
-    if cli.resume.is_some() && cli.command.is_some() {
-        anyhow::bail!("--resume starts chat and cannot be combined with a subcommand");
+    if (cli.resume.is_some() || cli.continue_chat || cli.plain || cli.tui || cli.print.is_some())
+        && cli.command.is_some()
+    {
+        anyhow::bail!(
+            "chat surface, continuation, and one-shot options cannot be combined with a subcommand"
+        );
+    }
+    if cli.tui {
+        anyhow::bail!("the full-screen TUI is not available yet; use `xana --plain`");
     }
 
     match cli.command {
         None => {
+            if let Some(argument) = cli.print {
+                let output = if cli.json || cli.output == Some(OutputChoice::Json) {
+                    OneShotOutput::Json
+                } else {
+                    OneShotOutput::Text
+                };
+                return run_and_render_one_shot(
+                    &paths,
+                    cli.resume,
+                    cli.continue_chat,
+                    argument,
+                    output,
+                )
+                .await;
+            }
             let mode = banner_mode(
                 true,
                 io::stdin().is_terminal(),
                 io::stdout().is_terminal(),
                 no_banner,
             );
-            run_default(&paths, mode, cli.resume).await
+            run_default(&paths, mode, cli.resume, cli.continue_chat, None)
+                .await
+                .map(|_| ())
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
@@ -92,6 +120,115 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
         }
     }
+}
+
+async fn run_and_render_one_shot(
+    paths: &XanaPaths,
+    resume: Option<crate::identity::SessionId>,
+    continue_chat: bool,
+    argument: Option<String>,
+    output: OneShotOutput,
+) -> Result<()> {
+    let result = resolve_one_shot_input(argument);
+    let result = match result {
+        Ok(input) => run_default(
+            paths,
+            BannerMode::Hidden,
+            resume,
+            continue_chat,
+            Some(input),
+        )
+        .await
+        .and_then(|success| success.context("one-shot launch returned no result"))
+        .map_err(classify_one_shot_error),
+        Err(error) => Err(error),
+    };
+
+    let stdout = io::stdout();
+    let stderr = io::stderr();
+    let mut stdout = stdout.lock();
+    let mut stderr = stderr.lock();
+    match result {
+        Ok(success) => write_success(output, &success, &mut stdout).map_err(anyhow::Error::new),
+        Err(failure) => {
+            write_failure(output, &failure, &mut stdout, &mut stderr)
+                .context("could not write one-shot failure")?;
+            Err(anyhow::Error::new(failure.rendered()))
+        }
+    }
+}
+
+fn resolve_one_shot_input(argument: Option<String>) -> Result<String, OneShotFailure> {
+    let stdin = io::stdin();
+    let piped = !stdin.is_terminal();
+    let mut stdin_text = String::new();
+    if piped {
+        let mut bounded = stdin.lock().take(MAX_ONE_SHOT_INPUT_BYTES + 1);
+        bounded.read_to_string(&mut stdin_text).map_err(|error| {
+            OneShotFailure::new(
+                ExitCategory::InvalidInput,
+                format!("could not read stdin: {error}"),
+            )
+        })?;
+        if stdin_text.len() as u64 > MAX_ONE_SHOT_INPUT_BYTES {
+            return Err(OneShotFailure::new(
+                ExitCategory::InvalidInput,
+                format!("one-shot stdin exceeds the {MAX_ONE_SHOT_INPUT_BYTES}-byte limit"),
+            ));
+        }
+    }
+    resolve_one_shot_sources(argument, piped.then_some(stdin_text))
+}
+
+fn resolve_one_shot_sources(
+    argument: Option<String>,
+    stdin_text: Option<String>,
+) -> Result<String, OneShotFailure> {
+    let stdin_text = stdin_text.unwrap_or_default();
+    let stdin_has_input = !stdin_text.trim().is_empty();
+    match (argument, stdin_has_input) {
+        (Some(_), true) => Err(OneShotFailure::new(
+            ExitCategory::InvalidInput,
+            "provide the one-shot prompt either as `-p PROMPT` or through stdin, not both",
+        )),
+        (Some(argument), false) if argument.trim().is_empty() => Err(OneShotFailure::new(
+            ExitCategory::InvalidInput,
+            "one-shot prompt must not be blank",
+        )),
+        (Some(argument), false) => Ok(argument),
+        (None, true) => Ok(stdin_text.trim_end_matches(['\r', '\n']).to_owned()),
+        (None, false) => Err(OneShotFailure::new(
+            ExitCategory::InvalidInput,
+            "one-shot mode requires `xana -p PROMPT` or a prompt on stdin",
+        )),
+    }
+}
+
+fn classify_one_shot_error(error: anyhow::Error) -> OneShotFailure {
+    if let Some(failure) = error.downcast_ref::<OneShotFailure>() {
+        return failure.clone();
+    }
+    let message = format!("{error:#}");
+    let lower = message.to_ascii_lowercase();
+    let category = if lower.contains("config")
+        || lower.contains("not initialized")
+        || lower.contains("xana_home")
+    {
+        ExitCategory::Configuration
+    } else if lower.contains("connection")
+        || lower.contains("credential")
+        || lower.contains("logged out")
+        || lower.contains("model")
+        || lower.contains("codex")
+        || lower.contains("provider")
+    {
+        ExitCategory::Connection
+    } else if lower.contains("interrupt") || lower.contains("cancelled") {
+        ExitCategory::Interrupted
+    } else {
+        ExitCategory::Runtime
+    };
+    OneShotFailure::new(category, message)
 }
 
 fn run_route_command<W: Write>(
@@ -843,13 +980,21 @@ async fn run_default(
     paths: &XanaPaths,
     banner_mode: BannerMode,
     resume: Option<crate::identity::SessionId>,
-) -> Result<()> {
-    {
+    continue_chat: bool,
+    one_shot: Option<String>,
+) -> Result<Option<OneShotSuccess>> {
+    if one_shot.is_none() {
         let mut output = anstream::stdout().lock();
         presentation::write_banner(&mut output, banner_mode)
             .context("could not write Xana banner")?;
         writeln!(
             output,
+            "loading Xana config from {}",
+            paths.config_file().display()
+        )?;
+    } else {
+        writeln!(
+            anstream::stderr().lock(),
             "loading Xana config from {}",
             paths.config_file().display()
         )?;
@@ -904,21 +1049,35 @@ async fn run_default(
             )
         }
         let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
-        return run_codex_chat(
-            server,
-            manager,
-            ManagedChatConfig {
-                connection: provider_name,
-                model,
-                workspace: workspace_root,
-                data_root: paths.data_dir().to_owned(),
-                artifact_store,
-                owner: crate::identity::PrincipalId::new(),
-                developer_instructions: crate::prompt::xana_identity(),
-                identity_version: crate::prompt::XANA_IDENTITY_VERSION,
-            },
-        )
-        .await;
+        let managed_config = ManagedChatConfig {
+            connection: provider_name,
+            model,
+            workspace: workspace_root,
+            data_root: paths.data_dir().to_owned(),
+            artifact_store,
+            owner: crate::identity::PrincipalId::new(),
+            developer_instructions: crate::prompt::xana_identity(),
+            identity_version: crate::prompt::XANA_IDENTITY_VERSION,
+        };
+        return match one_shot {
+            Some(input) => {
+                let mut activity = anstream::stderr().lock();
+                run_codex_one_shot(
+                    server,
+                    manager,
+                    managed_config,
+                    input,
+                    continue_chat,
+                    &mut activity,
+                )
+                .await
+                .map(Some)
+                .map_err(anyhow::Error::new)
+            }
+            None => run_codex_chat(server, manager, managed_config)
+                .await
+                .map(|()| None),
+        };
     }
 
     let base_url = selected_connection
@@ -980,17 +1139,24 @@ async fn run_default(
         };
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
+    let resume = if resume.is_none() && continue_chat {
+        Some(
+            DurableSession::latest_for_workspace(paths.data_dir(), &workspace_root)?
+                .context("--continue found no native conversation for this workspace")?,
+        )
+    } else {
+        resume
+    };
     let (session, permission_policy, resumed, repair_truncate_to, unfinished, restored_children) =
         match resume {
             Some(session_id) => {
                 let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
                 if session.workspace_root() != workspace_root {
-                    writeln!(
-                        anstream::stdout().lock(),
-                        "resuming session workspace {} (current directory is {})",
+                    anyhow::bail!(
+                        "session {session_id} belongs to workspace {}; current workspace is {}",
                         session.workspace_root().display(),
                         workspace_root.display()
-                    )?;
+                    );
                 }
                 let unfinished = summary.unfinished.clone();
                 let permission_policy = PermissionPolicy::new(
@@ -1137,9 +1303,19 @@ async fn run_default(
         models: manager,
     };
 
+    if let Some(input) = one_shot {
+        let mut activity = anstream::stderr().lock();
+        return terminal::run_one_shot(runtime, &header, input, &mut activity)
+            .await
+            .map(Some)
+            .map_err(anyhow::Error::new);
+    }
+
     match terminal::run_chat(runtime, header).await? {
-        terminal::ChatExit::Quit => Ok(()),
-        terminal::ChatExit::Restart => Box::pin(run_default(paths, BannerMode::Hidden, None)).await,
+        terminal::ChatExit::Quit => Ok(None),
+        terminal::ChatExit::Restart => {
+            Box::pin(run_default(paths, BannerMode::Hidden, None, false, None)).await
+        }
     }
 }
 
@@ -1390,6 +1566,28 @@ mod tests {
     use crate::config::{InitialConfig, InitialConnection};
     use std::{fs, io::Cursor};
     use tempfile::tempdir;
+
+    #[test]
+    fn one_shot_accepts_exactly_one_nonblank_input_source() {
+        assert_eq!(
+            resolve_one_shot_sources(Some("argument".to_owned()), None).expect("argument"),
+            "argument"
+        );
+        assert_eq!(
+            resolve_one_shot_sources(None, Some("stdin\r\n".to_owned())).expect("stdin"),
+            "stdin"
+        );
+
+        for result in [
+            resolve_one_shot_sources(Some("argument".to_owned()), Some("stdin".to_owned())),
+            resolve_one_shot_sources(None, None),
+            resolve_one_shot_sources(Some("  ".to_owned()), None),
+            resolve_one_shot_sources(None, Some("\n\t".to_owned())),
+        ] {
+            let failure = result.expect_err("ambiguous or empty input must fail");
+            assert_eq!(failure.category, ExitCategory::InvalidInput);
+        }
+    }
 
     #[test]
     fn config_commands_use_the_injected_paths_and_writer() {

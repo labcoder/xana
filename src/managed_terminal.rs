@@ -4,17 +4,21 @@ mod activity;
 
 use crate::{
     artifact::ArtifactStore,
+    frontend::ManagedClientEvent,
     identity::PrincipalId,
     managed::{
         codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
         thread_store::ManagedThreadStore,
     },
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
+    oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     vision::{ImageIngestor, ImageLimits, PendingImages},
 };
 use activity::{ActivityLevel, RetainedActivity, TerminalManagedHandler, render_retained_activity};
 use anyhow::{Context, Result};
+use futures::future::BoxFuture;
 use rustyline::{DefaultEditor, error::ReadlineError};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct ManagedChatConfig {
@@ -347,6 +351,223 @@ pub(crate) async fn run_codex_chat(
     Ok(())
 }
 
+pub(crate) async fn run_codex_one_shot(
+    mut server: CodexAppServer,
+    models: ModelManager,
+    config: ManagedChatConfig,
+    input: String,
+    continue_thread: bool,
+    activity: &mut impl Write,
+) -> Result<OneShotSuccess, OneShotFailure> {
+    let result = run_codex_one_shot_inner(
+        &mut server,
+        &models,
+        &config,
+        input,
+        continue_thread,
+        activity,
+    )
+    .await;
+    let shutdown = server.shutdown().await;
+    match (result, shutdown) {
+        (Ok(success), Ok(())) => Ok(success),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(OneShotFailure::new(
+            ExitCategory::Runtime,
+            error.to_string(),
+        )),
+    }
+}
+
+async fn run_codex_one_shot_inner(
+    server: &mut CodexAppServer,
+    models: &ModelManager,
+    config: &ManagedChatConfig,
+    input: String,
+    continue_thread: bool,
+    activity: &mut impl Write,
+) -> Result<OneShotSuccess, OneShotFailure> {
+    let account = server
+        .account_status()
+        .await
+        .map_err(|error| OneShotFailure::new(ExitCategory::Connection, error.to_string()))?;
+    if matches!(account, AccountStatus::LoggedOut) {
+        return Err(OneShotFailure::new(
+            ExitCategory::Connection,
+            format!(
+                "Codex is logged out; run `xana connection login {}` first",
+                config.connection
+            ),
+        ));
+    }
+    let available = server
+        .models()
+        .await
+        .map_err(|error| OneShotFailure::new(ExitCategory::Connection, error.to_string()))?;
+    models
+        .write_managed_cache(&config.connection, &available)
+        .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    if !available.iter().any(|model| model.id == config.model) {
+        return Err(OneShotFailure::new(
+            ExitCategory::Connection,
+            unavailable_model_message(&config.connection, &config.model, &available),
+        ));
+    }
+    let selection = models
+        .selected()
+        .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    let mut store =
+        ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
+            .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    let mut handler = OneShotManagedHandler::new(activity);
+    let thread_id = if continue_thread {
+        match store.thread_id() {
+            Some(thread_id) => {
+                server
+                    .resume_thread(
+                        thread_id,
+                        &config.model,
+                        &config.workspace,
+                        config.developer_instructions,
+                        &mut handler,
+                    )
+                    .await
+            }
+            None => {
+                return Err(OneShotFailure::new(
+                    ExitCategory::InvalidInput,
+                    "--continue found no managed Codex conversation for this workspace",
+                ));
+            }
+        }
+    } else {
+        server
+            .start_thread(
+                &config.model,
+                &config.workspace,
+                config.developer_instructions,
+                &mut handler,
+            )
+            .await
+    }
+    .map_err(|error| OneShotFailure::new(ExitCategory::Connection, error.to_string()))?;
+    store
+        .set_thread(Some(thread_id.clone()), Some(config.identity_version))
+        .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+
+    let turn = server
+        .run_turn(
+            &thread_id,
+            &config.model,
+            &ManagedTurnOptions {
+                reasoning_effort: selection.reasoning_effort,
+                reasoning_summary: selection.reasoning_summary,
+            },
+            ManagedTurnInput {
+                text: input,
+                local_images: Vec::new(),
+            },
+            &mut handler,
+        )
+        .await;
+    match turn {
+        Ok(_) if handler.approval_required => Err(OneShotFailure::new(
+            ExitCategory::Approval,
+            "one-shot managed execution required interactive approval and was denied",
+        )),
+        Ok(result) => Ok(OneShotSuccess {
+            text: if result.final_text.is_empty() {
+                handler.assistant
+            } else {
+                result.final_text
+            },
+            session_id: None,
+            execution_owner: "managed_codex",
+        }),
+        Err(error) if handler.approval_required => Err(OneShotFailure::new(
+            ExitCategory::Approval,
+            format!("managed approval was denied: {error}"),
+        )),
+        Err(error) => Err(OneShotFailure::new(
+            ExitCategory::Runtime,
+            error.to_string(),
+        )),
+    }
+}
+
+struct OneShotManagedHandler<'a, W: Write> {
+    activity: &'a mut W,
+    assistant: String,
+    approval_required: bool,
+}
+
+impl<'a, W: Write> OneShotManagedHandler<'a, W> {
+    fn new(activity: &'a mut W) -> Self {
+        Self {
+            activity,
+            assistant: String::new(),
+            approval_required: false,
+        }
+    }
+}
+
+impl<W: Write> crate::managed::codex::ManagedEventHandler for OneShotManagedHandler<'_, W> {
+    fn notification(
+        &mut self,
+        notification: crate::managed::codex::ManagedNotification,
+    ) -> std::result::Result<(), CodexError> {
+        let Some(event) = ManagedClientEvent::from_notification(notification) else {
+            return Ok(());
+        };
+        match event {
+            ManagedClientEvent::AssistantDelta(delta) => self.assistant.push_str(&delta),
+            ManagedClientEvent::Warning(message) => {
+                writeln!(self.activity, "Codex warning: {message}")
+                    .map_err(|error| CodexError::Io(error.to_string()))?;
+            }
+            ManagedClientEvent::ItemStarted(item) => {
+                writeln!(self.activity, "Codex started {}", item.label)
+                    .map_err(|error| CodexError::Io(error.to_string()))?;
+            }
+            ManagedClientEvent::ItemCompleted(item) => {
+                writeln!(self.activity, "Codex finished {}", item.label)
+                    .map_err(|error| CodexError::Io(error.to_string()))?;
+            }
+            ManagedClientEvent::ModelRerouted {
+                from_model,
+                to_model,
+                reason,
+            } => {
+                writeln!(
+                    self.activity,
+                    "Codex rerouted {from_model} to {to_model}: {reason}"
+                )
+                .map_err(|error| CodexError::Io(error.to_string()))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn approve<'a>(
+        &'a mut self,
+        request: crate::managed::codex::ApprovalRequest,
+    ) -> BoxFuture<'a, std::result::Result<crate::managed::codex::ApprovalDecision, CodexError>>
+    {
+        self.approval_required = true;
+        let decision = if request.available_decisions.contains("decline") {
+            Ok(crate::managed::codex::ApprovalDecision::Decline)
+        } else if request.available_decisions.contains("cancel") {
+            Ok(crate::managed::codex::ApprovalDecision::Cancel)
+        } else {
+            Err(CodexError::Protocol(
+                "managed approval offered no fail-closed decision".to_owned(),
+            ))
+        };
+        Box::pin(async move { decision })
+    }
+}
+
 fn unavailable_model_message(
     connection: &str,
     requested: &str,
@@ -498,7 +719,10 @@ fn checked_original_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::DescriptorSource;
+    use crate::{
+        managed::codex::{ApprovalRequest, ManagedEventHandler, ManagedNotification},
+        model::DescriptorSource,
+    };
     use std::collections::BTreeSet;
 
     fn model(id: &str, is_default: bool) -> ModelDescriptor {
@@ -529,5 +753,46 @@ mod tests {
         assert!(message.contains("xana model use codex/MODEL"));
         assert!(message.contains("cargo run -- model use codex/MODEL"));
         assert!(!message.contains("model refresh"));
+    }
+
+    #[test]
+    fn one_shot_managed_projection_collects_output_without_vendor_ids() {
+        let mut activity = Vec::new();
+        let mut handler = OneShotManagedHandler::new(&mut activity);
+        handler
+            .notification(ManagedNotification::AssistantDelta {
+                item_id: Some("private-item-id".to_owned()),
+                delta: "hello".to_owned(),
+            })
+            .expect("assistant delta");
+        handler
+            .notification(ManagedNotification::Warning("bounded warning".to_owned()))
+            .expect("warning");
+
+        assert_eq!(handler.assistant, "hello");
+        let rendered = String::from_utf8(activity).expect("UTF-8 activity");
+        assert!(rendered.contains("bounded warning"));
+        assert!(!rendered.contains("private-item-id"));
+    }
+
+    #[tokio::test]
+    async fn one_shot_managed_approval_fails_closed() {
+        let mut activity = Vec::new();
+        let mut handler = OneShotManagedHandler::new(&mut activity);
+        let decision = handler
+            .approve(ApprovalRequest {
+                item_id: Some("private-item-id".to_owned()),
+                method: "item/commandExecution/requestApproval".to_owned(),
+                available_decisions: ["decline".to_owned()].into_iter().collect(),
+                reason: None,
+                command: Some("echo secret".to_owned()),
+                cwd: None,
+            })
+            .await
+            .expect("decline is available");
+
+        assert_eq!(decision, crate::managed::codex::ApprovalDecision::Decline);
+        assert!(handler.approval_required);
+        assert!(activity.is_empty());
     }
 }

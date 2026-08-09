@@ -17,6 +17,8 @@ engineering contracts used to change it.
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
   immutable artifacts, inspection, corruption handling, and backup limits.
+- [Plain and one-shot modes](user/automation.md) explains terminal surface
+  selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
 - [Child orchestration](user/orchestration.md) explains exact native routes,

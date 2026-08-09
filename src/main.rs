@@ -1,3 +1,3 @@
-fn main() -> anyhow::Result<()> {
-    xana_runtime::run()
+fn main() -> std::process::ExitCode {
+    xana_runtime::entry()
 }
