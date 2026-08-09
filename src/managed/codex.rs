@@ -432,12 +432,16 @@ fn approval_response<H: ManagedEventHandler>(
     }
 }
 
+// The app-server request enum uses CLI-style kebab-case. Its response policy
+// object uses a separate camelCase tagged enum, so do not reuse that spelling.
+const WORKSPACE_WRITE_SANDBOX: &str = "workspace-write";
+
 fn thread_start_params(model: &str, workspace: &Path) -> Value {
     json!({
         "model": model,
         "cwd": workspace,
         "approvalPolicy": "on-request",
-        "sandbox": "workspaceWrite",
+        "sandbox": WORKSPACE_WRITE_SANDBOX,
         "ephemeral": false,
         "serviceName": "xana"
     })
@@ -449,7 +453,7 @@ fn thread_resume_params(thread_id: &str, model: &str, workspace: &Path) -> Value
         "model": model,
         "cwd": workspace,
         "approvalPolicy": "on-request",
-        "sandbox": "workspaceWrite"
+        "sandbox": WORKSPACE_WRITE_SANDBOX
     })
 }
 

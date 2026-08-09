@@ -190,6 +190,17 @@ refresh, inference, tools, sandbox, approvals, and inner thread history. Xana
 never reads or copies Codex's auth file and needs no hosted OAuth callback
 server.
 
+Xana launches the configured Codex CLI executable; it does not send managed
+turns through the running Codex desktop application. The two programs may use
+the same Codex home, but their binaries update separately. If desktop has a
+model or protocol behavior that Xana does not, compare the exact executable
+and version with `Get-Command codex` plus `codex --version` on PowerShell (or
+`command -v codex` plus `codex --version` on macOS/Linux), then run `xana
+connection status codex`. Update the CLI selected by `codex_program`, not only
+the desktop application. An app-server error that rejects the request value
+`workspaceWrite` indicates an older Xana binary; update or rebuild Xana so it
+sends the current `workspace-write` request enum.
+
 Codex model discovery retains the reasoning efforts and default advertised by
 each model. Use `--effort auto` or a value listed by `xana model`; Xana does
 not hard-code a vendor effort enum. `--summary` accepts `auto`, `concise`,

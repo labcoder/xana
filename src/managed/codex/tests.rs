@@ -180,16 +180,17 @@ fn reasoning_plan_tool_and_completion_events_are_typed() {
 }
 
 #[test]
-fn thread_and_turn_options_use_current_app_server_fields() {
+fn thread_lifecycle_uses_current_app_server_request_enums() {
     let workspace = Path::new("C:/work");
     let start = thread_start_params("gpt-5.6-sol", workspace);
-    assert_eq!(start["sandbox"], "workspaceWrite");
+    assert_eq!(start["sandbox"], "workspace-write");
     assert_eq!(start["approvalPolicy"], "on-request");
     assert_eq!(start["serviceName"], "xana");
 
     let resume = thread_resume_params("thr_123", "gpt-5.6-sol", workspace);
     assert_eq!(resume["threadId"], "thr_123");
     assert_eq!(resume["model"], "gpt-5.6-sol");
+    assert_eq!(resume["sandbox"], "workspace-write");
 
     let turn = turn_start_params(
         "thr_123",
