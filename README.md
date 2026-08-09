@@ -178,8 +178,15 @@ xana route list
 xana route check default
 ```
 
-The current route commands are read-only diagnostics; child execution is not
-yet exposed by this release.
+During a native conversation, Xana exposes `delegate_agent` when at least one
+child route is configured. The model can give one explicit task to the exact
+route (or the explicit default), while Xana prints the child id, route,
+connection/model, lifecycle, activity, and terminal status. The child gets a
+fresh bounded prompt rather than the parent transcript, cannot delegate
+again, and returns a bounded report directly to the root turn. This initial
+runtime slice supervises one active child at a time; parallel batches,
+cancellation, and managed Codex children arrive in the remaining Phase 4
+work. See [Child orchestration](docs/user/orchestration.md).
 
 ## Start first-run setup again
 
@@ -244,7 +251,8 @@ Native tool intents and results are durably bracketed. Session resume performs
 no automatic recovery; use `xana operation plan` and explicit `xana operation
 resume` for eligible safe reads. See [Project context](docs/user/project-context.md),
 [Permissions](docs/user/permissions.md), [Sessions](docs/user/sessions.md), and
-[Operation recovery](docs/user/operations.md).
+[Operation recovery](docs/user/operations.md). Native child behavior and its
+current limits are in [Child orchestration](docs/user/orchestration.md).
 
 ## Documentation and development
 

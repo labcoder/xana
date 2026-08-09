@@ -171,7 +171,10 @@ where
                     invocation_id: *invocation_id,
                     decision: RecoveryDecision::Replay,
                 })?;
-                let (tool_result, outcome) = match planned.execute().await {
+                let (tool_result, outcome) = match planned
+                    .execute(crate::tool::ToolExecutionContext { operation_id })
+                    .await
+                {
                     Ok(output) => {
                         let value =
                             session.store_json_value(serde_json::Value::String(output.clone()))?;

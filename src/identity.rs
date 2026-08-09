@@ -49,6 +49,20 @@ uuid_id!(PrincipalId);
 uuid_id!(ToolResultId);
 uuid_id!(NamedValueId);
 
+impl AgentId {
+    /// Returns the stable root-agent identity owned by one durable session.
+    ///
+    /// Session ids are public semantic identifiers, not secrets. Deriving the
+    /// root id keeps legacy sessions stable without mutating them during a
+    /// read-only resume or inspection.
+    pub(crate) fn for_session(session_id: SessionId) -> Self {
+        Self(Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            format!("io.github.labcoder.xana/session/{session_id}/root-agent").as_bytes(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +87,16 @@ mod tests {
 
         takes_operation(operation);
         assert_ne!(step.to_string(), invocation.to_string());
+    }
+
+    #[test]
+    fn durable_session_has_one_stable_root_agent_identity() {
+        let session = SessionId::new();
+
+        assert_eq!(AgentId::for_session(session), AgentId::for_session(session));
+        assert_ne!(
+            AgentId::for_session(session),
+            AgentId::for_session(SessionId::new())
+        );
     }
 }

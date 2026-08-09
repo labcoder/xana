@@ -1,9 +1,16 @@
 use super::*;
 use crate::{
+    config::{OrchestrationLimits, PermissionMode, ProviderKind},
     context::ContextBudget,
     identity::{StepId, ToolInvocationId},
-    message::{ContentBlock, Role, ToolResult},
+    message::{ContentBlock, Role, ToolCall, ToolResult},
+    model::{DescriptorSource, ModelDescriptor},
     operation::{BoundaryObserver, CrashSite},
+    orchestration::{
+        ChildAttribution, ChildExecution, ChildExecutionContext, ChildExecutionFactory,
+        ChildExecutionOutput, ChildLifecycle, ChildReport, ChildSupervisor, ChildUsage,
+        ExecutionOwner, ParentExecution, PreparedChild, ResolvedAgentConfig, SpawnAgentRequest,
+    },
     permission::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
         PermissionScope, PolicyDecision,
@@ -15,6 +22,7 @@ use crate::{
 };
 use futures::future::BoxFuture;
 use std::{
+    collections::BTreeSet,
     collections::VecDeque,
     sync::{
         Arc, Mutex,
@@ -63,9 +71,282 @@ impl ConversationalProvider for QueueTransport {
     }
 }
 
+#[tokio::test]
+async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_turn() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let session =
+        DurableSession::create(directory.path(), workspace.clone()).expect("durable session");
+    let session_id = session.session_id();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let (supervisor_handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: session.agent_id(),
+            thread_id: session.thread_id(),
+        },
+        Arc::new(ImmediateChildFactory {
+            workspace: workspace.clone(),
+            requests: Arc::clone(&requests),
+        }),
+    );
+    let root_responses = vec![
+        Ok(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "delegate-1".to_owned(),
+                name: "delegate_agent".to_owned(),
+                arguments: serde_json::json!({
+                    "route": "worker",
+                    "task": "inspect the bounded seam"
+                }),
+            })],
+        }),
+        Ok(Message::text(Role::Assistant, "root collected report")),
+    ];
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let provider = QueueTransport {
+        responses: Mutex::new(root_responses.into()),
+        requests: Arc::clone(&captured),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let mut tools = ToolRegistry::new();
+    tools
+        .enable_child_delegation(supervisor_handle.clone())
+        .expect("delegation tool");
+    let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+    let assembler = PromptAssembler::new(
+        definitions,
+        PromptEnvironment {
+            operating_system: "test".to_owned(),
+            working_directory: workspace.clone(),
+            configured_shell: "test shell".to_owned(),
+            surface: PromptSurface::Cli,
+        },
+        None,
+        ContextBudget {
+            total_tokens: 16_384,
+            conversation_reserve_tokens: 4_096,
+        },
+    );
+    let prompt = assembler.assemble(&[]).expect("root prompt");
+    let agent = Agent::new(Box::new(provider), tools, workspace.clone(), prompt, 2);
+    let policy =
+        PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace).expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent_with_supervisor(
+        agent,
+        policy,
+        true,
+        session,
+        assembler,
+        supervisor_handle,
+        supervisor,
+    )
+    .expect("persistent runtime with child supervisor");
+    let operation_id = OperationId::new();
+
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "delegate once".to_owned(),
+        })
+        .await
+        .expect("submit root turn");
+
+    let mut lifecycle = Vec::new();
+    let mut terminal_report = None;
+    loop {
+        let event = runtime.next_event().await.expect("runtime event");
+        match event {
+            AgentEvent::ChildLifecycleChanged {
+                attribution,
+                lifecycle: state,
+            } => {
+                assert_eq!(attribution.parent_operation_id, operation_id);
+                assert_eq!(attribution.route, "worker");
+                assert_eq!(attribution.connection, "scripted");
+                assert_eq!(attribution.model, "child-model");
+                lifecycle.push(state);
+            }
+            AgentEvent::ChildReportCommitted { report } => {
+                terminal_report = Some(report);
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            _ => {}
+        }
+    }
+
+    assert_eq!(
+        lifecycle,
+        vec![
+            ChildLifecycle::Admitted,
+            ChildLifecycle::Queued,
+            ChildLifecycle::Running,
+            ChildLifecycle::Completed,
+        ]
+    );
+    let report = terminal_report.expect("terminal child report");
+    assert_eq!(report.output.as_deref(), Some("child result"));
+    assert_eq!(
+        requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[SpawnAgentRequest {
+            route: Some("worker".to_owned()),
+            task: "inspect the bounded seam".to_owned(),
+        }]
+    );
+    {
+        let provider_requests = captured
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(provider_requests.len(), 2);
+        assert!(matches!(
+            provider_requests[1].last(),
+            Some(Message {
+                role: Role::Tool,
+                content,
+            }) if matches!(content.as_slice(), [ContentBlock::ToolResult(result)] if result.output.contains("child result"))
+        ));
+    }
+
+    runtime
+        .send(RuntimeCommand::Shutdown)
+        .await
+        .expect("shutdown runtime");
+    let (_, restored) =
+        DurableSession::inspect_restored(directory.path(), session_id).expect("inspect session");
+    assert_eq!(restored.children.len(), 1);
+    let child = restored.children.values().next().expect("restored child");
+    assert_eq!(child.handle.lifecycle, ChildLifecycle::Completed);
+    assert_eq!(
+        child
+            .report
+            .as_ref()
+            .and_then(|report| report.output.as_deref()),
+        Some("child result")
+    );
+}
+
 struct BlockingTransport {
     started: Arc<Notify>,
     release: Arc<Notify>,
+}
+
+struct ImmediateChildFactory {
+    workspace: std::path::PathBuf,
+    requests: Arc<Mutex<Vec<SpawnAgentRequest>>>,
+}
+
+struct ImmediateChildExecution;
+
+struct BarrierChildFactory {
+    workspace: std::path::PathBuf,
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+struct BarrierChildExecution {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+impl ChildExecutionFactory for ImmediateChildFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        self.requests
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(request.clone());
+        let resolved = scripted_child_config(request);
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            resolved,
+            policy,
+            Box::new(ImmediateChildExecution),
+        ))
+    }
+}
+
+impl ChildExecutionFactory for BarrierChildFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            scripted_child_config(request),
+            policy,
+            Box::new(BarrierChildExecution {
+                started: Arc::clone(&self.started),
+                release: Arc::clone(&self.release),
+            }),
+        ))
+    }
+}
+
+impl ChildExecution for BarrierChildExecution {
+    fn run(
+        self: Box<Self>,
+        _context: ChildExecutionContext,
+    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(ChildExecutionOutput {
+                text: "released child".to_owned(),
+                usage: ChildUsage::Unknown,
+            })
+        })
+    }
+}
+
+fn scripted_child_config(request: &SpawnAgentRequest) -> ResolvedAgentConfig {
+    ResolvedAgentConfig {
+        route: request.route.clone().unwrap_or_else(|| "worker".to_owned()),
+        profile: "worker".to_owned(),
+        connection: "scripted".to_owned(),
+        provider_kind: ProviderKind::OpenAiCompat,
+        owner: ExecutionOwner::Native,
+        model: ModelDescriptor {
+            id: "child-model".to_owned(),
+            display_name: "Child Model".to_owned(),
+            input_modalities: BTreeSet::from(["text".to_owned()]),
+            tools: Some(false),
+            reasoning: Some(false),
+            reasoning_efforts: Vec::new(),
+            default_reasoning_effort: None,
+            context_tokens: Some(8_192),
+            max_output_tokens: Some(1_024),
+            source: DescriptorSource::Configured,
+            is_default: false,
+        },
+        reasoning_effort: None,
+        reasoning_summary: None,
+        capabilities: xana_core::AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new()),
+        permission_mode: PermissionMode::Allow,
+        max_tool_rounds: 2,
+        orchestration: OrchestrationLimits::default(),
+    }
+}
+
+impl ChildExecution for ImmediateChildExecution {
+    fn run(
+        self: Box<Self>,
+        _context: ChildExecutionContext,
+    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>> {
+        Box::pin(async {
+            Ok(ChildExecutionOutput {
+                text: "child result".to_owned(),
+                usage: ChildUsage::Unknown,
+            })
+        })
+    }
 }
 
 impl ConversationalProvider for BlockingTransport {
@@ -169,6 +450,144 @@ async fn receive_finished(
     }
 }
 
+#[tokio::test]
+async fn dropping_one_await_does_not_detach_the_supervised_child() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let admitted = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "wait at the barrier".to_owned(),
+            },
+        )
+        .await
+        .expect("admit child");
+    started.notified().await;
+    let child_id = admitted.admission.attribution.agent_id;
+    let abandoned = tokio::spawn({
+        let handle = handle.clone();
+        async move { handle.await_agent(child_id).await }
+    });
+    tokio::task::yield_now().await;
+    abandoned.abort();
+    let _ = abandoned.await;
+
+    release.notify_one();
+    let report = handle
+        .await_agent(child_id)
+        .await
+        .expect("later await succeeds");
+    assert_eq!(report.output.as_deref(), Some("released child"));
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn child_events_never_claim_a_transition_whose_commit_failed() {
+    for fail_at in 1..=4 {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let (handle, supervisor) = ChildSupervisor::new(
+            ParentExecution {
+                agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+                thread_id: crate::identity::ThreadId::new(),
+            },
+            Arc::new(ImmediateChildFactory {
+                workspace,
+                requests,
+            }),
+        );
+        let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+        let commit_task = tokio::spawn(async move {
+            let mut count = 0;
+            while let Some(command) = commit_receiver.recv().await {
+                count += 1;
+                let result = if count == fail_at {
+                    Err(format!("injected commit failure {fail_at}"))
+                } else {
+                    Ok(())
+                };
+                let _ = command.acknowledged.send(result);
+            }
+        });
+        let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+
+        let spawn = handle
+            .spawn_agent(
+                OperationId::new(),
+                SpawnAgentRequest {
+                    route: Some("worker".to_owned()),
+                    task: "commit ordering".to_owned(),
+                },
+            )
+            .await;
+        if fail_at < 4 {
+            assert!(spawn.is_err(), "startup commit {fail_at} should fail");
+        } else {
+            let child_id = spawn
+                .expect("report commit happens after admission")
+                .admission
+                .attribution
+                .agent_id;
+            assert!(handle.await_agent(child_id).await.is_err());
+        }
+        tokio::task::yield_now().await;
+        let emitted = std::iter::from_fn(|| event_receiver.try_recv().ok()).collect::<Vec<_>>();
+        let lifecycle_count = emitted
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::ChildLifecycleChanged { .. }))
+            .count();
+        assert_eq!(lifecycle_count, fail_at - 1, "commit {fail_at}");
+        assert!(!emitted.iter().any(|event| matches!(
+            event,
+            AgentEvent::ChildReportCommitted { .. }
+                | AgentEvent::ChildLifecycleChanged {
+                    lifecycle: ChildLifecycle::Completed
+                        | ChildLifecycle::Failed
+                        | ChildLifecycle::Cancelled
+                        | ChildLifecycle::Interrupted,
+                    ..
+                }
+        )));
+
+        handle.shutdown().await;
+        supervisor_task.await.expect("supervisor task");
+        commit_task.await.expect("commit task");
+    }
+}
+
 #[test]
 fn commands_and_events_round_trip_through_json() {
     let operation_id = OperationId::new();
@@ -176,6 +595,16 @@ fn commands_and_events_round_trip_through_json() {
     let invocation_id = ToolInvocationId::new();
     let result_id = crate::identity::ToolResultId::new();
     let message = Message::text(Role::Assistant, "hello");
+    let child_attribution = ChildAttribution::new(
+        crate::identity::AgentId::new(),
+        crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+        operation_id,
+        crate::identity::ThreadId::new(),
+        &scripted_child_config(&SpawnAgentRequest {
+            route: Some("worker".to_owned()),
+            task: "task".to_owned(),
+        }),
+    );
     let commands = vec![
         RuntimeCommand::SubmitTurn {
             operation_id,
@@ -191,12 +620,29 @@ fn commands_and_events_round_trip_through_json() {
             invocation_id,
             decision: ControllerDecision::AllowOnce,
         },
+        RuntimeCommand::DecideChildPermission {
+            agent_id: child_attribution.agent_id,
+            operation_id: child_attribution.operation_id,
+            invocation_id,
+            decision: ControllerDecision::Deny,
+        },
         RuntimeCommand::Shutdown,
     ];
     let events = vec![
         AgentEvent::OperationStateChanged {
             operation_id,
             state: OperationState::Running,
+        },
+        AgentEvent::ChildLifecycleChanged {
+            attribution: child_attribution.clone(),
+            lifecycle: ChildLifecycle::Running,
+        },
+        AgentEvent::ChildReportCommitted {
+            report: ChildReport::completed(
+                child_attribution,
+                "done".to_owned(),
+                ChildUsage::Unknown,
+            ),
         },
         AgentEvent::OperationStateChanged {
             operation_id,

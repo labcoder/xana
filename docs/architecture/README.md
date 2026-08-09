@@ -36,6 +36,9 @@ flowchart LR
     PROMPT --> AGENT
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded native loop"]
+    RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
+    SUPERVISOR --> CHILD["fresh native child Agent<br/>exact route snapshot"]
+    SUPERVISOR --> SESSION
     AGENT --> PROVIDER["ConversationalProvider"]
     APP --> MANAGED["Codex app-server<br/>managed inner loop"]
     AGENT --> OPERATION
@@ -60,9 +63,57 @@ shut down the runtime. The dedicated CLI recovery controller consumes
 `ResumeOperation`; merely opening a foreground chat never reconciles effects.
 Events carry operation state, assistant deltas, permission requests and audit
 facts, committed invocation facts, tool completion, final messages, failures,
-clearing, and rejections. Except for the
+clearing, rejections, and attributed child lifecycle/activity/reports. Except for the
 explicit permission request, event delivery is passive: losing the receiver does
 not alter an operation's result.
+
+## One-child orchestration boundary
+
+When a native root has configured task routes, the application creates one
+`ChildSupervisor` actor and registers `delegate_agent` only in the root tool
+registry. The model-facing convenience calls the supervisor's distinct
+`spawn_agent` and `await_agent` operations in one tool execution, so no outer
+model response is needed between admission and collection. `AgentId` is the
+durable handle key. A session's root `AgentId` is deterministically derived
+from its public `SessionId`, keeping lineage stable across resume without a
+write-on-open migration.
+
+Admission prepares the exact route, native provider, immutable capability/tool
+snapshot, permission ceiling, prompt, and explicit task before a child record
+exists. The runtime then commits `admitted`, `queued`, and `running` in order
+before emitting each matching event. The supervisor, not the tool future,
+owns the Tokio task and permission broker. Dropping an await therefore leaves
+the child supervised and a later await reads the same terminal report. A
+terminal report is committed before completed/failed events and contains
+typed attribution and an honest `unknown` usage state when the adapter exposes
+no usage.
+
+```mermaid
+sequenceDiagram
+    participant Root as "root Agent"
+    participant Tool as "delegate_agent"
+    participant Supervisor as "ChildSupervisor"
+    participant Session as "session writer"
+    participant Child as "native child Agent"
+    Root->>Tool: exact route + explicit task
+    Tool->>Supervisor: spawn_agent
+    Supervisor->>Session: commit admitted → queued → running
+    Supervisor-->>Tool: AgentHandleSnapshot
+    Supervisor->>Child: fresh bounded prompt and tool snapshot
+    Tool->>Supervisor: await_agent(handle)
+    Child-->>Supervisor: direct result or attributed failure
+    Supervisor->>Session: commit ChildReport
+    Supervisor-->>Tool: bounded report
+    Tool-->>Root: handle + report JSON
+```
+
+The child receives Xana's identity/guidelines, its exact task, applicable
+bounded root `AGENTS.md`, environment facts, and only the tools selected by its
+profile. It receives no parent transcript and its registry never contains
+orchestration tools, so child depth is structurally one. This slice permits
+one active native child; parallel admission, explicit cancellation, offline
+child inspection, artifact overflow, plans, and managed Codex children are not
+yet implemented.
 
 `OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
 are distinct UUID v4 newtypes.
@@ -336,7 +387,9 @@ connection` commands for static keys and Codex account control. Read-only
 `xana route list` and `xana route check NAME` resolve exact child profile,
 connection, configured/cached model, capabilities, permission ceiling, and
 limits without provider network access or managed-process startup. This
-diagnostic slice does not start children yet.
+diagnostic remains read-only. During native chat, a separately composed root
+`delegate_agent` tool can admit one exact native child through the runtime
+supervisor; route diagnostics themselves never start work.
 
 Managed chat also exposes `/reasoning`, `/reasoning-summary`, `/activity`, and
 `/details`. Model, effort, and summary selections persist separately from
@@ -433,6 +486,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   conversation loop.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
+- `orchestration` owns exact route resolution, immutable child configuration,
+  one-child supervision, durable handle/report types, and native child
+  composition. The runtime remains the only session writer.
 - `operation` owns invocation intent/result ordering, bounded durable values,
   replay classification, and explicit recovery execution.
 - `permission` owns pure policy and scopes, pending controller decisions,

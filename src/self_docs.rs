@@ -167,6 +167,7 @@ static CONTRIBUTOR_AUDIENCE: &[DocAudience] = &[DocAudience::Contributor, DocAud
 static USER_TOPICS: &[&str] = &["configuration", "installation", "usage"];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
+static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -233,6 +234,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: &["installation", "updates"],
         body: include_str!("../docs/user/installation.md"),
+    },
+    BundledDoc {
+        id: "user.orchestration",
+        title: "Child orchestration",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: ORCHESTRATION_TOPICS,
+        body: include_str!("../docs/user/orchestration.md"),
     },
     BundledDoc {
         id: "proposal.media",

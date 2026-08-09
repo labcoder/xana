@@ -53,7 +53,10 @@ an optional parent; a separate thread-head record selects the visible branch.
 `/clear` moves that head to empty and does not erase earlier records. Operation
 acceptance, steps, invocation intents/results, states, permission audits,
 recovery decisions, named values, artifacts, contexts, and views are distinct
-record kinds and never enter model history automatically.
+record kinds and never enter model history automatically. Native child
+admission, nonterminal lifecycle, and terminal report are also separate record
+kinds. They retain parent/root, operation, thread, route, connection, model,
+and execution-owner attribution without storing a full child transcript.
 
 Each logical artifact has its own id, media type, byte length, and owner. Its
 bytes use a shared BLAKE3 content path. Existing content is reused only after

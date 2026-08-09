@@ -4,10 +4,12 @@ use crate::{
     credential::CredentialAvailability,
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
 };
+use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
 use xana_core::AgentCapabilitySnapshot;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ExecutionOwner {
     Native,
     Codex,

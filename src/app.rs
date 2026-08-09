@@ -19,7 +19,10 @@ use crate::{
     managed_terminal::{ManagedChatConfig, run_codex_chat},
     model::{ExecutionKind, ModelManager},
     operation::{RecoveryAction, execute_recovery, plan_recovery},
-    orchestration::{ExecutionOwner, ResolvedAgentConfig, RouteResolver},
+    orchestration::{
+        ChildSupervisor, ExecutionOwner, NativeChildFactory, ParentExecution, ResolvedAgentConfig,
+        RouteResolver,
+    },
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
     presentation::{self, BannerMode},
@@ -35,6 +38,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::sync::Arc;
 
 const PROMPT_TOTAL_TOKENS: usize = 32_768;
 const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
@@ -770,6 +774,7 @@ async fn execute_recovery_command<W: Write>(
         | RuntimeCommand::SubmitTurnWithImages { .. }
         | RuntimeCommand::ClearConversation
         | RuntimeCommand::DecidePermission { .. }
+        | RuntimeCommand::DecideChildPermission { .. }
         | RuntimeCommand::Shutdown => {
             anyhow::bail!("the explicit recovery controller accepts only ResumeOperation")
         }
@@ -866,6 +871,8 @@ async fn run_default(
     };
 
     let manager = model_manager(paths)?;
+    let child_registry = XanaConfig::load_registry_from(paths.config_file())
+        .context("could not load child route registry")?;
     let selected = manager.selected()?;
     let selected_connection = manager.connection(&selected.connection)?.clone();
 
@@ -968,7 +975,8 @@ async fn run_default(
             }
             ProviderKind::Codex => unreachable!("managed Codex was composed above"),
         };
-    let tools = ToolRegistry::builtins(shell).context("could not build tool registry")?;
+    let mut tools =
+        ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
     let (session, permission_policy, resumed, repair_truncate_to, unfinished) = match resume {
         Some(session_id) => {
             let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
@@ -983,7 +991,7 @@ async fn run_default(
             let unfinished = summary.unfinished.clone();
             let permission_policy = PermissionPolicy::new(
                 permission_mode.into(),
-                permission_rules,
+                permission_rules.clone(),
                 session.workspace_root(),
             )
             .context("could not resolve permission policy for the session workspace")?;
@@ -996,9 +1004,12 @@ async fn run_default(
             )
         }
         None => {
-            let permission_policy =
-                PermissionPolicy::new(permission_mode.into(), permission_rules, &workspace_root)
-                    .context("could not resolve permission policy for the launch workspace")?;
+            let permission_policy = PermissionPolicy::new(
+                permission_mode.into(),
+                permission_rules.clone(),
+                &workspace_root,
+            )
+            .context("could not resolve permission policy for the launch workspace")?;
             (
                 DurableSession::create(paths.data_dir(), workspace_root.clone())?,
                 permission_policy,
@@ -1009,6 +1020,29 @@ async fn run_default(
         }
     };
     let workspace_root = session.workspace_root().to_owned();
+    let child_supervisor = if child_registry.routes.is_empty() {
+        None
+    } else {
+        let factory = NativeChildFactory::new(
+            child_registry,
+            model_manager(paths)?,
+            shell,
+            workspace_root.clone(),
+            artifact_store.clone(),
+            permission_rules,
+        );
+        let (handle, supervisor) = ChildSupervisor::new(
+            ParentExecution {
+                agent_id: session.agent_id(),
+                thread_id: session.thread_id(),
+            },
+            Arc::new(factory),
+        );
+        tools
+            .enable_child_delegation(handle.clone())
+            .context("could not register child delegation tool")?;
+        Some((handle, supervisor))
+    };
     let environment = PromptEnvironment {
         operating_system: std::env::consts::OS.to_owned(),
         working_directory: workspace_root.clone(),
@@ -1047,8 +1081,24 @@ async fn run_default(
     );
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
-    let runtime =
-        RuntimeHandle::spawn_persistent(agent, permission_policy, true, session, prompt_assembler)?;
+    let runtime = match child_supervisor {
+        Some((handle, supervisor)) => RuntimeHandle::spawn_persistent_with_supervisor(
+            agent,
+            permission_policy,
+            true,
+            session,
+            prompt_assembler,
+            handle,
+            supervisor,
+        )?,
+        None => RuntimeHandle::spawn_persistent(
+            agent,
+            permission_policy,
+            true,
+            session,
+            prompt_assembler,
+        )?,
+    };
     let header = ChatHeader {
         provider_name,
         model,

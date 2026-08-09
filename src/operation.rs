@@ -288,7 +288,9 @@ impl<'a> OperationExecutor<'a> {
                 },
             )
         } else {
-            let execution = planned.execute().await;
+            let execution = planned
+                .execute(crate::tool::ToolExecutionContext { operation_id })
+                .await;
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;
             match execution {
                 Ok(output) => {

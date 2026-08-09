@@ -13,6 +13,10 @@ use crate::{
     identity::OperationId,
     message::{Message, Role},
     operation::{CrashSite, DurableOperationCommand, DurableOperationSender, SuspensionReason},
+    orchestration::{
+        ChildCommitCommand, ChildCommitReceiver, ChildCommitSender, ChildSupervisor,
+        ChildSupervisorHandle,
+    },
     permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
     prompt::{PromptAssembler, PromptSnapshot},
     session::{DurableSession, SessionRecord},
@@ -43,6 +47,10 @@ struct Runtime {
     durable_operation_sender: DurableOperationSender,
     session: Option<DurableSession>,
     prompt_assembler: Option<PromptAssembler>,
+    child_commits: ChildCommitReceiver,
+    _child_commit_sender: ChildCommitSender,
+    child_supervisor: Option<ChildSupervisorHandle>,
+    child_supervisor_task: Option<JoinHandle<()>>,
 }
 
 struct ActiveOperation {
@@ -61,7 +69,15 @@ struct OperationCompletion {
 impl RuntimeHandle {
     #[cfg(test)]
     pub(crate) fn spawn(agent: Agent, policy: PermissionPolicy, controller_present: bool) -> Self {
-        Self::spawn_inner(agent, policy, controller_present, None, None, Vec::new())
+        Self::spawn_inner(
+            agent,
+            policy,
+            controller_present,
+            None,
+            None,
+            Vec::new(),
+            None,
+        )
     }
 
     pub(crate) fn spawn_persistent(
@@ -79,6 +95,28 @@ impl RuntimeHandle {
             Some(session),
             Some(prompt_assembler),
             history,
+            None,
+        ))
+    }
+
+    pub(crate) fn spawn_persistent_with_supervisor(
+        agent: Agent,
+        policy: PermissionPolicy,
+        controller_present: bool,
+        session: DurableSession,
+        prompt_assembler: PromptAssembler,
+        supervisor_handle: ChildSupervisorHandle,
+        supervisor: ChildSupervisor,
+    ) -> Result<Self, RuntimeUnavailable> {
+        let history = session.conversation().map_err(|_| RuntimeUnavailable)?;
+        Ok(Self::spawn_inner(
+            agent,
+            policy,
+            controller_present,
+            Some(session),
+            Some(prompt_assembler),
+            history,
+            Some((supervisor_handle, supervisor)),
         ))
     }
 
@@ -89,6 +127,7 @@ impl RuntimeHandle {
         session: Option<DurableSession>,
         prompt_assembler: Option<PromptAssembler>,
         history: Vec<Message>,
+        child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
@@ -96,6 +135,7 @@ impl RuntimeHandle {
         let (completion_sender, completion_receiver) = mpsc::unbounded_channel();
         let (conversation_committer, conversation_commits) = ConversationCommitSender::channel();
         let (durable_operation_sender, durable_operations) = DurableOperationSender::channel();
+        let (child_commit_sender, child_commits) = ChildCommitSender::channel();
         let (permissions, _broker_task) = if session.is_some() {
             PermissionBroker::spawn_for_durable_runtime(
                 policy,
@@ -104,6 +144,14 @@ impl RuntimeHandle {
             )
         } else {
             PermissionBroker::spawn(policy, controller_present, broker_event_sender)
+        };
+        let (child_supervisor, child_supervisor_task) = match child_supervisor {
+            Some((handle, supervisor)) => {
+                let task =
+                    tokio::spawn(supervisor.run(child_commit_sender.clone(), event_sender.clone()));
+                (Some(handle), Some(task))
+            }
+            None => (None, None),
         };
         let runtime = Runtime {
             agent: Arc::new(agent),
@@ -121,6 +169,10 @@ impl RuntimeHandle {
             durable_operation_sender,
             session,
             prompt_assembler,
+            child_commits,
+            _child_commit_sender: child_commit_sender,
+            child_supervisor,
+            child_supervisor_task,
         };
         tokio::spawn(runtime.run());
 
@@ -150,6 +202,7 @@ impl Runtime {
                     let Some(command) = command else {
                         self.permissions.controller_lost();
                         self.interrupt_active();
+                        self.shutdown_children().await;
                         return;
                     };
                     if self.handle_command(command).await {
@@ -174,6 +227,11 @@ impl Runtime {
                 command = self.durable_operations.recv() => {
                     if let Some(command) = command {
                         self.handle_durable_operation(command);
+                    }
+                }
+                command = self.child_commits.recv() => {
+                    if let Some(command) = command {
+                        self.handle_child_commit(command);
                     }
                 }
             }
@@ -235,9 +293,27 @@ impl Runtime {
                     });
                 }
             }
+            RuntimeCommand::DecideChildPermission {
+                agent_id,
+                operation_id,
+                invocation_id,
+                decision,
+            } => {
+                let result = match &self.child_supervisor {
+                    Some(supervisor) => supervisor
+                        .decide_permission(agent_id, operation_id, invocation_id, decision)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    None => Err("this runtime has no child supervisor".to_owned()),
+                };
+                if let Err(reason) = result {
+                    self.emit(AgentEvent::CommandRejected { reason });
+                }
+            }
             RuntimeCommand::Shutdown => {
                 self.permissions.shutdown();
                 self.interrupt_active();
+                self.shutdown_children().await;
                 return true;
             }
         }
@@ -625,6 +701,26 @@ impl Runtime {
                     });
                 let _ = acknowledged.send(result);
             }
+        }
+    }
+
+    fn handle_child_commit(&mut self, command: ChildCommitCommand) {
+        let result = if let Some(session) = &mut self.session {
+            session
+                .append_record(command.record)
+                .map_err(|error| format!("could not append child record: {error:#}"))
+        } else {
+            Ok(())
+        };
+        let _ = command.acknowledged.send(result);
+    }
+
+    async fn shutdown_children(&mut self) {
+        if let Some(supervisor) = self.child_supervisor.take() {
+            supervisor.shutdown().await;
+        }
+        if let Some(task) = self.child_supervisor_task.take() {
+            let _ = task.await;
         }
     }
 

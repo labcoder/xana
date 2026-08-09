@@ -142,8 +142,10 @@ locally unavailable routes inline. `route check` exits nonzero for an unknown
 route, missing credential, absent configured/cached model, unsupported model
 option, unknown capability, or a model that explicitly rejects the selected
 tools. Diagnostics identify the route, profile, connection, and model without
-printing secret values. The current commands are read-only diagnostics; this
-release does not yet start a child from a route.
+printing secret values. The route commands themselves are read-only. Native
+chat separately uses the same exact resolver when its root `delegate_agent`
+tool admits one supervised native child; see
+[Child orchestration](orchestration.md).
 
 ### API-key providers
 

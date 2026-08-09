@@ -41,6 +41,7 @@ impl Tool for Echo {
     fn execute<'a>(
         &'a self,
         _planned: &'a PlannedToolInvocation,
+        _context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Ok("echoed".to_owned()) })
     }
@@ -75,6 +76,7 @@ impl Tool for AlwaysFails {
     fn execute<'a>(
         &'a self,
         _planned: &'a PlannedToolInvocation,
+        _context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Err("planned failure".to_owned()) })
     }
@@ -112,6 +114,7 @@ impl Tool for CountedDefinition {
     fn execute<'a>(
         &'a self,
         _planned: &'a PlannedToolInvocation,
+        _context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async { Ok("counted".to_owned()) })
     }
@@ -347,6 +350,7 @@ impl Tool for FakeEffect {
     fn execute<'a>(
         &'a self,
         planned: &'a PlannedToolInvocation,
+        _context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let executable = planned.executable::<Value>("fake_effect")?;

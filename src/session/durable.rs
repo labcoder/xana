@@ -111,6 +111,7 @@ impl DurableSession {
         records: Vec<RecordEnvelope>,
     ) -> Result<Self> {
         let restored = reduce(&records).context("could not reduce durable session")?;
+        let agent_id = AgentId::for_session(restored.session_id);
         let record_ids = records.iter().map(|record| record.record_id).collect();
         Ok(Self {
             store,
@@ -118,7 +119,7 @@ impl DurableSession {
             record_ids,
             restored,
             artifacts: ArtifactStore::new(data_dir.join("artifacts")),
-            agent_id: AgentId::new(),
+            agent_id,
             owner: PrincipalId::new(),
         })
     }
@@ -129,6 +130,10 @@ impl DurableSession {
 
     pub(crate) fn thread_id(&self) -> ThreadId {
         self.restored.thread_id
+    }
+
+    pub(crate) fn agent_id(&self) -> AgentId {
+        self.agent_id
     }
 
     pub(crate) fn path(&self) -> &Path {

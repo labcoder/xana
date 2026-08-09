@@ -8,6 +8,10 @@ use crate::{
         DurableValueRef, InvocationIntent, InvocationResultRecord, NamedValueRecord,
         RecoveryDecision,
     },
+    orchestration::{
+        AgentHandleSnapshot, CHILD_REPORT_VERSION, ChildLifecycle, ChildReport,
+        ChildReportReference, ChildTerminalStatus,
+    },
     permission::PermissionAuditFact,
     runtime::{OperationOutcome, OperationState},
 };
@@ -33,6 +37,13 @@ pub(crate) struct RestoredSession {
     pub(crate) named_context: BTreeMap<String, (ContextId, u64)>,
     pub(crate) operation_details: BTreeMap<OperationId, RestoredOperation>,
     pub(crate) named_values: BTreeMap<NamedValueId, NamedValueRecord>,
+    pub(crate) children: BTreeMap<AgentId, RestoredChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RestoredChild {
+    pub(crate) handle: AgentHandleSnapshot,
+    pub(crate) report: Option<ChildReport>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +86,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         named_context: BTreeMap::new(),
         operation_details: BTreeMap::new(),
         named_values: BTreeMap::new(),
+        children: BTreeMap::new(),
     };
     let mut record_ids = HashSet::new();
 
@@ -402,6 +414,71 @@ pub(crate) fn validate_envelope(
                 Ok(())
             }
         }
+        SessionRecord::ChildAdmitted { handle } => {
+            let attribution = &handle.admission.attribution;
+            if handle.lifecycle != ChildLifecycle::Admitted
+                || handle.report.is_some()
+                || handle.usage != crate::orchestration::ChildUsage::Unknown
+                || attribution.agent_id == attribution.parent_agent_id
+                || attribution.parent_agent_id != AgentId::for_session(state.session_id)
+                || attribution.route.trim().is_empty()
+                || attribution.profile.trim().is_empty()
+                || attribution.connection.trim().is_empty()
+                || attribution.model.trim().is_empty()
+                || handle.admission.task_hash.len() != 64
+                || handle.admission.task_preview.len()
+                    > crate::orchestration::MAX_CHILD_TASK_PREVIEW_BYTES
+            {
+                Err(ReductionError::InvalidChildAdmission {
+                    agent: attribution.agent_id,
+                })
+            } else if state.children.contains_key(&attribution.agent_id) {
+                Err(ReductionError::DuplicateChild {
+                    agent: attribution.agent_id,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::ChildLifecycleChanged {
+            agent_id,
+            lifecycle,
+        } => {
+            let child = state
+                .children
+                .get(agent_id)
+                .ok_or(ReductionError::UnknownChild { agent: *agent_id })?;
+            if lifecycle.is_terminal()
+                || !valid_child_transition(child.handle.lifecycle, *lifecycle)
+            {
+                Err(ReductionError::InvalidChildTransition {
+                    agent: *agent_id,
+                    previous: child.handle.lifecycle,
+                    next: *lifecycle,
+                })
+            } else {
+                Ok(())
+            }
+        }
+        SessionRecord::ChildReportCommitted { report } => {
+            let agent_id = report.attribution.agent_id;
+            let child = state
+                .children
+                .get(&agent_id)
+                .ok_or(ReductionError::UnknownChild { agent: agent_id })?;
+            if child.report.is_some() {
+                return Err(ReductionError::DuplicateChildReport { agent: agent_id });
+            }
+            if report.version != CHILD_REPORT_VERSION
+                || report.attribution != child.handle.admission.attribution
+                || !valid_child_terminal_source(child.handle.lifecycle)
+                || !valid_child_report(report, child.handle.admission.limits.max_report_bytes)
+            {
+                Err(ReductionError::InvalidChildReport { agent: agent_id })
+            } else {
+                Ok(())
+            }
+        }
     }
 }
 
@@ -527,6 +604,76 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
         }
         SessionRecord::NamedValueSet { value } => {
             state.named_values.insert(value.id, value.clone());
+        }
+        SessionRecord::ChildAdmitted { handle } => {
+            state.children.insert(
+                handle.admission.attribution.agent_id,
+                RestoredChild {
+                    handle: handle.clone(),
+                    report: None,
+                },
+            );
+        }
+        SessionRecord::ChildLifecycleChanged {
+            agent_id,
+            lifecycle,
+        } => {
+            state
+                .children
+                .get_mut(agent_id)
+                .expect("validated child exists")
+                .handle
+                .apply_lifecycle(*lifecycle);
+        }
+        SessionRecord::ChildReportCommitted { report } => {
+            let child = state
+                .children
+                .get_mut(&report.attribution.agent_id)
+                .expect("validated child exists");
+            child.handle.apply_report(report);
+            child.report = Some(report.clone());
+        }
+    }
+}
+
+fn valid_child_transition(previous: ChildLifecycle, next: ChildLifecycle) -> bool {
+    matches!(
+        (previous, next),
+        (ChildLifecycle::Admitted, ChildLifecycle::Queued)
+            | (ChildLifecycle::Queued, ChildLifecycle::Running)
+            | (ChildLifecycle::Running, ChildLifecycle::Suspended)
+            | (ChildLifecycle::Suspended, ChildLifecycle::Running)
+    )
+}
+
+fn valid_child_terminal_source(previous: ChildLifecycle) -> bool {
+    matches!(
+        previous,
+        ChildLifecycle::Admitted
+            | ChildLifecycle::Queued
+            | ChildLifecycle::Running
+            | ChildLifecycle::Suspended
+    )
+}
+
+fn valid_child_report(report: &ChildReport, max_bytes: usize) -> bool {
+    let content = match report.status {
+        ChildTerminalStatus::Completed if report.error.is_none() => report.output.as_deref(),
+        ChildTerminalStatus::Failed
+        | ChildTerminalStatus::Cancelled
+        | ChildTerminalStatus::Interrupted
+            if report.output.is_none() =>
+        {
+            report.error.as_deref()
+        }
+        _ => None,
+    };
+    let Some(content) = content else {
+        return false;
+    };
+    match report.reference {
+        ChildReportReference::Inline { byte_len } => {
+            byte_len == content.len() && byte_len <= max_bytes
         }
     }
 }
@@ -694,6 +841,26 @@ pub(crate) enum ReductionError {
     },
     DuplicateNamedValue {
         value: NamedValueId,
+    },
+    InvalidChildAdmission {
+        agent: AgentId,
+    },
+    DuplicateChild {
+        agent: AgentId,
+    },
+    UnknownChild {
+        agent: AgentId,
+    },
+    InvalidChildTransition {
+        agent: AgentId,
+        previous: ChildLifecycle,
+        next: ChildLifecycle,
+    },
+    DuplicateChildReport {
+        agent: AgentId,
+    },
+    InvalidChildReport {
+        agent: AgentId,
     },
 }
 
