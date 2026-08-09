@@ -1,6 +1,7 @@
 //! Terminal-independent state and update policy for the full-screen client.
 
 use super::command::{self, CommandId, CommandSpec, ParsedCommand};
+use super::session::{self, SessionRow};
 use crate::{
     frontend::EmbeddedClient,
     identity::OperationId,
@@ -8,6 +9,7 @@ use crate::{
     presentation::ComposerPreset,
     runtime::{AgentEvent, OperationState},
     vision::{ImageAttachment, ImageRef},
+    workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use std::{collections::VecDeque, ops::Range};
 
@@ -144,6 +146,9 @@ pub(super) enum UpdateEffect {
     ClearConversation,
     OpenModelPicker,
     OpenReasoningPicker,
+    OpenSessionPicker,
+    ViewSession(ConversationRef),
+    PersistRail(bool),
     Quit,
 }
 
@@ -276,6 +281,11 @@ pub(super) enum Overlay {
         choices: Vec<String>,
         selected: usize,
     },
+    SessionPicker {
+        query: String,
+        choices: Vec<SessionRow>,
+        selected: usize,
+    },
 }
 
 pub(super) struct TuiState {
@@ -293,8 +303,13 @@ pub(super) struct TuiState {
     pub(super) activity_visibility: ActivityVisibility,
     pub(super) composer_preset: ComposerPreset,
     pub(super) scroll: u16,
+    pub(super) sessions: Vec<SessionRow>,
+    pub(super) rail_expanded: bool,
+    pub(super) runtime_conversation: ConversationRef,
+    pub(super) viewed_conversation: ConversationRef,
     capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
+    background_messages: Option<VecDeque<VisibleMessage>>,
 }
 
 impl TuiState {
@@ -317,12 +332,21 @@ impl TuiState {
             activity_visibility: ActivityVisibility::Normal,
             composer_preset,
             scroll: 0,
+            sessions: Vec::new(),
+            rail_expanded: true,
+            runtime_conversation: ConversationRef::NewNative,
+            viewed_conversation: ConversationRef::NewNative,
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            background_messages: None,
         }
     }
 
-    pub(super) fn from_client(client: &EmbeddedClient, composer_preset: ComposerPreset) -> Self {
+    pub(super) fn from_client(
+        client: &EmbeddedClient,
+        composer_preset: ComposerPreset,
+        conversation: ConversationRef,
+    ) -> Self {
         let snapshot = client.snapshot();
         let mut messages = snapshot
             .conversation
@@ -345,8 +369,13 @@ impl TuiState {
             activity_visibility: ActivityVisibility::Normal,
             composer_preset,
             scroll: 0,
+            sessions: Vec::new(),
+            rail_expanded: true,
+            runtime_conversation: conversation.clone(),
+            viewed_conversation: conversation,
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            background_messages: None,
         };
         if snapshot.conversation_truncated {
             state.push_activity("older conversation content is outside the bounded snapshot");
@@ -433,16 +462,28 @@ impl TuiState {
                 UpdateEffect::None
             }
             InputAction::Insert(text) => {
-                if let Some(Overlay::Palette { query, selected }) = &mut self.overlay {
-                    append_bounded(query, &sanitize_input(&text), 256);
-                    *selected = 0;
+                match &mut self.overlay {
+                    Some(Overlay::Palette { query, selected })
+                    | Some(Overlay::SessionPicker {
+                        query, selected, ..
+                    }) => {
+                        append_bounded(query, &sanitize_input(&text), 256);
+                        *selected = 0;
+                    }
+                    _ => {}
                 }
                 UpdateEffect::None
             }
             InputAction::Backspace => {
-                if let Some(Overlay::Palette { query, selected }) = &mut self.overlay {
-                    query.pop();
-                    *selected = 0;
+                match &mut self.overlay {
+                    Some(Overlay::Palette { query, selected })
+                    | Some(Overlay::SessionPicker {
+                        query, selected, ..
+                    }) => {
+                        query.pop();
+                        *selected = 0;
+                    }
+                    _ => {}
                 }
                 UpdateEffect::None
             }
@@ -465,6 +506,17 @@ impl TuiState {
             Some(Overlay::Palette { query, selected }) => (selected, command::search(query).len()),
             Some(Overlay::ModelPicker { choices, selected })
             | Some(Overlay::ReasoningPicker { choices, selected }) => (selected, choices.len()),
+            Some(Overlay::SessionPicker {
+                query,
+                choices,
+                selected,
+            }) => (
+                selected,
+                choices
+                    .iter()
+                    .filter(|row| session_matches(row, query))
+                    .count(),
+            ),
             _ => return,
         };
         if len == 0 {
@@ -509,6 +561,17 @@ impl TuiState {
                 .get(selected)
                 .cloned()
                 .map_or(UpdateEffect::None, UpdateEffect::SetReasoning),
+            Overlay::SessionPicker {
+                query,
+                choices,
+                selected,
+            } => choices
+                .into_iter()
+                .filter(|row| session_matches(row, &query))
+                .nth(selected)
+                .map_or(UpdateEffect::None, |row| {
+                    UpdateEffect::ViewSession(row.conversation)
+                }),
             Overlay::Help | Overlay::Queue => UpdateEffect::None,
         }
     }
@@ -607,6 +670,26 @@ impl TuiState {
                     UpdateEffect::SetReasoning(command.arguments)
                 }
             }
+            CommandId::Sessions => {
+                self.composer.take();
+                match command.arguments.as_str() {
+                    "" => UpdateEffect::OpenSessionPicker,
+                    "expanded" => {
+                        self.rail_expanded = true;
+                        self.status = "Wide session rail expanded".to_owned();
+                        UpdateEffect::PersistRail(true)
+                    }
+                    "collapsed" => {
+                        self.rail_expanded = false;
+                        self.status = "Wide session rail collapsed".to_owned();
+                        UpdateEffect::PersistRail(false)
+                    }
+                    _ => {
+                        self.status = command_usage(CommandId::Sessions);
+                        UpdateEffect::None
+                    }
+                }
+            }
             CommandId::Activity => {
                 self.composer.take();
                 self.activity_visibility = match command.arguments.as_str() {
@@ -703,6 +786,12 @@ impl TuiState {
             return UpdateEffect::None;
         }
         let images = self.take_pending_images();
+        if self.viewed_conversation != self.runtime_conversation {
+            self.composer.replace(input);
+            self.restore_images(images);
+            self.status = "Draft retained; return to the runtime conversation or use exact resume before submitting".to_owned();
+            return UpdateEffect::None;
+        }
         if self.busy {
             if self.followups.len() >= MAX_FOLLOWUPS
                 || self
@@ -812,6 +901,93 @@ impl TuiState {
         }
     }
 
+    pub(super) fn refresh_sessions(&mut self, snapshot: WorkspaceSnapshot) {
+        let previous = std::mem::take(&mut self.sessions);
+        self.sessions = session::project(
+            snapshot,
+            &self.runtime_conversation,
+            &self.connection,
+            &self.model,
+        );
+        for row in &mut self.sessions {
+            if let Some(old) = previous
+                .iter()
+                .find(|old| old.conversation == row.conversation)
+            {
+                row.unread = old.unread;
+                row.error = old.error;
+            }
+        }
+    }
+
+    pub(super) fn open_session_picker(&mut self) {
+        if self.sessions.is_empty() {
+            self.status = "No retained conversations are available".to_owned();
+        } else {
+            self.overlay = Some(Overlay::SessionPicker {
+                query: String::new(),
+                choices: self.sessions.clone(),
+                selected: 0,
+            });
+        }
+    }
+
+    pub(super) fn view_session(
+        &mut self,
+        conversation: ConversationRef,
+        history: Option<Vec<Message>>,
+    ) {
+        if conversation == self.runtime_conversation {
+            if self.viewed_conversation != self.runtime_conversation
+                && let Some(messages) = self.background_messages.take()
+            {
+                self.messages = messages;
+            }
+            self.viewed_conversation = conversation.clone();
+            self.status = "Viewing the runtime conversation".to_owned();
+        } else {
+            if self.viewed_conversation == self.runtime_conversation {
+                self.background_messages = Some(std::mem::take(&mut self.messages));
+            }
+            self.messages = history.as_ref().map_or_else(
+                || {
+                    VecDeque::from([VisibleMessage {
+                        kind: MessageKind::System,
+                        text: "Managed transcript remains owned by its runtime and is unavailable to this local history viewer".to_owned(),
+                    }])
+                },
+                |history| {
+                    let mut messages = history
+                        .iter()
+                        .map(message_projection)
+                        .collect::<VecDeque<_>>();
+                    trim_front(&mut messages, MAX_VISIBLE_MESSAGES);
+                    messages
+                },
+            );
+            self.viewed_conversation = conversation.clone();
+            self.status = if self.busy {
+                "Inspecting another conversation; the active root remains controlled in its original conversation".to_owned()
+            } else {
+                "Inspecting retained history; use exact resume to continue it".to_owned()
+            };
+        }
+        self.scroll = 0;
+        if let Some(row) = self
+            .sessions
+            .iter_mut()
+            .find(|row| row.conversation == conversation)
+        {
+            row.unread = false;
+            row.error = false;
+            row.title = session::preview_title(history.as_deref().unwrap_or_default(), &row.title);
+        }
+    }
+
+    pub(super) fn set_rail_expanded(&mut self, expanded: bool) {
+        self.rail_expanded = expanded;
+    }
+
     pub(super) fn set_status(&mut self, status: impl Into<String>) {
         self.status = bounded(status.into(), MAX_ACTIVITY_BYTES);
     }
@@ -824,6 +1000,11 @@ impl TuiState {
     }
 
     pub(super) fn apply_runtime(&mut self, event: &AgentEvent) {
+        let viewing_background = self.viewed_conversation != self.runtime_conversation;
+        if viewing_background {
+            let background = self.background_messages.get_or_insert_with(VecDeque::new);
+            std::mem::swap(&mut self.messages, background);
+        }
         match event {
             AgentEvent::OperationStateChanged {
                 operation_id,
@@ -901,6 +1082,25 @@ impl TuiState {
             | AgentEvent::ChildListSnapshot { .. }
             | AgentEvent::ChildInspectionSnapshot { .. }
             | AgentEvent::ChildCancellationRequested { .. } => {}
+        }
+        if viewing_background {
+            let background = self.background_messages.get_or_insert_with(VecDeque::new);
+            std::mem::swap(&mut self.messages, background);
+            if let Some(row) = self
+                .sessions
+                .iter_mut()
+                .find(|row| row.conversation == self.runtime_conversation)
+            {
+                row.unread = matches!(
+                    event,
+                    AgentEvent::AssistantMessage { .. }
+                        | AgentEvent::OperationStateChanged {
+                            state: OperationState::Finished(_),
+                            ..
+                        }
+                );
+                row.error |= matches!(event, AgentEvent::OperationFailed { .. });
+            }
         }
     }
 
@@ -993,6 +1193,16 @@ fn command_usage(id: CommandId) -> String {
             || "Invalid command".to_owned(),
             |command| format!("Usage: {}", command.usage),
         )
+}
+
+fn session_matches(row: &SessionRow, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    query.is_empty()
+        || row.title.to_ascii_lowercase().contains(&query)
+        || row.connection.to_ascii_lowercase().contains(&query)
+        || row.model.to_ascii_lowercase().contains(&query)
+        || row.execution_owner.contains(&query)
+        || row.state.to_string().contains(&query)
 }
 
 fn parse_queue_index(value: Option<&str>, len: usize) -> Result<usize, String> {
@@ -1156,7 +1366,11 @@ fn trim_front<T>(values: &mut VecDeque<T>, limit: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{identity::StepId, runtime::OperationOutcome};
+    use crate::{
+        identity::{SessionId, StepId},
+        runtime::OperationOutcome,
+        workspace_host::{ConversationProjection, ConversationState, WorkspaceSnapshot},
+    };
 
     #[test]
     fn composer_edits_unicode_multiline_and_selection_safely() {
@@ -1275,5 +1489,66 @@ mod tests {
             state.push_activity(format!("event {index}"));
         }
         assert_eq!(state.activity.len(), MAX_ACTIVITY);
+    }
+
+    #[test]
+    fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
+        let runtime = ConversationRef::Native {
+            session_id: SessionId::new(),
+        };
+        let other = ConversationRef::Native {
+            session_id: SessionId::new(),
+        };
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.busy = true;
+        state.runtime_conversation = runtime.clone();
+        state.viewed_conversation = runtime.clone();
+        state.refresh_sessions(WorkspaceSnapshot {
+            workspace: std::env::current_dir().unwrap(),
+            conversations: vec![
+                ConversationProjection {
+                    conversation: runtime.clone(),
+                    state: ConversationState::Controlled,
+                    record_count: Some(5),
+                    modified: None,
+                    selected: false,
+                },
+                ConversationProjection {
+                    conversation: other.clone(),
+                    state: ConversationState::Inactive,
+                    record_count: Some(3),
+                    modified: None,
+                    selected: false,
+                },
+            ],
+            active: None,
+        });
+
+        state.view_session(
+            other.clone(),
+            Some(vec![Message::text(Role::User, "retained history")]),
+        );
+        state.update_input(InputAction::Insert("local draft".to_owned()));
+        assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+        assert_eq!(state.composer.text, "local draft");
+
+        let operation_id = OperationId::new();
+        state.active_operation = Some(operation_id);
+        state.apply_runtime(&AgentEvent::AssistantMessage {
+            operation_id,
+            message: Message::text(Role::Assistant, "background result"),
+        });
+        assert_eq!(state.messages.back().unwrap().text, "retained history");
+        assert!(
+            state
+                .sessions
+                .iter()
+                .find(|row| row.conversation == runtime)
+                .unwrap()
+                .unread
+        );
+
+        state.view_session(runtime, None);
+        assert_eq!(state.messages.back().unwrap().text, "background result");
     }
 }

@@ -1417,6 +1417,10 @@ async fn run_default(
             prompt_assembler,
         )?,
     };
+    let conversation = match conversation {
+        ConversationRef::NewNative => ConversationRef::Native { session_id },
+        conversation => conversation,
+    };
     let header = ChatHeader {
         provider_name,
         model,

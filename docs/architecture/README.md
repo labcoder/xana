@@ -85,7 +85,14 @@ promise to third-party clients or future network adapters.
 `workspace_host` owns canonical local-workspace conversation discovery and the
 single-root admission gate shared by embedded native and managed clients. A
 bounded snapshot combines reducible native session records with retained
-opaque managed handles. An OS file lock, acquired only for an active root
+opaque managed handles and native modification metadata. Explicit native
+history inspection reduces one selected session; managed inspection returns no
+invented transcript. The TUI caps the projection to 512 deterministic rows,
+derives bounded titles only from retained user text, and keeps viewed history,
+the runtime transcript, and unsent draft as separate state. Switching view
+focus cannot transfer control or dispatch work. A versioned workspace/frontend
+file persists only the wide-rail Boolean; runtime selection, activity,
+unread/error state, and ownership are recomputed. An OS file lock, acquired only for an active root
 turn, is the cross-process authority; its bounded host-id/PID/conversation
 descriptor is diagnostic and never authorizes process signalling. A second
 plain client may hold an inactive session writer and draft input, but its turn

@@ -4,6 +4,7 @@ use crate::{
     bounded_file,
     identity::SessionId,
     managed::thread_store::{ManagedConversationHandle, ManagedThreadStore},
+    message::Message,
     session::{DurableSession, NativeConversationHandle},
 };
 use serde::{Deserialize, Serialize};
@@ -87,6 +88,7 @@ pub(crate) struct ConversationProjection {
     pub(crate) conversation: ConversationRef,
     pub(crate) state: ConversationState,
     pub(crate) record_count: Option<usize>,
+    pub(crate) modified: Option<std::time::SystemTime>,
     pub(crate) selected: bool,
 }
 
@@ -264,6 +266,24 @@ impl WorkspaceHost {
         })
     }
 
+    pub(crate) fn conversation_history(
+        &self,
+        conversation: &ConversationRef,
+    ) -> Result<Option<Vec<Message>>, WorkspaceHostError> {
+        match conversation {
+            ConversationRef::Native { session_id } => {
+                let (_, restored) = DurableSession::inspect_restored(&self.data_root, *session_id)
+                    .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?;
+                restored
+                    .conversation_path()
+                    .map(Some)
+                    .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))
+            }
+            ConversationRef::Managed { .. } => Ok(None),
+            ConversationRef::NewNative | ConversationRef::NewManaged { .. } => Ok(Some(Vec::new())),
+        }
+    }
+
     fn active_descriptor(&self) -> Result<Option<ActiveRootDescriptor>, WorkspaceHostError> {
         let lock = match open_lock(&self.lock_path) {
             Ok(lock) => lock,
@@ -403,6 +423,7 @@ fn native_projection(
         state: state_for(&conversation, active, controlled),
         conversation,
         record_count: Some(entry.record_count),
+        modified: Some(entry.modified),
         selected: false,
     }
 }
@@ -420,6 +441,7 @@ fn managed_projection(
         state: state_for(&conversation, active, controlled),
         conversation,
         record_count: None,
+        modified: None,
         selected: entry.current,
     }
 }
@@ -471,6 +493,32 @@ mod tests {
         assert_eq!(snapshot.workspace, workspace.canonicalize().unwrap());
         assert_eq!(snapshot.conversations.len(), 4);
         assert!(snapshot.active.is_none());
+    }
+
+    #[test]
+    fn explicit_history_reads_native_content_but_never_invents_managed_content() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let native = DurableSession::create(directory.path(), workspace.clone()).unwrap();
+        let session_id = native.session_id();
+        drop(native);
+        let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
+
+        assert_eq!(
+            host.conversation_history(&ConversationRef::Native { session_id })
+                .unwrap(),
+            Some(Vec::new())
+        );
+        assert_eq!(
+            host.conversation_history(&ConversationRef::Managed {
+                connection: "codex".to_owned(),
+                thread_id: "opaque".to_owned(),
+            })
+            .unwrap(),
+            None
+        );
     }
 
     #[test]

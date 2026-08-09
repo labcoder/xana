@@ -26,7 +26,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: Res
     let columns = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(24),
+            Constraint::Length(if state.rail_expanded { 32 } else { 9 }),
             Constraint::Min(36),
             Constraint::Length(30),
         ])
@@ -115,22 +115,42 @@ fn render_header(
 }
 
 fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
-    Paragraph::new(Text::from(vec![
-        Line::styled(
-            "Current",
-            semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD),
-        ),
-        Line::raw(state.session.clone()),
-        Line::raw(""),
-        Line::styled(
-            "Conversation controls",
+    let mut lines = Vec::new();
+    for row in &state.sessions {
+        let focused = row.conversation == state.viewed_conversation;
+        let marker = session_marker(row.state, row.unread, row.error);
+        if state.rail_expanded {
+            lines.push(Line::styled(
+                format!("{} {marker} {}", if focused { ">" } else { " " }, row.title),
+                if focused {
+                    semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                },
+            ));
+            lines.push(Line::styled(
+                format!(
+                    "  {} · {}/{} · {}",
+                    row.execution_owner, row.connection, row.model, row.state
+                ),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+        } else {
+            lines.push(Line::styled(
+                format!("{} {marker}", if focused { ">" } else { " " }),
+                semantic_style(profile, SemanticToken::Focus),
+            ));
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::styled(
+            "No sessions",
             semantic_style(profile, SemanticToken::Muted),
-        ),
-        Line::raw(format!("{} queued follow-up(s)", state.followups.len())),
-        Line::raw(format!("{} staged image(s)", state.pending_image_count())),
-    ]))
-    .block(Block::default().title(" Session ").borders(Borders::ALL))
-    .wrap(Wrap { trim: false })
+        ));
+    }
+    Paragraph::new(Text::from(lines))
+        .block(Block::default().title(" Sessions ").borders(Borders::ALL))
+        .wrap(Wrap { trim: false })
 }
 
 fn conversation(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
@@ -338,6 +358,45 @@ fn render_overlay(
             " Select reasoning effort ",
             choice_lines(choices, *selected, profile),
         ),
+        Overlay::SessionPicker {
+            query,
+            choices,
+            selected,
+        } => {
+            let filtered = choices
+                .iter()
+                .filter(|row| session_row_matches(row, query))
+                .collect::<Vec<_>>();
+            let mut lines = vec![Line::from(vec![
+                Span::styled("> ", semantic_style(profile, SemanticToken::Focus)),
+                Span::raw(query.clone()),
+            ])];
+            lines.extend(filtered.into_iter().enumerate().map(|(index, row)| {
+                let marker = if index == *selected { ">" } else { " " };
+                let recency = row.modified_unix.map_or_else(
+                    || "recency unknown".to_owned(),
+                    |value| format!("updated {value}"),
+                );
+                Line::styled(
+                    format!(
+                        "{marker} {} [{} · {}/{} · {} · {recency}{}]",
+                        row.title,
+                        row.execution_owner,
+                        row.connection,
+                        row.model,
+                        row.state,
+                        row.record_count
+                            .map_or_else(String::new, |count| format!(" · {count} records")),
+                    ),
+                    if index == *selected {
+                        semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                )
+            }));
+            (" Conversations ", lines)
+        }
     };
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -351,6 +410,35 @@ fn render_overlay(
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+fn session_marker(
+    state: crate::workspace_host::ConversationState,
+    unread: bool,
+    error: bool,
+) -> String {
+    let state = match state {
+        crate::workspace_host::ConversationState::Inactive => "idle",
+        crate::workspace_host::ConversationState::Active => "active",
+        crate::workspace_host::ConversationState::Controlled => "control",
+        crate::workspace_host::ConversationState::Observable => "observe",
+        crate::workspace_host::ConversationState::Unavailable => "unavail",
+    };
+    format!(
+        "[{state}{}{}]",
+        if unread { " unread" } else { "" },
+        if error { " error" } else { "" }
+    )
+}
+
+fn session_row_matches(row: &super::session::SessionRow, query: &str) -> bool {
+    let query = query.trim().to_ascii_lowercase();
+    query.is_empty()
+        || row.title.to_ascii_lowercase().contains(&query)
+        || row.connection.to_ascii_lowercase().contains(&query)
+        || row.model.to_ascii_lowercase().contains(&query)
+        || row.execution_owner.contains(&query)
+        || row.state.to_string().contains(&query)
 }
 
 fn choice_lines(
@@ -405,6 +493,12 @@ fn to_color(color: PresentationColor) -> Color {
 mod tests {
     use super::*;
     use crate::presentation::{ComposerPreset, ResolvedPresentation};
+    use crate::{
+        identity::SessionId,
+        workspace_host::{
+            ConversationProjection, ConversationRef, ConversationState, WorkspaceSnapshot,
+        },
+    };
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
@@ -447,6 +541,30 @@ mod tests {
             .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
             .unwrap();
         assert!(buffer_text(terminal.backend().buffer()).contains("openai/gpt-test"));
+
+        let conversation = ConversationRef::Native {
+            session_id: SessionId::new(),
+        };
+        state.runtime_conversation = conversation.clone();
+        state.viewed_conversation = conversation.clone();
+        state.refresh_sessions(WorkspaceSnapshot {
+            workspace: std::env::current_dir().unwrap(),
+            conversations: vec![ConversationProjection {
+                conversation,
+                state: ConversationState::Controlled,
+                record_count: Some(12),
+                modified: None,
+                selected: false,
+            }],
+            active: None,
+        });
+        state.open_session_picker();
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("Conversations"));
+        assert!(rendered.contains("12 records"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

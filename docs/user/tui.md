@@ -64,6 +64,7 @@ use one typed registry:
 - `/activity quiet|normal|verbose`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
+- `/sessions [expanded|collapsed]`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
 Esc closes the overlay. `/model` without an argument opens choices from the
@@ -76,6 +77,17 @@ only what the frontend renders and never changes model reasoning effort.
 bounded artifact ingestion. It refuses traversal, symlink escape, unsupported
 formats, oversized images, more than eight images, more than 20 MiB per turn,
 or a selected model not declared image-capable.
+
+## Conversation navigation
+
+`/sessions` opens a searchable, keyboard-complete picker backed by the bounded
+workspace-host snapshot. On wide terminals `/sessions expanded` and
+`/sessions collapsed` persist the default rail state for this workspace.
+Selecting another native conversation opens its committed history for
+inspection while leaving an active root attached to its original conversation;
+managed history remains owned by Codex. Drafting remains local, but Xana will
+not submit a draft from a read-only historical view. Return to the runtime
+conversation or use the exact resume command shown in [Sessions](sessions.md).
 
 ## Layout and accessibility
 
