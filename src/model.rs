@@ -453,6 +453,18 @@ impl ModelManager {
         &self,
         id: &str,
     ) -> Result<Vec<ModelDescriptor>, ModelError> {
+        let models = self.probe_native(id, None).await?;
+        self.write_cache(id, &models)?;
+        Ok(models)
+    }
+
+    /// Establish a native connection and fetch its live catalog without
+    /// mutating Xana's cache. Setup uses this before the user chooses a model.
+    pub(crate) async fn probe_native(
+        &self,
+        id: &str,
+        staged_secret: Option<&SecretString>,
+    ) -> Result<Vec<ModelDescriptor>, ModelError> {
         let connection = self.connection(id)?;
         if connection.kind == ProviderKind::Codex {
             return Err(ModelError::InvalidEndpoint(
@@ -461,7 +473,9 @@ impl ModelManager {
         }
         let endpoint = catalog_endpoint(connection)?;
         let mut request = self.client.get(endpoint);
-        if let Some(reference) = &connection.credential {
+        if let Some(secret) = staged_secret {
+            request = apply_catalog_auth(request, connection.kind, secret);
+        } else if let Some(reference) = &connection.credential {
             let secret = self
                 .credentials
                 .resolve(reference)
@@ -481,9 +495,7 @@ impl ModelManager {
         let bytes = bounded_response_bytes(response).await?;
         let value = serde_json::from_slice::<Value>(&bytes)
             .map_err(|error| ModelError::Decode(error.to_string()))?;
-        let models = parse_catalog(connection.kind, &value)?;
-        self.write_cache(id, &models)?;
-        Ok(models)
+        parse_catalog(connection.kind, &value)
     }
 
     pub(crate) fn write_managed_cache(
@@ -814,6 +826,7 @@ mod tests {
     use super::*;
     use crate::config::{ConnectionConfig, CredentialReference};
     use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     fn registry() -> ConnectionRegistry {
         ConnectionRegistry {
@@ -1020,5 +1033,46 @@ mod tests {
         let encoded = toml::to_string(&reference).unwrap();
         assert!(!encoded.contains("token"));
         assert!(encoded.contains("remote"));
+    }
+
+    #[tokio::test]
+    async fn setup_probe_fetches_live_models_without_writing_the_catalog_cache() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1")
+            );
+            let body = r#"{"models":[{"name":"live-model"}]}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let directory = tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let mut registry = registry();
+        registry.connections.get_mut("local").unwrap().base_url =
+            Some(format!("http://{address}/v1"));
+        let manager = ModelManager::new(
+            registry,
+            cache.clone(),
+            directory.path().join("selection.toml"),
+        );
+
+        let models = manager.probe_native("local", None).await.unwrap();
+
+        assert_eq!(models[0].id, "live-model");
+        assert!(!cache.join("models/local.json").exists());
+        server.await.unwrap();
     }
 }

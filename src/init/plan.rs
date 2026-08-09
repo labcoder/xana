@@ -213,6 +213,7 @@ fn plan_noninteractive(args: &InitArgs) -> Result<InitPlan, InitError> {
             .permission_mode
             .expect("permission mode presence was checked")
             .into(),
+        reasoning_effort: None,
     }))
 }
 
@@ -330,6 +331,12 @@ fn plan_interactive<R: BufRead, W: Write>(
             writeln!(output, "  Kind:                OpenAI-compatible")?;
             writeln!(output, "  Base URL:            {base_url}")?;
         }
+        InitialConnection::Native { kind, base_url, .. } => {
+            writeln!(output, "  Kind:                {}", kind.as_str())?;
+            if let Some(base_url) = base_url {
+                writeln!(output, "  Base URL:            {base_url}")?;
+            }
+        }
         InitialConnection::Codex { program, home, .. } => {
             writeln!(output, "  Kind:                managed Codex")?;
             writeln!(output, "  Codex executable:    {program}")?;
@@ -366,6 +373,7 @@ fn plan_interactive<R: BufRead, W: Write>(
         max_tool_rounds,
         shell,
         permission_mode,
+        reasoning_effort: None,
     }))
 }
 
@@ -615,6 +623,7 @@ mod tests {
                 max_tool_rounds: 8,
                 shell: ShellConfig::default(),
                 permission_mode: PermissionMode::Ask,
+                reasoning_effort: None,
             })
         );
         assert!(transcript.contains("[1/4] Connection"));
@@ -645,6 +654,7 @@ mod tests {
                     program: Some("custom-shell".into()),
                 },
                 permission_mode: PermissionMode::Allow,
+                reasoning_effort: None,
             })
         );
     }
@@ -666,6 +676,7 @@ mod tests {
                 max_tool_rounds: 8,
                 shell: ShellConfig::default(),
                 permission_mode: PermissionMode::Ask,
+                reasoning_effort: None,
             })
         );
         assert!(transcript.contains("ChatGPT subscription through Codex"));

@@ -135,6 +135,7 @@ mod tests {
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
             permission_mode: crate::config::PermissionMode::Ask,
+            reasoning_effort: None,
         })
         .expect("render config")
     }

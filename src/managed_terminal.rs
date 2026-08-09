@@ -16,6 +16,7 @@ use crate::{
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     presentation::{ResolvedPresentation, SemanticToken},
+    terminal::ChatExit,
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
 };
@@ -60,7 +61,7 @@ pub(crate) async fn run_codex_chat(
     mut config: ManagedChatConfig,
     workspace_host: WorkspaceHost,
     mut conversation: ConversationRef,
-) -> Result<()> {
+) -> Result<ChatExit> {
     if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
         anyhow::bail!(
             "Codex is logged out; run `xana connection login {}` first",
@@ -127,13 +128,14 @@ pub(crate) async fn run_codex_chat(
         }
     }
     println!(
-        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /clear starts a new Codex thread; /quit exits"
+        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
     );
 
     let mut editor = DefaultEditor::new().context("could not initialize terminal editor")?;
     let mut pending = PendingImages::default();
     let ingestor = ImageIngestor::new(config.artifact_store.clone(), ImageLimits::default());
 
+    let mut exit = ChatExit::Quit;
     loop {
         let line = match editor.readline("you> ") {
             Ok(line) => line,
@@ -149,6 +151,10 @@ pub(crate) async fn run_codex_chat(
             continue;
         }
         if input == "/quit" {
+            break;
+        }
+        if input == "/setup" {
+            exit = ChatExit::Setup;
             break;
         }
         if input == "/clear" {
@@ -384,7 +390,7 @@ pub(crate) async fn run_codex_chat(
         drop(root_lease);
     }
     server.shutdown().await?;
-    Ok(())
+    Ok(exit)
 }
 
 pub(crate) async fn run_codex_one_shot(

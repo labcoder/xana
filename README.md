@@ -37,7 +37,7 @@ git clone https://github.com/labcoder/xana.git
 cd xana
 cargo install --path crates/xana-cli --locked
 xana --version
-xana init
+xana setup
 xana config check
 xana
 ```
@@ -54,10 +54,13 @@ crates.io and has no prebuilt installer or automatic updater. See
 
 ## Choose a first connection
 
-`xana init` offers local Ollama, a ChatGPT subscription through the managed
-Codex runtime, or a custom OpenAI-compatible endpoint. It creates and validates
-the selected connection without storing a plaintext secret. A minimal Ollama
-document is:
+`xana setup` is the canonical first-run and rerunnable Quick Setup. Xana does
+not preselect or recommend a provider. It first establishes the chosen local,
+API-key, or managed Codex connection and fetches its live catalog; only then
+does it offer model and reasoning choices. Ordinary configuration remains in
+memory until the redacted review is confirmed, then the credential reference
+and valid config are committed atomically. Cancelling preserves the previous
+installation. A minimal Ollama document is:
 
 ```toml
 version = 3
@@ -102,10 +105,10 @@ Anthropic is API-key-only; Xana does not offer Claude subscription OAuth.
 
 ## Use a ChatGPT subscription through Codex
 
-On a fresh installation, install a compatible Codex CLI and choose
-`ChatGPT subscription through Codex` in `xana init`. Xana creates the managed
-connection and prints the status, login, catalog-refresh, and model-discovery
-commands to run next.
+On a fresh installation, install and log into a compatible Codex CLI, then
+choose Codex in `xana setup`. Quick Setup probes the executable and app-server,
+checks the Codex-owned account, fetches the live catalog, and refuses stale or
+unadvertised model ids before writing configuration.
 
 To add Codex to an existing Xana configuration instead:
 
@@ -227,11 +230,11 @@ reset:
 
 ```bash
 xana reset --yes
-xana init
+xana setup
 ```
 
 From this source checkout, use `cargo run -- reset --yes` followed by `cargo
-run -- init`. Reset removes configuration, model selection/catalog caches, and
+run -- setup`. Reset removes configuration, model selection/catalog caches, and
 managed-thread handles. It preserves native sessions, artifacts, stored API
 keys, Codex authentication, and Codex-owned conversations. `/clear` is
 different: it clears only the current conversation.

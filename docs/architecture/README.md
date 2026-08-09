@@ -688,15 +688,18 @@ human-authored configuration and apply to subsequent turns without replacing
 the Codex thread. Activity level is process-local presentation of typed
 runtime events and never changes model effort.
 
-Initialization collects interactive or explicit noninteractive answers,
-builds a typed Ollama, OpenAI-compatible, or managed Codex connection draft
-without filesystem effects, renders the version 3 TOML shape, validates it
-through the production configuration loader, and creates `config.toml`
-without replacing an existing file. The variants keep HTTP provider fields
-out of managed-runtime drafts and Codex process fields out of native-provider
-drafts. Codex authentication remains an explicit subsequent action delegated
-to app-server, and first-run guidance requires live catalog discovery followed
-by explicit selection of an advertised model. Path and configuration
+Provider-neutral Quick Setup is the canonical first-run and rerunnable path.
+It stages a typed native or managed connection without filesystem effects,
+establishes the endpoint/executable and credential/account, and performs a
+non-persistent live catalog fetch before accepting model and managed reasoning
+choices. The validated version 3 document and any hidden OS-store secret stay
+in memory through the bounded redacted review. After confirmation, the prior
+file is backed up exactly and config is atomically replaced; secret mutation
+is rolled back if the config commit fails. Codex OAuth is vendor-owned and is
+reported outside that transaction. Bare interactive startup and `/setup`
+enter the same application operation after restoring any full-screen terminal;
+non-TTY startup emits the exact flag-driven form. The legacy hidden `init`
+command remains create-new compatibility only. Path and configuration
 diagnostics do not construct an agent.
 
 The guarded `reset`/`clean` boundary removes configuration last, after

@@ -152,6 +152,7 @@ pub(super) enum InputAction {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum UpdateEffect {
     None,
+    Setup,
     Submit {
         operation_id: OperationId,
         input: String,
@@ -838,6 +839,15 @@ impl TuiState {
                         self.status = command_usage(CommandId::Sessions);
                         UpdateEffect::None
                     }
+                }
+            }
+            CommandId::Setup => {
+                self.composer.take();
+                if self.busy {
+                    self.status = "Wait for or interrupt the active turn before setup".to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::Setup
                 }
             }
             CommandId::Activity => {
