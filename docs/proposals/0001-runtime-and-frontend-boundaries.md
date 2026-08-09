@@ -6,16 +6,19 @@
 
 ## Context
 
-[Architecture](../architecture/README.md) describes Xana's implemented
-single-crate boundaries. This proposal explores a physical separation that
-keeps the engine headless, puts application policy in one runtime layer, and
-treats every frontend as a client of that layer.
+[Architecture](../architecture/README.md) describes Xana's implemented Cargo
+workspace and logical boundaries. This proposal explores the broader physical
+and hosting topology that keeps the engine headless, puts application policy
+in one runtime layer, and treats every frontend as a client of that layer.
 
-The single-process foreground command/event boundary needed before a physical
-workspace split has been implemented through historical
+The Cargo workspace and single-process foreground command/event boundary have
+been implemented through current Architecture and historical
 [Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
-Proposed for the later package split, runtime host, shared capability catalog,
-and additional frontend topology described below.
+Proposed for the broader package topology, shared capability catalog, and
+additional frontend shapes described below. The exact local frontend and
+workspace-host subset required for Phase 5 is accepted separately by
+[Proposal 0017](0017-bounded-local-frontends-and-workspace-host.md); accepting
+that subset does not give authority to the broader designs here.
 
 ## Proposed component model
 
@@ -97,13 +100,15 @@ state, and shortcuts remain frontend concerns. A frontend may edit shared
 configuration through runtime-owned validation, but it does not independently
 mutate shared state or implement another agent loop.
 
-The exact command, event, snapshot, and concurrency contracts are developed in
-[Proposal 0005](0005-runtime-protocol-threads-and-concurrency.md).
+The broad command, event, snapshot, and concurrency designs are developed in
+[Proposal 0005](0005-runtime-protocol-threads-and-concurrency.md). The bounded
+local contract that implementation must now follow is Proposal 0017.
 
-## Proposed physical workspace
+## Broader proposed physical workspace
 
-After the logical boundaries have been exercised, the Rust workspace would
-separate into:
+The current Cargo workspace already separates `xana-core`, `xana-runtime`, and
+`xana-cli` at the boundaries described by Architecture. The broader topology
+would continue that separation into:
 
 ```text
 xana-core       headless engine and public internal types

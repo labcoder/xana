@@ -97,3 +97,8 @@ This accepted proposal does not add or authorize:
 
 Those designs remain non-authoritative in Proposals 0001 and 0005 until
 separately accepted.
+
+The later bounded local frontend and workspace-host evolution is accepted in
+[Proposal 0017](0017-bounded-local-frontends-and-workspace-host.md). Until its
+individual slices ship, the single-client foreground behavior above remains
+the implemented contract.
