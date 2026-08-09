@@ -22,6 +22,9 @@ Implemented scope:
 - unified `xana model`, advanced `xana connection`, and `/model` selection;
 - a Codex app-server managed runtime using Codex-owned ChatGPT login, account,
   refresh, model, turn, tool, sandbox, and approval behavior;
+- canonical Xana identity handoff at Codex thread creation without replacing
+  Codex base instructions or adding an outer model call, plus versioned local
+  detection of legacy handles whose creation-time identity cannot be replaced;
 - typed Codex activity for assistant text, reasoning summaries and exposed
   reasoning blocks, plans, commands/tools, file changes and diffs, compaction,
   collaboration, reroutes, approvals, warnings, and completion;

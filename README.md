@@ -17,7 +17,10 @@ Xana currently supports:
 
 Native connections run Xana's own agent loop. Codex is a managed runtime: Xana
 provides the CLI and process/event/approval bridge but does not wrap the turn
-in a second model call or copy Codex credentials.
+in a second model call or copy Codex credentials. When Xana creates a managed
+thread, it supplies its canonical built-in identity as a developer instruction,
+so the assistant presents itself as Xana while Codex retains ownership of its
+base instructions and inner loop.
 
 ## Install from source
 
@@ -117,6 +120,16 @@ desktop app and CLI binaries update separately even when they share account
 state. Use `codex --version` and `xana connection status codex` to confirm the
 runtime Xana is actually supervising; update or rebuild both sides when the
 experimental app-server protocol changes.
+
+The managed assistant identifies itself as Xana. Xana sends its canonical
+built-in identity when it creates the Codex thread, but does not replace
+Codex's base instructions, tools, sandbox, approvals, or project context
+discovery. This is part of the same managed request, not an additional model
+call. Codex fixes the effective identity when it creates a thread; it cannot
+retrofit Xana's identity onto an older thread during resume. Xana detects
+legacy local handles and tells you to enter `/clear` before the first prompt.
+That starts a new Xana-identified thread without deleting the old Codex-owned
+thread.
 
 During a managed turn Xana projects the activity that Codex app-server emits:
 reasoning summaries, plans, command and tool progress, file changes, context

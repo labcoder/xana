@@ -436,24 +436,31 @@ fn approval_response<H: ManagedEventHandler>(
 // object uses a separate camelCase tagged enum, so do not reuse that spelling.
 const WORKSPACE_WRITE_SANDBOX: &str = "workspace-write";
 
-fn thread_start_params(model: &str, workspace: &Path) -> Value {
+fn thread_start_params(model: &str, workspace: &Path, developer_instructions: &str) -> Value {
     json!({
         "model": model,
         "cwd": workspace,
         "approvalPolicy": "on-request",
         "sandbox": WORKSPACE_WRITE_SANDBOX,
         "ephemeral": false,
-        "serviceName": "xana"
+        "serviceName": "xana",
+        "developerInstructions": developer_instructions
     })
 }
 
-fn thread_resume_params(thread_id: &str, model: &str, workspace: &Path) -> Value {
+fn thread_resume_params(
+    thread_id: &str,
+    model: &str,
+    workspace: &Path,
+    developer_instructions: &str,
+) -> Value {
     json!({
         "threadId": thread_id,
         "model": model,
         "cwd": workspace,
         "approvalPolicy": "on-request",
-        "sandbox": WORKSPACE_WRITE_SANDBOX
+        "sandbox": WORKSPACE_WRITE_SANDBOX,
+        "developerInstructions": developer_instructions
     })
 }
 
@@ -809,12 +816,13 @@ impl CodexAppServer {
         &mut self,
         model: &str,
         workspace: &Path,
+        developer_instructions: &str,
         handler: &mut H,
     ) -> Result<String, CodexError> {
         let result = self
             .request(
                 "thread/start",
-                thread_start_params(model, workspace),
+                thread_start_params(model, workspace, developer_instructions),
                 handler,
             )
             .await?;
@@ -826,12 +834,13 @@ impl CodexAppServer {
         thread_id: &str,
         model: &str,
         workspace: &Path,
+        developer_instructions: &str,
         handler: &mut H,
     ) -> Result<String, CodexError> {
         let result = self
             .request(
                 "thread/resume",
-                thread_resume_params(thread_id, model, workspace),
+                thread_resume_params(thread_id, model, workspace, developer_instructions),
                 handler,
             )
             .await?;

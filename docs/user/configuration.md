@@ -190,6 +190,18 @@ refresh, inference, tools, sandbox, approvals, and inner thread history. Xana
 never reads or copies Codex's auth file and needs no hosted OAuth callback
 server.
 
+When Xana creates a managed thread, it supplies its canonical built-in identity
+as a developer instruction. The assistant should therefore identify itself as
+Xana, while Codex continues to own its base instructions, tools,
+project-context discovery, and inner loop. Xana does not add an outer model
+call or duplicate its native prompt layers for this handoff.
+
+Codex cannot retrofit a new identity onto an older persisted thread during
+resume. Xana records the creating identity version in its non-secret local
+thread handle and warns when that marker is missing or old. Enter `/clear`
+before the first prompt to create a new Xana-identified thread. Clearing the
+local handle does not delete the old Codex-owned conversation.
+
 Xana launches the configured Codex CLI executable; it does not send managed
 turns through the running Codex desktop application. The two programs may use
 the same Codex home, but their binaries update separately. If desktop has a

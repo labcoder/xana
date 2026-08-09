@@ -21,9 +21,16 @@ use render::{
 use std::{collections::HashSet, error::Error, fmt, path::PathBuf};
 
 pub(crate) const PROMPT_ASSEMBLY_VERSION: &str = "xana-prompt-v1";
+// Bump this whenever the canonical identity changes. Managed thread handles
+// use it to avoid claiming that Codex can retrofit identity onto old rollouts.
+pub(crate) const XANA_IDENTITY_VERSION: &str = "xana-identity-v1";
 
 const IDENTITY: &str = include_str!("prompt/identity.md");
 const GUIDELINES: &str = include_str!("prompt/guidelines.md");
+
+pub(crate) fn xana_identity() -> &'static str {
+    IDENTITY
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PromptLayerKind {

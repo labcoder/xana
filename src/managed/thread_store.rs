@@ -12,6 +12,7 @@ use std::{
 const DOCUMENT_VERSION: u32 = 1;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_THREAD_ID_BYTES: usize = 4096;
+const MAX_IDENTITY_VERSION_BYTES: usize = 128;
 
 #[derive(Debug)]
 pub(crate) enum ManagedThreadStoreError {
@@ -52,6 +53,8 @@ struct ManagedThreadDocument {
     connection: String,
     workspace: PathBuf,
     thread_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    identity_version: Option<String>,
 }
 
 pub(crate) struct ManagedThreadStore {
@@ -59,6 +62,7 @@ pub(crate) struct ManagedThreadStore {
     connection: String,
     workspace: PathBuf,
     thread_id: Option<String>,
+    identity_version: Option<String>,
     _writer_lock: fs::File,
 }
 
@@ -104,41 +108,47 @@ impl ManagedThreadStore {
             }
         }
 
-        let thread_id = match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
-            Ok(bytes) => {
-                let document: ManagedThreadDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
-                if document.version != DOCUMENT_VERSION
-                    || document.connection != connection
-                    || document.workspace != workspace
-                {
-                    return Err(ManagedThreadStoreError::Invalid(
-                        "route identity does not match its state file".into(),
-                    ));
+        let (thread_id, identity_version) =
+            match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
+                Ok(bytes) => {
+                    let document: ManagedThreadDocument = serde_json::from_slice(&bytes)
+                        .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
+                    if document.version != DOCUMENT_VERSION
+                        || document.connection != connection
+                        || document.workspace != workspace
+                    {
+                        return Err(ManagedThreadStoreError::Invalid(
+                            "route identity does not match its state file".into(),
+                        ));
+                    }
+                    validate_thread_state(
+                        document.thread_id.as_deref(),
+                        document.identity_version.as_deref(),
+                    )?;
+                    (document.thread_id, document.identity_version)
                 }
-                document.thread_id
-            }
-            Err(bounded_file::BoundedReadError::Io { source, .. })
-                if source.kind() == io::ErrorKind::NotFound =>
-            {
-                None
-            }
-            Err(bounded_file::BoundedReadError::Io { path, source }) => {
-                return Err(ManagedThreadStoreError::Io { path, source });
-            }
-            Err(bounded_file::BoundedReadError::TooLarge { actual, limit, .. }) => {
-                return Err(ManagedThreadStoreError::Invalid(format!(
-                    "{} contains {actual} bytes, exceeding the {limit}-byte limit",
-                    state_path.display()
-                )));
-            }
-        };
+                Err(bounded_file::BoundedReadError::Io { source, .. })
+                    if source.kind() == io::ErrorKind::NotFound =>
+                {
+                    (None, None)
+                }
+                Err(bounded_file::BoundedReadError::Io { path, source }) => {
+                    return Err(ManagedThreadStoreError::Io { path, source });
+                }
+                Err(bounded_file::BoundedReadError::TooLarge { actual, limit, .. }) => {
+                    return Err(ManagedThreadStoreError::Invalid(format!(
+                        "{} contains {actual} bytes, exceeding the {limit}-byte limit",
+                        state_path.display()
+                    )));
+                }
+            };
 
         Ok(Self {
             state_path,
             connection: connection.to_owned(),
             workspace: workspace.to_owned(),
             thread_id,
+            identity_version,
             _writer_lock: writer_lock,
         })
     }
@@ -147,23 +157,23 @@ impl ManagedThreadStore {
         self.thread_id.as_deref()
     }
 
-    pub(crate) fn set_thread_id(
+    pub(crate) fn identity_version(&self) -> Option<&str> {
+        self.identity_version.as_deref()
+    }
+
+    pub(crate) fn set_thread(
         &mut self,
         thread_id: Option<String>,
+        identity_version: Option<&str>,
     ) -> Result<(), ManagedThreadStoreError> {
-        if thread_id
-            .as_deref()
-            .is_some_and(|id| id.is_empty() || id.len() > MAX_THREAD_ID_BYTES)
-        {
-            return Err(ManagedThreadStoreError::Invalid(format!(
-                "thread id must contain 1 to {MAX_THREAD_ID_BYTES} bytes"
-            )));
-        }
+        validate_thread_state(thread_id.as_deref(), identity_version)?;
+        let identity_version = identity_version.map(str::to_owned);
         let document = ManagedThreadDocument {
             version: DOCUMENT_VERSION,
             connection: self.connection.clone(),
             workspace: self.workspace.clone(),
             thread_id: thread_id.clone(),
+            identity_version: identity_version.clone(),
         };
         let bytes = serde_json::to_vec_pretty(&document)
             .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
@@ -190,8 +200,33 @@ impl ManagedThreadStore {
                 source,
             })?;
         self.thread_id = thread_id;
+        self.identity_version = identity_version;
         Ok(())
     }
+}
+
+fn validate_thread_state(
+    thread_id: Option<&str>,
+    identity_version: Option<&str>,
+) -> Result<(), ManagedThreadStoreError> {
+    if thread_id.is_some_and(|id| id.is_empty() || id.len() > MAX_THREAD_ID_BYTES) {
+        return Err(ManagedThreadStoreError::Invalid(format!(
+            "thread id must contain 1 to {MAX_THREAD_ID_BYTES} bytes"
+        )));
+    }
+    if identity_version.is_some() && thread_id.is_none() {
+        return Err(ManagedThreadStoreError::Invalid(
+            "identity version requires a managed thread id".into(),
+        ));
+    }
+    if identity_version
+        .is_some_and(|version| version.is_empty() || version.len() > MAX_IDENTITY_VERSION_BYTES)
+    {
+        return Err(ManagedThreadStoreError::Invalid(format!(
+            "identity version must contain 1 to {MAX_IDENTITY_VERSION_BYTES} bytes"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -208,16 +243,47 @@ mod tests {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             assert_eq!(store.thread_id(), None);
-            store.set_thread_id(Some("thr_123".into())).unwrap();
+            assert_eq!(store.identity_version(), None);
+            store
+                .set_thread(Some("thr_123".into()), Some("xana-identity-v1"))
+                .unwrap();
         }
         {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             assert_eq!(store.thread_id(), Some("thr_123"));
-            store.set_thread_id(None).unwrap();
+            assert_eq!(store.identity_version(), Some("xana-identity-v1"));
+            store.set_thread(None, None).unwrap();
         }
         let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         assert_eq!(store.thread_id(), None);
+        assert_eq!(store.identity_version(), None);
+    }
+
+    #[test]
+    fn legacy_handle_without_identity_version_remains_detectable() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let state_path = {
+            let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+            store.state_path.clone()
+        };
+        fs::write(
+            state_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 1,
+                "connection": "codex",
+                "workspace": workspace,
+                "thread_id": "thr_legacy"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        assert_eq!(store.thread_id(), Some("thr_legacy"));
+        assert_eq!(store.identity_version(), None);
     }
 
     #[test]
@@ -242,8 +308,34 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         assert!(matches!(
-            store.set_thread_id(Some("x".repeat(MAX_THREAD_ID_BYTES + 1))),
+            store.set_thread(
+                Some("x".repeat(MAX_THREAD_ID_BYTES + 1)),
+                Some("xana-identity-v1")
+            ),
             Err(ManagedThreadStoreError::Invalid(_))
+        ));
+        assert!(!store.state_path.is_file());
+    }
+
+    #[test]
+    fn invalid_identity_versions_are_rejected_before_a_state_write() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+
+        assert!(matches!(
+            store.set_thread(None, Some("xana-identity-v1")),
+            Err(ManagedThreadStoreError::Invalid(reason))
+                if reason.contains("requires a managed thread id")
+        ));
+        assert!(matches!(
+            store.set_thread(
+                Some("thr_123".into()),
+                Some(&"x".repeat(MAX_IDENTITY_VERSION_BYTES + 1))
+            ),
+            Err(ManagedThreadStoreError::Invalid(reason))
+                if reason.contains("identity version must contain")
         ));
         assert!(!store.state_path.is_file());
     }
@@ -256,7 +348,9 @@ mod tests {
         let state_path = {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
-            store.set_thread_id(Some("thr_123".into())).unwrap();
+            store
+                .set_thread(Some("thr_123".into()), Some("xana-identity-v1"))
+                .unwrap();
             store.state_path.clone()
         };
         fs::write(&state_path, vec![b'x'; MAX_DOCUMENT_BYTES + 1]).unwrap();
