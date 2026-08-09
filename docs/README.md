@@ -19,6 +19,9 @@ engineering contracts used to change it.
   immutable artifacts, inspection, corruption handling, and backup limits.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
+- [Terminal presentation](user/presentation.md) explains semantic styling,
+  terminal fallbacks, `NO_COLOR`, reduced motion, and machine-local
+  preferences.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
 - [Child orchestration](user/orchestration.md) explains exact native routes,

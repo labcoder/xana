@@ -143,14 +143,18 @@ When the complete accepted contract is implemented, this proposal becomes
 historical and Architecture owns the resulting description. Partial delivery
 does not permit unimplemented sections to be described as current behavior.
 
-The frontend-safe embedded-client, permanent plain/one-shot, and embedded
-workspace-host ownership slices are implemented. Native append-only chat uses
+The frontend-safe embedded-client, permanent plain/one-shot, embedded
+workspace-host ownership, and presentation-capability slices are implemented.
+Native append-only chat uses
 the versioned bounded client seam;
 managed Codex notifications are normalized through its provider-neutral event
 vocabulary; one-shot has exclusive input, stdout/stderr, JSON, exit,
 continuation, and fail-closed approval contracts. A canonical workspace host
 catalogs native and managed conversations, retains selectable Codex handles,
 and uses an OS-authoritative per-turn gate so embedded processes cannot run
-competing roots. Network projection, attached controller/observer leases, the
-TUI, setup, and complete explicit-server shutdown remain unimplemented, so
-this proposal remains Accepted.
+competing roots. Presentation resolves a versioned bounded preference file and
+injected terminal facts into semantic dark, light, monochrome, color-depth,
+glyph, width, and motion policy; redirected output remains control-free.
+Network projection, attached controller/observer leases, the TUI, setup, and
+complete explicit-server shutdown remain unimplemented, so this proposal
+remains Accepted.

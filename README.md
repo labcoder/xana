@@ -15,6 +15,12 @@ Xana currently supports:
 - ChatGPT Plus/Pro through a locally installed Codex app-server, with Codex
   owning login, token refresh, inference, tools, sandbox, and inner history.
 
+Interactive terminal surfaces use one semantic presentation language with
+dark, light, monochrome, Unicode/ASCII, narrow-width, and reduced-motion
+fallbacks. Redirected output and `NO_COLOR` remain plain and control-free. See
+[Terminal presentation](docs/user/presentation.md) for automatic detection and
+the separate machine-local preference file.
+
 Native connections run Xana's own agent loop. Codex is a managed runtime: Xana
 provides the CLI and process/event/approval bridge but does not wrap the turn
 in a second model call or copy Codex credentials. When Xana creates a managed

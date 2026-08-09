@@ -57,8 +57,13 @@ flowchart LR
 at most one active root operation. `frontend` owns the repository-private
 versioned client vocabulary and the reference embedded adapter. `terminal` is
 a client that owns readline input, permission answers, and human rendering.
-`presentation` owns terminal-mark selection and its TTY, monochrome,
-suppression, and fallback behavior. None of those frontend concerns enters the
+`presentation` owns semantic presentation tokens, adaptive terminal-mark
+selection, and the pure resolution of injected terminal facts plus bounded
+machine-local preferences. The application edge samples TTY state, color
+depth, background hints, Unicode, width, and reduced-motion preferences once
+per surface. Redirected, dumb, monochrome, and `NO_COLOR` profiles resolve to
+plain text with no control sequences. Preference failure falls back safely and
+cannot change runtime policy. None of those frontend concerns enters the
 headless agent loop.
 
 The embedded client captures an initial snapshot before it begins forwarding

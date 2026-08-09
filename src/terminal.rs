@@ -12,6 +12,7 @@ use crate::{
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
+    presentation::{ResolvedPresentation, SemanticToken},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
@@ -36,6 +37,7 @@ pub(crate) struct ChatHeader {
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
     pub(crate) models: ModelManager,
+    pub(crate) presentation: ResolvedPresentation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +84,16 @@ fn classify_input(line: &str) -> InputAction<'_> {
     }
 }
 
-fn write_assistant<W: Write>(output: &mut W, message: &Message) -> io::Result<()> {
-    write!(output, "xana> ")?;
+fn write_assistant<W: Write>(
+    output: &mut W,
+    message: &Message,
+    presentation: ResolvedPresentation,
+) -> io::Result<()> {
+    write!(
+        output,
+        "{} ",
+        presentation.paint(SemanticToken::Assistant, "xana>")
+    )?;
     for block in &message.content {
         match block {
             ContentBlock::Text(text) => write!(output, "{text}")?,
@@ -103,14 +113,16 @@ struct EventRenderer<W> {
     output: W,
     streaming_text: bool,
     streaming_step: Option<crate::identity::StepId>,
+    presentation: ResolvedPresentation,
 }
 
 impl<W: Write> EventRenderer<W> {
-    fn new(output: W) -> Self {
+    fn new(output: W, presentation: ResolvedPresentation) -> Self {
         Self {
             output,
             streaming_text: false,
             streaming_step: None,
+            presentation,
         }
     }
 
@@ -135,7 +147,11 @@ impl<W: Write> EventRenderer<W> {
                     self.finish_stream()?;
                 }
                 if !self.streaming_text {
-                    write!(self.output, "xana> ")?;
+                    write!(
+                        self.output,
+                        "{} ",
+                        self.presentation.paint(SemanticToken::Assistant, "xana>")
+                    )?;
                     self.streaming_text = true;
                     self.streaming_step = Some(*step_id);
                 }
@@ -146,7 +162,9 @@ impl<W: Write> EventRenderer<W> {
                 self.finish_stream()?;
                 writeln!(
                     self.output,
-                    "xana> permission required\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
+                    "{}\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
+                    self.presentation
+                        .paint(SemanticToken::Approval, "xana> permission required"),
                     request.tool_name,
                     request.effect_class,
                     display_scope(&request.scope),
@@ -163,12 +181,17 @@ impl<W: Write> EventRenderer<W> {
                 if self.streaming_text {
                     self.finish_stream()?;
                 } else {
-                    write_assistant(&mut self.output, message)?;
+                    write_assistant(&mut self.output, message, self.presentation)?;
                 }
             }
             AgentEvent::OperationFailed { reason, .. } => {
                 self.finish_stream()?;
-                writeln!(self.output, "xana> error: {reason}")?;
+                writeln!(
+                    self.output,
+                    "{} {reason}",
+                    self.presentation
+                        .paint(SemanticToken::Danger, "xana> error:")
+                )?;
             }
             AgentEvent::ConversationCleared => {
                 writeln!(self.output, "xana> conversation cleared")?;
@@ -436,7 +459,7 @@ pub(crate) async fn run_chat(
 
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let stdout = anstream::stdout();
-    let mut renderer = EventRenderer::new(stdout.lock());
+    let mut renderer = EventRenderer::new(stdout.lock(), header.presentation);
     let mut pending_images = PendingImages::default();
     let mut exit = ChatExit::Quit;
 
@@ -969,7 +992,10 @@ mod tests {
         let step_id = crate::identity::StepId::new();
         let mut output = Vec::new();
         {
-            let mut renderer = EventRenderer::new(&mut output);
+            let mut renderer = EventRenderer::new(
+                &mut output,
+                crate::presentation::ResolvedPresentation::test_plain(),
+            );
 
             renderer
                 .render(&AgentEvent::AssistantTextDelta {
@@ -1039,7 +1065,10 @@ mod tests {
         };
         let mut output = Vec::new();
         {
-            let mut renderer = EventRenderer::new(&mut output);
+            let mut renderer = EventRenderer::new(
+                &mut output,
+                crate::presentation::ResolvedPresentation::test_plain(),
+            );
             renderer
                 .render(&AgentEvent::ChildListSnapshot {
                     children: vec![child.clone()],

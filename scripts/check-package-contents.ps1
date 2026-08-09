@@ -25,6 +25,7 @@ $required = @(
     "docs/user/installation.md",
     "docs/user/operations.md",
     "docs/user/permissions.md",
+    "docs/user/presentation.md",
     "docs/user/project-context.md",
     "docs/user/sessions.md",
     "src/main.rs"

@@ -30,12 +30,13 @@ routes beyond the exact bounded subset, frontend preferences, and the broader
 structured editor. Complete child profiles and exact task routes for Phase 4
 are accepted separately by
 [Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md).
-Versioned machine-local presentation preferences are accepted separately by
+Versioned machine-local presentation preferences were accepted and are now
+implemented separately by
 [Proposal 0017](0017-bounded-local-frontends-and-workspace-host.md). They are
-frontend-owned, live under frontend-specific platform storage, and follow the
-explicit `XANA_HOME` override for portability and tests. Broader frontend,
-extension, package, secret, and configuration-editor state remains Proposed
-here.
+frontend-owned at `data/frontend/presentation.toml`, follow the explicit
+`XANA_HOME` override for portability and tests, and fail safely without
+changing agent configuration. Broader frontend, extension, package, secret,
+and configuration-editor state remains Proposed here.
 
 ## Proposed state ownership
 

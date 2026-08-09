@@ -98,6 +98,10 @@ impl XanaPaths {
     pub(crate) fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
     }
+
+    pub(crate) fn presentation_file(&self) -> PathBuf {
+        self.data_dir.join("frontend/presentation.toml")
+    }
 }
 
 fn choose_runtime_dir(runtime_dir: Option<&Path>, cache_dir: &Path) -> PathBuf {
@@ -123,6 +127,10 @@ mod tests {
         assert_eq!(paths.data_dir(), root.join("data"));
         assert_eq!(paths.cache_dir(), root.join("cache"));
         assert_eq!(paths.runtime_dir(), root.join("run"));
+        assert_eq!(
+            paths.presentation_file(),
+            root.join("data/frontend/presentation.toml")
+        );
     }
 
     #[test]

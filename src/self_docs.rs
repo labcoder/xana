@@ -264,6 +264,15 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/orchestration-plans.md"),
     },
     BundledDoc {
+        id: "user.presentation",
+        title: "Terminal presentation",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["terminal", "theme", "color", "accessibility", "preferences"],
+        body: include_str!("../docs/user/presentation.md"),
+    },
+    BundledDoc {
         id: "proposal.media",
         title: "Media and document services",
         audience: CONTRIBUTOR_AUDIENCE,

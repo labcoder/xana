@@ -12,6 +12,7 @@ use crate::{
     },
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
+    presentation::{ResolvedPresentation, SemanticToken},
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
 };
@@ -31,6 +32,7 @@ pub(crate) struct ManagedChatConfig {
     pub(crate) owner: PrincipalId,
     pub(crate) developer_instructions: &'static str,
     pub(crate) identity_version: &'static str,
+    pub(crate) presentation: ResolvedPresentation,
 }
 
 pub(crate) struct ManagedOneShotRequest {
@@ -85,7 +87,13 @@ pub(crate) async fn run_codex_chat(
     let mut activity = ActivityLevel::Normal;
     let mut last_activity = RetainedActivity::default();
 
-    println!("provider connection: {}", config.connection);
+    println!(
+        "{} {}",
+        config
+            .presentation
+            .paint(SemanticToken::Accent, "Xana managed connection:"),
+        config.connection
+    );
     println!("execution: managed Codex app-server ({})", server.version);
     println!("model: {}", config.model);
     println!(
