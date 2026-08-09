@@ -1051,6 +1051,36 @@ fn resume_restores_exact_history_and_exposes_unfinished_work_without_replay() {
 }
 
 #[test]
+fn latest_session_selection_is_bounded_to_the_exact_workspace() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = directory.path().join("workspace");
+    let other_workspace = directory.path().join("other");
+    std::fs::create_dir_all(&workspace).expect("workspace");
+    std::fs::create_dir_all(&other_workspace).expect("other workspace");
+    let matching =
+        DurableSession::create(directory.path(), workspace.clone()).expect("matching session");
+    let matching_id = matching.session_id();
+    drop(matching);
+    drop(DurableSession::create(directory.path(), other_workspace).expect("unrelated session"));
+    std::fs::write(
+        directory.path().join("sessions/not-a-session.jsonl"),
+        b"corrupt",
+    )
+    .expect("corrupt candidate");
+
+    assert_eq!(
+        DurableSession::latest_for_workspace(directory.path(), &workspace)
+            .expect("latest compatible session"),
+        Some(matching_id)
+    );
+    assert_eq!(
+        DurableSession::latest_for_workspace(directory.path(), &directory.path().join("missing"))
+            .expect("no compatible session"),
+        None
+    );
+}
+
+#[test]
 fn append_rejection_does_not_change_the_committed_file() {
     let directory = tempdir().expect("session tempdir");
     let session_id = SessionId::new();

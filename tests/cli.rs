@@ -1,6 +1,12 @@
 //! Package-level smoke tests for the compiled Xana executable.
 
-use std::{path::Path, process::Command};
+use std::{
+    io::{Read, Write},
+    net::{TcpListener, TcpStream},
+    path::Path,
+    process::{Command, Stdio},
+    thread,
+};
 use tempfile::tempdir;
 
 fn xana(home: &Path) -> Command {
@@ -16,6 +22,78 @@ fn assert_success(output: &std::process::Output) {
         output.status,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn fake_chat_server(final_text: &str) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
+    let address = listener.local_addr().expect("fake provider address");
+    let body = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"content\":{}}}}}]}}\n\ndata: [DONE]\n\n",
+        serde_json::to_string(final_text).expect("JSON text")
+    );
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept provider request");
+        read_http_request(&mut stream);
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write provider response");
+    });
+    (format!("http://{address}/v1"), worker)
+}
+
+fn read_http_request(stream: &mut TcpStream) {
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("request timeout");
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let header_end = loop {
+        let read = stream.read(&mut buffer).expect("read provider request");
+        assert!(read > 0, "provider request ended before headers");
+        request.extend_from_slice(&buffer[..read]);
+        if let Some(index) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+            break index + 4;
+        }
+    };
+    let headers = String::from_utf8_lossy(&request[..header_end]);
+    let content_length = headers
+        .lines()
+        .find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length")
+                .then(|| value.trim().parse::<usize>().expect("content length"))
+        })
+        .unwrap_or_default();
+    while request.len() - header_end < content_length {
+        let read = stream.read(&mut buffer).expect("read provider body");
+        assert!(read > 0, "provider request ended before body");
+        request.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn init_native(home: &Path, base_url: &str) {
+    let output = xana(home)
+        .args([
+            "init",
+            "--non-interactive",
+            "--kind",
+            "ollama",
+            "--provider-name",
+            "test",
+            "--base-url",
+            base_url,
+            "--model",
+            "test-model",
+            "--permission-mode",
+            "deny",
+        ])
+        .output()
+        .expect("initialize fake provider");
+    assert_success(&output);
 }
 
 #[test]
@@ -176,4 +254,112 @@ fn reset_requires_confirmation_preserves_history_and_allows_reinitialization() {
         .expect("reinitialize Xana");
     assert_success(&reinitialized);
     assert!(home.join("config.toml").is_file());
+}
+
+#[test]
+fn one_shot_text_keeps_payload_on_stdout_and_diagnostics_on_stderr() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, worker) = fake_chat_server("hello from Xana");
+    init_native(&home, &base_url);
+
+    let output = xana(&home)
+        .args(["--plain", "-p", "say hello"])
+        .output()
+        .expect("run text one-shot");
+    worker.join().expect("fake provider worker");
+
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "hello from Xana\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("loading Xana config"));
+    assert!(!output.stdout.contains(&0x1b));
+    let sessions = home.join("data/sessions");
+    assert_eq!(
+        std::fs::read_dir(sessions)
+            .expect("durable sessions")
+            .filter_map(Result::ok)
+            .filter(|entry| entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "jsonl"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn one_shot_json_is_one_versioned_envelope() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, worker) = fake_chat_server("structured answer");
+    init_native(&home, &base_url);
+
+    let output = xana(&home)
+        .args(["--json", "-p", "answer"])
+        .output()
+        .expect("run JSON one-shot");
+    worker.join().expect("fake provider worker");
+
+    assert_success(&output);
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON envelope");
+    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["status"], "success");
+    assert_eq!(envelope["result"]["text"], "structured answer");
+    assert_eq!(envelope["result"]["execution_owner"], "native");
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn one_shot_rejects_missing_and_ambiguous_input_before_provider_activation() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("unused-home");
+    let missing = xana(&home)
+        .args(["--json", "--print"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("missing prompt");
+    assert_eq!(missing.status.code(), Some(2));
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&missing.stdout).expect("missing-input envelope");
+    assert_eq!(envelope["error"]["category"], "invalid_input");
+
+    let mut child = xana(&home)
+        .args(["--json", "-p", "argument"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("ambiguous prompt");
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(b"stdin")
+        .expect("write prompt");
+    let ambiguous = child.wait_with_output().expect("ambiguous result");
+    assert_eq!(ambiguous.status.code(), Some(2));
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&ambiguous.stdout).expect("ambiguous-input envelope");
+    assert_eq!(envelope["error"]["category"], "invalid_input");
+    assert!(!home.exists(), "provider/config must not be activated");
+}
+
+#[test]
+fn one_shot_configuration_failure_has_stable_exit_and_json_shape() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("unused-home");
+    let output = xana(&home)
+        .args(["--json", "-p", "hello"])
+        .output()
+        .expect("configuration failure");
+
+    assert_eq!(output.status.code(), Some(3));
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("configuration envelope");
+    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["status"], "error");
+    assert_eq!(envelope["error"]["category"], "configuration");
+    assert!(!output.stdout.contains(&0x1b));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not initialized"));
 }

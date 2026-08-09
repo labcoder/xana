@@ -22,6 +22,7 @@ mod managed;
 mod managed_terminal;
 mod message;
 mod model;
+mod oneshot;
 mod operation;
 mod orchestration;
 mod paths;
@@ -43,17 +44,49 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cli::Cli;
 use paths::XanaPaths;
+use std::process::ExitCode;
 
 /// Run the process-bound command using the runtime's stable CLI adapter.
 pub fn run() -> Result<()> {
+    run_cli(Cli::parse())
+}
+
+fn run_cli(cli: Cli) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("could not create Xana runtime")?;
     runtime.block_on(async {
-        let cli = Cli::parse();
         let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
             .context("could not resolve Xana paths")?;
         app::run(cli, paths).await
     })
+}
+
+/// Run Xana as a process and return its stable process status.
+pub fn entry() -> ExitCode {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let code = error.exit_code();
+            let _ = error.print();
+            return if code == 0 {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(u8::try_from(code).unwrap_or(2))
+            };
+        }
+    };
+    match run_cli(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            if let Some(failure) = error.downcast_ref::<oneshot::OneShotFailure>()
+                && failure.rendered
+            {
+                return failure.exit_code();
+            }
+            eprintln!("Error: {error:#}");
+            ExitCode::from(1)
+        }
+    }
 }

@@ -231,10 +231,22 @@ different: it clears only the current conversation.
 
 ## Chat, tools, and images
 
-Bare `xana` starts terminal chat. Native conversations create a durable JSONL
-session; resume one explicitly with `xana --resume SESSION_ID`. `/clear` moves
-to a new empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF
-shut down the foreground runtime.
+Bare `xana` and explicit `xana --plain` start append-only terminal chat. Native
+conversations create a durable JSONL session; `--continue` selects the latest
+compatible conversation in the canonical workspace, while
+`--resume SESSION_ID` selects one exact native session. `/clear` moves to a new
+empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF shut down
+the foreground runtime and print a compact native resume receipt. `--tui` is
+reserved for the adaptive full-screen frontend and currently fails visibly.
+
+Run exactly one turn with `xana -p "PROMPT"` or pipe one prompt into
+`xana --print`. Final text is the only stdout payload; activity and diagnostics
+use stderr. `--json` or `--output json` returns one versioned result envelope.
+One-shot approvals fail closed instead of waiting for terminal input. From a
+checkout, place CLI arguments after `--`, for example
+`cargo run -- --json -p "summarize this repository"`. See
+[Plain and one-shot modes](docs/user/automation.md) for pipelines, process
+statuses, continuation, and the output contract.
 
 For Codex, Xana stores only an opaque thread id keyed by the connection and
 canonical workspace. The next Xana process resumes that Codex-owned thread on

@@ -3,26 +3,31 @@
 > Audience: People using, resuming, inspecting, or backing up Xana sessions.
 
 Xana persists every native-provider chat as one append-only session. Bare
-`xana` with a native selection creates a new session and prints its UUID and
-file path. Resume only an explicit id:
+`xana`, `xana --plain`, and one-shot mode without a continuation option create
+a new session. Interactive plain chat prints its UUID, file path, and exact
+resume command. Resume an explicit id or select the latest compatible session:
 
 ```text
 xana --resume SESSION_ID
+xana --continue
 ```
 
-Xana never chooses a latest session. Resume restores the committed
+`--continue` scans a bounded set of native session files and selects only the
+latest valid session with the same canonical workspace. Corrupt and unrelated
+sessions are not candidates. `--resume` remains exact. Resume restores the committed
 conversation head, context metadata, operation states, and permission audits,
 but opening performs no provider call, tool execution, project-file refresh,
-or unfinished-operation replay. If the current directory differs, Xana uses
-the canonical workspace stored when the session was created and reports that
-choice.
+or unfinished-operation replay. If the current canonical directory differs
+from the stored workspace, Xana rejects resume rather than crossing workspace
+identity.
 
 Managed Codex owns its thread history. Xana does not duplicate that history in
 native session JSONL, and `--resume` is rejected for a Codex selection. Xana
 does persist one opaque Codex thread id for each connection and canonical
-workspace. A later Xana process automatically asks Codex to resume that thread
-on the first turn. `/clear` discards the active handle and starts a new thread;
-model or reasoning changes retain it.
+workspace. Interactive managed chat resumes that saved handle; managed
+one-shot starts a new thread unless `--continue` requests the saved compatible
+handle. `/clear` discards the active handle and starts a new thread; model or
+reasoning changes retain it.
 
 ## Storage
 
@@ -127,8 +132,8 @@ useful only while the corresponding Codex-owned thread remains available to
 the same Codex account/home and workspace identity. Otherwise resume fails
 visibly and `/clear` starts a new thread.
 
-There is no session deletion, garbage collection, automatic latest-session
-selection, portable-workspace rewrite, durable session grant, invocation
+There is no session deletion, garbage collection, portable-workspace rewrite,
+durable session grant, invocation
 auto-replay, or database migration tool yet. Explicit conservative operation
 recovery is described separately. Unknown future record versions and artifact
 hash mismatches fail visibly.

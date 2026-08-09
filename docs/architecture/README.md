@@ -77,6 +77,14 @@ bounded command for delivery; semantic runtime outcomes remain ordered
 observations. This contract is repository-private and makes no compatibility
 promise to third-party clients or future network adapters.
 
+The append-only terminal and one-shot adapter are permanent clients of this
+boundary. One-shot accepts exactly one bounded argument or stdin source,
+denies unresolved approvals, and writes only the final payload to stdout.
+Human activity and diagnostics use stderr. Its version-1 JSON result envelope
+is redacted and maps invalid input, configuration, connection, approval,
+runtime, and interruption outcomes to stable process categories. It is a
+terminal result contract, not an event stream.
+
 Behind the embedded adapter, control values cross a bounded Tokio channel as
 serializable `RuntimeCommand`s. One internal foreground receiver drains
 serializable `AgentEvent`s from the runtime's unbounded channel into the
@@ -360,20 +368,24 @@ paths under the managed workspace.
 
 ## Session and artifact boundary
 
-Native bare chat creates `data/sessions/<SessionId>.jsonl` and one thread before any
-conversation entry. `xana --resume SESSION_ID` performs bounded read-only
+Native bare, plain, and default one-shot chat create
+`data/sessions/<SessionId>.jsonl` and one thread before any conversation entry.
+`xana --continue` chooses the latest reducible session from a bounded directory
+scan only when its canonical workspace matches. `xana --resume SESSION_ID`
+performs bounded read-only
 inspection and pure ordered reduction, explicitly opens the verified file for
-append, and restores the selected conversation path. The optional `xana
+append, verifies the launch workspace matches, and restores the selected
+conversation path. The optional `xana
 session inspect SESSION_ID` reports bounded metadata without conversation
 content and never opens for writing.
 
 Managed Codex threads remain Codex-owned and are not mirrored into Xana's
 native session log. Xana stores only an opaque thread id per connection and
 canonical workspace, then delegates `thread/resume` to Codex on the next
-process's first turn. The bounded, atomically written handle is neither
-history nor a credential. `--resume` therefore applies only to native
-conversations; managed resumption is automatic and `/clear` replaces the
-saved handle.
+process's first interactive turn. The bounded, atomically written handle is
+neither history nor a credential. `--resume` therefore applies only to native
+conversations; managed one-shot starts fresh unless `--continue` selects the
+workspace handle, and `/clear` replaces the saved handle.
 
 Every compact newline-terminated envelope has format version 1, record id,
 session id, and one typed record. The initial record owns the thread and
@@ -523,8 +535,12 @@ does not claim atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
-Bare `xana` starts the selected native or managed route. Native chat creates a
-session; `xana --resume SESSION_ID` resumes only a native session. The typed
+Bare `xana` and `--plain` start the selected native or managed route. Native
+chat creates a session; `--continue` selects the latest compatible execution
+owner/workspace conversation and `--resume SESSION_ID` resumes only an exact
+native session. `-p`/`--print` runs one noninteractive turn with text or
+versioned JSON output. Explicit `--tui` is reserved until the adaptive TUI is
+implemented. The typed
 command boundary exposes initialization/configuration, session inspection,
 explicit operation recovery, unified `xana model`, and advanced `xana
 connection` commands for static keys and Codex account control. Read-only

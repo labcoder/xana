@@ -20,6 +20,7 @@ $required = @(
     "LICENSE",
     "README.md",
     "docs/README.md",
+    "docs/user/automation.md",
     "docs/user/configuration.md",
     "docs/user/installation.md",
     "docs/user/operations.md",

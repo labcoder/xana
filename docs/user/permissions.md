@@ -86,6 +86,11 @@ Blank input, EOF, an unknown or stale decision, controller loss, and an
 unattended ask all deny. A pending request is correlated by operation and tool
 invocation ids. `allow once` never authorizes a later invocation.
 
+One-shot mode is noninteractive: a request that reaches the approval boundary
+is denied and the process exits with the `approval` category instead of
+waiting. Explicit configured policy may authorize an effect before a request
+is necessary. See [Plain and one-shot modes](automation.md).
+
 ## Managed Codex approvals
 
 A Codex connection owns its inner tool loop, sandbox policy, and approval
