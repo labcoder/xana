@@ -16,7 +16,7 @@ process composition root and delegates command execution to `xana-runtime`.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. `xana-core` remains headless and has no
 filesystem, terminal, HTTP, or process dependencies. See
-[Phase 3 composition services](phase3-composition.md) for the capability,
+[composition services](composition-services.md) for the capability,
 self-documentation, and document-extraction boundaries.
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md)
 describes native inference, Codex delegation, catalogs, selection, and
