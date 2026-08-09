@@ -218,6 +218,7 @@ mod tests {
         };
         let mut handle = AgentHandleSnapshot::admitted(ChildAdmission {
             attribution: attribution.clone(),
+            plan: None,
             task_preview: "task".to_owned(),
             task_hash: blake3::hash(b"task").to_hex().to_string(),
             result_schema: ChildResultSchema::Summary,

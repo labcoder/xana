@@ -177,8 +177,8 @@ terminal state returns the same durable report evidence.
   rounds, context bounds, inline report bytes, and artifact bytes. A child's
   wall-clock deadline begins at admission, including queue time.
 - There is no detach or background continuation.
-- Orchestration plans and managed Codex children are not implemented in this
-  slice.
+- Managed Codex children are not implemented in this slice. Closed native
+  plans are described in [Orchestration plans](orchestration-plans.md).
 - Runtime shutdown cooperatively cancels queued and running children, closes
   pending permission requests, waits for their durable terminal outcomes, and
   uses a bounded interrupted fallback only for an unresponsive execution.

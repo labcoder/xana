@@ -192,8 +192,9 @@ when any member or aggregate bound is invalid. Use `/agents`,
 and cooperative cancellation; `xana session inspect SESSION_ID` is read-only
 after restart. Typed summary/JSON reports overflow to immutable artifacts, and
 multi-result collection preserves caller order, partial failures, and explicit
-timeout/cancellation policy without loading artifact bodies. Plans and managed
-Codex children arrive in the remaining Phase 4 work. See
+timeout/cancellation policy without loading artifact bodies. Closed versioned
+plans validate fixed spawn/await/collect/cancel graphs before admission;
+managed Codex children arrive in the remaining Phase 4 work. See
 [Child orchestration](docs/user/orchestration.md).
 
 ## Start first-run setup again

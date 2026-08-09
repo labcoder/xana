@@ -8,6 +8,7 @@ mod budget;
 mod collection;
 mod execution;
 mod native;
+mod plan;
 mod report;
 mod routing;
 mod supervisor;
@@ -22,6 +23,14 @@ pub(crate) use execution::{
     ChildExecutionOutput, PreparedChild,
 };
 pub(crate) use native::NativeChildFactory;
+#[cfg(test)]
+pub(crate) use plan::PlanHandleRef;
+pub(crate) use plan::{
+    MAX_PLAN_RESULT_BYTES, MAX_PLAN_STEPS, ORCHESTRATION_PLAN_VERSION, OrchestrationPlan,
+    OrchestrationPlanResult, OrchestrationPlanStart, OrchestrationPlanStep,
+    OrchestrationPlanStepResult, PlanValidationDiagnostic, ValidatedOrchestrationPlan,
+    await_options, collect_options, resolve_handle, validate_plan_structure, validation_diagnostic,
+};
 pub(crate) use report::{MaterializedChildReport, materialize_completed_report};
 pub(crate) use routing::{
     EnforcementCapabilities, ExecutionOwner, ResolvedAgentConfig, RouteResolver,
@@ -33,6 +42,7 @@ pub(crate) use supervisor::{
     ChildCommitCommand, ChildCommitReceiver, ChildCommitSender, ChildSupervisor,
     ChildSupervisorHandle, ParentExecution,
 };
+pub(crate) use types::PlanChildAttribution;
 pub(crate) use types::{
     AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, ChildActivity, ChildAdmission,
     ChildAttribution, ChildCancellationReceipt, ChildInspection, ChildLifecycle, ChildReport,

@@ -37,6 +37,8 @@ pub(crate) struct RestoredSession {
     pub(crate) named_context: BTreeMap<String, (ContextId, u64)>,
     pub(crate) operation_details: BTreeMap<OperationId, RestoredOperation>,
     pub(crate) named_values: BTreeMap<NamedValueId, NamedValueRecord>,
+    pub(crate) orchestration_plans:
+        BTreeMap<OrchestrationPlanId, crate::orchestration::OrchestrationPlanStart>,
     pub(crate) children: BTreeMap<AgentId, RestoredChild>,
 }
 
@@ -111,6 +113,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         named_context: BTreeMap::new(),
         operation_details: BTreeMap::new(),
         named_values: BTreeMap::new(),
+        orchestration_plans: BTreeMap::new(),
         children: BTreeMap::new(),
     };
     let mut record_ids = HashSet::new();
@@ -458,6 +461,25 @@ pub(crate) fn validate_envelope(
             }
             Ok(())
         }
+        SessionRecord::OrchestrationPlanStarted { start } => {
+            if !state.operation_details.contains_key(&start.operation_id)
+                || state.orchestration_plans.contains_key(&start.plan_id)
+                || start.fingerprint.len() != 64
+                || !start
+                    .fingerprint
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || start.step_ids.is_empty()
+                || start.step_ids.len() > crate::orchestration::MAX_PLAN_STEPS
+                || start.step_ids.iter().any(|id| id.is_empty())
+                || start.step_ids.iter().collect::<HashSet<_>>().len() != start.step_ids.len()
+            {
+                return Err(ReductionError::InvalidOrchestrationPlan {
+                    plan: start.plan_id,
+                });
+            }
+            Ok(())
+        }
         SessionRecord::ChildLifecycleChanged {
             agent_id,
             lifecycle,
@@ -629,6 +651,11 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
         SessionRecord::NamedValueSet { value } => {
             state.named_values.insert(value.id, value.clone());
         }
+        SessionRecord::OrchestrationPlanStarted { start } => {
+            state
+                .orchestration_plans
+                .insert(start.plan_id, start.clone());
+        }
         SessionRecord::ChildAdmitted { handle } => {
             state.children.insert(
                 handle.admission.attribution.agent_id,
@@ -698,6 +725,15 @@ fn validate_child_admission(
         || attribution.model.trim().is_empty()
         || handle.admission.task_hash.len() != 64
         || handle.admission.task_preview.len() > crate::orchestration::MAX_CHILD_TASK_PREVIEW_BYTES
+        || !handle.admission.plan.as_ref().is_none_or(|plan| {
+            state
+                .orchestration_plans
+                .get(&plan.plan_id)
+                .is_some_and(|start| {
+                    start.operation_id == attribution.parent_operation_id
+                        && start.step_ids.contains(&plan.step_id)
+                })
+        })
     {
         Err(ReductionError::InvalidChildAdmission {
             agent: attribution.agent_id,
@@ -942,6 +978,9 @@ pub(crate) enum ReductionError {
     },
     DuplicateNamedValue {
         value: NamedValueId,
+    },
+    InvalidOrchestrationPlan {
+        plan: OrchestrationPlanId,
     },
     InvalidChildAdmission {
         agent: AgentId,

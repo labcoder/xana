@@ -3,13 +3,17 @@ use super::{
     BudgetReservation, ChildActivity, ChildAdmission, ChildAttribution, ChildCancellationReceipt,
     ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildInspection,
     ChildLifecycle, ChildReport, CollectAgentsOptions, CollectionFailurePolicy,
-    CollectionObservation, CollectionResult, MAX_COLLECTION_HANDLES, MaterializedChildReport,
-    OrchestrationBudget, PreparedChild, ReservationRequest, SpawnAgentRequest,
-    build_collection_result, materialize_completed_report, truncate_utf8, validate_spawn_request,
+    CollectionObservation, CollectionResult, MAX_COLLECTION_HANDLES, MAX_PLAN_RESULT_BYTES,
+    MaterializedChildReport, OrchestrationBudget, OrchestrationPlan, OrchestrationPlanResult,
+    OrchestrationPlanStart, OrchestrationPlanStep, OrchestrationPlanStepResult,
+    PlanChildAttribution, PlanValidationDiagnostic, PreparedChild, ReservationRequest,
+    SpawnAgentRequest, ValidatedOrchestrationPlan, await_options, build_collection_result,
+    collect_options, materialize_completed_report, resolve_handle, truncate_utf8,
+    validate_plan_structure, validate_spawn_request, validation_diagnostic,
 };
 use crate::{
     artifact::ArtifactStore,
-    identity::{AgentId, OperationId, ThreadId, ToolInvocationId},
+    identity::{AgentId, OperationId, OrchestrationPlanId, ThreadId, ToolInvocationId},
     permission::{ControllerDecision, PermissionBroker, PermissionBrokerHandle},
     runtime::{AgentEvent, OperationState},
     session::SessionRecord,
@@ -89,6 +93,7 @@ pub(crate) struct ChildSupervisor {
     admission_queue: VecDeque<AgentId>,
     artifact_store: ArtifactStore,
     artifact_owner: crate::identity::PrincipalId,
+    started_plans: BTreeSet<OrchestrationPlanId>,
 }
 
 struct ActiveChild {
@@ -139,6 +144,16 @@ enum SupervisorCommand {
         agent_ids: Vec<AgentId>,
         reply: oneshot::Sender<Result<Vec<ChildInspection>, SupervisorError>>,
     },
+    ValidatePlan {
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+        reply: oneshot::Sender<Result<PlanValidationDiagnostic, SupervisorError>>,
+    },
+    StartPlan {
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+        reply: oneshot::Sender<Result<StartedPlan, SupervisorError>>,
+    },
     Cancel {
         agent_id: AgentId,
         reply: oneshot::Sender<Result<ChildCancellationReceipt, SupervisorError>>,
@@ -158,6 +173,11 @@ enum SupervisorCommand {
 struct ChildCompletion {
     agent_id: AgentId,
     materialized: MaterializedChildReport,
+}
+
+struct StartedPlan {
+    validated: ValidatedOrchestrationPlan,
+    handles: Vec<AgentHandleSnapshot>,
 }
 
 struct RunningChild {
@@ -186,6 +206,8 @@ pub(crate) enum SupervisorError {
     DuplicateAgent(AgentId),
     TooManyCollectionHandles { requested: usize, maximum: usize },
     Collection(String),
+    Plan(String),
+    DuplicatePlan(OrchestrationPlanId),
     Permission(String),
     Durability(String),
 }
@@ -210,6 +232,13 @@ impl fmt::Display for SupervisorError {
                 "child collection requests {requested} handles, exceeding maximum {maximum}"
             ),
             Self::Collection(reason) => write!(formatter, "child collection failed: {reason}"),
+            Self::Plan(reason) => write!(formatter, "orchestration plan rejected: {reason}"),
+            Self::DuplicatePlan(plan_id) => {
+                write!(
+                    formatter,
+                    "orchestration plan {plan_id} has already started"
+                )
+            }
             Self::Permission(reason) => {
                 write!(formatter, "child permission decision failed: {reason}")
             }
@@ -232,6 +261,7 @@ impl ChildSupervisor {
             parent,
             factory,
             Vec::new(),
+            Vec::new(),
             OrchestrationBudget::new(crate::config::OrchestrationLimits::default(), 8),
             test_artifact_store(),
             crate::identity::PrincipalId::new(),
@@ -247,6 +277,7 @@ impl ChildSupervisor {
         Self::with_restored(
             parent,
             factory,
+            Vec::new(),
             Vec::new(),
             budget,
             test_artifact_store(),
@@ -266,6 +297,7 @@ impl ChildSupervisor {
             parent,
             factory,
             Vec::new(),
+            Vec::new(),
             budget,
             artifact_store,
             artifact_owner,
@@ -276,6 +308,7 @@ impl ChildSupervisor {
         parent: ParentExecution,
         factory: Arc<dyn ChildExecutionFactory>,
         restored: Vec<ChildInspection>,
+        restored_plans: Vec<OrchestrationPlanStart>,
         budget: OrchestrationBudget,
         artifact_store: ArtifactStore,
         artifact_owner: crate::identity::PrincipalId,
@@ -322,6 +355,10 @@ impl ChildSupervisor {
                 admission_queue: VecDeque::new(),
                 artifact_store,
                 artifact_owner,
+                started_plans: restored_plans
+                    .into_iter()
+                    .map(|start| start.plan_id)
+                    .collect(),
             },
         )
     }
@@ -436,6 +473,25 @@ impl ChildSupervisor {
                     .collect();
                 let _ = reply.send(result);
             }
+            SupervisorCommand::ValidatePlan {
+                parent_operation_id,
+                plan,
+                reply,
+            } => {
+                let result = self.validate_plan(parent_operation_id, plan);
+                let _ = reply.send(result.map(|validated| validation_diagnostic(&validated)));
+            }
+            SupervisorCommand::StartPlan {
+                parent_operation_id,
+                plan,
+                reply,
+            } => {
+                let result = self
+                    .start_plan(parent_operation_id, plan, commits, events)
+                    .await;
+                let _ = reply.send(result);
+                self.start_queued_children(commits, events).await;
+            }
             SupervisorCommand::Cancel { agent_id, reply } => {
                 let result = self.request_cancellation(agent_id, commits, events).await;
                 let _ = reply.send(result);
@@ -469,6 +525,77 @@ impl ChildSupervisor {
             }
         }
         false
+    }
+
+    fn validate_plan(
+        &mut self,
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+    ) -> Result<ValidatedOrchestrationPlan, SupervisorError> {
+        let validated = validate_plan_structure(plan)
+            .map_err(|error| SupervisorError::Plan(error.to_string()))?;
+        let reservations = validated
+            .spawn_requests
+            .iter()
+            .cloned()
+            .map(|request| {
+                self.prepare_candidate(parent_operation_id, request)
+                    .map(|candidate| candidate.reservation)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let reserved = self
+            .ledger
+            .reserve_batch(&reservations)
+            .map_err(SupervisorError::Budget)?;
+        for reservation in reserved {
+            self.ledger.release(reservation);
+        }
+        Ok(validated)
+    }
+
+    async fn start_plan(
+        &mut self,
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+        commits: &ChildCommitSender,
+        events: &mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<StartedPlan, SupervisorError> {
+        if self.started_plans.contains(&plan.plan_id) {
+            return Err(SupervisorError::DuplicatePlan(plan.plan_id));
+        }
+        let validated = self.validate_plan(parent_operation_id, plan)?;
+        let start = OrchestrationPlanStart {
+            plan_id: validated.plan.plan_id,
+            operation_id: parent_operation_id,
+            fingerprint: validated.fingerprint.clone(),
+            step_ids: validated
+                .plan
+                .steps
+                .iter()
+                .map(|step| step.id().to_owned())
+                .collect(),
+        };
+        commits
+            .append(SessionRecord::OrchestrationPlanStarted { start })
+            .await?;
+        self.started_plans.insert(validated.plan.plan_id);
+        let mut candidates = Vec::with_capacity(validated.spawn_requests.len());
+        for step in &validated.plan.steps {
+            let OrchestrationPlanStep::Spawn { id, requests } = step else {
+                continue;
+            };
+            for (output_index, request) in requests.iter().cloned().enumerate() {
+                let mut candidate = self.prepare_candidate(parent_operation_id, request)?;
+                candidate.snapshot.admission.plan = Some(PlanChildAttribution {
+                    plan_id: validated.plan.plan_id,
+                    step_id: id.clone(),
+                    output_index,
+                });
+                candidates.push(candidate);
+            }
+        }
+        let handles = self.admit_candidates(candidates, commits, events).await?;
+        Ok(StartedPlan { validated, handles })
     }
 
     async fn spawn_child(
@@ -557,6 +684,15 @@ impl ChildSupervisor {
         for request in requests {
             candidates.push(self.prepare_candidate(parent_operation_id, request)?);
         }
+        self.admit_candidates(candidates, commits, events).await
+    }
+
+    async fn admit_candidates(
+        &mut self,
+        candidates: Vec<AdmissionCandidate>,
+        commits: &ChildCommitSender,
+        events: &mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<Vec<AgentHandleSnapshot>, SupervisorError> {
         let reservation_requests = candidates
             .iter()
             .map(|candidate| candidate.reservation.clone())
@@ -1362,6 +1498,126 @@ impl ChildSupervisorHandle {
             .await_agent(handle.admission.attribution.agent_id)
             .await?;
         Ok((handle, report))
+    }
+
+    pub(crate) async fn validate_orchestration_plan(
+        &self,
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+    ) -> Result<PlanValidationDiagnostic, SupervisorError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(SupervisorCommand::ValidatePlan {
+                parent_operation_id,
+                plan,
+                reply,
+            })
+            .await
+            .map_err(|_| SupervisorError::Unavailable)?;
+        response.await.map_err(|_| SupervisorError::Unavailable)?
+    }
+
+    pub(crate) async fn execute_orchestration_plan(
+        &self,
+        parent_operation_id: OperationId,
+        plan: OrchestrationPlan,
+    ) -> Result<OrchestrationPlanResult, SupervisorError> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(SupervisorCommand::StartPlan {
+                parent_operation_id,
+                plan,
+                reply,
+            })
+            .await
+            .map_err(|_| SupervisorError::Unavailable)?;
+        let StartedPlan { validated, handles } =
+            response.await.map_err(|_| SupervisorError::Unavailable)??;
+        let mut results = Vec::with_capacity(validated.plan.steps.len());
+        for step in &validated.plan.steps {
+            let result = match step {
+                OrchestrationPlanStep::Spawn { id, .. } => {
+                    let range = &validated.spawn_ranges[id];
+                    OrchestrationPlanStepResult::Spawn {
+                        id: id.clone(),
+                        handles: handles[range.clone()].to_vec(),
+                    }
+                }
+                OrchestrationPlanStep::Await {
+                    id,
+                    handle,
+                    timeout_ms,
+                    cancel_on_timeout,
+                } => OrchestrationPlanStepResult::Await {
+                    id: id.clone(),
+                    outcome: self
+                        .await_agent_with(
+                            resolve_handle(handle, &validated.spawn_ranges, &handles),
+                            await_options(*timeout_ms, *cancel_on_timeout),
+                        )
+                        .await?,
+                },
+                OrchestrationPlanStep::Collect {
+                    id,
+                    handles: references,
+                    timeout_ms,
+                    failure_policy,
+                    cancel_remaining,
+                    cancel_on_timeout,
+                } => {
+                    let agent_ids = references
+                        .iter()
+                        .map(|reference| {
+                            resolve_handle(reference, &validated.spawn_ranges, &handles)
+                        })
+                        .collect();
+                    OrchestrationPlanStepResult::Collect {
+                        id: id.clone(),
+                        result: self
+                            .collect_agents(
+                                agent_ids,
+                                collect_options(
+                                    *timeout_ms,
+                                    *failure_policy,
+                                    *cancel_remaining,
+                                    *cancel_on_timeout,
+                                ),
+                            )
+                            .await?,
+                    }
+                }
+                OrchestrationPlanStep::Cancel { id, handle } => {
+                    OrchestrationPlanStepResult::Cancel {
+                        id: id.clone(),
+                        receipt: Box::new(
+                            self.cancel_agent(resolve_handle(
+                                handle,
+                                &validated.spawn_ranges,
+                                &handles,
+                            ))
+                            .await?,
+                        ),
+                    }
+                }
+            };
+            results.push(result);
+        }
+        let result = OrchestrationPlanResult {
+            version: super::ORCHESTRATION_PLAN_VERSION,
+            plan_id: validated.plan.plan_id,
+            fingerprint: validated.fingerprint,
+            steps: results,
+        };
+        let encoded = serde_json::to_vec(&result)
+            .map_err(|error| SupervisorError::Plan(error.to_string()))?;
+        if encoded.len() > MAX_PLAN_RESULT_BYTES {
+            return Err(SupervisorError::Plan(format!(
+                "plan result contains {} bytes, exceeding the {}-byte model-facing limit",
+                encoded.len(),
+                MAX_PLAN_RESULT_BYTES
+            )));
+        }
+        Ok(result)
     }
 
     pub(crate) async fn decide_permission(

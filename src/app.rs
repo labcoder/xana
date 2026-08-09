@@ -1027,6 +1027,7 @@ async fn run_default(
         };
     let workspace_root = session.workspace_root().to_owned();
     let artifact_owner = session.artifact_owner();
+    let restored_plans = session.started_orchestration_plans();
     let child_supervisor = if child_registry.routes.is_empty() {
         None
     } else {
@@ -1053,6 +1054,7 @@ async fn run_default(
             },
             Arc::new(factory),
             restored_children.clone(),
+            restored_plans,
             budget,
             artifact_store.clone(),
             artifact_owner,

@@ -48,6 +48,13 @@ uuid_id!(ContextViewId);
 uuid_id!(PrincipalId);
 uuid_id!(ToolResultId);
 uuid_id!(NamedValueId);
+uuid_id!(OrchestrationPlanId);
+
+impl Default for OrchestrationPlanId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl AgentId {
     /// Returns the stable root-agent identity owned by one durable session.

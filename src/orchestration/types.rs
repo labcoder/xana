@@ -336,7 +336,8 @@ pub(crate) struct AwaitAgentOptions {
     pub(crate) cancel_on_timeout: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
 pub(crate) enum AwaitAgentOutcome {
     Report(Box<ChildReport>),
     TimedOut {
@@ -356,6 +357,8 @@ pub(crate) struct ChildCancellationReceipt {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChildAdmission {
     pub(crate) attribution: ChildAttribution,
+    #[serde(default)]
+    pub(crate) plan: Option<PlanChildAttribution>,
     pub(crate) task_preview: String,
     pub(crate) task_hash: String,
     #[serde(default)]
@@ -370,6 +373,14 @@ pub(crate) struct ChildAdmission {
     pub(crate) hard_spend_microusd: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PlanChildAttribution {
+    pub(crate) plan_id: crate::identity::OrchestrationPlanId,
+    pub(crate) step_id: String,
+    pub(crate) output_index: usize,
+}
+
 impl ChildAdmission {
     pub(crate) fn new(
         attribution: ChildAttribution,
@@ -379,6 +390,7 @@ impl ChildAdmission {
     ) -> Self {
         Self {
             attribution,
+            plan: None,
             task_preview: truncate_utf8(task, MAX_CHILD_TASK_PREVIEW_BYTES),
             task_hash: blake3::hash(task.as_bytes()).to_hex().to_string(),
             result_schema,
@@ -585,6 +597,7 @@ mod tests {
         };
         let admission = ChildAdmission {
             attribution: attribution.clone(),
+            plan: None,
             task_preview: "task".to_owned(),
             task_hash: blake3::hash(b"task").to_hex().to_string(),
             result_schema: ChildResultSchema::Summary,
