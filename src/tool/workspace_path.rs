@@ -8,7 +8,7 @@ use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 use std::sync::Arc;
 
 #[derive(Debug)]
