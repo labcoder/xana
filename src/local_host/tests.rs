@@ -5,7 +5,10 @@ use super::{
         ClientFrame, ClientHello, ClientRole, HostEvent, HostSnapshot, HostSnapshotSeed,
         LOCAL_HOST_PROTOCOL_VERSION, ServerFrame, decode_server_frame, workspace_identity,
     },
-    transport::{LocalHostServer, constant_time_equal, origin_is_loopback, validate_hello},
+    transport::{
+        ControlledExecution, LocalHostServer, constant_time_equal, origin_is_loopback,
+        validate_hello,
+    },
 };
 use crate::{
     frontend::{ClientCommand, ClientEvent},
@@ -15,7 +18,7 @@ use crate::{
 use futures::{SinkExt, StreamExt};
 use std::{
     net::{IpAddr, Ipv4Addr},
-    sync::{Arc, Barrier},
+    sync::{Arc, Barrier, Mutex},
     thread,
 };
 use tempfile::tempdir;
@@ -82,6 +85,7 @@ fn hello_rejects_wrong_version_workspace_role_and_capability_without_echoing_sec
         host_id: uuid::Uuid::new_v4(),
         workspace_id: "workspace".into(),
         capability: "correct".into(),
+        controller_reconnect: None,
         role: ClientRole::Observer,
     };
     assert!(validate_hello(&valid, valid.host_id, "workspace", &capability).is_ok());
@@ -120,6 +124,7 @@ fn valid_for_test(hello: &ClientHello) -> ClientHello {
         host_id: hello.host_id,
         workspace_id: hello.workspace_id.clone(),
         capability: hello.capability.clone(),
+        controller_reconnect: None,
         role: hello.role,
     }
 }
@@ -187,6 +192,7 @@ async fn observer_command_is_rejected_and_audited_without_runtime_mutation() {
         host_id: descriptor.host_id,
         workspace_id: descriptor.workspace_id.clone(),
         capability: descriptor.capability.clone(),
+        controller_reconnect: None,
         role: ClientRole::Observer,
     });
     socket
@@ -196,7 +202,7 @@ async fn observer_command_is_rejected_and_audited_without_runtime_mutation() {
     let first = socket.next().await.unwrap().unwrap().into_text().unwrap();
     assert!(matches!(
         decode_server_frame(&first).unwrap(),
-        ServerFrame::Snapshot(_)
+        ServerFrame::Snapshot { .. }
     ));
     let command = ClientCommand::new(RuntimeCommand::ClearConversation);
     socket
@@ -221,6 +227,117 @@ async fn observer_command_is_rejected_and_audited_without_runtime_mutation() {
 
     shutdown.cancel();
     task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn controller_is_explicit_exclusive_and_release_fails_closed() {
+    let directory = tempdir().unwrap();
+    let runtime = directory.path().join("run");
+    let data = directory.path().join("data");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let events = Arc::new(Mutex::new(None));
+    let factory_events = Arc::clone(&events);
+    let server = LocalHostServer::bind_controlled(
+        &runtime,
+        &workspace,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        seed(&workspace, &data),
+        ControlledExecution::new("native/test".into(), None, move |hub| {
+            let (execution, receiver) = super::execution::fake_execution(hub);
+            *factory_events.lock().unwrap() = Some(receiver);
+            execution
+        }),
+    )
+    .await
+    .unwrap();
+    let shutdown = server.shutdown_token();
+    let task = tokio::spawn(server.run());
+    tokio::task::yield_now().await;
+
+    let mut first = super::connect_observer(&runtime, &workspace).await.unwrap();
+    let mut second = super::connect_observer(&runtime, &workspace).await.unwrap();
+    first
+        .acquire_control("native/test".into(), false)
+        .await
+        .unwrap();
+    assert!(first.is_controller());
+    assert!(
+        second
+            .acquire_control("native/test".into(), false)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("already has a controller")
+    );
+    let accepted = first
+        .send_command(crate::runtime::RuntimeCommand::ClearConversation)
+        .await
+        .unwrap();
+    assert!(accepted.accepted);
+    let mut events = events.lock().unwrap().take().unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(super::execution::FakeExecutionEvent::Command(command))
+            if matches!(command.value, crate::frontend::ClientCommandValue::ClearConversation)
+    ));
+
+    second
+        .acquire_control("native/test".into(), true)
+        .await
+        .unwrap();
+    assert!(
+        !first
+            .send_command(crate::runtime::RuntimeCommand::ClearConversation)
+            .await
+            .unwrap()
+            .accepted
+    );
+    second.release_control().await.unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(super::execution::FakeExecutionEvent::FailClosed)
+    ));
+
+    shutdown.cancel();
+    task.await.unwrap().unwrap();
+    assert!(matches!(
+        events.recv().await,
+        Some(super::execution::FakeExecutionEvent::Shutdown)
+    ));
+}
+
+#[test]
+fn reconnect_capability_restores_only_the_same_controller_during_grace() {
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let host_id = uuid::Uuid::new_v4();
+    let snapshot = HostSnapshot::new(host_id, seed(&workspace, directory.path()))
+        .with_controllable_conversation("native/test".into());
+    let hub = ObservationHub::new(snapshot);
+    let original = uuid::Uuid::new_v4();
+    let reconnect = hub
+        .acquire_controller(original, "native/test", false)
+        .unwrap();
+    let generation = hub.disconnect_controller(original).unwrap();
+    assert!(
+        hub.reconnect_controller(uuid::Uuid::new_v4(), "wrong")
+            .is_err()
+    );
+    let replacement = uuid::Uuid::new_v4();
+    hub.reconnect_controller(replacement, &reconnect).unwrap();
+    assert!(hub.is_controller(replacement));
+    assert!(!hub.expire_controller(generation));
+
+    let next_generation = hub.disconnect_controller(replacement).unwrap();
+    assert!(hub.expire_controller(next_generation));
+    assert!(!hub.is_controller(replacement));
+    assert!(
+        hub.reconnect_controller(uuid::Uuid::new_v4(), &reconnect)
+            .is_err()
+    );
 }
 
 #[cfg(unix)]

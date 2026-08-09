@@ -1,15 +1,17 @@
 use super::{
     descriptor::{DescriptorLease, RuntimeDescriptor, discover},
+    execution::HostedExecutionHandle,
     hub::ObservationHub,
     protocol::{
-        ClientFrame, ClientHello, ClientRole, HostEvent, HostObservation, HostSnapshot,
-        HostSnapshotSeed, LOCAL_HOST_PROTOCOL_VERSION, MAX_WIRE_BYTES, ServerFrame, command_kind,
-        decode_client_frame, decode_server_frame, encode_frame,
+        ClientFrame, ClientHello, ClientRole, ControlResult, HostEvent, HostObservation,
+        HostSnapshot, HostSnapshotSeed, LOCAL_HOST_PROTOCOL_VERSION, MAX_WIRE_BYTES, ServerFrame,
+        command_kind, decode_client_frame, decode_server_frame, encode_frame,
     },
 };
 use crate::frontend::ClientCommandResult;
 use futures::{SinkExt, StreamExt};
 use std::{
+    collections::VecDeque,
     error::Error,
     fmt,
     net::{IpAddr, SocketAddr},
@@ -33,6 +35,39 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const CONTROLLER_RECONNECT_GRACE: Duration = Duration::from_secs(3);
+type ExecutionFactory = Box<dyn FnOnce(ObservationHub) -> HostedExecutionHandle>;
+
+pub(crate) struct ControlledExecution {
+    pub(crate) conversation: String,
+    pub(crate) frontend: Option<crate::frontend::ClientSnapshot>,
+    pub(crate) factory: ExecutionFactory,
+}
+
+impl ControlledExecution {
+    pub(crate) fn new(
+        conversation: String,
+        frontend: Option<crate::frontend::ClientSnapshot>,
+        factory: impl FnOnce(ObservationHub) -> HostedExecutionHandle + 'static,
+    ) -> Self {
+        Self {
+            conversation,
+            frontend,
+            factory: Box::new(factory),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ClientService {
+    endpoint: SocketAddr,
+    host_id: Uuid,
+    workspace_id: String,
+    capability_hash: [u8; 32],
+    hub: ObservationHub,
+    execution: Option<HostedExecutionHandle>,
+    shutdown: CancellationToken,
+}
 
 #[derive(Debug)]
 pub(crate) enum LocalHostError {
@@ -75,16 +110,40 @@ pub(crate) struct LocalHostServer {
     descriptor: DescriptorLease,
     capability_hash: [u8; 32],
     hub: ObservationHub,
+    execution: Option<HostedExecutionHandle>,
     shutdown: CancellationToken,
 }
 
 impl LocalHostServer {
+    #[cfg(test)]
     pub(crate) async fn bind(
         runtime_root: &Path,
         workspace: &Path,
         bind: IpAddr,
         port: u16,
         seed: HostSnapshotSeed,
+    ) -> Result<Self, LocalHostError> {
+        Self::bind_inner(runtime_root, workspace, bind, port, seed, None).await
+    }
+
+    pub(crate) async fn bind_controlled(
+        runtime_root: &Path,
+        workspace: &Path,
+        bind: IpAddr,
+        port: u16,
+        seed: HostSnapshotSeed,
+        controlled: ControlledExecution,
+    ) -> Result<Self, LocalHostError> {
+        Self::bind_inner(runtime_root, workspace, bind, port, seed, Some(controlled)).await
+    }
+
+    async fn bind_inner(
+        runtime_root: &Path,
+        workspace: &Path,
+        bind: IpAddr,
+        port: u16,
+        seed: HostSnapshotSeed,
+        controlled: Option<ControlledExecution>,
     ) -> Result<Self, LocalHostError> {
         if !bind.is_loopback() {
             return Err(LocalHostError::Invalid(
@@ -110,6 +169,21 @@ impl LocalHostServer {
             .map_err(LocalHostError::Invalid)?;
         capability.zeroize();
         drop(descriptor_value);
+        let snapshot = controlled.as_ref().map_or_else(
+            || HostSnapshot::new(host_id, seed.clone()),
+            |controlled| {
+                let snapshot = HostSnapshot::new(host_id, seed.clone())
+                    .with_controllable_conversation(controlled.conversation.clone());
+                controlled
+                    .frontend
+                    .clone()
+                    .map_or(snapshot.clone(), |frontend| {
+                        snapshot.with_frontend(frontend)
+                    })
+            },
+        );
+        let hub = ObservationHub::new(snapshot);
+        let execution = controlled.map(|controlled| (controlled.factory)(hub.clone()));
         Ok(Self {
             listener,
             endpoint,
@@ -117,7 +191,8 @@ impl LocalHostServer {
             workspace,
             descriptor,
             capability_hash,
-            hub: ObservationHub::new(HostSnapshot::new(host_id, seed)),
+            hub,
+            execution,
             shutdown: CancellationToken::new(),
         })
     }
@@ -142,23 +217,18 @@ impl LocalHostServer {
                 () = self.shutdown.cancelled() => break,
                 accepted = self.listener.accept() => {
                     let (stream, _) = accepted.map_err(LocalHostError::Io)?;
-                    let hub = self.hub.clone();
-                    let shutdown = self.shutdown.child_token();
-                    let capability_hash = self.capability_hash;
-                    let workspace_id = super::protocol::workspace_identity(&self.workspace);
-                    let endpoint = self.endpoint;
-                    let host_id = self.host_id;
+                    let service = ClientService {
+                        endpoint: self.endpoint,
+                        host_id: self.host_id,
+                        workspace_id: super::protocol::workspace_identity(&self.workspace),
+                        capability_hash: self.capability_hash,
+                        hub: self.hub.clone(),
+                        execution: self.execution.clone(),
+                        shutdown: self.shutdown.child_token(),
+                    };
                     clients.spawn(async move {
-                        let result = serve_client(
-                            stream,
-                            endpoint,
-                            host_id,
-                            workspace_id,
-                            capability_hash,
-                            hub.clone(),
-                            shutdown,
-                        )
-                        .await;
+                        let hub = service.hub.clone();
+                        let result = serve_client(stream, service).await;
                         eprintln!(
                             "xana serve: client disconnected ({} remaining)",
                             hub.subscriber_count()
@@ -179,6 +249,9 @@ impl LocalHostServer {
                 eprintln!("xana serve: client task failed during shutdown: {error}");
             }
         }
+        if let Some(execution) = &self.execution {
+            execution.shutdown().await;
+        }
         Ok(())
     }
 }
@@ -187,15 +260,16 @@ impl LocalHostServer {
     clippy::result_large_err,
     reason = "the tungstenite handshake callback requires its concrete HTTP error response"
 )]
-async fn serve_client(
-    stream: TcpStream,
-    endpoint: SocketAddr,
-    host_id: Uuid,
-    workspace_id: String,
-    capability_hash: [u8; 32],
-    hub: ObservationHub,
-    shutdown: CancellationToken,
-) -> Result<(), LocalHostError> {
+async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), LocalHostError> {
+    let ClientService {
+        endpoint,
+        host_id,
+        workspace_id,
+        capability_hash,
+        hub,
+        execution,
+        shutdown,
+    } = service;
     let socket = accept_hdr_async_with_config(
         stream,
         move |request: &Request, response: Response| {
@@ -226,6 +300,9 @@ async fn serve_client(
         }
     };
     let authentication = validate_hello(&hello, host_id, &workspace_id, &capability_hash);
+    let client_id = Uuid::new_v4();
+    let requested_role = hello.role;
+    let reconnect = hello.controller_reconnect.take();
     hello.capability.zeroize();
     if let Err(reason) = authentication {
         send_frame(
@@ -238,8 +315,29 @@ async fn serve_client(
         .await?;
         return Ok(());
     }
-    let mut subscription = hub.subscribe().map_err(LocalHostError::Invalid)?;
-    let client_id = subscription.client_id;
+    let mut role = match (requested_role, reconnect) {
+        (ClientRole::Observer, None) => ClientRole::Observer,
+        (ClientRole::Controller, Some(mut reconnect)) if execution.is_some() => {
+            let result = hub.reconnect_controller(client_id, &reconnect);
+            reconnect.zeroize();
+            result.map_err(LocalHostError::Invalid)?;
+            ClientRole::Controller
+        }
+        (ClientRole::Controller, _) => {
+            return Err(LocalHostError::Invalid(
+                "controller reconnect requires a valid reconnect capability".into(),
+            ));
+        }
+        (ClientRole::Observer, Some(mut reconnect)) => {
+            reconnect.zeroize();
+            return Err(LocalHostError::Invalid(
+                "observer attachment cannot present controller authority".into(),
+            ));
+        }
+    };
+    let mut subscription = hub
+        .subscribe_as(client_id)
+        .map_err(LocalHostError::Invalid)?;
     let _subscriber = SubscriberGuard {
         hub: hub.clone(),
         client_id,
@@ -250,7 +348,10 @@ async fn serve_client(
     );
     send_frame(
         &mut writer,
-        &ServerFrame::Snapshot(subscription.snapshot.clone()),
+        &ServerFrame::Snapshot {
+            snapshot: Box::new(subscription.snapshot.clone()),
+            role,
+        },
     )
     .await?;
     loop {
@@ -268,16 +369,76 @@ async fn serve_client(
                     ClientFrame::RequestSnapshot => {
                         hub.unsubscribe(client_id);
                         subscription = hub.subscribe_as(client_id).map_err(LocalHostError::Invalid)?;
-                        send_frame(&mut writer, &ServerFrame::Snapshot(subscription.snapshot.clone())).await?;
+                        role = if hub.is_controller(client_id) {
+                            ClientRole::Controller
+                        } else {
+                            ClientRole::Observer
+                        };
+                        send_frame(&mut writer, &ServerFrame::Snapshot {
+                            snapshot: Box::new(subscription.snapshot.clone()),
+                            role,
+                        }).await?;
+                    }
+                    ClientFrame::AcquireControl { request_id, conversation, takeover } => {
+                        let result = if execution.is_none() {
+                            ControlResult::rejected(request_id, "this host has no controllable execution")
+                        } else {
+                            match hub.acquire_controller(client_id, &conversation, takeover) {
+                                Ok(reconnect) => {
+                                    role = ClientRole::Controller;
+                                    ControlResult::accepted(request_id, reconnect)
+                                }
+                                Err(reason) => ControlResult::rejected(request_id, reason),
+                            }
+                        };
+                        send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
+                    }
+                    ClientFrame::ReleaseControl { request_id } => {
+                        let result = if hub.release_controller(client_id) {
+                            role = ClientRole::Observer;
+                            if let Some(execution) = &execution {
+                                execution.fail_closed().await;
+                            }
+                            ControlResult::released(request_id)
+                        } else {
+                            ControlResult::rejected(request_id, "this client does not own controller authority")
+                        };
+                        send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
+                    }
+                    ClientFrame::DecideManagedApproval { request_id, approval_id, decision } => {
+                        let result = if role == ClientRole::Controller && hub.is_controller(client_id) {
+                            match &execution {
+                                Some(execution) => match execution.managed_approval(approval_id, decision).await {
+                                    Ok(()) => ControlResult::released(request_id),
+                                    Err(reason) => ControlResult::rejected(request_id, reason),
+                                },
+                                None => ControlResult::rejected(request_id, "hosted execution is unavailable"),
+                            }
+                        } else {
+                            ControlResult::rejected(request_id, "observer clients cannot approve managed work")
+                        };
+                        send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
                     }
                     ClientFrame::Command(command) => {
                         let kind = command_kind(&command);
-                        let result = ClientCommandResult::rejected(
-                            command.id,
-                            "observer clients cannot mutate Xana runtime state",
-                        );
+                        let command_id = command.id;
+                        let result = if role == ClientRole::Controller && hub.is_controller(client_id) {
+                            match &execution {
+                                Some(execution) => execution.command(command).await.unwrap_or_else(|reason| {
+                                    ClientCommandResult::rejected(command_id, reason)
+                                }),
+                                None => ClientCommandResult::rejected(command_id, "hosted execution is unavailable"),
+                            }
+                        } else {
+                            ClientCommandResult::rejected(
+                                command_id,
+                                "observer clients cannot mutate Xana runtime state",
+                            )
+                        };
                         send_frame(&mut writer, &ServerFrame::CommandResult(result)).await?;
-                        let _ = hub.publish(HostEvent::ObserverCommandRejected { command: kind });
+                        if role != ClientRole::Controller || !hub.is_controller(client_id) {
+                            let _ = hub.publish(HostEvent::ObserverCommandRejected { command: kind });
+                        }
                     }
                     ClientFrame::Ping => send_frame(&mut writer, &ServerFrame::Pong).await?,
                     ClientFrame::Hello(_) => {
@@ -293,6 +454,23 @@ async fn serve_client(
                 }
             }
         }
+    }
+    if let Some(generation) = hub.disconnect_controller(client_id) {
+        let grace_hub = hub.clone();
+        let grace_execution = execution.clone();
+        let grace_shutdown = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::select! {
+                () = grace_shutdown.cancelled() => {}
+                () = tokio::time::sleep(CONTROLLER_RECONNECT_GRACE) => {
+                    if grace_hub.expire_controller(generation)
+                        && let Some(execution) = grace_execution
+                    {
+                        execution.fail_closed().await;
+                    }
+                }
+            }
+        });
     }
     let _ = writer.close().await;
     Ok(())
@@ -323,9 +501,6 @@ pub(super) fn validate_hello(
     }
     if hello.workspace_id != workspace_id {
         return Err("local-host attachment targets another workspace".into());
-    }
-    if hello.role != ClientRole::Observer {
-        return Err("this local-host version accepts observer attachment only".into());
     }
     let received = blake3::hash(hello.capability.as_bytes());
     if !constant_time_equal(received.as_bytes(), capability_hash) {
@@ -442,6 +617,9 @@ pub(crate) struct AttachedObserver {
     socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
     snapshot: HostSnapshot,
     expected_sequence: u64,
+    role: ClientRole,
+    controller_reconnect: Option<String>,
+    buffered: VecDeque<HostObservation>,
 }
 
 impl AttachedObserver {
@@ -449,34 +627,106 @@ impl AttachedObserver {
         &self.snapshot
     }
 
-    pub(crate) async fn next(&mut self) -> Result<HostObservation, LocalHostError> {
+    pub(crate) fn is_controller(&self) -> bool {
+        self.role == ClientRole::Controller
+    }
+
+    pub(crate) fn take_controller_reconnect(&mut self) -> Option<String> {
+        self.controller_reconnect.take()
+    }
+
+    pub(crate) async fn acquire_control(
+        &mut self,
+        conversation: String,
+        takeover: bool,
+    ) -> Result<(), LocalHostError> {
+        let request_id = super::protocol::ControlRequestId::new();
+        self.send_client_frame(&ClientFrame::AcquireControl {
+            request_id,
+            conversation,
+            takeover,
+        })
+        .await?;
         loop {
-            let message = self
-                .socket
-                .next()
-                .await
-                .ok_or(LocalHostError::Closed)?
-                .map_err(|error| LocalHostError::Transport(error.to_string()))?;
-            let frame = match message {
-                Message::Text(encoded) => {
-                    decode_server_frame(&encoded).map_err(LocalHostError::Invalid)?
+            match self.read_server_frame().await? {
+                ServerFrame::ControlResult(mut result) if result.request_id == request_id => {
+                    if !result.accepted {
+                        return Err(LocalHostError::Invalid(
+                            result
+                                .reason
+                                .take()
+                                .unwrap_or_else(|| "controller acquisition was rejected".into()),
+                        ));
+                    }
+                    self.controller_reconnect = result.controller_reconnect.take();
+                    self.role = ClientRole::Controller;
+                    return Ok(());
                 }
-                Message::Ping(data) => {
-                    self.socket
-                        .send(Message::Pong(data))
-                        .await
-                        .map_err(|error| LocalHostError::Transport(error.to_string()))?;
-                    continue;
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
                 }
-                Message::Pong(_) => continue,
-                Message::Close(_) => return Err(LocalHostError::Closed),
-                Message::Binary(_) | Message::Frame(_) => {
-                    return Err(LocalHostError::Invalid(
-                        "local-host server sent a non-text protocol frame".into(),
-                    ));
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) async fn release_control(&mut self) -> Result<(), LocalHostError> {
+        let request_id = super::protocol::ControlRequestId::new();
+        self.send_client_frame(&ClientFrame::ReleaseControl { request_id })
+            .await?;
+        loop {
+            match self.read_server_frame().await? {
+                ServerFrame::ControlResult(mut result) if result.request_id == request_id => {
+                    if !result.accepted {
+                        return Err(LocalHostError::Invalid(
+                            result
+                                .reason
+                                .take()
+                                .unwrap_or_else(|| "controller release was rejected".into()),
+                        ));
+                    }
+                    self.controller_reconnect = None;
+                    self.role = ClientRole::Observer;
+                    return Ok(());
                 }
-            };
-            match frame {
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) async fn send_command(
+        &mut self,
+        command: crate::runtime::RuntimeCommand,
+    ) -> Result<ClientCommandResult, LocalHostError> {
+        let command = crate::frontend::ClientCommand::new(command);
+        let command_id = command.id;
+        self.send_client_frame(&ClientFrame::Command(command))
+            .await?;
+        loop {
+            match self.read_server_frame().await? {
+                ServerFrame::CommandResult(result) if result.command_id == command_id => {
+                    return Ok(result);
+                }
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) async fn next(&mut self) -> Result<HostObservation, LocalHostError> {
+        if let Some(observation) = self.buffered.pop_front() {
+            return Ok(observation);
+        }
+        loop {
+            match self.read_server_frame().await? {
                 ServerFrame::Observation(observation) => {
                     if observation.version != LOCAL_HOST_PROTOCOL_VERSION {
                         return Err(LocalHostError::Invalid(
@@ -492,14 +742,92 @@ impl AttachedObserver {
                     self.expected_sequence = self.expected_sequence.saturating_add(1);
                     return Ok(observation);
                 }
-                ServerFrame::Snapshot(snapshot) => {
+                ServerFrame::Snapshot { snapshot, role } => {
                     self.expected_sequence = snapshot.sequence.saturating_add(1);
-                    self.snapshot = snapshot;
+                    self.snapshot = *snapshot;
+                    self.role = role;
                 }
                 ServerFrame::ProtocolError { message, .. } => {
                     return Err(LocalHostError::Invalid(message));
                 }
-                ServerFrame::CommandResult(_) | ServerFrame::Pong => continue,
+                ServerFrame::CommandResult(_)
+                | ServerFrame::ControlResult(_)
+                | ServerFrame::Pong => continue,
+            }
+        }
+    }
+
+    fn buffer_observation(&mut self, observation: HostObservation) -> Result<(), LocalHostError> {
+        self.validate_observation(&observation)?;
+        if self.buffered.len() >= super::hub::OBSERVER_QUEUE_CAPACITY {
+            return Err(LocalHostError::SequenceGap {
+                expected: self.expected_sequence,
+                received: observation.sequence,
+            });
+        }
+        self.buffered.push_back(observation);
+        Ok(())
+    }
+
+    fn validate_observation(
+        &mut self,
+        observation: &HostObservation,
+    ) -> Result<(), LocalHostError> {
+        if observation.version != LOCAL_HOST_PROTOCOL_VERSION {
+            return Err(LocalHostError::Invalid(
+                "local-host observation uses an unsupported version".into(),
+            ));
+        }
+        if observation.sequence != self.expected_sequence {
+            return Err(LocalHostError::SequenceGap {
+                expected: self.expected_sequence,
+                received: observation.sequence,
+            });
+        }
+        self.expected_sequence = self.expected_sequence.saturating_add(1);
+        Ok(())
+    }
+
+    async fn send_client_frame(&mut self, frame: &ClientFrame) -> Result<(), LocalHostError> {
+        let encoded = serde_json::to_string(frame).map_err(|error| {
+            LocalHostError::Invalid(format!("could not encode local-host request: {error}"))
+        })?;
+        if encoded.len() > MAX_WIRE_BYTES {
+            return Err(LocalHostError::Invalid(
+                "local-host request exceeds its byte bound".into(),
+            ));
+        }
+        self.socket
+            .send(Message::Text(encoded.into()))
+            .await
+            .map_err(|error| LocalHostError::Transport(error.to_string()))
+    }
+
+    async fn read_server_frame(&mut self) -> Result<ServerFrame, LocalHostError> {
+        loop {
+            let message = self
+                .socket
+                .next()
+                .await
+                .ok_or(LocalHostError::Closed)?
+                .map_err(|error| LocalHostError::Transport(error.to_string()))?;
+            match message {
+                Message::Text(encoded) => {
+                    return decode_server_frame(&encoded).map_err(LocalHostError::Invalid);
+                }
+                Message::Ping(data) => {
+                    self.socket
+                        .send(Message::Pong(data))
+                        .await
+                        .map_err(|error| LocalHostError::Transport(error.to_string()))?;
+                }
+                Message::Pong(_) => {}
+                Message::Close(_) => return Err(LocalHostError::Closed),
+                Message::Binary(_) | Message::Frame(_) => {
+                    return Err(LocalHostError::Invalid(
+                        "local-host server sent a non-text protocol frame".into(),
+                    ));
+                }
             }
         }
     }
@@ -508,6 +836,29 @@ impl AttachedObserver {
 pub(crate) async fn connect_observer(
     runtime_root: &Path,
     workspace: &Path,
+) -> Result<AttachedObserver, LocalHostError> {
+    connect_client(runtime_root, workspace, ClientRole::Observer, None).await
+}
+
+pub(crate) async fn reconnect_controller(
+    runtime_root: &Path,
+    workspace: &Path,
+    reconnect: String,
+) -> Result<AttachedObserver, LocalHostError> {
+    connect_client(
+        runtime_root,
+        workspace,
+        ClientRole::Controller,
+        Some(reconnect),
+    )
+    .await
+}
+
+async fn connect_client(
+    runtime_root: &Path,
+    workspace: &Path,
+    role: ClientRole,
+    controller_reconnect: Option<String>,
 ) -> Result<AttachedObserver, LocalHostError> {
     let mut descriptor = discover(runtime_root, workspace).map_err(LocalHostError::Invalid)?;
     let endpoint = format!("ws://{}", descriptor.endpoint);
@@ -523,8 +874,13 @@ pub(crate) async fn connect_observer(
         host_id: descriptor.host_id,
         workspace_id: descriptor.workspace_id.clone(),
         capability: std::mem::take(&mut descriptor.capability),
-        role: ClientRole::Observer,
+        controller_reconnect,
+        role,
     });
+    let retained_reconnect = match &hello {
+        ClientFrame::Hello(hello) => hello.controller_reconnect.clone(),
+        _ => None,
+    };
     let mut encoded = serde_json::to_string(&hello).map_err(|error| {
         LocalHostError::Invalid(format!("could not encode attach request: {error}"))
     })?;
@@ -545,7 +901,7 @@ pub(crate) async fn connect_observer(
         ));
     };
     match decode_server_frame(&encoded).map_err(LocalHostError::Invalid)? {
-        ServerFrame::Snapshot(snapshot)
+        ServerFrame::Snapshot { snapshot, role }
             if snapshot.version == LOCAL_HOST_PROTOCOL_VERSION
                 && snapshot.host_id == descriptor.host_id
                 && snapshot.workspace_id == descriptor.workspace_id =>
@@ -553,13 +909,24 @@ pub(crate) async fn connect_observer(
             let expected_sequence = snapshot.sequence.saturating_add(1);
             Ok(AttachedObserver {
                 socket,
-                snapshot,
+                snapshot: *snapshot,
                 expected_sequence,
+                role,
+                controller_reconnect: retained_reconnect,
+                buffered: VecDeque::new(),
             })
         }
         ServerFrame::ProtocolError { message, .. } => Err(LocalHostError::Invalid(message)),
         _ => Err(LocalHostError::Invalid(
             "local-host did not provide a matching initial snapshot".into(),
         )),
+    }
+}
+
+impl Drop for AttachedObserver {
+    fn drop(&mut self) {
+        if let Some(reconnect) = &mut self.controller_reconnect {
+            reconnect.zeroize();
+        }
     }
 }

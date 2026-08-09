@@ -362,6 +362,57 @@ impl ClientSnapshot {
             artifact_count,
         }
     }
+
+    pub(crate) fn apply(&mut self, event: &ClientEvent, sequence: u64) {
+        self.sequence = sequence;
+        match event {
+            ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::OperationStateChanged {
+                    operation_id,
+                    state:
+                        crate::runtime::OperationState::Running
+                        | crate::runtime::OperationState::Suspended,
+                } => self.active_operation = Some(*operation_id),
+                AgentEvent::OperationStateChanged {
+                    state: crate::runtime::OperationState::Finished(_),
+                    ..
+                }
+                | AgentEvent::OperationFailed { .. } => self.active_operation = None,
+                AgentEvent::AssistantMessage { message, .. } => {
+                    let mut conversation = std::mem::take(&mut self.conversation);
+                    conversation.push(message.clone());
+                    let (conversation, truncated) = bounded_history(conversation);
+                    self.conversation = conversation;
+                    self.conversation_truncated |= truncated;
+                    self.artifact_count = self
+                        .conversation
+                        .iter()
+                        .flat_map(|message| &message.content)
+                        .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
+                        .count();
+                }
+                AgentEvent::ConversationCleared => {
+                    self.conversation.clear();
+                    self.conversation_truncated = false;
+                    self.active_operation = None;
+                    self.artifact_count = 0;
+                }
+                AgentEvent::PermissionRequested { .. } => {
+                    self.pending_approval_count = self.pending_approval_count.saturating_add(1);
+                }
+                AgentEvent::PermissionAudited { .. } => {
+                    self.pending_approval_count = self.pending_approval_count.saturating_sub(1);
+                }
+                AgentEvent::ChildListSnapshot { children } => {
+                    self.children = children.iter().take(64).map(ChildSnapshot::from).collect();
+                }
+                _ => self.activity_count = self.activity_count.saturating_add(1),
+            },
+            ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {
+                self.activity_count = self.activity_count.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

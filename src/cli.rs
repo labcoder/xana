@@ -104,8 +104,8 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Host Xana explicitly for authenticated local frontend attachment.
     Serve(ServeArgs),
-    /// Attach as a passive observer to this workspace's foreground host.
-    Attach,
+    /// Attach to this workspace's foreground host; observation is the default.
+    Attach(AttachArgs),
     /// Create Xana's first configuration.
     Init(InitArgs),
     /// Clear setup state so Xana can be initialized again.
@@ -137,6 +137,21 @@ pub(crate) struct ServeArgs {
     /// Local port, or zero to let the operating system select one.
     #[arg(long, default_value_t = 0)]
     pub(crate) port: u16,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct AttachArgs {
+    /// Explicitly acquire controller authority for the hosted conversation.
+    #[arg(long)]
+    pub(crate) control: bool,
+
+    /// Explicitly replace the current controller.
+    #[arg(long, requires = "control")]
+    pub(crate) takeover: bool,
+
+    /// Submit one prompt after acquiring control.
+    #[arg(long, requires = "control", value_name = "PROMPT")]
+    pub(crate) prompt: Option<String>,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -582,7 +597,32 @@ mod tests {
                 port: 43123,
             }))
         );
-        assert_eq!(attach.command, Some(Command::Attach));
+        assert_eq!(
+            attach.command,
+            Some(Command::Attach(AttachArgs {
+                control: false,
+                takeover: false,
+                prompt: None,
+            }))
+        );
+
+        let controller = Cli::try_parse_from([
+            "xana",
+            "attach",
+            "--control",
+            "--takeover",
+            "--prompt",
+            "continue",
+        ])
+        .expect("controller attach");
+        assert_eq!(
+            controller.command,
+            Some(Command::Attach(AttachArgs {
+                control: true,
+                takeover: true,
+                prompt: Some("continue".into()),
+            }))
+        );
     }
 
     #[test]

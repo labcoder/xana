@@ -37,7 +37,7 @@ flowchart LR
     PROMPT --> AGENT
     TERMINAL <-->|"client commands + observations"| FRONTEND["embedded frontend client<br/>snapshot + sequence + bounds"]
     LOCAL -.->|"same repository-private semantics"| FRONTEND
-    OBSERVER["attached observer"] <-->|"capability + snapshot + ordered events"| LOCAL
+    CLIENT["attached observer / one controller"] <-->|"capability + snapshot + ordered events / commands"| LOCAL
     FRONTEND <-->|"runtime commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded native loop"]
     RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
@@ -85,7 +85,7 @@ daemonizes or accepts a non-loopback bind. A canonical-workspace hash selects
 one runtime descriptor. The protected descriptor carries a fresh per-launch
 capability and endpoint, while normal logs and attach arguments carry neither.
 The first bounded frame must match protocol version, host generation,
-workspace identity, capability, and passive observer role before any snapshot
+workspace identity, capability, and requested role before any snapshot
 is sent. Browser handshakes additionally require a loopback Origin.
 
 The host observation hub captures its bounded workspace snapshot and installs
@@ -93,13 +93,22 @@ a 256-entry observer queue while holding one lock. Each later event receives
 one monotonically increasing host sequence under the same lock, so attachment
 has no snapshot/live race. A full queue drops that observer rather than
 blocking host execution; reconnect and sequence gaps take a new snapshot
-instead of guessing replay. The current network role is observation only.
-Commands receive a correlated rejection and a bounded audit event without
-crossing the runtime command lane. Host snapshots expose bounded conversation
+instead of guessing replay. Observers receive correlated rejections and
+bounded audit events without crossing the runtime command lane. One client may
+explicitly acquire the hosted conversation's controller lease; acquisition,
+release, and takeover update the same snapshot/event sequence. Controller
+commands retain their independent command and operation ids and enter the same
+embedded native owner or managed Codex driver used by local frontends.
+
+A disconnected controller enters a three-second reconnect grace identified by
+an in-memory per-lease capability. Reconnect authenticates the same authority
+and begins from a fresh snapshot. Grace expiry or explicit release drains
+pending approvals with deny/cancel and interrupts the exact active operation.
+Observers never inherit control. The workspace host remains the sole root gate,
+so changing clients cannot create a competing native or managed root.
+Host snapshots expose bounded conversation
 metadata and a workspace hash/display name, not the canonical path, provider
 secrets, credential references, or capability. Frames are capped at 1 MiB.
-Controller authority and hosted turn execution remain unimplemented until the
-next accepted slice.
 
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
@@ -754,7 +763,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   terminal-independent model/update policy, and pure adaptive view modules.
 - `frontend` owns the typed embedded application contract; `local_host` owns
   only its authenticated loopback projection, protected discovery descriptor,
-  atomic host snapshot/sequence boundary, and passive observer transport.
+  atomic host snapshot/sequence boundary, observer fan-out, and one explicit
+  controller/reconnect lease. Native and managed hosted execution adapters
+  translate that authority back into their existing owners.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
@@ -797,8 +808,8 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no Xana-owned sandbox, background runtime, attached controller,
-durable event replay, persistent grants,
+Xana has no Xana-owned sandbox, background runtime, durable event replay,
+persistent grants,
 remote controller authentication, general context service, nested
 project-instruction or skill discovery, prompt compaction, artifact/session
 garbage collection, automatic/background operation replay, generalized

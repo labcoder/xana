@@ -86,6 +86,13 @@ Blank input, EOF, an unknown or stale decision, controller loss, and an
 unattended ask all deny. A pending request is correlated by operation and tool
 invocation ids. `allow once` never authorizes a later invocation.
 
+An explicit `xana attach --control` client may answer only approval ids emitted
+for the one conversation it controls. Observers, stale controllers, duplicate
+answers, and ids from another native child, operation, or managed callback are
+rejected. Disconnect starts a three-second authenticated reconnect grace;
+expiry and explicit release deny/cancel pending requests and interrupt the
+active root. Takeover is explicit and does not widen the underlying policy.
+
 One-shot mode is noninteractive: a request that reaches the approval boundary
 is denied and the process exits with the `approval` category instead of
 waiting. Explicit configured policy may authorize an effect before a request
