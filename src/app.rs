@@ -106,6 +106,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 )
                 .await;
             }
+            ensure_setup(&paths).await?;
             let input_is_terminal = io::stdin().is_terminal();
             let output_is_terminal = io::stdout().is_terminal();
             let mode = banner_mode(
@@ -147,6 +148,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Serve(args)) => run_serve_command(&args, &paths).await,
         Some(Command::Attach(args)) => run_attach_command(&args, &paths).await,
+        Some(Command::Setup(args)) => run_setup_command(&args, &paths).await,
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
@@ -175,6 +177,26 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Auth(args)) => {
             let stdout = io::stdout();
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
+        }
+    }
+}
+
+async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
+    match XanaConfig::load_from(paths.config_file()) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+                anyhow::bail!(
+                    "Xana configuration is absent or invalid at {}: {error}\nrun `xana setup --non-interactive --kind KIND --connection NAME --model MODEL --permission-mode MODE --yes`",
+                    paths.config_file().display()
+                );
+            }
+            eprintln!("xana: configuration is absent or invalid: {error}");
+            eprintln!("xana: starting provider-neutral Quick Setup");
+            run_setup_command(&cli::SetupArgs::default(), paths).await?;
+            XanaConfig::load_from(paths.config_file())
+                .context("setup ended without installing a valid configuration")?;
+            Ok(())
         }
     }
 }
@@ -1304,41 +1326,50 @@ async fn run_default(
                 .map(Some)
                 .map_err(anyhow::Error::new)
             }
-            None => match surface {
-                ChatSurface::Plain(_) => run_codex_chat(
-                    server,
-                    manager,
-                    managed_config,
-                    workspace_host,
-                    conversation,
-                )
-                .await
-                .map(|()| None),
-                ChatSurface::Tui { prepared, .. } => tui::run_managed(
-                    prepared,
-                    server,
-                    manager,
-                    managed_config,
-                    workspace_host,
-                    conversation,
-                )
-                .await
-                .map(|_| None),
-                ChatSurface::Hosted { bind, port, .. } => crate::local_host::run_managed_host(
-                    paths.runtime_dir(),
-                    bind,
-                    port,
-                    crate::local_host::ManagedHostExecution {
-                        server,
-                        models: manager,
-                        config: managed_config,
-                        workspace_host,
-                        conversation,
-                    },
-                )
-                .await
-                .map(|()| None),
-            },
+            None => {
+                let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
+                let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
+                let exit = match surface {
+                    ChatSurface::Plain(_) => {
+                        run_codex_chat(
+                            server,
+                            manager,
+                            managed_config,
+                            workspace_host,
+                            conversation,
+                        )
+                        .await?
+                    }
+                    ChatSurface::Tui { prepared, .. } => {
+                        tui::run_managed(
+                            prepared,
+                            server,
+                            manager,
+                            managed_config,
+                            workspace_host,
+                            conversation,
+                        )
+                        .await?
+                    }
+                    ChatSurface::Hosted { bind, port, .. } => {
+                        crate::local_host::run_managed_host(
+                            paths.runtime_dir(),
+                            bind,
+                            port,
+                            crate::local_host::ManagedHostExecution {
+                                server,
+                                models: manager,
+                                config: managed_config,
+                                workspace_host,
+                                conversation,
+                            },
+                        )
+                        .await?;
+                        terminal::ChatExit::Quit
+                    }
+                };
+                continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
+            }
         };
     }
 
@@ -1600,34 +1631,44 @@ async fn run_default(
             terminal::ChatExit::Quit
         }
     };
-    match exit {
-        terminal::ChatExit::Quit => Ok(None),
-        terminal::ChatExit::Restart => {
-            let restart_surface = if restart_tui {
-                let preferences =
-                    presentation::PresentationPreferences::load(&paths.presentation_file())
-                        .preferences;
-                match tui::prepare(presentation, preferences, paths.presentation_file()) {
-                    Ok(prepared) => ChatSurface::Tui {
-                        prepared,
-                        required: tui_required,
-                    },
-                    Err(error) if !tui_required => {
-                        eprintln!(
-                            "xana: could not restart the full-screen terminal ({error}); falling back to --plain"
-                        );
-                        ChatSurface::Plain(BannerMode::hidden(presentation))
-                    }
-                    Err(error) => {
-                        return Err(error).context("could not restart the required Xana TUI");
-                    }
-                }
-            } else {
-                ChatSurface::Plain(BannerMode::hidden(presentation))
-            };
-            Box::pin(run_default(paths, restart_surface, None, false, None)).await
-        }
+    continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
+}
+
+async fn continue_after_chat_exit(
+    paths: &XanaPaths,
+    exit: terminal::ChatExit,
+    presentation: presentation::ResolvedPresentation,
+    restart_tui: bool,
+    tui_required: bool,
+) -> Result<Option<OneShotSuccess>> {
+    if exit == terminal::ChatExit::Quit {
+        return Ok(None);
     }
+    if exit == terminal::ChatExit::Setup {
+        run_setup_command(&cli::SetupArgs::default(), paths).await?;
+    }
+    let restart_surface = if restart_tui {
+        let preferences =
+            presentation::PresentationPreferences::load(&paths.presentation_file()).preferences;
+        match tui::prepare(presentation, preferences, paths.presentation_file()) {
+            Ok(prepared) => ChatSurface::Tui {
+                prepared,
+                required: tui_required,
+            },
+            Err(error) if !tui_required => {
+                eprintln!(
+                    "xana: could not restart the full-screen terminal ({error}); falling back to --plain"
+                );
+                ChatSurface::Plain(BannerMode::hidden(presentation))
+            }
+            Err(error) => {
+                return Err(error).context("could not restart the required Xana TUI");
+            }
+        }
+    } else {
+        ChatSurface::Plain(BannerMode::hidden(presentation))
+    };
+    Box::pin(run_default(paths, restart_surface, None, false, None)).await
 }
 
 fn run_session_command<W: Write>(
@@ -1917,6 +1958,14 @@ fn run_init_command(args: &cli::InitArgs, paths: &XanaPaths, no_banner: bool) ->
     )
 }
 
+async fn run_setup_command(args: &cli::SetupArgs, paths: &XanaPaths) -> Result<()> {
+    let stdin = io::stdin();
+    let input_is_terminal = stdin.is_terminal();
+    let mut input = stdin.lock();
+    let mut output = anstream::stdout().lock();
+    crate::setup::run(args, paths, input_is_terminal, &mut input, &mut output).await
+}
+
 fn banner_mode(
     paths: &XanaPaths,
     selected_surface: bool,
@@ -2028,6 +2077,7 @@ mod tests {
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
             permission_mode: crate::config::PermissionMode::Ask,
+            reasoning_effort: None,
         })
         .expect("render config");
         fs::write(paths.config_file(), rendered).expect("write config");
@@ -2063,6 +2113,7 @@ mod tests {
             max_tool_rounds: 8,
             shell: crate::shell::ShellConfig::default(),
             permission_mode: crate::config::PermissionMode::Ask,
+            reasoning_effort: None,
         })
         .expect("render config");
         fs::write(paths.config_file(), rendered).expect("write config");

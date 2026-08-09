@@ -83,6 +83,14 @@ and Codex `model/list`. Remote claims and explicit overrides are merged by
 field; unknown capabilities remain unknown and image input fails closed.
 Catalog responses and caches are bounded and contain no credentials.
 
+Quick Setup is the one deliberate pre-install discovery path. It constructs a
+staged registry, establishes the endpoint/executable plus credential/account,
+and fetches a live catalog without writing the normal catalog cache. Only an
+id from that result can become the installed default model. A hidden API key
+is held in zeroizing memory until confirmation; configuration contains only
+its OS-store id or environment-variable name. This transaction does not turn
+ordinary startup into implicit network discovery.
+
 `xana model` lists the unified catalog. `xana model use
 CONNECTION/MODEL` persists the next-conversation selection. `/model` lists or
 selects from chat. Native selection restarts Xana's foreground conversation;

@@ -10,6 +10,7 @@ pub(super) enum CommandId {
     Model,
     Reasoning,
     Sessions,
+    Setup,
     Activity,
     Artifact,
     Attach,
@@ -111,6 +112,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "sessions",
         usage: "/sessions [expanded|collapsed]",
         summary: "Search conversations or persist the wide session rail",
+    },
+    CommandSpec {
+        id: CommandId::Setup,
+        name: "setup",
+        usage: "/setup",
+        summary: "Leave the conversation and run provider-neutral Quick Setup",
     },
     CommandSpec {
         id: CommandId::Steer,

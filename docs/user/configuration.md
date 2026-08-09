@@ -7,72 +7,90 @@ Human-authored configuration declares connections and profiles; static
 secrets, cached catalogs, model selection, sessions, and artifacts live
 elsewhere.
 
-## Initialize
+## Quick Setup
 
 ```bash
-xana init
+xana setup
 xana config path
 xana config check
 ```
 
-The initializer offers local Ollama, a ChatGPT subscription through the
-managed Codex runtime, or a custom OpenAI-compatible endpoint. It asks for the
-model plus the native-agent shell, bounded tool rounds, and
-`deny`/`ask`/`allow` permission default, then validates before a create-new
-write. Codex owns its own tool loop and approvals; the native defaults remain
-available if another connection is added later.
+Quick Setup offers every supported connection kind without recommending or
+preselecting one. It validates endpoint or executable first, then credential
+or Codex-owned account, then fetches the live catalog before model and
+reasoning selection. The platform shell and bounded native defaults are used;
+full profile, route, and shell editing remains an advanced configuration task.
 
-Initialization never replaces an existing file. `--dry-run` renders without
-writing. `--non-interactive` never reads stdin and requires a connection name,
-model, and permission mode. Custom OpenAI-compatible setup also requires a
-base URL. Select the connection shape with `--kind ollama|openai_compat|codex`;
-omitting `--kind` retains the original `openai_compat` behavior.
+`xana setup` is safe to rerun. It stages ordinary configuration in memory,
+shows a bounded redacted review, and replaces `config.toml` atomically only
+after confirmation. An exact prior config is retained as `config.toml.bak`.
+Cancellation and connection failures write nothing. If a newly staged OS-store
+key cannot be followed by a config commit, the prior key is restored. Codex
+OAuth remains vendor-owned and is never represented as part of that rollback.
+`--dry-run` establishes and validates without committing.
 
 ```bash
-xana init --non-interactive \
+xana setup --non-interactive \
   --kind ollama \
-  --provider-name ollama \
+  --connection ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
-  --max-tool-rounds 8 \
-  --shell platform \
-  --permission-mode ask
+  --permission-mode ask \
+  --yes
 ```
+
+API keys are either referenced by name or read from the explicit stdin secret
+channel; they never appear in argv or TOML:
+
+```bash
+xana setup --non-interactive --kind open-router --connection openrouter \
+  --credential-env OPENROUTER_API_KEY --model PROVIDER/MODEL \
+  --permission-mode ask --yes
+printf '%s' "$OPENAI_API_KEY" | xana setup --non-interactive --kind open-ai \
+  --connection openai --key-from-stdin --model MODEL \
+  --permission-mode ask --yes
+```
+
+Bare interactive `xana` offers Quick Setup when configuration is missing or
+invalid. Non-TTY startup fails promptly with the exact noninteractive command
+shape. Inside plain or full-screen chat, `/setup` closes the current foreground
+owner, restores the terminal, runs the same setup transaction, and starts a
+new conversation using the installed choice.
 
 For a managed Codex first connection, no HTTP base URL or Xana credential is
 accepted:
 
 ```bash
-xana init --non-interactive \
+xana setup --non-interactive \
   --kind codex \
-  --provider-name codex \
+  --connection codex \
   --model ADVERTISED_MODEL_ID \
-  --permission-mode ask
+  --reasoning-effort high \
+  --permission-mode ask \
+  --yes
 ```
 
 `--codex-program PROGRAM` overrides the executable; `--codex-home PATH`
 selects an absolute isolated `CODEX_HOME`. Otherwise Xana launches `codex` and
-shares the normal Codex home. After interactive setup, use the printed
-`connection status`, `connection login`, `connection refresh`, `model list`,
-and `model use` commands. The initial ID is verified against Codex's live
-catalog before managed chat; replace it with an advertised ID when necessary.
-Status is the first executable/runtime check; login remains an explicit
-account-changing action delegated to Codex.
+shares the normal Codex home. Setup requires the Codex-owned account to be
+available and verifies the exact model and optional reasoning effort against
+the live app-server catalog. Login remains an explicit vendor-owned action;
+run `codex login` or `xana connection login codex` before retrying setup.
 
 ## Reset first-run setup
 
 Use `reset` (or its `clean` alias) when you want to discard the current setup
-and run initialization again:
+and run Quick Setup again:
 
 ```bash
 xana reset
 # Noninteractive confirmation:
 xana reset --yes
-xana init
+xana setup
 ```
 
 From a source checkout, the equivalents are `cargo run -- reset` and `cargo
-run -- init`. Without `--yes`, an interactive terminal previews every target
+run -- setup`. Without `--yes`, an interactive terminal previews every target
 and asks for confirmation; redirected input fails closed.
 
 Reset removes only:
@@ -436,8 +454,9 @@ rules govern Xana's runtime authorization; see [Permissions](permissions.md).
 
 ## Deliberate limits
 
-Initialization does not yet provide the full connection/model manager; add
-authenticated and Codex connections afterward. Xana has no hosted OAuth
-service, direct ChatGPT backend transport, Claude subscription login,
-automatic catalog refresh, automatic model routing, plaintext secret fallback,
-`--force`, or automatic legacy repair.
+Quick Setup intentionally creates one functional default connection/profile.
+It does not edit the full profile, route, orchestration, or shell schema. Xana
+has no hosted OAuth service, direct ChatGPT backend transport, Claude
+subscription login, automatic catalog refresh at ordinary startup, automatic
+model routing, plaintext secret fallback, or automatic legacy repair. Use the
+advanced connection/model commands or edit validated TOML for those concerns.

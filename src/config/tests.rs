@@ -614,6 +614,7 @@ fn initial_config() -> InitialConfig {
         max_tool_rounds: 12,
         shell: crate::shell::ShellConfig::default(),
         permission_mode: PermissionMode::Ask,
+        reasoning_effort: None,
     }
 }
 

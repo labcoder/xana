@@ -52,13 +52,14 @@ temporary or dedicated install prefix:
 
 ```bash
 scripts/run-isolated.sh /tmp/xana-install --version
-scripts/run-isolated.sh /tmp/xana-install init \
+scripts/run-isolated.sh /tmp/xana-install setup \
   --non-interactive \
   --kind ollama \
-  --provider-name ollama \
+  --connection ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
-  --permission-mode ask
+  --permission-mode ask \
+  --yes
 ```
 
 The helper installs from the checkout with `--locked`, runs the installed
@@ -100,7 +101,7 @@ the shell path to a Windows absolute path; do not pass `/c/...` or a literal
 Interactive setup:
 
 ```bash
-xana init
+xana setup
 xana config check
 xana
 ```
@@ -114,21 +115,21 @@ uses plain mode; see [Terminal and one-shot modes](automation.md).
 For a disposable noninteractive local Ollama setup:
 
 ```bash
-xana init --non-interactive \
+xana setup --non-interactive \
   --kind ollama \
-  --provider-name ollama \
+  --connection ollama \
   --base-url http://localhost:11434/v1 \
   --model qwen3:1.7b \
-  --shell platform \
-  --permission-mode ask
+  --permission-mode ask \
+  --yes
 xana config check
 ```
 
-Interactive setup can instead create a managed Codex connection for a
-ChatGPT subscription. Install the Codex CLI, choose that option, then follow
-the printed status, login, model refresh, model list, and model use commands.
-Codex model IDs depend on the installed runtime and account, so the initial ID
-is provisional until that live check. Xana delegates OAuth and credential
+Quick Setup can instead create a managed Codex connection for a ChatGPT
+subscription. Install and log into the Codex CLI, then choose Codex. Xana
+checks the executable, app-server, Codex-owned account, and live model catalog
+in that order before model selection. Model IDs therefore cannot be
+provisional or stale at commit time. Xana delegates OAuth and credential
 storage to Codex; it does not need a hosted callback server.
 
 When developing from this checkout, pass Xana arguments after Cargo's `--`:
@@ -151,7 +152,7 @@ artifacts, stored credentials, and external Codex state:
 
 ```bash
 cargo run -- reset
-cargo run -- init
+cargo run -- setup
 ```
 
 Use `cargo run -- reset --yes` when no interactive confirmation is possible.

@@ -110,7 +110,10 @@ pub(crate) enum Command {
     Serve(ServeArgs),
     /// Attach to this workspace's foreground host; observation is the default.
     Attach(AttachArgs),
+    /// Establish a provider connection and atomically install a quick configuration.
+    Setup(SetupArgs),
     /// Create Xana's first configuration.
+    #[command(hide = true)]
     Init(InitArgs),
     /// Clear setup state so Xana can be initialized again.
     #[command(visible_alias = "clean")]
@@ -160,6 +163,61 @@ pub(crate) struct AttachArgs {
     /// Retrieve one authorized bounded artifact preview by immutable id.
     #[arg(long, value_name = "ARTIFACT_ID")]
     pub(crate) artifact: Option<ArtifactId>,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Default)]
+pub(crate) struct SetupArgs {
+    /// Never prompt; require durable choices as flags.
+    #[arg(long)]
+    pub(crate) non_interactive: bool,
+
+    /// Select a provider or managed-runtime kind.
+    #[arg(long, value_enum, value_name = "KIND")]
+    pub(crate) kind: Option<ConnectionKindChoice>,
+
+    /// Name the connection.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) connection: Option<String>,
+
+    /// Override the provider's absolute HTTP(S) base URL.
+    #[arg(long, value_name = "URL")]
+    pub(crate) base_url: Option<String>,
+
+    /// Override the managed Codex executable.
+    #[arg(long, value_name = "PROGRAM")]
+    pub(crate) codex_program: Option<String>,
+
+    /// Isolate managed Codex in an absolute CODEX_HOME.
+    #[arg(long, value_name = "PATH")]
+    pub(crate) codex_home: Option<PathBuf>,
+
+    /// Resolve an API key from this environment variable.
+    #[arg(long, value_name = "VARIABLE", conflicts_with = "key_from_stdin")]
+    pub(crate) credential_env: Option<String>,
+
+    /// Read one API key from stdin; never place secrets in argv.
+    #[arg(long, conflicts_with = "credential_env")]
+    pub(crate) key_from_stdin: bool,
+
+    /// Select an exact model from the established live catalog.
+    #[arg(long, value_name = "MODEL")]
+    pub(crate) model: Option<String>,
+
+    /// Select a managed model's advertised reasoning effort.
+    #[arg(long, value_name = "EFFORT")]
+    pub(crate) reasoning_effort: Option<String>,
+
+    /// Select the default permission policy.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub(crate) permission_mode: Option<PermissionChoice>,
+
+    /// Confirm installation without a final terminal prompt.
+    #[arg(long)]
+    pub(crate) yes: bool,
+
+    /// Establish and validate the connection but do not mutate durable state.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -686,6 +744,46 @@ mod tests {
                 shell: Some(ShellChoice::PowerShell),
                 shell_program: Some(PathBuf::from("pwsh.exe")),
                 permission_mode: Some(PermissionChoice::Ask),
+                dry_run: false,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_provider_neutral_noninteractive_setup_without_secret_argv() {
+        let cli = Cli::try_parse_from([
+            "xana",
+            "setup",
+            "--non-interactive",
+            "--kind",
+            "open-router",
+            "--connection",
+            "openrouter",
+            "--credential-env",
+            "OPENROUTER_API_KEY",
+            "--model",
+            "openai/gpt-4.1",
+            "--permission-mode",
+            "ask",
+            "--yes",
+        ])
+        .expect("complete setup");
+
+        assert_eq!(
+            cli.command,
+            Some(Command::Setup(SetupArgs {
+                non_interactive: true,
+                kind: Some(ConnectionKindChoice::OpenRouter),
+                connection: Some("openrouter".into()),
+                base_url: None,
+                codex_program: None,
+                codex_home: None,
+                credential_env: Some("OPENROUTER_API_KEY".into()),
+                key_from_stdin: false,
+                model: Some("openai/gpt-4.1".into()),
+                reasoning_effort: None,
+                permission_mode: Some(PermissionChoice::Ask),
+                yes: true,
                 dry_run: false,
             }))
         );

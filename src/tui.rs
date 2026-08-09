@@ -215,7 +215,7 @@ pub(crate) async fn run_managed(
 
     let exit = loop {
         if let Some(effect) = state.next_followup()
-            && dispatch_managed_effect(
+            && let Some(requested_exit) = dispatch_managed_effect(
                 effect,
                 &mut state,
                 &driver,
@@ -229,7 +229,7 @@ pub(crate) async fn run_managed(
             )
             .await?
         {
-            break ChatExit::Quit;
+            break requested_exit;
         }
         prepared
             .terminal
@@ -244,7 +244,7 @@ pub(crate) async fn run_managed(
                 let terminal_event = terminal_event.context("terminal input failed")?;
                 if let Some(action) = input_action(terminal_event, &state) {
                     let effect = state.update_input(action);
-                    if dispatch_managed_effect(
+                    if let Some(requested_exit) = dispatch_managed_effect(
                         effect,
                         &mut state,
                         &driver,
@@ -256,7 +256,7 @@ pub(crate) async fn run_managed(
                         &mut session_preferences,
                         &mut pending_approval,
                     ).await? {
-                        break ChatExit::Quit;
+                        break requested_exit;
                     }
                 }
             }
@@ -309,10 +309,11 @@ async fn dispatch_managed_effect(
     preferences_path: &std::path::Path,
     session_preferences: &mut session::SessionPreferenceStore,
     pending_approval: &mut Option<oneshot::Sender<ApprovalDecision>>,
-) -> Result<bool> {
+) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
-        UpdateEffect::Quit => return Ok(true),
+        UpdateEffect::Quit => return Ok(Some(ChatExit::Quit)),
+        UpdateEffect::Setup => return Ok(Some(ChatExit::Setup)),
         UpdateEffect::Submit {
             operation_id,
             input,
@@ -414,7 +415,7 @@ async fn dispatch_managed_effect(
         }
         UpdateEffect::LoadOlder(conversation) => {
             let Some(before) = state.history_before() else {
-                return Ok(false);
+                return Ok(None);
             };
             match workspace_host.conversation_history_page(&conversation, Some(before), 128) {
                 Ok(Some(page)) => state.prepend_history_page(page),
@@ -438,7 +439,7 @@ async fn dispatch_managed_effect(
         UpdateEffect::DecideManagedApproval(decision) => {
             let Some(reply) = pending_approval.take() else {
                 state.set_status("Managed approval is no longer pending");
-                return Ok(false);
+                return Ok(None);
             };
             if reply.send(decision).is_err() {
                 state.set_status("Managed approval is no longer pending");
@@ -448,7 +449,7 @@ async fn dispatch_managed_effect(
             state.set_status("Native approval cannot be sent to the managed runtime");
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 fn apply_artifact_action(
@@ -545,6 +546,10 @@ async fn dispatch_effect(
         UpdateEffect::Quit => {
             let _ = client.send(RuntimeCommand::Shutdown).await;
             return Ok(Some(ChatExit::Quit));
+        }
+        UpdateEffect::Setup => {
+            let _ = client.send(RuntimeCommand::Shutdown).await;
+            return Ok(Some(ChatExit::Setup));
         }
         UpdateEffect::Submit {
             operation_id,

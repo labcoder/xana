@@ -36,6 +36,7 @@ mod reset;
 mod runtime;
 pub mod self_docs;
 mod session;
+mod setup;
 mod shell;
 mod terminal;
 mod tool;

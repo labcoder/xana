@@ -44,6 +44,7 @@ pub(crate) struct ChatHeader {
 pub(crate) enum ChatExit {
     Quit,
     Restart,
+    Setup,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -52,6 +53,7 @@ enum InputAction<'a> {
     Clear,
     Attach(&'a str),
     Model(&'a str),
+    Setup,
     Agents,
     Agent(&'a str),
     CancelAgent(&'a str),
@@ -78,6 +80,7 @@ fn classify_input(line: &str) -> InputAction<'_> {
     }
     match trimmed {
         "/quit" => InputAction::Quit,
+        "/setup" => InputAction::Setup,
         "/clear" => InputAction::Clear,
         "" => InputAction::Ignore,
         input => InputAction::Send(input),
@@ -516,6 +519,11 @@ pub(crate) async fn run_chat(
                         }
                         Err(error) => println!("xana> could not select model: {error}"),
                     }
+                }
+                InputAction::Setup => {
+                    runtime.send(RuntimeCommand::Shutdown).await?;
+                    exit = ChatExit::Setup;
+                    break;
                 }
                 InputAction::Agents => {
                     runtime.send(RuntimeCommand::ListChildren).await?;
@@ -963,6 +971,7 @@ mod tests {
     #[test]
     fn classifies_commands_blanks_and_messages() {
         assert_eq!(classify_input("/quit"), InputAction::Quit);
+        assert_eq!(classify_input("/setup"), InputAction::Setup);
         assert_eq!(classify_input("  /clear  "), InputAction::Clear);
         assert_eq!(classify_input("   "), InputAction::Ignore);
         assert_eq!(

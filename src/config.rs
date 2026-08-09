@@ -313,6 +313,12 @@ pub(crate) enum InitialConnection {
         name: String,
         base_url: String,
     },
+    Native {
+        name: String,
+        kind: ProviderKind,
+        base_url: Option<String>,
+        credential: Option<CredentialReference>,
+    },
     Codex {
         name: String,
         program: String,
@@ -325,6 +331,7 @@ impl InitialConnection {
         match self {
             Self::Ollama { name, .. }
             | Self::OpenAiCompatible { name, .. }
+            | Self::Native { name, .. }
             | Self::Codex { name, .. } => name,
         }
     }
@@ -341,6 +348,7 @@ pub(crate) struct InitialConfig {
     pub(crate) max_tool_rounds: usize,
     pub(crate) shell: ShellConfig,
     pub(crate) permission_mode: PermissionMode,
+    pub(crate) reasoning_effort: Option<String>,
 }
 
 #[derive(Debug)]
@@ -647,6 +655,7 @@ impl XanaConfig {
             max_tool_rounds,
             shell,
             permission_mode,
+            reasoning_effort,
         } = input;
 
         let (connection_name, connection) = match connection {
@@ -667,6 +676,22 @@ impl XanaConfig {
                     kind: ProviderKind::OpenAiCompat,
                     base_url: Some(base_url),
                     credential: None,
+                    models: BTreeMap::new(),
+                    codex_program: None,
+                    codex_home: None,
+                },
+            ),
+            InitialConnection::Native {
+                name,
+                kind,
+                base_url,
+                credential,
+            } => (
+                name,
+                ProviderConnection {
+                    kind,
+                    base_url,
+                    credential,
                     models: BTreeMap::new(),
                     codex_program: None,
                     codex_home: None,
@@ -699,7 +724,7 @@ impl XanaConfig {
                 connection: connection_name,
                 model,
                 max_tool_rounds,
-                reasoning_effort: None,
+                reasoning_effort,
                 reasoning_summary: None,
                 capabilities: None,
                 permission_mode: None,
@@ -735,13 +760,17 @@ impl XanaConfig {
 
     pub(crate) fn load_registry_from(path: &Path) -> Result<ConnectionRegistry, ConfigError> {
         let input = read_config(path)?;
-        let header: VersionHeader = toml::from_str(&input).map_err(ConfigError::Decode)?;
+        Self::parse_registry(&input)
+    }
+
+    pub(crate) fn parse_registry(input: &str) -> Result<ConnectionRegistry, ConfigError> {
+        let header: VersionHeader = toml::from_str(input).map_err(ConfigError::Decode)?;
         if !(MIN_CONFIG_VERSION..=CONFIG_VERSION).contains(&header.version) {
             return Err(ConfigError::UnsupportedVersion {
                 found: header.version,
             });
         }
-        let document: ConfigDocument = toml::from_str(&input).map_err(ConfigError::Decode)?;
+        let document: ConfigDocument = toml::from_str(input).map_err(ConfigError::Decode)?;
         validate_document(&document)?;
         Ok(registry_from_document(document))
     }

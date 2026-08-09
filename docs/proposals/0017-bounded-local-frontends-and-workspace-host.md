@@ -168,7 +168,10 @@ interrupts the root without promoting an observer. Client count/rate/frame/
 queue/write bounds now isolate slow or malicious clients; authorized artifact
 lookup accepts only visible immutable references and returns a verified 64 KiB
 preview; the host owns two-second graceful and five-second hard shutdown of its
-exact client/execution tasks. Transactional setup remains unimplemented. The
+exact client/execution tasks. Provider-neutral Quick Setup now establishes a
+live native or managed connection before model selection and atomically commits
+the redacted reviewed config, backup, and rollback-safe credential reference.
+The
 TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,
 image staging, ordered follow-ups, exact interruption, owner-gated steering,
