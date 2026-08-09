@@ -11,6 +11,7 @@ pub(super) enum CommandId {
     Reasoning,
     Sessions,
     Activity,
+    Artifact,
     Attach,
     Queue,
     Clear,
@@ -38,6 +39,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "attach",
         usage: "/attach WORKSPACE_RELATIVE_PATH",
         summary: "Stage an image for the next submitted or queued turn",
+    },
+    CommandSpec {
+        id: CommandId::Artifact,
+        name: "artifact",
+        usage: "/artifact ARTIFACT_ID",
+        summary: "Preview or explicitly act on a visible immutable artifact",
     },
     CommandSpec {
         id: CommandId::Clear,

@@ -281,6 +281,15 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/presentation.md"),
     },
     BundledDoc {
+        id: "user.rich-content",
+        title: "Rich terminal content and artifacts",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["tui", "markdown", "artifacts", "images", "links", "safety"],
+        body: include_str!("../docs/user/rich-content.md"),
+    },
+    BundledDoc {
         id: "user.sessions",
         title: "Sessions",
         audience: USER_AUDIENCE,

@@ -69,7 +69,13 @@ time. Older native sessions do not durably retain their historical model, so
 Xana says `not retained` instead of guessing. Managed rows retain connection
 and opaque thread identity but no transcript or reliable recency.
 
-Selecting an inactive native row opens its committed transcript read-only.
+Selecting an inactive native row opens the newest page of its committed
+transcript read-only. A page contains at most 128 messages; reaching the older
+edge requests the preceding page and preserves the visible scroll anchor. The
+session journal scan retains entry ancestry and byte offsets, then reads only
+the selected messages into the frontend. At most 512 projected messages remain
+in the TUI cache.
+
 Selecting a managed row explains that Codex still owns the transcript. This is
 view focus only: it does not transfer controller ownership, cancel the active
 root, change the model, or send a draft. Incoming completion/error state for

@@ -205,6 +205,15 @@ impl ArtifactStore {
         Ok(())
     }
 
+    pub(crate) fn verified_path(
+        &self,
+        artifact: &ArtifactRecord,
+        max_bytes: usize,
+    ) -> Result<PathBuf, ArtifactError> {
+        self.verify_reference(&artifact.reference, artifact.byte_len, max_bytes)?;
+        Ok(self.path_for(&artifact.reference.content_hash))
+    }
+
     fn path_for(&self, content_hash: &ContentHash) -> PathBuf {
         self.root.join(content_hash.as_str())
     }

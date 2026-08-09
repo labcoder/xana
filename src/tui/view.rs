@@ -3,6 +3,7 @@
 use super::{
     activity::{ActivityKind, ActivityState},
     model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState},
+    rich_text::RichLineKind,
 };
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
@@ -38,7 +39,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: Res
         ])
         .split(rows[1]);
     frame.render_widget(session_rail(state, profile), columns[0]);
-    frame.render_widget(conversation(state, profile), columns[1]);
+    frame.render_widget(conversation(state, profile, columns[1].height), columns[1]);
     if activity_visible(state) {
         frame.render_widget(activity(state, profile), columns[2]);
     }
@@ -54,7 +55,7 @@ fn render_medium(
 ) {
     let rows = shell_rows(area);
     render_header(frame, rows[0], state, profile, false);
-    frame.render_widget(conversation(state, profile), rows[1]);
+    frame.render_widget(conversation(state, profile, rows[1].height), rows[1]);
     render_composer(frame, rows[2], state, profile);
     render_footer(frame, rows[3], state, profile, "medium");
 }
@@ -75,7 +76,7 @@ fn render_narrow(
         ])
         .split(area);
     render_header(frame, rows[0], state, profile, true);
-    frame.render_widget(conversation(state, profile), rows[1]);
+    frame.render_widget(conversation(state, profile, rows[1].height), rows[1]);
     render_composer(frame, rows[2], state, profile);
     render_footer(frame, rows[3], state, profile, "narrow");
 }
@@ -161,22 +162,85 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
         .wrap(Wrap { trim: false })
 }
 
-fn conversation(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
+fn conversation(
+    state: &TuiState,
+    profile: ResolvedPresentation,
+    viewport_height: u16,
+) -> Paragraph<'static> {
     let mut lines = Vec::new();
-    for message in &state.messages {
+    let render_limit = usize::from(viewport_height)
+        .saturating_sub(2)
+        .saturating_div(3)
+        .clamp(1, 128);
+    let end = state
+        .messages
+        .len()
+        .saturating_sub(usize::from(state.scroll));
+    let start = end.saturating_sub(render_limit);
+    if start > 0 {
+        lines.push(Line::styled(
+            format!("[{} older message(s) outside this viewport]", start),
+            semantic_style(profile, SemanticToken::Muted),
+        ));
+    }
+    for message in state.messages.iter().skip(start).take(end - start) {
         let (label, token) = match message.kind {
             MessageKind::User => ("you", SemanticToken::User),
             MessageKind::Assistant => ("xana", SemanticToken::Assistant),
             MessageKind::Tool => ("tool", SemanticToken::Tool),
             MessageKind::System => ("status", SemanticToken::Muted),
         };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{label}> "),
-                semantic_style(profile, token).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(message.text.clone()),
-        ]));
+        lines.push(Line::styled(
+            format!("{label}>"),
+            semantic_style(profile, token).add_modifier(Modifier::BOLD),
+        ));
+        for rich in &message.document.lines {
+            let (prefix, style) = match rich.kind {
+                RichLineKind::Heading => (
+                    "# ",
+                    semantic_style(profile, token).add_modifier(Modifier::BOLD),
+                ),
+                RichLineKind::List => ("  ", Style::default()),
+                RichLineKind::Quote => ("> ", semantic_style(profile, SemanticToken::Muted)),
+                RichLineKind::Table => ("  ", semantic_style(profile, SemanticToken::Tool)),
+                RichLineKind::Code => ("  ", semantic_style(profile, SemanticToken::Tool)),
+                RichLineKind::DiffAdd => ("+ ", semantic_style(profile, SemanticToken::DiffAdd)),
+                RichLineKind::DiffRemove => {
+                    ("- ", semantic_style(profile, SemanticToken::DiffRemove))
+                }
+                RichLineKind::Warning => ("! ", semantic_style(profile, SemanticToken::Warning)),
+                RichLineKind::Paragraph => ("  ", Style::default()),
+            };
+            let mut style = style;
+            if rich.emphasized {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            if rich.inline_code {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            lines.push(Line::styled(format!("{prefix}{}", rich.text), style));
+        }
+        for (index, link) in message.document.links.iter().enumerate() {
+            lines.push(Line::styled(
+                format!("  link {}: {} -> {}", index + 1, link.label, link.target),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+        }
+        for artifact in &message.document.artifacts {
+            lines.push(Line::styled(
+                format!(
+                    "  artifact {}: {} (/artifact {})",
+                    artifact.record.reference.id, artifact.label, artifact.record.reference.id
+                ),
+                semantic_style(profile, SemanticToken::Accent),
+            ));
+        }
+        if message.document.truncated {
+            lines.push(Line::styled(
+                "  [rich preview truncated at its safety bound]",
+                semantic_style(profile, SemanticToken::Warning),
+            ));
+        }
         lines.push(Line::raw(""));
     }
     if lines.is_empty() {
@@ -191,7 +255,6 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
                 .title(" Conversation ")
                 .borders(Borders::ALL),
         )
-        .scroll((state.scroll, 0))
         .wrap(Wrap { trim: false })
 }
 
@@ -486,6 +549,50 @@ fn render_overlay(
             }
             (" Approval required ", lines)
         }
+        Overlay::Artifact {
+            artifact,
+            selected,
+            preview,
+        } => {
+            let mut lines = vec![
+                Line::styled(
+                    format!("Immutable artifact {}", artifact.record.reference.id),
+                    semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+                ),
+                Line::raw(format!(
+                    "{} · {} · {} bytes",
+                    artifact.label, artifact.record.media_type, artifact.record.byte_len
+                )),
+                Line::styled(
+                    "Nothing opens automatically. Enter runs only the highlighted action.",
+                    semantic_style(profile, SemanticToken::Warning),
+                ),
+            ];
+            if let Some(preview) = preview {
+                lines.push(Line::raw(""));
+                lines.push(Line::raw(preview.clone()));
+            }
+            lines.push(Line::raw(""));
+            for (index, action) in [
+                "Preview bounded bytes",
+                "Insert immutable reference into draft",
+                "Reveal in the OS file manager",
+                "Open with the OS default application",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                lines.push(Line::styled(
+                    format!("{} {action}", if index == *selected { ">" } else { " " }),
+                    if index == *selected {
+                        semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ));
+            }
+            (" Artifact actions ", lines)
+        }
     };
     frame.render_widget(Clear, popup);
     frame.render_widget(
@@ -654,6 +761,31 @@ mod tests {
         let rendered = buffer_text(terminal.backend().buffer());
         assert!(rendered.contains("Conversations"));
         assert!(rendered.contains("12 records"));
+    }
+
+    #[test]
+    fn ten_thousand_message_fixture_renders_only_the_bounded_viewport_window() {
+        let backend = TestBackend::new(130, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.messages.clear();
+        for index in 0..10_000 {
+            let text = format!("message {index}");
+            state
+                .messages
+                .push_back(super::super::model::VisibleMessage {
+                    kind: MessageKind::Assistant,
+                    document: super::super::rich_text::RichDocument::plain(&text),
+                    text,
+                });
+        }
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("message 9999"));
+        assert!(!rendered.contains("message 0"));
+        assert!(rendered.contains("older message(s) outside this viewport"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

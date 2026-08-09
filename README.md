@@ -244,12 +244,15 @@ interactive; redirected launches remain control-free plain output. Use
 require full-screen initialization. The native TUI has a bounded multiline
 composer, confirmed paste, ordered follow-ups, exact interruption, a shared
 slash-command/command palette, model picker, image staging, streamed turns,
-and adaptive wide/medium/narrow layouts. Ctrl+C interrupts the active turn;
+bounded Markdown/code/diff rendering, explicit artifact actions, paged native
+history, and adaptive wide/medium/narrow layouts. Ctrl+C interrupts the active turn;
 Ctrl+Q exits. Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization
 failure restores the terminal, warns, and falls back to plain, while explicit
 `--tui` exits nonzero. See [Full-screen terminal UI](docs/user/tui.md).
+Rich content, link safety, paging, and artifact actions are documented in
+[Rich terminal content and artifacts](docs/user/rich-content.md).
 
 Native
 conversations use the latest compatible inactive session or create a new one;

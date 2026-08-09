@@ -7,6 +7,7 @@ mod activity;
 mod command;
 mod lifecycle;
 mod model;
+mod rich_text;
 mod session;
 mod view;
 
@@ -27,7 +28,7 @@ use crossterm::event::{
 };
 use futures::StreamExt;
 use lifecycle::TerminalSession;
-use model::{InputAction, MoveDirection, TuiState, UpdateEffect};
+use model::{ArtifactAction, InputAction, MoveDirection, TuiState, UpdateEffect};
 use std::{io, path::PathBuf, sync::Arc};
 use tokio::sync::oneshot;
 
@@ -406,9 +407,19 @@ async fn dispatch_managed_effect(
         }
         UpdateEffect::OpenSessionPicker => state.open_session_picker(),
         UpdateEffect::ViewSession(conversation) => {
-            match workspace_host.conversation_history(&conversation) {
-                Ok(history) => state.view_session(conversation, history),
+            match workspace_host.conversation_history_page(&conversation, None, 128) {
+                Ok(page) => state.view_session_page(conversation, page),
                 Err(error) => state.set_status(format!("could not inspect conversation: {error}")),
+            }
+        }
+        UpdateEffect::LoadOlder(conversation) => {
+            let Some(before) = state.history_before() else {
+                return Ok(false);
+            };
+            match workspace_host.conversation_history_page(&conversation, Some(before), 128) {
+                Ok(Some(page)) => state.prepend_history_page(page),
+                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
+                Err(error) => state.set_status(format!("could not load older history: {error}")),
             }
         }
         UpdateEffect::PersistRail(expanded) => {
@@ -420,6 +431,9 @@ async fn dispatch_managed_effect(
             if let Err(error) = PresentationPreferences::set_activity(preferences_path, activity) {
                 state.set_status(format!("could not save activity preference: {error}"));
             }
+        }
+        UpdateEffect::ArtifactAction { record, action } => {
+            apply_artifact_action(state, artifact_store, record, action)?;
         }
         UpdateEffect::DecideManagedApproval(decision) => {
             let Some(reply) = pending_approval.take() else {
@@ -435,6 +449,83 @@ async fn dispatch_managed_effect(
         }
     }
     Ok(false)
+}
+
+fn apply_artifact_action(
+    state: &mut TuiState,
+    store: &crate::artifact::ArtifactStore,
+    record: crate::artifact::ArtifactRecord,
+    action: ArtifactAction,
+) -> Result<()> {
+    const PREVIEW_BYTES: usize = 64 * 1024;
+    match action {
+        ArtifactAction::Preview => {
+            let preview = if record.media_type.starts_with("text/")
+                || matches!(
+                    record.media_type.as_str(),
+                    "application/json" | "application/toml"
+                ) {
+                let bytes = store
+                    .read_bounded(&record, PREVIEW_BYTES)
+                    .context("could not read artifact preview")?;
+                String::from_utf8(bytes)
+                    .unwrap_or_else(|_| "[artifact text is not valid UTF-8]".to_owned())
+            } else {
+                format!(
+                    "[binary preview omitted: {} · {} bytes]",
+                    record.media_type, record.byte_len
+                )
+            };
+            state.show_artifact_preview(record, preview);
+        }
+        ArtifactAction::InsertReference => state.insert_artifact_reference(&record),
+        ArtifactAction::Reveal | ArtifactAction::Open => {
+            let path = store
+                .verified_path(&record, crate::artifact::MAX_ARTIFACT_BYTES)
+                .context("could not verify artifact before opening it")?;
+            open_artifact_path(&path, action == ArtifactAction::Reveal)
+                .context("could not start the OS artifact action")?;
+            state.set_status(if action == ArtifactAction::Reveal {
+                "Artifact revealed in the OS file manager"
+            } else {
+                "Artifact opened with the OS default application"
+            });
+        }
+    }
+    Ok(())
+}
+
+fn open_artifact_path(path: &std::path::Path, reveal: bool) -> io::Result<()> {
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer.exe");
+        if reveal {
+            command.arg(format!("/select,{}", path.display()));
+        } else {
+            command.arg(path);
+        }
+        command
+    };
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        if reveal {
+            command.arg("-R");
+        }
+        command.arg(path);
+        command
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = {
+        let mut command = std::process::Command::new("xdg-open");
+        command.arg(if reveal {
+            path.parent().unwrap_or(path)
+        } else {
+            path
+        });
+        command
+    };
+    command.spawn().map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -645,9 +736,19 @@ async fn dispatch_effect(
         }
         UpdateEffect::OpenSessionPicker => state.open_session_picker(),
         UpdateEffect::ViewSession(conversation) => {
-            match workspace_host.conversation_history(&conversation) {
-                Ok(history) => state.view_session(conversation, history),
+            match workspace_host.conversation_history_page(&conversation, None, 128) {
+                Ok(page) => state.view_session_page(conversation, page),
                 Err(error) => state.set_status(format!("could not inspect conversation: {error}")),
+            }
+        }
+        UpdateEffect::LoadOlder(conversation) => {
+            let Some(before) = state.history_before() else {
+                return Ok(None);
+            };
+            match workspace_host.conversation_history_page(&conversation, Some(before), 128) {
+                Ok(Some(page)) => state.prepend_history_page(page),
+                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
+                Err(error) => state.set_status(format!("could not load older history: {error}")),
             }
         }
         UpdateEffect::PersistRail(expanded) => {
@@ -659,6 +760,9 @@ async fn dispatch_effect(
             if let Err(error) = PresentationPreferences::set_activity(preferences_path, activity) {
                 state.set_status(format!("could not save activity preference: {error}"));
             }
+        }
+        UpdateEffect::ArtifactAction { record, action } => {
+            apply_artifact_action(state, &header.artifact_store, record, action)?;
         }
         UpdateEffect::DecideNativeApproval {
             operation_id,
@@ -1037,6 +1141,42 @@ mod tests {
             }
         }
         assert_eq!(state.messages.back().unwrap().text, "released");
+    }
+
+    #[test]
+    fn artifact_preview_and_reference_actions_are_explicit_and_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::artifact::ArtifactStore::new(directory.path().to_owned());
+        let (record, _) = store
+            .put(
+                b"bounded artifact preview",
+                "text/plain",
+                crate::identity::PrincipalId::new(),
+            )
+            .unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+
+        apply_artifact_action(&mut state, &store, record.clone(), ArtifactAction::Preview).unwrap();
+        assert!(matches!(
+            state.overlay,
+            Some(model::Overlay::Artifact {
+                preview: Some(ref preview),
+                ..
+            }) if preview == "bounded artifact preview"
+        ));
+
+        state.overlay = None;
+        apply_artifact_action(
+            &mut state,
+            &store,
+            record.clone(),
+            ArtifactAction::InsertReference,
+        )
+        .unwrap();
+        assert_eq!(
+            state.composer.text,
+            format!("artifact:{}", record.reference.id)
+        );
     }
 
     #[test]

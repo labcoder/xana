@@ -12,7 +12,7 @@ pub(crate) use reduce::{
 };
 #[cfg(test)]
 pub(crate) use store::TornTailRepair;
-pub(crate) use store::{LoadedSession, SessionStore};
+pub(crate) use store::{ConversationPage, LoadedSession, SessionStore};
 
 #[cfg(test)]
 mod tests;
