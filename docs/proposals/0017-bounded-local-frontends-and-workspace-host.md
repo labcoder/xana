@@ -142,3 +142,10 @@ Architecture and User Documentation in the same change that ships it.
 When the complete accepted contract is implemented, this proposal becomes
 historical and Architecture owns the resulting description. Partial delivery
 does not permit unimplemented sections to be described as current behavior.
+
+The frontend-safe embedded-client slice is implemented: native append-only
+chat uses the versioned bounded client seam, and managed Codex notifications
+are normalized through its provider-neutral event vocabulary. The local host,
+multi-conversation controller/observer ownership, TUI, network projection,
+setup, and complete shutdown contract remain unimplemented, so this proposal
+remains Accepted.

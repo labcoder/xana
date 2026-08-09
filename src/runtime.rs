@@ -32,6 +32,7 @@ const COMMAND_CAPACITY: usize = 16;
 pub(crate) struct RuntimeHandle {
     commands: mpsc::Sender<RuntimeCommand>,
     events: mpsc::UnboundedReceiver<AgentEvent>,
+    initial_history: Vec<Message>,
 }
 
 struct Runtime {
@@ -132,6 +133,7 @@ impl RuntimeHandle {
         history: Vec<Message>,
         child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
+        let initial_history = history.clone();
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let (broker_event_sender, broker_event_receiver) = mpsc::unbounded_channel();
@@ -182,6 +184,7 @@ impl RuntimeHandle {
         Self {
             commands: command_sender,
             events: event_receiver,
+            initial_history,
         }
     }
 
@@ -192,8 +195,28 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeUnavailable)
     }
 
+    #[cfg(test)]
     pub(crate) async fn next_event(&mut self) -> Option<AgentEvent> {
         self.events.recv().await
+    }
+
+    pub(crate) fn into_frontend_parts(
+        self,
+    ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>, Vec<Message>) {
+        let Self {
+            commands,
+            events,
+            initial_history,
+        } = self;
+        (
+            Self {
+                commands,
+                events: mpsc::unbounded_channel().1,
+                initial_history: Vec::new(),
+            },
+            events,
+            initial_history,
+        )
     }
 }
 

@@ -1,6 +1,9 @@
 //! Foreground runtime protocol, history, observation, and crash-boundary tests.
 
 use super::*;
+use crate::frontend::{
+    ClientCommand, ClientEvent, ClientSnapshotSeed, EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
+};
 
 #[test]
 fn commands_and_events_round_trip_through_json() {
@@ -179,6 +182,168 @@ fn commands_and_events_round_trip_through_json() {
             event
         );
     }
+}
+
+#[tokio::test]
+async fn embedded_client_snapshots_then_sequences_a_complete_native_turn() {
+    let (agent, requests, completed) = queue_agent(
+        vec![Ok(Message::text(Role::Assistant, "hello from Xana"))],
+        vec!["hello ".to_owned(), "from Xana".to_owned()],
+    );
+    let runtime = spawn_runtime(agent);
+    let session_id = crate::identity::SessionId::new();
+    let client = EmbeddedClient::from_runtime(
+        runtime,
+        ClientSnapshotSeed {
+            session_id,
+            connection: "scripted".to_owned(),
+            execution_owner: "native".to_owned(),
+            model: "test-model".to_owned(),
+            reasoning_effort: None,
+            children: Vec::new(),
+        },
+    );
+
+    assert_eq!(client.snapshot().version, FRONTEND_PROTOCOL_VERSION);
+    assert_eq!(client.snapshot().sequence, 0);
+    assert_eq!(client.snapshot().session_id, session_id);
+    assert!(client.snapshot().conversation.is_empty());
+    let (owner, mut observer) = client.into_parts();
+
+    let operation_id = OperationId::new();
+    let result = owner
+        .send(ClientCommand::new(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "hello".to_owned(),
+        }))
+        .await
+        .expect("embedded command accepted");
+    assert!(result.accepted);
+
+    let mut saw_assistant = false;
+    let mut expected_sequence = 1;
+    loop {
+        let observation = observer.next().await.expect("sequenced event");
+        assert_eq!(observation.sequence, expected_sequence);
+        expected_sequence += 1;
+        let ClientEvent::Runtime(event) = observation.event else {
+            panic!("native runtime emitted a non-runtime client event");
+        };
+        let event = *event;
+        match event {
+            AgentEvent::AssistantMessage { message, .. } => {
+                saw_assistant = message == Message::text(Role::Assistant, "hello from Xana");
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            _ => {}
+        }
+    }
+
+    assert!(saw_assistant);
+    assert!(completed.load(Ordering::SeqCst));
+    let captured = requests.lock().unwrap();
+    assert!(
+        captured
+            .iter()
+            .flatten()
+            .any(|message| message == &Message::text(Role::User, "hello"))
+    );
+}
+
+#[tokio::test]
+async fn dropping_embedded_observer_does_not_cancel_owner() {
+    let (agent, _, completed) = queue_agent(
+        vec![Ok(Message::text(Role::Assistant, "still completed"))],
+        Vec::new(),
+    );
+    let runtime = spawn_runtime(agent);
+    let client = EmbeddedClient::from_runtime(
+        runtime,
+        ClientSnapshotSeed {
+            session_id: crate::identity::SessionId::new(),
+            connection: "scripted".to_owned(),
+            execution_owner: "native".to_owned(),
+            model: "test-model".to_owned(),
+            reasoning_effort: None,
+            children: Vec::new(),
+        },
+    );
+    let (owner, observer) = client.into_parts();
+    drop(observer);
+
+    owner
+        .send(ClientCommand::new(RuntimeCommand::SubmitTurn {
+            operation_id: OperationId::new(),
+            input: "continue without renderer".to_owned(),
+        }))
+        .await
+        .expect("runtime remains owned after observer drop");
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !completed.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("provider completes without observer");
+}
+
+#[tokio::test]
+async fn dropping_embedded_owner_interrupts_its_active_native_turn() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let agent = make_agent(Box::new(BlockingTransport {
+        started: Arc::clone(&started),
+        release,
+    }));
+    let runtime = spawn_runtime(agent);
+    let client = EmbeddedClient::from_runtime(
+        runtime,
+        ClientSnapshotSeed {
+            session_id: crate::identity::SessionId::new(),
+            connection: "blocking".to_owned(),
+            execution_owner: "native".to_owned(),
+            model: "test-model".to_owned(),
+            reasoning_effort: None,
+            children: Vec::new(),
+        },
+    );
+    let (owner, mut observer) = client.into_parts();
+    let operation_id = OperationId::new();
+    owner
+        .send(ClientCommand::new(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "wait".to_owned(),
+        }))
+        .await
+        .expect("submit blocking turn");
+    started.notified().await;
+
+    drop(owner);
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let observation = observer.next().await.expect("terminal observation");
+            if matches!(
+                observation.event,
+                ClientEvent::Runtime(event)
+                    if matches!(
+                        *event,
+                        AgentEvent::OperationStateChanged {
+                            operation_id: actual,
+                            state: OperationState::Finished(OperationOutcome::Interrupted),
+                        } if actual == operation_id
+                    )
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .expect("owner drop interrupts turn");
 }
 
 #[tokio::test]
@@ -445,7 +610,9 @@ async fn dropped_event_receiver_does_not_fail_operation() {
         vec![Ok(Message::text(Role::Assistant, "still completes"))],
         vec!["still ".to_owned(), "completes".to_owned()],
     );
-    let RuntimeHandle { commands, events } = spawn_runtime(agent);
+    let RuntimeHandle {
+        commands, events, ..
+    } = spawn_runtime(agent);
     drop(events);
     commands
         .send(RuntimeCommand::SubmitTurn {

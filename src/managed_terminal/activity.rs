@@ -1,8 +1,10 @@
 //! Bounded terminal rendering for typed managed-runtime activity.
 
-use crate::managed::codex::{
-    ApprovalDecision, ApprovalRequest, CodexError, ManagedEventHandler, ManagedItem,
-    ManagedNotification,
+use crate::{
+    frontend::{ManagedClientEvent, ManagedClientItem},
+    managed::codex::{
+        ApprovalDecision, ApprovalRequest, CodexError, ManagedEventHandler, ManagedNotification,
+    },
 };
 use futures::future::BoxFuture;
 use std::{
@@ -57,21 +59,21 @@ enum StreamKind {
 
 #[derive(Default)]
 pub(super) struct RetainedActivity {
-    events: Vec<ManagedNotification>,
+    events: Vec<ManagedClientEvent>,
     bytes: usize,
     truncated: bool,
     pub(super) assistant_streamed: bool,
 }
 
 impl RetainedActivity {
-    fn push(&mut self, notification: &ManagedNotification) {
+    fn push(&mut self, notification: &ManagedClientEvent) {
         let is_content_item = matches!(
             notification,
-            ManagedNotification::ItemStarted(ManagedItem { kind, .. })
-                | ManagedNotification::ItemCompleted(ManagedItem { kind, .. })
+            ManagedClientEvent::ItemStarted(ManagedClientItem { kind, .. })
+                | ManagedClientEvent::ItemCompleted(ManagedClientItem { kind, .. })
                 if matches!(kind.as_str(), "agentMessage" | "userMessage" | "reasoning" | "plan")
         );
-        if matches!(notification, ManagedNotification::AssistantDelta { .. }) || is_content_item {
+        if matches!(notification, ManagedClientEvent::AssistantDelta(_)) || is_content_item {
             return;
         }
         let cost = retained_cost(notification);
@@ -89,7 +91,7 @@ impl RetainedActivity {
 pub(super) struct TerminalManagedHandler {
     activity: ActivityLevel,
     current_stream: Option<StreamKind>,
-    pending_items: BTreeMap<String, ManagedItem>,
+    pending_items: BTreeMap<String, ManagedClientItem>,
     retained: RetainedActivity,
 }
 
@@ -143,7 +145,7 @@ impl TerminalManagedHandler {
         Ok(())
     }
 
-    fn render_item(&mut self, verb: &str, item: &ManagedItem) -> Result<(), CodexError> {
+    fn render_item(&mut self, verb: &str, item: &ManagedClientItem) -> Result<(), CodexError> {
         if !is_visible_work_item(&item.kind) || self.activity == ActivityLevel::Quiet {
             return Ok(());
         }
@@ -158,110 +160,8 @@ impl TerminalManagedHandler {
 
 impl ManagedEventHandler for TerminalManagedHandler {
     fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
-        self.retained.push(&notification);
-        match notification {
-            ManagedNotification::ThreadStarted { .. }
-            | ManagedNotification::TokenUsageUpdated { .. } => {}
-            ManagedNotification::AssistantDelta { delta, .. } => {
-                self.retained.assistant_streamed |= !delta.is_empty();
-                self.write_delta(StreamKind::Assistant, "xana>", &delta)?;
-            }
-            ManagedNotification::ReasoningSummaryDelta { delta, .. }
-                if self.activity != ActivityLevel::Quiet =>
-            {
-                self.write_delta(StreamKind::ReasoningSummary, "summary>", &delta)?;
-            }
-            ManagedNotification::ReasoningSummaryPartAdded { .. }
-                if self.activity != ActivityLevel::Quiet =>
-            {
-                self.finish_stream()?;
-            }
-            ManagedNotification::ReasoningDelta { delta, .. }
-                if self.activity == ActivityLevel::Verbose =>
-            {
-                self.write_delta(StreamKind::Reasoning, "reasoning>", &delta)?;
-            }
-            ManagedNotification::PlanDelta { delta, .. }
-                if self.activity == ActivityLevel::Verbose =>
-            {
-                self.write_delta(StreamKind::Plan, "plan>", &delta)?;
-            }
-            ManagedNotification::CommandOutputDelta { delta, .. }
-                if self.activity == ActivityLevel::Verbose =>
-            {
-                self.write_delta(StreamKind::Tool, "tool>", &delta)?;
-            }
-            ManagedNotification::PlanUpdated { explanation, steps }
-                if self.activity != ActivityLevel::Quiet =>
-            {
-                self.finish_stream()?;
-                if let Some(explanation) = explanation {
-                    println!("xana> plan: {explanation}");
-                } else {
-                    println!("xana> plan updated:");
-                }
-                for step in steps {
-                    println!("  [{}] {}", plan_marker(&step.status), step.step);
-                }
-            }
-            ManagedNotification::DiffUpdated(diff) if self.activity == ActivityLevel::Verbose => {
-                self.finish_stream()?;
-                println!("xana> working diff updated:\n{diff}");
-            }
-            ManagedNotification::DiffUpdated(_) if self.activity == ActivityLevel::Normal => {
-                self.line("working diff updated; use /details or verbose activity to inspect it")?;
-            }
-            ManagedNotification::ItemStarted(item) => {
-                self.render_item("started", &item)?;
-                if !self.pending_items.contains_key(&item.id)
-                    && self.pending_items.len() >= MAX_PENDING_ITEMS
-                {
-                    return Err(CodexError::Protocol(format!(
-                        "managed runtime exceeds the {MAX_PENDING_ITEMS}-item pending limit"
-                    )));
-                }
-                self.pending_items.insert(item.id.clone(), item);
-            }
-            ManagedNotification::ItemCompleted(item) => {
-                if item.kind == "contextCompaction" && self.activity != ActivityLevel::Quiet {
-                    self.line("Codex compacted the managed conversation context")?;
-                } else {
-                    self.render_item("finished", &item)?;
-                }
-                self.pending_items.remove(&item.id);
-            }
-            ManagedNotification::ModelRerouted {
-                from_model,
-                to_model,
-                reason,
-            } => self.line(format_args!(
-                "Codex rerouted {from_model} to {to_model}: {reason}"
-            ))?,
-            ManagedNotification::Warning(message) => {
-                self.line(format_args!("Codex warning: {message}"))?;
-            }
-            ManagedNotification::TurnCompleted { status, error, .. } if status != "completed" => {
-                self.line(format_args!(
-                    "Codex turn ended with status {status}{}",
-                    error
-                        .as_deref()
-                        .map(|value| format!(": {value}"))
-                        .unwrap_or_default()
-                ))?;
-            }
-            ManagedNotification::Other { method } if self.activity == ActivityLevel::Verbose => {
-                self.line(format_args!("Codex event: {method}"))?;
-            }
-            ManagedNotification::ReasoningSummaryDelta { .. }
-            | ManagedNotification::ReasoningSummaryPartAdded { .. }
-            | ManagedNotification::ReasoningDelta { .. }
-            | ManagedNotification::PlanDelta { .. }
-            | ManagedNotification::CommandOutputDelta { .. }
-            | ManagedNotification::PlanUpdated { .. }
-            | ManagedNotification::DiffUpdated(_)
-            | ManagedNotification::TurnCompleted { .. }
-            | ManagedNotification::LoginCompleted { .. }
-            | ManagedNotification::Other { .. } => {}
+        if let Some(event) = ManagedClientEvent::from_notification(notification) {
+            self.render_event(event)?;
         }
         Ok(())
     }
@@ -276,6 +176,116 @@ impl ManagedEventHandler for TerminalManagedHandler {
 }
 
 impl TerminalManagedHandler {
+    fn render_event(&mut self, event: ManagedClientEvent) -> Result<(), CodexError> {
+        self.retained.push(&event);
+        match event {
+            ManagedClientEvent::ThreadReady | ManagedClientEvent::TokenUsageUpdated { .. } => {}
+            ManagedClientEvent::AssistantDelta(delta) => {
+                self.retained.assistant_streamed |= !delta.is_empty();
+                self.write_delta(StreamKind::Assistant, "xana>", &delta)?;
+            }
+            ManagedClientEvent::ReasoningSummaryDelta(delta)
+                if self.activity != ActivityLevel::Quiet =>
+            {
+                self.write_delta(StreamKind::ReasoningSummary, "summary>", &delta)?;
+            }
+            ManagedClientEvent::ReasoningSummaryPartAdded
+                if self.activity != ActivityLevel::Quiet =>
+            {
+                self.finish_stream()?;
+            }
+            ManagedClientEvent::ReasoningDelta(delta)
+                if self.activity == ActivityLevel::Verbose =>
+            {
+                self.write_delta(StreamKind::Reasoning, "reasoning>", &delta)?;
+            }
+            ManagedClientEvent::PlanDelta(delta) if self.activity == ActivityLevel::Verbose => {
+                self.write_delta(StreamKind::Plan, "plan>", &delta)?;
+            }
+            ManagedClientEvent::CommandOutputDelta(delta)
+                if self.activity == ActivityLevel::Verbose =>
+            {
+                self.write_delta(StreamKind::Tool, "tool>", &delta)?;
+            }
+            ManagedClientEvent::PlanUpdated {
+                explanation,
+                steps,
+                truncated,
+            } if self.activity != ActivityLevel::Quiet => {
+                self.finish_stream()?;
+                if let Some(explanation) = explanation {
+                    println!("xana> plan: {explanation}");
+                } else {
+                    println!("xana> plan updated:");
+                }
+                for step in steps {
+                    println!("  [{}] {}", plan_marker(&step.status), step.step);
+                }
+                if truncated {
+                    println!("  [...] additional plan steps omitted by the frontend bound");
+                }
+            }
+            ManagedClientEvent::DiffUpdated { preview, truncated }
+                if self.activity == ActivityLevel::Verbose =>
+            {
+                self.finish_stream()?;
+                println!("xana> working diff updated:\n{preview}");
+                if truncated {
+                    println!("xana> additional diff content omitted by the frontend bound");
+                }
+            }
+            ManagedClientEvent::DiffUpdated { .. } if self.activity == ActivityLevel::Normal => {
+                self.line("working diff updated; use /details or verbose activity to inspect it")?;
+            }
+            ManagedClientEvent::ItemStarted(item) => {
+                self.render_item("started", &item)?;
+                if !self.pending_items.contains_key(&item.id)
+                    && self.pending_items.len() >= MAX_PENDING_ITEMS
+                {
+                    return Err(CodexError::Protocol(format!(
+                        "managed runtime exceeds the {MAX_PENDING_ITEMS}-item pending limit"
+                    )));
+                }
+                self.pending_items.insert(item.id.clone(), item);
+            }
+            ManagedClientEvent::ItemCompleted(item) => {
+                if item.kind == "contextCompaction" && self.activity != ActivityLevel::Quiet {
+                    self.line("Codex compacted the managed conversation context")?;
+                } else {
+                    self.render_item("finished", &item)?;
+                }
+                self.pending_items.remove(&item.id);
+            }
+            ManagedClientEvent::ModelRerouted {
+                from_model,
+                to_model,
+                reason,
+            } => self.line(format_args!(
+                "Codex rerouted {from_model} to {to_model}: {reason}"
+            ))?,
+            ManagedClientEvent::Warning(message) => {
+                self.line(format_args!("Codex warning: {message}"))?;
+            }
+            ManagedClientEvent::TurnCompleted { status, error } if status != "completed" => {
+                self.line(format_args!(
+                    "Codex turn ended with status {status}{}",
+                    error
+                        .as_deref()
+                        .map(|value| format!(": {value}"))
+                        .unwrap_or_default()
+                ))?;
+            }
+            ManagedClientEvent::ReasoningSummaryDelta(_)
+            | ManagedClientEvent::ReasoningSummaryPartAdded
+            | ManagedClientEvent::ReasoningDelta(_)
+            | ManagedClientEvent::PlanDelta(_)
+            | ManagedClientEvent::CommandOutputDelta(_)
+            | ManagedClientEvent::PlanUpdated { .. }
+            | ManagedClientEvent::DiffUpdated { .. }
+            | ManagedClientEvent::TurnCompleted { .. } => {}
+        }
+        Ok(())
+    }
     fn approve_now(&mut self, request: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
         self.finish_stream()?;
         println!("xana> Codex requests approval");
@@ -348,7 +358,7 @@ pub(super) fn render_retained_activity(activity: &RetainedActivity) -> Result<()
     println!("xana> retained managed activity for the last turn:");
     let mut renderer = TerminalManagedHandler::new(ActivityLevel::Verbose);
     for event in &activity.events {
-        renderer.notification(event.clone())?;
+        renderer.render_event(event.clone())?;
     }
     renderer.finish_stream()?;
     if activity.truncated {
@@ -361,40 +371,35 @@ pub(super) fn render_retained_activity(activity: &RetainedActivity) -> Result<()
     Ok(())
 }
 
-fn retained_cost(notification: &ManagedNotification) -> usize {
+fn retained_cost(notification: &ManagedClientEvent) -> usize {
     match notification {
-        ManagedNotification::AssistantDelta { delta, .. }
-        | ManagedNotification::ReasoningSummaryDelta { delta, .. }
-        | ManagedNotification::ReasoningDelta { delta, .. }
-        | ManagedNotification::PlanDelta { delta, .. }
-        | ManagedNotification::CommandOutputDelta { delta, .. }
-        | ManagedNotification::DiffUpdated(delta)
-        | ManagedNotification::Warning(delta) => delta.len(),
-        ManagedNotification::ItemStarted(item) | ManagedNotification::ItemCompleted(item) => {
+        ManagedClientEvent::AssistantDelta(delta)
+        | ManagedClientEvent::ReasoningSummaryDelta(delta)
+        | ManagedClientEvent::ReasoningDelta(delta)
+        | ManagedClientEvent::PlanDelta(delta)
+        | ManagedClientEvent::CommandOutputDelta(delta)
+        | ManagedClientEvent::Warning(delta) => delta.len(),
+        ManagedClientEvent::DiffUpdated { preview, .. } => preview.len(),
+        ManagedClientEvent::ItemStarted(item) | ManagedClientEvent::ItemCompleted(item) => {
             item.details.len() + item.label.len()
         }
-        ManagedNotification::PlanUpdated { explanation, steps } => {
+        ManagedClientEvent::PlanUpdated {
+            explanation, steps, ..
+        } => {
             explanation.as_deref().map_or(0, str::len)
                 + steps
                     .iter()
                     .map(|step| step.step.len() + step.status.len())
                     .sum::<usize>()
         }
-        ManagedNotification::ModelRerouted {
+        ManagedClientEvent::ModelRerouted {
             from_model,
             to_model,
             reason,
         } => from_model.len() + to_model.len() + reason.len(),
-        ManagedNotification::TurnCompleted { error, .. }
-        | ManagedNotification::LoginCompleted { error, .. } => {
-            error.as_deref().map_or(64, str::len)
-        }
-        ManagedNotification::ThreadStarted { thread_id } => thread_id.len(),
-        ManagedNotification::TokenUsageUpdated {
-            thread_id, turn_id, ..
-        } => thread_id.len() + turn_id.len() + 24,
-        ManagedNotification::ReasoningSummaryPartAdded { .. }
-        | ManagedNotification::Other { .. } => 64,
+        ManagedClientEvent::TurnCompleted { error, .. } => error.as_deref().map_or(64, str::len),
+        ManagedClientEvent::ThreadReady | ManagedClientEvent::ReasoningSummaryPartAdded => 64,
+        ManagedClientEvent::TokenUsageUpdated { .. } => 24,
     }
 }
 
@@ -428,6 +433,7 @@ fn plan_marker(status: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::managed::codex::ManagedItem;
 
     #[test]
     fn activity_levels_are_explicit_and_do_not_change_reasoning_effort() {
@@ -443,24 +449,19 @@ mod tests {
     #[test]
     fn retained_activity_is_bounded_and_omits_visible_assistant_text() {
         let mut retained = RetainedActivity::default();
-        retained.push(&ManagedNotification::AssistantDelta {
-            item_id: Some("answer".into()),
-            delta: "already visible".into(),
-        });
-        retained.push(&ManagedNotification::ItemCompleted(ManagedItem {
+        retained.push(&ManagedClientEvent::AssistantDelta(
+            "already visible".into(),
+        ));
+        retained.push(&ManagedClientEvent::ItemCompleted(ManagedClientItem {
             id: "answer".into(),
             kind: "agentMessage".into(),
             status: None,
-            phase: Some("final_answer".into()),
             label: "agentMessage".into(),
             details: "final assistant text".into(),
-            text: Some("final assistant text".into()),
         }));
         assert!(retained.events.is_empty());
         for _ in 0..MAX_RETAINED_ACTIVITY_EVENTS + 1 {
-            retained.push(&ManagedNotification::Other {
-                method: "test/event".into(),
-            });
+            retained.push(&ManagedClientEvent::Warning("test event".into()));
         }
         assert_eq!(retained.events.len(), MAX_RETAINED_ACTIVITY_EVENTS);
         assert!(retained.truncated);
