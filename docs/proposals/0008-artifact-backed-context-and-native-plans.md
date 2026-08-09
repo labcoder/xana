@@ -24,7 +24,10 @@ literal-search selectors materialize bounded persisted bytes. That subset is
 implemented through historical
 [Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
 unimplemented for model-facing context capabilities, native plans, and
-optional computation.
+optional computation. The narrower, statically bounded child-composition plan
+is accepted as `OrchestrationPlan` by
+[Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md); it does
+not accept the broader context-plan or computation design here.
 
 ## Proposed context references
 

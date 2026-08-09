@@ -15,8 +15,10 @@ The smaller foreground protocol—one runtime owner, one active root turn,
 serializable commands/events/ids, live-only deltas, and observer-failure
 semantics—has been implemented through historical
 [Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
-Proposed for atomic client attachment, durable threads, hooks, child handles,
-structured concurrency, multi-client fan-out, and retained work.
+Proposed for atomic client attachment, durable threads, hooks, multi-client
+fan-out, and retained work. The one-generation child-handle and structured
+concurrency subset is accepted separately by
+[Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md).
 
 The foreground permission command/event exchange and its single embedded
 controller are separately implemented through historical

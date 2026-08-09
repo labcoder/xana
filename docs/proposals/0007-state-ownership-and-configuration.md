@@ -26,7 +26,10 @@ The version 2 connection/model subset is implemented through historical
 comment-preserving connection edits, separate selection and non-secret cache
 files, environment/OS credential references, and external Codex credential
 ownership. This proposal remains Proposed for extension/package state, task
-routes, frontend preferences, and the broader structured editor.
+routes beyond the exact bounded subset, frontend preferences, and the broader
+structured editor. Complete child profiles and exact task routes for Phase 4
+are accepted separately by
+[Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md).
 
 ## Proposed state ownership
 
