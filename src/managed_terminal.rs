@@ -1,6 +1,9 @@
 //! Terminal projection for a foreign managed-agent runtime.
 
 mod activity;
+mod tui_driver;
+
+pub(crate) use tui_driver::{ManagedTuiDriver, ManagedTuiEvent};
 
 use crate::{
     artifact::ArtifactStore,
@@ -23,6 +26,7 @@ use rustyline::{DefaultEditor, error::ReadlineError};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub(crate) struct ManagedChatConfig {
     pub(crate) connection: String,
     pub(crate) model: String,
@@ -636,12 +640,12 @@ Select one with `xana model use {connection}/MODEL` (from a source checkout: \
     )
 }
 
-async fn ensure_thread_loaded(
+async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     server: &mut CodexAppServer,
     thread: &mut ManagedThreadState,
     store: &mut ManagedThreadStore,
     config: &ManagedChatConfig,
-    handler: &mut TerminalManagedHandler,
+    handler: &mut H,
 ) -> Result<String, CodexError> {
     let id = match thread {
         ManagedThreadState::New => {

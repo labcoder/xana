@@ -157,11 +157,13 @@ competing roots. Presentation resolves a versioned bounded preference file and
 injected terminal facts into semantic dark, light, monochrome, color-depth,
 glyph, width, and motion policy; redirected output remains control-free.
 Network projection, attached controller/observer leases, setup, complete
-explicit-server shutdown, and the TUI's remaining managed/rich interaction
-slices remain unimplemented. The native TUI now owns adaptive state/update/view
+explicit-server shutdown, and rich content remain unimplemented. The TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,
 image staging, ordered follow-ups, exact interruption, owner-gated steering,
 one command registry/palette, model selection, independent activity visibility,
 and bounded session rail/picker inspection with workspace-local rail
-preference. Managed activity/approvals and rich content remain later slices.
+preference. Its managed Codex actor projects typed activity, exposed reasoning,
+plans, commands, diffs, collaboration, reroutes, warnings and completion;
+native, child, and managed approval cards retain exact correlation even when
+activity is hidden. Rich Markdown and artifact interaction remain later slices.
 This proposal therefore remains Accepted.

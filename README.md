@@ -144,10 +144,11 @@ thread.
 During a managed turn Xana projects the activity that Codex app-server emits:
 reasoning summaries, plans, command and tool progress, file changes, context
 compaction, Codex-owned subagent activity, model reroutes, and approval
-requests. The default `normal` view is concise. Use
-`/activity quiet|normal|verbose` to change the presentation for
-the current CLI process and `/details` to replay the bounded details retained
-for the last turn. `verbose` can show raw reasoning text only when Codex
+requests. The full-screen TUI uses `/activity auto|open|hidden` to persist an
+automatic, pinned, or hidden activity pane. It shows correlated approval cards
+even when hidden and labels Codex-owned work separately from Xana-native
+children. The plain renderer keeps `/activity quiet|normal|verbose` for
+append-only detail and `/details` for the last retained turn. `verbose` can show raw reasoning text only when Codex
 actually emits it; Xana cannot expose private hidden chain-of-thought.
 
 ## Models and connections
@@ -244,8 +245,9 @@ require full-screen initialization. The native TUI has a bounded multiline
 composer, confirmed paste, ordered follow-ups, exact interruption, a shared
 slash-command/command palette, model picker, image staging, streamed turns,
 and adaptive wide/medium/narrow layouts. Ctrl+C interrupts the active turn;
-Ctrl+Q exits. Managed Codex chat temporarily uses the plain renderer until its
-full activity and approval projection is attached. An implicit initialization
+Ctrl+Q exits. Managed Codex uses the same full-screen shell while Codex retains
+ownership of its inner loop and history; Xana displays app-server activity and
+routes exact approval decisions without a second model call. An implicit initialization
 failure restores the terminal, warns, and falls back to plain, while explicit
 `--tui` exits nonzero. See [Full-screen terminal UI](docs/user/tui.md).
 

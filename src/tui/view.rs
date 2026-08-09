@@ -1,6 +1,9 @@
 //! Pure Ratatui rendering for the adaptive shell.
 
-use super::model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState};
+use super::{
+    activity::{ActivityKind, ActivityState},
+    model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState},
+};
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
@@ -17,6 +20,9 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedP
         LayoutClass::Medium => render_medium(frame, area, state, profile),
         LayoutClass::Narrow => render_narrow(frame, area, state, profile),
     }
+    if LayoutClass::for_width(area.width) != LayoutClass::Wide && activity_visible(state) {
+        render_activity_drawer(frame, area, state, profile);
+    }
     render_overlay(frame, area, state, profile);
 }
 
@@ -28,12 +34,14 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: Res
         .constraints([
             Constraint::Length(if state.rail_expanded { 32 } else { 9 }),
             Constraint::Min(36),
-            Constraint::Length(30),
+            Constraint::Length(if activity_visible(state) { 30 } else { 0 }),
         ])
         .split(rows[1]);
     frame.render_widget(session_rail(state, profile), columns[0]);
     frame.render_widget(conversation(state, profile), columns[1]);
-    frame.render_widget(activity(state, profile), columns[2]);
+    if activity_visible(state) {
+        frame.render_widget(activity(state, profile), columns[2]);
+    }
     render_composer(frame, rows[2], state, profile);
     render_footer(frame, rows[3], state, profile, "wide");
 }
@@ -188,12 +196,7 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
 }
 
 fn activity(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
-    let lines = if state.activity_visibility == ActivityVisibility::Quiet {
-        vec![Line::styled(
-            "Activity hidden (/activity normal)",
-            semantic_style(profile, SemanticToken::Muted),
-        )]
-    } else if state.activity.is_empty() {
+    let lines = if state.activity.is_empty() {
         vec![Line::styled(
             "No activity yet",
             semantic_style(profile, SemanticToken::Muted),
@@ -202,17 +205,67 @@ fn activity(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'stati
         state
             .activity
             .iter()
-            .map(|value| {
-                Line::from(vec![
-                    Span::styled("• ", semantic_style(profile, SemanticToken::Child)),
-                    Span::raw(value.clone()),
-                ])
+            .flat_map(|card| {
+                let marker = match card.state {
+                    ActivityState::Running => ">",
+                    ActivityState::Waiting => "?",
+                    ActivityState::Complete => "+",
+                    ActivityState::Failed => "!",
+                };
+                let token = match card.kind {
+                    ActivityKind::Approval => SemanticToken::Approval,
+                    ActivityKind::Warning | ActivityKind::Error => SemanticToken::Warning,
+                    ActivityKind::Child => SemanticToken::Child,
+                    ActivityKind::ReasoningSummary | ActivityKind::ReasoningRaw => {
+                        SemanticToken::Reasoning
+                    }
+                    ActivityKind::Tool | ActivityKind::Diff => SemanticToken::Tool,
+                    _ => SemanticToken::Muted,
+                };
+                let mut lines = vec![Line::from(vec![
+                    Span::styled(format!("{marker} "), semantic_style(profile, token)),
+                    Span::styled(
+                        format!("{}: ", card.owner),
+                        semantic_style(profile, SemanticToken::Muted),
+                    ),
+                    Span::raw(card.summary.clone()),
+                ])];
+                if card.expanded && !card.detail.is_empty() {
+                    lines.push(Line::styled(
+                        format!("  {}", card.detail),
+                        semantic_style(profile, SemanticToken::Muted),
+                    ));
+                }
+                lines
             })
             .collect()
     };
     Paragraph::new(Text::from(lines))
         .block(Block::default().title(" Activity ").borders(Borders::ALL))
         .wrap(Wrap { trim: false })
+}
+
+fn activity_visible(state: &TuiState) -> bool {
+    match state.activity_visibility {
+        ActivityVisibility::Open => true,
+        ActivityVisibility::Hidden => false,
+        ActivityVisibility::Auto => state.auto_activity_open,
+    }
+}
+
+fn render_activity_drawer(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &TuiState,
+    profile: ResolvedPresentation,
+) {
+    let popup = centered(
+        area,
+        area.width.saturating_sub(4).min(72),
+        area.height.saturating_sub(6).min(18),
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(activity(state, profile), popup);
 }
 
 fn render_composer(
@@ -396,6 +449,42 @@ fn render_overlay(
                 )
             }));
             (" Conversations ", lines)
+        }
+        Overlay::Approval { prompt, selected } => {
+            let mut lines = vec![
+                Line::styled(
+                    format!("Authority requested by {}", prompt.owner),
+                    semantic_style(profile, SemanticToken::Approval).add_modifier(Modifier::BOLD),
+                ),
+                Line::raw(prompt.title.clone()),
+            ];
+            lines.extend(
+                prompt
+                    .details
+                    .iter()
+                    .map(|detail| Line::raw(detail.clone())),
+            );
+            lines.push(Line::raw(""));
+            let mut index = 0usize;
+            for (label, enabled) in [
+                ("Allow once", prompt.allow_once),
+                ("Allow exact scope for this session", prompt.allow_session),
+                ("Deny", prompt.deny),
+            ] {
+                if !enabled {
+                    continue;
+                }
+                lines.push(Line::styled(
+                    format!("{} {label}", if index == *selected { ">" } else { " " }),
+                    if index == *selected {
+                        semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ));
+                index += 1;
+            }
+            (" Approval required ", lines)
         }
     };
     frame.render_widget(Clear, popup);

@@ -30,8 +30,8 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Activity,
         name: "activity",
-        usage: "/activity quiet|normal|verbose",
-        summary: "Choose visible activity detail without changing model reasoning",
+        usage: "/activity auto|open|hidden",
+        summary: "Persist activity-pane visibility without changing model reasoning",
     },
     CommandSpec {
         id: CommandId::Attach,

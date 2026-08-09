@@ -117,11 +117,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 let preferences =
                     presentation::PresentationPreferences::load(&paths.presentation_file())
                         .preferences;
-                match tui::prepare(
-                    mode.profile(),
-                    preferences.composer,
-                    paths.presentation_file(),
-                ) {
+                match tui::prepare(mode.profile(), preferences, paths.presentation_file()) {
                     Ok(prepared) => ChatSurface::Tui {
                         prepared,
                         required: cli.tui,
@@ -1194,19 +1190,8 @@ async fn run_default(
                 .map(Some)
                 .map_err(anyhow::Error::new)
             }
-            None => {
-                if let ChatSurface::Tui { prepared, required } = surface {
-                    drop(prepared);
-                    if required {
-                        anyhow::bail!(
-                            "the managed Codex TUI projection is not available yet; use `xana --plain`"
-                        );
-                    }
-                    eprintln!(
-                        "xana: managed Codex activity is using the plain terminal until its TUI projection is attached"
-                    );
-                }
-                run_codex_chat(
+            None => match surface {
+                ChatSurface::Plain(_) => run_codex_chat(
                     server,
                     manager,
                     managed_config,
@@ -1214,8 +1199,18 @@ async fn run_default(
                     conversation,
                 )
                 .await
-                .map(|()| None)
-            }
+                .map(|()| None),
+                ChatSurface::Tui { prepared, .. } => tui::run_managed(
+                    prepared,
+                    server,
+                    manager,
+                    managed_config,
+                    workspace_host,
+                    conversation,
+                )
+                .await
+                .map(|_| None),
+            },
         };
     }
 
@@ -1471,11 +1466,7 @@ async fn run_default(
                 let preferences =
                     presentation::PresentationPreferences::load(&paths.presentation_file())
                         .preferences;
-                match tui::prepare(
-                    presentation,
-                    preferences.composer,
-                    paths.presentation_file(),
-                ) {
+                match tui::prepare(presentation, preferences, paths.presentation_file()) {
                     Ok(prepared) => ChatSurface::Tui {
                         prepared,
                         required: tui_required,
