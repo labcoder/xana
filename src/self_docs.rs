@@ -220,7 +220,7 @@ static ENTRIES: &[BundledDoc] = &[
     },
     BundledDoc {
         id: "user.automation",
-        title: "Plain and one-shot terminal modes",
+        title: "Terminal and one-shot modes",
         audience: USER_AUDIENCE,
         authority: DocAuthority::Descriptive,
         status: DocStatus::Shipped,

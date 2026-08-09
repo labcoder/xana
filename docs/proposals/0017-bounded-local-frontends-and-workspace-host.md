@@ -144,7 +144,8 @@ historical and Architecture owns the resulting description. Partial delivery
 does not permit unimplemented sections to be described as current behavior.
 
 The frontend-safe embedded-client, permanent plain/one-shot, embedded
-workspace-host ownership, and presentation-capability slices are implemented.
+workspace-host ownership, presentation-capability, and native adaptive-TUI
+shell slices are implemented.
 Native append-only chat uses
 the versioned bounded client seam;
 managed Codex notifications are normalized through its provider-neutral event
@@ -155,6 +156,10 @@ and uses an OS-authoritative per-turn gate so embedded processes cannot run
 competing roots. Presentation resolves a versioned bounded preference file and
 injected terminal facts into semantic dark, light, monochrome, color-depth,
 glyph, width, and motion policy; redirected output remains control-free.
-Network projection, attached controller/observer leases, the TUI, setup, and
-complete explicit-server shutdown remain unimplemented, so this proposal
-remains Accepted.
+Network projection, attached controller/observer leases, setup, complete
+explicit-server shutdown, and the TUI's remaining managed/rich interaction
+slices remain unimplemented. The native TUI already owns adaptive
+state/update/view rendering and terminal restoration; managed
+activity/approvals, complete session navigation, rich content, and advanced
+composer behavior remain later slices. This proposal therefore remains
+Accepted.

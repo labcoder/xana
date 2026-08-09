@@ -552,12 +552,26 @@ does not claim atomic or crash-safe writes.
 
 ## CLI, configuration, and initialization
 
-Bare `xana` and `--plain` start the selected native or managed route. Native
+Bare `xana` chooses the Ratatui/Crossterm full-screen frontend only when stdin
+and stdout are interactive. `--plain` selects the permanent append-only client;
+non-TTY launch chooses it automatically, and `--tui` makes terminal
+initialization mandatory. The TUI owns an explicit state/update/view model,
+consumes the same bounded embedded snapshot/events as plain native chat, and
+emits only typed runtime commands. It paints a local starting frame before
+configuration/provider composition, adapts side panes into drawer labels at
+medium/narrow widths, and bounds composer, message, and activity retention.
+One idempotent terminal lifecycle owner restores raw mode, alternate screen,
+cursor, mouse capture, and bracketed paste after normal exit, input EOF,
+transport error, cancellation, panic unwind, or partial initialization.
+Implicit initialization failure restores then falls back to plain; explicit
+failure exits nonzero. Managed Codex still uses its plain terminal projection
+until the TUI's managed activity and approval slice is implemented.
+
+Native
 chat creates a session; `--continue` selects the latest compatible execution
 owner/workspace conversation and `--resume SESSION_ID` resumes only an exact
 native session. `-p`/`--print` runs one noninteractive turn with text or
-versioned JSON output. Explicit `--tui` is reserved until the adaptive TUI is
-implemented. The typed
+versioned JSON output. The typed
 command boundary exposes initialization/configuration, session inspection,
 explicit operation recovery, unified `xana model`, and advanced `xana
 connection` commands for static keys and Codex account control. Read-only
@@ -657,10 +671,11 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 
 - `main.rs` composes the process.
 - `app` owns command routing and dependency construction.
-- `terminal`, `managed_terminal`, and `presentation` own frontend behavior.
+- `terminal`, `managed_terminal`, `tui`, and `presentation` own frontend behavior.
   Managed terminal activity filtering/retention is isolated in
   `managed_terminal/activity` so display policy does not enter the process or
-  conversation loop.
+  conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
+  terminal-independent model/update policy, and pure adaptive view modules.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
