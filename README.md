@@ -184,21 +184,20 @@ when at least one child route is configured. The model can give one task or a
 fixed independent batch to exact routes (or the explicit default), while Xana
 prints each child id, route, connection/model, lifecycle, activity, and
 terminal status. Routes can mix Ollama, OpenAI-compatible, OpenAI API,
-OpenRouter, and Anthropic models in one batch. The child gets a fresh bounded
-prompt containing only its task, applicable project instructions, and explicit
-selected previews/artifact references rather than the parent transcript. It
-cannot delegate again and returns a bounded report directly to the root turn;
-provider request counts and exposed token fields retain exact child
-attribution. Batches reserve their complete budget before becoming visible, run
-in input order up to the root profile's concurrency limit, and fail atomically
-when any member or aggregate bound is invalid. Use `/agents`,
+OpenRouter, Anthropic, and managed Codex routes in one batch. A native child gets
+a fresh bounded prompt; a managed Codex child gets a fresh ephemeral Codex
+thread. Both receive only the explicit task and selected bounded handoff data,
+not the parent transcript, cannot delegate again, and return a bounded report
+directly to the root turn. Native provider requests and managed Codex turn
+usage retain exact child attribution. Batches reserve their complete budget
+before becoming visible, run in input order up to the root profile's concurrency
+limit, and fail atomically when any member or aggregate bound is invalid. Use `/agents`,
 `/agent AGENT_ID`, and `/cancel-agent AGENT_ID` for active-process inspection
 and cooperative cancellation; `xana session inspect SESSION_ID` is read-only
 after restart. Typed summary/JSON reports overflow to immutable artifacts, and
 multi-result collection preserves caller order, partial failures, and explicit
 timeout/cancellation policy without loading artifact bodies. Closed versioned
-plans validate fixed spawn/await/collect/cancel graphs before admission;
-managed Codex children arrive in the remaining Phase 4 work. See
+plans validate fixed spawn/await/collect/cancel graphs before admission. See
 [Child orchestration](docs/user/orchestration.md).
 
 ## Start first-run setup again

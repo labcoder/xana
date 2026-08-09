@@ -7,6 +7,14 @@ pub(super) fn normalize_notification(
     params: Value,
 ) -> Result<ManagedNotification, CodexError> {
     Ok(match method.as_str() {
+        "thread/started" => ManagedNotification::ThreadStarted {
+            thread_id: required_string(
+                params
+                    .get("thread")
+                    .ok_or_else(|| CodexError::Protocol("thread/started omitted thread".into()))?,
+                "id",
+            )?,
+        },
         "item/agentMessage/delta" => ManagedNotification::AssistantDelta {
             item_id: optional_string(&params, "itemId"),
             delta: bounded_event_delta(&params),
@@ -123,6 +131,13 @@ pub(super) fn normalize_notification(
                 .and_then(Value::as_str)
                 .map(|value| bounded_text(value, 4096)),
         },
+        "thread/tokenUsage/updated" => ManagedNotification::TokenUsageUpdated {
+            thread_id: required_string(&params, "threadId")?,
+            turn_id: required_string(&params, "turnId")?,
+            input_tokens: required_u64(&params, "/tokenUsage/total/inputTokens")?,
+            output_tokens: required_u64(&params, "/tokenUsage/total/outputTokens")?,
+            total_tokens: required_u64(&params, "/tokenUsage/total/totalTokens")?,
+        },
         "warning" | "error" => ManagedNotification::Warning(bounded_text(
             params
                 .get("message")
@@ -144,6 +159,13 @@ pub(super) fn normalize_notification(
         },
         _ => ManagedNotification::Other { method },
     })
+}
+
+fn required_u64(value: &Value, pointer: &str) -> Result<u64, CodexError> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| CodexError::Protocol(format!("notification omitted non-negative {pointer}")))
 }
 
 fn bounded_event_delta(params: &Value) -> String {

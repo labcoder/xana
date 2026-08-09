@@ -142,9 +142,24 @@ locally unavailable routes inline. `route check` exits nonzero for an unknown
 route, missing credential, absent configured/cached model, unsupported model
 option, unknown capability, or a model that explicitly rejects the selected
 tools. Diagnostics identify the route, profile, connection, and model without
-printing secret values. The route commands themselves are read-only. Native
-chat separately uses the same exact resolver when its root `delegate_agent`
-tool admits one supervised native child; see
+printing secret values. The route commands themselves are read-only. A Codex
+route requires a model already present in the local catalog cache and an empty
+native capability set because Codex owns its own tools:
+
+```toml
+[profiles.codex-review]
+connection = "codex"
+model = "ADVERTISED_MODEL_ID"
+capabilities = []
+permission_mode = "ask"
+
+[routes.codex-review]
+profile = "codex-review"
+```
+
+Run `xana connection login codex` and `xana model refresh codex` before using
+that route. Native chat uses the same exact resolver when an orchestration tool
+admits one supervised native or managed child; see
 [Child orchestration](orchestration.md).
 
 ### API-key providers

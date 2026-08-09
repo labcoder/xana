@@ -11,9 +11,12 @@ impl ManagedEventHandler for TestHandler {
         self.notifications.push(notification);
         Ok(())
     }
-    fn approve(&mut self, _: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
+    fn approve<'a>(
+        &'a mut self,
+        _: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
         self.approvals += 1;
-        Ok(ApprovalDecision::AcceptOnce)
+        Box::pin(async { Ok(ApprovalDecision::AcceptOnce) })
     }
 }
 
@@ -54,6 +57,105 @@ async fn fake_jsonl_child_maps_notification_and_approval() {
             delta: "hi".into(),
         }]
     );
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn cancellable_turn_wait_sends_one_exact_interrupt_request() {
+    let (client, server) = duplex(32 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, mut server_write) = split(server);
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let interrupt: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(interrupt["method"], "turn/interrupt");
+        assert_eq!(interrupt["params"]["threadId"], "thread-1");
+        assert_eq!(interrupt["params"]["turnId"], "turn-1");
+        let id = interrupt["id"].clone();
+        server_write
+            .write_all(format!("{{\"id\":{id},\"result\":{{}}}}\n").as_bytes())
+            .await
+            .unwrap();
+        server_write
+            .write_all(
+                b"{\"method\":\"turn/completed\",\"params\":{\"turn\":{\"id\":\"turn-1\",\"status\":\"interrupted\"}}}\n",
+            )
+            .await
+            .unwrap();
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut handler = TestHandler::default();
+
+    let interrupted = peer
+        .wait_for_turn(
+            "thread-1",
+            "turn-1",
+            Some(&cancellation),
+            |notification| {
+                Ok(matches!(
+                    notification,
+                    ManagedNotification::TurnCompleted { .. }
+                ))
+            },
+            &mut handler,
+        )
+        .await
+        .unwrap();
+
+    assert!(interrupted);
+    assert_eq!(
+        handler
+            .notifications
+            .iter()
+            .filter(|event| matches!(event, ManagedNotification::TurnCompleted { .. }))
+            .count(),
+        1
+    );
+    server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn unsupported_interrupt_is_a_typed_remote_error() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, mut server_write) = split(server);
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let interrupt: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let id = interrupt["id"].clone();
+        server_write
+            .write_all(
+                format!(
+                    "{{\"id\":{id},\"error\":{{\"code\":-32601,\"message\":\"method not found\"}}}}\n"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut handler = TestHandler::default();
+
+    assert!(matches!(
+        peer.wait_for_turn(
+            "thread-1",
+            "turn-1",
+            Some(&cancellation),
+            |_| Ok(false),
+            &mut handler,
+        )
+        .await,
+        Err(CodexError::Remote {
+            code: Some(-32601),
+            ..
+        })
+    ));
     server_task.await.unwrap();
 }
 
@@ -180,17 +282,72 @@ fn reasoning_plan_tool_and_completion_events_are_typed() {
 }
 
 #[test]
+fn thread_and_usage_notifications_keep_managed_correlation() {
+    assert_eq!(
+        normalize_notification("thread/started".into(), json!({"thread":{"id":"thread-1"}}),)
+            .unwrap(),
+        ManagedNotification::ThreadStarted {
+            thread_id: "thread-1".into(),
+        }
+    );
+    assert_eq!(
+        normalize_notification(
+            "thread/tokenUsage/updated".into(),
+            json!({
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"inputTokens":30,"outputTokens":7,"totalTokens":37},
+                    "last":{"inputTokens":10,"outputTokens":2,"totalTokens":12}
+                }
+            }),
+        )
+        .unwrap(),
+        ManagedNotification::TokenUsageUpdated {
+            thread_id: "thread-1".into(),
+            turn_id: "turn-1".into(),
+            input_tokens: 30,
+            output_tokens: 7,
+            total_tokens: 37,
+        }
+    );
+
+    assert!(matches!(
+        normalize_notification(
+            "thread/tokenUsage/updated".into(),
+            json!({
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{"total":{"inputTokens":30,"totalTokens":37}}
+            }),
+        ),
+        Err(CodexError::Protocol(_))
+    ));
+}
+
+#[test]
 fn thread_lifecycle_preserves_codex_base_and_supplies_xana_identity() {
     let workspace = Path::new("C:/work");
     let developer_instructions = "You are Xana, a personal AI agent.";
-    let start = thread_start_params("gpt-5.6-sol", workspace, developer_instructions);
+    let start = thread_start_params(
+        "gpt-5.6-sol",
+        workspace,
+        developer_instructions,
+        ManagedThreadPolicy::default(),
+    );
     assert_eq!(start["sandbox"], "workspace-write");
     assert_eq!(start["approvalPolicy"], "on-request");
     assert_eq!(start["serviceName"], "xana");
     assert_eq!(start["developerInstructions"], developer_instructions);
     assert!(start.get("baseInstructions").is_none());
 
-    let resume = thread_resume_params("thr_123", "gpt-5.6-sol", workspace, developer_instructions);
+    let resume = thread_resume_params(
+        "thr_123",
+        "gpt-5.6-sol",
+        workspace,
+        developer_instructions,
+        ManagedThreadPolicy::default(),
+    );
     assert_eq!(resume["threadId"], "thr_123");
     assert_eq!(resume["model"], "gpt-5.6-sol");
     assert_eq!(resume["sandbox"], "workspace-write");

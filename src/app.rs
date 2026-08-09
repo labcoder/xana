@@ -20,8 +20,8 @@ use crate::{
     model::{ExecutionKind, ModelManager},
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     orchestration::{
-        ChildSupervisor, ExecutionOwner, NativeChildFactory, OrchestrationBudget, ParentExecution,
-        ResolvedAgentConfig, RouteResolver,
+        ChildExecutionOwnerFactory, ChildSupervisor, ExecutionOwner, OrchestrationBudget,
+        ParentExecution, ResolvedAgentConfig, RouteResolver,
     },
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
@@ -1039,7 +1039,7 @@ async fn run_default(
             root_profile.orchestration.clone(),
             root_profile.max_tool_rounds,
         );
-        let factory = NativeChildFactory::new(
+        let factory = ChildExecutionOwnerFactory::new(
             child_registry,
             model_manager(paths)?,
             shell,
