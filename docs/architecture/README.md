@@ -34,7 +34,8 @@ flowchart LR
     SESSION --> OPERATION["durable operation log<br/>intent + result"]
     CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
-    TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
+    TERMINAL <-->|"client commands + observations"| FRONTEND["embedded frontend client<br/>snapshot + sequence + bounds"]
+    FRONTEND <-->|"runtime commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded native loop"]
     RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
     SUPERVISOR --> OWNER["execution-owner factory<br/>exact route snapshot"]
@@ -53,14 +54,33 @@ flowchart LR
 ```
 
 `runtime` owns the sole open session writer, reduced conversation history, and
-at most one active root operation. `terminal` is a protocol client that owns readline input, permission
-answers, and human rendering. `presentation` owns terminal-mark selection and
-its TTY, monochrome, suppression, and fallback behavior. None of those
-frontend concerns enters the headless agent loop.
+at most one active root operation. `frontend` owns the repository-private
+versioned client vocabulary and the reference embedded adapter. `terminal` is
+a client that owns readline input, permission answers, and human rendering.
+`presentation` owns terminal-mark selection and its TTY, monochrome,
+suppression, and fallback behavior. None of those frontend concerns enters the
+headless agent loop.
 
-Control values cross a bounded Tokio channel as serializable
-`RuntimeCommand`s. A single foreground receiver observes serializable
-`AgentEvent`s over an unbounded channel. Commands submit turns, clear idle
+The embedded client captures an initial snapshot before it begins forwarding
+live events. The snapshot carries the native conversation, connection, model,
+execution owner, child summaries, and artifact-backed image references under
+explicit message-count and encoded-size limits. It then assigns monotonically
+increasing sequence numbers to live observations and forwards them through a
+256-entry bounded queue. An oversized observation becomes a bounded omission
+fact. A full or closed observer queue ends that observation stream without
+blocking or cancelling runtime work. Dropping the embedded owner closes the
+runtime command lane and follows the foreground cancellation path.
+
+Client commands use a provider-neutral, serializable value and an independent
+correlation id. The embedded transport reports whether it accepted the
+bounded command for delivery; semantic runtime outcomes remain ordered
+observations. This contract is repository-private and makes no compatibility
+promise to third-party clients or future network adapters.
+
+Behind the embedded adapter, control values cross a bounded Tokio channel as
+serializable `RuntimeCommand`s. One internal foreground receiver drains
+serializable `AgentEvent`s from the runtime's unbounded channel into the
+bounded client queue. Commands submit turns, clear idle
 history, identify explicit recovery work, correlate permission decisions, and
 shut down the runtime. The dedicated CLI recovery controller consumes
 `ResumeOperation`; merely opening a foreground chat never reconciles effects.
@@ -75,8 +95,9 @@ control lane remains separate so an activity flood cannot hide a decision that
 must fail closed. The supervisor forwards at most 4,096 non-control child
 events or 4 MiB of their serialized attribution and payload, then emits one
 attributed truncation warning. Durable state records lifecycle and reports,
-not transient deltas. The foreground root event stream remains a single
-unbounded receiver; child contribution to it is bounded before forwarding.
+not transient deltas. The internal foreground root event stream remains a
+single unbounded receiver; child contribution to it is bounded before
+forwarding and frontend delivery is independently bounded.
 
 Child list, detail, cancellation-request, and permission-decision commands
 address the in-process supervisor. They do not imply a daemon or remote runtime

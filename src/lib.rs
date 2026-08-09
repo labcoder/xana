@@ -15,6 +15,7 @@ mod config;
 mod context;
 mod credential;
 pub mod documents;
+mod frontend;
 mod identity;
 mod init;
 mod managed;

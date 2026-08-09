@@ -5,6 +5,7 @@
 
 use crate::{
     artifact::ArtifactStore,
+    frontend::{ClientSnapshotSeed, EmbeddedClient},
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     model::{ExecutionKind, ModelManager},
@@ -373,7 +374,17 @@ fn render_managed_child_activity(
     }
 }
 
-pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
+pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
+    let seed = ClientSnapshotSeed {
+        session_id: header.session_id,
+        connection: header.provider_name.clone(),
+        execution_owner: "native".to_owned(),
+        model: header.model.clone(),
+        reasoning_effort: None,
+        children: header.children.clone(),
+    };
+    let mut runtime = EmbeddedClient::from_runtime(runtime, seed);
+    debug_assert_eq!(runtime.snapshot().session_id, header.session_id);
     println!("provider connection: {}", header.provider_name);
     println!("model: {}", header.model);
     println!("chat endpoint: {}", header.endpoint);
@@ -597,7 +608,7 @@ fn write_child_summary<W: Write>(output: &mut W, child: &ChildInspection) -> io:
 }
 
 async fn render_until_child_control_result<W: Write>(
-    runtime: &mut RuntimeHandle,
+    runtime: &mut EmbeddedClient,
     renderer: &mut EventRenderer<W>,
 ) -> Result<()> {
     loop {
@@ -639,7 +650,7 @@ fn write_models(models: &ModelManager) -> Result<()> {
 }
 
 async fn render_until_clear_result<W: Write>(
-    runtime: &mut RuntimeHandle,
+    runtime: &mut EmbeddedClient,
     renderer: &mut EventRenderer<W>,
 ) -> Result<()> {
     let Some(event) = runtime.next_event().await else {
@@ -657,7 +668,7 @@ async fn render_until_clear_result<W: Write>(
 }
 
 async fn render_operation<W: Write>(
-    runtime: &mut RuntimeHandle,
+    runtime: &mut EmbeddedClient,
     renderer: &mut EventRenderer<W>,
     operation_id: OperationId,
 ) -> Result<OperationOutcome> {
@@ -698,7 +709,7 @@ async fn render_operation<W: Write>(
 }
 
 async fn send_permission_decision(
-    runtime: &RuntimeHandle,
+    runtime: &EmbeddedClient,
     operation_id: OperationId,
     invocation_id: ToolInvocationId,
     decision: ControllerDecision,

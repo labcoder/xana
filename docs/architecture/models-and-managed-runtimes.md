@@ -256,13 +256,16 @@ thread on the next prompt. It does not delete the external Codex thread. Native
 ## Managed activity and reasoning controls
 
 Managed activity is a typed event stream, not assistant prose. The append-only
-terminal projects that stream through three session-only display levels:
+terminal first converts that stream to the bounded provider-neutral frontend
+vocabulary, then projects it through three session-only display levels. Vendor
+thread and turn identifiers, login notifications, and private RPC method names
+do not cross that frontend boundary:
 
 - `quiet` shows assistant output, approvals, reroutes, warnings, and failures;
 - `normal` additionally shows summaries, plans, and concise work lifecycle
   updates; and
 - `verbose` additionally shows provider-emitted reasoning text, command
-  output, complete diffs, plan deltas, and unknown event method names.
+  output, bounded diff previews, and plan deltas.
 
 `/details` replays a byte- and event-bounded verbose projection of the last
 turn. Assistant text is not duplicated in that buffer. These controls only
