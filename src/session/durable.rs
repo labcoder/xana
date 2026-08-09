@@ -142,6 +142,16 @@ impl DurableSession {
         self.owner
     }
 
+    pub(crate) fn started_orchestration_plans(
+        &self,
+    ) -> Vec<crate::orchestration::OrchestrationPlanStart> {
+        self.restored
+            .orchestration_plans
+            .values()
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.store.path()
     }

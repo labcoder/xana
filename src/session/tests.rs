@@ -15,6 +15,7 @@ use crate::{
     orchestration::{
         AgentHandleSnapshot, ChildAdmission, ChildAttribution, ChildLifecycle, ChildReport,
         ChildReportReference, ChildTerminalStatus, ChildUsage, ExecutionOwner,
+        OrchestrationPlanStart, PlanChildAttribution,
     },
     permission::{PermissionAuditFact, PermissionRequest, PermissionScope, PolicyDecision},
     runtime::{OperationOutcome, OperationState},
@@ -63,6 +64,7 @@ fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapsh
             connection: "local".to_owned(),
             model: "small".to_owned(),
         },
+        plan: None,
         task_preview: "bounded task".to_owned(),
         task_hash: blake3::hash(b"bounded task").to_hex().to_string(),
         result_schema: crate::orchestration::ChildResultSchema::Summary,
@@ -215,6 +217,85 @@ fn artifact_backed_child_report_requires_a_matching_prior_registration() {
     ));
     let restored = reduce(&registered).expect("registered artifact report");
     assert_eq!(restored.children[&agent_id].report.as_ref(), Some(&report));
+}
+
+#[test]
+fn plan_start_and_child_step_attribution_restore_without_evaluator_state() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let operation_id = OperationId::new();
+    let input = ConversationEntry {
+        id: ConversationEntryId::new(),
+        parent: None,
+        agent_id: AgentId::for_session(session_id),
+        message: Message::text(Role::User, "execute bounded plan"),
+    };
+    let plan_id = OrchestrationPlanId::new();
+    let start = OrchestrationPlanStart {
+        plan_id,
+        operation_id,
+        fingerprint: blake3::hash(b"plan").to_hex().to_string(),
+        step_ids: vec!["workers".to_owned(), "results".to_owned()],
+    };
+    let mut handle = child_handle(session_id, thread_id);
+    handle.apply_lifecycle(ChildLifecycle::Queued);
+    handle.admission.attribution.parent_operation_id = operation_id;
+    handle.admission.plan = Some(PlanChildAttribution {
+        plan_id,
+        step_id: "workers".to_owned(),
+        output_index: 0,
+    });
+    let records = vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ConversationEntryAppended {
+                entry: input.clone(),
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::OperationAccepted {
+                operation_id,
+                thread_id,
+                input_entry_id: input.id,
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::OrchestrationPlanStarted {
+                start: start.clone(),
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildrenBatchAdmitted {
+                handles: vec![handle.clone()],
+            },
+        ),
+    ];
+    let restored = reduce(&records).expect("restore plan attribution");
+    assert_eq!(restored.orchestration_plans[&plan_id], start);
+    assert_eq!(
+        restored.children[&handle.admission.attribution.agent_id]
+            .handle
+            .admission
+            .plan,
+        handle.admission.plan
+    );
+
+    let mut duplicate = records;
+    duplicate.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::OrchestrationPlanStarted {
+            start: restored.orchestration_plans[&plan_id].clone(),
+        },
+    ));
+    assert!(matches!(
+        reduce(&duplicate),
+        Err(crate::session::reduce::ReductionError::InvalidOrchestrationPlan { plan })
+            if plan == plan_id
+    ));
 }
 
 #[test]

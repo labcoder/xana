@@ -22,6 +22,8 @@ engineering contracts used to change it.
 - [Child orchestration](user/orchestration.md) explains exact native routes,
   runtime-owned children, active/offline inspection, cancellation and timeout
   semantics, attributed lifecycle, bounded reports, and current limits.
+- [Orchestration plans](user/orchestration-plans.md) explains the closed,
+  versioned spawn/await/collect/cancel graph and its validation boundary.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 

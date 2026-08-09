@@ -165,7 +165,20 @@ terminal status, attribution, typed usage, and report reference. Its explicit
 continue-on-error or fail-fast policy never erases results already observed;
 timeout and cancellation are separate choices. Collection serialization has a
 hard bound independent of durable artifact size and makes no model call.
-Plans and managed Codex children are not yet implemented.
+Managed Codex children are not yet implemented.
+
+`OrchestrationPlan` is the separate closed child-work domain; the existing
+prompt-selection `ContextPlan` is unchanged. A pure structural validator
+checks the versioned, byte-bounded spawn/await/collect/cancel graph and only
+prior spawn-handle references. The supervisor then resolves every exact route
+and performs a reserve/release dry check of the aggregate ledger before any
+record is appended. Execution commits `OrchestrationPlanStarted`, atomically
+admits the complete static spawn set through the canonical batch path, and
+executes remaining steps through the same await, collect, and cancel methods.
+The durable start fingerprint rejects repeated plan ids across restoration;
+each child admission carries plan id, spawn step id, and output index. No plan
+interpreter, evaluator state, loop, branch, recursion, or second scheduler
+exists.
 
 `OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
 are distinct UUID v4 newtypes.

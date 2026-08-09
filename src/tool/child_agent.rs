@@ -411,7 +411,7 @@ impl Tool for CollectAgents {
     }
 }
 
-fn spawn_parameters() -> Value {
+pub(super) fn spawn_parameters() -> Value {
     json!({
         "type":"object",
         "additionalProperties":false,

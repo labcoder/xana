@@ -8,6 +8,7 @@ mod child_agent;
 mod delegate_agent;
 mod edit_file;
 mod list_files;
+mod orchestration_plan;
 mod read_document;
 mod read_file;
 mod run_command;
@@ -329,6 +330,12 @@ impl ToolRegistry {
         self.register(child_agent::AwaitAgent::new(supervisor.clone()))?;
         self.register(child_agent::CancelAgent::new(supervisor.clone()))?;
         self.register(child_agent::CollectAgents::new(supervisor.clone()))?;
+        self.register(orchestration_plan::ValidateOrchestrationPlan::new(
+            supervisor.clone(),
+        ))?;
+        self.register(orchestration_plan::ExecuteOrchestrationPlan::new(
+            supervisor.clone(),
+        ))?;
         self.register(delegate_agent::DelegateAgent::new(supervisor))
     }
 

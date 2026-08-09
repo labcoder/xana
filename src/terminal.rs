@@ -484,7 +484,7 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
 
 fn write_child_summary<W: Write>(output: &mut W, child: &ChildInspection) -> io::Result<()> {
     let attribution = &child.handle.admission.attribution;
-    writeln!(
+    write!(
         output,
         "  {} parent={} route={} owner={} connection={} model={} state={:?}{}",
         attribution.agent_id,
@@ -499,7 +499,15 @@ fn write_child_summary<W: Write>(output: &mut W, child: &ChildInspection) -> io:
         } else {
             ""
         }
-    )
+    )?;
+    if let Some(plan) = &child.handle.admission.plan {
+        write!(
+            output,
+            " plan={} step={}[{}]",
+            plan.plan_id, plan.step_id, plan.output_index
+        )?;
+    }
+    writeln!(output)
 }
 
 async fn render_until_child_control_result<W: Write>(
@@ -754,6 +762,7 @@ mod tests {
         let mut handle = crate::orchestration::AgentHandleSnapshot::admitted(
             crate::orchestration::ChildAdmission {
                 attribution,
+                plan: None,
                 task_preview: "review".to_owned(),
                 task_hash: blake3::hash(b"review").to_hex().to_string(),
                 result_schema: crate::orchestration::ChildResultSchema::Summary,
