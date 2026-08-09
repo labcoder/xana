@@ -2,9 +2,9 @@
 
 > Audience: People configuring or observing Xana child agents.
 
-Xana can currently delegate one bounded task from a native root conversation
-to an exact native task route. This is runtime-owned work, not a second shell
-process and not a free-form background agent.
+Xana can delegate one bounded task or atomically admit a fixed batch from a
+native root conversation to exact native task routes. This is runtime-owned
+work, not a second shell process and not a free-form background agent.
 
 ## Configure and verify a route
 
@@ -26,6 +26,15 @@ tools = true
 [profiles.default]
 connection = "local"
 model = "qwen3:1.7b"
+
+[profiles.default.orchestration]
+max_fan_out = 4
+max_descendants = 8
+max_concurrency = 2
+deadline_seconds = 300
+max_context_tokens = 8192
+max_report_bytes = 32768
+max_artifact_bytes = 8388608
 
 [profiles.worker]
 connection = "local"
@@ -56,8 +65,8 @@ managed process. An unavailable route fails rather than choosing a fallback.
 ## Delegate during native chat
 
 When at least one route exists, the native root tool catalog includes the
-explicit `spawn_agent`, `await_agent`, and `cancel_agent` operations plus
-`delegate_agent`. You can ask naturally, for example:
+explicit `spawn_agent`, `spawn_many`, `await_agent`, and `cancel_agent`
+operations plus `delegate_agent`. You can ask naturally, for example:
 
 ```text
 Please delegate a focused review of the configuration parser to the worker
@@ -77,7 +86,8 @@ xana> child <id> report: Completed
 
 Permission questions identify the child and route. The root remains the
 controlling terminal, and the child profile can only narrow the configured
-permission ceiling.
+permission ceiling. The root profile is the parent authority and budget
+ceiling; a child profile and request may narrow it but cannot widen it.
 
 `delegate_agent` is the efficient one-task path: it spawns and waits inside one
 tool call. `spawn_agent` returns immediately with a handle, allowing the root
@@ -86,6 +96,11 @@ can call `await_agent` or `cancel_agent`; this also makes the active slash
 commands useful between turns. `await_agent` accepts an optional bounded
 `timeout_ms` and an explicit `cancel_on_timeout` flag. `cancel_agent` returns a
 request receipt, not a fictional terminal success.
+
+`spawn_many` takes a statically bounded array of independent child requests.
+Xana validates and reserves the complete batch before one handle or event is
+visible. A bad member or aggregate limit rejects the entire batch. Accepted
+children queue in input order and run fairly up to `max_concurrency`.
 
 ## Context, identity, and reports
 
@@ -129,16 +144,22 @@ read-only restart projection.
 
 Completed, failed, cancelled, and interrupted reports retain parent/child,
 operation, thread, route, connection, model, and owner attribution. Inline
-output is bounded by the route's `max_report_bytes`. Provider usage is reported
-as `unknown` until an adapter supplies a real measurement; Xana does not
-substitute zero.
+output is bounded by the route's `max_report_bytes`. Provider usage is
+explicitly `measured`, `estimated`, or `unknown`; Xana does not substitute
+zero. Native adapters currently report `unknown`. A hard token or spend
+request is rejected unless its execution owner exposes enforceable
+pre-request control or an interruptible live meter. Subscription rate-limit
+state is not monetary spend.
 
 ## Current limits
 
-- One native child runs at a time in this slice; additional admitted children
-  wait in stable admission order.
+- Native children run up to the root profile's `max_concurrency`; additional
+  admitted children wait in stable admission order.
+- The runtime atomically accounts for fan-out, active descendants, tool
+  rounds, context bounds, inline report bytes, and artifact bytes. A child's
+  wall-clock deadline begins at admission, including queue time.
 - There is no detach or background continuation.
-- Atomic parallel batches, artifact-backed report overflow, orchestration
+- Artifact-backed report overflow, multi-result collection, orchestration
   plans, and managed Codex children are not implemented in this slice.
 - Runtime shutdown cooperatively cancels queued and running children, closes
   pending permission requests, waits for their durable terminal outcomes, and

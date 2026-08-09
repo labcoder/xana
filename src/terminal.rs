@@ -760,6 +760,8 @@ mod tests {
                 permission_mode: crate::config::PermissionMode::Deny,
                 max_tool_rounds: 1,
                 limits: crate::config::OrchestrationLimits::default(),
+                hard_token_limit: None,
+                hard_spend_microusd: None,
             },
         );
         handle.apply_lifecycle(crate::orchestration::ChildLifecycle::Running);

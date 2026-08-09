@@ -75,8 +75,9 @@ the committed terminal lifecycle/report is the stop acknowledgement.
 ## Native child supervision boundary
 
 When a native root has configured task routes, the application creates one
-`ChildSupervisor` actor and registers `spawn_agent`, `await_agent`,
-`cancel_agent`, and `delegate_agent` only in the root tool registry. The
+`ChildSupervisor` actor and registers `spawn_agent`, `spawn_many`,
+`await_agent`, `cancel_agent`, and `delegate_agent` only in the root tool
+registry. The
 model-facing convenience calls the supervisor's distinct `spawn_agent` and
 `await_agent` operations in one tool execution, so no outer model response is
 needed between admission and collection. `AgentId` is the
@@ -85,28 +86,40 @@ from its public `SessionId`, keeping lineage stable across resume without a
 write-on-open migration.
 
 Admission prepares the exact route, native provider, immutable capability/tool
-snapshot, permission ceiling, prompt, and explicit task before a child record
-exists. The runtime commits `admitted` and `queued` before exposing the handle,
-then starts queued work in stable admission order when the single native slot
-is free and commits `running` before its event. The supervisor, not the tool
-future, owns the Tokio task and permission broker. Dropping or timing out an
-await therefore leaves the child supervised unless cancel-on-timeout was
-explicit. Repeated await/cancel operations are idempotent after terminal state.
-A terminal report is committed before completed/failed/cancelled/interrupted
-events and contains typed attribution and an honest `unknown` usage state when
-the adapter exposes no usage.
+snapshot, authority intersection, prompt, and explicit task before a child
+record exists. A runtime-owned `BudgetLedger` reserves fan-out, active
+descendants, tool rounds, context capacity, report bytes, and artifact bytes in
+one actor mutation. `spawn_many` validates and reserves every member before a
+single durable batch record or observer event exists. Queued work is kept in a
+FIFO admission queue and starts only while the root profile's concurrency
+capacity is available. The child deadline begins at admission, so queue time is
+bounded too. Reservations and running slots are released exactly once on every
+terminal or failed-start path.
+
+Single admission preserves explicit `admitted` and `queued` durable facts;
+batch admission commits all queued handles in one atomic record. `running` is
+always committed before its event. The supervisor, not the tool future, owns
+the Tokio task and permission broker. Dropping or timing out an await therefore
+leaves the child supervised unless cancel-on-timeout was explicit. Repeated
+await/cancel operations are idempotent after terminal state. A terminal report
+is committed before completed/failed/cancelled/interrupted events and contains
+typed attribution. Usage is represented as measured, estimated, or unknown;
+unknown is never treated as zero.
 
 ```mermaid
 sequenceDiagram
     participant Root as "root Agent"
-    participant Tool as "delegate_agent"
+    participant Tool as "spawn_many / delegate_agent"
     participant Supervisor as "ChildSupervisor"
+    participant Ledger as "BudgetLedger"
     participant Session as "session writer"
     participant Child as "native child Agent"
-    Root->>Tool: exact route + explicit task
-    Tool->>Supervisor: spawn_agent
-    Supervisor->>Session: commit admitted → queued → running
+    Root->>Tool: exact route + fixed task request(s)
+    Tool->>Supervisor: spawn one or atomic batch
+    Supervisor->>Ledger: validate + reserve complete admission
+    Supervisor->>Session: commit queued batch or admitted → queued
     Supervisor-->>Tool: AgentHandleSnapshot
+    Supervisor->>Session: commit running as capacity opens
     Supervisor->>Child: fresh bounded prompt and tool snapshot
     Tool->>Supervisor: await_agent(handle)
     Child-->>Supervisor: direct result or attributed failure
@@ -135,10 +148,10 @@ process is read-only and cannot claim to cancel foreground work.
 The child receives Xana's identity/guidelines, its exact task, applicable
 bounded root `AGENTS.md`, environment facts, and only the tools selected by its
 profile. It receives no parent transcript and its registry never contains
-orchestration tools, so child depth is structurally one. This slice runs one
-native child and queues later single admissions. Atomic batch admission,
-parallel execution, artifact overflow, plans, and managed Codex children are
-not yet implemented.
+orchestration tools, so child depth is structurally one. Native children run
+in stable admission order up to the root profile's bounded concurrency.
+Artifact overflow, multi-result collection, plans, and managed Codex children
+are not yet implemented.
 
 `OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
 are distinct UUID v4 newtypes.

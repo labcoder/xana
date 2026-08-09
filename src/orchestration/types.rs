@@ -18,6 +18,29 @@ pub(crate) struct SpawnAgentRequest {
     #[serde(default)]
     pub(crate) route: Option<String>,
     pub(crate) task: String,
+    #[serde(default)]
+    pub(crate) restrictions: ChildRestrictions,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChildRestrictions {
+    #[serde(default)]
+    pub(crate) permission_mode: Option<PermissionMode>,
+    #[serde(default)]
+    pub(crate) max_tool_rounds: Option<usize>,
+    #[serde(default)]
+    pub(crate) deadline_seconds: Option<u64>,
+    #[serde(default)]
+    pub(crate) max_context_tokens: Option<usize>,
+    #[serde(default)]
+    pub(crate) max_report_bytes: Option<usize>,
+    #[serde(default)]
+    pub(crate) max_artifact_bytes: Option<usize>,
+    #[serde(default)]
+    pub(crate) hard_token_limit: Option<u64>,
+    #[serde(default)]
+    pub(crate) hard_spend_microusd: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +156,15 @@ pub(crate) enum ChildUsage {
         output_tokens: Option<u64>,
         total_tokens: Option<u64>,
         requests: u64,
+        #[serde(default)]
+        spend_microusd: Option<u64>,
+    },
+    Estimated {
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        total_tokens: Option<u64>,
+        requests: Option<u64>,
+        spend_microusd: Option<u64>,
     },
 }
 
@@ -268,6 +300,10 @@ pub(crate) struct ChildAdmission {
     pub(crate) permission_mode: PermissionMode,
     pub(crate) max_tool_rounds: usize,
     pub(crate) limits: OrchestrationLimits,
+    #[serde(default)]
+    pub(crate) hard_token_limit: Option<u64>,
+    #[serde(default)]
+    pub(crate) hard_spend_microusd: Option<u64>,
 }
 
 impl ChildAdmission {
@@ -289,6 +325,8 @@ impl ChildAdmission {
             permission_mode: resolved.permission_mode,
             max_tool_rounds: resolved.max_tool_rounds,
             limits: resolved.orchestration.clone(),
+            hard_token_limit: resolved.hard_token_limit,
+            hard_spend_microusd: resolved.hard_spend_microusd,
         }
     }
 }
@@ -337,6 +375,17 @@ pub(crate) fn validate_spawn_request(request: &SpawnAgentRequest) -> Result<(), 
     {
         return Err("child route must not be blank when supplied");
     }
+    let restrictions = &request.restrictions;
+    if restrictions.max_tool_rounds == Some(0)
+        || restrictions.deadline_seconds == Some(0)
+        || restrictions.max_context_tokens == Some(0)
+        || restrictions.max_report_bytes == Some(0)
+        || restrictions.max_artifact_bytes == Some(0)
+        || restrictions.hard_token_limit == Some(0)
+        || restrictions.hard_spend_microusd == Some(0)
+    {
+        return Err("child restriction bounds must be greater than zero");
+    }
     Ok(())
 }
 
@@ -361,6 +410,7 @@ mod tests {
             validate_spawn_request(&SpawnAgentRequest {
                 route: None,
                 task: "  ".to_owned(),
+                restrictions: ChildRestrictions::default(),
             }),
             Err("child task must not be blank")
         );
@@ -393,6 +443,8 @@ mod tests {
             permission_mode: PermissionMode::Deny,
             max_tool_rounds: 1,
             limits: OrchestrationLimits::default(),
+            hard_token_limit: None,
+            hard_spend_microusd: None,
         };
         let mut handle = AgentHandleSnapshot::admitted(admission);
         let report =
@@ -406,5 +458,44 @@ mod tests {
             handle.report,
             Some(ChildReportReference::Inline { byte_len: 4 })
         );
+    }
+
+    #[test]
+    fn usage_distinguishes_measured_estimated_and_unknown_values() {
+        let measured = ChildUsage::Measured {
+            input_tokens: Some(10),
+            output_tokens: Some(5),
+            total_tokens: Some(15),
+            requests: 1,
+            spend_microusd: Some(250),
+        };
+        let estimated = ChildUsage::Estimated {
+            input_tokens: Some(8),
+            output_tokens: None,
+            total_tokens: None,
+            requests: Some(1),
+            spend_microusd: None,
+        };
+        for usage in [measured, estimated, ChildUsage::Unknown] {
+            let encoded = serde_json::to_vec(&usage).expect("encode usage");
+            let decoded: ChildUsage = serde_json::from_slice(&encoded).expect("decode usage");
+            assert_eq!(decoded, usage);
+        }
+
+        let prior_measured: ChildUsage = serde_json::from_value(serde_json::json!({
+            "state":"measured",
+            "input_tokens":10,
+            "output_tokens":5,
+            "total_tokens":15,
+            "requests":1
+        }))
+        .expect("decode pre-spend measured usage");
+        assert!(matches!(
+            prior_measured,
+            ChildUsage::Measured {
+                spend_microusd: None,
+                ..
+            }
+        ));
     }
 }

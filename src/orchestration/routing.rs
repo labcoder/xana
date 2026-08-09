@@ -1,3 +1,4 @@
+use super::types::ChildRestrictions;
 use crate::{
     capability::resolve_builtin_capability_snapshot,
     config::{ConnectionRegistry, OrchestrationLimits, PermissionMode, ProviderKind},
@@ -38,6 +39,14 @@ pub(crate) struct ResolvedAgentConfig {
     pub(crate) permission_mode: PermissionMode,
     pub(crate) max_tool_rounds: usize,
     pub(crate) orchestration: OrchestrationLimits,
+    pub(crate) hard_token_limit: Option<u64>,
+    pub(crate) hard_spend_microusd: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct EnforcementCapabilities {
+    pub(crate) hard_tokens: bool,
+    pub(crate) hard_spend: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +75,43 @@ pub(crate) enum RouteResolutionError {
         model: String,
     },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RestrictionError {
+    AuthorityWidening,
+    BoundWidening {
+        field: &'static str,
+        requested: u64,
+        maximum: u64,
+    },
+    UnsupportedHardLimit {
+        field: &'static str,
+    },
+}
+
+impl fmt::Display for RestrictionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AuthorityWidening => formatter.write_str(
+                "child permission restriction would widen its resolved parent/profile ceiling",
+            ),
+            Self::BoundWidening {
+                field,
+                requested,
+                maximum,
+            } => write!(
+                formatter,
+                "child restriction {field}={requested} exceeds resolved maximum {maximum}"
+            ),
+            Self::UnsupportedHardLimit { field } => write!(
+                formatter,
+                "child requests hard {field}, but this execution owner exposes no enforceable pre-request control or interruptible live meter"
+            ),
+        }
+    }
+}
+
+impl Error for RestrictionError {}
 
 impl fmt::Display for RouteResolutionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -140,6 +186,16 @@ impl<'a> RouteResolver<'a> {
                 RouteResolutionError::InconsistentConfig(format!(
                     "route {route:?} references missing profile {:?}",
                     route_config.profile
+                ))
+            })?;
+        let parent_profile = self
+            .registry
+            .profiles
+            .get(&self.registry.default_profile)
+            .ok_or_else(|| {
+                RouteResolutionError::InconsistentConfig(format!(
+                    "default profile {:?} is missing",
+                    self.registry.default_profile
                 ))
             })?;
         let connection = self
@@ -231,13 +287,115 @@ impl<'a> RouteResolver<'a> {
             reasoning_summary: selection.reasoning_summary,
             capabilities,
             permission_mode: narrow_permission(
-                self.registry.permission_mode,
+                narrow_permission(
+                    self.registry.permission_mode,
+                    parent_profile.permission_mode,
+                ),
                 profile.permission_mode,
             ),
-            max_tool_rounds: profile.max_tool_rounds,
-            orchestration: profile.orchestration.clone(),
+            max_tool_rounds: profile.max_tool_rounds.min(parent_profile.max_tool_rounds),
+            orchestration: intersect_limits(&parent_profile.orchestration, &profile.orchestration),
+            hard_token_limit: None,
+            hard_spend_microusd: None,
         })
     }
+}
+
+pub(crate) fn apply_spawn_restrictions(
+    resolved: &mut ResolvedAgentConfig,
+    restrictions: &ChildRestrictions,
+    enforcement: EnforcementCapabilities,
+) -> Result<(), RestrictionError> {
+    let mut restricted = resolved.clone();
+    if let Some(permission_mode) = restrictions.permission_mode {
+        if permission_rank(permission_mode) > permission_rank(restricted.permission_mode) {
+            return Err(RestrictionError::AuthorityWidening);
+        }
+        restricted.permission_mode = permission_mode;
+    }
+    narrow_usize(
+        "max_tool_rounds",
+        &mut restricted.max_tool_rounds,
+        restrictions.max_tool_rounds,
+    )?;
+    narrow_u64(
+        "deadline_seconds",
+        &mut restricted.orchestration.deadline_seconds,
+        restrictions.deadline_seconds,
+    )?;
+    narrow_usize(
+        "max_context_tokens",
+        &mut restricted.orchestration.max_context_tokens,
+        restrictions.max_context_tokens,
+    )?;
+    narrow_usize(
+        "max_report_bytes",
+        &mut restricted.orchestration.max_report_bytes,
+        restrictions.max_report_bytes,
+    )?;
+    narrow_usize(
+        "max_artifact_bytes",
+        &mut restricted.orchestration.max_artifact_bytes,
+        restrictions.max_artifact_bytes,
+    )?;
+    if restrictions.hard_token_limit.is_some() && !enforcement.hard_tokens {
+        return Err(RestrictionError::UnsupportedHardLimit {
+            field: "token limit",
+        });
+    }
+    if restrictions.hard_spend_microusd.is_some() && !enforcement.hard_spend {
+        return Err(RestrictionError::UnsupportedHardLimit {
+            field: "spend limit",
+        });
+    }
+    restricted.hard_token_limit = restrictions.hard_token_limit;
+    restricted.hard_spend_microusd = restrictions.hard_spend_microusd;
+    *resolved = restricted;
+    Ok(())
+}
+
+fn permission_rank(mode: PermissionMode) -> u8 {
+    match mode {
+        PermissionMode::Deny => 0,
+        PermissionMode::Ask => 1,
+        PermissionMode::Allow => 2,
+    }
+}
+
+fn narrow_usize(
+    field: &'static str,
+    value: &mut usize,
+    requested: Option<usize>,
+) -> Result<(), RestrictionError> {
+    if let Some(requested) = requested {
+        if requested > *value {
+            return Err(RestrictionError::BoundWidening {
+                field,
+                requested: requested as u64,
+                maximum: *value as u64,
+            });
+        }
+        *value = requested;
+    }
+    Ok(())
+}
+
+fn narrow_u64(
+    field: &'static str,
+    value: &mut u64,
+    requested: Option<u64>,
+) -> Result<(), RestrictionError> {
+    if let Some(requested) = requested {
+        if requested > *value {
+            return Err(RestrictionError::BoundWidening {
+                field,
+                requested,
+                maximum: *value,
+            });
+        }
+        *value = requested;
+    }
+    Ok(())
 }
 
 fn narrow_permission(global: PermissionMode, profile: Option<PermissionMode>) -> PermissionMode {
@@ -246,6 +404,21 @@ fn narrow_permission(global: PermissionMode, profile: Option<PermissionMode>) ->
         (PermissionMode::Deny, _) | (_, PermissionMode::Deny) => PermissionMode::Deny,
         (PermissionMode::Ask, _) | (_, PermissionMode::Ask) => PermissionMode::Ask,
         (PermissionMode::Allow, PermissionMode::Allow) => PermissionMode::Allow,
+    }
+}
+
+fn intersect_limits(
+    parent: &OrchestrationLimits,
+    child: &OrchestrationLimits,
+) -> OrchestrationLimits {
+    OrchestrationLimits {
+        max_fan_out: parent.max_fan_out.min(child.max_fan_out),
+        max_descendants: parent.max_descendants.min(child.max_descendants),
+        max_concurrency: parent.max_concurrency.min(child.max_concurrency),
+        deadline_seconds: parent.deadline_seconds.min(child.deadline_seconds),
+        max_context_tokens: parent.max_context_tokens.min(child.max_context_tokens),
+        max_report_bytes: parent.max_report_bytes.min(child.max_report_bytes),
+        max_artifact_bytes: parent.max_artifact_bytes.min(child.max_artifact_bytes),
     }
 }
 
@@ -412,6 +585,147 @@ profile = "worker"
             .expect("resolve route");
 
         assert_eq!(resolved.permission_mode, PermissionMode::Ask);
+    }
+
+    #[test]
+    fn request_restrictions_narrow_atomically_and_never_widen_authority() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            ROUTE_CONFIG.replace("permission_mode = \"deny\"", "permission_mode = \"ask\""),
+        )
+        .expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        let baseline = RouteResolver::new(&registry, &manager)
+            .resolve(None)
+            .expect("resolve route");
+
+        let mut narrowed = baseline.clone();
+        apply_spawn_restrictions(
+            &mut narrowed,
+            &ChildRestrictions {
+                permission_mode: Some(PermissionMode::Deny),
+                max_tool_rounds: Some(2),
+                deadline_seconds: Some(30),
+                max_context_tokens: Some(1_024),
+                max_report_bytes: Some(2_048),
+                max_artifact_bytes: Some(4_096),
+                hard_token_limit: None,
+                hard_spend_microusd: None,
+            },
+            EnforcementCapabilities {
+                hard_tokens: false,
+                hard_spend: false,
+            },
+        )
+        .expect("narrow restrictions");
+        assert_eq!(narrowed.permission_mode, PermissionMode::Deny);
+        assert_eq!(narrowed.max_tool_rounds, 2);
+        assert_eq!(narrowed.orchestration.deadline_seconds, 30);
+
+        let mut widening = baseline.clone();
+        assert_eq!(
+            apply_spawn_restrictions(
+                &mut widening,
+                &ChildRestrictions {
+                    permission_mode: Some(PermissionMode::Allow),
+                    ..Default::default()
+                },
+                EnforcementCapabilities {
+                    hard_tokens: false,
+                    hard_spend: false,
+                },
+            ),
+            Err(RestrictionError::AuthorityWidening)
+        );
+        assert_eq!(widening, baseline, "a rejected restriction is atomic");
+    }
+
+    #[test]
+    fn root_profile_is_the_parent_ceiling_for_child_routes() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        let config = ROUTE_CONFIG.replace(
+            "[profiles.default]\nconnection = \"local\"\nmodel = \"root\"",
+            r#"[profiles.default]
+connection = "local"
+model = "root"
+permission_mode = "deny"
+max_tool_rounds = 2
+
+[profiles.default.orchestration]
+deadline_seconds = 20
+max_context_tokens = 1000"#,
+        );
+        fs::write(&config_path, config).expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+
+        let resolved = RouteResolver::new(&registry, &manager)
+            .resolve(None)
+            .expect("resolve route");
+        assert_eq!(resolved.permission_mode, PermissionMode::Deny);
+        assert_eq!(resolved.max_tool_rounds, 2);
+        assert_eq!(resolved.orchestration.deadline_seconds, 20);
+        assert_eq!(resolved.orchestration.max_context_tokens, 1_000);
+    }
+
+    #[test]
+    fn hard_usage_limits_require_an_enforcement_capability() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        fs::write(&config_path, ROUTE_CONFIG).expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        let baseline = RouteResolver::new(&registry, &manager)
+            .resolve(None)
+            .expect("resolve route");
+        let restrictions = ChildRestrictions {
+            hard_token_limit: Some(1_000),
+            hard_spend_microusd: Some(25_000),
+            ..Default::default()
+        };
+
+        let mut unsupported = baseline.clone();
+        assert!(matches!(
+            apply_spawn_restrictions(
+                &mut unsupported,
+                &restrictions,
+                EnforcementCapabilities {
+                    hard_tokens: false,
+                    hard_spend: false,
+                },
+            ),
+            Err(RestrictionError::UnsupportedHardLimit { .. })
+        ));
+        assert_eq!(unsupported, baseline);
+
+        let mut supported = baseline;
+        apply_spawn_restrictions(
+            &mut supported,
+            &restrictions,
+            EnforcementCapabilities {
+                hard_tokens: true,
+                hard_spend: true,
+            },
+        )
+        .expect("enforceable limits");
+        assert_eq!(supported.hard_token_limit, Some(1_000));
+        assert_eq!(supported.hard_spend_microusd, Some(25_000));
     }
 
     #[test]

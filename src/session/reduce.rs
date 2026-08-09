@@ -439,30 +439,23 @@ pub(crate) fn validate_envelope(
             }
         }
         SessionRecord::ChildAdmitted { handle } => {
-            let attribution = &handle.admission.attribution;
-            if handle.lifecycle != ChildLifecycle::Admitted
-                || handle.report.is_some()
-                || handle.usage != crate::orchestration::ChildUsage::Unknown
-                || attribution.agent_id == attribution.parent_agent_id
-                || attribution.parent_agent_id != AgentId::for_session(state.session_id)
-                || attribution.route.trim().is_empty()
-                || attribution.profile.trim().is_empty()
-                || attribution.connection.trim().is_empty()
-                || attribution.model.trim().is_empty()
-                || handle.admission.task_hash.len() != 64
-                || handle.admission.task_preview.len()
-                    > crate::orchestration::MAX_CHILD_TASK_PREVIEW_BYTES
-            {
-                Err(ReductionError::InvalidChildAdmission {
-                    agent: attribution.agent_id,
-                })
-            } else if state.children.contains_key(&attribution.agent_id) {
-                Err(ReductionError::DuplicateChild {
-                    agent: attribution.agent_id,
-                })
-            } else {
-                Ok(())
+            validate_child_admission(state, handle, ChildLifecycle::Admitted)
+        }
+        SessionRecord::ChildrenBatchAdmitted { handles } => {
+            if handles.is_empty() || handles.len() > 64 {
+                return Err(ReductionError::InvalidChildBatch {
+                    size: handles.len(),
+                });
             }
+            let mut batch_ids = HashSet::with_capacity(handles.len());
+            for handle in handles {
+                let agent_id = handle.admission.attribution.agent_id;
+                if !batch_ids.insert(agent_id) {
+                    return Err(ReductionError::DuplicateChild { agent: agent_id });
+                }
+                validate_child_admission(state, handle, ChildLifecycle::Queued)?;
+            }
+            Ok(())
         }
         SessionRecord::ChildLifecycleChanged {
             agent_id,
@@ -638,6 +631,17 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
                 },
             );
         }
+        SessionRecord::ChildrenBatchAdmitted { handles } => {
+            for handle in handles {
+                state.children.insert(
+                    handle.admission.attribution.agent_id,
+                    RestoredChild {
+                        handle: handle.clone(),
+                        report: None,
+                    },
+                );
+            }
+        }
         SessionRecord::ChildLifecycleChanged {
             agent_id,
             lifecycle,
@@ -668,6 +672,36 @@ fn valid_child_transition(previous: ChildLifecycle, next: ChildLifecycle) -> boo
             | (ChildLifecycle::Running, ChildLifecycle::Suspended)
             | (ChildLifecycle::Suspended, ChildLifecycle::Running)
     )
+}
+
+fn validate_child_admission(
+    state: &RestoredSession,
+    handle: &AgentHandleSnapshot,
+    required_lifecycle: ChildLifecycle,
+) -> Result<(), ReductionError> {
+    let attribution = &handle.admission.attribution;
+    if handle.lifecycle != required_lifecycle
+        || handle.report.is_some()
+        || handle.usage != crate::orchestration::ChildUsage::Unknown
+        || attribution.agent_id == attribution.parent_agent_id
+        || attribution.parent_agent_id != AgentId::for_session(state.session_id)
+        || attribution.route.trim().is_empty()
+        || attribution.profile.trim().is_empty()
+        || attribution.connection.trim().is_empty()
+        || attribution.model.trim().is_empty()
+        || handle.admission.task_hash.len() != 64
+        || handle.admission.task_preview.len() > crate::orchestration::MAX_CHILD_TASK_PREVIEW_BYTES
+    {
+        Err(ReductionError::InvalidChildAdmission {
+            agent: attribution.agent_id,
+        })
+    } else if state.children.contains_key(&attribution.agent_id) {
+        Err(ReductionError::DuplicateChild {
+            agent: attribution.agent_id,
+        })
+    } else {
+        Ok(())
+    }
 }
 
 fn valid_child_terminal_source(previous: ChildLifecycle) -> bool {
@@ -868,6 +902,9 @@ pub(crate) enum ReductionError {
     },
     InvalidChildAdmission {
         agent: AgentId,
+    },
+    InvalidChildBatch {
+        size: usize,
     },
     DuplicateChild {
         agent: AgentId,

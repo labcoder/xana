@@ -325,6 +325,7 @@ impl ToolRegistry {
         supervisor: crate::orchestration::ChildSupervisorHandle,
     ) -> Result<(), RegistryError> {
         self.register(child_agent::SpawnAgent::new(supervisor.clone()))?;
+        self.register(child_agent::SpawnMany::new(supervisor.clone()))?;
         self.register(child_agent::AwaitAgent::new(supervisor.clone()))?;
         self.register(child_agent::CancelAgent::new(supervisor.clone()))?;
         self.register(delegate_agent::DelegateAgent::new(supervisor))
