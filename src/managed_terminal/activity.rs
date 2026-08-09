@@ -4,6 +4,7 @@ use crate::managed::codex::{
     ApprovalDecision, ApprovalRequest, CodexError, ManagedEventHandler, ManagedItem,
     ManagedNotification,
 };
+use futures::future::BoxFuture;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -159,6 +160,8 @@ impl ManagedEventHandler for TerminalManagedHandler {
     fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
         self.retained.push(&notification);
         match notification {
+            ManagedNotification::ThreadStarted { .. }
+            | ManagedNotification::TokenUsageUpdated { .. } => {}
             ManagedNotification::AssistantDelta { delta, .. } => {
                 self.retained.assistant_streamed |= !delta.is_empty();
                 self.write_delta(StreamKind::Assistant, "xana>", &delta)?;
@@ -263,7 +266,17 @@ impl ManagedEventHandler for TerminalManagedHandler {
         Ok(())
     }
 
-    fn approve(&mut self, request: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
+    fn approve<'a>(
+        &'a mut self,
+        request: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
+        let result = self.approve_now(request);
+        Box::pin(async move { result })
+    }
+}
+
+impl TerminalManagedHandler {
+    fn approve_now(&mut self, request: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
         self.finish_stream()?;
         println!("xana> Codex requests approval");
         println!("request: {}", request.method);
@@ -376,6 +389,10 @@ fn retained_cost(notification: &ManagedNotification) -> usize {
         | ManagedNotification::LoginCompleted { error, .. } => {
             error.as_deref().map_or(64, str::len)
         }
+        ManagedNotification::ThreadStarted { thread_id } => thread_id.len(),
+        ManagedNotification::TokenUsageUpdated {
+            thread_id, turn_id, ..
+        } => thread_id.len() + turn_id.len() + 24,
         ManagedNotification::ReasoningSummaryPartAdded { .. }
         | ManagedNotification::Other { .. } => 64,
     }

@@ -11,9 +11,10 @@ use crate::{
         ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildExecutionOutput,
         ChildLifecycle, ChildReport, ChildResultSchema, ChildSupervisor, ChildTerminalStatus,
         ChildUsage, CollectAgentsOptions, CollectionEntryState, CollectionFailurePolicy,
-        EnforcementCapabilities, ExecutionOwner, OrchestrationBudget, OrchestrationPlan,
-        OrchestrationPlanStep, OrchestrationPlanStepResult, ParentExecution, PlanHandleRef,
-        PreparedChild, ResolvedAgentConfig, SpawnAgentRequest, apply_spawn_restrictions,
+        EnforcementCapabilities, ExecutionOwner, ManagedCodexChildExecution, ManagedCodexChildSpec,
+        ManagedCodexRunner, OrchestrationBudget, OrchestrationPlan, OrchestrationPlanStep,
+        OrchestrationPlanStepResult, ParentExecution, PlanHandleRef, PreparedChild,
+        ResolvedAgentConfig, SpawnAgentRequest, apply_spawn_restrictions, child_policy,
     },
     permission::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
@@ -298,6 +299,68 @@ struct ScriptedOutcomeChildExecution {
     task: String,
 }
 
+struct SupervisorManagedFactory {
+    workspace: std::path::PathBuf,
+    runner: Arc<dyn ManagedCodexRunner>,
+}
+
+#[derive(Default)]
+struct SupervisorManagedRunner {
+    started: Arc<Notify>,
+    interruptions: Arc<AtomicUsize>,
+}
+
+impl ManagedCodexRunner for SupervisorManagedRunner {
+    fn run(
+        &self,
+        spec: ManagedCodexChildSpec,
+        context: ChildExecutionContext,
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
+        self.started.notify_one();
+        let cancellation = context.cancellation.clone();
+        let interruptions = Arc::clone(&self.interruptions);
+        Box::pin(async move {
+            let _ = context.events.send(AgentEvent::ChildActivity {
+                attribution: context.attribution.clone(),
+                activity: crate::orchestration::ChildActivity::ManagedRuntime {
+                    notification: crate::managed::codex::ManagedNotification::ThreadStarted {
+                        thread_id: "thread-fake".to_owned(),
+                    },
+                },
+            });
+            if spec.task == "cancel" {
+                cancellation.cancelled().await;
+                interruptions.fetch_add(1, Ordering::SeqCst);
+                return ChildExecutionOutcome::Cancelled(
+                    "fake Codex interrupt acknowledged".to_owned(),
+                );
+            }
+            let _ = context.events.send(AgentEvent::ChildActivity {
+                attribution: context.attribution,
+                activity: crate::orchestration::ChildActivity::ManagedRuntime {
+                    notification: crate::managed::codex::ManagedNotification::TokenUsageUpdated {
+                        thread_id: "thread-fake".to_owned(),
+                        turn_id: "turn-fake".to_owned(),
+                        input_tokens: 20,
+                        output_tokens: 5,
+                        total_tokens: 25,
+                    },
+                },
+            });
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                text: "managed child result".to_owned(),
+                usage: ChildUsage::Measured {
+                    input_tokens: Some(20),
+                    output_tokens: Some(5),
+                    total_tokens: Some(25),
+                    requests: 1,
+                    spend_microusd: None,
+                },
+            })
+        })
+    }
+}
+
 impl ChildExecutionFactory for ImmediateChildFactory {
     fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
         self.requests
@@ -374,6 +437,42 @@ impl ChildExecutionFactory for ScriptedOutcomeChildFactory {
             Box::new(ScriptedOutcomeChildExecution {
                 task: request.task.clone(),
             }),
+        ))
+    }
+}
+
+impl ChildExecutionFactory for SupervisorManagedFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        let mut resolved = restricted_scripted_child_config(request)?;
+        resolved.owner = ExecutionOwner::Codex;
+        resolved.provider_kind = ProviderKind::Codex;
+        resolved.connection = "codex-test".to_owned();
+        resolved.model.id = "gpt-managed".to_owned();
+        resolved.model.display_name = "GPT Managed".to_owned();
+        resolved.capabilities =
+            xana_core::AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new());
+        let policy = PermissionPolicy::new(PolicyDecision::Ask, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            resolved.clone(),
+            policy,
+            Box::new(ManagedCodexChildExecution::new(
+                Arc::clone(&self.runner),
+                ManagedCodexChildSpec {
+                    launch: crate::managed::codex::CodexLaunchConfig {
+                        program: "fake-codex".to_owned(),
+                        home: None,
+                    },
+                    workspace: self.workspace.clone(),
+                    model: resolved.model.id,
+                    options: crate::managed::codex::ManagedTurnOptions {
+                        reasoning_effort: None,
+                        reasoning_summary: None,
+                    },
+                    task: request.task.clone(),
+                    policy: child_policy(resolved.permission_mode),
+                },
+            )),
         ))
     }
 }
@@ -1231,6 +1330,104 @@ async fn mixed_native_routes_preserve_exact_owner_connection_and_model_attributi
             ),
         ]
     );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn managed_child_uses_public_supervision_for_activity_usage_and_interruption() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let runner = Arc::new(SupervisorManagedRunner::default());
+    let factory = SupervisorManagedFactory {
+        workspace,
+        runner: runner.clone(),
+    };
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(factory),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let request = |task: &str| SpawnAgentRequest {
+        route: Some("codex".to_owned()),
+        task: task.to_owned(),
+        result_schema: ChildResultSchema::Summary,
+        restrictions: Default::default(),
+        handoff: Default::default(),
+    };
+
+    let completed = handle
+        .spawn_agent(OperationId::new(), request("complete"))
+        .await
+        .expect("managed admission");
+    let report = handle
+        .await_agent(completed.admission.attribution.agent_id)
+        .await
+        .expect("managed report");
+    runner.started.notified().await;
+    assert_eq!(report.status, ChildTerminalStatus::Completed);
+    assert_eq!(
+        report.usage,
+        ChildUsage::Measured {
+            input_tokens: Some(20),
+            output_tokens: Some(5),
+            total_tokens: Some(25),
+            requests: 1,
+            spend_microusd: None,
+        }
+    );
+    let mut saw_usage = false;
+    while let Ok(event) = event_receiver.try_recv() {
+        saw_usage |= matches!(
+            event,
+            AgentEvent::ChildActivity {
+                attribution,
+                activity: crate::orchestration::ChildActivity::ManagedRuntime {
+                    notification: crate::managed::codex::ManagedNotification::TokenUsageUpdated { .. }
+                },
+            } if attribution.owner == ExecutionOwner::Codex
+                && attribution.connection == "codex-test"
+                && attribution.model == "gpt-managed"
+        );
+    }
+    assert!(saw_usage);
+
+    let cancelled = handle
+        .spawn_agent(OperationId::new(), request("cancel"))
+        .await
+        .expect("managed cancellation admission");
+    runner.started.notified().await;
+    handle
+        .cancel_agent(cancelled.admission.attribution.agent_id)
+        .await
+        .expect("request managed cancellation");
+    let report = handle
+        .await_agent(cancelled.admission.attribution.agent_id)
+        .await
+        .expect("managed cancellation report");
+    assert_eq!(report.status, ChildTerminalStatus::Cancelled);
+    assert!(
+        report
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("interrupt acknowledged"))
+    );
+    assert_eq!(runner.interruptions.load(Ordering::SeqCst), 1);
 
     handle.shutdown().await;
     supervisor_task.await.expect("supervisor task");

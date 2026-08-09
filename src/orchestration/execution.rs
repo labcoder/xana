@@ -1,4 +1,4 @@
-use super::{ChildUsage, ResolvedAgentConfig, SpawnAgentRequest};
+use super::{ChildAttribution, ChildUsage, ResolvedAgentConfig, SpawnAgentRequest};
 use crate::{
     identity::OperationId,
     permission::{PermissionBrokerHandle, PermissionPolicy},
@@ -33,6 +33,7 @@ impl PreparedChild {
 }
 
 pub(crate) struct ChildExecutionContext {
+    pub(crate) attribution: ChildAttribution,
     pub(crate) operation_id: OperationId,
     pub(crate) permissions: PermissionBrokerHandle,
     pub(crate) events: mpsc::UnboundedSender<AgentEvent>,
@@ -53,6 +54,10 @@ pub(crate) enum ChildExecutionOutcome {
 }
 
 pub(crate) trait ChildExecution: Send {
+    fn handles_cancellation(&self) -> bool {
+        false
+    }
+
     fn run(
         self: Box<Self>,
         context: ChildExecutionContext,

@@ -224,6 +224,10 @@ impl<W: Write> EventRenderer<W> {
                         attribution.agent_id, attribution.route
                     )?;
                 }
+                ChildActivity::ManagedRuntime { notification } => {
+                    self.finish_stream()?;
+                    render_managed_child_activity(&mut self.output, attribution, notification)?;
+                }
             },
             AgentEvent::ChildReportCommitted { report } => {
                 self.finish_stream()?;
@@ -284,6 +288,88 @@ impl<W: Write> EventRenderer<W> {
             self.streaming_step = None;
         }
         Ok(())
+    }
+}
+
+fn render_managed_child_activity(
+    output: &mut impl Write,
+    attribution: &crate::orchestration::ChildAttribution,
+    notification: &crate::managed::codex::ManagedNotification,
+) -> io::Result<()> {
+    use crate::managed::codex::ManagedNotification;
+
+    let prefix = format!(
+        "xana> child {} [{}; Codex]",
+        attribution.agent_id, attribution.route
+    );
+    match notification {
+        ManagedNotification::ThreadStarted { thread_id } => {
+            writeln!(output, "{prefix} opened managed thread {thread_id}")
+        }
+        ManagedNotification::AssistantDelta { delta, .. } => {
+            writeln!(output, "{prefix}: {delta}")
+        }
+        ManagedNotification::ReasoningSummaryDelta { delta, .. } => {
+            writeln!(output, "{prefix} summary> {delta}")
+        }
+        ManagedNotification::ReasoningDelta { delta, .. } => {
+            writeln!(output, "{prefix} reasoning> {delta}")
+        }
+        ManagedNotification::PlanDelta { delta, .. } => {
+            writeln!(output, "{prefix} plan> {delta}")
+        }
+        ManagedNotification::CommandOutputDelta { delta, .. } => {
+            writeln!(output, "{prefix} tool> {delta}")
+        }
+        ManagedNotification::PlanUpdated { explanation, steps } => writeln!(
+            output,
+            "{prefix} plan updated: {} ({} steps)",
+            explanation.as_deref().unwrap_or("no explanation"),
+            steps.len()
+        ),
+        ManagedNotification::DiffUpdated(_) => {
+            writeln!(output, "{prefix} working diff updated")
+        }
+        ManagedNotification::ItemStarted(item) => {
+            writeln!(output, "{prefix} started {}", item.label)
+        }
+        ManagedNotification::ItemCompleted(item) => {
+            writeln!(output, "{prefix} finished {}", item.label)
+        }
+        ManagedNotification::ModelRerouted {
+            from_model,
+            to_model,
+            reason,
+        } => writeln!(
+            output,
+            "{prefix} rerouted {from_model} to {to_model}: {reason}"
+        ),
+        ManagedNotification::TurnCompleted {
+            turn_id,
+            status,
+            error,
+        } => writeln!(
+            output,
+            "{prefix} turn {turn_id}: {status}{}",
+            error
+                .as_deref()
+                .map(|value| format!(": {value}"))
+                .unwrap_or_default()
+        ),
+        ManagedNotification::TokenUsageUpdated {
+            turn_id,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            ..
+        } => writeln!(
+            output,
+            "{prefix} turn {turn_id} usage: input {input_tokens}, output {output_tokens}, total {total_tokens}"
+        ),
+        ManagedNotification::Warning(message) => writeln!(output, "{prefix} warning: {message}"),
+        ManagedNotification::ReasoningSummaryPartAdded { .. }
+        | ManagedNotification::LoginCompleted { .. }
+        | ManagedNotification::Other { .. } => Ok(()),
     }
 }
 

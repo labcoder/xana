@@ -100,6 +100,9 @@ pub(crate) enum ChildActivity {
     Warning {
         message: String,
     },
+    ManagedRuntime {
+        notification: crate::managed::codex::ManagedNotification,
+    },
     Suspended,
 }
 

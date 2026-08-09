@@ -7,6 +7,8 @@ use crate::{
     process_capture,
 };
 use events::normalize_notification;
+use futures::future::BoxFuture;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeSet, HashSet},
@@ -21,6 +23,7 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     time::timeout,
 };
+use tokio_util::sync::CancellationToken;
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -82,6 +85,15 @@ pub(crate) struct ManagedTurnResult {
     pub(crate) thread_id: String,
     pub(crate) turn_id: String,
     pub(crate) final_text: String,
+    pub(crate) usage: Option<ManagedTokenUsage>,
+    pub(crate) interruption_requested: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedTokenUsage {
+    pub(crate) input_tokens: u64,
+    pub(crate) output_tokens: u64,
+    pub(crate) total_tokens: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +102,54 @@ pub(crate) struct ManagedTurnOptions {
     pub(crate) reasoning_summary: Option<ReasoningSummary>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedApprovalPolicy {
+    OnRequest,
+    Never,
+}
+
+impl ManagedApprovalPolicy {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::OnRequest => "on-request",
+            Self::Never => "never",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedSandbox {
+    ReadOnly,
+    WorkspaceWrite,
+}
+
+impl ManagedSandbox {
+    fn wire(self) -> &'static str {
+        match self {
+            Self::ReadOnly => "read-only",
+            Self::WorkspaceWrite => "workspace-write",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ManagedThreadPolicy {
+    pub(crate) approval: ManagedApprovalPolicy,
+    pub(crate) sandbox: ManagedSandbox,
+    pub(crate) ephemeral: bool,
+}
+
+impl Default for ManagedThreadPolicy {
+    fn default() -> Self {
+        Self {
+            approval: ManagedApprovalPolicy::OnRequest,
+            sandbox: ManagedSandbox::WorkspaceWrite,
+            ephemeral: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ManagedItem {
     pub(crate) id: String,
     pub(crate) kind: String,
@@ -101,14 +160,17 @@ pub(crate) struct ManagedItem {
     pub(crate) text: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ManagedPlanStep {
     pub(crate) step: String,
     pub(crate) status: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ManagedNotification {
+    ThreadStarted {
+        thread_id: String,
+    },
     AssistantDelta {
         item_id: Option<String>,
         delta: String,
@@ -150,6 +212,13 @@ pub(crate) enum ManagedNotification {
         turn_id: String,
         status: String,
         error: Option<String>,
+    },
+    TokenUsageUpdated {
+        thread_id: String,
+        turn_id: String,
+        input_tokens: u64,
+        output_tokens: u64,
+        total_tokens: u64,
     },
     Warning(String),
     LoginCompleted {
@@ -193,7 +262,10 @@ impl ApprovalDecision {
 
 pub(crate) trait ManagedEventHandler {
     fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError>;
-    fn approve(&mut self, request: ApprovalRequest) -> Result<ApprovalDecision, CodexError>;
+    fn approve<'a>(
+        &'a mut self,
+        request: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>>;
 }
 
 #[derive(Debug)]
@@ -207,6 +279,7 @@ pub(crate) enum CodexError {
     Remote { code: Option<i64>, message: String },
     UnsupportedServerRequest(String),
     LoginFailed(String),
+    TurnInterrupted { turn_id: String, status: String },
 }
 
 impl fmt::Display for CodexError {
@@ -226,6 +299,12 @@ impl fmt::Display for CodexError {
                 write!(f, "unsupported Codex app-server callback {method:?}")
             }
             Self::LoginFailed(reason) => write!(f, "Codex login failed: {reason}"),
+            Self::TurnInterrupted { turn_id, status } => {
+                write!(
+                    f,
+                    "Codex turn {turn_id} ended after interruption with status {status}"
+                )
+            }
         }
     }
 }
@@ -296,7 +375,7 @@ where
         serde_json::from_slice(&line).map_err(|error| CodexError::Protocol(error.to_string()))
     }
 
-    async fn request<H: ManagedEventHandler>(
+    async fn request<H: ManagedEventHandler + ?Sized>(
         &mut self,
         method: &str,
         params: Value,
@@ -317,7 +396,7 @@ where
         }
     }
 
-    async fn handle_incoming<H: ManagedEventHandler>(
+    async fn handle_incoming<H: ManagedEventHandler + ?Sized>(
         &mut self,
         message: Value,
         handler: &mut H,
@@ -329,7 +408,7 @@ where
             .to_owned();
         if let Some(id) = message.get("id").cloned() {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
-            let result = approval_response(&method, &params, handler)?;
+            let result = approval_response(&method, &params, handler).await?;
             self.send(&json!({"id": id, "result": result})).await
         } else {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -337,7 +416,7 @@ where
         }
     }
 
-    async fn wait_for<H: ManagedEventHandler>(
+    async fn wait_for<H: ManagedEventHandler + ?Sized>(
         &mut self,
         mut complete: impl FnMut(&ManagedNotification) -> Result<bool, CodexError>,
         handler: &mut H,
@@ -366,6 +445,74 @@ where
             }
         }
     }
+
+    async fn wait_for_turn<H: ManagedEventHandler + ?Sized>(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        cancellation: Option<&CancellationToken>,
+        mut complete: impl FnMut(&ManagedNotification) -> Result<bool, CodexError>,
+        handler: &mut H,
+    ) -> Result<bool, CodexError> {
+        let mut cancellation_observed = false;
+        let mut interrupt_response_id = None;
+        loop {
+            let message = if !cancellation_observed {
+                tokio::select! {
+                    biased;
+                    message = self.receive() => message?,
+                    _ = wait_for_cancellation(cancellation) => {
+                        cancellation_observed = true;
+                        let id = self.next_id;
+                        self.next_id = self.next_id.saturating_add(1);
+                        self.send(&json!({
+                            "method":"turn/interrupt",
+                            "id":id,
+                            "params":{"threadId":thread_id,"turnId":turn_id}
+                        })).await?;
+                        interrupt_response_id = Some(id);
+                        continue;
+                    }
+                }
+            } else {
+                self.receive().await?
+            };
+            if interrupt_response_id.is_some()
+                && message.get("id").and_then(Value::as_u64) == interrupt_response_id
+            {
+                response_result(message)?;
+                interrupt_response_id = None;
+                continue;
+            }
+            let method = message
+                .get("method")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if message.get("id").is_some() && method.is_some() {
+                self.handle_incoming(message, handler).await?;
+                continue;
+            }
+            let method = method.ok_or_else(|| {
+                CodexError::Protocol("unexpected response while waiting for turn".into())
+            })?;
+            let notification = normalize_notification(
+                method,
+                message.get("params").cloned().unwrap_or(Value::Null),
+            )?;
+            let done = complete(&notification)?;
+            handler.notification(notification)?;
+            if done {
+                return Ok(cancellation_observed);
+            }
+        }
+    }
+}
+
+async fn wait_for_cancellation(cancellation: Option<&CancellationToken>) {
+    match cancellation {
+        Some(cancellation) => cancellation.cancelled().await,
+        None => std::future::pending().await,
+    }
 }
 
 fn response_result(message: Value) -> Result<Value, CodexError> {
@@ -387,62 +534,70 @@ fn response_result(message: Value) -> Result<Value, CodexError> {
         .ok_or_else(|| CodexError::Protocol("response is missing result".into()))
 }
 
-fn approval_response<H: ManagedEventHandler>(
+async fn approval_response<H: ManagedEventHandler + ?Sized>(
     method: &str,
     params: &Value,
     handler: &mut H,
 ) -> Result<Value, CodexError> {
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            let decision = handler.approve(ApprovalRequest {
-                item_id: params
-                    .get("itemId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                method: method.to_owned(),
-                available_decisions: params
-                    .get("availableDecisions")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .filter_map(Value::as_str)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        ["accept", "acceptForSession", "decline", "cancel"]
-                            .into_iter()
-                            .map(str::to_owned)
-                            .collect()
-                    }),
-                reason: params
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                command: params
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                cwd: params.get("cwd").and_then(Value::as_str).map(str::to_owned),
-            })?;
+            let decision = handler
+                .approve(ApprovalRequest {
+                    item_id: params
+                        .get("itemId")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    method: method.to_owned(),
+                    available_decisions: params
+                        .get("availableDecisions")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .take(16)
+                                .filter_map(Value::as_str)
+                                .filter(|value| value.len() <= 64)
+                                .map(str::to_owned)
+                                .collect()
+                        })
+                        .unwrap_or_else(|| {
+                            ["accept", "acceptForSession", "decline", "cancel"]
+                                .into_iter()
+                                .map(str::to_owned)
+                                .collect()
+                        }),
+                    reason: params
+                        .get("reason")
+                        .and_then(Value::as_str)
+                        .map(|value| bounded_text(value, 4096)),
+                    command: params
+                        .get("command")
+                        .and_then(Value::as_str)
+                        .map(|value| bounded_text(value, MAX_ITEM_DETAIL_BYTES)),
+                    cwd: params
+                        .get("cwd")
+                        .and_then(Value::as_str)
+                        .map(|value| bounded_text(value, 4096)),
+                })
+                .await?;
             Ok(json!({"decision": decision.wire()}))
         }
         _ => Err(CodexError::UnsupportedServerRequest(method.to_owned())),
     }
 }
 
-// The app-server request enum uses CLI-style kebab-case. Its response policy
-// object uses a separate camelCase tagged enum, so do not reuse that spelling.
-const WORKSPACE_WRITE_SANDBOX: &str = "workspace-write";
-
-fn thread_start_params(model: &str, workspace: &Path, developer_instructions: &str) -> Value {
+fn thread_start_params(
+    model: &str,
+    workspace: &Path,
+    developer_instructions: &str,
+    policy: ManagedThreadPolicy,
+) -> Value {
     json!({
         "model": model,
         "cwd": workspace,
-        "approvalPolicy": "on-request",
-        "sandbox": WORKSPACE_WRITE_SANDBOX,
-        "ephemeral": false,
+        "approvalPolicy": policy.approval.wire(),
+        "sandbox": policy.sandbox.wire(),
+        "ephemeral": policy.ephemeral,
         "serviceName": "xana",
         "developerInstructions": developer_instructions
     })
@@ -453,13 +608,14 @@ fn thread_resume_params(
     model: &str,
     workspace: &Path,
     developer_instructions: &str,
+    policy: ManagedThreadPolicy,
 ) -> Value {
     json!({
         "threadId": thread_id,
         "model": model,
         "cwd": workspace,
-        "approvalPolicy": "on-request",
-        "sandbox": WORKSPACE_WRITE_SANDBOX,
+        "approvalPolicy": policy.approval.wire(),
+        "sandbox": policy.sandbox.wire(),
         "developerInstructions": developer_instructions
     })
 }
@@ -819,10 +975,28 @@ impl CodexAppServer {
         developer_instructions: &str,
         handler: &mut H,
     ) -> Result<String, CodexError> {
+        self.start_thread_with_policy(
+            model,
+            workspace,
+            developer_instructions,
+            ManagedThreadPolicy::default(),
+            handler,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_thread_with_policy<H: ManagedEventHandler + ?Sized>(
+        &mut self,
+        model: &str,
+        workspace: &Path,
+        developer_instructions: &str,
+        policy: ManagedThreadPolicy,
+        handler: &mut H,
+    ) -> Result<String, CodexError> {
         let result = self
             .request(
                 "thread/start",
-                thread_start_params(model, workspace, developer_instructions),
+                thread_start_params(model, workspace, developer_instructions, policy),
                 handler,
             )
             .await?;
@@ -840,7 +1014,13 @@ impl CodexAppServer {
         let result = self
             .request(
                 "thread/resume",
-                thread_resume_params(thread_id, model, workspace, developer_instructions),
+                thread_resume_params(
+                    thread_id,
+                    model,
+                    workspace,
+                    developer_instructions,
+                    ManagedThreadPolicy::default(),
+                ),
                 handler,
             )
             .await?;
@@ -853,6 +1033,39 @@ impl CodexAppServer {
         model: &str,
         options: &ManagedTurnOptions,
         input: ManagedTurnInput,
+        handler: &mut H,
+    ) -> Result<ManagedTurnResult, CodexError> {
+        self.run_turn_inner(thread_id, model, options, input, None, handler)
+            .await
+    }
+
+    pub(crate) async fn run_turn_cancellable<H: ManagedEventHandler + ?Sized>(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        options: &ManagedTurnOptions,
+        input: ManagedTurnInput,
+        cancellation: &CancellationToken,
+        handler: &mut H,
+    ) -> Result<ManagedTurnResult, CodexError> {
+        self.run_turn_inner(
+            thread_id,
+            model,
+            options,
+            input,
+            Some(cancellation),
+            handler,
+        )
+        .await
+    }
+
+    async fn run_turn_inner<H: ManagedEventHandler + ?Sized>(
+        &mut self,
+        thread_id: &str,
+        model: &str,
+        options: &ManagedTurnOptions,
+        input: ManagedTurnInput,
+        cancellation: Option<&CancellationToken>,
         handler: &mut H,
     ) -> Result<ManagedTurnResult, CodexError> {
         let mut user_input = vec![json!({"type": "text", "text": input.text})];
@@ -878,6 +1091,7 @@ impl CodexAppServer {
         let mut final_text = None::<String>;
         let mut completed_status = None;
         let mut completed_error = None;
+        let mut usage = None;
         if !self.protocol_usable {
             return Err(CodexError::Protocol(
                 "app-server connection is unavailable after a prior timeout".into(),
@@ -885,7 +1099,10 @@ impl CodexAppServer {
         }
         let completion = timeout(
             TURN_TIMEOUT,
-            self.peer.wait_for(
+            self.peer.wait_for_turn(
+                thread_id,
+                &turn_id,
+                cancellation,
                 |notification| match notification {
                     ManagedNotification::AssistantDelta { delta, .. } => {
                         if streamed_text.len().saturating_add(delta.len()) > MAX_TURN_TEXT_BYTES {
@@ -914,6 +1131,20 @@ impl CodexAppServer {
                         completed_error = error.clone();
                         Ok(true)
                     }
+                    ManagedNotification::TokenUsageUpdated {
+                        thread_id: usage_thread,
+                        turn_id: usage_turn,
+                        input_tokens,
+                        output_tokens,
+                        total_tokens,
+                    } if usage_thread == thread_id && usage_turn == &turn_id => {
+                        usage = Some(ManagedTokenUsage {
+                            input_tokens: *input_tokens,
+                            output_tokens: *output_tokens,
+                            total_tokens: *total_tokens,
+                        });
+                        Ok(false)
+                    }
                     _ => Ok(false),
                 },
                 handler,
@@ -927,12 +1158,18 @@ impl CodexAppServer {
                 return Err(CodexError::Timeout("turn completion"));
             }
         };
-        if let Err(error) = completion {
-            self.protocol_usable = false;
-            return Err(error);
-        }
+        let interruption_requested = match completion {
+            Ok(interruption_requested) => interruption_requested,
+            Err(error) => {
+                self.protocol_usable = false;
+                return Err(error);
+            }
+        };
         let status = completed_status.unwrap_or_else(|| "unknown".into());
         if status != "completed" {
+            if interruption_requested {
+                return Err(CodexError::TurnInterrupted { turn_id, status });
+            }
             return Err(CodexError::Remote {
                 code: None,
                 message: completed_error
@@ -943,10 +1180,12 @@ impl CodexAppServer {
             thread_id: thread_id.to_owned(),
             turn_id,
             final_text: final_text.unwrap_or(streamed_text),
+            usage,
+            interruption_requested,
         })
     }
 
-    async fn request<H: ManagedEventHandler>(
+    async fn request<H: ManagedEventHandler + ?Sized>(
         &mut self,
         method: &'static str,
         params: Value,
@@ -1051,8 +1290,11 @@ impl ManagedEventHandler for RejectingHandler {
     fn notification(&mut self, _: ManagedNotification) -> Result<(), CodexError> {
         Ok(())
     }
-    fn approve(&mut self, _: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
-        Ok(ApprovalDecision::Decline)
+    fn approve<'a>(
+        &'a mut self,
+        _: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
+        Box::pin(async { Ok(ApprovalDecision::Decline) })
     }
 }
 
@@ -1062,8 +1304,11 @@ impl ManagedEventHandler for CapturingHandler {
     fn notification(&mut self, _: ManagedNotification) -> Result<(), CodexError> {
         Ok(())
     }
-    fn approve(&mut self, _: ApprovalRequest) -> Result<ApprovalDecision, CodexError> {
-        Ok(ApprovalDecision::Decline)
+    fn approve<'a>(
+        &'a mut self,
+        _: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
+        Box::pin(async { Ok(ApprovalDecision::Decline) })
     }
 }
 

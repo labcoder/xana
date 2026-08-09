@@ -44,14 +44,16 @@ stable child-task name to exactly one profile. `xana route list` and `xana
 route check NAME` resolve configured/cached metadata, local credential
 availability, model options, and built-in capabilities without network or
 process activation. The commands do not start a child. Native chat uses the
-same resolver before its runtime admits a supervised native child; the
-immutable result drives provider, prompt, tool, permission, and budget
-composition for that execution. Routes can select different native
-provider/model pairs, each with an independent history and bounded explicit
-context handoff. Interactive foreground model selection remains separate and
-cannot mutate a task route. Atomic batch admission, bounded parallel execution,
-typed collection, and closed native plans are implemented. Managed Codex
-children remain a separate execution-owner path.
+same resolver before its runtime admits a supervised native or managed child;
+the immutable result drives owner-specific execution, permission, and budget
+composition. A native result also freezes its provider, prompt and tool
+snapshot. A Codex result requires an empty Xana capability snapshot because
+Codex owns its tools, and freezes the app-server launch, model options and
+workspace policy instead. Routes can mix owners and model pairs, each with an
+independent history and bounded explicit context handoff. Interactive
+foreground model selection remains separate and cannot mutate a task route.
+Atomic batch admission, bounded parallel execution, typed collection, and
+closed owner-neutral plans share the same supervisor.
 
 ```mermaid
 flowchart TD
@@ -182,6 +184,49 @@ sequenceDiagram
 This is a direct control handoff, not an agent-to-agent conversation. Only the
 Codex-owned service request consumes model tokens; Xana does not ask a second
 model to summarize, route, or relay the turn.
+
+The same adapter also supports a separate supervised-child mode. The native
+root remains the control plane and the child supervisor remains the lifecycle,
+budget, permission, attribution, and report owner. For every managed admission,
+the execution-owner factory starts a new app-server and a fresh ephemeral
+thread; it never borrows the foreground handle or reuses another child thread.
+The exact task plus bounded, explicitly selected handoff data enters that
+thread once. Codex owns the child inner loop and returns its final text directly
+to the normal bounded child-report path, so there is no model-to-model relay.
+
+```mermaid
+flowchart LR
+    ROOT["native root Agent"] --> TOOLS["spawn / await / collect / cancel"]
+    TOOLS --> SUP["ChildSupervisor<br/>budgets + durable lifecycle"]
+    SUP --> FACTORY["exact execution-owner snapshot"]
+    FACTORY --> NATIVE["native child<br/>ConversationalProvider"]
+    FACTORY --> CODEX["managed Codex child<br/>fresh app-server + ephemeral thread"]
+    CODEX --> EVENTS["typed activity + token usage"]
+    CODEX --> APPROVAL["correlated approval callback"]
+    APPROVAL --> BROKER["child PermissionBroker"]
+    NATIVE --> REPORT["bounded ChildReport"]
+    EVENTS --> SUP
+    BROKER --> CODEX
+    CODEX --> REPORT
+    REPORT --> SUP
+```
+
+Managed cancellation is cooperative across that boundary: the child adapter
+sends one `turn/interrupt` for the active thread/turn and keeps consuming
+events until Codex resolves the completion race. An older app-server that does
+not support the request is closed and yields an attributed bounded cancellation
+diagnostic. Thread token-usage updates retain thread/turn correlation and map
+to provider-neutral input/output/total observations; missing updates remain
+unknown, spend is never inferred, and the single managed turn count does not
+claim to expose Codex's private upstream request count.
+
+Child approval callbacks pass through the existing child permission broker.
+`deny` chooses read-only with no approval escalation, `ask` chooses
+workspace-write with on-request callbacks, and `allow` chooses workspace-write
+without prompts. Managed children never select danger-full-access. All
+app-server activity is transiently re-attributed to the child; durable state
+records lifecycle and bounded report facts rather than hidden reasoning or all
+streaming deltas.
 
 Xana stores the opaque managed thread id and non-secret creating identity
 version beneath `data/managed-threads/`, keyed by connection and canonical

@@ -37,13 +37,16 @@ flowchart LR
     TERMINAL <-->|"commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded native loop"]
     RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
-    SUPERVISOR --> CHILD["fresh native child Agent<br/>exact route snapshot"]
+    SUPERVISOR --> OWNER["execution-owner factory<br/>exact route snapshot"]
+    OWNER --> CHILD["fresh native child Agent"]
+    OWNER --> MC_CHILD["fresh ephemeral Codex child<br/>app-server + thread"]
     SUPERVISOR --> SESSION
     AGENT --> PROVIDER["ConversationalProvider"]
     APP --> MANAGED["Codex app-server<br/>managed inner loop"]
     AGENT --> OPERATION
     OPERATION --> TOOLS["tool registry<br/>plan + invoke"]
     TOOLS --> BROKER["permission broker<br/>policy + grants + pending"]
+    MC_CHILD -->|"approval callbacks"| BROKER
     TERMINAL -->|"typed decision"| BROKER
     BROKER --> HOST["workspace-scoped host tools"]
     BROKER --> SHELL["configured shell execution"]
@@ -72,7 +75,7 @@ address the in-process supervisor. They do not imply a daemon or remote runtime
 host. A cancellation-request event confirms only that the signal was accepted;
 the committed terminal lifecycle/report is the stop acknowledgement.
 
-## Native child supervision boundary
+## Child supervision boundary
 
 When a native root has configured task routes, the application creates one
 `ChildSupervisor` actor and registers `spawn_agent`, `spawn_many`,
@@ -85,9 +88,11 @@ durable handle key. A session's root `AgentId` is deterministically derived
 from its public `SessionId`, keeping lineage stable across resume without a
 write-on-open migration.
 
-Admission prepares the exact route, native provider, immutable capability/tool
-snapshot, authority intersection, prompt, and explicit task before a child
-record exists. A runtime-owned `BudgetLedger` reserves fan-out, active
+Admission prepares the exact route, execution owner, connection/model,
+immutable capability/authority snapshot, and explicit task before a child
+record exists. Native preparation also freezes its provider, prompt, and tool
+registry; managed preparation freezes its Codex launch, model options, policy,
+and bounded handoff. A runtime-owned `BudgetLedger` reserves fan-out, active
 descendants, tool rounds, context capacity, report bytes, and artifact bytes in
 one actor mutation. `spawn_many` validates and reserves every member before a
 single durable batch record or observer event exists. Queued work is kept in a
@@ -122,16 +127,16 @@ sequenceDiagram
     participant Supervisor as "ChildSupervisor"
     participant Ledger as "BudgetLedger"
     participant Session as "session writer"
-    participant Child as "native child Agent"
+    participant Owner as "native Agent or Codex app-server"
     Root->>Tool: exact route + fixed task request(s)
     Tool->>Supervisor: spawn one or atomic batch
     Supervisor->>Ledger: validate + reserve complete admission
     Supervisor->>Session: commit queued batch or admitted → queued
     Supervisor-->>Tool: AgentHandleSnapshot
     Supervisor->>Session: commit running as capacity opens
-    Supervisor->>Child: fresh bounded prompt and tool snapshot
+    Supervisor->>Owner: fresh bounded owner-specific execution
     Tool->>Supervisor: await_agent(handle) or collect_agents(handles)
-    Child-->>Supervisor: direct result or attributed failure
+    Owner-->>Supervisor: attributed activity, usage, and terminal result
     Supervisor->>Session: commit artifact if needed, then ChildReport
     Supervisor-->>Tool: bounded report(s) in requested order
     Tool-->>Root: versioned bounded JSON
@@ -141,6 +146,11 @@ Native cancellation is structured: the supervisor marks the request, closes
 the child's permission broker, signals its cancellation token, drops the
 in-flight provider/tool future at the execution boundary, and waits for one
 terminal completion. The command does not equate signalling with success.
+Managed Codex execution observes the same token inside its owner adapter,
+sends one correlated `turn/interrupt`, and continues reading the terminal race
+before returning cancellation or completion. If an incompatible app-server
+rejects interruption, shutting down that child process is the bounded fallback
+and the report retains the limitation.
 Queued cancellation commits `Cancelled` without constructing an execution.
 Runtime shutdown applies the same path to every queued/running child and waits
 for terminal commits while the runtime continues servicing commit acks. A
@@ -171,7 +181,21 @@ terminal status, attribution, typed usage, and report reference. Its explicit
 continue-on-error or fail-fast policy never erases results already observed;
 timeout and cancellation are separate choices. Collection serialization has a
 hard bound independent of durable artifact size and makes no model call.
-Managed Codex children are not yet implemented.
+A managed Codex child uses the same supervisor, budget ledger, permission
+owner, lifecycle, report, artifact overflow, and collection path. Its internal
+owner seam starts one app-server and a fresh ephemeral thread per admission;
+it never resumes the foreground managed handle or another child's thread.
+Codex receives Xana's identity developer instruction, the explicit task, exact
+route model/options, workspace policy, and only bounded parent-selected
+handoff data. It owns inference, inner history, project discovery, tools, and
+sandbox. App-server activity is re-attributed to the child for terminal
+projection; approval callbacks cross the child permission broker. `deny` maps
+to read-only/no escalation, while `ask` and `allow` remain workspace-write;
+no route maps to danger-full-access. Token-usage notifications map to measured
+fields when emitted; otherwise the fields and spend remain unknown. One
+managed turn is counted as one request without claiming knowledge of private
+upstream calls. No outer conversational-provider call summarizes or relays the
+managed result.
 
 `OrchestrationPlan` is the separate closed child-work domain; the existing
 prompt-selection `ContextPlan` is unchanged. A pure structural validator
@@ -558,9 +582,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
-  queued native supervision, cancellation/inspection, durable handle/report
-  types, and native child composition. The runtime remains the only session
-  writer.
+  queued owner-neutral supervision, cancellation/inspection, durable
+  handle/report types, native child composition, and the crate-private managed
+  Codex child adapter. The runtime remains the only session writer.
 - `operation` owns invocation intent/result ordering, bounded durable values,
   replay classification, and explicit recovery execution.
 - `permission` owns pure policy and scopes, pending controller decisions,

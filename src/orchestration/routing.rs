@@ -6,7 +6,7 @@ use crate::{
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
 };
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt};
+use std::{collections::BTreeSet, error::Error, fmt};
 use xana_core::AgentCapabilitySnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,13 +258,32 @@ impl<'a> RouteResolver<'a> {
                 model: profile.model.clone(),
                 reason: error.to_string(),
             })?;
-        let capabilities = resolve_builtin_capability_snapshot(profile.capabilities.as_deref())
-            .map_err(|error| RouteResolutionError::CapabilityUnavailable {
-                route: route.to_owned(),
-                capability: error.capability().unwrap_or("unknown").to_owned(),
-                reason: error.to_string(),
-            })?;
-        if !capabilities.tool_ids().is_empty() && model.tools == Some(false) {
+        let capabilities = if connection.kind == ProviderKind::Codex {
+            if let Some(capability) = profile
+                .capabilities
+                .as_ref()
+                .and_then(|capabilities| capabilities.first())
+            {
+                return Err(RouteResolutionError::CapabilityUnavailable {
+                    route: route.to_owned(),
+                    capability: capability.clone(),
+                    reason: "managed Codex owns its tool catalog; a child route cannot claim Xana-native capabilities".to_owned(),
+                });
+            }
+            AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new())
+        } else {
+            resolve_builtin_capability_snapshot(profile.capabilities.as_deref()).map_err(
+                |error| RouteResolutionError::CapabilityUnavailable {
+                    route: route.to_owned(),
+                    capability: error.capability().unwrap_or("unknown").to_owned(),
+                    reason: error.to_string(),
+                },
+            )?
+        };
+        if connection.kind != ProviderKind::Codex
+            && !capabilities.tool_ids().is_empty()
+            && model.tools == Some(false)
+        {
             return Err(RouteResolutionError::ModelToolsUnavailable {
                 route: route.to_owned(),
                 connection: connection.id.clone(),

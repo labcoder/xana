@@ -93,9 +93,16 @@ semantics. Xana translates the command-execution and file-change approval
 requests emitted by app-server into an explicit terminal choice and returns
 the correlated decision. Rendering a plan, reasoning summary, command output,
 diff, or other managed activity is observation only and never grants
-authority. Xana's native permission rules and session grants do not silently
-authorize Codex actions, and Codex approval decisions do not become native
-Xana grants.
+authority.
+
+Foreground Codex approval choices remain local to that managed conversation;
+they do not become native Xana grants. A supervised Codex child instead routes
+each callback through that child's existing Xana permission broker, preserving
+parent, child, route, operation, and invocation correlation. `deny` selects a
+read-only Codex sandbox with no approval escalation. `ask` selects
+workspace-write plus on-request approval. `allow` selects workspace-write with
+no prompt. No child permission mode selects Codex's danger-full-access sandbox,
+and the child route and request may only narrow the root's authority ceiling.
 
 ## Scope and audit facts
 

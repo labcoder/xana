@@ -852,6 +852,7 @@ impl ChildSupervisor {
             let (permissions, broker_task) =
                 PermissionBroker::spawn(prepared.permission_policy, true, child_events.clone());
             let execution_context = ChildExecutionContext {
+                attribution: attribution.clone(),
                 operation_id: attribution.operation_id,
                 permissions: permissions.clone(),
                 events: child_events,
@@ -895,15 +896,19 @@ impl ChildSupervisor {
             artifact,
         } = completion.materialized;
         let (report, artifact) = if child.cancellation_requested {
-            (
-                ChildReport::cancelled_with_schema(
-                    attribution.clone(),
-                    schema,
-                    "child cancellation was requested and observed".to_owned(),
-                    max_bytes,
-                ),
-                None,
-            )
+            if materialized_report.status == super::ChildTerminalStatus::Cancelled {
+                (materialized_report, None)
+            } else {
+                (
+                    ChildReport::cancelled_with_schema(
+                        attribution.clone(),
+                        schema,
+                        "child cancellation was requested and observed".to_owned(),
+                        max_bytes,
+                    ),
+                    None,
+                )
+            }
         } else {
             (materialized_report, artifact)
         };
@@ -1670,12 +1675,13 @@ async fn run_child_execution(child: RunningChild) {
         artifact_owner,
     } = child;
     let cancellation = context.cancellation.clone();
+    let handles_cancellation = execution.handles_cancellation();
     let run = execution.run(context);
     tokio::pin!(run);
     let outcome = loop {
         tokio::select! {
             result = &mut run => break result,
-            _ = cancellation.cancelled() => {
+            _ = cancellation.cancelled(), if !handles_cancellation => {
                 break ChildExecutionOutcome::Cancelled(
                     "child execution observed cancellation".to_owned()
                 );
@@ -1763,6 +1769,7 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
             state: OperationState::Suspended,
             ..
         } => Some(ChildActivity::Suspended),
+        AgentEvent::ChildActivity { activity, .. } => Some(activity),
         AgentEvent::OperationStateChanged { .. }
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }
@@ -1770,7 +1777,6 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::ConversationCleared
         | AgentEvent::CommandRejected { .. }
         | AgentEvent::ChildLifecycleChanged { .. }
-        | AgentEvent::ChildActivity { .. }
         | AgentEvent::ChildReportCommitted { .. }
         | AgentEvent::ChildListSnapshot { .. }
         | AgentEvent::ChildInspectionSnapshot { .. }

@@ -7,7 +7,8 @@
 mod budget;
 mod collection;
 mod execution;
-mod native;
+mod execution_owner;
+mod managed_codex;
 mod plan;
 mod report;
 mod routing;
@@ -22,7 +23,11 @@ pub(crate) use execution::{
     ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
     ChildExecutionOutput, PreparedChild,
 };
-pub(crate) use native::NativeChildFactory;
+pub(crate) use execution_owner::ChildExecutionOwnerFactory;
+#[cfg(test)]
+pub(crate) use managed_codex::{
+    ManagedCodexChildExecution, ManagedCodexChildSpec, ManagedCodexRunner, child_policy,
+};
 #[cfg(test)]
 pub(crate) use plan::PlanHandleRef;
 pub(crate) use plan::{
