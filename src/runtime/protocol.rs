@@ -9,6 +9,11 @@ use crate::{
     permission::{ControllerDecision, PermissionAuditFact, PermissionRequest},
 };
 use serde::{Deserialize, Serialize};
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum RuntimeCommand {
@@ -122,4 +127,86 @@ pub(crate) enum AgentEvent {
     ChildCancellationRequested {
         receipt: ChildCancellationReceipt,
     },
+}
+
+#[derive(Clone)]
+pub(crate) struct AgentEventSender {
+    transport: AgentEventTransport,
+}
+
+#[derive(Clone)]
+enum AgentEventTransport {
+    Unbounded(mpsc::UnboundedSender<AgentEvent>),
+    Child {
+        observations: mpsc::Sender<AgentEvent>,
+        controls: mpsc::UnboundedSender<AgentEvent>,
+        dropped: DroppedAgentEvents,
+    },
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DroppedAgentEvents(Arc<AtomicUsize>);
+
+impl AgentEventSender {
+    pub(crate) fn child(
+        observation_capacity: usize,
+    ) -> (
+        Self,
+        mpsc::Receiver<AgentEvent>,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        DroppedAgentEvents,
+    ) {
+        let (observations, observation_receiver) = mpsc::channel(observation_capacity);
+        let (controls, control_receiver) = mpsc::unbounded_channel();
+        let dropped = DroppedAgentEvents::default();
+        (
+            Self {
+                transport: AgentEventTransport::Child {
+                    observations,
+                    controls,
+                    dropped: dropped.clone(),
+                },
+            },
+            observation_receiver,
+            control_receiver,
+            dropped,
+        )
+    }
+
+    pub(crate) fn send(&self, event: AgentEvent) -> Result<(), ()> {
+        match &self.transport {
+            AgentEventTransport::Unbounded(sender) => sender.send(event).map_err(|_| ()),
+            AgentEventTransport::Child {
+                observations,
+                controls,
+                dropped,
+            } => {
+                if matches!(event, AgentEvent::PermissionRequested { .. }) {
+                    return controls.send(event).map_err(|_| ());
+                }
+                match observations.try_send(event) {
+                    Ok(()) => Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        dropped.0.fetch_add(1, Ordering::Relaxed);
+                        Err(())
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => Err(()),
+                }
+            }
+        }
+    }
+}
+
+impl DroppedAgentEvents {
+    pub(crate) fn count(&self) -> usize {
+        self.0.load(Ordering::Relaxed)
+    }
+}
+
+impl From<mpsc::UnboundedSender<AgentEvent>> for AgentEventSender {
+    fn from(sender: mpsc::UnboundedSender<AgentEvent>) -> Self {
+        Self {
+            transport: AgentEventTransport::Unbounded(sender),
+        }
+    }
 }

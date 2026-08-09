@@ -6,7 +6,10 @@
 
 mod protocol;
 
-pub(crate) use protocol::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand};
+pub(crate) use protocol::{
+    AgentEvent, AgentEventSender, DroppedAgentEvents, OperationOutcome, OperationState,
+    RuntimeCommand,
+};
 
 use crate::{
     agent::{Agent, ConversationCommit, ConversationCommitSender, DurableTurnServices},
@@ -21,7 +24,7 @@ use crate::{
     prompt::{PromptAssembler, PromptSnapshot},
     session::{DurableSession, SessionRecord},
 };
-use std::{error::Error, fmt, sync::Arc};
+use std::{error::Error, fmt, future::Future, sync::Arc};
 use tokio::{sync::mpsc, task::JoinHandle};
 
 const COMMAND_CAPACITY: usize = 16;
@@ -299,11 +302,19 @@ impl Runtime {
                 invocation_id,
                 decision,
             } => {
-                let result = match &self.child_supervisor {
-                    Some(supervisor) => supervisor
-                        .decide_permission(agent_id, operation_id, invocation_id, decision)
-                        .await
-                        .map_err(|error| error.to_string()),
+                let result = match self.child_supervisor.clone() {
+                    Some(supervisor) => await_supervisor_response(
+                        &mut self.child_commits,
+                        &mut self.session,
+                        supervisor.decide_permission(
+                            agent_id,
+                            operation_id,
+                            invocation_id,
+                            decision,
+                        ),
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
                     None => Err("this runtime has no child supervisor".to_owned()),
                 };
                 if let Err(reason) = result {
@@ -311,11 +322,14 @@ impl Runtime {
                 }
             }
             RuntimeCommand::ListChildren => {
-                let result = match &self.child_supervisor {
-                    Some(supervisor) => supervisor
-                        .list_agents()
-                        .await
-                        .map_err(|error| error.to_string()),
+                let result = match self.child_supervisor.clone() {
+                    Some(supervisor) => await_supervisor_response(
+                        &mut self.child_commits,
+                        &mut self.session,
+                        supervisor.list_agents(),
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
                     None => Ok(Vec::new()),
                 };
                 match result {
@@ -324,11 +338,14 @@ impl Runtime {
                 }
             }
             RuntimeCommand::InspectChild { agent_id } => {
-                let result = match &self.child_supervisor {
-                    Some(supervisor) => supervisor
-                        .inspect_agent(agent_id)
-                        .await
-                        .map_err(|error| error.to_string()),
+                let result = match self.child_supervisor.clone() {
+                    Some(supervisor) => await_supervisor_response(
+                        &mut self.child_commits,
+                        &mut self.session,
+                        supervisor.inspect_agent(agent_id),
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
                     None => Err("this runtime has no child supervisor".to_owned()),
                 };
                 match result {
@@ -339,11 +356,14 @@ impl Runtime {
                 }
             }
             RuntimeCommand::CancelChild { agent_id } => {
-                let result = match &self.child_supervisor {
-                    Some(supervisor) => supervisor
-                        .cancel_agent(agent_id)
-                        .await
-                        .map_err(|error| error.to_string()),
+                let result = match self.child_supervisor.clone() {
+                    Some(supervisor) => await_supervisor_response(
+                        &mut self.child_commits,
+                        &mut self.session,
+                        supervisor.cancel_agent(agent_id),
+                    )
+                    .await
+                    .map_err(|error| error.to_string()),
                     None => Err("this runtime has no child supervisor".to_owned()),
                 };
                 match result {
@@ -746,14 +766,7 @@ impl Runtime {
     }
 
     fn handle_child_commit(&mut self, command: ChildCommitCommand) {
-        let result = if let Some(session) = &mut self.session {
-            session
-                .append_record(command.record)
-                .map_err(|error| format!("could not append child record: {error:#}"))
-        } else {
-            Ok(())
-        };
-        let _ = command.acknowledged.send(result);
+        handle_child_commit(&mut self.session, command);
     }
 
     async fn shutdown_children(&mut self) {
@@ -801,6 +814,34 @@ impl Runtime {
             .as_ref()
             .is_some_and(|session| session.operation_has_pending(operation_id))
     }
+}
+
+async fn await_supervisor_response<T>(
+    child_commits: &mut ChildCommitReceiver,
+    session: &mut Option<DurableSession>,
+    response: impl Future<Output = T>,
+) -> T {
+    tokio::pin!(response);
+    loop {
+        tokio::select! {
+            result = &mut response => return result,
+            command = child_commits.recv() => match command {
+                Some(command) => handle_child_commit(session, command),
+                None => return response.await,
+            }
+        }
+    }
+}
+
+fn handle_child_commit(session: &mut Option<DurableSession>, command: ChildCommitCommand) {
+    let result = if let Some(session) = session {
+        session
+            .append_record(command.record)
+            .map_err(|error| format!("could not append child record: {error:#}"))
+    } else {
+        Ok(())
+    };
+    let _ = command.acknowledged.send(result);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

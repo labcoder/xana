@@ -12,11 +12,8 @@ use crate::{
         CodexLaunchConfig, ManagedApprovalPolicy, ManagedEventHandler, ManagedNotification,
         ManagedSandbox, ManagedThreadPolicy, ManagedTurnInput, ManagedTurnOptions,
     },
-    permission::{
-        Authorization, ControllerDecision, PermissionBrokerHandle, PermissionRequest,
-        PermissionScope,
-    },
-    runtime::AgentEvent,
+    permission::{Authorization, PermissionBrokerHandle, PermissionRequest, PermissionScope},
+    runtime::{AgentEvent, AgentEventSender},
     tool::EffectClass,
 };
 use futures::future::BoxFuture;
@@ -82,42 +79,91 @@ async fn run_app_server(
     spec: ManagedCodexChildSpec,
     context: ChildExecutionContext,
 ) -> ChildExecutionOutcome {
-    let mut server = match CodexAppServer::spawn(&spec.launch).await {
-        Ok(server) => server,
-        Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
+    if context.cancellation.is_cancelled() {
+        return ChildExecutionOutcome::Cancelled(
+            "managed cancellation was observed before Codex startup".to_owned(),
+        );
+    }
+    let mut server = tokio::select! {
+        result = CodexAppServer::spawn(&spec.launch) => match result {
+            Ok(server) => server,
+            Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
+        },
+        _ = context.cancellation.cancelled() => {
+            return ChildExecutionOutcome::Cancelled(
+                "managed cancellation was observed during Codex startup".to_owned()
+            );
+        }
     };
     let mut handler = ChildManagedHandler::new(&context, spec.workspace.clone());
-    let turn = async {
-        if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
-            return Err(CodexError::LoginFailed(
-                "managed child connection is logged out".to_owned(),
-            ));
+    let account = tokio::select! {
+        result = server.account_status() => result,
+        _ = context.cancellation.cancelled() => {
+            let _ = server.shutdown().await;
+            return ChildExecutionOutcome::Cancelled(
+                "managed cancellation was observed before account validation".to_owned()
+            );
         }
-        let thread_id = server
-            .start_thread_with_policy(
+    };
+    let account = match account {
+        Ok(account) => account,
+        Err(error) => {
+            let _ = server.shutdown().await;
+            return ChildExecutionOutcome::Failed(error.to_string());
+        }
+    };
+    if matches!(account, AccountStatus::LoggedOut) {
+        let _ = server.shutdown().await;
+        return ChildExecutionOutcome::Failed(
+            CodexError::LoginFailed("managed child connection is logged out".to_owned())
+                .to_string(),
+        );
+    }
+    let thread = tokio::select! {
+        result = server.start_thread_with_policy(
                 &spec.model,
                 &spec.workspace,
                 crate::prompt::xana_identity(),
                 spec.policy,
                 &mut handler,
-            )
-            .await?;
-        handler.ensure_thread_visible(&thread_id)?;
-        server
-            .run_turn_cancellable(
-                &thread_id,
-                &spec.model,
-                &spec.options,
-                ManagedTurnInput {
-                    text: spec.task,
-                    local_images: Vec::new(),
-                },
-                &context.cancellation,
-                &mut handler,
-            )
-            .await
+            ) => result,
+        _ = context.cancellation.cancelled() => {
+            let _ = server.shutdown().await;
+            return ChildExecutionOutcome::Cancelled(
+                "managed cancellation was observed before thread creation".to_owned()
+            );
+        }
+    };
+    let thread_id = match thread {
+        Ok(thread_id) => thread_id,
+        Err(error) => {
+            let _ = server.shutdown().await;
+            return ChildExecutionOutcome::Failed(error.to_string());
+        }
+    };
+    if let Err(error) = handler.ensure_thread_visible(&thread_id) {
+        let _ = server.shutdown().await;
+        return ChildExecutionOutcome::Failed(error.to_string());
     }
-    .await;
+    if context.cancellation.is_cancelled() {
+        let _ = server.shutdown().await;
+        return ChildExecutionOutcome::Cancelled(
+            "managed cancellation was observed before turn start".to_owned(),
+        );
+    }
+    let turn = server
+        .run_turn_cancellable(
+            &thread_id,
+            &spec.model,
+            &spec.options,
+            ManagedTurnInput {
+                text: spec.task,
+                local_images: Vec::new(),
+            },
+            &context.cancellation,
+            &mut handler,
+        )
+        .await;
     let shutdown = server.shutdown().await;
     match turn {
         Ok(result) => match shutdown {
@@ -145,9 +191,11 @@ async fn run_app_server(
         Err(CodexError::TurnInterrupted { .. }) if context.cancellation.is_cancelled() => {
             ChildExecutionOutcome::Cancelled("Codex acknowledged turn interruption".to_owned())
         }
-        Err(error) if context.cancellation.is_cancelled() => ChildExecutionOutcome::Cancelled(
-            format!("managed cancellation closed Codex after interrupt failed: {error}"),
-        ),
+        Err(CodexError::RequestCancelled(_)) if context.cancellation.is_cancelled() => {
+            ChildExecutionOutcome::Cancelled(
+                "managed cancellation was observed while starting the Codex turn".to_owned(),
+            )
+        }
         Err(error) => ChildExecutionOutcome::Failed(error.to_string()),
     }
 }
@@ -156,7 +204,7 @@ struct ChildManagedHandler {
     attribution: super::ChildAttribution,
     operation_id: crate::identity::OperationId,
     permissions: PermissionBrokerHandle,
-    events: tokio::sync::mpsc::UnboundedSender<AgentEvent>,
+    events: AgentEventSender,
     workspace: PathBuf,
     observed_thread: Option<String>,
 }
@@ -252,16 +300,9 @@ impl ManagedEventHandler for ChildManagedHandler {
                 })
                 .await
                 .map_err(|_| CodexError::Protocol("child permission broker closed".to_owned()))?;
-            let Authorization::Allowed(fact) = authorization else {
+            let Authorization::Allowed(_) = authorization else {
                 return self.rejection(&request);
             };
-            if matches!(
-                fact.controller_decision,
-                Some(ControllerDecision::AllowSession { .. })
-            ) && request.available_decisions.contains("acceptForSession")
-            {
-                return Ok(ApprovalDecision::AcceptForSession);
-            }
             if request.available_decisions.contains("accept") {
                 Ok(ApprovalDecision::AcceptOnce)
             } else {
@@ -271,23 +312,21 @@ impl ManagedEventHandler for ChildManagedHandler {
     }
 }
 
-pub(crate) fn child_policy(mode: PermissionMode) -> ManagedThreadPolicy {
+pub(crate) fn child_policy(mode: PermissionMode) -> Result<ManagedThreadPolicy, &'static str> {
     match mode {
-        PermissionMode::Deny => ManagedThreadPolicy {
-            approval: ManagedApprovalPolicy::Never,
-            sandbox: ManagedSandbox::ReadOnly,
-            ephemeral: true,
-        },
-        PermissionMode::Ask => ManagedThreadPolicy {
+        PermissionMode::Deny => Err(
+            "the current Codex app-server contract cannot prove that all inner tool effects are disabled",
+        ),
+        PermissionMode::Ask => Ok(ManagedThreadPolicy {
             approval: ManagedApprovalPolicy::OnRequest,
             sandbox: ManagedSandbox::WorkspaceWrite,
             ephemeral: true,
-        },
-        PermissionMode::Allow => ManagedThreadPolicy {
+        }),
+        PermissionMode::Allow => Ok(ManagedThreadPolicy {
             approval: ManagedApprovalPolicy::Never,
             sandbox: ManagedSandbox::WorkspaceWrite,
             ephemeral: true,
-        },
+        }),
     }
 }
 
@@ -297,7 +336,7 @@ mod tests {
     use crate::{
         identity::{AgentId, OperationId, ThreadId},
         orchestration::{ChildAttribution, ExecutionOwner},
-        permission::{PermissionBroker, PermissionPolicy, PolicyDecision},
+        permission::{ControllerDecision, PermissionBroker, PermissionPolicy, PolicyDecision},
     };
     use std::collections::BTreeSet;
     use tempfile::tempdir;
@@ -330,7 +369,7 @@ mod tests {
             attribution: attribution(operation_id),
             operation_id,
             permissions: permissions.clone(),
-            events,
+            events: events.into(),
             workspace: workspace.clone(),
             observed_thread: None,
         };
@@ -371,7 +410,26 @@ mod tests {
 
         assert_eq!(
             approval.await.expect("approval response"),
-            ApprovalDecision::AcceptForSession
+            ApprovalDecision::AcceptOnce
+        );
+
+        let session_only = ApprovalRequest {
+            item_id: Some("command-2".to_owned()),
+            method: "item/commandExecution/requestApproval".to_owned(),
+            available_decisions: BTreeSet::from([
+                "acceptForSession".to_owned(),
+                "decline".to_owned(),
+            ]),
+            reason: Some("run tests again".to_owned()),
+            command: Some("cargo test".to_owned()),
+            cwd: Some(workspace.display().to_string()),
+        };
+        assert_eq!(
+            handler
+                .approve(session_only)
+                .await
+                .expect("fail-closed approval response"),
+            ApprovalDecision::Decline
         );
         permissions.shutdown();
         broker.await.expect("broker task");
@@ -390,7 +448,7 @@ mod tests {
             attribution: attribution(operation_id),
             operation_id,
             permissions: permissions.clone(),
-            events,
+            events: events.into(),
             workspace,
             observed_thread: None,
         };
@@ -412,20 +470,217 @@ mod tests {
         broker.await.expect("broker task");
     }
 
+    #[tokio::test]
+    async fn cancellation_before_start_never_spawns_the_managed_process() {
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().canonicalize().expect("workspace");
+        let operation_id = OperationId::new();
+        let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let policy = PermissionPolicy::new(PolicyDecision::Deny, Vec::new(), &workspace)
+            .expect("permission policy");
+        let (permissions, broker) = PermissionBroker::spawn(policy, true, events.clone());
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let outcome = AppServerCodexRunner
+            .run(
+                ManagedCodexChildSpec {
+                    launch: CodexLaunchConfig {
+                        program: "definitely-not-a-real-codex-executable".to_owned(),
+                        home: None,
+                    },
+                    workspace,
+                    model: "gpt-test".to_owned(),
+                    options: ManagedTurnOptions {
+                        reasoning_effort: None,
+                        reasoning_summary: None,
+                    },
+                    task: "must not start".to_owned(),
+                    policy: ManagedThreadPolicy {
+                        approval: ManagedApprovalPolicy::Never,
+                        sandbox: ManagedSandbox::WorkspaceWrite,
+                        ephemeral: true,
+                    },
+                },
+                ChildExecutionContext {
+                    attribution: attribution(operation_id),
+                    operation_id,
+                    permissions: permissions.clone(),
+                    events: events.into(),
+                    cancellation,
+                },
+            )
+            .await;
+
+        assert!(matches!(outcome, ChildExecutionOutcome::Cancelled(_)));
+        permissions.shutdown();
+        broker.await.expect("broker task");
+    }
+
     #[test]
     fn managed_permission_modes_never_select_full_host_access() {
+        assert!(child_policy(PermissionMode::Deny).is_err());
         assert_eq!(
-            child_policy(PermissionMode::Deny).sandbox,
-            ManagedSandbox::ReadOnly
-        );
-        assert_eq!(
-            child_policy(PermissionMode::Ask).approval,
+            child_policy(PermissionMode::Ask)
+                .expect("ask policy")
+                .approval,
             ManagedApprovalPolicy::OnRequest
         );
         assert_eq!(
-            child_policy(PermissionMode::Allow).sandbox,
+            child_policy(PermissionMode::Allow)
+                .expect("allow policy")
+                .sandbox,
             ManagedSandbox::WorkspaceWrite
         );
-        assert!(child_policy(PermissionMode::Allow).ephemeral);
+        assert!(
+            child_policy(PermissionMode::Allow)
+                .expect("allow policy")
+                .ephemeral
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an authenticated local Codex CLI and XANA_LIVE_CODEX_MODEL"]
+    async fn live_codex_child_completes_with_visible_activity() {
+        let model = std::env::var("XANA_LIVE_CODEX_MODEL")
+            .expect("set XANA_LIVE_CODEX_MODEL to an advertised Codex model");
+        let program =
+            std::env::var("XANA_LIVE_CODEX_PROGRAM").unwrap_or_else(|_| "codex".to_owned());
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().canonicalize().expect("workspace");
+        let operation_id = OperationId::new();
+        let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let policy = PermissionPolicy::new(PolicyDecision::Deny, Vec::new(), &workspace)
+            .expect("permission policy");
+        let (permissions, broker) = PermissionBroker::spawn(policy, true, events.clone());
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(180),
+            AppServerCodexRunner.run(
+                ManagedCodexChildSpec {
+                    launch: CodexLaunchConfig {
+                        program,
+                        home: None,
+                    },
+                    workspace,
+                    model,
+                    options: ManagedTurnOptions {
+                        reasoning_effort: None,
+                        reasoning_summary: None,
+                    },
+                    task: "Reply with exactly: phase 4 live smoke complete. Do not use tools."
+                        .to_owned(),
+                    policy: child_policy(PermissionMode::Ask).expect("ask policy"),
+                },
+                ChildExecutionContext {
+                    attribution: attribution(operation_id),
+                    operation_id,
+                    permissions: permissions.clone(),
+                    events: events.into(),
+                    cancellation: tokio_util::sync::CancellationToken::new(),
+                },
+            ),
+        )
+        .await
+        .expect("live Codex child timeout");
+
+        let ChildExecutionOutcome::Completed(output) = outcome else {
+            panic!("live Codex child did not complete: {outcome:?}");
+        };
+        assert!(output.text.contains("phase 4 live smoke complete"));
+        assert!(
+            std::iter::from_fn(|| event_receiver.try_recv().ok()).any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ChildActivity {
+                        activity: ChildActivity::ManagedRuntime { .. },
+                        ..
+                    }
+                )
+            })
+        );
+        permissions.shutdown();
+        broker.await.expect("broker task");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an authenticated local Codex CLI and XANA_LIVE_CODEX_MODEL"]
+    async fn live_codex_child_cancellation_reaches_a_terminal_report() {
+        let model = std::env::var("XANA_LIVE_CODEX_MODEL")
+            .expect("set XANA_LIVE_CODEX_MODEL to an advertised Codex model");
+        let program =
+            std::env::var("XANA_LIVE_CODEX_PROGRAM").unwrap_or_else(|_| "codex".to_owned());
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().canonicalize().expect("workspace");
+        let operation_id = OperationId::new();
+        let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let policy = PermissionPolicy::new(PolicyDecision::Deny, Vec::new(), &workspace)
+            .expect("permission policy");
+        let (permissions, broker) = PermissionBroker::spawn(policy, true, events.clone());
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let mut run = AppServerCodexRunner.run(
+            ManagedCodexChildSpec {
+                launch: CodexLaunchConfig {
+                    program,
+                    home: None,
+                },
+                workspace,
+                model,
+                options: ManagedTurnOptions {
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                },
+                task:
+                    "Write a detailed 5,000-word explanation of Rust ownership without using tools."
+                        .to_owned(),
+                policy: child_policy(PermissionMode::Ask).expect("ask policy"),
+            },
+            ChildExecutionContext {
+                attribution: attribution(operation_id),
+                operation_id,
+                permissions: permissions.clone(),
+                events: events.into(),
+                cancellation: cancellation.clone(),
+            },
+        );
+
+        tokio::time::timeout(std::time::Duration::from_secs(180), async {
+            loop {
+                tokio::select! {
+                    outcome = &mut run => panic!(
+                        "live Codex child finished before cancellation could be requested: {outcome:?}"
+                    ),
+                    event = event_receiver.recv() => {
+                        if matches!(
+                            event,
+                            Some(AgentEvent::ChildActivity {
+                                activity: ChildActivity::ManagedRuntime {
+                                    notification: ManagedNotification::ThreadStarted { .. }
+                                },
+                                ..
+                            })
+                        ) {
+                            continue;
+                        }
+                        if matches!(
+                            event,
+                            Some(AgentEvent::ChildActivity {
+                                activity: ChildActivity::ManagedRuntime { .. },
+                                ..
+                            })
+                        ) {
+                            break;
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .expect("live Codex child never emitted turn activity");
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(30), run)
+            .await
+            .expect("live Codex cancellation did not terminate");
+        assert!(matches!(outcome, ChildExecutionOutcome::Cancelled(_)));
+        permissions.shutdown();
+        broker.await.expect("broker task");
     }
 }

@@ -2,10 +2,9 @@ use super::{ChildAttribution, ChildUsage, ResolvedAgentConfig, SpawnAgentRequest
 use crate::{
     identity::OperationId,
     permission::{PermissionBrokerHandle, PermissionPolicy},
-    runtime::AgentEvent,
+    runtime::AgentEventSender,
 };
 use futures::future::BoxFuture;
-use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) trait ChildExecutionFactory: Send + Sync {
@@ -36,7 +35,7 @@ pub(crate) struct ChildExecutionContext {
     pub(crate) attribution: ChildAttribution,
     pub(crate) operation_id: OperationId,
     pub(crate) permissions: PermissionBrokerHandle,
-    pub(crate) events: mpsc::UnboundedSender<AgentEvent>,
+    pub(crate) events: AgentEventSender,
     pub(crate) cancellation: CancellationToken,
 }
 

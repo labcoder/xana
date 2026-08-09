@@ -53,7 +53,9 @@ after session restoration, rather than silently admitting duplicate work.
 
 Plans are capped at 256 KiB, 64 steps, and 64 total children; the configured
 root budget can be narrower. The returned model-facing result is independently
-capped at 256 KiB. Plans have no loops, conditions, expressions, dynamic
-spawns, recursion, general filter/reduce, arbitrary code, or evaluator state.
-Timeout and cancellation remain explicit, and partial child evidence stays in
-the durable session if a later plan step fails.
+capped at 256 KiB. Xana charges each encoded step before retaining it, so a
+later oversized await or collection cannot first accumulate a much larger
+transient result. Plans have no loops, conditions, expressions, dynamic spawns,
+recursion, general filter/reduce, arbitrary code, or evaluator state. Timeout
+and cancellation remain explicit, and partial child evidence stays in the
+durable session if a later plan step fails.

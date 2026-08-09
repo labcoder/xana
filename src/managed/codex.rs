@@ -29,6 +29,7 @@ const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+const INTERRUPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
 const MAX_VERSION_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
@@ -119,14 +120,12 @@ impl ManagedApprovalPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedSandbox {
-    ReadOnly,
     WorkspaceWrite,
 }
 
 impl ManagedSandbox {
     fn wire(self) -> &'static str {
         match self {
-            Self::ReadOnly => "read-only",
             Self::WorkspaceWrite => "workspace-write",
         }
     }
@@ -279,6 +278,7 @@ pub(crate) enum CodexError {
     Remote { code: Option<i64>, message: String },
     UnsupportedServerRequest(String),
     LoginFailed(String),
+    RequestCancelled(&'static str),
     TurnInterrupted { turn_id: String, status: String },
 }
 
@@ -299,6 +299,9 @@ impl fmt::Display for CodexError {
                 write!(f, "unsupported Codex app-server callback {method:?}")
             }
             Self::LoginFailed(reason) => write!(f, "Codex login failed: {reason}"),
+            Self::RequestCancelled(method) => {
+                write!(f, "Codex app-server request {method} was cancelled")
+            }
             Self::TurnInterrupted { turn_id, status } => {
                 write!(
                     f,
@@ -315,6 +318,7 @@ struct JsonLinePeer<R, W> {
     reader: R,
     writer: W,
     next_id: u64,
+    incoming: Vec<u8>,
 }
 
 impl<R, W> JsonLinePeer<R, W>
@@ -327,6 +331,7 @@ where
             reader,
             writer,
             next_id: 1,
+            incoming: Vec::new(),
         }
     }
 
@@ -348,7 +353,6 @@ where
     }
 
     async fn receive(&mut self) -> Result<Value, CodexError> {
-        let mut line = Vec::new();
         loop {
             let available = self
                 .reader
@@ -362,16 +366,17 @@ where
                 .iter()
                 .position(|byte| *byte == b'\n')
                 .map_or(available.len(), |index| index + 1);
-            if line.len().saturating_add(end) > MAX_FRAME_BYTES {
+            if self.incoming.len().saturating_add(end) > MAX_FRAME_BYTES {
                 return Err(CodexError::FrameTooLarge);
             }
-            line.extend_from_slice(&available[..end]);
+            self.incoming.extend_from_slice(&available[..end]);
             let complete = available.get(end.saturating_sub(1)) == Some(&b'\n');
             self.reader.consume(end);
             if complete {
                 break;
             }
         }
+        let line = std::mem::take(&mut self.incoming);
         serde_json::from_slice(&line).map_err(|error| CodexError::Protocol(error.to_string()))
     }
 
@@ -393,6 +398,49 @@ where
                 return response_result(message);
             }
             self.handle_incoming(message, handler).await?;
+        }
+    }
+
+    async fn request_cancellable<H: ManagedEventHandler + ?Sized>(
+        &mut self,
+        method: &'static str,
+        params: Value,
+        cancellation: &CancellationToken,
+        handler: &mut H,
+    ) -> Result<Value, CodexError> {
+        if cancellation.is_cancelled() {
+            return Err(CodexError::RequestCancelled(method));
+        }
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        let request = json!({"method": method, "id": id, "params": params});
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(CodexError::RequestCancelled(method));
+            }
+            sent = self.send(&request) => sent?,
+        }
+        loop {
+            let message = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    return Err(CodexError::RequestCancelled(method));
+                }
+                message = self.receive() => message?,
+            };
+            if message.get("id").and_then(Value::as_u64) == Some(id)
+                && (message.get("result").is_some() || message.get("error").is_some())
+            {
+                return response_result(message);
+            }
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    return Err(CodexError::RequestCancelled(method));
+                }
+                handled = self.handle_incoming(message, handler) => handled?,
+            }
         }
     }
 
@@ -456,26 +504,38 @@ where
     ) -> Result<bool, CodexError> {
         let mut cancellation_observed = false;
         let mut interrupt_response_id = None;
+        let mut interruption_deadline = None;
         loop {
             let message = if !cancellation_observed {
                 tokio::select! {
                     biased;
-                    message = self.receive() => message?,
                     _ = wait_for_cancellation(cancellation) => {
                         cancellation_observed = true;
+                        let deadline = tokio::time::Instant::now() + INTERRUPT_COMPLETION_TIMEOUT;
+                        interruption_deadline = Some(deadline);
                         let id = self.next_id;
                         self.next_id = self.next_id.saturating_add(1);
-                        self.send(&json!({
-                            "method":"turn/interrupt",
-                            "id":id,
-                            "params":{"threadId":thread_id,"turnId":turn_id}
-                        })).await?;
+                        tokio::time::timeout_at(deadline, self.send(&json!({
+                                "method":"turn/interrupt",
+                                "id":id,
+                                "params":{"threadId":thread_id,"turnId":turn_id}
+                            })))
+                            .await
+                            .map_err(|_| CodexError::Timeout("turn interruption"))??;
                         interrupt_response_id = Some(id);
                         continue;
                     }
+                    message = self.receive() => message?,
                 }
             } else {
-                self.receive().await?
+                let deadline = interruption_deadline
+                    .expect("observed cancellation establishes an interruption deadline");
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(CodexError::Timeout("turn interruption"));
+                }
+                tokio::time::timeout_at(deadline, self.receive())
+                    .await
+                    .map_err(|_| CodexError::Timeout("turn interruption"))??
             };
             if interrupt_response_id.is_some()
                 && message.get("id").and_then(Value::as_u64) == interrupt_response_id
@@ -489,7 +549,13 @@ where
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             if message.get("id").is_some() && method.is_some() {
-                self.handle_incoming(message, handler).await?;
+                if let Some(deadline) = interruption_deadline {
+                    tokio::time::timeout_at(deadline, self.handle_incoming(message, handler))
+                        .await
+                        .map_err(|_| CodexError::Timeout("turn interruption"))??;
+                } else {
+                    self.handle_incoming(message, handler).await?;
+                }
                 continue;
             }
             let method = method.ok_or_else(|| {
@@ -1075,13 +1141,28 @@ impl CodexAppServer {
                 .into_iter()
                 .map(|path| json!({"type": "localImage", "path": path})),
         );
-        let result = self
-            .request(
-                "turn/start",
-                turn_start_params(thread_id, model, options, user_input),
-                handler,
+        let params = turn_start_params(thread_id, model, options, user_input);
+        let result = match cancellation {
+            Some(cancellation) => match timeout(
+                REQUEST_TIMEOUT,
+                self.peer
+                    .request_cancellable("turn/start", params, cancellation, handler),
             )
-            .await?;
+            .await
+            {
+                Ok(Ok(result)) => result,
+                Ok(Err(error @ CodexError::RequestCancelled(_))) => {
+                    self.protocol_usable = false;
+                    return Err(error);
+                }
+                Ok(Err(error)) => return Err(error),
+                Err(_) => {
+                    self.protocol_usable = false;
+                    return Err(CodexError::Timeout("turn/start"));
+                }
+            },
+            None => self.request("turn/start", params, handler).await?,
+        };
         let turn_id = result
             .pointer("/turn/id")
             .and_then(Value::as_str)

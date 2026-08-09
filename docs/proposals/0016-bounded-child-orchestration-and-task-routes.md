@@ -173,6 +173,10 @@ The effective child authority is the intersection of:
 Children cannot widen permissions, capabilities, workspace scope, or execution
 containment. Existing permission brokers remain the approval and audit owner.
 Managed-runtime approval requests retain both child and parent correlation.
+If an execution owner cannot enforce the effective restriction, that route is
+unavailable rather than widened or approximated. In particular, the current
+Codex app-server contract does not expose a stable zero-inner-tool mode, so an
+effective `deny` policy rejects a managed Codex child route.
 
 Admission uses one runtime ledger. Capacity is reserved atomically before a
 child becomes admitted so concurrent callers cannot oversubscribe the same
@@ -186,6 +190,13 @@ budget. The initial hard limits cover:
 - input/context estimate;
 - inline report size; and
 - artifact bytes.
+
+Total descendants and the aggregate tool/context/report/artifact reservations
+are cumulative for the owning session. A terminal child releases its running
+concurrency slot but does not replenish those totals; otherwise sequential
+children could bypass the configured hard bounds and grow retained handles
+without limit. An admission that fails before its durable record rolls back
+the provisional reservation.
 
 Token and spend observations are recorded when the execution owner exposes
 them. Unknown usage is a typed state, never zero. A route that cannot provide
@@ -242,8 +253,10 @@ Unsupported protocol features remain typed unavailable states.
 Runtime events and durable records carry `AgentId`, optional parent identity,
 owning operation, route, execution owner, connection, and model. The CLI can
 render a child tree and inspect one handle without parsing log text. High-rate
-managed activity remains bounded by the existing projection policy; durable
-state records lifecycle and report facts, not every transient delta or hidden
+managed activity remains bounded by a finite producer queue plus per-child
+event and byte projection limits. Permission requests use a separate control
+lane so observation truncation cannot hide an authority decision. Durable state
+records lifecycle and report facts, not every transient delta or hidden
 reasoning token.
 
 ## Verification contract

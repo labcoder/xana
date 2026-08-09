@@ -14,7 +14,7 @@ use crate::{
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
     provider::{ConversationalProvider, DeltaSink, ProviderUsage},
-    runtime::AgentEvent,
+    runtime::{AgentEvent, AgentEventSender},
     tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
@@ -127,14 +127,14 @@ impl Agent {
         operation_id: OperationId,
         messages: &mut Vec<Message>,
         permissions: PermissionBrokerHandle,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: impl Into<AgentEventSender>,
     ) -> Result<Message> {
         self.run_turn_inner(
             operation_id,
             messages,
             &self.prompt,
             permissions,
-            events,
+            events.into(),
             None,
         )
         .await
@@ -146,14 +146,14 @@ impl Agent {
         operation_id: OperationId,
         messages: &mut Vec<Message>,
         permissions: PermissionBrokerHandle,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: impl Into<AgentEventSender>,
     ) -> Result<AgentTurnResult> {
         self.run_turn_inner(
             operation_id,
             messages,
             &self.prompt,
             permissions,
-            events,
+            events.into(),
             None,
         )
         .await
@@ -165,12 +165,19 @@ impl Agent {
         messages: &mut Vec<Message>,
         prompt: &PromptSnapshot,
         permissions: PermissionBrokerHandle,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: impl Into<AgentEventSender>,
         durable: Option<DurableTurnServices>,
     ) -> Result<Message> {
-        self.run_turn_inner(operation_id, messages, prompt, permissions, events, durable)
-            .await
-            .map(|result| result.message)
+        self.run_turn_inner(
+            operation_id,
+            messages,
+            prompt,
+            permissions,
+            events.into(),
+            durable,
+        )
+        .await
+        .map(|result| result.message)
     }
 
     async fn run_turn_inner(
@@ -179,7 +186,7 @@ impl Agent {
         messages: &mut Vec<Message>,
         prompt: &PromptSnapshot,
         permissions: PermissionBrokerHandle,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: AgentEventSender,
         durable: Option<DurableTurnServices>,
     ) -> Result<AgentTurnResult> {
         let definitions = self.tools.definitions();
@@ -297,7 +304,7 @@ impl Agent {
 
 struct EventDeltaSink {
     operation_id: OperationId,
-    events: mpsc::UnboundedSender<AgentEvent>,
+    events: AgentEventSender,
     usage: Mutex<UsageAccumulator>,
 }
 

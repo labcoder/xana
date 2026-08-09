@@ -98,11 +98,26 @@ authority.
 Foreground Codex approval choices remain local to that managed conversation;
 they do not become native Xana grants. A supervised Codex child instead routes
 each callback through that child's existing Xana permission broker, preserving
-parent, child, route, operation, and invocation correlation. `deny` selects a
-read-only Codex sandbox with no approval escalation. `ask` selects
-workspace-write plus on-request approval. `allow` selects workspace-write with
-no prompt. No child permission mode selects Codex's danger-full-access sandbox,
-and the child route and request may only narrow the root's authority ceiling.
+parent, child, route, operation, and invocation correlation. An effective
+`deny` mode makes a managed Codex child route unavailable because the current
+app-server contract cannot prove that every inner tool effect is disabled;
+Xana fails closed instead of presenting read-only sandboxing as equivalent to
+zero tool authority. `ask` selects workspace-write plus on-request approval.
+`allow` selects workspace-write with no prompt. No child permission mode
+selects Codex's danger-full-access sandbox, and the child route and request may
+only narrow the root's authority ceiling.
+
+Xana owns the lifetime and scope of its in-process session grants. Even when a
+matching Xana grant authorizes a later callback without another terminal
+prompt, Xana returns only Codex's one-effect `accept` decision. It never returns
+`acceptForSession`, whose future scope Xana cannot validate. If app-server does
+not offer a one-effect acceptance, Xana declines the callback so the next
+effect cannot bypass the child broker.
+
+For native and managed children alike, the resolved child mode is also a hard
+ceiling over matching configured rules: a `deny` child cannot be reopened by
+an `allow` rule, and an `ask` child converts any matching `allow` rule to an
+approval request. Rules may still narrow authority further.
 
 ## Scope and audit facts
 

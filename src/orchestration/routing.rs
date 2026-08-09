@@ -74,6 +74,12 @@ pub(crate) enum RouteResolutionError {
         connection: String,
         model: String,
     },
+    PermissionModeUnavailable {
+        route: String,
+        owner: ExecutionOwner,
+        permission_mode: PermissionMode,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +92,11 @@ pub(crate) enum RestrictionError {
     },
     UnsupportedHardLimit {
         field: &'static str,
+    },
+    PermissionModeUnavailable {
+        owner: ExecutionOwner,
+        permission_mode: PermissionMode,
+        reason: &'static str,
     },
 }
 
@@ -106,6 +117,15 @@ impl fmt::Display for RestrictionError {
             Self::UnsupportedHardLimit { field } => write!(
                 formatter,
                 "child requests hard {field}, but this execution owner exposes no enforceable pre-request control or interruptible live meter"
+            ),
+            Self::PermissionModeUnavailable {
+                owner,
+                permission_mode,
+                reason,
+            } => write!(
+                formatter,
+                "child execution owner {} cannot enforce permission mode {permission_mode:?}: {reason}",
+                owner.as_str()
             ),
         }
     }
@@ -149,6 +169,16 @@ impl fmt::Display for RouteResolutionError {
             } => write!(
                 f,
                 "route {route:?} selects tools but model {connection}/{model} declares tools unavailable"
+            ),
+            Self::PermissionModeUnavailable {
+                route,
+                owner,
+                permission_mode,
+                reason,
+            } => write!(
+                f,
+                "route {route:?} cannot use execution owner {} with permission mode {permission_mode:?}: {reason}",
+                owner.as_str()
             ),
         }
     }
@@ -280,6 +310,41 @@ impl<'a> RouteResolver<'a> {
                 },
             )?
         };
+        let parent_connection = self
+            .registry
+            .connections
+            .get(&parent_profile.connection)
+            .ok_or_else(|| {
+                RouteResolutionError::InconsistentConfig(format!(
+                    "default profile {:?} references missing connection {:?}",
+                    parent_profile.id, parent_profile.connection
+                ))
+            })?;
+        let parent_capabilities = if parent_connection.kind == ProviderKind::Codex {
+            AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new())
+        } else {
+            resolve_builtin_capability_snapshot(parent_profile.capabilities.as_deref()).map_err(
+                |error| RouteResolutionError::CapabilityUnavailable {
+                    route: route.to_owned(),
+                    capability: error.capability().unwrap_or("unknown").to_owned(),
+                    reason: format!("default profile capability ceiling is invalid: {error}"),
+                },
+            )?
+        };
+        if let Some(capability) = capabilities
+            .capabilities()
+            .difference(parent_capabilities.capabilities())
+            .next()
+        {
+            return Err(RouteResolutionError::CapabilityUnavailable {
+                route: route.to_owned(),
+                capability: capability.to_string(),
+                reason: format!(
+                    "child route capability exceeds the default profile {:?} authority ceiling",
+                    parent_profile.id
+                ),
+            });
+        }
         if connection.kind != ProviderKind::Codex
             && !capabilities.tool_ids().is_empty()
             && model.tools == Some(false)
@@ -291,27 +356,38 @@ impl<'a> RouteResolver<'a> {
             });
         }
 
+        let owner = if connection.kind == ProviderKind::Codex {
+            ExecutionOwner::Codex
+        } else {
+            ExecutionOwner::Native
+        };
+        let permission_mode = narrow_permission(
+            narrow_permission(
+                self.registry.permission_mode,
+                parent_profile.permission_mode,
+            ),
+            profile.permission_mode,
+        );
+        if owner == ExecutionOwner::Codex && permission_mode == PermissionMode::Deny {
+            return Err(RouteResolutionError::PermissionModeUnavailable {
+                route: route.to_owned(),
+                owner,
+                permission_mode,
+                reason: "the current Codex app-server contract cannot prove that all inner tool effects are disabled",
+            });
+        }
+
         Ok(ResolvedAgentConfig {
             route: route.to_owned(),
             profile: profile.id.clone(),
             connection: connection.id.clone(),
             provider_kind: connection.kind,
-            owner: if connection.kind == ProviderKind::Codex {
-                ExecutionOwner::Codex
-            } else {
-                ExecutionOwner::Native
-            },
+            owner,
             model,
             reasoning_effort: selection.reasoning_effort,
             reasoning_summary: selection.reasoning_summary,
             capabilities,
-            permission_mode: narrow_permission(
-                narrow_permission(
-                    self.registry.permission_mode,
-                    parent_profile.permission_mode,
-                ),
-                profile.permission_mode,
-            ),
+            permission_mode,
             max_tool_rounds: profile.max_tool_rounds.min(parent_profile.max_tool_rounds),
             orchestration: intersect_limits(&parent_profile.orchestration, &profile.orchestration),
             hard_token_limit: None,
@@ -331,6 +407,15 @@ pub(crate) fn apply_spawn_restrictions(
             return Err(RestrictionError::AuthorityWidening);
         }
         restricted.permission_mode = permission_mode;
+    }
+    if restricted.owner == ExecutionOwner::Codex
+        && restricted.permission_mode == PermissionMode::Deny
+    {
+        return Err(RestrictionError::PermissionModeUnavailable {
+            owner: restricted.owner,
+            permission_mode: restricted.permission_mode,
+            reason: "the current Codex app-server contract cannot prove that all inner tool effects are disabled",
+        });
     }
     narrow_usize(
         "max_tool_rounds",
@@ -700,6 +785,32 @@ max_context_tokens = 1000"#,
     }
 
     #[test]
+    fn child_route_cannot_widen_the_root_capability_ceiling() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        let config = ROUTE_CONFIG.replace(
+            "[profiles.default]\nconnection = \"local\"\nmodel = \"root\"",
+            "[profiles.default]\nconnection = \"local\"\nmodel = \"root\"\ncapabilities = [\"fs.read\"]",
+        );
+        fs::write(&config_path, config).expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+
+        assert!(matches!(
+            RouteResolver::new(&registry, &manager).resolve(None),
+            Err(RouteResolutionError::CapabilityUnavailable {
+                capability,
+                reason,
+                ..
+            }) if capability == "xana.docs.read" && reason.contains("authority ceiling")
+        ));
+    }
+
+    #[test]
     fn hard_usage_limits_require_an_enforcement_capability() {
         let directory = tempdir().expect("temporary directory");
         let config_path = directory.path().join("config.toml");
@@ -797,5 +908,98 @@ profile = "planner"
         assert_eq!(resolved.reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(resolved.reasoning_summary, Some(ReasoningSummary::Detailed));
         assert!(resolved.capabilities.tool_ids().is_empty());
+    }
+
+    #[test]
+    fn codex_route_rejects_an_effective_deny_policy() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            r#"
+version = 3
+default_profile = "default"
+default_child_route = "worker"
+permission_mode = "ask"
+
+[providers.codex]
+kind = "codex"
+codex_program = "this-program-must-not-run"
+
+[providers.codex.models."gpt-test"]
+reasoning = true
+
+[profiles.default]
+connection = "codex"
+model = "gpt-test"
+
+[profiles.worker]
+connection = "codex"
+model = "gpt-test"
+permission_mode = "deny"
+capabilities = []
+
+[routes.worker]
+profile = "worker"
+"#,
+        )
+        .expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+
+        assert!(matches!(
+            RouteResolver::new(&registry, &manager).resolve(None),
+            Err(RouteResolutionError::PermissionModeUnavailable {
+                owner: ExecutionOwner::Codex,
+                permission_mode: PermissionMode::Deny,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn spawn_restriction_cannot_narrow_codex_to_an_unenforceable_deny_policy() {
+        let directory = tempdir().expect("temporary directory");
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            ROUTE_CONFIG.replace("permission_mode = \"deny\"", "permission_mode = \"ask\""),
+        )
+        .expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        let mut resolved = RouteResolver::new(&registry, &manager)
+            .resolve(None)
+            .expect("resolve route");
+        resolved.owner = ExecutionOwner::Codex;
+        let baseline = resolved.clone();
+
+        assert!(matches!(
+            apply_spawn_restrictions(
+                &mut resolved,
+                &ChildRestrictions {
+                    permission_mode: Some(PermissionMode::Deny),
+                    ..Default::default()
+                },
+                EnforcementCapabilities {
+                    hard_tokens: false,
+                    hard_spend: false,
+                },
+            ),
+            Err(RestrictionError::PermissionModeUnavailable {
+                owner: ExecutionOwner::Codex,
+                permission_mode: PermissionMode::Deny,
+                ..
+            })
+        ));
+        assert_eq!(resolved, baseline, "a rejected restriction is atomic");
     }
 }

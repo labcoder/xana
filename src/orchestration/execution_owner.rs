@@ -112,7 +112,7 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             }
             let policy = PermissionPolicy::new(
                 policy_decision(resolved.permission_mode),
-                self.permission_rules.clone(),
+                capped_permission_rules(resolved.permission_mode, &self.permission_rules),
                 &self.workspace_root,
             )
             .map_err(|error| format!("could not resolve child permission policy: {error}"))?;
@@ -133,7 +133,12 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
                         reasoning_summary: resolved.reasoning_summary,
                     },
                     task,
-                    policy: child_policy(resolved.permission_mode),
+                    policy: child_policy(resolved.permission_mode).map_err(|reason| {
+                        format!(
+                            "managed child route {:?} cannot enforce permission mode {:?}: {reason}",
+                            resolved.route, resolved.permission_mode
+                        )
+                    })?,
                 },
             );
             return Ok(PreparedChild::new(resolved, policy, Box::new(execution)));
@@ -182,7 +187,7 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             .map_err(|error| format!("child task does not fit its prompt budget: {error}"))?;
         let policy = PermissionPolicy::new(
             policy_decision(resolved.permission_mode),
-            self.permission_rules.clone(),
+            capped_permission_rules(resolved.permission_mode, &self.permission_rules),
             &self.workspace_root,
         )
         .map_err(|error| format!("could not resolve child permission policy: {error}"))?;
@@ -411,16 +416,37 @@ fn policy_decision(mode: PermissionMode) -> crate::permission::PolicyDecision {
     mode.into()
 }
 
+fn capped_permission_rules(mode: PermissionMode, rules: &[PermissionRule]) -> Vec<PermissionRule> {
+    rules
+        .iter()
+        .cloned()
+        .map(|mut rule| {
+            rule.decision = match (mode, rule.decision) {
+                (PermissionMode::Deny, _) => crate::permission::PolicyDecision::Deny,
+                (PermissionMode::Ask, crate::permission::PolicyDecision::Allow) => {
+                    crate::permission::PolicyDecision::Ask
+                }
+                (_, decision) => decision,
+            };
+            rule
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::XanaConfig;
     use crate::identity::{AgentId, OperationId, ThreadId};
     use crate::orchestration::types::ChildContextPreview;
-    use crate::orchestration::{ChildContextHandoff, ChildRestrictions, ChildResultSchema};
-    use crate::permission::PermissionBroker;
+    use crate::orchestration::{
+        ChildActivity, ChildCommitSender, ChildContextHandoff, ChildRestrictions,
+        ChildResultSchema, ChildSupervisor, ChildTerminalStatus, ParentExecution,
+    };
+    use crate::permission::{PermissionBroker, PermissionRequest, PermissionScope, PolicyDecision};
     use crate::runtime::AgentEvent;
     use crate::shell::ShellConfig;
+    use crate::tool::EffectClass;
     use std::fs;
     use std::sync::Mutex;
     use tempfile::tempdir;
@@ -498,6 +524,47 @@ mod tests {
         assert_eq!(sources[0].content, "untrusted <text>");
         assert_eq!(sources[0].trust, TrustClass::Project);
         assert_eq!(sources[0].provenance.origin, SourceOrigin::ParentHandoff);
+    }
+
+    #[test]
+    fn resolved_child_permission_mode_is_a_hard_rule_ceiling() {
+        let directory = tempdir().expect("workspace");
+        let workspace = directory
+            .path()
+            .canonicalize()
+            .expect("canonical workspace");
+        let allow_rule = PermissionRule {
+            id: "configured-allow".to_owned(),
+            decision: PolicyDecision::Allow,
+            tool: Some("read_file".to_owned()),
+            effect: None,
+            workspace: None,
+            command: None,
+        };
+        let request = PermissionRequest {
+            operation_id: OperationId::new(),
+            invocation_id: crate::identity::ToolInvocationId::new(),
+            tool_name: "read_file".to_owned(),
+            effect_class: EffectClass::Read,
+            final_arguments: serde_json::json!({"path": "notes.txt"}),
+            scope: PermissionScope::WorkspacePath {
+                canonical_path: workspace.join("notes.txt"),
+            },
+        };
+
+        for (mode, expected) in [
+            (PermissionMode::Deny, PolicyDecision::Deny),
+            (PermissionMode::Ask, PolicyDecision::Ask),
+            (PermissionMode::Allow, PolicyDecision::Allow),
+        ] {
+            let policy = PermissionPolicy::new(
+                policy_decision(mode),
+                capped_permission_rules(mode, std::slice::from_ref(&allow_rule)),
+                &workspace,
+            )
+            .expect("child policy");
+            assert_eq!(policy.explain(&request).winning_decision, expected);
+        }
     }
 
     #[tokio::test]
@@ -590,7 +657,7 @@ profile = "codex-review"
                 attribution,
                 operation_id: OperationId::new(),
                 permissions: permissions.clone(),
-                events,
+                events: events.into(),
                 cancellation: tokio_util::sync::CancellationToken::new(),
             })
             .await;
@@ -608,5 +675,253 @@ profile = "codex-review"
         assert!(seen[0].policy.ephemeral);
         assert!(seen[0].task.contains("untrusted source"));
         assert!(!seen[0].task.contains("parent transcript"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a running Ollama server and XANA_LIVE_OLLAMA_MODEL"]
+    async fn live_native_child_uses_the_exact_ollama_route() {
+        let model = std::env::var("XANA_LIVE_OLLAMA_MODEL")
+            .expect("set XANA_LIVE_OLLAMA_MODEL to an installed Ollama model");
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().canonicalize().expect("workspace");
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+version = 3
+default_profile = "default"
+default_child_route = "worker"
+permission_mode = "deny"
+
+[providers.local]
+kind = "ollama"
+base_url = "http://localhost:11434/v1"
+
+[providers.local.models.{model:?}]
+tools = false
+
+[profiles.default]
+connection = "local"
+model = {model:?}
+
+[profiles.worker]
+connection = "local"
+model = {model:?}
+capabilities = []
+permission_mode = "deny"
+
+[routes.worker]
+profile = "worker"
+"#
+            ),
+        )
+        .expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        let factory = ChildExecutionOwnerFactory::new(
+            registry,
+            manager,
+            Shell::resolve(ShellConfig::default()).expect("shell"),
+            workspace.clone(),
+            ArtifactStore::new(directory.path().join("artifacts")),
+            Vec::new(),
+        );
+        let (handle, supervisor) = ChildSupervisor::new(
+            ParentExecution {
+                agent_id: AgentId::new(),
+                thread_id: ThreadId::new(),
+            },
+            Arc::new(factory),
+        );
+        let (commits, mut commit_receiver) = ChildCommitSender::channel();
+        let commit_task = tokio::spawn(async move {
+            while let Some(command) = commit_receiver.recv().await {
+                let _ = command.acknowledged.send(Ok(()));
+            }
+        });
+        let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+        let admitted = handle
+            .spawn_agent(
+                OperationId::new(),
+                SpawnAgentRequest {
+                    route: Some("worker".to_owned()),
+                    task: "Reply with exactly: native phase 4 smoke complete.".to_owned(),
+                    result_schema: ChildResultSchema::Summary,
+                    restrictions: ChildRestrictions::default(),
+                    handoff: ChildContextHandoff::default(),
+                },
+            )
+            .await
+            .expect("admit live native child");
+        assert_eq!(admitted.admission.attribution.owner, ExecutionOwner::Native);
+        assert_eq!(admitted.admission.attribution.connection, "local");
+        assert_eq!(admitted.admission.attribution.model, model);
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            handle.await_agent(admitted.admission.attribution.agent_id),
+        )
+        .await
+        .expect("live Ollama child timeout")
+        .expect("collect live native report");
+        assert_eq!(report.status, ChildTerminalStatus::Completed);
+        assert!(
+            report
+                .output
+                .as_deref()
+                .is_some_and(|output| output.contains("native phase 4 smoke complete"))
+        );
+        assert!(matches!(
+            report.usage,
+            ChildUsage::Measured { requests: 1, .. }
+        ));
+        assert!(
+            std::iter::from_fn(|| event_receiver.try_recv().ok()).any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ChildLifecycleChanged {
+                        lifecycle: crate::orchestration::ChildLifecycle::Running,
+                        ..
+                    }
+                )
+            })
+        );
+        handle.shutdown().await;
+        supervisor_task.await.expect("supervisor task");
+        commit_task.await.expect("commit task");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an authenticated local Codex CLI and XANA_LIVE_CODEX_MODEL"]
+    async fn live_managed_codex_route_collects_a_supervised_report() {
+        let model = std::env::var("XANA_LIVE_CODEX_MODEL")
+            .expect("set XANA_LIVE_CODEX_MODEL to an advertised Codex model");
+        let program =
+            std::env::var("XANA_LIVE_CODEX_PROGRAM").unwrap_or_else(|_| "codex".to_owned());
+        let directory = tempdir().expect("temporary directory");
+        let workspace = directory.path().canonicalize().expect("workspace");
+        let config_path = directory.path().join("config.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+version = 3
+default_profile = "default"
+default_child_route = "codex-review"
+permission_mode = "ask"
+
+[providers.local]
+kind = "openai_compat"
+base_url = "http://localhost:11434/v1"
+
+[providers.local.models.root]
+tools = false
+
+[providers.codex]
+kind = "codex"
+codex_program = {program:?}
+
+[providers.codex.models.{model:?}]
+tools = true
+
+[profiles.default]
+connection = "local"
+model = "root"
+
+[profiles.codex-review]
+connection = "codex"
+model = {model:?}
+capabilities = []
+permission_mode = "ask"
+
+[routes.codex-review]
+profile = "codex-review"
+"#
+            ),
+        )
+        .expect("write config");
+        let registry = XanaConfig::load_registry_from(&config_path).expect("registry");
+        let manager = ModelManager::new(
+            registry.clone(),
+            directory.path().join("cache"),
+            directory.path().join("selection.toml"),
+        );
+        let factory = ChildExecutionOwnerFactory::new(
+            registry,
+            manager,
+            Shell::resolve(ShellConfig::default()).expect("shell"),
+            workspace,
+            ArtifactStore::new(directory.path().join("artifacts")),
+            Vec::new(),
+        );
+        let (handle, supervisor) = ChildSupervisor::new(
+            ParentExecution {
+                agent_id: AgentId::new(),
+                thread_id: ThreadId::new(),
+            },
+            Arc::new(factory),
+        );
+        let (commits, mut commit_receiver) = ChildCommitSender::channel();
+        let commit_task = tokio::spawn(async move {
+            while let Some(command) = commit_receiver.recv().await {
+                let _ = command.acknowledged.send(Ok(()));
+            }
+        });
+        let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+        let admitted = handle
+            .spawn_agent(
+                OperationId::new(),
+                SpawnAgentRequest {
+                    route: Some("codex-review".to_owned()),
+                    task: "Reply with exactly: managed phase 4 smoke complete. Do not use tools."
+                        .to_owned(),
+                    result_schema: ChildResultSchema::Summary,
+                    restrictions: ChildRestrictions::default(),
+                    handoff: ChildContextHandoff::default(),
+                },
+            )
+            .await
+            .expect("admit live managed child");
+        assert_eq!(admitted.admission.attribution.owner, ExecutionOwner::Codex);
+        assert_eq!(admitted.admission.attribution.connection, "codex");
+        assert_eq!(admitted.admission.attribution.model, model);
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(180),
+            handle.await_agent(admitted.admission.attribution.agent_id),
+        )
+        .await
+        .expect("live Codex child timeout")
+        .expect("collect live managed report");
+        assert_eq!(report.status, ChildTerminalStatus::Completed);
+        assert!(
+            report
+                .output
+                .as_deref()
+                .is_some_and(|output| output.contains("managed phase 4 smoke complete"))
+        );
+        assert!(matches!(
+            report.usage,
+            ChildUsage::Measured { requests: 1, .. }
+        ));
+        assert!(
+            std::iter::from_fn(|| event_receiver.try_recv().ok()).any(|event| {
+                matches!(
+                    event,
+                    AgentEvent::ChildActivity {
+                        activity: ChildActivity::ManagedRuntime { .. },
+                        ..
+                    }
+                )
+            })
+        );
+        handle.shutdown().await;
+        supervisor_task.await.expect("supervisor task");
+        commit_task.await.expect("commit task");
     }
 }

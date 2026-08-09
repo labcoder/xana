@@ -452,10 +452,14 @@ pub(crate) fn validate_envelope(
                 });
             }
             let mut batch_ids = HashSet::with_capacity(handles.len());
+            let mut batch_operation_ids = HashSet::with_capacity(handles.len());
             for handle in handles {
                 let agent_id = handle.admission.attribution.agent_id;
                 if !batch_ids.insert(agent_id) {
                     return Err(ReductionError::DuplicateChild { agent: agent_id });
+                }
+                if !batch_operation_ids.insert(handle.admission.attribution.operation_id) {
+                    return Err(ReductionError::InvalidChildAdmission { agent: agent_id });
                 }
                 validate_child_admission(state, handle, ChildLifecycle::Queued)?;
             }
@@ -714,11 +718,27 @@ fn validate_child_admission(
     required_lifecycle: ChildLifecycle,
 ) -> Result<(), ReductionError> {
     let attribution = &handle.admission.attribution;
+    let parent_operation_is_valid = state
+        .operation_details
+        .get(&attribution.parent_operation_id)
+        .is_some_and(|operation| {
+            operation.thread_id == attribution.thread_id && operation.finished.is_none()
+        });
+    let child_operation_is_unique = attribution.operation_id != attribution.parent_operation_id
+        && !state
+            .operation_details
+            .contains_key(&attribution.operation_id)
+        && state.children.values().all(|child| {
+            child.handle.admission.attribution.operation_id != attribution.operation_id
+        });
     if handle.lifecycle != required_lifecycle
         || handle.report.is_some()
         || handle.usage != crate::orchestration::ChildUsage::Unknown
         || attribution.agent_id == attribution.parent_agent_id
         || attribution.parent_agent_id != AgentId::for_session(state.session_id)
+        || attribution.thread_id != state.thread_id
+        || !parent_operation_is_valid
+        || !child_operation_is_unique
         || attribution.route.trim().is_empty()
         || attribution.profile.trim().is_empty()
         || attribution.connection.trim().is_empty()

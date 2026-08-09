@@ -1,8 +1,8 @@
 use super::broker::DecisionError;
 use super::*;
 use crate::{
-    identity::{OperationId, ToolInvocationId},
-    runtime::AgentEvent,
+    identity::{OperationId, StepId, ToolInvocationId},
+    runtime::{AgentEvent, AgentEventSender},
     tool::EffectClass,
 };
 use std::path::{Path, PathBuf};
@@ -64,6 +64,55 @@ fn configured_default_applies_when_no_rule_matches() {
         policy(PolicyDecision::Ask, Vec::new(), workspace.path()).evaluate(&request, &grants),
         Evaluation::Ask { rule_ids } if rule_ids.is_empty()
     ));
+}
+
+#[tokio::test]
+async fn full_child_observation_queue_cannot_hide_a_permission_control_request() {
+    let workspace = tempdir().expect("workspace");
+    let (events, mut observations, mut controls, dropped) = AgentEventSender::child(1);
+    events
+        .send(AgentEvent::AssistantTextDelta {
+            operation_id: OperationId::new(),
+            step_id: StepId::new(),
+            text: "fills the observation queue".to_owned(),
+        })
+        .expect("fill observation queue");
+    let (broker, task) = PermissionBroker::spawn(
+        policy(PolicyDecision::Ask, Vec::new(), workspace.path()),
+        true,
+        events,
+    );
+    let request = workspace_request(workspace.path());
+    let waiter = {
+        let broker = broker.clone();
+        let request = request.clone();
+        tokio::spawn(async move { broker.authorize(request).await })
+    };
+
+    assert!(matches!(
+        controls.recv().await,
+        Some(AgentEvent::PermissionRequested { request: emitted })
+            if emitted == request
+    ));
+    broker
+        .decide(
+            request.operation_id,
+            request.invocation_id,
+            ControllerDecision::Deny,
+        )
+        .await
+        .expect("deny request");
+    assert!(matches!(
+        waiter
+            .await
+            .expect("authorization task")
+            .expect("authorization"),
+        Authorization::Denied(_)
+    ));
+    assert!(dropped.count() >= 1);
+    assert!(observations.try_recv().is_ok());
+    broker.shutdown();
+    task.await.expect("broker task");
 }
 
 #[test]
