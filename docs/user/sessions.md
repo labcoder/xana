@@ -3,9 +3,10 @@
 > Audience: People using, resuming, inspecting, or backing up Xana sessions.
 
 Xana persists every native-provider chat as one append-only session. Bare
-`xana`, `xana --plain`, and one-shot mode without a continuation option create
-a new session. Interactive plain chat prints its UUID, file path, and exact
-resume command. Resume an explicit id or select the latest compatible session:
+`xana` and `xana --plain` select the latest compatible inactive session or
+create a new one. One-shot without a continuation option always creates a new
+session. Interactive plain chat prints its UUID, file path, and exact resume
+command. Resume an explicit id or select the latest compatible session:
 
 ```text
 xana --resume SESSION_ID
@@ -23,11 +24,38 @@ identity.
 
 Managed Codex owns its thread history. Xana does not duplicate that history in
 native session JSONL, and `--resume` is rejected for a Codex selection. Xana
-does persist one opaque Codex thread id for each connection and canonical
-workspace. Interactive managed chat resumes that saved handle; managed
+does retain a bounded catalog of opaque Codex thread ids for each connection
+and canonical workspace, plus which one is selected. Interactive managed chat
+resumes that saved handle; managed
 one-shot starts a new thread unless `--continue` requests the saved compatible
-handle. `/clear` discards the active handle and starts a new thread; model or
-reasoning changes retain it.
+handle. `/clear` deselects the current handle and starts a new thread while
+retaining the old opaque id; model or reasoning changes retain the selection.
+
+## Workspace host ownership
+
+```text
+xana session list
+xana session select-managed codex THREAD_ID
+```
+
+The process-owned workspace host uses one canonical workspace identity and can
+list multiple native sessions and retained managed handles. It permits one
+active root turn across Xana processes in that workspace; Phase 4 children
+remain bounded beneath that root. The OS file lock is authoritative. A small
+descriptor records a random host id, PID, and conversation only for diagnosis;
+stale metadata never authorizes Xana to signal or kill that PID.
+
+When another root is active, a normal plain launch can create an inactive
+native conversation for drafting, but submitting another root is rejected.
+Exact resume and `--continue` fail rather than guessing. Wait for or cancel the
+controlling terminal, or attach once an explicit foreground server is running.
+Closing the embedded owner cancels its runtime-owned operation and children;
+there is no daemon or retained background work yet.
+
+Conversation ownership is not a filesystem or worktree lock. Multiple
+conversations may reference the same workspace, which is useful outside code,
+but parallel code edits can conflict. Prefer separate Git worktrees when work
+may overlap; Xana does not create them automatically.
 
 ## Storage
 
@@ -39,6 +67,8 @@ data/
   sessions/<session-uuid>.jsonl.lock
   managed-threads/<blake3-route-key>.json
   managed-threads/<blake3-route-key>.lock
+  workspace-hosts/<blake3-workspace-key>.json
+  workspace-hosts/<blake3-workspace-key>.lock
   artifacts/<64-character-blake3-hex>
 ```
 
@@ -46,8 +76,9 @@ With `XANA_HOME`, `data/` is beneath that absolute root. Otherwise the platform
 data directory described in [Configuration](configuration.md) applies.
 
 A managed-thread document contains only a format version, connection id,
-canonical workspace, and optional opaque thread id. It contains no transcript,
-model context, tool state, credential, or token. Its companion lock permits
+canonical workspace, a bounded list of opaque thread ids and identity versions,
+and the selected id. It contains no transcript, model context, tool state,
+credential, or token. Its companion lock permits
 one Xana writer for the same managed route while allowing different
 workspaces. Writes are atomic and bounded. Codex remains the authority for
 whether a saved id can be resumed.

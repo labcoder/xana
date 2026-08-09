@@ -5,7 +5,7 @@ mod record;
 mod reduce;
 mod store;
 
-pub(crate) use durable::DurableSession;
+pub(crate) use durable::{DurableSession, NativeConversationHandle};
 pub(crate) use record::{ConversationEntry, RecordEnvelope, SessionRecord};
 pub(crate) use reduce::{
     RestoredOperation, RestoredSession, apply_validated, reduce, validate_envelope,

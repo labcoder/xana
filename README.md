@@ -232,12 +232,23 @@ different: it clears only the current conversation.
 ## Chat, tools, and images
 
 Bare `xana` and explicit `xana --plain` start append-only terminal chat. Native
-conversations create a durable JSONL session; `--continue` selects the latest
+conversations use the latest compatible inactive session or create a new one;
+`--continue` selects the latest
 compatible conversation in the canonical workspace, while
 `--resume SESSION_ID` selects one exact native session. `/clear` moves to a new
 empty native history or a new Codex thread. `/quit`, Ctrl-C, and EOF shut down
 the foreground runtime and print a compact native resume receipt. `--tui` is
 reserved for the adaptive full-screen frontend and currently fails visibly.
+
+`xana session list` shows the bounded native and managed conversation catalog
+for the canonical current workspace, including active ownership. A single
+OS-backed workspace gate permits only one root turn across local Xana
+processes; another plain client may open a new inactive conversation for
+drafting but cannot submit competing work. Exact resume fails with controlling
+terminal/attach guidance. Xana does not lock the workspace filesystem: use
+separate worktrees when parallel conversations might edit the same files.
+Retained Codex handles can be selected with
+`xana session select-managed CONNECTION THREAD_ID`.
 
 Run exactly one turn with `xana -p "PROMPT"` or pipe one prompt into
 `xana --print`. Final text is the only stdout payload; activity and diagnostics
@@ -248,10 +259,11 @@ checkout, place CLI arguments after `--`, for example
 [Plain and one-shot modes](docs/user/automation.md) for pipelines, process
 statuses, continuation, and the output contract.
 
-For Codex, Xana stores only an opaque thread id keyed by the connection and
-canonical workspace. The next Xana process resumes that Codex-owned thread on
-its first turn. It does not copy the conversation, tool state, or credentials;
-`/clear` replaces the saved handle with a new Codex thread.
+For Codex, Xana retains a bounded catalog of opaque thread ids keyed by the
+connection and canonical workspace. The next Xana process resumes the selected
+Codex-owned thread on its first turn. It does not copy the conversation, tool
+state, or credentials; `/clear` starts a new selected Codex thread while the
+old opaque handle remains available for explicit selection.
 
 The capability-resolved native tool snapshot contains:
 

@@ -77,6 +77,16 @@ bounded command for delivery; semantic runtime outcomes remain ordered
 observations. This contract is repository-private and makes no compatibility
 promise to third-party clients or future network adapters.
 
+`workspace_host` owns canonical local-workspace conversation discovery and the
+single-root admission gate shared by embedded native and managed clients. A
+bounded snapshot combines reducible native session records with retained
+opaque managed handles. An OS file lock, acquired only for an active root
+turn, is the cross-process authority; its bounded host-id/PID/conversation
+descriptor is diagnostic and never authorizes process signalling. A second
+plain client may hold an inactive session writer and draft input, but its turn
+cannot cross the root gate. Dropping the active embedded client follows the
+existing runtime cancellation path before its lease is released.
+
 The append-only terminal and one-shot adapter are permanent clients of this
 boundary. One-shot accepts exactly one bounded argument or stdin source,
 denies unresolved approvals, and writes only the final payload to stdout.
@@ -380,8 +390,9 @@ session inspect SESSION_ID` reports bounded metadata without conversation
 content and never opens for writing.
 
 Managed Codex threads remain Codex-owned and are not mirrored into Xana's
-native session log. Xana stores only an opaque thread id per connection and
-canonical workspace, then delegates `thread/resume` to Codex on the next
+native session log. Xana stores a bounded version-2 catalog of opaque thread
+ids per connection and canonical workspace, including the current selection,
+then delegates `thread/resume` to Codex on the next
 process's first interactive turn. The bounded, atomically written handle is
 neither history nor a credential. `--resume` therefore applies only to native
 conversations; managed one-shot starts fresh unless `--continue` selects the
@@ -426,8 +437,9 @@ from byte equality.
 The foreground runtime owns the only open `SessionStore`. A companion lock file
 uses the standard library's nonblocking exclusive file lock, so a second
 process cannot open the same session for writing or recovery concurrently.
-There is no session deletion or garbage collection, automatic latest-session
-choice, or portable-workspace rewrite. Restore reports unfinished operation
+There is no session deletion, garbage collection, or portable-workspace
+rewrite. Interactive launch and `--continue` use a bounded, canonical-workspace
+latest-session query. Restore reports unfinished operation
 states but performs no provider, tool, context-refresh, or replay effect.
 
 ## Durable operation and recovery boundary

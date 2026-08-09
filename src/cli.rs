@@ -109,7 +109,7 @@ pub(crate) enum Command {
     Reset(ResetArgs),
     /// Inspect the active configuration.
     Config(ConfigArgs),
-    /// Inspect durable sessions without entering chat.
+    /// List, inspect, or select conversations without entering chat.
     Session(SessionArgs),
     /// Inspect or explicitly reconcile interrupted operations.
     Operation(OperationArgs),
@@ -347,8 +347,15 @@ pub(crate) struct SessionArgs {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum SessionCommand {
+    /// List bounded conversations for the canonical current workspace.
+    List,
     /// Print bounded metadata without conversation content.
     Inspect { session_id: SessionId },
+    /// Select one retained managed conversation for its next resume.
+    SelectManaged {
+        connection: String,
+        thread_id: String,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -656,6 +663,22 @@ mod tests {
                 command: SessionCommand::Inspect { session_id: id },
             }))
         );
+        assert!(matches!(
+            Cli::try_parse_from(["xana", "session", "list"])
+                .unwrap()
+                .command,
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::List
+            }))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["xana", "session", "select-managed", "codex", "thread-1"])
+                .unwrap()
+                .command,
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::SelectManaged { .. }
+            }))
+        ));
     }
 
     #[test]

@@ -15,8 +15,13 @@ use crate::{
     context::{ContextBudget, ContextPlanReport},
     credential::{CredentialResolver, SecretString, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
-    managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
-    managed_terminal::{ManagedChatConfig, run_codex_chat, run_codex_one_shot},
+    managed::{
+        codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
+        thread_store::ManagedThreadStore,
+    },
+    managed_terminal::{
+        ManagedChatConfig, ManagedOneShotRequest, run_codex_chat, run_codex_one_shot,
+    },
     model::{ExecutionKind, ModelManager},
     oneshot::{
         ExitCategory, OneShotFailure, OneShotOutput, OneShotSuccess, write_failure, write_success,
@@ -38,6 +43,7 @@ use crate::{
     terminal::{self, ChatHeader},
     tool::ToolRegistry,
     vision::MediaResolver,
+    workspace_host::{ConversationRef, ConversationState, WorkspaceHost, WorkspaceHostError},
 };
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -1042,6 +1048,64 @@ async fn run_default(
         .context("could not canonicalize Xana workspace root")?;
     let artifact_store = ArtifactStore::new(paths.data_dir().join("artifacts"));
 
+    let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
+    debug_assert_eq!(workspace_host.workspace(), workspace_root);
+    let host_snapshot = workspace_host.snapshot()?;
+    let resume = if provider_kind != ProviderKind::Codex {
+        if (resume.is_some() || continue_chat) && host_snapshot.active.is_some() {
+            return Err(anyhow::Error::new(WorkspaceHostError::Busy(
+                host_snapshot.active.clone(),
+            )));
+        }
+        if resume.is_none() && (continue_chat || one_shot.is_none()) {
+            let latest = if host_snapshot.active.is_none() {
+                DurableSession::latest_for_workspace(paths.data_dir(), &workspace_root)?
+            } else {
+                None
+            };
+            if continue_chat && latest.is_none() {
+                anyhow::bail!(
+                    "--continue found no inactive native conversation for this workspace"
+                );
+            }
+            if one_shot.is_none() && host_snapshot.active.is_some() {
+                writeln!(
+                    anstream::stdout().lock(),
+                    "another Xana root is active in this workspace; opening a new inactive conversation for drafting. Submitting work waits until the controlling root ends"
+                )?;
+            }
+            latest
+        } else {
+            resume
+        }
+    } else {
+        resume
+    };
+    let conversation = if provider_kind == ProviderKind::Codex {
+        let current =
+            host_snapshot
+                .conversations
+                .into_iter()
+                .find_map(|projection| match projection.conversation {
+                    ConversationRef::Managed {
+                        connection,
+                        thread_id,
+                    } if connection == provider_name && projection.selected => {
+                        Some(ConversationRef::Managed {
+                            connection,
+                            thread_id,
+                        })
+                    }
+                    _ => None,
+                });
+        current.unwrap_or_else(|| ConversationRef::NewManaged {
+            connection: provider_name.clone(),
+        })
+    } else {
+        resume.map_or(ConversationRef::NewNative, |session_id| {
+            ConversationRef::Native { session_id }
+        })
+    };
     if provider_kind == ProviderKind::Codex {
         if resume.is_some() {
             anyhow::bail!(
@@ -1066,17 +1130,27 @@ async fn run_default(
                     server,
                     manager,
                     managed_config,
-                    input,
-                    continue_chat,
+                    ManagedOneShotRequest {
+                        input,
+                        continue_thread: continue_chat,
+                        conversation,
+                    },
                     &mut activity,
+                    &workspace_host,
                 )
                 .await
                 .map(Some)
                 .map_err(anyhow::Error::new)
             }
-            None => run_codex_chat(server, manager, managed_config)
-                .await
-                .map(|()| None),
+            None => run_codex_chat(
+                server,
+                manager,
+                managed_config,
+                workspace_host,
+                conversation,
+            )
+            .await
+            .map(|()| None),
         };
     }
 
@@ -1139,14 +1213,6 @@ async fn run_default(
         };
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
-    let resume = if resume.is_none() && continue_chat {
-        Some(
-            DurableSession::latest_for_workspace(paths.data_dir(), &workspace_root)?
-                .context("--continue found no native conversation for this workspace")?,
-        )
-    } else {
-        resume
-    };
     let (session, permission_policy, resumed, repair_truncate_to, unfinished, restored_children) =
         match resume {
             Some(session_id) => {
@@ -1305,13 +1371,20 @@ async fn run_default(
 
     if let Some(input) = one_shot {
         let mut activity = anstream::stderr().lock();
-        return terminal::run_one_shot(runtime, &header, input, &mut activity)
-            .await
-            .map(Some)
-            .map_err(anyhow::Error::new);
+        return terminal::run_one_shot(
+            runtime,
+            &header,
+            input,
+            &mut activity,
+            &workspace_host,
+            conversation,
+        )
+        .await
+        .map(Some)
+        .map_err(anyhow::Error::new);
     }
 
-    match terminal::run_chat(runtime, header).await? {
+    match terminal::run_chat(runtime, header, workspace_host, conversation).await? {
         terminal::ChatExit::Quit => Ok(None),
         terminal::ChatExit::Restart => {
             Box::pin(run_default(paths, BannerMode::Hidden, None, false, None)).await
@@ -1325,6 +1398,53 @@ fn run_session_command<W: Write>(
     output: &mut W,
 ) -> Result<()> {
     match command {
+        SessionCommand::List => {
+            let workspace = std::env::current_dir()
+                .context("could not resolve current workspace")?
+                .canonicalize()
+                .context("could not canonicalize current workspace")?;
+            let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+            let snapshot = host.snapshot()?;
+            writeln!(output, "workspace: {}", snapshot.workspace.display())?;
+            writeln!(output, "conversations: {}", snapshot.conversations.len())?;
+            for conversation in snapshot.conversations {
+                writeln!(
+                    output,
+                    "  {} state={}{}{}",
+                    conversation.conversation,
+                    conversation.state,
+                    if conversation.selected {
+                        " selected"
+                    } else {
+                        ""
+                    },
+                    conversation
+                        .record_count
+                        .map(|count| format!(" records={count}"))
+                        .unwrap_or_default()
+                )?;
+            }
+            if let Some(active) = snapshot.active {
+                writeln!(
+                    output,
+                    "active root: {} process={} (descriptor is advisory; the OS lock is authoritative)",
+                    active.conversation,
+                    active.process_id()
+                )?;
+            } else {
+                writeln!(output, "active root: none")?;
+            }
+            writeln!(
+                output,
+                "states: {}",
+                ConversationState::all()
+                    .into_iter()
+                    .map(|state| state.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )?;
+            Ok(())
+        }
         SessionCommand::Inspect { session_id } => {
             let summary = DurableSession::inspect(paths.data_dir(), session_id)?;
             writeln!(output, "session: {}", summary.session_id)?;
@@ -1376,6 +1496,23 @@ fn run_session_command<W: Write>(
                 }
                 None => writeln!(output, "torn tail: none")?,
             }
+            Ok(())
+        }
+        SessionCommand::SelectManaged {
+            connection,
+            thread_id,
+        } => {
+            let workspace = std::env::current_dir()
+                .context("could not resolve current workspace")?
+                .canonicalize()
+                .context("could not canonicalize current workspace")?;
+            let mut store = ManagedThreadStore::open(paths.data_dir(), &connection, &workspace)?;
+            store.select_thread(&thread_id)?;
+            writeln!(
+                output,
+                "selected managed conversation {connection}/{thread_id} for {}",
+                workspace.display()
+            )?;
             Ok(())
         }
     }

@@ -244,10 +244,12 @@ races, and cancellation is polled before continuously ready app-server input,
 so an interrupted request cannot corrupt the following frame or starve the
 interrupt path.
 
-Xana stores the opaque managed thread id and non-secret creating identity
-version beneath `data/managed-threads/`, keyed by connection and canonical
+Xana stores a bounded catalog of opaque managed thread ids, their non-secret
+creating identity versions, and one current selection beneath
+`data/managed-threads/`, keyed by connection and canonical
 workspace. A companion lock gives one local writer ownership of that route.
-The handle lets a later Xana process ask Codex to resume its own thread; it is
+The selected handle lets a later Xana process ask Codex to resume its own
+thread; retained handles can be selected without copying vendor history. This is
 not a transcript, portable session, auth token, or claim that Xana owns the
 inner state. `/clear` atomically records an empty handle and creates a new
 thread on the next prompt. It does not delete the external Codex thread. Native
