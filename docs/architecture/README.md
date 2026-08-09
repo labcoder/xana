@@ -67,26 +67,34 @@ clearing, rejections, and attributed child lifecycle/activity/reports. Except fo
 explicit permission request, event delivery is passive: losing the receiver does
 not alter an operation's result.
 
-## One-child orchestration boundary
+Child list, detail, cancellation-request, and permission-decision commands
+address the in-process supervisor. They do not imply a daemon or remote runtime
+host. A cancellation-request event confirms only that the signal was accepted;
+the committed terminal lifecycle/report is the stop acknowledgement.
+
+## Native child supervision boundary
 
 When a native root has configured task routes, the application creates one
-`ChildSupervisor` actor and registers `delegate_agent` only in the root tool
-registry. The model-facing convenience calls the supervisor's distinct
-`spawn_agent` and `await_agent` operations in one tool execution, so no outer
-model response is needed between admission and collection. `AgentId` is the
+`ChildSupervisor` actor and registers `spawn_agent`, `await_agent`,
+`cancel_agent`, and `delegate_agent` only in the root tool registry. The
+model-facing convenience calls the supervisor's distinct `spawn_agent` and
+`await_agent` operations in one tool execution, so no outer model response is
+needed between admission and collection. `AgentId` is the
 durable handle key. A session's root `AgentId` is deterministically derived
 from its public `SessionId`, keeping lineage stable across resume without a
 write-on-open migration.
 
 Admission prepares the exact route, native provider, immutable capability/tool
 snapshot, permission ceiling, prompt, and explicit task before a child record
-exists. The runtime then commits `admitted`, `queued`, and `running` in order
-before emitting each matching event. The supervisor, not the tool future,
-owns the Tokio task and permission broker. Dropping an await therefore leaves
-the child supervised and a later await reads the same terminal report. A
-terminal report is committed before completed/failed events and contains
-typed attribution and an honest `unknown` usage state when the adapter exposes
-no usage.
+exists. The runtime commits `admitted` and `queued` before exposing the handle,
+then starts queued work in stable admission order when the single native slot
+is free and commits `running` before its event. The supervisor, not the tool
+future, owns the Tokio task and permission broker. Dropping or timing out an
+await therefore leaves the child supervised unless cancel-on-timeout was
+explicit. Repeated await/cancel operations are idempotent after terminal state.
+A terminal report is committed before completed/failed/cancelled/interrupted
+events and contains typed attribution and an honest `unknown` usage state when
+the adapter exposes no usage.
 
 ```mermaid
 sequenceDiagram
@@ -107,13 +115,30 @@ sequenceDiagram
     Tool-->>Root: handle + report JSON
 ```
 
+Native cancellation is structured: the supervisor marks the request, closes
+the child's permission broker, signals its cancellation token, drops the
+in-flight provider/tool future at the execution boundary, and waits for one
+terminal completion. The command does not equate signalling with success.
+Queued cancellation commits `Cancelled` without constructing an execution.
+Runtime shutdown applies the same path to every queued/running child and waits
+for terminal commits while the runtime continues servicing commit acks. A
+bounded grace expiry aborts only the unresponsive task and commits
+`Interrupted`; abort is not the normal cancellation path.
+
+On restoration, the reducer leaves committed records unchanged. Its inspection
+projection maps any nonterminal child prefix to `Interrupted` with an explicit
+projection marker, performs no provider/tool call, and appends no
+reconciliation fact. Active `/agents`, `/agent`, and `/cancel-agent` commands
+reach only the owning foreground process. `xana session inspect` in another
+process is read-only and cannot claim to cancel foreground work.
+
 The child receives Xana's identity/guidelines, its exact task, applicable
 bounded root `AGENTS.md`, environment facts, and only the tools selected by its
 profile. It receives no parent transcript and its registry never contains
-orchestration tools, so child depth is structurally one. This slice permits
-one active native child; parallel admission, explicit cancellation, offline
-child inspection, artifact overflow, plans, and managed Codex children are not
-yet implemented.
+orchestration tools, so child depth is structurally one. This slice runs one
+native child and queues later single admissions. Atomic batch admission,
+parallel execution, artifact overflow, plans, and managed Codex children are
+not yet implemented.
 
 `OperationId`, `StepId`, `ToolInvocationId`, `ToolResultId`, and `NamedValueId`
 are distinct UUID v4 newtypes.
@@ -487,8 +512,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
-  one-child supervision, durable handle/report types, and native child
-  composition. The runtime remains the only session writer.
+  queued native supervision, cancellation/inspection, durable handle/report
+  types, and native child composition. The runtime remains the only session
+  writer.
 - `operation` owns invocation intent/result ordering, bounded durable values,
   replay classification, and explicit recovery execution.
 - `permission` owns pure policy and scopes, pending controller decisions,

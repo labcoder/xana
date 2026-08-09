@@ -9,7 +9,7 @@ use crate::{
         RecoveryDecision,
     },
     orchestration::{
-        AgentHandleSnapshot, CHILD_REPORT_VERSION, ChildLifecycle, ChildReport,
+        AgentHandleSnapshot, CHILD_REPORT_VERSION, ChildInspection, ChildLifecycle, ChildReport,
         ChildReportReference, ChildTerminalStatus,
     },
     permission::PermissionAuditFact,
@@ -44,6 +44,30 @@ pub(crate) struct RestoredSession {
 pub(crate) struct RestoredChild {
     pub(crate) handle: AgentHandleSnapshot,
     pub(crate) report: Option<ChildReport>,
+}
+
+impl RestoredChild {
+    pub(crate) fn inspection(&self) -> ChildInspection {
+        if self.handle.lifecycle.is_terminal() {
+            return ChildInspection {
+                handle: self.handle.clone(),
+                report: self.report.clone(),
+                projected_interruption: false,
+            };
+        }
+        let mut handle = self.handle.clone();
+        let report = ChildReport::interrupted(
+            handle.admission.attribution.clone(),
+            "child work was interrupted when its owning Xana runtime stopped".to_owned(),
+            handle.admission.limits.max_report_bytes,
+        );
+        handle.apply_report(&report);
+        ChildInspection {
+            handle,
+            report: Some(report),
+            projected_interruption: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

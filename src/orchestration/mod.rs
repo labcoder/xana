@@ -11,8 +11,8 @@ mod supervisor;
 mod types;
 
 pub(crate) use execution::{
-    ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutput,
-    PreparedChild,
+    ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
+    ChildExecutionOutput, PreparedChild,
 };
 pub(crate) use native::NativeChildFactory;
 pub(crate) use routing::{ExecutionOwner, ResolvedAgentConfig, RouteResolver};
@@ -21,8 +21,9 @@ pub(crate) use supervisor::{
     ChildSupervisorHandle, ParentExecution,
 };
 pub(crate) use types::{
-    AgentHandleSnapshot, ChildActivity, ChildAdmission, ChildAttribution, ChildLifecycle,
-    ChildReport, ChildReportReference, ChildTerminalStatus, ChildUsage, SpawnAgentRequest,
+    AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, ChildActivity, ChildAdmission,
+    ChildAttribution, ChildCancellationReceipt, ChildInspection, ChildLifecycle, ChildReport,
+    ChildReportReference, ChildTerminalStatus, ChildUsage, SpawnAgentRequest,
 };
 pub(crate) use types::{
     CHILD_REPORT_VERSION, MAX_CHILD_TASK_PREVIEW_BYTES, truncate_utf8, validate_spawn_request,

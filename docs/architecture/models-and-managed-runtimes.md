@@ -44,11 +44,12 @@ stable child-task name to exactly one profile. `xana route list` and `xana
 route check NAME` resolve configured/cached metadata, local credential
 availability, model options, and built-in capabilities without network or
 process activation. The commands do not start a child. Native chat uses the
-same resolver before its runtime admits one supervised native child; the
+same resolver before its runtime admits a supervised native child; the
 immutable result drives provider, prompt, tool, permission, and budget
 composition for that execution. Interactive foreground model selection
-remains separate and cannot mutate a task route. Managed Codex children and
-parallel admission are not implemented yet.
+remains separate and cannot mutate a task route. Single admissions may queue
+behind the active native child; atomic batch admission, parallel execution,
+and managed Codex children are not implemented yet.
 
 ```mermaid
 flowchart TD

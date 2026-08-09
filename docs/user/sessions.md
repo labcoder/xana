@@ -72,8 +72,12 @@ xana session inspect SESSION_ID
 ```
 
 It reads without modifying the session and prints ids, path, record count,
-unfinished operation states, artifact counts and bytes, context versions, and
+unfinished operation states, artifact counts and bytes, context versions,
+child lineage/route/owner/connection/model/lifecycle/usage/report facts, and
 whether a torn tail is repairable. It does not render conversation content.
+Any child whose durable prefix ends before a terminal report is shown as an
+explicit read-only `Interrupted` projection. Inspection neither appends that
+projection nor replays provider or tool work.
 
 ## Crash and corruption behavior
 

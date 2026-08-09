@@ -7,8 +7,9 @@ use crate::{
     model::{DescriptorSource, ModelDescriptor},
     operation::{BoundaryObserver, CrashSite},
     orchestration::{
-        ChildAttribution, ChildExecution, ChildExecutionContext, ChildExecutionFactory,
-        ChildExecutionOutput, ChildLifecycle, ChildReport, ChildSupervisor, ChildUsage,
+        AwaitAgentOptions, AwaitAgentOutcome, ChildAttribution, ChildExecution,
+        ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome, ChildExecutionOutput,
+        ChildLifecycle, ChildReport, ChildSupervisor, ChildTerminalStatus, ChildUsage,
         ExecutionOwner, ParentExecution, PreparedChild, ResolvedAgentConfig, SpawnAgentRequest,
     },
     permission::{
@@ -17,7 +18,7 @@ use crate::{
     },
     prompt::{PromptAssembler, PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::{ConversationalProvider, DeltaSink, ProviderError},
-    session::{DurableSession, SessionStore, reduce},
+    session::{DurableSession, SessionRecord, SessionStore, reduce},
     tool::{ToolDefinition, ToolRegistry},
 };
 use futures::future::BoxFuture;
@@ -28,6 +29,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use tempfile::tempdir;
 use tokio::sync::Notify;
@@ -258,6 +260,15 @@ struct BarrierChildExecution {
     release: Arc<Notify>,
 }
 
+struct PermissionChildFactory {
+    workspace: std::path::PathBuf,
+    effect_ran: Arc<AtomicBool>,
+}
+
+struct PermissionChildExecution {
+    effect_ran: Arc<AtomicBool>,
+}
+
 impl ChildExecutionFactory for ImmediateChildFactory {
     fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
         self.requests
@@ -290,16 +301,61 @@ impl ChildExecutionFactory for BarrierChildFactory {
     }
 }
 
+impl ChildExecutionFactory for PermissionChildFactory {
+    fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        let policy = PermissionPolicy::new(PolicyDecision::Ask, Vec::new(), &self.workspace)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedChild::new(
+            scripted_child_config(request),
+            policy,
+            Box::new(PermissionChildExecution {
+                effect_ran: Arc::clone(&self.effect_ran),
+            }),
+        ))
+    }
+}
+
 impl ChildExecution for BarrierChildExecution {
     fn run(
         self: Box<Self>,
         _context: ChildExecutionContext,
-    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>> {
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async move {
             self.started.notify_one();
             self.release.notified().await;
-            Ok(ChildExecutionOutput {
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
                 text: "released child".to_owned(),
+                usage: ChildUsage::Unknown,
+            })
+        })
+    }
+}
+
+impl ChildExecution for PermissionChildExecution {
+    fn run(
+        self: Box<Self>,
+        context: ChildExecutionContext,
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
+        Box::pin(async move {
+            let authorization = context
+                .permissions
+                .authorize(PermissionRequest {
+                    operation_id: context.operation_id,
+                    invocation_id: ToolInvocationId::new(),
+                    tool_name: "test_effect".to_owned(),
+                    effect_class: crate::tool::EffectClass::Execute,
+                    final_arguments: serde_json::json!({"action": "test"}),
+                    scope: PermissionScope::Unscoped,
+                })
+                .await;
+            if matches!(
+                authorization,
+                Ok(crate::permission::Authorization::Allowed(_))
+            ) {
+                self.effect_ran.store(true, Ordering::SeqCst);
+            }
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                text: "permission resolved".to_owned(),
                 usage: ChildUsage::Unknown,
             })
         })
@@ -339,9 +395,9 @@ impl ChildExecution for ImmediateChildExecution {
     fn run(
         self: Box<Self>,
         _context: ChildExecutionContext,
-    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>> {
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async {
-            Ok(ChildExecutionOutput {
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
                 text: "child result".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -510,6 +566,461 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
 }
 
 #[tokio::test]
+async fn running_cancellation_is_observed_once_and_repeated_reads_are_idempotent() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release,
+        }),
+    );
+    let records = Arc::new(Mutex::new(Vec::new()));
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let committed = Arc::clone(&records);
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            committed
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(command.record);
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let admitted = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "cancel at the barrier".to_owned(),
+            },
+        )
+        .await
+        .expect("admit child");
+    started.notified().await;
+    let agent_id = admitted.admission.attribution.agent_id;
+
+    let first = handle.cancel_agent(agent_id).await.expect("cancel child");
+    let repeated = handle
+        .cancel_agent(agent_id)
+        .await
+        .expect("repeat cancellation");
+    assert!(first.newly_requested);
+    assert!(!repeated.newly_requested);
+
+    let report = handle.await_agent(agent_id).await.expect("cancel report");
+    assert_eq!(report.status, ChildTerminalStatus::Cancelled);
+    assert_eq!(
+        handle.await_agent(agent_id).await.expect("repeat report"),
+        report
+    );
+    let inspection = handle.inspect_agent(agent_id).await.expect("inspect child");
+    assert_eq!(inspection.handle.lifecycle, ChildLifecycle::Cancelled);
+    assert_eq!(inspection.report.as_ref(), Some(&report));
+
+    tokio::task::yield_now().await;
+    let terminal_events = std::iter::from_fn(|| event_receiver.try_recv().ok())
+        .filter(|event| {
+            matches!(
+                event,
+                AgentEvent::ChildReportCommitted { .. }
+                    | AgentEvent::ChildLifecycleChanged {
+                        lifecycle: ChildLifecycle::Cancelled,
+                        ..
+                    }
+            )
+        })
+        .count();
+    assert_eq!(terminal_events, 2, "one lifecycle and one report event");
+    assert_eq!(
+        records
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|record| matches!(record, SessionRecord::ChildReportCommitted { .. }))
+            .count(),
+        1
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let first = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "occupy the only running slot".to_owned(),
+            },
+        )
+        .await
+        .expect("first child");
+    started.notified().await;
+    let second = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "remain queued".to_owned(),
+            },
+        )
+        .await
+        .expect("second child");
+    let second_id = second.admission.attribution.agent_id;
+    assert_eq!(second.lifecycle, ChildLifecycle::Queued);
+
+    let receipt = handle
+        .cancel_agent(second_id)
+        .await
+        .expect("cancel queued child");
+    assert!(receipt.newly_requested);
+    assert_eq!(receipt.handle.lifecycle, ChildLifecycle::Cancelled);
+    assert_eq!(
+        handle
+            .await_agent(second_id)
+            .await
+            .expect("queued report")
+            .status,
+        ChildTerminalStatus::Cancelled
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), started.notified())
+            .await
+            .is_err(),
+        "the cancelled queued execution must never start"
+    );
+
+    release.notify_one();
+    assert_eq!(
+        handle
+            .await_agent(first.admission.attribution.agent_id)
+            .await
+            .expect("first report")
+            .status,
+        ChildTerminalStatus::Completed
+    );
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace,
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let first = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "time out without cancelling".to_owned(),
+            },
+        )
+        .await
+        .expect("first child");
+    started.notified().await;
+    let first_id = first.admission.attribution.agent_id;
+    assert_eq!(
+        handle
+            .await_agent_with(
+                first_id,
+                AwaitAgentOptions {
+                    timeout: Some(Duration::ZERO),
+                    cancel_on_timeout: false,
+                },
+            )
+            .await
+            .expect("timeout outcome"),
+        AwaitAgentOutcome::TimedOut {
+            agent_id: first_id,
+            cancellation_requested: false,
+        }
+    );
+    assert_eq!(
+        handle
+            .inspect_agent(first_id)
+            .await
+            .expect("still supervised")
+            .handle
+            .lifecycle,
+        ChildLifecycle::Running
+    );
+    release.notify_one();
+    assert_eq!(
+        handle
+            .await_agent(first_id)
+            .await
+            .expect("later collection")
+            .status,
+        ChildTerminalStatus::Completed
+    );
+
+    let second = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "time out and cancel".to_owned(),
+            },
+        )
+        .await
+        .expect("second child");
+    started.notified().await;
+    let second_id = second.admission.attribution.agent_id;
+    assert_eq!(
+        handle
+            .await_agent_with(
+                second_id,
+                AwaitAgentOptions {
+                    timeout: Some(Duration::ZERO),
+                    cancel_on_timeout: true,
+                },
+            )
+            .await
+            .expect("cancel-on-timeout outcome"),
+        AwaitAgentOutcome::TimedOut {
+            agent_id: second_id,
+            cancellation_requested: true,
+        }
+    );
+    assert_eq!(
+        handle
+            .await_agent(second_id)
+            .await
+            .expect("cancel terminal")
+            .status,
+        ChildTerminalStatus::Cancelled
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn cancelling_a_child_closes_pending_permission_before_any_effect() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let effect_ran = Arc::new(AtomicBool::new(false));
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(PermissionChildFactory {
+            workspace,
+            effect_ran: Arc::clone(&effect_ran),
+        }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let admitted = handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "request one effect".to_owned(),
+            },
+        )
+        .await
+        .expect("admit permission child");
+    let agent_id = admitted.admission.attribution.agent_id;
+    let request = loop {
+        if let AgentEvent::ChildActivity {
+            activity: crate::orchestration::ChildActivity::PermissionRequested { request },
+            ..
+        } = event_receiver.recv().await.expect("child permission event")
+        {
+            break request;
+        }
+    };
+
+    assert!(
+        handle
+            .cancel_agent(agent_id)
+            .await
+            .expect("cancel permission child")
+            .newly_requested
+    );
+    assert!(
+        handle
+            .decide_permission(
+                agent_id,
+                request.operation_id,
+                request.invocation_id,
+                ControllerDecision::AllowOnce,
+            )
+            .await
+            .is_err(),
+        "a cancellation-closed permission request cannot later authorize an effect"
+    );
+    assert_eq!(
+        handle
+            .await_agent(agent_id)
+            .await
+            .expect("cancel report")
+            .status,
+        ChildTerminalStatus::Cancelled
+    );
+    assert!(!effect_ran.load(Ordering::SeqCst));
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
+async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let session =
+        DurableSession::create(directory.path(), workspace.clone()).expect("durable session");
+    let session_id = session.session_id();
+    let started = Arc::new(Notify::new());
+    let (supervisor_handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: session.agent_id(),
+            thread_id: session.thread_id(),
+        },
+        Arc::new(BarrierChildFactory {
+            workspace: workspace.clone(),
+            started: Arc::clone(&started),
+            release: Arc::new(Notify::new()),
+        }),
+    );
+    let provider = QueueTransport {
+        responses: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_agent(Box::new(provider), workspace.clone());
+    let policy =
+        PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace).expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent_with_supervisor(
+        agent,
+        policy,
+        true,
+        session,
+        assembler,
+        supervisor_handle.clone(),
+        supervisor,
+    )
+    .expect("persistent runtime");
+    let admitted = supervisor_handle
+        .spawn_agent(
+            OperationId::new(),
+            SpawnAgentRequest {
+                route: Some("worker".to_owned()),
+                task: "stop with the runtime".to_owned(),
+            },
+        )
+        .await
+        .expect("admit child");
+    started.notified().await;
+
+    runtime
+        .send(RuntimeCommand::Shutdown)
+        .await
+        .expect("request shutdown");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while runtime.next_event().await.is_some() {}
+    })
+    .await
+    .expect("runtime shutdown is bounded");
+
+    let (_, restored) =
+        DurableSession::inspect_restored(directory.path(), session_id).expect("inspect session");
+    let child = restored
+        .children
+        .get(&admitted.admission.attribution.agent_id)
+        .expect("durable child");
+    assert_eq!(child.handle.lifecycle, ChildLifecycle::Cancelled);
+    assert_eq!(
+        child.report.as_ref().map(|report| report.status),
+        Some(ChildTerminalStatus::Cancelled)
+    );
+}
+
+#[tokio::test]
 async fn child_events_never_claim_a_transition_whose_commit_failed() {
     for fail_at in 1..=4 {
         let directory = tempdir().expect("temporary directory");
@@ -553,11 +1064,11 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                 },
             )
             .await;
-        if fail_at < 4 {
+        if fail_at <= 2 {
             assert!(spawn.is_err(), "startup commit {fail_at} should fail");
         } else {
             let child_id = spawn
-                .expect("report commit happens after admission")
+                .expect("running/report commits happen after admission")
                 .admission
                 .attribution
                 .agent_id;
@@ -625,6 +1136,13 @@ fn commands_and_events_round_trip_through_json() {
             operation_id: child_attribution.operation_id,
             invocation_id,
             decision: ControllerDecision::Deny,
+        },
+        RuntimeCommand::ListChildren,
+        RuntimeCommand::InspectChild {
+            agent_id: child_attribution.agent_id,
+        },
+        RuntimeCommand::CancelChild {
+            agent_id: child_attribution.agent_id,
         },
         RuntimeCommand::Shutdown,
     ];

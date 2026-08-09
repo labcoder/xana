@@ -19,6 +19,7 @@ use crate::{
     },
     message::Message,
     operation::{DurableValueRef, MAX_INLINE_VALUE_BYTES},
+    orchestration::ChildInspection,
     permission::PermissionAuditFact,
     runtime::OperationState,
 };
@@ -57,6 +58,7 @@ pub(crate) struct SessionSummary {
     pub(crate) artifact_count: usize,
     pub(crate) artifact_bytes: u64,
     pub(crate) context_versions: Vec<(ContextId, u64)>,
+    pub(crate) children: Vec<ChildInspection>,
 }
 
 impl DurableSession {
@@ -374,6 +376,11 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
             .map(|artifact| artifact.byte_len)
             .sum(),
         context_versions,
+        children: restored
+            .children
+            .values()
+            .map(|child| child.inspection())
+            .collect(),
     })
 }
 
