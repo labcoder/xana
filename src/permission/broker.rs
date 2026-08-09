@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     identity::{OperationId, ToolInvocationId},
-    runtime::{AgentEvent, OperationState},
+    runtime::{AgentEvent, AgentEventSender, OperationState},
 };
 use std::{collections::HashMap, error::Error, fmt};
 use tokio::{
@@ -30,7 +30,7 @@ pub(crate) struct PermissionBroker {
     grants: SessionGrants,
     pending: HashMap<PermissionKey, PendingRequest>,
     controller_present: bool,
-    events: mpsc::UnboundedSender<AgentEvent>,
+    events: AgentEventSender,
     emit_audit_events: bool,
     commands: mpsc::UnboundedReceiver<BrokerCommand>,
 }
@@ -64,23 +64,23 @@ impl PermissionBroker {
     pub(crate) fn spawn(
         policy: PermissionPolicy,
         controller_present: bool,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: impl Into<AgentEventSender>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
-        Self::spawn_with_audit_events(policy, controller_present, events, true)
+        Self::spawn_with_audit_events(policy, controller_present, events.into(), true)
     }
 
     pub(crate) fn spawn_for_durable_runtime(
         policy: PermissionPolicy,
         controller_present: bool,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: impl Into<AgentEventSender>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
-        Self::spawn_with_audit_events(policy, controller_present, events, false)
+        Self::spawn_with_audit_events(policy, controller_present, events.into(), false)
     }
 
     fn spawn_with_audit_events(
         policy: PermissionPolicy,
         controller_present: bool,
-        events: mpsc::UnboundedSender<AgentEvent>,
+        events: AgentEventSender,
         emit_audit_events: bool,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
         let (sender, receiver) = mpsc::unbounded_channel();
@@ -183,17 +183,14 @@ impl PermissionBroker {
                         reply,
                     },
                 );
+                let _ = self.events.send(AgentEvent::OperationStateChanged {
+                    operation_id: request.operation_id,
+                    state: OperationState::Suspended,
+                });
                 if self
                     .events
-                    .send(AgentEvent::OperationStateChanged {
-                        operation_id: request.operation_id,
-                        state: OperationState::Suspended,
-                    })
+                    .send(AgentEvent::PermissionRequested { request })
                     .is_err()
-                    || self
-                        .events
-                        .send(AgentEvent::PermissionRequested { request })
-                        .is_err()
                 {
                     self.controller_present = false;
                     self.cancel(key);

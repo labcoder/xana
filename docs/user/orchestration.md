@@ -83,7 +83,10 @@ profile = "codex-review"
 
 Before delegating, run `xana connection login codex`, `xana model refresh
 codex`, and `xana route check codex-review`. A child uses the configured Codex
-CLI app-server, not a running Codex desktop process.
+CLI app-server, not a running Codex desktop process. Managed child routes must
+resolve to `ask` or `allow`; an effective `deny` route fails closed because the
+current app-server contract cannot guarantee that all Codex-owned inner tools
+are disabled.
 
 ## Delegate during native chat
 
@@ -181,7 +184,9 @@ During an active foreground process, use:
 ```
 
 The list and detail views show lineage, route, execution owner, connection,
-model, lifecycle, usage state, and report reference. Cancellation first prints
+model, lifecycle, usage state, and report reference. They do not copy a
+completed inline report body into the control event; use `await_agent` or
+`collect_agents` when the report itself is needed. Cancellation first prints
 that a request was made; only the later `Cancelled` lifecycle/report proves the
 child stopped. Repeating cancellation or awaiting a terminal child is safe and
 returns the existing state.
@@ -226,9 +231,11 @@ terminal state returns the same durable report evidence.
 
 - Children run up to the root profile's `max_concurrency`; additional
   admitted children wait in stable admission order.
-- The runtime atomically accounts for fan-out, active descendants, tool
-  rounds, context bounds, inline report bytes, and artifact bytes. A child's
-  wall-clock deadline begins at admission, including queue time.
+- The runtime atomically accounts for fan-out, total admitted descendants,
+  tool rounds, context bounds, inline report bytes, and artifact bytes. These
+  are session-wide ceilings and are not replenished by sequential completions;
+  only the concurrency slot is reusable. A child's wall-clock deadline begins
+  at admission, including queue time.
 - There is no detach or background continuation.
 - Mixed-model children keep independent histories; Xana does not translate,
   merge, or summarize them through an additional model call.
@@ -237,8 +244,21 @@ terminal state returns the same durable report evidence.
   loss. Closed owner-neutral plans are described in
   [Orchestration plans](orchestration-plans.md).
 - Managed cancellation sends one correlated `turn/interrupt` request and keeps
-  consuming the terminal race. An older/incompatible app-server that rejects
-  interruption is closed and reported as a bounded cancellation limitation.
+  consuming the terminal race until one absolute three-second deadline from
+  the observed cancellation. Cancellation also
+  races startup/account/thread setup and prevents turn start once observed. An
+  older/incompatible app-server that rejects interruption is closed and
+  reported as a failed child with the typed remote error; Xana does not claim
+  that cancellation succeeded.
+- Each supervised managed approval re-enters the child broker. A matching Xana
+  session grant can avoid a repeated user prompt, but Xana still sends Codex
+  only one-effect `accept`; it never delegates session approval scope to the
+  app-server and declines when one-effect acceptance is unavailable.
+- Child live activity uses a 256-event producer queue and is projected up to
+  4,096 non-control events or 4 MiB per child. Xana then drops further
+  non-control activity and emits one warning. Permission requests use a
+  separate control lane, so truncation cannot hide an approval that must be
+  decided or denied.
 - Runtime shutdown cooperatively cancels queued and running children, closes
   pending permission requests, waits for their durable terminal outcomes, and
   uses a bounded interrupted fallback only for an unresponsive execution.

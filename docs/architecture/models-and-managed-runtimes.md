@@ -213,20 +213,36 @@ flowchart LR
 
 Managed cancellation is cooperative across that boundary: the child adapter
 sends one `turn/interrupt` for the active thread/turn and keeps consuming
-events until Codex resolves the completion race. An older app-server that does
-not support the request is closed and yields an attributed bounded cancellation
-diagnostic. Thread token-usage updates retain thread/turn correlation and map
+events until one absolute three-second post-cancellation deadline while Codex resolves the
+completion race. Cancellation also races process startup, account validation,
+and thread creation; once observed, it prevents the model turn from starting.
+An older app-server that does
+not support the request is closed and yields an attributed failed child with
+the typed remote error, not a claimed successful cancellation. Thread token-usage updates retain thread/turn correlation and map
 to provider-neutral input/output/total observations; missing updates remain
 unknown, spend is never inferred, and the single managed turn count does not
 claim to expose Codex's private upstream request count.
 
 Child approval callbacks pass through the existing child permission broker.
-`deny` chooses read-only with no approval escalation, `ask` chooses
-workspace-write with on-request callbacks, and `allow` chooses workspace-write
-without prompts. Managed children never select danger-full-access. All
-app-server activity is transiently re-attributed to the child; durable state
-records lifecycle and bounded report facts rather than hidden reasoning or all
-streaming deltas.
+An effective `deny` policy makes a managed Codex child route unavailable:
+app-server does not currently expose a stable setting that proves all inner
+tool effects are disabled. `ask` chooses workspace-write with on-request
+callbacks, and `allow` chooses workspace-write without prompts. Managed
+children never select danger-full-access. All app-server activity is
+transiently re-attributed to the child through a 256-event producer queue and
+a separate permission-request control lane. The supervisor forwards at most
+4,096 non-control events or 4 MiB per child and then emits one truncation
+warning; durable state records lifecycle and bounded report facts rather than
+hidden reasoning or all streaming deltas.
+
+The broker may remember an exact Xana session grant, but the adapter still
+returns only app-server's one-effect `accept` response for every authorized
+callback. It never delegates session-grant scope to the managed runtime; an
+app-server request that offers only `acceptForSession` fails closed. The
+newline-framed JSON transport retains an incomplete frame across cancellation
+races, and cancellation is polled before continuously ready app-server input,
+so an interrupted request cannot corrupt the following frame or starve the
+interrupt path.
 
 Xana stores the opaque managed thread id and non-secret creating identity
 version beneath `data/managed-threads/`, keyed by connection and canonical

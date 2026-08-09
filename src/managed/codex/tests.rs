@@ -1,5 +1,7 @@
 use super::*;
+use std::sync::Arc;
 use tokio::io::{BufReader, duplex, sink, split};
+use tokio::sync::Notify;
 
 #[derive(Default)]
 struct TestHandler {
@@ -17,6 +19,27 @@ impl ManagedEventHandler for TestHandler {
     ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
         self.approvals += 1;
         Box::pin(async { Ok(ApprovalDecision::AcceptOnce) })
+    }
+}
+
+struct BlockingApprovalHandler {
+    started: Arc<Notify>,
+}
+
+impl ManagedEventHandler for BlockingApprovalHandler {
+    fn notification(&mut self, _: ManagedNotification) -> Result<(), CodexError> {
+        Ok(())
+    }
+
+    fn approve<'a>(
+        &'a mut self,
+        _: ApprovalRequest,
+    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
+        let started = Arc::clone(&self.started);
+        Box::pin(async move {
+            started.notify_one();
+            std::future::pending().await
+        })
     }
 }
 
@@ -157,6 +180,267 @@ async fn unsupported_interrupt_is_a_typed_remote_error() {
         })
     ));
     server_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn pending_turn_start_request_observes_cancellation() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, _server_write) = split(server);
+    let cancellation = CancellationToken::new();
+    let cancel_after_request = cancellation.clone();
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let request: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(request["method"], "turn/start");
+        cancel_after_request.cancel();
+        std::future::pending::<()>().await;
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let mut handler = TestHandler::default();
+
+    assert!(matches!(
+        peer.request_cancellable(
+            "turn/start",
+            json!({"threadId":"thread-1"}),
+            &cancellation,
+            &mut handler,
+        )
+        .await,
+        Err(CodexError::RequestCancelled("turn/start"))
+    ));
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn backpressured_turn_start_write_observes_cancellation() {
+    let (client, _server) = duplex(8);
+    let (client_read, client_write) = split(client);
+    let cancellation = CancellationToken::new();
+    let cancel_write = cancellation.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        cancel_write.cancel();
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let mut handler = TestHandler::default();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        peer.request_cancellable(
+            "turn/start",
+            json!({"input":"x".repeat(4 * 1024)}),
+            &cancellation,
+            &mut handler,
+        ),
+    )
+    .await
+    .expect("cancellation must beat a blocked JSONL write");
+    assert!(matches!(
+        result,
+        Err(CodexError::RequestCancelled("turn/start"))
+    ));
+    cancel_task.await.expect("cancellation task");
+}
+
+#[tokio::test]
+async fn pending_approval_callback_observes_turn_start_cancellation() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, mut server_write) = split(server);
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let request: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(request["method"], "turn/start");
+        server_write
+            .write_all(b"{\"method\":\"item/commandExecution/requestApproval\",\"id\":99,\"params\":{\"command\":\"echo hi\"}}\n")
+            .await
+            .unwrap();
+        std::future::pending::<()>().await;
+    });
+    let cancellation = CancellationToken::new();
+    let started = Arc::new(Notify::new());
+    let cancel_approval = cancellation.clone();
+    let approval_started = Arc::clone(&started);
+    let cancel_task = tokio::spawn(async move {
+        approval_started.notified().await;
+        cancel_approval.cancel();
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let mut handler = BlockingApprovalHandler { started };
+
+    assert!(matches!(
+        peer.request_cancellable(
+            "turn/start",
+            json!({"threadId":"thread-1"}),
+            &cancellation,
+            &mut handler,
+        )
+        .await,
+        Err(CodexError::RequestCancelled("turn/start"))
+    ));
+    cancel_task.await.expect("cancellation task");
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test]
+async fn cancelled_partial_receive_preserves_the_frame_prefix() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (_server_read, mut server_write) = split(server);
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    server_write
+        .write_all(b"{\"method\":\"test/no")
+        .await
+        .expect("first frame fragment");
+    let cancellation = CancellationToken::new();
+    let cancel_receive = cancellation.clone();
+    let cancel_task = tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        cancel_receive.cancel();
+    });
+
+    {
+        let receive = peer.receive();
+        tokio::pin!(receive);
+        tokio::select! {
+            _ = cancellation.cancelled() => {}
+            result = &mut receive => panic!("partial frame unexpectedly completed: {result:?}"),
+        }
+    }
+    server_write
+        .write_all(b"ise\",\"params\":{}}\n")
+        .await
+        .expect("remaining frame fragment");
+    let message = peer.receive().await.expect("complete retained frame");
+    assert_eq!(message["method"], "test/noise");
+    cancel_task.await.expect("cancellation task");
+}
+
+#[tokio::test]
+async fn continuous_ready_input_cannot_starve_request_cancellation() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, mut server_write) = split(server);
+    let cancellation = CancellationToken::new();
+    let cancel_noise = cancellation.clone();
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let _: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        for index in 0usize.. {
+            if index == 10 {
+                cancel_noise.cancel();
+            }
+            if server_write
+                .write_all(b"{\"method\":\"test/noise\",\"params\":{}}\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let mut handler = TestHandler::default();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        peer.request_cancellable(
+            "turn/start",
+            json!({"threadId":"thread-1"}),
+            &cancellation,
+            &mut handler,
+        ),
+    )
+    .await
+    .expect("ready input must not starve cancellation");
+    assert!(matches!(
+        result,
+        Err(CodexError::RequestCancelled("turn/start"))
+    ));
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn noisy_server_cannot_replenish_the_interruption_grace_bound() {
+    let (client, server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let (server_read, mut server_write) = split(server);
+    let server_task = tokio::spawn(async move {
+        let mut lines = BufReader::new(server_read).lines();
+        let interrupt: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        let id = interrupt["id"].clone();
+        server_write
+            .write_all(format!("{{\"id\":{id},\"result\":{{}}}}\n").as_bytes())
+            .await
+            .unwrap();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            if server_write
+                .write_all(b"{\"method\":\"test/noise\",\"params\":{}}\n")
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
+    });
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut handler = TestHandler::default();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(4),
+        peer.wait_for_turn(
+            "thread-1",
+            "turn-1",
+            Some(&cancellation),
+            |_| Ok(false),
+            &mut handler,
+        ),
+    )
+    .await
+    .expect("absolute interruption deadline must beat the outer test bound");
+    assert!(matches!(
+        result,
+        Err(CodexError::Timeout("turn interruption"))
+    ));
+    server_task.abort();
+    let _ = server_task.await;
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn silent_server_after_interrupt_hits_the_interruption_grace_bound() {
+    let (client, _server) = duplex(16 * 1024);
+    let (client_read, client_write) = split(client);
+    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    let mut handler = TestHandler::default();
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(6),
+        peer.wait_for_turn(
+            "thread-1",
+            "turn-1",
+            Some(&cancellation),
+            |_| Ok(false),
+            &mut handler,
+        ),
+    )
+    .await
+    .expect("test timeout should outlast the adapter interruption bound");
+    assert!(matches!(
+        result,
+        Err(CodexError::Timeout("turn interruption"))
+    ));
 }
 
 #[tokio::test]

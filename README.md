@@ -200,6 +200,18 @@ timeout/cancellation policy without loading artifact bodies. Closed versioned
 plans validate fixed spawn/await/collect/cancel graphs before admission. See
 [Child orchestration](docs/user/orchestration.md).
 
+Managed Codex child routes support effective `ask` and `allow` modes. An
+effective `deny` route is rejected because the current app-server contract
+cannot prove that every Codex-owned inner tool effect is disabled. Child
+activity is bounded before it reaches the root event stream, while permission
+requests use a separate fail-closed control lane.
+
+Descendant and aggregate tool/context/report/artifact budgets are cumulative
+for the session; completed children release concurrency capacity but do not
+replenish those totals. A cancellation request also does not overwrite the
+owner's observed terminal outcome: completion can win the race, while a Codex
+interrupt rejection remains a failed child with its remote error.
+
 ## Start first-run setup again
 
 `xana reset` (alias: `xana clean`) previews the narrow setup state it will

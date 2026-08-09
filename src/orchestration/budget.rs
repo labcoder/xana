@@ -46,7 +46,7 @@ pub(crate) struct BudgetReservation {
 #[derive(Debug)]
 pub(crate) struct BudgetLedger {
     budget: OrchestrationBudget,
-    active_children: usize,
+    admitted_children: usize,
     running_children: usize,
     tool_rounds: usize,
     context_tokens: usize,
@@ -115,15 +115,31 @@ impl fmt::Display for BudgetError {
 impl Error for BudgetError {}
 
 impl BudgetLedger {
+    #[cfg(test)]
     pub(crate) fn new(budget: OrchestrationBudget) -> Self {
         Self {
             budget,
-            active_children: 0,
+            admitted_children: 0,
             running_children: 0,
             tool_rounds: 0,
             context_tokens: 0,
             report_bytes: 0,
             artifact_bytes: 0,
+        }
+    }
+
+    pub(crate) fn with_consumed(
+        budget: OrchestrationBudget,
+        requests: &[ReservationRequest],
+    ) -> Self {
+        Self {
+            budget,
+            admitted_children: requests.len(),
+            running_children: 0,
+            tool_rounds: sum(requests, |request| request.tool_rounds),
+            context_tokens: sum(requests, |request| request.context_tokens),
+            report_bytes: sum(requests, |request| request.report_bytes),
+            artifact_bytes: sum(requests, |request| request.artifact_bytes),
         }
     }
 
@@ -150,7 +166,7 @@ impl BudgetLedger {
             self.budget
                 .limits
                 .max_descendants
-                .saturating_sub(self.active_children),
+                .saturating_sub(self.admitted_children),
             |requested, remaining| BudgetError::Descendants {
                 requested,
                 remaining,
@@ -201,7 +217,7 @@ impl BudgetLedger {
             },
         )?;
 
-        self.active_children += requested_children;
+        self.admitted_children += requested_children;
         self.tool_rounds += tool_rounds;
         self.context_tokens += context_tokens;
         self.report_bytes += report_bytes;
@@ -232,8 +248,13 @@ impl BudgetLedger {
             .expect("running reservation released exactly once");
     }
 
-    pub(crate) fn release(&mut self, reservation: BudgetReservation) {
-        self.active_children = subtract(self.active_children, 1, "child");
+    /// Rolls back an admission that did not become durable.
+    ///
+    /// Successfully admitted descendants and their aggregate reservations are
+    /// session-wide budgets. They are deliberately not recycled when a child
+    /// reaches a terminal state.
+    pub(crate) fn rollback(&mut self, reservation: BudgetReservation) {
+        self.admitted_children = subtract(self.admitted_children, 1, "child");
         self.tool_rounds = subtract(
             self.tool_rounds,
             reservation.request.tool_rounds,
@@ -257,9 +278,9 @@ impl BudgetLedger {
     }
 
     #[cfg(test)]
-    pub(crate) fn active_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
+    pub(crate) fn budget_counts(&self) -> (usize, usize, usize, usize, usize, usize) {
         (
-            self.active_children,
+            self.admitted_children,
             self.running_children,
             self.tool_rounds,
             self.context_tokens,
@@ -323,17 +344,17 @@ mod tests {
         let reservations = ledger
             .reserve_batch(&[request(), request()])
             .expect("exact limits");
-        assert_eq!(ledger.active_counts(), (2, 0, 4, 20, 40, 60));
+        assert_eq!(ledger.budget_counts(), (2, 0, 4, 20, 40, 60));
         assert!(matches!(
             ledger.reserve_batch(&[request()]),
             Err(BudgetError::Descendants { .. })
         ));
-        assert_eq!(ledger.active_counts(), (2, 0, 4, 20, 40, 60));
+        assert_eq!(ledger.budget_counts(), (2, 0, 4, 20, 40, 60));
 
         for reservation in reservations {
-            ledger.release(reservation);
+            ledger.rollback(reservation);
         }
-        assert_eq!(ledger.active_counts(), (0, 0, 0, 0, 0, 0));
+        assert_eq!(ledger.budget_counts(), (0, 0, 0, 0, 0, 0));
     }
 
     #[test]
@@ -356,7 +377,7 @@ mod tests {
             ledger.reserve_batch(&[request(), request(), request()]),
             Err(BudgetError::FanOut { .. })
         ));
-        assert_eq!(ledger.active_counts(), (0, 0, 0, 0, 0, 0));
+        assert_eq!(ledger.budget_counts(), (0, 0, 0, 0, 0, 0));
     }
 
     #[test]
@@ -394,7 +415,7 @@ mod tests {
         for (request, label) in cases {
             let mut ledger = BudgetLedger::new(OrchestrationBudget::for_tests(limits(), 2));
             assert!(ledger.reserve_batch(&[request]).is_err(), "{label}");
-            assert_eq!(ledger.active_counts(), (0, 0, 0, 0, 0, 0), "{label}");
+            assert_eq!(ledger.budget_counts(), (0, 0, 0, 0, 0, 0), "{label}");
         }
     }
 
@@ -409,8 +430,38 @@ mod tests {
                 remaining: 1
             })
         ));
-        assert_eq!(ledger.active_counts(), (1, 0, 2, 10, 20, 30));
-        ledger.release(first.into_iter().next().expect("reservation"));
-        assert_eq!(ledger.active_counts(), (0, 0, 0, 0, 0, 0));
+        assert_eq!(ledger.budget_counts(), (1, 0, 2, 10, 20, 30));
+        ledger.rollback(first.into_iter().next().expect("reservation"));
+        assert_eq!(ledger.budget_counts(), (0, 0, 0, 0, 0, 0));
+    }
+
+    #[test]
+    fn terminal_children_do_not_replenish_session_wide_budgets() {
+        let mut ledger = BudgetLedger::new(OrchestrationBudget::for_tests(limits(), 2));
+        let reservations = ledger
+            .reserve_batch(&[request(), request()])
+            .expect("all descendants admitted");
+        drop(reservations);
+
+        assert!(matches!(
+            ledger.reserve_batch(&[request()]),
+            Err(BudgetError::Descendants {
+                requested: 1,
+                remaining: 0
+            })
+        ));
+        assert_eq!(ledger.budget_counts(), (2, 0, 4, 20, 40, 60));
+    }
+
+    #[test]
+    fn restored_admissions_consume_the_same_session_wide_budgets() {
+        let budget = OrchestrationBudget::for_tests(limits(), 2);
+        let mut ledger = BudgetLedger::with_consumed(budget, &[request(), request()]);
+
+        assert!(matches!(
+            ledger.reserve_batch(&[request()]),
+            Err(BudgetError::Descendants { remaining: 0, .. })
+        ));
+        assert_eq!(ledger.budget_counts(), (2, 0, 4, 20, 40, 60));
     }
 }

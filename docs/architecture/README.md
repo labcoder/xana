@@ -70,6 +70,14 @@ clearing, rejections, and attributed child lifecycle/activity/reports. Except fo
 explicit permission request, event delivery is passive: losing the receiver does
 not alter an operation's result.
 
+Each child has a 256-event bounded observation queue. Its permission-request
+control lane remains separate so an activity flood cannot hide a decision that
+must fail closed. The supervisor forwards at most 4,096 non-control child
+events or 4 MiB of their serialized attribution and payload, then emits one
+attributed truncation warning. Durable state records lifecycle and reports,
+not transient deltas. The foreground root event stream remains a single
+unbounded receiver; child contribution to it is bounded before forwarding.
+
 Child list, detail, cancellation-request, and permission-decision commands
 address the in-process supervisor. They do not imply a daemon or remote runtime
 host. A cancellation-request event confirms only that the signal was accepted;
@@ -92,14 +100,18 @@ Admission prepares the exact route, execution owner, connection/model,
 immutable capability/authority snapshot, and explicit task before a child
 record exists. Native preparation also freezes its provider, prompt, and tool
 registry; managed preparation freezes its Codex launch, model options, policy,
-and bounded handoff. A runtime-owned `BudgetLedger` reserves fan-out, active
-descendants, tool rounds, context capacity, report bytes, and artifact bytes in
+and bounded handoff. The root capability snapshot is a hard ceiling: a child
+route may select a subset, never a capability absent from its parent. A
+runtime-owned `BudgetLedger` reserves fan-out, total admitted descendants,
+tool rounds, context capacity, report bytes, and artifact bytes in
 one actor mutation. `spawn_many` validates and reserves every member before a
 single durable batch record or observer event exists. Queued work is kept in a
 FIFO admission queue and starts only while the root profile's concurrency
 capacity is available. The child deadline begins at admission, so queue time is
-bounded too. Reservations and running slots are released exactly once on every
-terminal or failed-start path.
+bounded too. Failed pre-commit admission rolls back its reservation. Durable
+descendant and aggregate reservations remain charged for the session so
+sequential work cannot evade the total bounds; only running concurrency slots
+are released at terminal state.
 
 Single admission preserves explicit `admitted` and `queued` durable facts;
 batch admission commits all queued handles in one atomic record. `running` is
@@ -115,10 +127,12 @@ Each admission fixes a result schema (`summary` or canonical JSON). Completed
 output at or below `max_report_bytes` stays inline. Larger output is written to
 the immutable content-addressed artifact store, with `ArtifactRegistered`
 committed before the child report that references it; the handle and collection
-surface retain only a bounded preview and reference. Persistence or validation
-failure becomes a bounded attributed failed report, never an unregistered
-reference. Collection verifies artifact length and digest by streaming bytes
-without loading artifact bodies into model context.
+surface retain only a bounded preview and reference. When the durable store
+recovers after a lifecycle-transition failure, the still-owned child records a
+bounded attributed failed report. A continuing persistence failure remains a
+typed live durability error and never creates an unregistered reference.
+Collection verifies artifact length and digest by streaming bytes without
+loading artifact bodies into model context.
 
 ```mermaid
 sequenceDiagram
@@ -148,10 +162,14 @@ in-flight provider/tool future at the execution boundary, and waits for one
 terminal completion. The command does not equate signalling with success.
 Managed Codex execution observes the same token inside its owner adapter,
 sends one correlated `turn/interrupt`, and continues reading the terminal race
-before returning cancellation or completion. If an incompatible app-server
+until one absolute three-second deadline established when cancellation is
+observed before returning cancellation or completion. Cancellation can also win during process startup,
+account validation, or thread creation, and no turn starts after cancellation
+has been observed. If an incompatible app-server
 rejects interruption, shutting down that child process is the bounded fallback
-and the report retains the limitation.
-Queued cancellation commits `Cancelled` without constructing an execution.
+and the child fails with the typed remote error rather than being mislabeled
+cancelled.
+Queued cancellation commits `Cancelled` without starting its prepared execution.
 Runtime shutdown applies the same path to every queued/running child and waits
 for terminal commits while the runtime continues servicing commit acks. A
 bounded grace expiry aborts only the unresponsive task and commits
@@ -162,7 +180,9 @@ projection maps any nonterminal child prefix to `Interrupted` with an explicit
 projection marker, performs no provider/tool call, and appends no
 reconciliation fact. Active `/agents`, `/agent`, and `/cancel-agent` commands
 reach only the owning foreground process. `xana session inspect` in another
-process is read-only and cannot claim to cancel foreground work.
+process is read-only and cannot claim to cancel foreground work. List and
+detail control events project only bounded handle metadata and report
+references; full report bodies remain on await and collection paths.
 
 The child receives Xana's identity/guidelines, its exact task, applicable
 bounded root `AGENTS.md`, environment facts, and only the tools selected by its
@@ -190,12 +210,20 @@ route model/options, workspace policy, and only bounded parent-selected
 handoff data. It owns inference, inner history, project discovery, tools, and
 sandbox. App-server activity is re-attributed to the child for terminal
 projection; approval callbacks cross the child permission broker. `deny` maps
-to read-only/no escalation, while `ask` and `allow` remain workspace-write;
-no route maps to danger-full-access. Token-usage notifications map to measured
+to no managed Codex child route: the current app-server contract cannot prove
+that all inner tool effects are disabled, so route resolution fails closed.
+`ask` and `allow` remain workspace-write; no route maps to
+danger-full-access. Token-usage notifications map to measured
 fields when emitted; otherwise the fields and spend remain unknown. One
 managed turn is counted as one request without claiming knowledge of private
 upstream calls. No outer conversational-provider call summarizes or relays the
 managed result.
+
+Xana session grants remain owned by Xana: every authorized app-server callback
+receives only a one-effect `accept`, even when the broker reused a matching
+grant, and session-only vendor acceptance fails closed. Managed JSON framing is
+cancellation-safe, and cancellation has priority over continuously ready input
+so the interrupt boundary cannot lose a partial frame or be starved by activity.
 
 `OrchestrationPlan` is the separate closed child-work domain; the existing
 prompt-selection `ContextPlan` is unchanged. A pure structural validator
@@ -584,7 +612,10 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `orchestration` owns exact route resolution, immutable child configuration,
   queued owner-neutral supervision, cancellation/inspection, durable
   handle/report types, native child composition, and the crate-private managed
-  Codex child adapter. The runtime remains the only session writer.
+  Codex child adapter. Its supervisor facade delegates admission, lifecycle,
+  bounded activity projection, command-side handles, and allocation-free JSON
+  size accounting to focused child modules. The runtime remains the only
+  session writer.
 - `operation` owns invocation intent/result ordering, bounded durable values,
   replay classification, and explicit recovery execution.
 - `permission` owns pure policy and scopes, pending controller decisions,

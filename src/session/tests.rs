@@ -50,13 +50,17 @@ fn audit(operation_id: OperationId) -> PermissionAuditFact {
     }
 }
 
-fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapshot {
+fn child_handle(
+    session_id: SessionId,
+    thread_id: ThreadId,
+    parent_operation_id: OperationId,
+) -> AgentHandleSnapshot {
     AgentHandleSnapshot::admitted(ChildAdmission {
         attribution: ChildAttribution {
             agent_id: AgentId::new(),
             parent_agent_id: AgentId::for_session(session_id),
             operation_id: OperationId::new(),
-            parent_operation_id: OperationId::new(),
+            parent_operation_id,
             thread_id,
             route: "worker".to_owned(),
             profile: "worker".to_owned(),
@@ -77,11 +81,42 @@ fn child_handle(session_id: SessionId, thread_id: ThreadId) -> AgentHandleSnapsh
     })
 }
 
+fn child_operation_prefix(
+    session_id: SessionId,
+    thread_id: ThreadId,
+    operation_id: OperationId,
+) -> Vec<RecordEnvelope> {
+    let input = ConversationEntry {
+        id: ConversationEntryId::new(),
+        parent: None,
+        agent_id: AgentId::for_session(session_id),
+        message: Message::text(Role::User, "delegate bounded child"),
+    };
+    vec![
+        created(session_id, thread_id),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::ConversationEntryAppended {
+                entry: input.clone(),
+            },
+        ),
+        RecordEnvelope::new(
+            session_id,
+            SessionRecord::OperationAccepted {
+                operation_id,
+                thread_id,
+                input_entry_id: input.id,
+            },
+        ),
+    ]
+}
+
 #[test]
 fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let handle = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let handle = child_handle(session_id, thread_id, operation_id);
     let agent_id = handle.admission.attribution.agent_id;
     let report = ChildReport {
         version: crate::orchestration::CHILD_REPORT_VERSION,
@@ -93,8 +128,8 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
         usage: ChildUsage::Unknown,
         reference: ChildReportReference::Inline { byte_len: 4 },
     };
-    let records = vec![
-        created(session_id, thread_id),
+    let mut records = child_operation_prefix(session_id, thread_id, operation_id);
+    records.extend([
         RecordEnvelope::new(
             session_id,
             SessionRecord::ChildAdmitted {
@@ -121,7 +156,7 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
                 report: report.clone(),
             },
         ),
-    ];
+    ]);
 
     let restored = reduce(&records).expect("reduce child records");
     let child = restored.children.get(&agent_id).expect("restored child");
@@ -140,7 +175,8 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
 fn artifact_backed_child_report_requires_a_matching_prior_registration() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let handle = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let handle = child_handle(session_id, thread_id, operation_id);
     let agent_id = handle.admission.attribution.agent_id;
     let byte_len = handle.admission.limits.max_report_bytes as u64 + 1;
     let artifact = ArtifactRecord {
@@ -166,8 +202,8 @@ fn artifact_backed_child_report_requires_a_matching_prior_registration() {
             preview_byte_len: "preview".len(),
         },
     };
-    let base = vec![
-        created(session_id, thread_id),
+    let mut base = child_operation_prefix(session_id, thread_id, operation_id);
+    base.extend([
         RecordEnvelope::new(
             session_id,
             SessionRecord::ChildAdmitted {
@@ -188,7 +224,7 @@ fn artifact_backed_child_report_requires_a_matching_prior_registration() {
                 lifecycle: ChildLifecycle::Running,
             },
         ),
-    ];
+    ]);
     let mut missing = base.clone();
     missing.push(RecordEnvelope::new(
         session_id,
@@ -237,7 +273,7 @@ fn plan_start_and_child_step_attribution_restore_without_evaluator_state() {
         fingerprint: blake3::hash(b"plan").to_hex().to_string(),
         step_ids: vec!["workers".to_owned(), "results".to_owned()],
     };
-    let mut handle = child_handle(session_id, thread_id);
+    let mut handle = child_handle(session_id, thread_id, operation_id);
     handle.apply_lifecycle(ChildLifecycle::Queued);
     handle.admission.attribution.parent_operation_id = operation_id;
     handle.admission.plan = Some(PlanChildAttribution {
@@ -302,9 +338,10 @@ fn plan_start_and_child_step_attribution_restore_without_evaluator_state() {
 fn child_batch_admission_is_one_atomic_queued_fact() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let mut first = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let mut first = child_handle(session_id, thread_id, operation_id);
     first.apply_lifecycle(ChildLifecycle::Queued);
-    let mut second = child_handle(session_id, thread_id);
+    let mut second = child_handle(session_id, thread_id, operation_id);
     second.apply_lifecycle(ChildLifecycle::Queued);
     let first_id = first.admission.attribution.agent_id;
     let second_id = second.admission.attribution.agent_id;
@@ -315,8 +352,9 @@ fn child_batch_admission_is_one_atomic_queued_fact() {
         },
     );
 
-    let restored = reduce(&[created(session_id, thread_id), record.clone()])
-        .expect("reduce atomic child batch");
+    let mut records = child_operation_prefix(session_id, thread_id, operation_id);
+    records.push(record.clone());
+    let restored = reduce(&records).expect("reduce atomic child batch");
     assert_eq!(restored.children[&first_id].handle, first);
     assert_eq!(restored.children[&second_id].handle, second);
 
@@ -329,23 +367,128 @@ fn child_batch_admission_is_one_atomic_queued_fact() {
 fn invalid_child_batch_member_rejects_the_whole_record() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let mut valid = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let mut valid = child_handle(session_id, thread_id, operation_id);
     valid.apply_lifecycle(ChildLifecycle::Queued);
     let mut duplicate = valid.clone();
     duplicate.admission.task_preview = "different task".to_owned();
-    let records = vec![
-        created(session_id, thread_id),
-        RecordEnvelope::new(
-            session_id,
-            SessionRecord::ChildrenBatchAdmitted {
-                handles: vec![valid, duplicate],
-            },
-        ),
-    ];
+    let mut records = child_operation_prefix(session_id, thread_id, operation_id);
+    records.extend([RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildrenBatchAdmitted {
+            handles: vec![valid, duplicate],
+        },
+    )]);
 
     assert!(matches!(
         reduce(&records),
         Err(crate::session::reduce::ReductionError::DuplicateChild { .. })
+    ));
+
+    let mut first = child_handle(session_id, thread_id, operation_id);
+    first.apply_lifecycle(ChildLifecycle::Queued);
+    let mut duplicate_operation = child_handle(session_id, thread_id, operation_id);
+    duplicate_operation.apply_lifecycle(ChildLifecycle::Queued);
+    duplicate_operation.admission.attribution.operation_id =
+        first.admission.attribution.operation_id;
+    let mut records = child_operation_prefix(session_id, thread_id, operation_id);
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildrenBatchAdmitted {
+            handles: vec![first, duplicate_operation],
+        },
+    ));
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
+    ));
+}
+
+#[test]
+fn child_admission_rejects_invalid_thread_and_operation_ownership() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let parent_operation_id = OperationId::new();
+    let prefix = child_operation_prefix(session_id, thread_id, parent_operation_id);
+
+    let mut wrong_thread = child_handle(session_id, thread_id, parent_operation_id);
+    wrong_thread.admission.attribution.thread_id = ThreadId::new();
+    let mut records = prefix.clone();
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted {
+            handle: wrong_thread,
+        },
+    ));
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
+    ));
+
+    let unknown_parent = child_handle(session_id, thread_id, OperationId::new());
+    let mut records = prefix.clone();
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted {
+            handle: unknown_parent,
+        },
+    ));
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
+    ));
+
+    let mut reused_parent = child_handle(session_id, thread_id, parent_operation_id);
+    reused_parent.admission.attribution.operation_id = parent_operation_id;
+    let mut records = prefix.clone();
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted {
+            handle: reused_parent,
+        },
+    ));
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
+    ));
+
+    let mut finished_parent = prefix.clone();
+    finished_parent.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::OperationFinished {
+            operation_id: parent_operation_id,
+            outcome: OperationOutcome::Completed,
+        },
+    ));
+    finished_parent.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted {
+            handle: child_handle(session_id, thread_id, parent_operation_id),
+        },
+    ));
+    assert!(matches!(
+        reduce(&finished_parent),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
+    ));
+
+    let first = child_handle(session_id, thread_id, parent_operation_id);
+    let mut duplicate_operation = child_handle(session_id, thread_id, parent_operation_id);
+    duplicate_operation.admission.attribution.operation_id =
+        first.admission.attribution.operation_id;
+    let mut records = prefix;
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted { handle: first },
+    ));
+    records.push(RecordEnvelope::new(
+        session_id,
+        SessionRecord::ChildAdmitted {
+            handle: duplicate_operation,
+        },
+    ));
+    assert!(matches!(
+        reduce(&records),
+        Err(crate::session::reduce::ReductionError::InvalidChildAdmission { .. })
     ));
 }
 
@@ -353,10 +496,11 @@ fn invalid_child_batch_member_rejects_the_whole_record() {
 fn child_reducer_rejects_skipped_and_duplicate_terminal_transitions() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let handle = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let handle = child_handle(session_id, thread_id, operation_id);
     let agent_id = handle.admission.attribution.agent_id;
-    let skipped = vec![
-        created(session_id, thread_id),
+    let mut skipped = child_operation_prefix(session_id, thread_id, operation_id);
+    skipped.extend([
         RecordEnvelope::new(session_id, SessionRecord::ChildAdmitted { handle }),
         RecordEnvelope::new(
             session_id,
@@ -365,7 +509,7 @@ fn child_reducer_rejects_skipped_and_duplicate_terminal_transitions() {
                 lifecycle: ChildLifecycle::Running,
             },
         ),
-    ];
+    ]);
 
     assert!(matches!(
         reduce(&skipped),
@@ -377,7 +521,8 @@ fn child_reducer_rejects_skipped_and_duplicate_terminal_transitions() {
 fn every_nonterminal_child_prefix_projects_interrupted_without_mutating_facts() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
-    let handle = child_handle(session_id, thread_id);
+    let operation_id = OperationId::new();
+    let handle = child_handle(session_id, thread_id, operation_id);
     let agent_id = handle.admission.attribution.agent_id;
     let transitions = [
         ChildLifecycle::Queued,
@@ -386,15 +531,13 @@ fn every_nonterminal_child_prefix_projects_interrupted_without_mutating_facts() 
     ];
 
     for prefix_len in 0..=transitions.len() {
-        let mut records = vec![
-            created(session_id, thread_id),
-            RecordEnvelope::new(
-                session_id,
-                SessionRecord::ChildAdmitted {
-                    handle: handle.clone(),
-                },
-            ),
-        ];
+        let mut records = child_operation_prefix(session_id, thread_id, operation_id);
+        records.extend([RecordEnvelope::new(
+            session_id,
+            SessionRecord::ChildAdmitted {
+                handle: handle.clone(),
+            },
+        )]);
         records.extend(transitions[..prefix_len].iter().map(|lifecycle| {
             RecordEnvelope::new(
                 session_id,
