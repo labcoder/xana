@@ -90,6 +90,15 @@ pub(crate) enum ComposerPreset {
     Newline,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ActivityPaneChoice {
+    #[default]
+    Auto,
+    Open,
+    Hidden,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PresentationPreferences {
@@ -104,6 +113,8 @@ pub(crate) struct PresentationPreferences {
     pub(crate) density: DensityChoice,
     #[serde(default)]
     pub(crate) composer: ComposerPreset,
+    #[serde(default)]
+    pub(crate) activity: ActivityPaneChoice,
 }
 
 impl Default for PresentationPreferences {
@@ -115,6 +126,7 @@ impl Default for PresentationPreferences {
             motion: MotionChoice::Auto,
             density: DensityChoice::Auto,
             composer: ComposerPreset::Submit,
+            activity: ActivityPaneChoice::Auto,
         }
     }
 }
@@ -170,6 +182,12 @@ impl PresentationPreferences {
     pub(crate) fn set_composer(path: &Path, composer: ComposerPreset) -> io::Result<()> {
         let mut preferences = Self::load(path).preferences;
         preferences.composer = composer;
+        preferences.store(path)
+    }
+
+    pub(crate) fn set_activity(path: &Path, activity: ActivityPaneChoice) -> io::Result<()> {
+        let mut preferences = Self::load(path).preferences;
+        preferences.activity = activity;
         preferences.store(path)
     }
 }

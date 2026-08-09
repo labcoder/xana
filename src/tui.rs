@@ -3,6 +3,7 @@
 //! Crossterm/Ratatui types stop at this module. The state/update layer consumes
 //! provider-neutral snapshots and runtime events and emits runtime commands.
 
+mod activity;
 mod command;
 mod lifecycle;
 mod model;
@@ -11,7 +12,9 @@ mod view;
 
 use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
-    permission::ControllerDecision,
+    managed::codex::ApprovalDecision,
+    managed_terminal::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
+    model::ModelManager,
     presentation::{ComposerPreset, PresentationPreferences, ResolvedPresentation},
     runtime::{AgentEvent, OperationState, RuntimeCommand, RuntimeHandle},
     terminal::{ChatExit, ChatHeader},
@@ -25,12 +28,13 @@ use crossterm::event::{
 use futures::StreamExt;
 use lifecycle::TerminalSession;
 use model::{InputAction, MoveDirection, TuiState, UpdateEffect};
-use std::{io, path::PathBuf};
+use std::{io, path::PathBuf, sync::Arc};
+use tokio::sync::oneshot;
 
 pub(crate) struct PreparedTui {
     terminal: TerminalSession,
     profile: ResolvedPresentation,
-    composer_preset: ComposerPreset,
+    preferences: PresentationPreferences,
     preferences_path: PathBuf,
 }
 
@@ -42,18 +46,18 @@ impl PreparedTui {
 
 pub(crate) fn prepare(
     profile: ResolvedPresentation,
-    composer_preset: ComposerPreset,
+    preferences: PresentationPreferences,
     preferences_path: PathBuf,
 ) -> io::Result<PreparedTui> {
     let mut terminal = TerminalSession::enter()?;
-    let state = TuiState::starting(composer_preset);
+    let state = TuiState::starting(preferences.composer);
     terminal
         .terminal_mut()
         .draw(|frame| view::render(frame, &state, profile))?;
     Ok(PreparedTui {
         terminal,
         profile,
-        composer_preset,
+        preferences,
         preferences_path,
     })
 }
@@ -74,7 +78,12 @@ pub(crate) async fn run_native(
         children: header.children.clone(),
     };
     let mut client = EmbeddedClient::from_runtime(runtime, seed);
-    let mut state = TuiState::from_client(&client, prepared.composer_preset, conversation.clone());
+    let mut state = TuiState::from_client(
+        &client,
+        prepared.preferences.composer,
+        prepared.preferences.activity.into(),
+        conversation.clone(),
+    );
     let frontend_dir = prepared
         .preferences_path
         .parent()
@@ -147,7 +156,6 @@ pub(crate) async fn run_native(
                     } | AgentEvent::OperationFailed { .. }
                 );
                 state.apply_runtime(&runtime_event);
-                handle_fail_closed_approval(&client, &runtime_event).await?;
                 if terminal {
                     _active_root = None;
                 }
@@ -157,6 +165,276 @@ pub(crate) async fn run_native(
             }
         }
     }
+}
+
+pub(crate) async fn run_managed(
+    mut prepared: PreparedTui,
+    server: crate::managed::codex::CodexAppServer,
+    models: ModelManager,
+    config: ManagedChatConfig,
+    workspace_host: WorkspaceHost,
+    conversation: ConversationRef,
+) -> Result<ChatExit> {
+    let connection = config.connection.clone();
+    let workspace = config.workspace.clone();
+    let artifact_store = config.artifact_store.clone();
+    let owner = config.owner;
+    let workspace_host = Arc::new(workspace_host);
+    let mut driver = ManagedTuiDriver::start(
+        server,
+        models,
+        config,
+        Arc::clone(&workspace_host),
+        conversation.clone(),
+    )
+    .await?;
+    let session = driver
+        .initial_thread
+        .clone()
+        .unwrap_or_else(|| "new".to_owned());
+    let initial_model = driver.selected_model.clone();
+    let mut state = TuiState::from_managed(
+        connection.clone(),
+        initial_model,
+        session,
+        prepared.preferences.composer,
+        prepared.preferences.activity.into(),
+        conversation,
+    );
+    state.set_status(format!("Managed Codex app-server {} ready", driver.version));
+    let frontend_dir = prepared
+        .preferences_path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+    let mut session_preferences = session::SessionPreferenceStore::load(frontend_dir, &workspace);
+    state.set_rail_expanded(session_preferences.rail_expanded());
+    state.refresh_sessions(workspace_host.snapshot()?);
+    let mut events = EventStream::new();
+    let mut pending_approval: Option<oneshot::Sender<ApprovalDecision>> = None;
+
+    let exit = loop {
+        if let Some(effect) = state.next_followup()
+            && dispatch_managed_effect(
+                effect,
+                &mut state,
+                &driver,
+                &workspace_host,
+                &workspace,
+                &artifact_store,
+                owner,
+                &prepared.preferences_path,
+                &mut session_preferences,
+                &mut pending_approval,
+            )
+            .await?
+        {
+            break ChatExit::Quit;
+        }
+        prepared
+            .terminal
+            .terminal_mut()
+            .draw(|frame| view::render(frame, &state, prepared.profile))
+            .context("could not draw Xana managed TUI")?;
+        tokio::select! {
+            terminal_event = events.next() => {
+                let Some(terminal_event) = terminal_event else {
+                    break ChatExit::Quit;
+                };
+                let terminal_event = terminal_event.context("terminal input failed")?;
+                if let Some(action) = input_action(terminal_event, &state) {
+                    let effect = state.update_input(action);
+                    if dispatch_managed_effect(
+                        effect,
+                        &mut state,
+                        &driver,
+                        &workspace_host,
+                        &workspace,
+                        &artifact_store,
+                        owner,
+                        &prepared.preferences_path,
+                        &mut session_preferences,
+                        &mut pending_approval,
+                    ).await? {
+                        break ChatExit::Quit;
+                    }
+                }
+            }
+            managed_event = driver.next_event() => {
+                let Some(managed_event) = managed_event else {
+                    anyhow::bail!("Codex managed runtime stopped while the TUI was attached");
+                };
+                match managed_event {
+                    ManagedTuiEvent::Notification(event) => state.apply_managed_event(&event),
+                    ManagedTuiEvent::Approval { request, reply } => {
+                        if let Some(stale) = pending_approval.replace(reply) {
+                            let _ = stale.send(ApprovalDecision::Cancel);
+                        }
+                        state.open_managed_approval(request);
+                    }
+                    ManagedTuiEvent::ThreadOpened(thread_id) => {
+                        state.set_managed_thread(&connection, thread_id);
+                    }
+                    ManagedTuiEvent::TurnFinished { operation_id, error } => {
+                        state.finish_managed_turn(operation_id, error);
+                        pending_approval = None;
+                    }
+                    ManagedTuiEvent::Cleared => state.managed_cleared(&connection),
+                }
+                if let Ok(snapshot) = workspace_host.snapshot() {
+                    state.refresh_sessions(snapshot);
+                }
+            }
+        }
+    };
+    if let Some(operation_id) = state.active_operation {
+        driver.interrupt(operation_id);
+    }
+    if let Some(reply) = pending_approval {
+        let _ = reply.send(ApprovalDecision::Cancel);
+    }
+    driver.shutdown().await?;
+    Ok(exit)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_managed_effect(
+    effect: UpdateEffect,
+    state: &mut TuiState,
+    driver: &ManagedTuiDriver,
+    workspace_host: &WorkspaceHost,
+    workspace: &std::path::Path,
+    artifact_store: &crate::artifact::ArtifactStore,
+    owner: crate::identity::PrincipalId,
+    preferences_path: &std::path::Path,
+    session_preferences: &mut session::SessionPreferenceStore,
+    pending_approval: &mut Option<oneshot::Sender<ApprovalDecision>>,
+) -> Result<bool> {
+    match effect {
+        UpdateEffect::None => {}
+        UpdateEffect::Quit => return Ok(true),
+        UpdateEffect::Submit {
+            operation_id,
+            input,
+            images,
+        } => {
+            let model = driver.models.iter().find(|model| model.id == state.model);
+            if !images.is_empty()
+                && !model.is_some_and(|model| model.input_modalities.contains("image"))
+            {
+                state.restore_submission(
+                    input,
+                    images,
+                    format!(
+                        "{}/{} is not advertised as image-capable",
+                        state.connection, state.model
+                    ),
+                );
+            } else if let Err(reason) = driver
+                .submit(operation_id, input.clone(), images.clone())
+                .await
+            {
+                state.restore_submission(input, images, reason);
+            } else {
+                state.mark_submitted(operation_id, input);
+            }
+        }
+        UpdateEffect::Interrupt { operation_id } => {
+            if !driver.interrupt(operation_id) {
+                state.set_status("No matching managed turn is active");
+            }
+        }
+        UpdateEffect::Steer { input, .. } => {
+            state.restore_submission(input, Vec::new(), "Codex app-server does not advertise same-turn steering; message retained as a draft".to_owned());
+        }
+        UpdateEffect::Attach(path) => {
+            match ImageIngestor::new(artifact_store.clone(), ImageLimits::default())
+                .ingest_path(workspace, &path, owner)
+            {
+                Ok(attachment) => state.stage_image(attachment),
+                Err(error) => state.set_status(format!("could not attach {path}: {error}")),
+            }
+        }
+        UpdateEffect::SelectModel(selection) => {
+            let requested = selection
+                .split_once('/')
+                .map_or(selection.as_str(), |(_, model)| model);
+            if !driver.models.iter().any(|model| model.id == requested) {
+                state.set_status(format!("Codex does not advertise model {requested:?}"));
+            } else {
+                driver
+                    .select_model(requested.to_owned())
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                state.set_model(requested.to_owned());
+            }
+        }
+        UpdateEffect::SetReasoning(effort) => {
+            driver
+                .set_reasoning((effort != "auto").then_some(effort))
+                .await
+                .map_err(anyhow::Error::msg)?;
+            state
+                .set_status("Reasoning updated for subsequent turns; managed context is unchanged");
+        }
+        UpdateEffect::PersistComposer(preset) => {
+            if let Err(error) = PresentationPreferences::set_composer(preferences_path, preset) {
+                state.set_status(format!("could not save composer preference: {error}"));
+            }
+        }
+        UpdateEffect::ClearConversation => driver.clear().await.map_err(anyhow::Error::msg)?,
+        UpdateEffect::OpenModelPicker => state.open_model_picker(
+            driver
+                .models
+                .iter()
+                .map(|model| format!("{}/{}", state.connection, model.id))
+                .collect(),
+        ),
+        UpdateEffect::OpenReasoningPicker => {
+            let choices = driver
+                .models
+                .iter()
+                .find(|model| model.id == state.model)
+                .map(|model| {
+                    model
+                        .reasoning_efforts
+                        .iter()
+                        .map(|effort| effort.id.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            state.open_reasoning_picker(choices);
+        }
+        UpdateEffect::OpenSessionPicker => state.open_session_picker(),
+        UpdateEffect::ViewSession(conversation) => {
+            match workspace_host.conversation_history(&conversation) {
+                Ok(history) => state.view_session(conversation, history),
+                Err(error) => state.set_status(format!("could not inspect conversation: {error}")),
+            }
+        }
+        UpdateEffect::PersistRail(expanded) => {
+            if let Err(error) = session_preferences.set_rail_expanded(expanded) {
+                state.set_status(format!("could not save session rail preference: {error}"));
+            }
+        }
+        UpdateEffect::PersistActivity(activity) => {
+            if let Err(error) = PresentationPreferences::set_activity(preferences_path, activity) {
+                state.set_status(format!("could not save activity preference: {error}"));
+            }
+        }
+        UpdateEffect::DecideManagedApproval(decision) => {
+            let Some(reply) = pending_approval.take() else {
+                state.set_status("Managed approval is no longer pending");
+                return Ok(false);
+            };
+            if reply.send(decision).is_err() {
+                state.set_status("Managed approval is no longer pending");
+            }
+        }
+        UpdateEffect::DecideNativeApproval { .. } | UpdateEffect::DecideChildApproval { .. } => {
+            state.set_status("Native approval cannot be sent to the managed runtime");
+        }
+    }
+    Ok(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -219,7 +497,7 @@ async fn dispatch_effect(
                 RuntimeCommand::SubmitTurnWithImages {
                     operation_id,
                     input: input.clone(),
-                    images: images.clone(),
+                    images: images.iter().map(|image| image.image.clone()).collect(),
                 }
             };
             let result = client
@@ -377,6 +655,58 @@ async fn dispatch_effect(
                 state.set_status(format!("could not save session rail preference: {error}"));
             }
         }
+        UpdateEffect::PersistActivity(activity) => {
+            if let Err(error) = PresentationPreferences::set_activity(preferences_path, activity) {
+                state.set_status(format!("could not save activity preference: {error}"));
+            }
+        }
+        UpdateEffect::DecideNativeApproval {
+            operation_id,
+            invocation_id,
+            decision,
+        } => {
+            let result = client
+                .send(RuntimeCommand::DecidePermission {
+                    operation_id,
+                    invocation_id,
+                    decision,
+                })
+                .await
+                .context("native TUI runtime stopped during approval")?;
+            if !result.accepted {
+                state.set_status(
+                    result
+                        .reason
+                        .unwrap_or_else(|| "approval was rejected".to_owned()),
+                );
+            }
+        }
+        UpdateEffect::DecideChildApproval {
+            agent_id,
+            operation_id,
+            invocation_id,
+            decision,
+        } => {
+            let result = client
+                .send(RuntimeCommand::DecideChildPermission {
+                    agent_id,
+                    operation_id,
+                    invocation_id,
+                    decision,
+                })
+                .await
+                .context("native child runtime stopped during approval")?;
+            if !result.accepted {
+                state.set_status(
+                    result
+                        .reason
+                        .unwrap_or_else(|| "child approval was rejected".to_owned()),
+                );
+            }
+        }
+        UpdateEffect::DecideManagedApproval(_) => {
+            state.set_status("Managed approval cannot be sent through the native runtime");
+        }
     }
     Ok(None)
 }
@@ -515,37 +845,6 @@ fn input_action(event: Event, state: &TuiState) -> Option<InputAction> {
     }
 }
 
-async fn handle_fail_closed_approval(client: &EmbeddedClient, event: &AgentEvent) -> Result<()> {
-    match event {
-        AgentEvent::PermissionRequested { request } => {
-            client
-                .send(RuntimeCommand::DecidePermission {
-                    operation_id: request.operation_id,
-                    invocation_id: request.invocation_id,
-                    decision: ControllerDecision::Deny,
-                })
-                .await
-                .context("could not deny unsupported TUI approval")?;
-        }
-        AgentEvent::ChildActivity {
-            attribution,
-            activity: crate::orchestration::ChildActivity::PermissionRequested { request },
-        } => {
-            client
-                .send(RuntimeCommand::DecideChildPermission {
-                    agent_id: attribution.agent_id,
-                    operation_id: request.operation_id,
-                    invocation_id: request.invocation_id,
-                    decision: ControllerDecision::Deny,
-                })
-                .await
-                .context("could not deny unsupported child TUI approval")?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -642,8 +941,12 @@ mod tests {
     #[tokio::test]
     async fn scripted_turn_crosses_the_real_embedded_client_and_finishes_in_view_state() {
         let mut client = scripted_client(Box::new(ScriptedProvider));
-        let mut state =
-            TuiState::from_client(&client, ComposerPreset::Submit, ConversationRef::NewNative);
+        let mut state = TuiState::from_client(
+            &client,
+            ComposerPreset::Submit,
+            model::ActivityVisibility::Auto,
+            ConversationRef::NewNative,
+        );
         state.update_input(InputAction::Insert("hi".to_owned()));
         let UpdateEffect::Submit {
             operation_id,
@@ -689,8 +992,12 @@ mod tests {
             started: Arc::clone(&started),
             release: Arc::clone(&release),
         }));
-        let mut state =
-            TuiState::from_client(&client, ComposerPreset::Submit, ConversationRef::NewNative);
+        let mut state = TuiState::from_client(
+            &client,
+            ComposerPreset::Submit,
+            model::ActivityVisibility::Auto,
+            ConversationRef::NewNative,
+        );
         state.update_input(InputAction::Insert("wait".to_owned()));
         let UpdateEffect::Submit {
             operation_id,

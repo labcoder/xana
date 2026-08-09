@@ -257,9 +257,9 @@ thread on the next prompt. It does not delete the external Codex thread. Native
 
 ## Managed activity and reasoning controls
 
-Managed activity is a typed event stream, not assistant prose. The append-only
-terminal first converts that stream to the bounded provider-neutral frontend
-vocabulary, then projects it through three session-only display levels. Vendor
+Managed activity is a typed event stream, not assistant prose. Xana first
+converts that stream to the bounded provider-neutral frontend vocabulary, then
+projects it through the selected frontend. Vendor
 thread and turn identifiers, login notifications, and private RPC method names
 do not cross that frontend boundary:
 
@@ -269,11 +269,13 @@ do not cross that frontend boundary:
 - `verbose` additionally shows provider-emitted reasoning text, command
   output, bounded diff previews, and plan deltas.
 
-`/details` replays a byte- and event-bounded verbose projection of the last
-turn. Assistant text is not duplicated in that buffer. These controls only
-filter already-emitted events and therefore make no extra model request.
-Because the current terminal is append-only, it cannot retroactively collapse
-or expand sections; a future TUI may present the same events interactively.
+In plain mode `/details` replays a byte- and event-bounded verbose projection
+of the last turn. Assistant text is not duplicated in that buffer. The TUI
+instead offers persisted `auto`, `open`, and `hidden` pane modes and bounded
+cards grouped by managed item identity. Approval and critical-failure cards
+remain modal when hidden. These controls only filter already-emitted events
+and therefore make no extra model request. Plain scrollback cannot collapse
+already-written content; the TUI can collapse its retained projection.
 
 Reasoning effort and reasoning-summary mode are model options, not display
 options. `/reasoning` and `/reasoning-summary` persist the selection and send

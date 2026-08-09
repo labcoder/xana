@@ -574,13 +574,33 @@ update model; slash input and the searchable palette share one typed command
 registry. Paste is normalized and confirmed as untrusted draft data. Model
 selection persists through `ModelManager` and restarts into a new conversation
 rather than translating history. Activity visibility is presentation state,
-not reasoning configuration.
+not reasoning configuration. The bounded activity projection groups typed
+cards by root, native child, managed Codex item, and approval identity. It
+labels exposed reasoning separately, never requests an extra summary, and
+forces approvals and critical failures into a modal even when activity is
+hidden. Native and managed decisions return through their original correlated
+control path rather than through display text.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.
 Implicit initialization failure restores then falls back to plain; explicit
-failure exits nonzero. Managed Codex still uses its plain terminal projection
-until the TUI's managed activity and approval slice is implemented.
+failure exits nonzero. Managed Codex runs behind a bounded actor that owns the
+app-server and thread store while the TUI consumes provider-neutral events.
+The actor keeps event delivery bounded, routes approval replies exactly once,
+supports exact cancellation and in-thread advertised model/reasoning changes,
+and shuts app-server down with the embedded frontend.
+
+```mermaid
+flowchart LR
+    NATIVE["Native runtime events"] --> NORMAL["Provider-neutral event projection"]
+    CODEX["Codex app-server notifications"] --> NORMAL
+    NORMAL --> CARDS["Bounded owner-aware activity cards"]
+    CARDS --> VIEW["Auto / open / hidden TUI view"]
+    VIEW -. "passive display only" .-> USER["User"]
+    USER --> APPROVAL["Explicit correlated approval decision"]
+    APPROVAL --> BROKER["Native permission broker"]
+    APPROVAL --> CALLBACK["Codex approval callback"]
+```
 
 Native
 chat creates a session; `--continue` selects the latest compatible execution

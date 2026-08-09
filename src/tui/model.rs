@@ -1,14 +1,18 @@
 //! Terminal-independent state and update policy for the full-screen client.
 
-use super::command::{self, CommandId, CommandSpec, ParsedCommand};
 use super::session::{self, SessionRow};
+use super::{
+    activity::{self, ActivityCard, ActivityKind, ActivityState, ApprovalPrompt, ApprovalTarget},
+    command::{self, CommandId, CommandSpec, ParsedCommand},
+};
 use crate::{
-    frontend::EmbeddedClient,
-    identity::OperationId,
+    frontend::{EmbeddedClient, ManagedClientEvent},
+    identity::{AgentId, OperationId, ToolInvocationId},
     message::{ContentBlock, Message, Role},
-    presentation::ComposerPreset,
+    permission::ControllerDecision,
+    presentation::{ActivityPaneChoice, ComposerPreset},
     runtime::{AgentEvent, OperationState},
-    vision::{ImageAttachment, ImageRef},
+    vision::ImageAttachment,
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use std::{collections::VecDeque, ops::Range};
@@ -16,7 +20,7 @@ use std::{collections::VecDeque, ops::Range};
 const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_VISIBLE_MESSAGES: usize = 512;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
-const MAX_ACTIVITY: usize = 128;
+const MAX_ACTIVITY: usize = 256;
 const MAX_ACTIVITY_BYTES: usize = 16 * 1024;
 const MAX_FOLLOWUPS: usize = 32;
 const MAX_FOLLOWUP_BYTES: usize = 2 * 1024 * 1024;
@@ -74,11 +78,10 @@ impl OwnerCapabilities {
         }
     }
 
-    #[cfg(test)]
     const fn managed() -> Self {
         Self {
             interrupt: true,
-            steer: true,
+            steer: false,
             model: true,
             reasoning: true,
         }
@@ -87,9 +90,29 @@ impl OwnerCapabilities {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActivityVisibility {
-    Quiet,
-    Normal,
-    Verbose,
+    Auto,
+    Open,
+    Hidden,
+}
+
+impl From<ActivityPaneChoice> for ActivityVisibility {
+    fn from(value: ActivityPaneChoice) -> Self {
+        match value {
+            ActivityPaneChoice::Auto => Self::Auto,
+            ActivityPaneChoice::Open => Self::Open,
+            ActivityPaneChoice::Hidden => Self::Hidden,
+        }
+    }
+}
+
+impl From<ActivityVisibility> for ActivityPaneChoice {
+    fn from(value: ActivityVisibility) -> Self {
+        match value {
+            ActivityVisibility::Auto => Self::Auto,
+            ActivityVisibility::Open => Self::Open,
+            ActivityVisibility::Hidden => Self::Hidden,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +153,7 @@ pub(super) enum UpdateEffect {
     Submit {
         operation_id: OperationId,
         input: String,
-        images: Vec<ImageRef>,
+        images: Vec<ImageAttachment>,
     },
     Interrupt {
         operation_id: OperationId,
@@ -149,6 +172,19 @@ pub(super) enum UpdateEffect {
     OpenSessionPicker,
     ViewSession(ConversationRef),
     PersistRail(bool),
+    PersistActivity(ActivityPaneChoice),
+    DecideNativeApproval {
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+        decision: ControllerDecision,
+    },
+    DecideChildApproval {
+        agent_id: AgentId,
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+        decision: ControllerDecision,
+    },
+    DecideManagedApproval(crate::managed::codex::ApprovalDecision),
     Quit,
 }
 
@@ -259,10 +295,10 @@ impl Composer {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct QueuedTurn {
     pub(super) input: String,
-    images: Vec<ImageRef>,
+    images: Vec<ImageAttachment>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum Overlay {
     Palette {
         query: String,
@@ -286,6 +322,10 @@ pub(super) enum Overlay {
         choices: Vec<SessionRow>,
         selected: usize,
     },
+    Approval {
+        prompt: Box<ApprovalPrompt>,
+        selected: usize,
+    },
 }
 
 pub(super) struct TuiState {
@@ -295,12 +335,13 @@ pub(super) struct TuiState {
     pub(super) status: String,
     pub(super) composer: Composer,
     pub(super) messages: VecDeque<VisibleMessage>,
-    pub(super) activity: VecDeque<String>,
+    pub(super) activity: VecDeque<ActivityCard>,
     pub(super) busy: bool,
     pub(super) active_operation: Option<OperationId>,
     pub(super) followups: VecDeque<QueuedTurn>,
     pub(super) overlay: Option<Overlay>,
     pub(super) activity_visibility: ActivityVisibility,
+    pub(super) auto_activity_open: bool,
     pub(super) composer_preset: ComposerPreset,
     pub(super) scroll: u16,
     pub(super) sessions: Vec<SessionRow>,
@@ -324,12 +365,20 @@ impl TuiState {
                 kind: MessageKind::System,
                 text: "Xana is preparing the workspace runtime. The interface is ready.".to_owned(),
             }]),
-            activity: VecDeque::from(["local frontend ready".to_owned()]),
+            activity: VecDeque::from([ActivityCard::new(
+                "Xana",
+                "frontend",
+                ActivityKind::Status,
+                ActivityState::Complete,
+                "local frontend ready",
+                "",
+            )]),
             busy: true,
             active_operation: None,
             followups: VecDeque::new(),
             overlay: None,
-            activity_visibility: ActivityVisibility::Normal,
+            activity_visibility: ActivityVisibility::Auto,
+            auto_activity_open: false,
             composer_preset,
             scroll: 0,
             sessions: Vec::new(),
@@ -345,6 +394,7 @@ impl TuiState {
     pub(super) fn from_client(
         client: &EmbeddedClient,
         composer_preset: ComposerPreset,
+        activity_visibility: ActivityVisibility,
         conversation: ConversationRef,
     ) -> Self {
         let snapshot = client.snapshot();
@@ -366,7 +416,8 @@ impl TuiState {
             active_operation: snapshot.active_operation,
             followups: VecDeque::new(),
             overlay: None,
-            activity_visibility: ActivityVisibility::Normal,
+            activity_visibility,
+            auto_activity_open: false,
             composer_preset,
             scroll: 0,
             sessions: Vec::new(),
@@ -381,6 +432,43 @@ impl TuiState {
             state.push_activity("older conversation content is outside the bounded snapshot");
         }
         state
+    }
+
+    pub(super) fn from_managed(
+        connection: String,
+        model: String,
+        session: String,
+        composer_preset: ComposerPreset,
+        activity_visibility: ActivityVisibility,
+        conversation: ConversationRef,
+    ) -> Self {
+        Self {
+            connection,
+            model,
+            session,
+            status: "Ready".to_owned(),
+            composer: Composer::new(),
+            messages: VecDeque::from([VisibleMessage {
+                kind: MessageKind::System,
+                text: "Codex owns this managed thread and inner loop; Xana projects its emitted activity and approvals.".to_owned(),
+            }]),
+            activity: VecDeque::new(),
+            busy: false,
+            active_operation: None,
+            followups: VecDeque::new(),
+            overlay: None,
+            activity_visibility,
+            auto_activity_open: false,
+            composer_preset,
+            scroll: 0,
+            sessions: Vec::new(),
+            rail_expanded: true,
+            runtime_conversation: conversation.clone(),
+            viewed_conversation: conversation,
+            capabilities: OwnerCapabilities::managed(),
+            pending_images: Vec::new(),
+            background_messages: None,
+        }
     }
 
     #[cfg(test)]
@@ -506,6 +594,9 @@ impl TuiState {
             Some(Overlay::Palette { query, selected }) => (selected, command::search(query).len()),
             Some(Overlay::ModelPicker { choices, selected })
             | Some(Overlay::ReasoningPicker { choices, selected }) => (selected, choices.len()),
+            Some(Overlay::Approval { prompt, selected }) => {
+                (selected, approval_choice_count(prompt))
+            }
             Some(Overlay::SessionPicker {
                 query,
                 choices,
@@ -572,6 +663,7 @@ impl TuiState {
                 .map_or(UpdateEffect::None, |row| {
                     UpdateEffect::ViewSession(row.conversation)
                 }),
+            Overlay::Approval { prompt, selected } => self.confirm_approval(*prompt, selected),
             Overlay::Help | Overlay::Queue => UpdateEffect::None,
         }
     }
@@ -693,16 +785,16 @@ impl TuiState {
             CommandId::Activity => {
                 self.composer.take();
                 self.activity_visibility = match command.arguments.as_str() {
-                    "quiet" => ActivityVisibility::Quiet,
-                    "verbose" => ActivityVisibility::Verbose,
-                    "normal" | "" => ActivityVisibility::Normal,
+                    "hidden" | "quiet" => ActivityVisibility::Hidden,
+                    "open" | "verbose" => ActivityVisibility::Open,
+                    "auto" | "normal" | "" => ActivityVisibility::Auto,
                     _ => {
                         self.status = command_usage(CommandId::Activity);
                         return UpdateEffect::None;
                     }
                 };
                 self.status = format!("Activity display: {:?}", self.activity_visibility);
-                UpdateEffect::None
+                UpdateEffect::PersistActivity(self.activity_visibility.into())
             }
             CommandId::Attach => {
                 self.composer.take();
@@ -761,15 +853,7 @@ impl TuiState {
                 Ok(index) => {
                     if let Some(turn) = self.followups.remove(index) {
                         self.composer.replace(turn.input);
-                        self.pending_images = turn
-                            .images
-                            .into_iter()
-                            .enumerate()
-                            .map(|(index, image)| ImageAttachment {
-                                source_path: format!("queued-image-{}", index + 1),
-                                image,
-                            })
-                            .collect();
+                        self.pending_images = turn.images;
                         self.status = format!("Editing queued follow-up {}", index + 1);
                     }
                 }
@@ -821,12 +905,15 @@ impl TuiState {
         self.busy = true;
         self.active_operation = Some(operation_id);
         self.status = "Working…".to_owned();
+        if self.activity_visibility == ActivityVisibility::Auto {
+            self.auto_activity_open = false;
+        }
     }
 
     pub(super) fn restore_submission(
         &mut self,
         input: String,
-        images: Vec<ImageRef>,
+        images: Vec<ImageAttachment>,
         reason: String,
     ) {
         if self.composer.text.is_empty() {
@@ -1021,7 +1108,14 @@ impl TuiState {
                 self.busy = false;
                 self.active_operation = None;
                 self.status = format!("Turn {outcome:?}");
-                self.push_activity(format!("operation {operation_id}: {outcome:?}"));
+                self.push_card(ActivityCard::new(
+                    "Xana root",
+                    operation_id.to_string(),
+                    ActivityKind::Status,
+                    ActivityState::Complete,
+                    format!("operation {outcome:?}"),
+                    "",
+                ));
             }
             AgentEvent::OperationStateChanged {
                 operation_id,
@@ -1031,7 +1125,14 @@ impl TuiState {
                 self.active_operation = None;
                 self.status =
                     "Turn interrupted; any uncertain effects remain recoverable".to_owned();
-                self.push_activity(format!("operation {operation_id}: suspended"));
+                self.push_card(ActivityCard::new(
+                    "Xana root",
+                    operation_id.to_string(),
+                    ActivityKind::Warning,
+                    ActivityState::Failed,
+                    "operation suspended",
+                    "Any uncertain effects remain recoverable.",
+                ));
             }
             AgentEvent::AssistantTextDelta {
                 operation_id, text, ..
@@ -1042,13 +1143,20 @@ impl TuiState {
             } => self.finish_assistant(*operation_id, message),
             AgentEvent::PermissionRequested { request } => {
                 self.status = format!("Approval required: {}", request.tool_name);
-                self.push_activity(format!("approval requested for {}", request.tool_name));
+                self.open_approval(ApprovalPrompt::native(request.clone()));
             }
             AgentEvent::OperationFailed { reason, .. } => {
                 self.busy = false;
                 self.active_operation = None;
                 self.status = bounded(reason.clone(), MAX_ACTIVITY_BYTES);
-                self.push_activity(format!("turn failed: {reason}"));
+                self.push_card(ActivityCard::new(
+                    "Xana root",
+                    "turn",
+                    ActivityKind::Error,
+                    ActivityState::Failed,
+                    "turn failed",
+                    reason.clone(),
+                ));
             }
             AgentEvent::ConversationCleared => {
                 self.messages.clear();
@@ -1057,25 +1165,87 @@ impl TuiState {
             AgentEvent::CommandRejected { reason } => {
                 self.status = bounded(format!("Command rejected: {reason}"), MAX_ACTIVITY_BYTES);
             }
-            AgentEvent::InvocationIntentCommitted { intent } => self.push_activity(format!(
-                "tool planned: {}",
-                intent.permission.request.tool_name
+            AgentEvent::InvocationIntentCommitted { intent } => self.push_card(ActivityCard::new(
+                "Xana root",
+                intent.invocation_id.to_string(),
+                ActivityKind::Tool,
+                ActivityState::Running,
+                format!("tool planned: {}", intent.permission.request.tool_name),
+                intent.permission.request.final_arguments.to_string(),
             )),
-            AgentEvent::ToolFinished { .. } => self.push_activity("tool finished"),
+            AgentEvent::ToolFinished { invocation_id, .. } => self.push_card(ActivityCard::new(
+                "Xana root",
+                invocation_id.to_string(),
+                ActivityKind::Tool,
+                ActivityState::Complete,
+                "tool finished",
+                "",
+            )),
             AgentEvent::ChildLifecycleChanged {
                 attribution,
                 lifecycle,
-            } => self.push_activity(format!(
-                "child {} [{}]: {lifecycle:?}",
-                attribution.agent_id, attribution.route
+            } => self.push_card(ActivityCard::new(
+                format!("Xana child {}", attribution.agent_id),
+                attribution.agent_id.to_string(),
+                ActivityKind::Child,
+                ActivityState::Running,
+                format!("{}: {lifecycle:?}", attribution.route),
+                format!(
+                    "{}/{} via {}",
+                    attribution.connection, attribution.model, attribution.profile
+                ),
             )),
-            AgentEvent::ChildActivity { attribution, .. } => self.push_activity(format!(
-                "child {} [{}] activity",
-                attribution.agent_id, attribution.route
-            )),
-            AgentEvent::ChildReportCommitted { report } => self.push_activity(format!(
-                "child {} report: {:?}",
-                report.attribution.agent_id, report.status
+            AgentEvent::ChildActivity {
+                attribution,
+                activity,
+            } => match activity {
+                crate::orchestration::ChildActivity::PermissionRequested { request } => {
+                    self.open_approval(ApprovalPrompt::child(attribution.clone(), request.clone()));
+                }
+                crate::orchestration::ChildActivity::ManagedRuntime { notification } => {
+                    if let Some(event) = ManagedClientEvent::from_notification(notification.clone())
+                    {
+                        self.apply_managed_activity(
+                            format!("Codex child {}", attribution.agent_id),
+                            &event,
+                        );
+                    }
+                }
+                crate::orchestration::ChildActivity::Warning { message } => {
+                    self.push_card(ActivityCard::new(
+                        format!("Xana child {}", attribution.agent_id),
+                        attribution.agent_id.to_string(),
+                        ActivityKind::Warning,
+                        ActivityState::Failed,
+                        "child warning",
+                        message.clone(),
+                    ))
+                }
+                crate::orchestration::ChildActivity::AssistantTextDelta { .. }
+                | crate::orchestration::ChildActivity::PermissionAudited { .. }
+                | crate::orchestration::ChildActivity::ToolFinished { .. }
+                | crate::orchestration::ChildActivity::Suspended => {
+                    self.push_card(ActivityCard::new(
+                        format!("Xana child {}", attribution.agent_id),
+                        attribution.agent_id.to_string(),
+                        ActivityKind::Child,
+                        ActivityState::Running,
+                        format!("{} activity", attribution.route),
+                        "",
+                    ))
+                }
+            },
+            AgentEvent::ChildReportCommitted { report } => self.push_card(ActivityCard::new(
+                format!("Xana child {}", report.attribution.agent_id),
+                report.attribution.agent_id.to_string(),
+                ActivityKind::Child,
+                ActivityState::Complete,
+                format!("child report: {:?}", report.status),
+                report
+                    .output
+                    .clone()
+                    .or_else(|| report.error.clone())
+                    .unwrap_or_default(),
             )),
             AgentEvent::InvocationResultCommitted { .. }
             | AgentEvent::PermissionAudited { .. }
@@ -1152,29 +1322,166 @@ impl TuiState {
     }
 
     fn push_activity(&mut self, text: impl Into<String>) {
-        self.activity
-            .push_back(bounded(text.into(), MAX_ACTIVITY_BYTES));
+        self.push_card(ActivityCard::new(
+            "Xana",
+            format!("event-{}", self.activity.len()),
+            ActivityKind::Status,
+            ActivityState::Complete,
+            text,
+            "",
+        ));
+    }
+
+    fn push_card(&mut self, card: ActivityCard) {
+        if self.activity_visibility == ActivityVisibility::Auto && card.is_substantive() {
+            self.auto_activity_open = true;
+        }
+        activity::push(&mut self.activity, card);
         trim_front(&mut self.activity, MAX_ACTIVITY);
     }
 
-    fn take_pending_images(&mut self) -> Vec<ImageRef> {
-        self.pending_images
-            .drain(..)
-            .map(|attachment| attachment.image)
-            .collect()
+    fn open_approval(&mut self, prompt: ApprovalPrompt) {
+        self.push_card(ActivityCard::new(
+            prompt.owner.clone(),
+            "approval",
+            ActivityKind::Approval,
+            ActivityState::Waiting,
+            prompt.title.clone(),
+            prompt.details.join("\n"),
+        ));
+        self.overlay = Some(Overlay::Approval {
+            prompt: Box::new(prompt),
+            selected: 0,
+        });
+        self.status = "Waiting for approval".to_owned();
     }
 
-    fn restore_images(&mut self, images: Vec<ImageRef>) {
-        self.pending_images
-            .extend(
-                images
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, image)| ImageAttachment {
-                        source_path: format!("restored-image-{}", index + 1),
-                        image,
-                    }),
-            );
+    pub(super) fn open_managed_approval(
+        &mut self,
+        request: crate::managed::codex::ApprovalRequest,
+    ) {
+        self.open_approval(ApprovalPrompt::managed(request));
+    }
+
+    fn confirm_approval(&mut self, prompt: ApprovalPrompt, selected: usize) -> UpdateEffect {
+        let choice = approval_choices(&prompt).get(selected).copied();
+        let Some(choice) = choice else {
+            self.status = "Approval offered no safe decision".to_owned();
+            return UpdateEffect::None;
+        };
+        self.status = format!("Approval decision: {choice:?}");
+        match prompt.target {
+            ApprovalTarget::Native(request) => UpdateEffect::DecideNativeApproval {
+                operation_id: request.operation_id,
+                invocation_id: request.invocation_id,
+                decision: controller_decision(choice, request.scope),
+            },
+            ApprovalTarget::Child {
+                attribution,
+                request,
+            } => UpdateEffect::DecideChildApproval {
+                agent_id: attribution.agent_id,
+                operation_id: request.operation_id,
+                invocation_id: request.invocation_id,
+                decision: controller_decision(choice, request.scope),
+            },
+            ApprovalTarget::Managed(request) => {
+                let decision = match choice {
+                    ApprovalChoice::Once => crate::managed::codex::ApprovalDecision::AcceptOnce,
+                    ApprovalChoice::Session => {
+                        crate::managed::codex::ApprovalDecision::AcceptForSession
+                    }
+                    ApprovalChoice::Deny if request.available_decisions.contains("decline") => {
+                        crate::managed::codex::ApprovalDecision::Decline
+                    }
+                    ApprovalChoice::Deny => crate::managed::codex::ApprovalDecision::Cancel,
+                };
+                UpdateEffect::DecideManagedApproval(decision)
+            }
+        }
+    }
+
+    pub(super) fn apply_managed_event(&mut self, event: &ManagedClientEvent) {
+        match event {
+            ManagedClientEvent::AssistantDelta(delta) => {
+                let operation_id = self.active_operation.unwrap_or_else(OperationId::new);
+                self.push_assistant_delta(operation_id, delta);
+            }
+            ManagedClientEvent::TurnCompleted { status, error } => {
+                self.busy = false;
+                self.active_operation = None;
+                self.status = error.as_ref().map_or_else(
+                    || format!("Managed turn {status}"),
+                    |error| format!("Managed turn failed: {error}"),
+                );
+            }
+            ManagedClientEvent::ModelRerouted { to_model, .. } => {
+                self.model = to_model.clone();
+            }
+            _ => {}
+        }
+        self.apply_managed_activity("Codex".to_owned(), event);
+    }
+
+    pub(super) fn set_managed_thread(&mut self, connection: &str, thread_id: String) {
+        self.session = thread_id.clone();
+        let conversation = ConversationRef::Managed {
+            connection: connection.to_owned(),
+            thread_id,
+        };
+        self.runtime_conversation = conversation.clone();
+        self.viewed_conversation = conversation;
+    }
+
+    pub(super) fn finish_managed_turn(&mut self, operation_id: OperationId, error: Option<String>) {
+        if self.active_operation == Some(operation_id) {
+            self.active_operation = None;
+            self.busy = false;
+        }
+        if let Some(error) = error {
+            self.status = bounded(format!("Managed turn failed: {error}"), MAX_ACTIVITY_BYTES);
+            self.push_card(ActivityCard::new(
+                "Codex",
+                operation_id.to_string(),
+                ActivityKind::Error,
+                ActivityState::Failed,
+                "managed turn failed",
+                error,
+            ));
+        } else {
+            self.status = "Managed turn completed".to_owned();
+        }
+    }
+
+    pub(super) fn managed_cleared(&mut self, connection: &str) {
+        self.messages.clear();
+        self.activity.clear();
+        self.session = "new".to_owned();
+        self.runtime_conversation = ConversationRef::NewManaged {
+            connection: connection.to_owned(),
+        };
+        self.viewed_conversation = self.runtime_conversation.clone();
+        self.status = "New managed thread will start with the next message".to_owned();
+    }
+
+    pub(super) fn set_model(&mut self, model: String) {
+        self.model = model;
+        self.status = "Model updated for subsequent turns; managed context is unchanged".to_owned();
+    }
+
+    fn apply_managed_activity(&mut self, owner: String, event: &ManagedClientEvent) {
+        if let Some(mut card) = activity::from_managed(event) {
+            card.owner = owner;
+            self.push_card(card);
+        }
+    }
+
+    fn take_pending_images(&mut self) -> Vec<ImageAttachment> {
+        self.pending_images.drain(..).collect()
+    }
+
+    fn restore_images(&mut self, images: Vec<ImageAttachment>) {
+        self.pending_images.extend(images);
     }
 
     fn queued_bytes(&self) -> usize {
@@ -1193,6 +1500,42 @@ fn command_usage(id: CommandId) -> String {
             || "Invalid command".to_owned(),
             |command| format!("Usage: {}", command.usage),
         )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApprovalChoice {
+    Once,
+    Session,
+    Deny,
+}
+
+fn approval_choices(prompt: &ApprovalPrompt) -> Vec<ApprovalChoice> {
+    let mut choices = Vec::with_capacity(3);
+    if prompt.allow_once {
+        choices.push(ApprovalChoice::Once);
+    }
+    if prompt.allow_session {
+        choices.push(ApprovalChoice::Session);
+    }
+    if prompt.deny {
+        choices.push(ApprovalChoice::Deny);
+    }
+    choices
+}
+
+fn approval_choice_count(prompt: &ApprovalPrompt) -> usize {
+    approval_choices(prompt).len()
+}
+
+fn controller_decision(
+    choice: ApprovalChoice,
+    scope: crate::permission::PermissionScope,
+) -> ControllerDecision {
+    match choice {
+        ApprovalChoice::Once => ControllerDecision::AllowOnce,
+        ApprovalChoice::Session => ControllerDecision::AllowSession { scope },
+        ApprovalChoice::Deny => ControllerDecision::Deny,
+    }
 }
 
 fn session_matches(row: &SessionRow, query: &str) -> bool {
@@ -1218,9 +1561,9 @@ fn parse_queue_index(value: Option<&str>, len: usize) -> Result<usize, String> {
     Ok(index - 1)
 }
 
-fn image_bytes(images: &[ImageRef]) -> usize {
+fn image_bytes(images: &[ImageAttachment]) -> usize {
     images.iter().fold(0_usize, |total, image| {
-        total.saturating_add(usize::try_from(image.byte_len).unwrap_or(usize::MAX))
+        total.saturating_add(usize::try_from(image.image.byte_len).unwrap_or(usize::MAX))
     })
 }
 
@@ -1438,11 +1781,9 @@ mod tests {
         managed.composer.replace("/steer focus".to_owned());
         assert_eq!(
             managed.update_input(InputAction::Submit),
-            UpdateEffect::Steer {
-                operation_id,
-                input: "focus".to_owned()
-            }
+            UpdateEffect::None
         );
+        assert!(managed.status.contains("does not support"));
     }
 
     #[test]
@@ -1489,6 +1830,84 @@ mod tests {
             state.push_activity(format!("event {index}"));
         }
         assert_eq!(state.activity.len(), MAX_ACTIVITY);
+    }
+
+    #[test]
+    fn hidden_activity_cannot_hide_or_duplicate_a_native_approval() {
+        let operation_id = OperationId::new();
+        let invocation_id = ToolInvocationId::new();
+        let request = crate::permission::PermissionRequest {
+            operation_id,
+            invocation_id,
+            tool_name: "run_command".to_owned(),
+            effect_class: crate::tool::EffectClass::Execute,
+            final_arguments: serde_json::json!({"command": "cargo test"}),
+            scope: crate::permission::PermissionScope::Unscoped,
+        };
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.activity_visibility = ActivityVisibility::Hidden;
+        state.apply_runtime(&AgentEvent::PermissionRequested {
+            request: request.clone(),
+        });
+        assert!(matches!(state.overlay, Some(Overlay::Approval { .. })));
+        assert!(
+            state
+                .activity
+                .back()
+                .is_some_and(|card| card.kind == ActivityKind::Approval)
+        );
+        assert_eq!(
+            state.update_input(InputAction::Confirm),
+            UpdateEffect::DecideNativeApproval {
+                operation_id,
+                invocation_id,
+                decision: ControllerDecision::AllowOnce,
+            }
+        );
+        assert_eq!(state.update_input(InputAction::Confirm), UpdateEffect::None);
+        assert_eq!(state.activity_visibility, ActivityVisibility::Hidden);
+    }
+
+    #[test]
+    fn fake_codex_transcript_preserves_reasoning_and_managed_ownership() {
+        let mut state = TuiState::from_managed(
+            "codex".to_owned(),
+            "gpt-test".to_owned(),
+            "thread-test".to_owned(),
+            ComposerPreset::Submit,
+            ActivityVisibility::Auto,
+            ConversationRef::NewManaged {
+                connection: "codex".to_owned(),
+            },
+        );
+        state.apply_managed_event(&ManagedClientEvent::ReasoningSummaryDelta(
+            "checking the workspace".to_owned(),
+        ));
+        state.apply_managed_event(&ManagedClientEvent::ItemStarted(
+            crate::frontend::ManagedClientItem {
+                id: "command-1".to_owned(),
+                kind: "commandExecution".to_owned(),
+                status: Some("inProgress".to_owned()),
+                label: "cargo test".to_owned(),
+                details: "running tests".to_owned(),
+            },
+        ));
+        state.apply_managed_event(&ManagedClientEvent::AssistantDelta(
+            "Tests are passing.".to_owned(),
+        ));
+        assert!(state.auto_activity_open);
+        assert!(
+            state.activity.iter().any(|card| {
+                card.kind == ActivityKind::ReasoningSummary && card.owner == "Codex"
+            })
+        );
+        assert!(
+            state
+                .activity
+                .iter()
+                .any(|card| { card.kind == ActivityKind::Tool && card.identity == "command-1" })
+        );
+        assert_eq!(state.messages.back().unwrap().kind, MessageKind::Assistant);
     }
 
     #[test]
