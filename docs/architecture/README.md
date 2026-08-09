@@ -559,7 +559,15 @@ initialization mandatory. The TUI owns an explicit state/update/view model,
 consumes the same bounded embedded snapshot/events as plain native chat, and
 emits only typed runtime commands. It paints a local starting frame before
 configuration/provider composition, adapts side panes into drawer labels at
-medium/narrow widths, and bounds composer, message, and activity retention.
+medium/narrow widths, and bounds composer, message, activity, staged images,
+and an ordered follow-up queue. Frontend protocol version 2 adds exact
+interrupt and capability-gated steer commands. The native TUI maps keyboard,
+mouse, bracketed-paste, and runtime events through one terminal-independent
+update model; slash input and the searchable palette share one typed command
+registry. Paste is normalized and confirmed as untrusted draft data. Model
+selection persists through `ModelManager` and restarts into a new conversation
+rather than translating history. Activity visibility is presentation state,
+not reasoning configuration.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.

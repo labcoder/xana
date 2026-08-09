@@ -114,7 +114,14 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let surface = if cli.plain || !(input_is_terminal && output_is_terminal) {
                 ChatSurface::Plain(mode)
             } else {
-                match tui::prepare(mode.profile()) {
+                let preferences =
+                    presentation::PresentationPreferences::load(&paths.presentation_file())
+                        .preferences;
+                match tui::prepare(
+                    mode.profile(),
+                    preferences.composer,
+                    paths.presentation_file(),
+                ) {
                     Ok(prepared) => ChatSurface::Tui {
                         prepared,
                         required: cli.tui,
@@ -954,6 +961,8 @@ async fn execute_recovery_command<W: Write>(
         }
         RuntimeCommand::SubmitTurn { .. }
         | RuntimeCommand::SubmitTurnWithImages { .. }
+        | RuntimeCommand::InterruptOperation { .. }
+        | RuntimeCommand::SteerOperation { .. }
         | RuntimeCommand::ClearConversation
         | RuntimeCommand::DecidePermission { .. }
         | RuntimeCommand::DecideChildPermission { .. }
@@ -1441,6 +1450,8 @@ async fn run_default(
         .map_err(anyhow::Error::new);
     }
 
+    let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
+    let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
     let exit = match surface {
         ChatSurface::Plain(_) => {
             terminal::run_chat(runtime, header, workspace_host, conversation).await?
@@ -1452,14 +1463,33 @@ async fn run_default(
     match exit {
         terminal::ChatExit::Quit => Ok(None),
         terminal::ChatExit::Restart => {
-            Box::pin(run_default(
-                paths,
-                ChatSurface::Plain(BannerMode::hidden(presentation)),
-                None,
-                false,
-                None,
-            ))
-            .await
+            let restart_surface = if restart_tui {
+                let preferences =
+                    presentation::PresentationPreferences::load(&paths.presentation_file())
+                        .preferences;
+                match tui::prepare(
+                    presentation,
+                    preferences.composer,
+                    paths.presentation_file(),
+                ) {
+                    Ok(prepared) => ChatSurface::Tui {
+                        prepared,
+                        required: tui_required,
+                    },
+                    Err(error) if !tui_required => {
+                        eprintln!(
+                            "xana: could not restart the full-screen terminal ({error}); falling back to --plain"
+                        );
+                        ChatSurface::Plain(BannerMode::hidden(presentation))
+                    }
+                    Err(error) => {
+                        return Err(error).context("could not restart the required Xana TUI");
+                    }
+                }
+            } else {
+                ChatSurface::Plain(BannerMode::hidden(presentation))
+            };
+            Box::pin(run_default(paths, restart_surface, None, false, None)).await
         }
     }
 }

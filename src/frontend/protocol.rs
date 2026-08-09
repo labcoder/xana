@@ -17,7 +17,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 1;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 2;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -62,6 +62,13 @@ pub(crate) enum ClientCommandValue {
     ResumeOperation {
         session_id: SessionId,
         operation_id: OperationId,
+    },
+    InterruptOperation {
+        operation_id: OperationId,
+    },
+    SteerOperation {
+        operation_id: OperationId,
+        input: String,
     },
     DecidePermission {
         operation_id: OperationId,
@@ -111,6 +118,16 @@ impl From<RuntimeCommand> for ClientCommandValue {
             } => Self::ResumeOperation {
                 session_id,
                 operation_id,
+            },
+            RuntimeCommand::InterruptOperation { operation_id } => {
+                Self::InterruptOperation { operation_id }
+            }
+            RuntimeCommand::SteerOperation {
+                operation_id,
+                input,
+            } => Self::SteerOperation {
+                operation_id,
+                input,
             },
             RuntimeCommand::DecidePermission {
                 operation_id,
@@ -167,6 +184,16 @@ impl From<ClientCommandValue> for RuntimeCommand {
             } => Self::ResumeOperation {
                 session_id,
                 operation_id,
+            },
+            ClientCommandValue::InterruptOperation { operation_id } => {
+                Self::InterruptOperation { operation_id }
+            }
+            ClientCommandValue::SteerOperation {
+                operation_id,
+                input,
+            } => Self::SteerOperation {
+                operation_id,
+                input,
             },
             ClientCommandValue::DecidePermission {
                 operation_id,
@@ -513,6 +540,31 @@ mod tests {
         assert!(!json.contains("authorization"));
         assert!(!json.contains("access_token"));
         assert!(!json.contains("jsonrpc"));
+    }
+
+    #[test]
+    fn interrupt_and_steer_commands_keep_exact_operation_correlation() {
+        let operation_id = OperationId::new();
+        for value in [
+            ClientCommandValue::InterruptOperation { operation_id },
+            ClientCommandValue::SteerOperation {
+                operation_id,
+                input: "focus on the failing test".to_owned(),
+            },
+        ] {
+            let command = ClientCommand::new(value.clone());
+            let encoded = serde_json::to_vec(&command).unwrap();
+            let decoded: ClientCommand = serde_json::from_slice(&encoded).unwrap();
+            assert_eq!(decoded.version, FRONTEND_PROTOCOL_VERSION);
+            assert_eq!(decoded.value, value);
+            let runtime: RuntimeCommand = decoded.value.into();
+            assert!(matches!(
+                runtime,
+                RuntimeCommand::InterruptOperation { operation_id: actual }
+                    | RuntimeCommand::SteerOperation { operation_id: actual, .. }
+                    if actual == operation_id
+            ));
+        }
     }
 
     #[test]
