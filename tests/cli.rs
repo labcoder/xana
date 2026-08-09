@@ -5,6 +5,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::Path,
     process::{Command, Stdio},
+    sync::mpsc,
     thread,
 };
 use tempfile::tempdir;
@@ -43,6 +44,39 @@ fn fake_chat_server(final_text: &str) -> (String, thread::JoinHandle<()>) {
         .expect("write provider response");
     });
     (format!("http://{address}/v1"), worker)
+}
+
+fn blocking_chat_server() -> (
+    String,
+    mpsc::Receiver<()>,
+    mpsc::Sender<()>,
+    thread::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind blocking provider");
+    let address = listener.local_addr().expect("blocking provider address");
+    let (accepted_tx, accepted_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept blocking request");
+        read_http_request(&mut stream);
+        accepted_tx.send(()).expect("announce accepted request");
+        release_rx.recv().expect("release blocking request");
+        let body =
+            "data: {\"choices\":[{\"delta\":{\"content\":\"finished\"}}]}\n\ndata: [DONE]\n\n";
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write blocking response");
+    });
+    (
+        format!("http://{address}/v1"),
+        accepted_rx,
+        release_tx,
+        worker,
+    )
 }
 
 fn read_http_request(stream: &mut TcpStream) {
@@ -362,4 +396,43 @@ fn one_shot_configuration_failure_has_stable_exit_and_json_shape() {
     assert_eq!(envelope["error"]["category"], "configuration");
     assert!(!output.stdout.contains(&0x1b));
     assert!(String::from_utf8_lossy(&output.stderr).contains("not initialized"));
+}
+
+#[test]
+fn a_second_process_cannot_start_a_competing_workspace_root() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, accepted, release, worker) = blocking_chat_server();
+    init_native(&home, &base_url);
+
+    let first = xana(&home)
+        .args(["-p", "hold the root"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start first root");
+    accepted
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("first root reached provider");
+
+    let second = xana(&home)
+        .args(["--json", "-p", "compete"])
+        .output()
+        .expect("run competing root");
+    assert_eq!(second.status.code(), Some(6));
+    let envelope: serde_json::Value =
+        serde_json::from_slice(&second.stdout).expect("busy result envelope");
+    assert_eq!(envelope["error"]["category"], "runtime");
+    assert!(
+        envelope["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("active Xana root")
+    );
+
+    release.send(()).expect("release first root");
+    let first = first.wait_with_output().expect("first root result");
+    worker.join().expect("blocking provider worker");
+    assert_success(&first);
+    assert_eq!(String::from_utf8_lossy(&first.stdout), "finished\n");
 }

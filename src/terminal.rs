@@ -14,6 +14,7 @@ use crate::{
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
+    workspace_host::{ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result, bail};
 use rustyline::{DefaultEditor, error::ReadlineError};
@@ -387,7 +388,12 @@ fn embedded_client(runtime: RuntimeHandle, header: &ChatHeader) -> EmbeddedClien
     EmbeddedClient::from_runtime(runtime, seed)
 }
 
-pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Result<ChatExit> {
+pub(crate) async fn run_chat(
+    runtime: RuntimeHandle,
+    header: ChatHeader,
+    workspace_host: WorkspaceHost,
+    conversation: ConversationRef,
+) -> Result<ChatExit> {
     let mut runtime = embedded_client(runtime, &header);
     debug_assert_eq!(runtime.snapshot().session_id, header.session_id);
     println!("provider connection: {}", header.provider_name);
@@ -569,8 +575,17 @@ pub(crate) async fn run_chat(runtime: RuntimeHandle, header: ChatHeader) -> Resu
                             images,
                         }
                     };
+                    let root_lease = match workspace_host.acquire_root(conversation.clone()) {
+                        Ok(lease) => lease,
+                        Err(error) => {
+                            println!("xana> could not start turn: {error}");
+                            continue;
+                        }
+                    };
                     runtime.send(command).await?;
-                    render_operation(&mut runtime, &mut renderer, operation_id).await?;
+                    let result = render_operation(&mut runtime, &mut renderer, operation_id).await;
+                    drop(root_lease);
+                    result?;
                 }
             },
             Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
@@ -598,8 +613,13 @@ pub(crate) async fn run_one_shot(
     header: &ChatHeader,
     input: String,
     activity: &mut impl Write,
+    workspace_host: &WorkspaceHost,
+    conversation: ConversationRef,
 ) -> Result<OneShotSuccess, OneShotFailure> {
     let mut client = embedded_client(runtime, header);
+    let _root_lease = workspace_host
+        .acquire_root(conversation)
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let operation_id = OperationId::new();
     client
         .send(RuntimeCommand::SubmitTurn {

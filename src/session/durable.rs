@@ -61,6 +61,13 @@ pub(crate) struct SessionSummary {
     pub(crate) children: Vec<ChildInspection>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct NativeConversationHandle {
+    pub(crate) session_id: SessionId,
+    pub(crate) modified: std::time::SystemTime,
+    pub(crate) record_count: usize,
+}
+
 impl DurableSession {
     pub(crate) fn create(data_dir: &Path, workspace_root: PathBuf) -> Result<Self> {
         fs::create_dir_all(data_dir.join("artifacts"))
@@ -111,15 +118,25 @@ impl DurableSession {
         data_dir: &Path,
         workspace_root: &Path,
     ) -> Result<Option<SessionId>> {
+        Ok(Self::list_for_workspace(data_dir, workspace_root)?
+            .into_iter()
+            .next()
+            .map(|entry| entry.session_id))
+    }
+
+    pub(crate) fn list_for_workspace(
+        data_dir: &Path,
+        workspace_root: &Path,
+    ) -> Result<Vec<NativeConversationHandle>> {
         const MAX_SESSION_FILES: usize = 10_000;
 
         let sessions_dir = data_dir.join("sessions");
         let entries = match fs::read_dir(&sessions_dir) {
             Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(error).context("could not list durable sessions"),
         };
-        let mut latest = None;
+        let mut conversations = Vec::new();
         for (index, entry) in entries.enumerate() {
             if index >= MAX_SESSION_FILES {
                 bail!("session selection exceeds the {MAX_SESSION_FILES}-file limit");
@@ -152,14 +169,21 @@ impl DurableSession {
                 .metadata()
                 .and_then(|metadata| metadata.modified())
                 .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-            let key = (modified, session_id.to_string());
-            if latest.as_ref().is_none_or(
-                |(current, _): &((std::time::SystemTime, String), SessionId)| key > *current,
-            ) {
-                latest = Some((key, session_id));
-            }
+            conversations.push(NativeConversationHandle {
+                session_id,
+                modified,
+                record_count: loaded.records.len(),
+            });
         }
-        Ok(latest.map(|(_, session_id)| session_id))
+        conversations.sort_by(|left, right| {
+            right.modified.cmp(&left.modified).then_with(|| {
+                right
+                    .session_id
+                    .to_string()
+                    .cmp(&left.session_id.to_string())
+            })
+        });
+        Ok(conversations)
     }
 
     fn from_open_store(

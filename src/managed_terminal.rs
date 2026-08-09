@@ -13,6 +13,7 @@ use crate::{
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     vision::{ImageIngestor, ImageLimits, PendingImages},
+    workspace_host::{ConversationRef, WorkspaceHost},
 };
 use activity::{ActivityLevel, RetainedActivity, TerminalManagedHandler, render_retained_activity};
 use anyhow::{Context, Result};
@@ -32,6 +33,12 @@ pub(crate) struct ManagedChatConfig {
     pub(crate) identity_version: &'static str,
 }
 
+pub(crate) struct ManagedOneShotRequest {
+    pub(crate) input: String,
+    pub(crate) continue_thread: bool,
+    pub(crate) conversation: ConversationRef,
+}
+
 enum ManagedThreadState {
     New,
     NeedsResume {
@@ -45,6 +52,8 @@ pub(crate) async fn run_codex_chat(
     mut server: CodexAppServer,
     models: ModelManager,
     mut config: ManagedChatConfig,
+    workspace_host: WorkspaceHost,
+    mut conversation: ConversationRef,
 ) -> Result<()> {
     if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
         anyhow::bail!(
@@ -134,6 +143,9 @@ pub(crate) async fn run_codex_chat(
             thread_store.set_thread(None, None)?;
             thread = ManagedThreadState::New;
             last_activity = RetainedActivity::default();
+            conversation = ConversationRef::NewManaged {
+                connection: config.connection.clone(),
+            };
             let cleared = pending.clear();
             println!("xana> new managed thread will start; cleared {cleared} pending image(s)");
             continue;
@@ -299,6 +311,13 @@ pub(crate) async fn run_codex_chat(
             }
         };
 
+        let root_lease = match workspace_host.acquire_root(conversation.clone()) {
+            Ok(lease) => lease,
+            Err(error) => {
+                println!("xana> could not start turn: {error}");
+                continue;
+            }
+        };
         let mut handler = TerminalManagedHandler::new(activity);
         let loaded_thread_id = match ensure_thread_loaded(
             &mut server,
@@ -346,6 +365,11 @@ pub(crate) async fn run_codex_chat(
             }
             Err(error) => println!("xana> managed turn failed: {error}"),
         }
+        conversation = ConversationRef::Managed {
+            connection: config.connection.clone(),
+            thread_id: loaded_thread_id,
+        };
+        drop(root_lease);
     }
     server.shutdown().await?;
     Ok(())
@@ -355,17 +379,17 @@ pub(crate) async fn run_codex_one_shot(
     mut server: CodexAppServer,
     models: ModelManager,
     config: ManagedChatConfig,
-    input: String,
-    continue_thread: bool,
+    request: ManagedOneShotRequest,
     activity: &mut impl Write,
+    workspace_host: &WorkspaceHost,
 ) -> Result<OneShotSuccess, OneShotFailure> {
     let result = run_codex_one_shot_inner(
         &mut server,
         &models,
         &config,
-        input,
-        continue_thread,
+        request,
         activity,
+        workspace_host,
     )
     .await;
     let shutdown = server.shutdown().await;
@@ -383,9 +407,9 @@ async fn run_codex_one_shot_inner(
     server: &mut CodexAppServer,
     models: &ModelManager,
     config: &ManagedChatConfig,
-    input: String,
-    continue_thread: bool,
+    request: ManagedOneShotRequest,
     activity: &mut impl Write,
+    workspace_host: &WorkspaceHost,
 ) -> Result<OneShotSuccess, OneShotFailure> {
     let account = server
         .account_status()
@@ -420,7 +444,7 @@ async fn run_codex_one_shot_inner(
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
             .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
     let mut handler = OneShotManagedHandler::new(activity);
-    let thread_id = if continue_thread {
+    let thread_id = if request.continue_thread {
         match store.thread_id() {
             Some(thread_id) => {
                 server
@@ -455,6 +479,9 @@ async fn run_codex_one_shot_inner(
         .set_thread(Some(thread_id.clone()), Some(config.identity_version))
         .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
 
+    let _root_lease = workspace_host
+        .acquire_root(request.conversation)
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let turn = server
         .run_turn(
             &thread_id,
@@ -464,7 +491,7 @@ async fn run_codex_one_shot_inner(
                 reasoning_summary: selection.reasoning_summary,
             },
             ManagedTurnInput {
-                text: input,
+                text: request.input,
                 local_images: Vec::new(),
             },
             &mut handler,

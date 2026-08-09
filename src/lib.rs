@@ -39,6 +39,7 @@ mod shell;
 mod terminal;
 mod tool;
 mod vision;
+mod workspace_host;
 
 use anyhow::{Context, Result};
 use clap::Parser;
