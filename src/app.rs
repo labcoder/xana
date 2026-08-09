@@ -86,6 +86,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 .await;
             }
             let mode = banner_mode(
+                &paths,
                 true,
                 io::stdin().is_terminal(),
                 io::stdout().is_terminal(),
@@ -139,7 +140,7 @@ async fn run_and_render_one_shot(
     let result = match result {
         Ok(input) => run_default(
             paths,
-            BannerMode::Hidden,
+            banner_mode(paths, false, false, false, true),
             resume,
             continue_chat,
             Some(input),
@@ -1122,6 +1123,7 @@ async fn run_default(
             owner: crate::identity::PrincipalId::new(),
             developer_instructions: crate::prompt::xana_identity(),
             identity_version: crate::prompt::XANA_IDENTITY_VERSION,
+            presentation: banner_mode.profile(),
         };
         return match one_shot {
             Some(input) => {
@@ -1367,6 +1369,7 @@ async fn run_default(
         artifact_store,
         owner: artifact_owner,
         models: manager,
+        presentation: banner_mode.profile(),
     };
 
     if let Some(input) = one_shot {
@@ -1387,7 +1390,14 @@ async fn run_default(
     match terminal::run_chat(runtime, header, workspace_host, conversation).await? {
         terminal::ChatExit::Quit => Ok(None),
         terminal::ChatExit::Restart => {
-            Box::pin(run_default(paths, BannerMode::Hidden, None, false, None)).await
+            Box::pin(run_default(
+                paths,
+                BannerMode::hidden(banner_mode.profile()),
+                None,
+                false,
+                None,
+            ))
+            .await
         }
     }
 }
@@ -1660,6 +1670,7 @@ fn run_init_command(args: &cli::InitArgs, paths: &XanaPaths, no_banner: bool) ->
     let input_is_terminal = stdin.is_terminal();
     let output_is_terminal = io::stdout().is_terminal();
     let banner_mode = banner_mode(
+        paths,
         !args.non_interactive && !args.dry_run,
         input_is_terminal,
         output_is_terminal,
@@ -1679,6 +1690,7 @@ fn run_init_command(args: &cli::InitArgs, paths: &XanaPaths, no_banner: bool) ->
 }
 
 fn banner_mode(
+    paths: &XanaPaths,
     selected_surface: bool,
     input_is_terminal: bool,
     output_is_terminal: bool,
@@ -1686,14 +1698,62 @@ fn banner_mode(
 ) -> BannerMode {
     let no_color = std::env::var_os("NO_COLOR").is_some();
     let dumb_terminal = std::env::var("TERM").is_ok_and(|term| term.eq_ignore_ascii_case("dumb"));
-
+    let color_depth = if no_color || !output_is_terminal || dumb_terminal {
+        presentation::ColorDepth::None
+    } else if std::env::var("COLORTERM")
+        .is_ok_and(|value| value.to_ascii_lowercase().contains("truecolor"))
+    {
+        presentation::ColorDepth::TrueColor
+    } else if std::env::var("TERM")
+        .is_ok_and(|value| value.to_ascii_lowercase().contains("256color"))
+    {
+        presentation::ColorDepth::Ansi256
+    } else {
+        presentation::ColorDepth::Ansi16
+    };
+    let background = std::env::var("COLORFGBG").ok().and_then(|value| {
+        let background = value.rsplit(';').next()?.parse::<u8>().ok()?;
+        Some(if background <= 6 {
+            presentation::Background::Dark
+        } else {
+            presentation::Background::Light
+        })
+    });
+    let width = std::env::var("COLUMNS")
+        .ok()
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|width| (20..=500).contains(width))
+        .unwrap_or(80);
+    let unicode = std::env::var("LC_ALL")
+        .or_else(|_| std::env::var("LANG"))
+        .is_ok_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("utf-8") || value.contains("utf8")
+        })
+        || cfg!(windows);
+    let reduced_motion = std::env::var("XANA_REDUCED_MOTION")
+        .is_ok_and(|value| !matches!(value.as_str(), "0" | "false" | "no"));
+    let loaded = presentation::PresentationPreferences::load(&paths.presentation_file());
+    if let Some(warning) = loaded.warning {
+        eprintln!("xana: {warning}");
+    }
+    let profile = presentation::resolve(
+        presentation::TerminalFacts {
+            input_is_terminal,
+            output_is_terminal,
+            color_depth,
+            background,
+            unicode,
+            width,
+            reduced_motion,
+            dumb: dumb_terminal,
+        },
+        &loaded.preferences,
+    );
     presentation::choose_banner_mode(
-        selected_surface,
-        input_is_terminal,
-        output_is_terminal,
+        selected_surface && input_is_terminal && output_is_terminal && !dumb_terminal,
         suppressed,
-        no_color,
-        dumb_terminal,
+        profile,
     )
 }
 
@@ -1888,7 +1948,7 @@ mod tests {
             false,
             &mut input,
             &mut output,
-            BannerMode::Hidden,
+            BannerMode::test_hidden(),
         )
         .expect("noninteractive init");
 
@@ -1929,7 +1989,7 @@ mod tests {
             true,
             &mut input,
             &mut output,
-            BannerMode::Hidden,
+            BannerMode::test_hidden(),
         )
         .expect("interactive Codex init");
 
@@ -1977,7 +2037,7 @@ mod tests {
             false,
             &mut input,
             &mut output,
-            BannerMode::Hidden,
+            BannerMode::test_hidden(),
         )
         .expect("dry-run init");
 

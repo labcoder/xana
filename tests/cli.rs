@@ -180,6 +180,9 @@ fn noninteractive_init_creates_once_and_config_check_loads_it() {
         .output()
         .expect("initialize Xana");
     assert_success(&first);
+    for stream in [&first.stdout, &first.stderr] {
+        assert!(!stream.contains(&0x1b), "redirected setup emitted controls");
+    }
     let config_path = home.join("config.toml");
     let original = std::fs::read(&config_path).expect("read created configuration");
 
