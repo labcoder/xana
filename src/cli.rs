@@ -3,7 +3,11 @@
 //! Clap turns process arguments into command data only; command execution and
 //! terminal/filesystem effects remain at the application edge.
 
-use crate::{config::PermissionMode, identity::SessionId, shell::ShellKind};
+use crate::{
+    config::PermissionMode,
+    identity::{ArtifactId, SessionId},
+    shell::ShellKind,
+};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::{net::IpAddr, path::PathBuf};
 
@@ -152,6 +156,10 @@ pub(crate) struct AttachArgs {
     /// Submit one prompt after acquiring control.
     #[arg(long, requires = "control", value_name = "PROMPT")]
     pub(crate) prompt: Option<String>,
+
+    /// Retrieve one authorized bounded artifact preview by immutable id.
+    #[arg(long, value_name = "ARTIFACT_ID")]
+    pub(crate) artifact: Option<ArtifactId>,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -597,12 +605,25 @@ mod tests {
                 port: 43123,
             }))
         );
+
+        let artifact_id = ArtifactId::new();
+        let artifact =
+            Cli::try_parse_from(["xana", "attach", "--artifact", &artifact_id.to_string()])
+                .expect("artifact attachment");
+        assert!(matches!(
+            artifact.command,
+            Some(Command::Attach(AttachArgs {
+                artifact: Some(actual),
+                ..
+            })) if actual == artifact_id
+        ));
         assert_eq!(
             attach.command,
             Some(Command::Attach(AttachArgs {
                 control: false,
                 takeover: false,
                 prompt: None,
+                artifact: None,
             }))
         );
 
@@ -621,6 +642,7 @@ mod tests {
                 control: true,
                 takeover: true,
                 prompt: Some("continue".into()),
+                artifact: None,
             }))
         );
     }

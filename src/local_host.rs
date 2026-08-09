@@ -1,5 +1,6 @@
 //! Authenticated loopback projection of Xana's repository-private frontend contract.
 
+mod artifact_access;
 mod descriptor;
 mod execution;
 mod hub;
@@ -29,6 +30,7 @@ pub(crate) async fn run_native_host(
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
 ) -> Result<()> {
+    let artifacts = header.artifact_store.clone();
     let workspace_host = Arc::new(workspace_host);
     let seed = HostSnapshotSeed::from_workspace(&workspace_host.snapshot()?);
     let frontend = EmbeddedClient::from_runtime(
@@ -51,14 +53,19 @@ pub(crate) async fn run_native_host(
         bind,
         port,
         seed,
-        ControlledExecution::new(conversation.to_string(), Some(snapshot), move |hub| {
-            execution::spawn_native_execution(
-                frontend,
-                controlled_host,
-                controlled_conversation,
-                hub,
-            )
-        }),
+        ControlledExecution::new(
+            conversation.to_string(),
+            Some(snapshot),
+            Some(artifacts),
+            move |hub| {
+                execution::spawn_native_execution(
+                    frontend,
+                    controlled_host,
+                    controlled_conversation,
+                    hub,
+                )
+            },
+        ),
     )
     .await?;
     run_server(server).await
@@ -79,6 +86,7 @@ pub(crate) async fn run_managed_host(
     } = execution;
     let workspace_host = Arc::new(workspace_host);
     let seed = HostSnapshotSeed::from_workspace(&workspace_host.snapshot()?);
+    let artifacts = config.artifact_store.clone();
     let driver = crate::managed_terminal::ManagedTuiDriver::start(
         server,
         models,
@@ -93,9 +101,12 @@ pub(crate) async fn run_managed_host(
         bind,
         port,
         seed,
-        ControlledExecution::new(conversation.to_string(), None, move |hub| {
-            execution::spawn_managed_execution(driver, hub)
-        }),
+        ControlledExecution::new(
+            conversation.to_string(),
+            None,
+            Some(artifacts),
+            move |hub| execution::spawn_managed_execution(driver, hub),
+        ),
     )
     .await?;
     run_server(server).await

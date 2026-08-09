@@ -74,3 +74,15 @@ work is needed.
   reconciliation outside Xana.
 - Replayed tools still run with the Xana process's ordinary host permissions.
   Recovery is not containment or a sandbox.
+
+## Foreground-host shutdown
+
+`xana serve` remains the sole owner of work it starts. Ctrl+C stops new client
+intake, fails pending controller approvals closed, interrupts the root, and
+asks the native child supervisor or managed Codex driver to shut down. Normal
+cleanup has a two-second target and exact owned-task escalation has a
+five-second hard bound. Tool subprocesses and Codex app-server are configured
+for kill-on-drop ownership; no cleanup path selects an unrelated process by
+name or an unverified stale PID. A client disconnect alone does not stop
+already-authorized work unless it held the controller lease, whose separate
+three-second grace is documented in [Local foreground host](local-host.md).

@@ -21,6 +21,7 @@ use std::{
 use tokio::{
     net::{TcpListener, TcpStream},
     task::JoinSet,
+    time::{Instant, timeout, timeout_at},
 };
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, accept_hdr_async_with_config, connect_async_with_config,
@@ -35,12 +36,18 @@ use uuid::Uuid;
 use zeroize::Zeroize;
 
 const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+const CLIENT_WRITE_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+const HOST_SHUTDOWN_HARD: Duration = Duration::from_secs(5);
+const MAX_CLIENTS: usize = 32;
+const MAX_INBOUND_FRAMES_PER_SECOND: usize = 256;
 pub(crate) const CONTROLLER_RECONNECT_GRACE: Duration = Duration::from_secs(3);
 type ExecutionFactory = Box<dyn FnOnce(ObservationHub) -> HostedExecutionHandle>;
 
 pub(crate) struct ControlledExecution {
     pub(crate) conversation: String,
     pub(crate) frontend: Option<crate::frontend::ClientSnapshot>,
+    pub(crate) artifacts: Option<crate::artifact::ArtifactStore>,
     pub(crate) factory: ExecutionFactory,
 }
 
@@ -48,11 +55,13 @@ impl ControlledExecution {
     pub(crate) fn new(
         conversation: String,
         frontend: Option<crate::frontend::ClientSnapshot>,
+        artifacts: Option<crate::artifact::ArtifactStore>,
         factory: impl FnOnce(ObservationHub) -> HostedExecutionHandle + 'static,
     ) -> Self {
         Self {
             conversation,
             frontend,
+            artifacts,
             factory: Box::new(factory),
         }
     }
@@ -182,7 +191,12 @@ impl LocalHostServer {
                     })
             },
         );
-        let hub = ObservationHub::new(snapshot);
+        let artifact_access = controlled.as_ref().and_then(|controlled| {
+            controlled.artifacts.clone().map(|store| {
+                super::artifact_access::ArtifactAccess::new(store, controlled.frontend.as_ref())
+            })
+        });
+        let hub = ObservationHub::with_artifacts(snapshot, artifact_access);
         let execution = controlled.map(|controlled| (controlled.factory)(hub.clone()));
         Ok(Self {
             listener,
@@ -217,6 +231,11 @@ impl LocalHostServer {
                 () = self.shutdown.cancelled() => break,
                 accepted = self.listener.accept() => {
                     let (stream, _) = accepted.map_err(LocalHostError::Io)?;
+                    if clients.len() >= MAX_CLIENTS {
+                        eprintln!("xana serve: rejected client because the {MAX_CLIENTS}-client bound is full");
+                        drop(stream);
+                        continue;
+                    }
                     let service = ClientService {
                         endpoint: self.endpoint,
                         host_id: self.host_id,
@@ -237,20 +256,46 @@ impl LocalHostServer {
                     });
                 }
                 Some(joined) = clients.join_next(), if !clients.is_empty() => {
-                    if let Err(error) = joined {
-                        eprintln!("xana serve: client task failed: {error}");
-                    }
+                    report_client_result(joined, "while serving");
                 }
             }
         }
         self.shutdown.cancel();
-        while let Some(joined) = clients.join_next().await {
-            if let Err(error) = joined {
-                eprintln!("xana serve: client task failed during shutdown: {error}");
+        let shutdown_started = Instant::now();
+        let graceful_deadline = shutdown_started + HOST_SHUTDOWN_GRACE;
+        let hard_deadline = shutdown_started + HOST_SHUTDOWN_HARD;
+        if let Some(execution) = &self.execution {
+            let graceful = async {
+                execution.fail_closed().await;
+                execution.shutdown().await;
+            };
+            if timeout_at(graceful_deadline, graceful).await.is_err() {
+                execution.abort();
             }
         }
-        if let Some(execution) = &self.execution {
-            execution.shutdown().await;
+        while !clients.is_empty() && Instant::now() < graceful_deadline {
+            match timeout_at(graceful_deadline, clients.join_next()).await {
+                Ok(Some(joined)) => report_client_result(joined, "during shutdown"),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        if !clients.is_empty() {
+            clients.abort_all();
+        }
+        while !clients.is_empty() && Instant::now() < hard_deadline {
+            match timeout_at(hard_deadline, clients.join_next()).await {
+                Ok(Some(joined)) => report_client_result(joined, "during forced shutdown"),
+                Ok(None) | Err(_) => break,
+            }
+        }
+        if let Some(execution) = &self.execution
+            && timeout_at(hard_deadline, execution.wait_closed())
+                .await
+                .is_err()
+        {
+            return Err(LocalHostError::Transport(
+                "host-owned execution did not confirm cleanup within five seconds".into(),
+            ));
         }
         Ok(())
     }
@@ -354,10 +399,17 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
         },
     )
     .await?;
+    let mut inbound_budget = InboundBudget::new();
     loop {
         tokio::select! {
             biased;
-            () = shutdown.cancelled() => break,
+            () = shutdown.cancelled() => {
+                let _ = send_frame(&mut writer, &ServerFrame::HostShuttingDown {
+                    graceful_ms: HOST_SHUTDOWN_GRACE.as_millis() as u64,
+                    hard_ms: HOST_SHUTDOWN_HARD.as_millis() as u64,
+                }).await;
+                break;
+            },
             observation = subscription.observations.recv() => {
                 let Some(observation) = observation else { break; };
                 send_frame(&mut writer, &ServerFrame::Observation(observation)).await?;
@@ -365,6 +417,19 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
             incoming = reader.next() => {
                 let Some(incoming) = incoming else { break; };
                 let incoming = incoming.map_err(|error| LocalHostError::Transport(error.to_string()))?;
+                if !inbound_budget.allow() {
+                    send_frame(
+                        &mut writer,
+                        &ServerFrame::ProtocolError {
+                            code: "rate_limited".into(),
+                            message: format!(
+                                "local-host clients may send at most {MAX_INBOUND_FRAMES_PER_SECOND} frames per second"
+                            ),
+                        },
+                    )
+                    .await?;
+                    break;
+                }
                 match parse_client_message(incoming)? {
                     ClientFrame::RequestSnapshot => {
                         hub.unsubscribe(client_id);
@@ -418,6 +483,10 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
                             ControlResult::rejected(request_id, "observer clients cannot approve managed work")
                         };
                         send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
+                    }
+                    ClientFrame::GetArtifact { request_id, artifact_id, max_preview_bytes } => {
+                        let result = hub.fetch_artifact(request_id, artifact_id, max_preview_bytes);
+                        send_frame(&mut writer, &ServerFrame::ArtifactResult(result)).await?;
                     }
                     ClientFrame::Command(command) => {
                         let kind = command_kind(&command);
@@ -607,10 +676,49 @@ where
     S::Error: fmt::Display,
 {
     let encoded = encode_frame(frame).map_err(LocalHostError::Invalid)?;
-    writer
-        .send(Message::Text(encoded.into()))
-        .await
-        .map_err(|error| LocalHostError::Transport(error.to_string()))
+    timeout(
+        CLIENT_WRITE_TIMEOUT,
+        writer.send(Message::Text(encoded.into())),
+    )
+    .await
+    .map_err(|_| LocalHostError::Transport("local-host client write timed out".into()))?
+    .map_err(|error| LocalHostError::Transport(error.to_string()))
+}
+
+struct InboundBudget {
+    started: Instant,
+    frames: usize,
+}
+
+impl InboundBudget {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            frames: 0,
+        }
+    }
+
+    fn allow(&mut self) -> bool {
+        let now = Instant::now();
+        if now.duration_since(self.started) >= Duration::from_secs(1) {
+            self.started = now;
+            self.frames = 0;
+        }
+        self.frames = self.frames.saturating_add(1);
+        self.frames <= MAX_INBOUND_FRAMES_PER_SECOND
+    }
+}
+
+fn report_client_result(
+    joined: Result<Result<(), LocalHostError>, tokio::task::JoinError>,
+    context: &str,
+) {
+    match joined {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("xana serve: client disconnected {context}: {error}"),
+        Err(error) if error.is_cancelled() => {}
+        Err(error) => eprintln!("xana serve: client task failed {context}: {error}"),
+    }
 }
 
 pub(crate) struct AttachedObserver {
@@ -721,6 +829,31 @@ impl AttachedObserver {
         }
     }
 
+    pub(crate) async fn get_artifact(
+        &mut self,
+        artifact_id: crate::identity::ArtifactId,
+    ) -> Result<super::protocol::ArtifactResult, LocalHostError> {
+        let request_id = super::protocol::ArtifactRequestId::new();
+        self.send_client_frame(&ClientFrame::GetArtifact {
+            request_id,
+            artifact_id,
+            max_preview_bytes: super::artifact_access::MAX_ARTIFACT_PREVIEW_BYTES,
+        })
+        .await?;
+        loop {
+            match self.read_server_frame().await? {
+                ServerFrame::ArtifactResult(result) if result.request_id == request_id => {
+                    return Ok(result);
+                }
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(crate) async fn next(&mut self) -> Result<HostObservation, LocalHostError> {
         if let Some(observation) = self.buffered.pop_front() {
             return Ok(observation);
@@ -750,8 +883,10 @@ impl AttachedObserver {
                 ServerFrame::ProtocolError { message, .. } => {
                     return Err(LocalHostError::Invalid(message));
                 }
+                ServerFrame::HostShuttingDown { .. } => return Err(LocalHostError::Closed),
                 ServerFrame::CommandResult(_)
                 | ServerFrame::ControlResult(_)
+                | ServerFrame::ArtifactResult(_)
                 | ServerFrame::Pong => continue,
             }
         }
@@ -928,5 +1063,62 @@ impl Drop for AttachedObserver {
         if let Some(reconnect) = &mut self.controller_reconnect {
             reconnect.zeroize();
         }
+    }
+}
+
+#[cfg(test)]
+mod bound_tests {
+    use super::*;
+    use futures::Sink;
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+
+    struct PendingSink;
+
+    impl Sink<Message> for PendingSink {
+        type Error = std::io::Error;
+
+        fn poll_ready(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn start_send(self: Pin<&mut Self>, _item: Message) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn poll_flush(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Pending
+        }
+
+        fn poll_close(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+        ) -> Poll<Result<(), Self::Error>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn outbound_frames_and_inbound_rate_have_exact_bounds() {
+        let mut budget = InboundBudget::new();
+        for _ in 0..MAX_INBOUND_FRAMES_PER_SECOND {
+            assert!(budget.allow());
+        }
+        assert!(!budget.allow());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(budget.allow());
+
+        let error = send_frame(&mut PendingSink, &ServerFrame::Pong)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("write timed out"));
     }
 }

@@ -265,6 +265,10 @@ same observer/controller envelope. The capability is discovered through a
 user-scoped runtime descriptor and never appears in argv, URLs, or shell
 history. From a source checkout, use `cargo run -- serve` and `cargo run --
 attach --control`. See [Local foreground host](docs/user/local-host.md).
+Visible immutable artifacts can be retrieved as a verified 64 KiB preview with
+`xana attach --artifact ARTIFACT_ID`; arbitrary paths are never accepted. The
+host caps clients, frame rate, frame size, event queues, and socket-write time,
+and owns a two-second graceful/five-second hard shutdown lifecycle.
 
 Native
 conversations use the latest compatible inactive session or create a new one;

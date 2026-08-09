@@ -238,6 +238,18 @@ async fn run_attach_command(args: &cli::AttachArgs, paths: &XanaPaths) -> Result
             }
         }
         println!("{}", serde_json::to_string(observer.snapshot())?);
+        if let Some(artifact_id) = args.artifact {
+            let result = observer.get_artifact(artifact_id).await?;
+            println!("{}", serde_json::to_string(&result)?);
+            return if result.accepted {
+                Ok(())
+            } else {
+                anyhow::bail!(
+                    "artifact retrieval was rejected: {}",
+                    result.reason.as_deref().unwrap_or("no reason provided")
+                )
+            };
+        }
         loop {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
