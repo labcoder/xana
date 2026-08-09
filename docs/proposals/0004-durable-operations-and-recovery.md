@@ -21,7 +21,10 @@ Proposed for invocation intents/results, reconciliation, and effect recovery.
 The serial tool-intent/result and explicit recovery subset is implemented through
 [Proposal 0013](0013-crash-recoverable-tool-operations.md). This proposal
 remains Proposed for broader continuation, context transforms, and recovery
-semantics.
+semantics. The narrower rule that Phase 4 child state is durable, interrupted
+children are inspectable after process loss, and child work is never replayed
+automatically is accepted separately by
+[Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md).
 
 | Record kind | Purpose | Enters model context? |
 |---|---|---|

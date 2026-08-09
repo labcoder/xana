@@ -15,8 +15,9 @@ The built-in capability resolver, named connections, connection-owned model
 descriptors, explicit cached catalog refresh, persistent selection, and the
 native-versus-managed execution boundary are implemented through historical
 [Proposal 0015](0015-connections-models-and-managed-runtimes.md). This proposal
-remains Proposed for task routes, package discovery/activation, lazy sidecars,
-and automatic capability routing.
+remains Proposed for package discovery/activation, lazy sidecars, and automatic
+capability routing. The bounded exact task-route subset is accepted separately
+by [Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md).
 
 ## Proposed concepts
 

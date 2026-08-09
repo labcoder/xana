@@ -37,6 +37,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their
   lifecycle status.
+- [Accepted Phase 4 orchestration](proposals/0016-bounded-child-orchestration-and-task-routes.md)
+  defines the approved but unimplemented bounded child, exact-route, report,
+  budget, native/managed owner, and orchestration-plan contract.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
