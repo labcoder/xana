@@ -45,9 +45,16 @@ pub(crate) struct ChildExecutionOutput {
     pub(crate) usage: ChildUsage,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ChildExecutionOutcome {
+    Completed(ChildExecutionOutput),
+    Failed(String),
+    Cancelled(String),
+}
+
 pub(crate) trait ChildExecution: Send {
     fn run(
         self: Box<Self>,
         context: ChildExecutionContext,
-    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>>;
+    ) -> BoxFuture<'static, ChildExecutionOutcome>;
 }

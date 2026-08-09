@@ -4,6 +4,7 @@
 //! registry exposes stable definitions and dispatches model requests without
 //! treating effect metadata as permission or containment.
 
+mod child_agent;
 mod delegate_agent;
 mod edit_file;
 mod list_files;
@@ -323,6 +324,9 @@ impl ToolRegistry {
         &mut self,
         supervisor: crate::orchestration::ChildSupervisorHandle,
     ) -> Result<(), RegistryError> {
+        self.register(child_agent::SpawnAgent::new(supervisor.clone()))?;
+        self.register(child_agent::AwaitAgent::new(supervisor.clone()))?;
+        self.register(child_agent::CancelAgent::new(supervisor.clone()))?;
         self.register(delegate_agent::DelegateAgent::new(supervisor))
     }
 

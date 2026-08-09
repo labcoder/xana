@@ -8,7 +8,7 @@ use crate::{
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     model::{ExecutionKind, ModelManager},
-    orchestration::ChildActivity,
+    orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
@@ -28,6 +28,7 @@ pub(crate) struct ChatHeader {
     pub(crate) resumed: bool,
     pub(crate) repair_truncate_to: Option<u64>,
     pub(crate) unfinished: Vec<(OperationId, OperationState)>,
+    pub(crate) children: Vec<ChildInspection>,
     pub(crate) workspace_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
@@ -46,12 +47,24 @@ enum InputAction<'a> {
     Clear,
     Attach(&'a str),
     Model(&'a str),
+    Agents,
+    Agent(&'a str),
+    CancelAgent(&'a str),
     Ignore,
     Send(&'a str),
 }
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
+    if let Some(agent_id) = trimmed.strip_prefix("/cancel-agent") {
+        return InputAction::CancelAgent(agent_id.trim());
+    }
+    if trimmed == "/agents" {
+        return InputAction::Agents;
+    }
+    if let Some(agent_id) = trimmed.strip_prefix("/agent") {
+        return InputAction::Agent(agent_id.trim());
+    }
     if let Some(path) = trimmed.strip_prefix("/attach") {
         return InputAction::Attach(path.trim());
     }
@@ -220,6 +233,46 @@ impl<W: Write> EventRenderer<W> {
                     report.attribution.agent_id, report.status
                 )?;
             }
+            AgentEvent::ChildListSnapshot { children } => {
+                self.finish_stream()?;
+                if children.is_empty() {
+                    writeln!(self.output, "xana> no child agents")?;
+                } else {
+                    writeln!(self.output, "xana> child agents:")?;
+                    for child in children {
+                        write_child_summary(&mut self.output, child)?;
+                    }
+                }
+            }
+            AgentEvent::ChildInspectionSnapshot { child } => {
+                self.finish_stream()?;
+                writeln!(self.output, "xana> child detail:")?;
+                write_child_summary(&mut self.output, child)?;
+                writeln!(
+                    self.output,
+                    "    parent operation={} child operation={} thread={} profile={} usage={:?} report={:?}",
+                    child.handle.admission.attribution.parent_operation_id,
+                    child.handle.admission.attribution.operation_id,
+                    child.handle.admission.attribution.thread_id,
+                    child.handle.admission.attribution.profile,
+                    child.handle.usage,
+                    child.handle.report,
+                )?;
+            }
+            AgentEvent::ChildCancellationRequested { receipt } => {
+                self.finish_stream()?;
+                writeln!(
+                    self.output,
+                    "xana> child {} cancellation {} (current state: {:?}); wait for its terminal event",
+                    receipt.handle.admission.attribution.agent_id,
+                    if receipt.newly_requested {
+                        "requested"
+                    } else {
+                        "was already requested or terminal"
+                    },
+                    receipt.handle.lifecycle,
+                )?;
+            }
         }
         Ok(())
     }
@@ -252,6 +305,25 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
             "unfinished operations restored without replay: {}",
             header.unfinished.len()
         );
+    }
+    if !header.children.is_empty() {
+        println!(
+            "restored child records (read-only): {}",
+            header.children.len()
+        );
+        for child in &header.children {
+            println!(
+                "  {} [{}]: {:?}{}",
+                child.handle.admission.attribution.agent_id,
+                child.handle.admission.attribution.route,
+                child.handle.lifecycle,
+                if child.projected_interruption {
+                    " (projected after restart)"
+                } else {
+                    ""
+                }
+            );
+        }
     }
 
     let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
@@ -313,6 +385,36 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
                         }
                         Err(error) => println!("xana> could not select model: {error}"),
                     }
+                }
+                InputAction::Agents => {
+                    runtime.send(RuntimeCommand::ListChildren).await?;
+                    render_until_child_control_result(&mut runtime, &mut renderer).await?;
+                }
+                InputAction::Agent(value) => {
+                    let agent_id = match value.parse() {
+                        Ok(agent_id) => agent_id,
+                        Err(error) => {
+                            println!("xana> invalid child agent id: {error}");
+                            continue;
+                        }
+                    };
+                    runtime
+                        .send(RuntimeCommand::InspectChild { agent_id })
+                        .await?;
+                    render_until_child_control_result(&mut runtime, &mut renderer).await?;
+                }
+                InputAction::CancelAgent(value) => {
+                    let agent_id = match value.parse() {
+                        Ok(agent_id) => agent_id,
+                        Err(error) => {
+                            println!("xana> invalid child agent id: {error}");
+                            continue;
+                        }
+                    };
+                    runtime
+                        .send(RuntimeCommand::CancelChild { agent_id })
+                        .await?;
+                    render_until_child_control_result(&mut runtime, &mut renderer).await?;
                 }
                 InputAction::Ignore => {}
                 InputAction::Send(input) => {
@@ -378,6 +480,48 @@ pub(crate) async fn run_chat(mut runtime: RuntimeHandle, header: ChatHeader) -> 
     }
 
     Ok(exit)
+}
+
+fn write_child_summary<W: Write>(output: &mut W, child: &ChildInspection) -> io::Result<()> {
+    let attribution = &child.handle.admission.attribution;
+    writeln!(
+        output,
+        "  {} parent={} route={} owner={} connection={} model={} state={:?}{}",
+        attribution.agent_id,
+        attribution.parent_agent_id,
+        attribution.route,
+        attribution.owner.as_str(),
+        attribution.connection,
+        attribution.model,
+        child.handle.lifecycle,
+        if child.projected_interruption {
+            " (projected after restart)"
+        } else {
+            ""
+        }
+    )
+}
+
+async fn render_until_child_control_result<W: Write>(
+    runtime: &mut RuntimeHandle,
+    renderer: &mut EventRenderer<W>,
+) -> Result<()> {
+    loop {
+        let Some(event) = runtime.next_event().await else {
+            bail!("Xana's foreground runtime stopped during child control");
+        };
+        let finished = matches!(
+            event,
+            AgentEvent::ChildListSnapshot { .. }
+                | AgentEvent::ChildInspectionSnapshot { .. }
+                | AgentEvent::ChildCancellationRequested { .. }
+                | AgentEvent::CommandRejected { .. }
+        );
+        renderer.render(&event)?;
+        if finished {
+            return Ok(());
+        }
+    }
 }
 
 fn write_models(models: &ModelManager) -> Result<()> {
@@ -543,6 +687,15 @@ mod tests {
             InputAction::Attach("assets/photo.png")
         );
         assert_eq!(classify_input("/attach"), InputAction::Attach(""));
+        assert_eq!(classify_input("/agents"), InputAction::Agents);
+        assert_eq!(
+            classify_input("/agent 018f0000-0000-7000-8000-000000000000"),
+            InputAction::Agent("018f0000-0000-7000-8000-000000000000")
+        );
+        assert_eq!(
+            classify_input("/cancel-agent child-id"),
+            InputAction::CancelAgent("child-id")
+        );
     }
 
     #[test]
@@ -581,6 +734,67 @@ mod tests {
                 .expect("terminal state");
         }
         assert_eq!(String::from_utf8(output).expect("UTF-8"), "xana> hello\n");
+    }
+
+    #[test]
+    fn child_control_renderer_captures_stable_attributed_output() {
+        let session_id = SessionId::new();
+        let attribution = crate::orchestration::ChildAttribution {
+            agent_id: crate::identity::AgentId::new(),
+            parent_agent_id: crate::identity::AgentId::for_session(session_id),
+            operation_id: OperationId::new(),
+            parent_operation_id: OperationId::new(),
+            thread_id: crate::identity::ThreadId::new(),
+            route: "worker".to_owned(),
+            profile: "reviewer".to_owned(),
+            owner: crate::orchestration::ExecutionOwner::Native,
+            connection: "local".to_owned(),
+            model: "small".to_owned(),
+        };
+        let mut handle = crate::orchestration::AgentHandleSnapshot::admitted(
+            crate::orchestration::ChildAdmission {
+                attribution,
+                task_preview: "review".to_owned(),
+                task_hash: blake3::hash(b"review").to_hex().to_string(),
+                capabilities: Vec::new(),
+                permission_mode: crate::config::PermissionMode::Deny,
+                max_tool_rounds: 1,
+                limits: crate::config::OrchestrationLimits::default(),
+            },
+        );
+        handle.apply_lifecycle(crate::orchestration::ChildLifecycle::Running);
+        let child = ChildInspection {
+            handle: handle.clone(),
+            report: None,
+            projected_interruption: false,
+        };
+        let mut output = Vec::new();
+        {
+            let mut renderer = EventRenderer::new(&mut output);
+            renderer
+                .render(&AgentEvent::ChildListSnapshot {
+                    children: vec![child.clone()],
+                })
+                .expect("child list");
+            renderer
+                .render(&AgentEvent::ChildInspectionSnapshot {
+                    child: Box::new(child),
+                })
+                .expect("child detail");
+            renderer
+                .render(&AgentEvent::ChildCancellationRequested {
+                    receipt: crate::orchestration::ChildCancellationReceipt {
+                        handle,
+                        newly_requested: true,
+                    },
+                })
+                .expect("cancellation receipt");
+        }
+        let output = String::from_utf8(output).expect("UTF-8");
+        assert!(output.contains("route=worker owner=native connection=local model=small"));
+        assert!(output.contains("parent operation="));
+        assert!(output.contains("cancellation requested"));
+        assert!(output.contains("wait for its terminal event"));
     }
 
     #[test]

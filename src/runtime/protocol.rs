@@ -2,7 +2,10 @@ use crate::{
     identity::{AgentId, OperationId, SessionId, StepId, ToolInvocationId},
     message::Message,
     operation::{InvocationIntent, InvocationResultRecord},
-    orchestration::{ChildActivity, ChildAttribution, ChildLifecycle, ChildReport},
+    orchestration::{
+        ChildActivity, ChildAttribution, ChildCancellationReceipt, ChildInspection, ChildLifecycle,
+        ChildReport,
+    },
     permission::{ControllerDecision, PermissionAuditFact, PermissionRequest},
 };
 use serde::{Deserialize, Serialize};
@@ -33,6 +36,13 @@ pub(crate) enum RuntimeCommand {
         operation_id: OperationId,
         invocation_id: ToolInvocationId,
         decision: ControllerDecision,
+    },
+    ListChildren,
+    InspectChild {
+        agent_id: AgentId,
+    },
+    CancelChild {
+        agent_id: AgentId,
     },
     Shutdown,
 }
@@ -102,5 +112,14 @@ pub(crate) enum AgentEvent {
     },
     ChildReportCommitted {
         report: ChildReport,
+    },
+    ChildListSnapshot {
+        children: Vec<ChildInspection>,
+    },
+    ChildInspectionSnapshot {
+        child: Box<ChildInspection>,
+    },
+    ChildCancellationRequested {
+        receipt: ChildCancellationReceipt,
     },
 }

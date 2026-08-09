@@ -6,6 +6,7 @@ use crate::{
     permission::{PermissionAuditFact, PermissionRequest},
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 pub(crate) const CHILD_REPORT_VERSION: u32 = 1;
 pub(crate) const MAX_CHILD_TASK_BYTES: usize = 256 * 1024;
@@ -172,12 +173,47 @@ impl ChildReport {
     }
 
     pub(crate) fn failed(attribution: ChildAttribution, reason: String, max_bytes: usize) -> Self {
+        Self::terminal_error(attribution, ChildTerminalStatus::Failed, reason, max_bytes)
+    }
+
+    pub(crate) fn cancelled(
+        attribution: ChildAttribution,
+        reason: String,
+        max_bytes: usize,
+    ) -> Self {
+        Self::terminal_error(
+            attribution,
+            ChildTerminalStatus::Cancelled,
+            reason,
+            max_bytes,
+        )
+    }
+
+    pub(crate) fn interrupted(
+        attribution: ChildAttribution,
+        reason: String,
+        max_bytes: usize,
+    ) -> Self {
+        Self::terminal_error(
+            attribution,
+            ChildTerminalStatus::Interrupted,
+            reason,
+            max_bytes,
+        )
+    }
+
+    fn terminal_error(
+        attribution: ChildAttribution,
+        status: ChildTerminalStatus,
+        reason: String,
+        max_bytes: usize,
+    ) -> Self {
         let error = truncate_utf8(&reason, max_bytes);
         let byte_len = error.len();
         Self {
             version: CHILD_REPORT_VERSION,
             attribution,
-            status: ChildTerminalStatus::Failed,
+            status,
             output: None,
             error: Some(error),
             usage: ChildUsage::Unknown,
@@ -188,6 +224,38 @@ impl ChildReport {
     pub(crate) fn lifecycle(&self) -> ChildLifecycle {
         self.status.into()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChildInspection {
+    pub(crate) handle: AgentHandleSnapshot,
+    pub(crate) report: Option<ChildReport>,
+    /// True only for a read-only restart projection. Producing this view never
+    /// appends a terminal record.
+    pub(crate) projected_interruption: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct AwaitAgentOptions {
+    pub(crate) timeout: Option<Duration>,
+    pub(crate) cancel_on_timeout: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AwaitAgentOutcome {
+    Report(Box<ChildReport>),
+    TimedOut {
+        agent_id: AgentId,
+        cancellation_requested: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChildCancellationReceipt {
+    pub(crate) handle: AgentHandleSnapshot,
+    pub(crate) newly_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -20,8 +20,8 @@ engineering contracts used to change it.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
 - [Child orchestration](user/orchestration.md) explains exact native routes,
-  one runtime-owned child, attributed lifecycle, bounded reports, and current
-  limits.
+  runtime-owned children, active/offline inspection, cancellation and timeout
+  semantics, attributed lifecycle, bounded reports, and current limits.
 - The repository [README](../README.md) is the user-first starting point for a
   source checkout and the shipped CLI.
 
@@ -43,7 +43,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Accepted Phase 4 orchestration](proposals/0016-bounded-child-orchestration-and-task-routes.md)
   defines the active bounded child, exact-route, report, budget,
   native/managed owner, and orchestration-plan contract. Exact routing and the
-  first supervised native-child slice are implemented; the proposal remains
+  native-child supervision, cancellation, and restart projection are
+  implemented; the proposal remains
   Accepted until its complete contract ships.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.

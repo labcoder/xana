@@ -55,7 +55,8 @@ managed process. An unavailable route fails rather than choosing a fallback.
 
 ## Delegate during native chat
 
-When at least one route exists, the native root tool catalog includes
+When at least one route exists, the native root tool catalog includes the
+explicit `spawn_agent`, `await_agent`, and `cancel_agent` operations plus
 `delegate_agent`. You can ask naturally, for example:
 
 ```text
@@ -78,6 +79,14 @@ Permission questions identify the child and route. The root remains the
 controlling terminal, and the child profile can only narrow the configured
 permission ceiling.
 
+`delegate_agent` is the efficient one-task path: it spawns and waits inside one
+tool call. `spawn_agent` returns immediately with a handle, allowing the root
+turn to finish while Xana continues supervising the child. A later root turn
+can call `await_agent` or `cancel_agent`; this also makes the active slash
+commands useful between turns. `await_agent` accepts an optional bounded
+`timeout_ms` and an explicit `cancel_on_timeout` flag. `cancel_agent` returns a
+request receipt, not a fictional terminal success.
+
 ## Context, identity, and reports
 
 Each child starts a fresh native conversation containing Xana's built-in
@@ -88,19 +97,51 @@ registry never contains `delegate_agent`, so children cannot create children.
 
 `spawn_agent` creates a durable handle keyed by `AgentId`; `await_agent` reads
 its terminal report. The model-facing `delegate_agent` convenience performs
-both inside one tool call. If its caller stops awaiting, the runtime still owns
-the child. Completed and failed reports retain parent/child, operation, thread,
-route, connection, model, and owner attribution. Inline output is bounded by
-the route's `max_report_bytes`. Provider usage is reported as `unknown` until
-an adapter supplies a real measurement; Xana does not substitute zero.
+both inside one tool call. If its caller stops awaiting or an await times out,
+the runtime still owns the child. Timeout does not cancel work unless the
+caller explicitly selects cancel-on-timeout.
+
+During an active foreground process, use:
+
+```text
+/agents
+/agent AGENT_ID
+/cancel-agent AGENT_ID
+```
+
+The list and detail views show lineage, route, execution owner, connection,
+model, lifecycle, usage state, and report reference. Cancellation first prints
+that a request was made; only the later `Cancelled` lifecycle/report proves the
+child stopped. Repeating cancellation or awaiting a terminal child is safe and
+returns the existing state.
+
+Another Xana process cannot control this foreground runtime. It can only read
+durable facts:
+
+```text
+cargo run -- session inspect SESSION_ID
+```
+
+If Xana restarts after an admitted, queued, running, or suspended child record,
+inspection projects that child as `Interrupted` without appending a record,
+calling a provider/tool, or replaying work. The output labels this as a
+read-only restart projection.
+
+Completed, failed, cancelled, and interrupted reports retain parent/child,
+operation, thread, route, connection, model, and owner attribution. Inline
+output is bounded by the route's `max_report_bytes`. Provider usage is reported
+as `unknown` until an adapter supplies a real measurement; Xana does not
+substitute zero.
 
 ## Current limits
 
-- One native child may be active at a time.
+- One native child runs at a time in this slice; additional admitted children
+  wait in stable admission order.
 - There is no detach or background continuation.
-- Parallel batches, explicit cancellation/timeouts, offline child inspection,
-  artifact-backed report overflow, orchestration plans, and managed Codex
-  children are not implemented in this slice.
-- Runtime shutdown owns the child task; process restart never implies that a
-  local child is still running.
+- Atomic parallel batches, artifact-backed report overflow, orchestration
+  plans, and managed Codex children are not implemented in this slice.
+- Runtime shutdown cooperatively cancels queued and running children, closes
+  pending permission requests, waits for their durable terminal outcomes, and
+  uses a bounded interrupted fallback only for an unresponsive execution.
+- Process restart never implies that a local child is still running.
 - `xana route` commands diagnose routes but do not start children.

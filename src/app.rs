@@ -775,6 +775,9 @@ async fn execute_recovery_command<W: Write>(
         | RuntimeCommand::ClearConversation
         | RuntimeCommand::DecidePermission { .. }
         | RuntimeCommand::DecideChildPermission { .. }
+        | RuntimeCommand::ListChildren
+        | RuntimeCommand::InspectChild { .. }
+        | RuntimeCommand::CancelChild { .. }
         | RuntimeCommand::Shutdown => {
             anyhow::bail!("the explicit recovery controller accepts only ResumeOperation")
         }
@@ -977,48 +980,51 @@ async fn run_default(
         };
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
-    let (session, permission_policy, resumed, repair_truncate_to, unfinished) = match resume {
-        Some(session_id) => {
-            let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
-            if session.workspace_root() != workspace_root {
-                writeln!(
-                    anstream::stdout().lock(),
-                    "resuming session workspace {} (current directory is {})",
-                    session.workspace_root().display(),
-                    workspace_root.display()
-                )?;
+    let (session, permission_policy, resumed, repair_truncate_to, unfinished, restored_children) =
+        match resume {
+            Some(session_id) => {
+                let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
+                if session.workspace_root() != workspace_root {
+                    writeln!(
+                        anstream::stdout().lock(),
+                        "resuming session workspace {} (current directory is {})",
+                        session.workspace_root().display(),
+                        workspace_root.display()
+                    )?;
+                }
+                let unfinished = summary.unfinished.clone();
+                let permission_policy = PermissionPolicy::new(
+                    permission_mode.into(),
+                    permission_rules.clone(),
+                    session.workspace_root(),
+                )
+                .context("could not resolve permission policy for the session workspace")?;
+                (
+                    session,
+                    permission_policy,
+                    true,
+                    summary.repair_truncate_to,
+                    unfinished,
+                    summary.children,
+                )
             }
-            let unfinished = summary.unfinished.clone();
-            let permission_policy = PermissionPolicy::new(
-                permission_mode.into(),
-                permission_rules.clone(),
-                session.workspace_root(),
-            )
-            .context("could not resolve permission policy for the session workspace")?;
-            (
-                session,
-                permission_policy,
-                true,
-                summary.repair_truncate_to,
-                unfinished,
-            )
-        }
-        None => {
-            let permission_policy = PermissionPolicy::new(
-                permission_mode.into(),
-                permission_rules.clone(),
-                &workspace_root,
-            )
-            .context("could not resolve permission policy for the launch workspace")?;
-            (
-                DurableSession::create(paths.data_dir(), workspace_root.clone())?,
-                permission_policy,
-                false,
-                None,
-                Vec::new(),
-            )
-        }
-    };
+            None => {
+                let permission_policy = PermissionPolicy::new(
+                    permission_mode.into(),
+                    permission_rules.clone(),
+                    &workspace_root,
+                )
+                .context("could not resolve permission policy for the launch workspace")?;
+                (
+                    DurableSession::create(paths.data_dir(), workspace_root.clone())?,
+                    permission_policy,
+                    false,
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                )
+            }
+        };
     let workspace_root = session.workspace_root().to_owned();
     let child_supervisor = if child_registry.routes.is_empty() {
         None
@@ -1031,12 +1037,13 @@ async fn run_default(
             artifact_store.clone(),
             permission_rules,
         );
-        let (handle, supervisor) = ChildSupervisor::new(
+        let (handle, supervisor) = ChildSupervisor::with_restored(
             ParentExecution {
                 agent_id: session.agent_id(),
                 thread_id: session.thread_id(),
             },
             Arc::new(factory),
+            restored_children.clone(),
         );
         tools
             .enable_child_delegation(handle.clone())
@@ -1109,6 +1116,7 @@ async fn run_default(
         resumed,
         repair_truncate_to,
         unfinished,
+        children: restored_children,
         workspace_root: workspace_root.clone(),
         artifact_store,
         owner: crate::identity::PrincipalId::new(),
@@ -1149,6 +1157,28 @@ fn run_session_command<W: Write>(
             )?;
             for (context_id, version) in summary.context_versions {
                 writeln!(output, "  {context_id} v{version}")?;
+            }
+            writeln!(output, "children: {}", summary.children.len())?;
+            for child in summary.children {
+                let attribution = &child.handle.admission.attribution;
+                writeln!(
+                    output,
+                    "  {} parent={} route={} owner={} connection={} model={} state={:?} usage={:?} report={:?}{}",
+                    attribution.agent_id,
+                    attribution.parent_agent_id,
+                    attribution.route,
+                    attribution.owner.as_str(),
+                    attribution.connection,
+                    attribution.model,
+                    child.handle.lifecycle,
+                    child.handle.usage,
+                    child.handle.report,
+                    if child.projected_interruption {
+                        " (projected after restart)"
+                    } else {
+                        ""
+                    }
+                )?;
             }
             match summary.repair_truncate_to {
                 Some(offset) => {

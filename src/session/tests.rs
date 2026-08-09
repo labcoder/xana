@@ -155,6 +155,67 @@ fn child_reducer_rejects_skipped_and_duplicate_terminal_transitions() {
 }
 
 #[test]
+fn every_nonterminal_child_prefix_projects_interrupted_without_mutating_facts() {
+    let session_id = SessionId::new();
+    let thread_id = ThreadId::new();
+    let handle = child_handle(session_id, thread_id);
+    let agent_id = handle.admission.attribution.agent_id;
+    let transitions = [
+        ChildLifecycle::Queued,
+        ChildLifecycle::Running,
+        ChildLifecycle::Suspended,
+    ];
+
+    for prefix_len in 0..=transitions.len() {
+        let mut records = vec![
+            created(session_id, thread_id),
+            RecordEnvelope::new(
+                session_id,
+                SessionRecord::ChildAdmitted {
+                    handle: handle.clone(),
+                },
+            ),
+        ];
+        records.extend(transitions[..prefix_len].iter().map(|lifecycle| {
+            RecordEnvelope::new(
+                session_id,
+                SessionRecord::ChildLifecycleChanged {
+                    agent_id,
+                    lifecycle: *lifecycle,
+                },
+            )
+        }));
+
+        let restored = reduce(&records).expect("reduce nonterminal prefix");
+        let durable = restored.children.get(&agent_id).expect("durable child");
+        let durable_lifecycle = if prefix_len == 0 {
+            ChildLifecycle::Admitted
+        } else {
+            transitions[prefix_len - 1]
+        };
+        assert_eq!(durable.handle.lifecycle, durable_lifecycle);
+
+        let projected = durable.inspection();
+        assert_eq!(projected.handle.lifecycle, ChildLifecycle::Interrupted);
+        assert!(projected.projected_interruption);
+        assert_eq!(
+            projected.report.as_ref().map(|report| report.status),
+            Some(ChildTerminalStatus::Interrupted)
+        );
+        assert_eq!(
+            restored
+                .children
+                .get(&agent_id)
+                .expect("unchanged durable child")
+                .handle
+                .lifecycle,
+            durable_lifecycle,
+            "projection must not rewrite durable state"
+        );
+    }
+}
+
+#[test]
 fn every_v1_record_kind_round_trips_without_collapsing_audit_into_conversation() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();

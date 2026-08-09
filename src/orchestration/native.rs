@@ -1,6 +1,7 @@
 use super::{
-    ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutput, ChildUsage,
-    ExecutionOwner, PreparedChild, RouteResolver, SpawnAgentRequest,
+    ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
+    ChildExecutionOutput, ChildUsage, ExecutionOwner, PreparedChild, RouteResolver,
+    SpawnAgentRequest,
 };
 use crate::{
     agent::Agent,
@@ -157,7 +158,7 @@ impl ChildExecution for NativeChildExecution {
     fn run(
         self: Box<Self>,
         context: ChildExecutionContext,
-    ) -> BoxFuture<'static, Result<ChildExecutionOutput, String>> {
+    ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async move {
             let mut history = self.history;
             let run = self.agent.run_turn(
@@ -168,13 +169,20 @@ impl ChildExecution for NativeChildExecution {
             );
             tokio::pin!(run);
             let message = tokio::select! {
-                result = &mut run => result.map_err(|error| error.to_string())?,
+                result = &mut run => match result {
+                    Ok(message) => message,
+                    Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
+                },
                 _ = context.cancellation.cancelled() => {
-                    return Err("native child was cancelled".to_owned());
+                    return ChildExecutionOutcome::Cancelled("native child was cancelled".to_owned());
                 }
             };
-            Ok(ChildExecutionOutput {
-                text: report_text(&message)?,
+            let text = match report_text(&message) {
+                Ok(text) => text,
+                Err(error) => return ChildExecutionOutcome::Failed(error),
+            };
+            ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                text,
                 usage: ChildUsage::Unknown,
             })
         })

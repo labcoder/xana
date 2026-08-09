@@ -310,6 +310,47 @@ impl Runtime {
                     self.emit(AgentEvent::CommandRejected { reason });
                 }
             }
+            RuntimeCommand::ListChildren => {
+                let result = match &self.child_supervisor {
+                    Some(supervisor) => supervisor
+                        .list_agents()
+                        .await
+                        .map_err(|error| error.to_string()),
+                    None => Ok(Vec::new()),
+                };
+                match result {
+                    Ok(children) => self.emit(AgentEvent::ChildListSnapshot { children }),
+                    Err(reason) => self.emit(AgentEvent::CommandRejected { reason }),
+                }
+            }
+            RuntimeCommand::InspectChild { agent_id } => {
+                let result = match &self.child_supervisor {
+                    Some(supervisor) => supervisor
+                        .inspect_agent(agent_id)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    None => Err("this runtime has no child supervisor".to_owned()),
+                };
+                match result {
+                    Ok(child) => self.emit(AgentEvent::ChildInspectionSnapshot {
+                        child: Box::new(child),
+                    }),
+                    Err(reason) => self.emit(AgentEvent::CommandRejected { reason }),
+                }
+            }
+            RuntimeCommand::CancelChild { agent_id } => {
+                let result = match &self.child_supervisor {
+                    Some(supervisor) => supervisor
+                        .cancel_agent(agent_id)
+                        .await
+                        .map_err(|error| error.to_string()),
+                    None => Err("this runtime has no child supervisor".to_owned()),
+                };
+                match result {
+                    Ok(receipt) => self.emit(AgentEvent::ChildCancellationRequested { receipt }),
+                    Err(reason) => self.emit(AgentEvent::CommandRejected { reason }),
+                }
+            }
             RuntimeCommand::Shutdown => {
                 self.permissions.shutdown();
                 self.interrupt_active();
@@ -717,7 +758,18 @@ impl Runtime {
 
     async fn shutdown_children(&mut self) {
         if let Some(supervisor) = self.child_supervisor.take() {
-            supervisor.shutdown().await;
+            let shutdown = supervisor.shutdown();
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    () = &mut shutdown => break,
+                    command = self.child_commits.recv() => {
+                        if let Some(command) = command {
+                            self.handle_child_commit(command);
+                        }
+                    }
+                }
+            }
         }
         if let Some(task) = self.child_supervisor_task.take() {
             let _ = task.await;
