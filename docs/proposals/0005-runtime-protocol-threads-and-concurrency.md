@@ -25,6 +25,14 @@ controller are separately implemented through historical
 [Proposal 0011](0011-scoped-runtime-permissions.md). Authentication, remote
 controller roles, hooks, and multi-client control remain Proposed here.
 
+The bounded local attachment subset required for Phase 5 is accepted by
+[Proposal 0017](0017-bounded-local-frontends-and-workspace-host.md): one
+canonical workspace, one active workspace root, multiple conversations, one
+controller per conversation, passive observers, an authenticated loopback
+projection, atomic snapshot plus gap-free live events, bounded queues, and
+explicit shutdown. Broader remote, multi-user, retained-work, hook, and public
+protocol designs remain Proposed in this document.
+
 ## Commands, events, hooks, and telemetry
 
 The runtime exposes three planes:
@@ -99,10 +107,11 @@ durable and observable, and usage remains attributable to the handle's parent,
 route, model, and budget. An unavailable exact route fails rather than silently
 falling back.
 
-One root turn may mutate a thread at a time, preventing frontends from racing
-to append incompatible next states. The runtime may execute root turns for
-different threads, bounded child agents owned by an admitted turn, and
-read-only frontend subscriptions concurrently.
+The broader design would allow one root turn to mutate each thread while root
+turns for different threads run concurrently. Proposal 0017 deliberately
+accepts a narrower Course 1 rule: at most one active root turn across a local
+workspace host, with bounded children beneath it and read-only frontend
+subscriptions concurrently. Per-thread parallel roots remain Proposed here.
 
 Child work carries parent and thread lineage and participates in structured
 cancellation and authority inheritance. Budgets cover concurrency, fan-out,
