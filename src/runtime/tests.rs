@@ -208,6 +208,7 @@ async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_tur
             task: "inspect the bounded seam".to_owned(),
             result_schema: Default::default(),
             restrictions: Default::default(),
+            handoff: Default::default(),
         }]
     );
     {
@@ -484,15 +485,21 @@ impl ChildExecution for ScriptedOutcomeChildExecution {
 }
 
 fn scripted_child_config(request: &SpawnAgentRequest) -> ResolvedAgentConfig {
+    let route = request.route.clone().unwrap_or_else(|| "worker".to_owned());
+    let (connection, model) = match route.as_str() {
+        "alpha" => ("native-a", "model-a"),
+        "beta" => ("native-b", "model-b"),
+        _ => ("scripted", "child-model"),
+    };
     ResolvedAgentConfig {
-        route: request.route.clone().unwrap_or_else(|| "worker".to_owned()),
+        route,
         profile: "worker".to_owned(),
-        connection: "scripted".to_owned(),
+        connection: connection.to_owned(),
         provider_kind: ProviderKind::OpenAiCompat,
         owner: ExecutionOwner::Native,
         model: ModelDescriptor {
-            id: "child-model".to_owned(),
-            display_name: "Child Model".to_owned(),
+            id: model.to_owned(),
+            display_name: model.to_owned(),
             input_modalities: BTreeSet::from(["text".to_owned()]),
             tools: Some(false),
             reasoning: Some(false),
@@ -686,6 +693,7 @@ async fn dropping_one_await_does_not_detach_the_supervised_child() {
                 task: "wait at the barrier".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -753,6 +761,7 @@ async fn running_cancellation_is_observed_once_and_repeated_reads_are_idempotent
                 task: "cancel at the barrier".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -848,6 +857,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
                 task: "occupy the only running slot".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -861,6 +871,7 @@ async fn queued_cancellation_never_starts_the_child_and_releases_its_slot_once()
                 task: "remain queued".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -955,6 +966,7 @@ async fn atomic_batch_runs_in_input_order_without_exceeding_parallel_capacity() 
             task: format!("parallel child {index}"),
             result_schema: Default::default(),
             restrictions: Default::default(),
+            handoff: Default::default(),
         })
         .collect::<Vec<_>>();
 
@@ -1032,6 +1044,7 @@ async fn collection_preserves_input_order_mixed_failures_and_fail_fast_evidence(
         task: task.to_owned(),
         result_schema: ChildResultSchema::Summary,
         restrictions: Default::default(),
+        handoff: Default::default(),
     };
     let children = handle
         .spawn_many(
@@ -1130,6 +1143,101 @@ async fn collection_preserves_input_order_mixed_failures_and_fail_fast_evidence(
 }
 
 #[tokio::test]
+async fn mixed_native_routes_preserve_exact_owner_connection_and_model_attribution() {
+    let directory = tempdir().expect("temporary directory");
+    let workspace = directory
+        .path()
+        .canonicalize()
+        .expect("canonical workspace");
+    let (handle, supervisor) = ChildSupervisor::new(
+        ParentExecution {
+            agent_id: crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
+            thread_id: crate::identity::ThreadId::new(),
+        },
+        Arc::new(ScriptedOutcomeChildFactory { workspace }),
+    );
+    let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
+    let commit_task = tokio::spawn(async move {
+        while let Some(command) = commit_receiver.recv().await {
+            let _ = command.acknowledged.send(Ok(()));
+        }
+    });
+    let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let supervisor_task = tokio::spawn(supervisor.run(commits, events));
+    let request = |route: &str, task: &str| SpawnAgentRequest {
+        route: Some(route.to_owned()),
+        task: task.to_owned(),
+        result_schema: ChildResultSchema::Summary,
+        restrictions: Default::default(),
+        handoff: Default::default(),
+    };
+
+    let children = handle
+        .spawn_many(
+            OperationId::new(),
+            vec![
+                request("alpha", "delay:20:first"),
+                request("beta", "fail:isolated failure"),
+                request("alpha", "delay:1:third"),
+            ],
+        )
+        .await
+        .expect("mixed native admission");
+    let ids = children
+        .iter()
+        .map(|child| child.admission.attribution.agent_id)
+        .collect::<Vec<_>>();
+    let result = handle
+        .collect_agents(ids, CollectAgentsOptions::default())
+        .await
+        .expect("mixed native collection");
+
+    let labels = result
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                entry.attribution.route.as_str(),
+                entry.attribution.owner,
+                entry.attribution.connection.as_str(),
+                entry.attribution.model.as_str(),
+                entry.status,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        labels,
+        vec![
+            (
+                "alpha",
+                ExecutionOwner::Native,
+                "native-a",
+                "model-a",
+                Some(ChildTerminalStatus::Completed),
+            ),
+            (
+                "beta",
+                ExecutionOwner::Native,
+                "native-b",
+                "model-b",
+                Some(ChildTerminalStatus::Failed),
+            ),
+            (
+                "alpha",
+                ExecutionOwner::Native,
+                "native-a",
+                "model-a",
+                Some(ChildTerminalStatus::Completed),
+            ),
+        ]
+    );
+
+    handle.shutdown().await;
+    supervisor_task.await.expect("supervisor task");
+    commit_task.await.expect("commit task");
+}
+
+#[tokio::test]
 async fn validated_plan_uses_the_supervisor_once_and_preserves_collection_order() {
     let directory = tempdir().expect("temporary directory");
     let workspace = directory
@@ -1162,6 +1270,7 @@ async fn validated_plan_uses_the_supervisor_once_and_preserves_collection_order(
         task: task.to_owned(),
         result_schema: ChildResultSchema::Summary,
         restrictions: Default::default(),
+        handoff: Default::default(),
     };
     let plan = OrchestrationPlan {
         version: 1,
@@ -1372,6 +1481,7 @@ async fn plan_start_persistence_failure_admits_no_child() {
                 task: "complete:never admitted".to_owned(),
                 result_schema: ChildResultSchema::Summary,
                 restrictions: Default::default(),
+                handoff: Default::default(),
             }],
         }],
     };
@@ -1435,6 +1545,7 @@ async fn report_overflow_is_registered_before_commit_and_missing_bytes_are_attri
                     max_report_bytes: Some("child result".len() - 1),
                     ..Default::default()
                 },
+                handoff: Default::default(),
             },
         )
         .await
@@ -1522,6 +1633,7 @@ async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
             task: format!("too many {index}"),
             result_schema: Default::default(),
             restrictions: Default::default(),
+            handoff: Default::default(),
         })
         .collect();
     assert!(matches!(
@@ -1540,12 +1652,14 @@ async fn invalid_or_oversized_batch_creates_no_child_record_or_event() {
                         task: "valid first member".to_owned(),
                         result_schema: Default::default(),
                         restrictions: Default::default(),
+                        handoff: Default::default(),
                     },
                     SpawnAgentRequest {
                         route: Some("worker".to_owned()),
                         task: "  ".to_owned(),
                         result_schema: Default::default(),
                         restrictions: Default::default(),
+                        handoff: Default::default(),
                     },
                 ],
             )
@@ -1619,6 +1733,7 @@ async fn competing_batch_callers_share_one_atomic_descendant_ledger() {
                 task: format!("{label} {index}"),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             })
             .collect::<Vec<_>>()
     };
@@ -1702,6 +1817,7 @@ async fn admission_deadline_cancels_running_work_and_releases_its_reservation() 
                     deadline_seconds: Some(1),
                     ..Default::default()
                 },
+                handoff: Default::default(),
             },
         )
         .await
@@ -1725,6 +1841,7 @@ async fn admission_deadline_cancels_running_work_and_releases_its_reservation() 
                 task: "reuse released reservation".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -1781,6 +1898,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
                 task: "time out without cancelling".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -1845,6 +1963,7 @@ async fn await_timeout_is_not_cancellation_unless_explicitly_requested() {
                 task: "time out and cancel".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -1915,6 +2034,7 @@ async fn cancelling_a_child_closes_pending_permission_before_any_effect() {
                 task: "request one effect".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -2013,6 +2133,7 @@ async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
                 task: "stop with the runtime".to_owned(),
                 result_schema: Default::default(),
                 restrictions: Default::default(),
+                handoff: Default::default(),
             },
         )
         .await
@@ -2085,6 +2206,7 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                     task: "commit ordering".to_owned(),
                     result_schema: Default::default(),
                     restrictions: Default::default(),
+                    handoff: Default::default(),
                 },
             )
             .await;
@@ -2140,6 +2262,7 @@ fn commands_and_events_round_trip_through_json() {
             task: "task".to_owned(),
             result_schema: Default::default(),
             restrictions: Default::default(),
+            handoff: Default::default(),
         }),
     );
     let commands = vec![

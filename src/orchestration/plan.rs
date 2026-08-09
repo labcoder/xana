@@ -399,6 +399,7 @@ mod tests {
             task: task.to_owned(),
             result_schema: ChildResultSchema::Summary,
             restrictions: ChildRestrictions::default(),
+            handoff: Default::default(),
         }
     }
 

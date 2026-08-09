@@ -156,9 +156,15 @@ process is read-only and cannot claim to cancel foreground work.
 
 The child receives Xana's identity/guidelines, its exact task, applicable
 bounded root `AGENTS.md`, environment facts, and only the tools selected by its
-profile. It receives no parent transcript and its registry never contains
-orchestration tools, so child depth is structurally one. Native children run
-in stable admission order up to the root profile's bounded concurrency.
+profile. A request may add a fixed set of parent-selected text previews and
+immutable artifact-reference metadata. These sources keep explicit
+`parent_handoff` provenance, remain untrusted prompt data, and pass through the
+same context budget; artifact bodies and the parent transcript are never
+copied. Its registry never contains orchestration tools, so child depth is
+structurally one. Native children run in stable admission order up to the root
+profile's bounded concurrency. Every native provider uses the same execution
+contract while its adapter maps optional token fields; Xana aggregates a field
+only when every request supplied it and separately measures request count.
 `collect_agents` snapshots a fixed set of unique handles atomically, returns
 entries in caller order regardless of completion timing, and preserves each
 terminal status, attribution, typed usage, and report reference. Its explicit

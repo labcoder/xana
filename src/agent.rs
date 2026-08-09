@@ -13,12 +13,15 @@ use crate::{
     },
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
-    provider::{ConversationalProvider, DeltaSink},
+    provider::{ConversationalProvider, DeltaSink, ProviderUsage},
     runtime::AgentEvent,
     tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 use tokio::sync::{mpsc, oneshot};
 
 #[derive(Clone)]
@@ -88,6 +91,19 @@ pub(crate) struct Agent {
     boundary_observer: Arc<dyn BoundaryObserver>,
 }
 
+pub(crate) struct AgentTurnResult {
+    pub(crate) message: Message,
+    pub(crate) usage: AgentTurnUsage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AgentTurnUsage {
+    pub(crate) input_tokens: Option<u64>,
+    pub(crate) output_tokens: Option<u64>,
+    pub(crate) total_tokens: Option<u64>,
+    pub(crate) requests: u64,
+}
+
 impl Agent {
     pub(crate) fn new(
         provider: Box<dyn ConversationalProvider>,
@@ -113,7 +129,26 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: mpsc::UnboundedSender<AgentEvent>,
     ) -> Result<Message> {
-        self.run_turn_with_prompt(
+        self.run_turn_inner(
+            operation_id,
+            messages,
+            &self.prompt,
+            permissions,
+            events,
+            None,
+        )
+        .await
+        .map(|result| result.message)
+    }
+
+    pub(crate) async fn run_turn_with_usage(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        permissions: PermissionBrokerHandle,
+        events: mpsc::UnboundedSender<AgentEvent>,
+    ) -> Result<AgentTurnResult> {
+        self.run_turn_inner(
             operation_id,
             messages,
             &self.prompt,
@@ -133,15 +168,31 @@ impl Agent {
         events: mpsc::UnboundedSender<AgentEvent>,
         durable: Option<DurableTurnServices>,
     ) -> Result<Message> {
+        self.run_turn_inner(operation_id, messages, prompt, permissions, events, durable)
+            .await
+            .map(|result| result.message)
+    }
+
+    async fn run_turn_inner(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        prompt: &PromptSnapshot,
+        permissions: PermissionBrokerHandle,
+        events: mpsc::UnboundedSender<AgentEvent>,
+        durable: Option<DurableTurnServices>,
+    ) -> Result<AgentTurnResult> {
         let definitions = self.tools.definitions();
         let delta_sink = EventDeltaSink {
             operation_id,
             events: events.clone(),
+            usage: Mutex::new(UsageAccumulator::default()),
         };
 
         for _ in 0..self.max_tool_rounds {
             let request_messages = prompt.messages_for_request(messages)?;
             let step_id = StepId::new();
+            delta_sink.begin_request();
             let assistant = self
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
@@ -149,7 +200,10 @@ impl Agent {
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
-                return Ok(assistant);
+                return Ok(AgentTurnResult {
+                    message: assistant,
+                    usage: delta_sink.usage(),
+                });
             }
 
             messages.push(assistant.clone());
@@ -244,6 +298,44 @@ impl Agent {
 struct EventDeltaSink {
     operation_id: OperationId,
     events: mpsc::UnboundedSender<AgentEvent>,
+    usage: Mutex<UsageAccumulator>,
+}
+
+#[derive(Default)]
+struct UsageAccumulator {
+    requests: Vec<Option<ProviderUsage>>,
+}
+
+impl EventDeltaSink {
+    fn begin_request(&self) {
+        self.usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requests
+            .push(None);
+    }
+
+    fn usage(&self) -> AgentTurnUsage {
+        let usage = self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        AgentTurnUsage {
+            input_tokens: complete_sum(&usage.requests, |usage| usage.input_tokens),
+            output_tokens: complete_sum(&usage.requests, |usage| usage.output_tokens),
+            total_tokens: complete_sum(&usage.requests, |usage| usage.total_tokens),
+            requests: usage.requests.len() as u64,
+        }
+    }
+}
+
+fn complete_sum(
+    requests: &[Option<ProviderUsage>],
+    field: impl Fn(ProviderUsage) -> Option<u64>,
+) -> Option<u64> {
+    requests
+        .iter()
+        .try_fold(0_u64, |total, usage| total.checked_add(field((*usage)?)?))
 }
 
 impl DeltaSink for EventDeltaSink {
@@ -253,6 +345,18 @@ impl DeltaSink for EventDeltaSink {
             step_id,
             text: text.to_owned(),
         });
+    }
+
+    fn usage(&self, usage: ProviderUsage) {
+        if let Some(current) = self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requests
+            .last_mut()
+        {
+            *current = Some(usage);
+        }
     }
 }
 

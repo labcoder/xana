@@ -49,7 +49,7 @@ impl<'de> Deserialize<'de> for ContentHash {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) struct ArtifactRef {
     pub(crate) id: ArtifactId,
     pub(crate) content_hash: ContentHash,

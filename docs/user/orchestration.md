@@ -3,8 +3,10 @@
 > Audience: People configuring or observing Xana child agents.
 
 Xana can delegate one bounded task or atomically admit a fixed batch from a
-native root conversation to exact native task routes. This is runtime-owned
-work, not a second shell process and not a free-form background agent.
+native root conversation to exact native task routes. Each route can select a
+different Ollama, OpenAI-compatible, OpenAI API, OpenRouter, or Anthropic
+connection and model. This is runtime-owned work, not a second shell process
+and not a free-form background agent.
 
 ## Configure and verify a route
 
@@ -119,6 +121,26 @@ environment facts, and a bounded root `AGENTS.md` view when present. It does
 not receive the parent's full conversation. A profile-selected child tool
 registry never contains `delegate_agent`, so children cannot create children.
 
+The root may explicitly hand off up to eight selected text previews (16 KiB
+each, 64 KiB in aggregate) and sixteen immutable artifact references. Text is
+marked as untrusted parent-selected context and competes for the child's
+configured prompt budget. Artifact handoff includes only logical id and
+content hash metadata; it never copies an artifact body into the prompt. For
+example:
+
+```json
+{
+  "route": "reviewer",
+  "task": "Review the selected parser branch.",
+  "handoff": {
+    "previews": [
+      {"label": "parser branch", "content": "selected bounded source text"}
+    ],
+    "artifacts": []
+  }
+}
+```
+
 `spawn_agent` creates a durable handle keyed by `AgentId`; `await_agent` reads
 its terminal report. The model-facing `delegate_agent` convenience performs
 both inside one tool call. If its caller stops awaiting or an await times out,
@@ -155,8 +177,11 @@ Completed, failed, cancelled, and interrupted reports retain parent/child,
 operation, thread, route, connection, model, and owner attribution. Inline
 output is bounded by the route's `max_report_bytes`. Provider usage is
 explicitly `measured`, `estimated`, or `unknown`; Xana does not substitute
-zero. Native adapters currently report `unknown`. A hard token or spend
-request is rejected unless its execution owner exposes enforceable
+zero. Native children always measure provider request count. OpenAI and
+OpenRouter request streaming usage, Anthropic maps its input/output fields,
+and compatible endpoints may emit optional usage. A field absent from any
+request remains unknown for the complete child turn; spend remains unknown. A
+hard token or spend request is rejected unless its execution owner exposes enforceable
 pre-request control or an interruptible live meter. Subscription rate-limit
 state is not monetary spend.
 
@@ -177,6 +202,8 @@ terminal state returns the same durable report evidence.
   rounds, context bounds, inline report bytes, and artifact bytes. A child's
   wall-clock deadline begins at admission, including queue time.
 - There is no detach or background continuation.
+- Mixed-model children keep independent histories; Xana does not translate,
+  merge, or summarize them through an additional model call.
 - Managed Codex children are not implemented in this slice. Closed native
   plans are described in [Orchestration plans](orchestration-plans.md).
 - Runtime shutdown cooperatively cancels queued and running children, closes
@@ -184,3 +211,14 @@ terminal state returns the same durable report evidence.
   uses a bounded interrupted fallback only for an unresponsive execution.
 - Process restart never implies that a local child is still running.
 - `xana route` commands diagnose routes but do not start children.
+
+## Optional native account smoke
+
+This check is owner-run and is not required in CI. Configure two exact native
+routes backed by credentials already stored through Xana's documented
+credential references. Run `xana route check` for each route, then ask the root
+to `spawn_many` one short task per route and collect both reports. Confirm that
+the displayed route, connection, model, request count, and any provider-exposed
+token fields remain distinct. When recording evidence, retain only those
+non-secret labels and terminal statuses; redact prompts, report bodies, HTTP
+headers, account identifiers, and credential-source values.

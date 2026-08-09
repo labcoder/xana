@@ -157,6 +157,7 @@ fn origin_name(origin: SourceOrigin) -> &'static str {
         SourceOrigin::RuntimeEnvironment => "runtime_environment",
         SourceOrigin::ProductDocumentation => "product_documentation",
         SourceOrigin::ProjectFile => "project_file",
+        SourceOrigin::ParentHandoff => "parent_handoff",
     }
 }
 

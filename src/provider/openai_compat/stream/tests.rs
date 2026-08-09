@@ -1,7 +1,7 @@
 use super::*;
 use crate::message::ToolResult;
 use crate::provider::openai_compat::wire::{
-    WireChatRequest, WireFunctionDelta, WireMessage, WireToolCallDelta,
+    WireChatRequest, WireFunctionDelta, WireMessage, WireStreamResponse, WireToolCallDelta,
 };
 
 fn decode_in_chunks(input: &[u8], chunk_size: usize) -> Result<Vec<SseItem>, StreamError> {
@@ -24,6 +24,23 @@ fn decoder_handles_one_byte_chunks_split_utf8_and_done() {
         matches!(&items[0], SseItem::Data(data) if String::from_utf8_lossy(data).contains("hé"))
     );
     assert_eq!(items[1], SseItem::Done);
+}
+
+#[test]
+fn usage_only_stream_chunk_keeps_optional_token_fields_typed() {
+    let response: WireStreamResponse = serde_json::from_value(serde_json::json!({
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 12,
+            "completion_tokens": 3,
+            "total_tokens": 15
+        }
+    }))
+    .expect("usage response");
+    let usage = response.usage.expect("usage");
+    assert_eq!(usage.prompt_tokens, Some(12));
+    assert_eq!(usage.completion_tokens, Some(3));
+    assert_eq!(usage.total_tokens, Some(15));
 }
 
 #[test]
@@ -200,6 +217,7 @@ fn captured_tool_stream_can_be_followed_by_a_tool_result_request() {
             .collect::<Result<Vec<_>, _>>()
             .expect("representable tool-result history"),
         stream: true,
+        stream_options: None,
         max_output_tokens: None,
         tools: Vec::new(),
     };

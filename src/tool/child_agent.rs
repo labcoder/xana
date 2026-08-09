@@ -4,8 +4,9 @@ use super::{
 use crate::{
     identity::AgentId,
     orchestration::{
-        AwaitAgentOptions, AwaitAgentOutcome, ChildRestrictions, ChildResultSchema,
-        ChildSupervisorHandle, CollectAgentsOptions, CollectionFailurePolicy, SpawnAgentRequest,
+        AwaitAgentOptions, AwaitAgentOutcome, ChildContextHandoff, ChildRestrictions,
+        ChildResultSchema, ChildSupervisorHandle, CollectAgentsOptions, CollectionFailurePolicy,
+        SpawnAgentRequest,
     },
     permission::PermissionScope,
 };
@@ -46,6 +47,8 @@ struct SpawnArgs {
     result_schema: ChildResultSchema,
     #[serde(default)]
     restrictions: ChildRestrictions,
+    #[serde(default)]
+    handoff: ChildContextHandoff,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -148,6 +151,7 @@ impl Tool for SpawnAgent {
                         task: args.task.clone(),
                         result_schema: args.result_schema,
                         restrictions: args.restrictions.clone(),
+                        handoff: args.handoff.clone(),
                     },
                 )
                 .await
@@ -205,6 +209,7 @@ impl Tool for SpawnMany {
                     task: request.task.clone(),
                     result_schema: request.result_schema,
                     restrictions: request.restrictions.clone(),
+                    handoff: request.handoff.clone(),
                 })
                 .collect();
             let handles = self
@@ -420,7 +425,44 @@ pub(super) fn spawn_parameters() -> Value {
             "route":{"type":"string","minLength":1,"maxLength":128},
             "task":{"type":"string","minLength":1,"maxLength":262144},
             "result_schema":{"type":"string","enum":["summary","json"],"default":"summary"},
-            "restrictions":restriction_schema()
+            "restrictions":restriction_schema(),
+            "handoff":handoff_schema()
+        }
+    })
+}
+
+pub(super) fn handoff_schema() -> Value {
+    json!({
+        "type":"object",
+        "additionalProperties":false,
+        "properties":{
+            "previews":{
+                "type":"array",
+                "maxItems":8,
+                "items":{
+                    "type":"object",
+                    "additionalProperties":false,
+                    "required":["label","content"],
+                    "properties":{
+                        "label":{"type":"string","minLength":1,"maxLength":128},
+                        "content":{"type":"string","minLength":1,"maxLength":16384}
+                    }
+                }
+            },
+            "artifacts":{
+                "type":"array",
+                "maxItems":16,
+                "uniqueItems":true,
+                "items":{
+                    "type":"object",
+                    "additionalProperties":false,
+                    "required":["id","content_hash"],
+                    "properties":{
+                        "id":{"type":"string","format":"uuid"},
+                        "content_hash":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+                    }
+                }
+            }
         }
     })
 }

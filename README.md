@@ -183,9 +183,13 @@ During a native conversation, Xana exposes `spawn_agent`, atomic `spawn_many`,
 when at least one child route is configured. The model can give one task or a
 fixed independent batch to exact routes (or the explicit default), while Xana
 prints each child id, route, connection/model, lifecycle, activity, and
-terminal status. The child gets a fresh bounded prompt rather than the parent
-transcript, cannot delegate again, and returns a bounded report directly to the
-root turn. Batches reserve their complete budget before becoming visible, run
+terminal status. Routes can mix Ollama, OpenAI-compatible, OpenAI API,
+OpenRouter, and Anthropic models in one batch. The child gets a fresh bounded
+prompt containing only its task, applicable project instructions, and explicit
+selected previews/artifact references rather than the parent transcript. It
+cannot delegate again and returns a bounded report directly to the root turn;
+provider request counts and exposed token fields retain exact child
+attribution. Batches reserve their complete budget before becoming visible, run
 in input order up to the root profile's concurrency limit, and fail atomically
 when any member or aggregate bound is invalid. Use `/agents`,
 `/agent AGENT_ID`, and `/cancel-agent AGENT_ID` for active-process inspection
