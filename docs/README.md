@@ -25,6 +25,9 @@ engineering contracts used to change it.
 - [Full-screen terminal UI](user/tui.md) explains composer presets, portable
   keys, safe paste, follow-ups, command/model controls, and owner-specific
   limitations.
+- [Local foreground host](user/local-host.md) explains loopback-only serving,
+  capability discovery, passive observer attachment, sequence boundaries, and
+  the repository-private transport.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
 - [Child orchestration](user/orchestration.md) explains exact native routes,

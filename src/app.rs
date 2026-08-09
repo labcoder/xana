@@ -15,6 +15,7 @@ use crate::{
     context::{ContextBudget, ContextPlanReport},
     credential::{CredentialResolver, SecretString, delete_secret, store_secret},
     init::{self, InitPlan, WriteOutcome},
+    local_host::{HostSnapshotSeed, LocalHostError, LocalHostServer, connect_observer},
     managed::{
         codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
         thread_store::ManagedThreadStore,
@@ -138,6 +139,8 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 .map(|_| ())
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
+        Some(Command::Serve(args)) => run_serve_command(&args, &paths).await,
+        Some(Command::Attach) => run_attach_command(&paths).await,
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
@@ -166,6 +169,73 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Auth(args)) => {
             let stdout = io::stdout();
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
+        }
+    }
+}
+
+async fn run_serve_command(args: &cli::ServeArgs, paths: &XanaPaths) -> Result<()> {
+    let workspace = std::env::current_dir()
+        .context("could not resolve Xana workspace root")?
+        .canonicalize()
+        .context("could not canonicalize Xana workspace root")?;
+    let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+    let seed = HostSnapshotSeed::from_workspace(&host.snapshot()?);
+    let server =
+        LocalHostServer::bind(paths.runtime_dir(), &workspace, args.bind, args.port, seed).await?;
+    let shutdown = server.shutdown_token();
+    writeln!(
+        anstream::stderr().lock(),
+        "xana serve: foreground loopback host ready\n  endpoint: {}\n  workspace: {}\n  descriptor: {}\n  clients: 0\nattach from this workspace with: xana attach",
+        server.endpoint(),
+        serde_json::to_string(
+            workspace
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("workspace")
+        )?,
+        server.descriptor_path().display(),
+    )?;
+    let signal = shutdown.clone();
+    let signal_task = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            signal.cancel();
+        }
+    });
+    let result = server.run().await;
+    signal_task.abort();
+    writeln!(anstream::stderr().lock(), "xana serve: stopped")?;
+    result.map_err(anyhow::Error::new)
+}
+
+async fn run_attach_command(paths: &XanaPaths) -> Result<()> {
+    let workspace = std::env::current_dir()
+        .context("could not resolve Xana workspace root")?
+        .canonicalize()
+        .context("could not canonicalize Xana workspace root")?;
+    loop {
+        let mut observer = connect_observer(paths.runtime_dir(), &workspace).await?;
+        println!("{}", serde_json::to_string(observer.snapshot())?);
+        loop {
+            tokio::select! {
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("could not listen for attach cancellation")?;
+                    return Ok(());
+                }
+                observation = observer.next() => {
+                    match observation {
+                        Ok(observation) => println!("{}", serde_json::to_string(&observation)?),
+                        Err(LocalHostError::SequenceGap { .. }) => {
+                            eprintln!("xana attach: observation gap; reconnecting for a fresh snapshot");
+                            break;
+                        }
+                        Err(LocalHostError::Closed) => {
+                            eprintln!("xana attach: foreground host closed");
+                            return Ok(());
+                        }
+                        Err(error) => return Err(anyhow::Error::new(error)),
+                    }
+                }
+            }
         }
     }
 }

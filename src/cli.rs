@@ -5,7 +5,7 @@
 
 use crate::{config::PermissionMode, identity::SessionId, shell::ShellKind};
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ShellChoice {
@@ -102,6 +102,10 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum Command {
+    /// Host Xana explicitly for authenticated local frontend attachment.
+    Serve(ServeArgs),
+    /// Attach as a passive observer to this workspace's foreground host.
+    Attach,
     /// Create Xana's first configuration.
     Init(InitArgs),
     /// Clear setup state so Xana can be initialized again.
@@ -122,6 +126,17 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ServeArgs {
+    /// Loopback address to bind. Non-loopback addresses are rejected.
+    #[arg(long, default_value = "127.0.0.1")]
+    pub(crate) bind: IpAddr,
+
+    /// Local port, or zero to let the operating system select one.
+    #[arg(long, default_value_t = 0)]
+    pub(crate) port: u16,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -552,6 +567,22 @@ mod tests {
             clean.command,
             Some(Command::Reset(ResetArgs { yes: false }))
         );
+    }
+
+    #[test]
+    fn parses_loopback_serve_and_workspace_attach() {
+        let serve = Cli::try_parse_from(["xana", "serve", "--bind", "::1", "--port", "43123"])
+            .expect("serve command");
+        let attach = Cli::try_parse_from(["xana", "attach"]).expect("attach command");
+
+        assert_eq!(
+            serve.command,
+            Some(Command::Serve(ServeArgs {
+                bind: "::1".parse().unwrap(),
+                port: 43123,
+            }))
+        );
+        assert_eq!(attach.command, Some(Command::Attach));
     }
 
     #[test]

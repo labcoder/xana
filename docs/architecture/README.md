@@ -27,6 +27,7 @@ flowchart LR
     MAIN["main<br/>process composition"] --> APP["app<br/>command orchestration"]
     APP --> INIT["init<br/>configuration planning and creation"]
     APP --> TERMINAL["terminal<br/>native and managed clients"]
+    APP --> LOCAL["local_host<br/>authenticated loopback projection"]
     APP --> CONFIG["config + paths"]
     APP --> SESSION["durable session<br/>JSONL owner"]
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
@@ -35,6 +36,8 @@ flowchart LR
     CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
     TERMINAL <-->|"client commands + observations"| FRONTEND["embedded frontend client<br/>snapshot + sequence + bounds"]
+    LOCAL -.->|"same repository-private semantics"| FRONTEND
+    OBSERVER["attached observer"] <-->|"capability + snapshot + ordered events"| LOCAL
     FRONTEND <-->|"runtime commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
     RUNTIME --> AGENT["Agent<br/>bounded native loop"]
     RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
@@ -75,6 +78,28 @@ increasing sequence numbers to live observations and forwards them through a
 fact. A full or closed observer queue ends that observation stream without
 blocking or cancelling runtime work. Dropping the embedded owner closes the
 runtime command lane and follows the foreground cancellation path.
+
+`local_host` projects a bounded repository-private host vocabulary over a
+loopback-only WebSocket. `xana serve` is explicit and foreground; it never
+daemonizes or accepts a non-loopback bind. A canonical-workspace hash selects
+one runtime descriptor. The protected descriptor carries a fresh per-launch
+capability and endpoint, while normal logs and attach arguments carry neither.
+The first bounded frame must match protocol version, host generation,
+workspace identity, capability, and passive observer role before any snapshot
+is sent. Browser handshakes additionally require a loopback Origin.
+
+The host observation hub captures its bounded workspace snapshot and installs
+a 256-entry observer queue while holding one lock. Each later event receives
+one monotonically increasing host sequence under the same lock, so attachment
+has no snapshot/live race. A full queue drops that observer rather than
+blocking host execution; reconnect and sequence gaps take a new snapshot
+instead of guessing replay. The current network role is observation only.
+Commands receive a correlated rejection and a bounded audit event without
+crossing the runtime command lane. Host snapshots expose bounded conversation
+metadata and a workspace hash/display name, not the canonical path, provider
+secrets, credential references, or capability. Frames are capped at 1 MiB.
+Controller authority and hosted turn execution remain unimplemented until the
+next accepted slice.
 
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
@@ -727,6 +752,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   `managed_terminal/activity` so display policy does not enter the process or
   conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
   terminal-independent model/update policy, and pure adaptive view modules.
+- `frontend` owns the typed embedded application contract; `local_host` owns
+  only its authenticated loopback projection, protected discovery descriptor,
+  atomic host snapshot/sequence boundary, and passive observer transport.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
@@ -769,7 +797,7 @@ that maintains these boundaries.
 
 ## Deliberate absences
 
-Xana has no Xana-owned sandbox, background runtime, multi-client attachment,
+Xana has no Xana-owned sandbox, background runtime, attached controller,
 durable event replay, persistent grants,
 remote controller authentication, general context service, nested
 project-instruction or skill discovery, prompt compaction, artifact/session

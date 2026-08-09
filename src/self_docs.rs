@@ -254,6 +254,15 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/installation.md"),
     },
     BundledDoc {
+        id: "user.local-host",
+        title: "Local foreground host and observer attachment",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["host", "attach", "observer", "websocket", "security"],
+        body: include_str!("../docs/user/local-host.md"),
+    },
+    BundledDoc {
         id: "user.orchestration",
         title: "Child orchestration",
         audience: USER_AUDIENCE,
