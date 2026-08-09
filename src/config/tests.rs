@@ -37,6 +37,113 @@ fn minimal_v1_resolves_default_profile_and_default_round_limit() {
 }
 
 #[test]
+fn v3_registry_preserves_complete_profiles_and_exact_routes() {
+    let input = r#"
+version = 3
+default_profile = "default"
+default_child_route = "worker"
+permission_mode = "ask"
+
+[providers.local]
+kind = "openai_compat"
+base_url = "http://localhost:11434/v1"
+
+[providers.remote]
+kind = "openai_compat"
+base_url = "https://example.test/v1"
+
+[profiles.default]
+connection = "local"
+model = "root-model"
+
+[profiles.worker]
+connection = "remote"
+model = "worker-model"
+reasoning_effort = "high"
+reasoning_summary = "concise"
+capabilities = ["fs.read", "xana.docs.read"]
+permission_mode = "deny"
+max_tool_rounds = 4
+
+[profiles.worker.orchestration]
+max_fan_out = 3
+max_descendants = 5
+max_concurrency = 2
+deadline_seconds = 90
+max_context_tokens = 4096
+max_report_bytes = 8192
+max_artifact_bytes = 65536
+
+[routes.worker]
+profile = "worker"
+"#;
+    let directory = tempdir().expect("temporary directory");
+    let path = directory.path().join("config.toml");
+    fs::write(&path, input).expect("write config");
+
+    let registry = XanaConfig::load_registry_from(&path).expect("load registry");
+
+    assert_eq!(registry.default_child_route.as_deref(), Some("worker"));
+    assert_eq!(registry.routes["worker"].profile, "worker");
+    let worker = &registry.profiles["worker"];
+    assert_eq!(worker.connection, "remote");
+    assert_eq!(worker.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(worker.reasoning_summary.as_deref(), Some("concise"));
+    assert_eq!(
+        worker.capabilities.as_deref(),
+        Some(["fs.read".to_owned(), "xana.docs.read".to_owned()].as_slice())
+    );
+    assert_eq!(worker.permission_mode, Some(PermissionMode::Deny));
+    assert_eq!(worker.orchestration.max_fan_out, 3);
+    assert_eq!(worker.orchestration.max_descendants, 5);
+    assert_eq!(worker.orchestration.max_concurrency, 2);
+    assert_eq!(worker.orchestration.deadline_seconds, 90);
+    assert_eq!(worker.orchestration.max_context_tokens, 4096);
+    assert_eq!(worker.orchestration.max_report_bytes, 8192);
+    assert_eq!(worker.orchestration.max_artifact_bytes, 65536);
+}
+
+#[test]
+fn profile_connection_migration_rejects_conflicting_keys() {
+    let input = MINIMAL.replace(
+        "provider = \"local\"",
+        "provider = \"local\"\nconnection = \"local\"",
+    );
+
+    assert!(matches!(parse_error(&input), ConfigError::Decode(_)));
+}
+
+#[test]
+fn routes_and_orchestration_limits_are_validated_before_resolution() {
+    let unknown_profile = format!(
+        "{}\n[routes.worker]\nprofile = \"missing\"\n",
+        MINIMAL.replace("version = 1", "version = 3").replace(
+            "default_profile = \"default\"",
+            "default_profile = \"default\"\ndefault_child_route = \"worker\""
+        )
+    );
+    assert!(matches!(
+        parse_error(&unknown_profile),
+        ConfigError::UnknownProfile { route, profile }
+            if route == "worker" && profile == "missing"
+    ));
+
+    let invalid_limit = MINIMAL.replace(
+        "model = \"qwen3:1.7b\"",
+        "model = \"qwen3:1.7b\"\n[profiles.default.orchestration]\nmax_concurrency = 0",
+    );
+    assert!(matches!(
+        parse_error(&invalid_limit),
+        ConfigError::InvalidOrchestrationLimit {
+            profile,
+            field: "max_concurrency",
+            value: 0,
+            ..
+        } if profile == "default"
+    ));
+}
+
+#[test]
 fn oversized_configuration_is_rejected_before_toml_decoding() {
     let directory = tempdir().expect("temporary directory");
     let path = directory.path().join("config.toml");
@@ -171,9 +278,40 @@ fn connection_edits_preserve_comments_and_validate_the_complete_document() {
 
     let edited = fs::read_to_string(&path).unwrap();
     assert!(edited.contains("# keep me"));
-    assert!(edited.contains("version = 2"));
+    assert!(edited.contains("version = 3"));
     let registry = XanaConfig::load_registry_from(&path).unwrap();
     assert_eq!(registry.connections["codex"].kind, ProviderKind::Codex);
+}
+
+#[test]
+fn structured_writes_migrate_legacy_profile_keys_to_connection() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(
+        &path,
+        MINIMAL.replace("version = 1", "# preserve this\nversion = 2"),
+    )
+    .unwrap();
+
+    XanaConfig::add_connection(
+        &path,
+        NewConnection {
+            id: "codex".into(),
+            kind: ProviderKind::Codex,
+            base_url: None,
+            credential: None,
+            model: "gpt-5.6-sol".into(),
+            codex_program: Some("codex".into()),
+            codex_home: None,
+        },
+    )
+    .unwrap();
+
+    let edited = fs::read_to_string(&path).unwrap();
+    assert!(edited.contains("# preserve this"));
+    assert!(edited.contains("version = 3"));
+    assert!(edited.contains("connection = \"local\""));
+    assert!(!edited.contains("provider = \"local\""));
 }
 
 #[test]
@@ -501,6 +639,11 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
         }
     );
     assert!(rendered.contains("permission_mode = \"ask\""));
+    assert!(rendered.contains("version = 3"));
+    assert!(rendered.contains("default_child_route = \"default\""));
+    assert!(rendered.contains("connection = \"ollama\""));
+    assert!(!rendered.contains("provider = \"ollama\""));
+    assert!(rendered.contains("[routes.default]"));
     assert!(rendered.contains("[shell]"));
     assert!(rendered.contains("kind = \"platform\""));
 }

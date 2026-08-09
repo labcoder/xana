@@ -6,7 +6,7 @@
 use crate::{
     bounded_file,
     config::{ConnectionConfig, ConnectionRegistry, ModelOverride, ProviderKind},
-    credential::{CredentialResolver, SecretString},
+    credential::{CredentialAvailability, CredentialResolver, SecretString},
 };
 use futures::StreamExt;
 use reqwest::{Client, Url};
@@ -422,6 +422,33 @@ impl ModelManager {
             })
     }
 
+    pub(crate) fn validate_candidate(
+        &self,
+        connection: &str,
+        model: &str,
+        reasoning_effort: Option<String>,
+        reasoning_summary: Option<ReasoningSummary>,
+    ) -> Result<ModelSelection, ModelError> {
+        self.normalize_and_validate_selection(ModelSelection {
+            connection: connection.to_owned(),
+            model: model.to_owned(),
+            reasoning_effort,
+            reasoning_summary,
+        })
+    }
+
+    pub(crate) fn credential_availability(
+        &self,
+        connection: &ConnectionConfig,
+    ) -> Result<CredentialAvailability, ModelError> {
+        let Some(reference) = &connection.credential else {
+            return Ok(CredentialAvailability::Available);
+        };
+        self.credentials
+            .status(reference)
+            .map_err(|error| ModelError::MissingCredential(error.to_string()))
+    }
+
     pub(crate) async fn refresh_native(
         &self,
         id: &str,
@@ -791,6 +818,8 @@ mod tests {
     fn registry() -> ConnectionRegistry {
         ConnectionRegistry {
             default_profile: "default".into(),
+            default_child_route: None,
+            permission_mode: crate::config::PermissionMode::Ask,
             connections: BTreeMap::from([(
                 "local".into(),
                 ConnectionConfig {
@@ -810,14 +839,22 @@ mod tests {
                     connection: "local".into(),
                     model: "qwen".into(),
                     max_tool_rounds: 8,
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    capabilities: None,
+                    permission_mode: None,
+                    orchestration: crate::config::OrchestrationLimits::default(),
                 },
             )]),
+            routes: BTreeMap::new(),
         }
     }
 
     fn codex_registry() -> ConnectionRegistry {
         ConnectionRegistry {
             default_profile: "default".into(),
+            default_child_route: None,
+            permission_mode: crate::config::PermissionMode::Ask,
             connections: BTreeMap::from([(
                 "codex".into(),
                 ConnectionConfig {
@@ -843,8 +880,14 @@ mod tests {
                     connection: "codex".into(),
                     model: "gpt-5.6-sol".into(),
                     max_tool_rounds: 8,
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                    capabilities: None,
+                    permission_mode: None,
+                    orchestration: crate::config::OrchestrationLimits::default(),
                 },
             )]),
+            routes: BTreeMap::new(),
         }
     }
 

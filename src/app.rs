@@ -9,7 +9,7 @@ use crate::{
     artifact::ArtifactStore,
     cli::{
         self, AuthCommand, Cli, Command, ConfigCommand, ConnectionCommand, ModelCommand,
-        OperationCommand, SessionCommand,
+        OperationCommand, RouteCommand, SessionCommand,
     },
     config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
@@ -19,6 +19,7 @@ use crate::{
     managed_terminal::{ManagedChatConfig, run_codex_chat},
     model::{ExecutionKind, ModelManager},
     operation::{RecoveryAction, execute_recovery, plan_recovery},
+    orchestration::{ExecutionOwner, ResolvedAgentConfig, RouteResolver},
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
     presentation::{self, BannerMode},
@@ -78,11 +79,118 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_model_command(args.command, &paths, &mut stdout.lock()).await
         }
+        Some(Command::Route(args)) => {
+            let stdout = io::stdout();
+            run_route_command(args.command, &paths, &mut stdout.lock())
+        }
         Some(Command::Auth(args)) => {
             let stdout = io::stdout();
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
         }
     }
+}
+
+fn run_route_command<W: Write>(
+    command: RouteCommand,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    let registry = XanaConfig::load_registry_from(paths.config_file())
+        .context("could not load route registry")?;
+    let manager = ModelManager::new(
+        registry.clone(),
+        paths.cache_dir().to_owned(),
+        paths.data_dir().join("selection.toml"),
+    );
+    let resolver = RouteResolver::new(&registry, &manager);
+    match command {
+        RouteCommand::List => {
+            if registry.routes.is_empty() {
+                writeln!(output, "no child task routes configured")?;
+                return Ok(());
+            }
+            for route in registry.routes.keys() {
+                let marker = if registry.default_child_route.as_deref() == Some(route.as_str()) {
+                    "*"
+                } else {
+                    " "
+                };
+                match resolver.resolve(Some(route)) {
+                    Ok(resolved) => writeln!(
+                        output,
+                        "{marker} {}\t{}\t{}/{}\tprofile {}",
+                        route,
+                        resolved.owner.as_str(),
+                        resolved.connection,
+                        resolved.model.id,
+                        resolved.profile
+                    )?,
+                    Err(error) => writeln!(output, "{marker} {route}\tunavailable\t{error}")?,
+                }
+            }
+            Ok(())
+        }
+        RouteCommand::Check { route } => {
+            let resolved = resolver.resolve(Some(&route))?;
+            write_resolved_route(output, &resolved)
+        }
+    }
+}
+
+fn write_resolved_route<W: Write>(output: &mut W, route: &ResolvedAgentConfig) -> Result<()> {
+    writeln!(output, "route: {}", route.route)?;
+    writeln!(output, "profile: {}", route.profile)?;
+    writeln!(output, "execution: {}", route.owner.as_str())?;
+    writeln!(output, "connection: {}", route.connection)?;
+    writeln!(output, "kind: {}", route.provider_kind.as_str())?;
+    writeln!(output, "model: {}", route.model.id)?;
+    if route.owner == ExecutionOwner::Codex {
+        writeln!(
+            output,
+            "reasoning effort: {}",
+            route.reasoning_effort.as_deref().unwrap_or("model default")
+        )?;
+        writeln!(
+            output,
+            "reasoning summary: {}",
+            route
+                .reasoning_summary
+                .map_or_else(|| "provider default".to_owned(), |value| value.to_string())
+        )?;
+    }
+    let capabilities = route
+        .capabilities
+        .capabilities()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    writeln!(
+        output,
+        "capabilities: {}",
+        if capabilities.is_empty() {
+            "none".to_owned()
+        } else {
+            capabilities.join(",")
+        }
+    )?;
+    writeln!(
+        output,
+        "permission ceiling: {}",
+        route.permission_mode.as_str()
+    )?;
+    writeln!(output, "maximum tool rounds: {}", route.max_tool_rounds)?;
+    writeln!(
+        output,
+        "orchestration: fan-out {}, descendants {}, concurrency {}, deadline {}s, context {} tokens, report {} bytes, artifacts {} bytes",
+        route.orchestration.max_fan_out,
+        route.orchestration.max_descendants,
+        route.orchestration.max_concurrency,
+        route.orchestration.deadline_seconds,
+        route.orchestration.max_context_tokens,
+        route.orchestration.max_report_bytes,
+        route.orchestration.max_artifact_bytes
+    )?;
+    Ok(())
 }
 
 fn run_reset_with_io<R: BufRead, W: Write>(
@@ -1222,6 +1330,48 @@ mod tests {
                 .expect("check output")
                 .starts_with("configuration is valid:")
         );
+    }
+
+    #[test]
+    fn route_commands_report_exact_local_resolution_without_starting_a_provider() {
+        let directory = tempdir().expect("temporary Xana home");
+        let paths = XanaPaths::resolve(Some(directory.path().as_os_str().to_owned()))
+            .expect("absolute Xana home");
+        let rendered = XanaConfig::render_initial(InitialConfig {
+            connection: InitialConnection::Ollama {
+                name: "ollama".to_owned(),
+                base_url: "http://localhost:11434/v1".to_owned(),
+            },
+            model: "qwen".to_owned(),
+            max_tool_rounds: 8,
+            shell: crate::shell::ShellConfig::default(),
+            permission_mode: crate::config::PermissionMode::Ask,
+        })
+        .expect("render config");
+        fs::write(paths.config_file(), rendered).expect("write config");
+
+        let mut listed = Vec::new();
+        run_route_command(RouteCommand::List, &paths, &mut listed).expect("list routes");
+        let mut checked = Vec::new();
+        run_route_command(
+            RouteCommand::Check {
+                route: "default".into(),
+            },
+            &paths,
+            &mut checked,
+        )
+        .expect("check route");
+
+        assert_eq!(
+            String::from_utf8(listed).expect("utf8 list"),
+            "* default\tnative\tollama/qwen\tprofile default\n"
+        );
+        let checked = String::from_utf8(checked).expect("utf8 check");
+        assert!(checked.contains("route: default\n"));
+        assert!(checked.contains("execution: native\n"));
+        assert!(checked.contains("connection: ollama\n"));
+        assert!(checked.contains("model: qwen\n"));
+        assert!(!checked.to_ascii_lowercase().contains("secret"));
     }
 
     #[test]

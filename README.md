@@ -54,8 +54,9 @@ the selected connection without storing a plaintext secret. A minimal Ollama
 document is:
 
 ```toml
-version = 2
+version = 3
 default_profile = "default"
+default_child_route = "default"
 permission_mode = "ask"
 
 [shell]
@@ -69,9 +70,12 @@ input_modalities = ["text"]
 tools = true
 
 [profiles.default]
-provider = "ollama"
+connection = "ollama"
 model = "qwen3:1.7b"
 max_tool_rounds = 8
+
+[routes.default]
+profile = "default"
 ```
 
 ## Add a remote API provider
@@ -164,6 +168,18 @@ Use `xana connection list|add|status|set-key|delete-key|login|logout|refresh|rem
 for advanced connection and credential control. See
 [Configuration](docs/user/configuration.md) for exact commands, provider kinds,
 catalogs, OS credential storage, and `XANA_HOME`.
+
+Named child task routes are separate from the interactive model selection.
+Inspect their exact local resolution without starting a provider or managed
+process:
+
+```text
+xana route list
+xana route check default
+```
+
+The current route commands are read-only diagnostics; child execution is not
+yet exposed by this release.
 
 ## Start first-run setup again
 
