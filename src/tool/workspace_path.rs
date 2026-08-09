@@ -75,14 +75,8 @@ pub(super) struct ResolvedPath {
     pub(super) identity: FileIdentity,
 }
 
-#[cfg(unix)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct FileIdentity {
-    device: u64,
-    inode: u64,
-}
-
-#[cfg(windows)]
+/// Retains the OS handle so its filesystem identity cannot be recycled before execution.
+#[cfg(any(unix, windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FileIdentity(Arc<same_file::Handle>);
 
@@ -167,15 +161,7 @@ pub(super) fn verify_open_file(
 }
 
 fn file_identity(path: &Path, requested_path: &str) -> Result<FileIdentity, WorkspacePathError> {
-    #[cfg(unix)]
-    {
-        let metadata = fs::metadata(path).map_err(|source| WorkspacePathError::Unavailable {
-            requested_path: requested_path.to_owned(),
-            source,
-        })?;
-        Ok(unix_identity(&metadata))
-    }
-    #[cfg(windows)]
+    #[cfg(any(unix, windows))]
     {
         same_file::Handle::from_path(path)
             .map(|handle| FileIdentity(Arc::new(handle)))
@@ -196,29 +182,7 @@ fn file_identity(path: &Path, requested_path: &str) -> Result<FileIdentity, Work
     }
 }
 
-#[cfg(unix)]
-fn identity_from_file(
-    file: &fs::File,
-    requested_path: &str,
-) -> Result<FileIdentity, WorkspacePathError> {
-    file.metadata()
-        .map(|metadata| unix_identity(&metadata))
-        .map_err(|source| WorkspacePathError::Unavailable {
-            requested_path: requested_path.to_owned(),
-            source,
-        })
-}
-
-#[cfg(unix)]
-fn unix_identity(metadata: &fs::Metadata) -> FileIdentity {
-    use std::os::unix::fs::MetadataExt as _;
-    FileIdentity {
-        device: metadata.dev(),
-        inode: metadata.ino(),
-    }
-}
-
-#[cfg(windows)]
+#[cfg(any(unix, windows))]
 fn identity_from_file(
     file: &fs::File,
     requested_path: &str,

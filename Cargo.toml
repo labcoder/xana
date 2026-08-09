@@ -44,6 +44,7 @@ keyring = "4.1.6"
 reqwest = { version = "0.13.4", features = ["json", "rustls", "stream"] }
 rpassword = "7.5.4"
 rustyline = "18.0.1"
+same-file = "1.0.6"
 xana-core = { version = "0.3.0", path = "crates/xana-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -52,9 +53,6 @@ toml = "1.1.4"
 toml_edit = "0.25.13"
 uuid = { version = "1.18.1", features = ["serde", "v4"] }
 zeroize = { version = "=1.8.2", features = ["derive"] }
-
-[target.'cfg(windows)'.dependencies]
-same-file = "1.0.6"
 
 [dev-dependencies]
 tempfile = "3.27.0"
