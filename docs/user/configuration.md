@@ -59,6 +59,36 @@ catalog before managed chat; replace it with an advertised ID when necessary.
 Status is the first executable/runtime check; login remains an explicit
 account-changing action delegated to Codex.
 
+## Reset first-run setup
+
+Use `reset` (or its `clean` alias) when you want to discard the current setup
+and run initialization again:
+
+```bash
+xana reset
+# Noninteractive confirmation:
+xana reset --yes
+xana init
+```
+
+From a source checkout, the equivalents are `cargo run -- reset` and `cargo
+run -- init`. Without `--yes`, an interactive terminal previews every target
+and asks for confirmation; redirected input fails closed.
+
+Reset removes only:
+
+- `config.toml`;
+- `data/selection.toml`;
+- cached model catalogs beneath `cache/models/`; and
+- Xana's managed-thread handles beneath `data/managed-threads/`.
+
+It preserves native session journals, artifacts, OS credential-manager API
+keys, Codex authentication, and Codex-owned conversations. Removing a managed
+thread handle means Xana will not automatically resume that external thread,
+but it does not delete the thread from Codex. Use `/clear` to clear only the
+active conversation, `connection delete-key` to remove an API key, and
+`connection logout` for an explicit managed-account logout.
+
 ## Connections and models
 
 `xana model` is the normal discovery and selection entry point:

@@ -24,6 +24,7 @@ use crate::{
     presentation::{self, BannerMode},
     prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
     provider::{anthropic::AnthropicClient, openai_compat::OpenAiCompatClient},
+    reset::ResetPlan,
     runtime::{RuntimeCommand, RuntimeHandle},
     session::{DurableSession, RestoredOperation},
     shell::Shell,
@@ -56,6 +57,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             run_default(&paths, mode, cli.resume).await
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
+        Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
             run_config_command(args.command, &paths, &mut stdout.lock())
@@ -81,6 +83,75 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
         }
     }
+}
+
+fn run_reset_with_io<R: BufRead, W: Write>(
+    args: &cli::ResetArgs,
+    paths: &XanaPaths,
+    is_terminal: bool,
+    input: &mut R,
+    output: &mut W,
+) -> Result<()> {
+    let plan = ResetPlan::inspect(paths).context("could not inspect Xana setup state")?;
+    if plan.targets().is_empty() {
+        writeln!(output, "Xana setup state is already clear.")?;
+        writeln!(output, "Next: xana init")?;
+        writeln!(output, "Source checkout: cargo run -- init")?;
+        return Ok(());
+    }
+
+    if !args.yes {
+        writeln!(output, "Reset will remove:")?;
+        for target in plan.targets() {
+            writeln!(output, "  {}: {}", target.label, target.path.display())?;
+        }
+        writeln!(output, "Reset preserves:")?;
+        writeln!(output, "  native sessions and artifacts")?;
+        writeln!(output, "  stored API keys")?;
+        writeln!(
+            output,
+            "  Codex authentication and Codex-owned conversations"
+        )?;
+        if !is_terminal {
+            anyhow::bail!("reset requires --yes when stdin is not a terminal")
+        }
+        write!(output, "Reset Xana setup state? [y/N]: ")?;
+        output.flush()?;
+        let mut answer = String::new();
+        if input.read_line(&mut answer)? == 0
+            || !matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+        {
+            writeln!(output, "No changes made.")?;
+            return Ok(());
+        }
+    }
+
+    let removed = plan.execute().context("could not reset Xana setup state")?;
+    writeln!(output, "Xana setup state reset.")?;
+    for target in removed {
+        writeln!(
+            output,
+            "  removed {}: {}",
+            target.label,
+            target.path.display()
+        )?;
+    }
+    writeln!(output)?;
+    writeln!(
+        output,
+        "Preserved native sessions, artifacts, stored API keys, and external Codex state."
+    )?;
+    writeln!(output, "Next: xana init")?;
+    writeln!(output, "Source checkout: cargo run -- init")?;
+    Ok(())
+}
+
+fn run_reset_command(args: &cli::ResetArgs, paths: &XanaPaths) -> Result<()> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let stdout = io::stdout();
+    let mut output = stdout.lock();
+    run_reset_with_io(args, paths, stdin.is_terminal(), &mut input, &mut output)
 }
 
 async fn run_auth_command<W: Write>(
@@ -1148,6 +1219,63 @@ mod tests {
             String::from_utf8(check_output)
                 .expect("check output")
                 .starts_with("configuration is valid:")
+        );
+    }
+
+    #[test]
+    fn reset_confirmation_can_decline_without_removing_configuration() {
+        let directory = tempdir().expect("temporary Xana home");
+        let root = directory.path().join("xana-home");
+        let paths = XanaPaths::resolve(Some(root.into_os_string())).expect("absolute Xana home");
+        fs::create_dir_all(paths.config_file().parent().expect("config parent"))
+            .expect("create config parent");
+        fs::write(paths.config_file(), b"existing").expect("existing config");
+        let mut input = Cursor::new(b"n\n");
+        let mut output = Vec::new();
+
+        run_reset_with_io(
+            &cli::ResetArgs { yes: false },
+            &paths,
+            true,
+            &mut input,
+            &mut output,
+        )
+        .expect("decline reset");
+
+        assert!(paths.config_file().is_file());
+        assert!(
+            String::from_utf8(output)
+                .expect("reset output")
+                .contains("No changes made.")
+        );
+    }
+
+    #[test]
+    fn confirmed_reset_does_not_read_input_and_allows_initialization_again() {
+        let directory = tempdir().expect("temporary Xana home");
+        let root = directory.path().join("xana-home");
+        let paths = XanaPaths::resolve(Some(root.into_os_string())).expect("absolute Xana home");
+        fs::create_dir_all(paths.config_file().parent().expect("config parent"))
+            .expect("create config parent");
+        fs::write(paths.config_file(), b"existing").expect("existing config");
+        let mut input = Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        run_reset_with_io(
+            &cli::ResetArgs { yes: true },
+            &paths,
+            false,
+            &mut input,
+            &mut output,
+        )
+        .expect("confirmed reset");
+
+        assert_eq!(input.position(), 0);
+        assert!(!paths.config_file().exists());
+        assert!(
+            String::from_utf8(output)
+                .expect("reset output")
+                .contains("cargo run -- init")
         );
     }
 

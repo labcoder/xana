@@ -74,6 +74,9 @@ pub(crate) struct Cli {
 pub(crate) enum Command {
     /// Create Xana's first configuration.
     Init(InitArgs),
+    /// Clear setup state so Xana can be initialized again.
+    #[command(visible_alias = "clean")]
+    Reset(ResetArgs),
     /// Inspect the active configuration.
     Config(ConfigArgs),
     /// Inspect durable sessions without entering chat.
@@ -87,6 +90,13 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ResetArgs {
+    /// Confirm removal without reading from the terminal.
+    #[arg(long)]
+    pub(crate) yes: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -429,6 +439,18 @@ mod tests {
                 permission_mode: None,
                 dry_run: true,
             }))
+        );
+    }
+
+    #[test]
+    fn parses_guarded_reset_and_clean_alias() {
+        let reset = Cli::try_parse_from(["xana", "reset", "--yes"]).expect("reset command");
+        let clean = Cli::try_parse_from(["xana", "clean"]).expect("clean alias");
+
+        assert_eq!(reset.command, Some(Command::Reset(ResetArgs { yes: true })));
+        assert_eq!(
+            clean.command,
+            Some(Command::Reset(ResetArgs { yes: false }))
         );
     }
 
