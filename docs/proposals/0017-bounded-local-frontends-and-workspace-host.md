@@ -164,8 +164,12 @@ Observer commands are correlated rejections and cannot reach runtime control.
 One explicit controller lease routes correlated native and managed Codex turns
 and exact approval decisions. Release, takeover, reconnect grace, and expiry
 are sequenced host facts; controller loss fails pending approvals closed and
-interrupts the root without promoting an observer. Transactional setup and
-complete explicit-server shutdown remain unimplemented. The TUI now owns adaptive state/update/view
+interrupts the root without promoting an observer. Client count/rate/frame/
+queue/write bounds now isolate slow or malicious clients; authorized artifact
+lookup accepts only visible immutable references and returns a verified 64 KiB
+preview; the host owns two-second graceful and five-second hard shutdown of its
+exact client/execution tasks. Transactional setup remains unimplemented. The
+TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,
 image staging, ordered follow-ups, exact interruption, owner-gated steering,
 one command registry/palette, model selection, independent activity visibility,

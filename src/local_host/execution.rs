@@ -14,12 +14,16 @@ use crate::{
 };
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::AbortHandle;
+use tokio_util::sync::CancellationToken;
 
 const EXECUTION_COMMAND_CAPACITY: usize = 32;
 
 #[derive(Clone)]
 pub(crate) struct HostedExecutionHandle {
     requests: mpsc::Sender<ExecutionRequest>,
+    abort: AbortHandle,
+    done: CancellationToken,
 }
 
 enum ExecutionRequest {
@@ -33,7 +37,9 @@ enum ExecutionRequest {
         reply: oneshot::Sender<Result<(), String>>,
     },
     FailClosed,
-    Shutdown,
+    Shutdown {
+        complete: oneshot::Sender<()>,
+    },
 }
 
 impl HostedExecutionHandle {
@@ -75,7 +81,23 @@ impl HostedExecutionHandle {
     }
 
     pub(crate) async fn shutdown(&self) {
-        let _ = self.requests.send(ExecutionRequest::Shutdown).await;
+        let (complete, finished) = oneshot::channel();
+        if self
+            .requests
+            .send(ExecutionRequest::Shutdown { complete })
+            .await
+            .is_ok()
+        {
+            let _ = finished.await;
+        }
+    }
+
+    pub(crate) fn abort(&self) {
+        self.abort.abort();
+    }
+
+    pub(crate) async fn wait_closed(&self) {
+        self.done.cancelled().await;
     }
 }
 
@@ -84,8 +106,17 @@ pub(crate) fn spawn_managed_execution(
     hub: ObservationHub,
 ) -> HostedExecutionHandle {
     let (requests, receiver) = mpsc::channel(EXECUTION_COMMAND_CAPACITY);
-    tokio::spawn(run_managed_execution(driver, receiver, hub));
-    HostedExecutionHandle { requests }
+    let done = CancellationToken::new();
+    let guard = done.clone().drop_guard();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        run_managed_execution(driver, receiver, hub).await;
+    });
+    HostedExecutionHandle {
+        requests,
+        abort: task.abort_handle(),
+        done,
+    }
 }
 
 async fn run_managed_execution(
@@ -124,9 +155,10 @@ async fn run_managed_execution(
                     ExecutionRequest::FailClosed => {
                         fail_closed_managed(&driver, &mut active_operation, &mut approvals);
                     }
-                    ExecutionRequest::Shutdown => {
+                    ExecutionRequest::Shutdown { complete } => {
                         fail_closed_managed(&driver, &mut active_operation, &mut approvals);
                         let _ = driver.shutdown().await;
+                        let _ = complete.send(());
                         return;
                     }
                 }
@@ -261,15 +293,17 @@ pub(crate) fn spawn_native_execution(
 ) -> HostedExecutionHandle {
     let (owner, observer) = client.into_parts();
     let (requests, receiver) = mpsc::channel(EXECUTION_COMMAND_CAPACITY);
-    tokio::spawn(run_native_execution(
-        owner,
-        observer,
-        receiver,
-        workspace_host,
-        conversation,
-        hub,
-    ));
-    HostedExecutionHandle { requests }
+    let done = CancellationToken::new();
+    let guard = done.clone().drop_guard();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        run_native_execution(owner, observer, receiver, workspace_host, conversation, hub).await;
+    });
+    HostedExecutionHandle {
+        requests,
+        abort: task.abort_handle(),
+        done,
+    }
 }
 
 struct NativeExecutionState {
@@ -379,9 +413,10 @@ async fn run_native_execution(
                         ));
                     }
                     ExecutionRequest::FailClosed => fail_closed_native(&owner, &mut state).await,
-                    ExecutionRequest::Shutdown => {
+                    ExecutionRequest::Shutdown { complete } => {
                         fail_closed_native(&owner, &mut state).await;
                         let _ = owner.send(ClientCommand::new(RuntimeCommand::Shutdown)).await;
+                        let _ = complete.send(());
                         return;
                     }
                 }
@@ -475,7 +510,10 @@ pub(crate) fn fake_execution(
 ) -> (HostedExecutionHandle, mpsc::Receiver<FakeExecutionEvent>) {
     let (requests, mut receiver) = mpsc::channel(EXECUTION_COMMAND_CAPACITY);
     let (seen, seen_receiver) = mpsc::channel(EXECUTION_COMMAND_CAPACITY);
-    tokio::spawn(async move {
+    let done = CancellationToken::new();
+    let guard = done.clone().drop_guard();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
         while let Some(request) = receiver.recv().await {
             match request {
                 ExecutionRequest::Command { command, reply } => {
@@ -493,14 +531,54 @@ pub(crate) fn fake_execution(
                 ExecutionRequest::FailClosed => {
                     let _ = seen.send(FakeExecutionEvent::FailClosed).await;
                 }
-                ExecutionRequest::Shutdown => {
+                ExecutionRequest::Shutdown { complete } => {
                     let _ = seen.send(FakeExecutionEvent::Shutdown).await;
+                    let _ = complete.send(());
                     break;
                 }
             }
         }
     });
-    (HostedExecutionHandle { requests }, seen_receiver)
+    (
+        HostedExecutionHandle {
+            requests,
+            abort: task.abort_handle(),
+            done,
+        },
+        seen_receiver,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn stubborn_execution() -> HostedExecutionHandle {
+    let (requests, mut receiver) = mpsc::channel(EXECUTION_COMMAND_CAPACITY);
+    let done = CancellationToken::new();
+    let guard = done.clone().drop_guard();
+    let task = tokio::spawn(async move {
+        let _guard = guard;
+        while let Some(request) = receiver.recv().await {
+            match request {
+                ExecutionRequest::Command { command, reply } => {
+                    let _ = reply.send(ClientCommandResult::rejected(
+                        command.id,
+                        "stubborn fixture",
+                    ));
+                }
+                ExecutionRequest::ManagedApproval { reply, .. } => {
+                    let _ = reply.send(Err("stubborn fixture".into()));
+                }
+                ExecutionRequest::FailClosed => {}
+                ExecutionRequest::Shutdown { .. } => {
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+    });
+    HostedExecutionHandle {
+        requests,
+        abort: task.abort_handle(),
+        done,
+    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 use crate::{
+    artifact::ArtifactRecord,
     frontend::{ClientCommand, ClientCommandResult, ClientEvent, ClientSnapshot},
-    identity::OperationId,
+    identity::{ArtifactId, OperationId},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,16 @@ impl ControlRequestId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ArtifactRequestId(Uuid);
+
+impl ArtifactRequestId {
+    pub(crate) fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub(crate) enum ClientFrame {
@@ -69,6 +80,11 @@ pub(crate) enum ClientFrame {
         approval_id: Uuid,
         decision: ManagedApprovalDecision,
     },
+    GetArtifact {
+        request_id: ArtifactRequestId,
+        artifact_id: ArtifactId,
+        max_preview_bytes: usize,
+    },
     Command(ClientCommand),
     Ping,
 }
@@ -83,11 +99,55 @@ pub(crate) enum ServerFrame {
     Observation(HostObservation),
     CommandResult(ClientCommandResult),
     ControlResult(ControlResult),
+    ArtifactResult(ArtifactResult),
     ProtocolError {
         code: String,
         message: String,
     },
+    HostShuttingDown {
+        graceful_ms: u64,
+        hard_ms: u64,
+    },
     Pong,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ArtifactResult {
+    pub(crate) request_id: ArtifactRequestId,
+    pub(crate) accepted: bool,
+    pub(crate) record: Option<ArtifactRecord>,
+    pub(crate) preview: Vec<u8>,
+    pub(crate) preview_truncated: bool,
+    pub(crate) reason: Option<String>,
+}
+
+impl ArtifactResult {
+    pub(crate) fn accepted(
+        request_id: ArtifactRequestId,
+        record: ArtifactRecord,
+        preview: Vec<u8>,
+        preview_truncated: bool,
+    ) -> Self {
+        Self {
+            request_id,
+            accepted: true,
+            record: Some(record),
+            preview,
+            preview_truncated,
+            reason: None,
+        }
+    }
+
+    pub(crate) fn rejected(request_id: ArtifactRequestId, reason: impl Into<String>) -> Self {
+        Self {
+            request_id,
+            accepted: false,
+            record: None,
+            preview: Vec::new(),
+            preview_truncated: false,
+            reason: Some(bounded_label(reason.into())),
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

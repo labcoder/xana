@@ -110,6 +110,21 @@ Host snapshots expose bounded conversation
 metadata and a workspace hash/display name, not the canonical path, provider
 secrets, credential references, or capability. Frames are capped at 1 MiB.
 
+Client isolation is structural: at most 32 client tasks exist, each has a
+256-event queue, a 256-frame-per-second inbound budget, and a two-second write
+deadline. Queue overflow or transport failure removes only that subscriber.
+The authenticated artifact adapter indexes at most 512 immutable records found
+in visible frontend messages. Lookup accepts `ArtifactId`, never a path, streams
+full content through digest verification, and retains at most a 64 KiB preview.
+
+Host shutdown cancels intake and controller authority, then gives the exact
+owned execution two seconds to close normally. A shared five-second hard
+deadline aborts only its retained Tokio task handle and client tasks. Dropping
+the native owner enters runtime/child structured shutdown; dropping a managed
+driver drops the `kill_on_drop` app-server child. Descriptor cleanup is tied to
+the verified host-generation lease, so stale PID metadata is diagnostic only
+and never process-kill authority.
+
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
 bounded command for delivery; semantic runtime outcomes remain ordered
@@ -764,7 +779,8 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
 - `frontend` owns the typed embedded application contract; `local_host` owns
   only its authenticated loopback projection, protected discovery descriptor,
   atomic host snapshot/sequence boundary, observer fan-out, and one explicit
-  controller/reconnect lease. Native and managed hosted execution adapters
+  controller/reconnect lease, bounded visible-artifact catalog, and exact
+  foreground shutdown registry. Native and managed hosted execution adapters
   translate that authority back into their existing owners.
 - `runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.

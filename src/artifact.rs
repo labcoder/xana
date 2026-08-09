@@ -154,6 +154,68 @@ impl ArtifactStore {
         Ok(bytes)
     }
 
+    pub(crate) fn read_verified_preview(
+        &self,
+        artifact: &ArtifactRecord,
+        max_preview_bytes: usize,
+    ) -> Result<(Vec<u8>, bool), ArtifactError> {
+        let declared = usize::try_from(artifact.byte_len).map_err(|_| ArtifactError::TooLarge {
+            actual: usize::MAX,
+            limit: MAX_ARTIFACT_BYTES,
+        })?;
+        if declared > MAX_ARTIFACT_BYTES {
+            return Err(ArtifactError::TooLarge {
+                actual: declared,
+                limit: MAX_ARTIFACT_BYTES,
+            });
+        }
+        let path = self.path_for(&artifact.reference.content_hash);
+        let mut file = fs::File::open(&path).map_err(|source| ArtifactError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if file
+            .metadata()
+            .map_err(|source| ArtifactError::Io {
+                path: path.clone(),
+                source,
+            })?
+            .len()
+            != artifact.byte_len
+        {
+            return Err(ArtifactError::CorruptContent { path });
+        }
+        let mut preview = Vec::with_capacity(declared.min(max_preview_bytes));
+        let mut hasher = blake3::Hasher::new();
+        let mut actual = 0_usize;
+        let mut chunk = [0_u8; 16 * 1024];
+        loop {
+            let read = file.read(&mut chunk).map_err(|source| ArtifactError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            if read == 0 {
+                break;
+            }
+            actual = actual.saturating_add(read);
+            if actual > MAX_ARTIFACT_BYTES {
+                return Err(ArtifactError::TooLarge {
+                    actual,
+                    limit: MAX_ARTIFACT_BYTES,
+                });
+            }
+            hasher.update(&chunk[..read]);
+            let remaining = max_preview_bytes.saturating_sub(preview.len());
+            preview.extend_from_slice(&chunk[..read.min(remaining)]);
+        }
+        if actual != declared
+            || hasher.finalize().to_hex().as_str() != artifact.reference.content_hash.as_str()
+        {
+            return Err(ArtifactError::CorruptContent { path });
+        }
+        Ok((preview, actual > max_preview_bytes))
+    }
+
     pub(crate) fn verify_reference(
         &self,
         reference: &ArtifactRef,

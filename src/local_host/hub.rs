@@ -14,6 +14,7 @@ pub(crate) const OBSERVER_QUEUE_CAPACITY: usize = 256;
 #[derive(Clone)]
 pub(crate) struct ObservationHub {
     state: Arc<Mutex<HubState>>,
+    artifacts: Option<super::artifact_access::ArtifactAccess>,
 }
 
 struct HubState {
@@ -36,13 +37,22 @@ pub(crate) struct Subscription {
 }
 
 impl ObservationHub {
+    #[cfg(test)]
     pub(crate) fn new(snapshot: HostSnapshot) -> Self {
+        Self::with_artifacts(snapshot, None)
+    }
+
+    pub(crate) fn with_artifacts(
+        snapshot: HostSnapshot,
+        artifacts: Option<super::artifact_access::ArtifactAccess>,
+    ) -> Self {
         Self {
             state: Arc::new(Mutex::new(HubState {
                 snapshot,
                 subscribers: HashMap::new(),
                 controller: None,
             })),
+            artifacts,
         }
     }
 
@@ -83,6 +93,9 @@ impl ObservationHub {
         &self,
         event: crate::frontend::ClientEvent,
     ) -> Result<u64, String> {
+        if let Some(artifacts) = &self.artifacts {
+            artifacts.observe(&event);
+        }
         let mut state = self
             .state
             .lock()
@@ -92,6 +105,23 @@ impl ObservationHub {
             frontend.apply(&event, sequence);
         }
         Ok(publish_locked(&mut state, HostEvent::Frontend(event)))
+    }
+
+    pub(crate) fn fetch_artifact(
+        &self,
+        request_id: super::protocol::ArtifactRequestId,
+        artifact_id: crate::identity::ArtifactId,
+        max_preview_bytes: usize,
+    ) -> super::protocol::ArtifactResult {
+        self.artifacts.as_ref().map_or_else(
+            || {
+                super::protocol::ArtifactResult::rejected(
+                    request_id,
+                    "this host has no authorized artifact catalog",
+                )
+            },
+            |artifacts| artifacts.fetch(request_id, artifact_id, max_preview_bytes),
+        )
     }
 
     pub(crate) fn subscriber_count(&self) -> usize {

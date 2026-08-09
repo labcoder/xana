@@ -3,7 +3,8 @@ use super::{
     hub::ObservationHub,
     protocol::{
         ClientFrame, ClientHello, ClientRole, HostEvent, HostSnapshot, HostSnapshotSeed,
-        LOCAL_HOST_PROTOCOL_VERSION, ServerFrame, decode_server_frame, workspace_identity,
+        LOCAL_HOST_PROTOCOL_VERSION, ServerFrame, decode_client_frame, decode_server_frame,
+        workspace_identity,
     },
     transport::{
         ControlledExecution, LocalHostServer, constant_time_equal, origin_is_loopback,
@@ -75,6 +76,10 @@ fn capability_comparison_and_origin_policy_are_explicit() {
     assert!(origin_is_loopback("http://[::1]:8080"));
     assert!(!origin_is_loopback("https://example.com"));
     assert!(!origin_is_loopback("null"));
+    assert!(decode_client_frame(
+        r#"{"type":"get_artifact","value":{"request_id":"00000000-0000-0000-0000-000000000001","artifact_id":"../../etc/passwd","max_preview_bytes":64}}"#
+    )
+    .is_err());
 }
 
 #[test]
@@ -244,7 +249,7 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
         IpAddr::V4(Ipv4Addr::LOCALHOST),
         0,
         seed(&workspace, &data),
-        ControlledExecution::new("native/test".into(), None, move |hub| {
+        ControlledExecution::new("native/test".into(), None, None, move |hub| {
             let (execution, receiver) = super::execution::fake_execution(hub);
             *factory_events.lock().unwrap() = Some(receiver);
             execution
@@ -302,10 +307,12 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
 
     shutdown.cancel();
     task.await.unwrap().unwrap();
-    assert!(matches!(
-        events.recv().await,
-        Some(super::execution::FakeExecutionEvent::Shutdown)
-    ));
+    let first = events.recv().await;
+    let second = events.recv().await;
+    assert!(
+        matches!(first, Some(super::execution::FakeExecutionEvent::Shutdown))
+            || matches!(second, Some(super::execution::FakeExecutionEvent::Shutdown))
+    );
 }
 
 #[test]
@@ -338,6 +345,49 @@ fn reconnect_capability_restores_only_the_same_controller_during_grace() {
         hub.reconnect_controller(uuid::Uuid::new_v4(), &reconnect)
             .is_err()
     );
+}
+
+#[test]
+fn a_full_observer_queue_is_evicted_without_blocking_publication() {
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let hub = ObservationHub::new(HostSnapshot::new(
+        uuid::Uuid::new_v4(),
+        seed(&workspace, directory.path()),
+    ));
+    let _slow = hub.subscribe().unwrap();
+    for index in 0..=super::hub::OBSERVER_QUEUE_CAPACITY {
+        hub.publish(HostEvent::ObserverCommandRejected {
+            command: format!("event-{index}"),
+        })
+        .unwrap();
+    }
+    assert_eq!(hub.subscriber_count(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn host_shutdown_aborts_an_unresponsive_owned_execution_by_the_hard_bound() {
+    let directory = tempdir().unwrap();
+    let runtime = directory.path().join("run");
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let server = LocalHostServer::bind_controlled(
+        &runtime,
+        &workspace,
+        IpAddr::V4(Ipv4Addr::LOCALHOST),
+        0,
+        seed(&workspace, directory.path()),
+        ControlledExecution::new("native/test".into(), None, None, |_| {
+            super::execution::stubborn_execution()
+        }),
+    )
+    .await
+    .unwrap();
+    let descriptor = server.descriptor_path().to_owned();
+    server.shutdown_token().cancel();
+    server.run().await.unwrap();
+    assert!(!descriptor.exists());
 }
 
 #[cfg(unix)]

@@ -94,6 +94,40 @@ either represented by the snapshot boundary or delivered afterward, never
 lost between the two. Sequence gaps and reconnects require a fresh snapshot;
 the local stream is not durable replay.
 
+## Artifact previews
+
+An attached observer or controller may request a preview only by the immutable
+artifact id already present in that host's visible conversation:
+
+```text
+xana attach --artifact ARTIFACT_ID
+```
+
+Xana never accepts a filesystem path through this endpoint. The host keeps at
+most 512 visible artifact registrations, re-verifies content length and BLAKE3
+digest from the immutable store, and returns at most 64 KiB plus bounded media
+metadata and a truncation flag. Unknown, evicted, corrupt, or not-visible ids
+all fail without revealing a storage path. Each request is authenticated by
+the same host capability as the snapshot.
+
+## Resource and shutdown bounds
+
+The host accepts at most 32 simultaneous clients. Each client has a 256-event
+outbound queue, may send at most 256 frames per second, and uses 1 MiB frame
+and two-second outbound-write limits. A slow reader, oversized frame,
+malformed request, or rate overflow disconnects only that client; execution
+and other observers do not wait for it. Reattachment always starts from a
+fresh snapshot.
+
+Ctrl+C stops intake and announces shutdown. Xana first fails pending approval
+work closed, requests native/managed cancellation, and waits up to two seconds
+for ordinary cleanup. At the five-second hard bound it aborts only the exact
+host-owned execution task. Native runtime/Phase 4 child shutdown and
+`kill_on_drop` process ownership then reap their owned work; Codex app-server
+also receives its normal two-second exit opportunity before exact child
+termination. Xana never kills a process selected only by a stale PID or broad
+process name. The verified descriptor lease is removed when the host exits.
+
 The protocol is repository-private and versioned for Xana's own frontends. It
 is not a public SDK or compatibility promise. There is no daemon discovery,
 automatic startup, TLS, remote authentication, or LAN binding.
