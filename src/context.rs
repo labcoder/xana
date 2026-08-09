@@ -36,6 +36,7 @@ pub(crate) enum SourceOrigin {
     RuntimeEnvironment,
     ProductDocumentation,
     ProjectFile,
+    ParentHandoff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

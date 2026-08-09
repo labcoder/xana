@@ -3,13 +3,15 @@
 use super::{
     convert::{MessageConversionError, convert_message},
     stream::{SseDecoder, SseItem, StreamAccumulator, StreamError},
-    wire::{WireChatRequest, WireMessage, WireStreamResponse, WireToolDefinition},
+    wire::{
+        WireChatRequest, WireMessage, WireStreamOptions, WireStreamResponse, WireToolDefinition,
+    },
 };
 use crate::{
     credential::SecretString,
     identity::StepId,
     message::Message,
-    provider::{ConversationalProvider, DeltaSink, ProviderError},
+    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
     tool::ToolDefinition,
     vision::MediaResolver,
 };
@@ -105,6 +107,7 @@ pub(crate) struct OpenAiCompatClient {
     bearer_token: Option<SecretString>,
     attribution: Vec<(String, String)>,
     media: Option<MediaResolver>,
+    include_usage: bool,
 }
 
 impl OpenAiCompatClient {
@@ -118,6 +121,7 @@ impl OpenAiCompatClient {
             bearer_token: None,
             attribution: Vec::new(),
             media: None,
+            include_usage: false,
         }
     }
 
@@ -143,6 +147,11 @@ impl OpenAiCompatClient {
 
     pub(crate) fn with_media_resolver(mut self, media: MediaResolver) -> Self {
         self.media = Some(media);
+        self
+    }
+
+    pub(crate) fn with_usage(mut self) -> Self {
+        self.include_usage = true;
         self
     }
 
@@ -178,6 +187,9 @@ impl OpenAiCompatClient {
             model: &self.model,
             messages: wire_messages,
             stream: true,
+            stream_options: self.include_usage.then_some(WireStreamOptions {
+                include_usage: true,
+            }),
             max_output_tokens,
             tools: tools
                 .iter()
@@ -230,9 +242,23 @@ impl OpenAiCompatClient {
                                     StreamError::InvalidJson(source),
                                 )
                             })?;
-                        let choice = response.choices.into_iter().next().ok_or_else(|| {
-                            OpenAiCompatError::stream(&self.endpoint, StreamError::MissingChoice)
-                        })?;
+                        let has_usage = response.usage.is_some();
+                        if let Some(usage) = response.usage {
+                            deltas.usage(ProviderUsage {
+                                input_tokens: usage.prompt_tokens,
+                                output_tokens: usage.completion_tokens,
+                                total_tokens: usage.total_tokens,
+                            });
+                        }
+                        let Some(choice) = response.choices.into_iter().next() else {
+                            if has_usage {
+                                continue;
+                            }
+                            return Err(OpenAiCompatError::stream(
+                                &self.endpoint,
+                                StreamError::MissingChoice,
+                            ));
+                        };
                         for fragment in accumulator
                             .apply(choice.delta)
                             .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?

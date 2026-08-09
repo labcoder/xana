@@ -46,10 +46,12 @@ availability, model options, and built-in capabilities without network or
 process activation. The commands do not start a child. Native chat uses the
 same resolver before its runtime admits a supervised native child; the
 immutable result drives provider, prompt, tool, permission, and budget
-composition for that execution. Interactive foreground model selection
-remains separate and cannot mutate a task route. Single admissions may queue
-behind the active native child; atomic batch admission, parallel execution,
-and managed Codex children are not implemented yet.
+composition for that execution. Routes can select different native
+provider/model pairs, each with an independent history and bounded explicit
+context handoff. Interactive foreground model selection remains separate and
+cannot mutate a task route. Atomic batch admission, bounded parallel execution,
+typed collection, and closed native plans are implemented. Managed Codex
+children remain a separate execution-owner path.
 
 ```mermaid
 flowchart TD

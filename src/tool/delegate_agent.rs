@@ -3,7 +3,8 @@ use super::{
 };
 use crate::{
     orchestration::{
-        ChildRestrictions, ChildResultSchema, ChildSupervisorHandle, SpawnAgentRequest,
+        ChildContextHandoff, ChildRestrictions, ChildResultSchema, ChildSupervisorHandle,
+        SpawnAgentRequest,
     },
     permission::PermissionScope,
 };
@@ -26,6 +27,8 @@ struct Args {
     result_schema: ChildResultSchema,
     #[serde(default)]
     restrictions: ChildRestrictions,
+    #[serde(default)]
+    handoff: ChildContextHandoff,
 }
 
 impl DelegateAgent {
@@ -48,7 +51,8 @@ impl Tool for DelegateAgent {
                     "route":{"type":"string","minLength":1,"maxLength":128},
                     "task":{"type":"string","minLength":1,"maxLength":262144},
                     "result_schema":{"type":"string","enum":["summary","json"],"default":"summary"},
-                    "restrictions":super::child_agent::restriction_schema()
+                    "restrictions":super::child_agent::restriction_schema(),
+                    "handoff":super::child_agent::handoff_schema()
                 }
             }),
             effect_class: EffectClass::External,
@@ -83,6 +87,7 @@ impl Tool for DelegateAgent {
                         task: args.task.clone(),
                         result_schema: args.result_schema,
                         restrictions: args.restrictions.clone(),
+                        handoff: args.handoff.clone(),
                     },
                 )
                 .await

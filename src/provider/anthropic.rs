@@ -8,7 +8,7 @@ use crate::{
     credential::SecretString,
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
-    provider::{ConversationalProvider, DeltaSink, ProviderError, sse::SseDecoder},
+    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage, sse::SseDecoder},
     tool::ToolDefinition,
     vision::MediaResolver,
 };
@@ -342,6 +342,8 @@ struct AnthropicAccumulator {
     stop_reason: Option<String>,
     streamed_text_bytes: usize,
     streamed_tool_bytes: usize,
+    input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
 }
 
 #[derive(Debug)]
@@ -374,6 +376,9 @@ impl AnthropicAccumulator {
                     return Err("received duplicate message_start".into());
                 }
                 self.message_started = true;
+                self.input_tokens = event
+                    .pointer("/message/usage/input_tokens")
+                    .and_then(Value::as_u64);
             }
             "content_block_start" => {
                 if !self.message_started || self.message_stopped {
@@ -510,6 +515,9 @@ impl AnthropicAccumulator {
                     .pointer("/delta/stop_reason")
                     .and_then(Value::as_str)
                     .map(str::to_owned);
+                self.output_tokens = event
+                    .pointer("/usage/output_tokens")
+                    .and_then(Value::as_u64);
             }
             "message_stop" => {
                 if !self.message_started || self.message_stopped {
@@ -519,6 +527,13 @@ impl AnthropicAccumulator {
                     return Err("message_stop arrived while a content block was active".into());
                 }
                 self.message_stopped = true;
+                if self.input_tokens.is_some() || self.output_tokens.is_some() {
+                    deltas.usage(ProviderUsage {
+                        input_tokens: self.input_tokens,
+                        output_tokens: self.output_tokens,
+                        total_tokens: None,
+                    });
+                }
             }
             "ping" => {}
             other => return Err(format!("unsupported Anthropic event {other}")),
@@ -667,6 +682,34 @@ mod tests {
         assert!(
             matches!(&message.content[1], ContentBlock::ToolCall(call) if call.arguments == json!({"q":"x"}))
         );
+    }
+
+    #[test]
+    fn sse_accumulator_emits_anthropic_usage_without_inventing_total_tokens() {
+        struct Sink(std::sync::Mutex<Option<ProviderUsage>>);
+        impl DeltaSink for Sink {
+            fn text_delta(&self, _: StepId, _: &str) {}
+
+            fn usage(&self, usage: ProviderUsage) {
+                *self.0.lock().expect("usage lock") = Some(usage);
+            }
+        }
+        let sink = Sink(std::sync::Mutex::new(None));
+        let mut accumulator = AnthropicAccumulator::default();
+        let step = StepId::new();
+        for event in [
+            json!({"type":"message_start","message":{"usage":{"input_tokens":21}}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"done"}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}),
+            json!({"type":"message_stop"}),
+        ] {
+            accumulator.apply(&event, step, &sink).expect("event");
+        }
+        let usage = sink.0.lock().expect("usage lock").expect("usage");
+        assert_eq!(usage.input_tokens, Some(21));
+        assert_eq!(usage.output_tokens, Some(4));
+        assert_eq!(usage.total_tokens, None);
     }
 
     #[test]

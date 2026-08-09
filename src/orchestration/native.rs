@@ -101,7 +101,8 @@ impl ChildExecutionFactory for NativeChildFactory {
         let tools = ToolRegistry::builtins_for_snapshot(self.shell.clone(), &resolved.capabilities)
             .map_err(|error| error.to_string())?;
         let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
-        let project_sources = project_sources(&self.workspace_root)?;
+        let mut project_sources = project_sources(&self.workspace_root)?;
+        project_sources.extend(handoff_sources(request));
         let total_tokens = resolved.orchestration.max_context_tokens;
         let reserve_tokens = total_tokens.min(4_096) / 2;
         let assembler = PromptAssembler::new(
@@ -170,29 +171,35 @@ impl ChildExecution for NativeChildExecution {
     ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async move {
             let mut history = self.history;
-            let run = self.agent.run_turn(
+            let run = self.agent.run_turn_with_usage(
                 context.operation_id,
                 &mut history,
                 context.permissions,
                 context.events,
             );
             tokio::pin!(run);
-            let message = tokio::select! {
+            let result = tokio::select! {
                 result = &mut run => match result {
-                    Ok(message) => message,
+                    Ok(result) => result,
                     Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
                 },
                 _ = context.cancellation.cancelled() => {
                     return ChildExecutionOutcome::Cancelled("native child was cancelled".to_owned());
                 }
             };
-            let text = match report_text(&message) {
+            let text = match report_text(&result.message) {
                 Ok(text) => text,
                 Err(error) => return ChildExecutionOutcome::Failed(error),
             };
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
                 text,
-                usage: ChildUsage::Unknown,
+                usage: ChildUsage::Measured {
+                    input_tokens: result.usage.input_tokens,
+                    output_tokens: result.usage.output_tokens,
+                    total_tokens: result.usage.total_tokens,
+                    requests: result.usage.requests,
+                    spend_microusd: None,
+                },
             })
         })
     }
@@ -244,6 +251,7 @@ fn compose_native_provider(
                     None,
                     (connection.kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
                 )
+                .with_usage()
                 .with_media_resolver(media),
             ))
         }
@@ -283,6 +291,53 @@ fn project_sources(workspace_root: &std::path::Path) -> Result<Vec<ContextSource
     }])
 }
 
+fn handoff_sources(request: &SpawnAgentRequest) -> Vec<ContextSource> {
+    let mut sources = request
+        .handoff
+        .previews
+        .iter()
+        .enumerate()
+        .map(|(index, preview)| ContextSource {
+            id: TransientSourceId::new(format!("handoff:preview:{index}")),
+            provenance: SourceProvenance {
+                display_name: format!("parent-selected context: {}", preview.label.trim()),
+                path: None,
+                origin: SourceOrigin::ParentHandoff,
+            },
+            trust: TrustClass::Project,
+            content: canonical_text(&preview.content),
+            max_tokens: estimate_tokens(&preview.content).max(1),
+        })
+        .collect::<Vec<_>>();
+    if !request.handoff.artifacts.is_empty() {
+        let content = request
+            .handoff
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                format!(
+                    "- artifact_id={} content_hash={}",
+                    artifact.id,
+                    artifact.content_hash.as_str()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        sources.push(ContextSource {
+            id: TransientSourceId::new("handoff:artifact-references"),
+            provenance: SourceProvenance {
+                display_name: "parent-selected artifact references".to_owned(),
+                path: None,
+                origin: SourceOrigin::ParentHandoff,
+            },
+            trust: TrustClass::Runtime,
+            max_tokens: estimate_tokens(&content).max(1),
+            content,
+        });
+    }
+    sources
+}
+
 fn report_text(message: &Message) -> Result<String, String> {
     let mut output = String::new();
     for block in &message.content {
@@ -305,6 +360,8 @@ fn policy_decision(mode: PermissionMode) -> crate::permission::PolicyDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestration::types::ChildContextPreview;
+    use crate::orchestration::{ChildContextHandoff, ChildRestrictions, ChildResultSchema};
 
     #[test]
     fn report_text_preserves_text_order_without_serializing_other_blocks() {
@@ -317,5 +374,29 @@ mod tests {
         };
 
         assert_eq!(report_text(&message), Ok("one two".to_owned()));
+    }
+
+    #[test]
+    fn handoff_sources_include_selected_text_and_reference_metadata_only() {
+        let request = SpawnAgentRequest {
+            route: None,
+            task: "inspect".to_owned(),
+            result_schema: ChildResultSchema::Summary,
+            restrictions: ChildRestrictions::default(),
+            handoff: ChildContextHandoff {
+                previews: vec![ChildContextPreview {
+                    label: "selected lines".to_owned(),
+                    content: "untrusted <text>".to_owned(),
+                }],
+                artifacts: Vec::new(),
+            },
+        };
+
+        let sources = handoff_sources(&request);
+
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].content, "untrusted <text>");
+        assert_eq!(sources[0].trust, TrustClass::Project);
+        assert_eq!(sources[0].provenance.origin, SourceOrigin::ParentHandoff);
     }
 }

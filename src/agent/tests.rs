@@ -4,7 +4,7 @@ use crate::{
     message::{Role, ToolResultStatus},
     permission::{PermissionBroker, PermissionPolicy, PolicyDecision},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
-    provider::{ConversationalProvider, DeltaSink, ProviderError},
+    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
     shell::{Shell, ShellConfig},
     tool::ToolDefinition,
 };
@@ -20,6 +20,7 @@ use tempfile::tempdir;
 struct ScriptedResponse {
     deltas: Vec<String>,
     message: Message,
+    usage: Option<ProviderUsage>,
 }
 
 struct ScriptedChatTransport {
@@ -61,6 +62,9 @@ impl ConversationalProvider for ScriptedChatTransport {
                 .ok_or_else(|| ProviderError::new("script exhausted"))?;
             for text in &response.deltas {
                 deltas.text_delta(step_id, text);
+            }
+            if let Some(usage) = response.usage {
+                deltas.usage(usage);
             }
             Ok(response.message)
         })
@@ -157,6 +161,7 @@ async fn scripted_text_turn_emits_deltas_then_final_message() {
     let response = ScriptedResponse {
         deltas: vec!["hel".to_owned(), "lo".to_owned()],
         message: Message::text(Role::Assistant, "hello"),
+        usage: None,
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 2);
@@ -207,10 +212,12 @@ async fn scripted_tool_turn_preserves_step_and_invocation_identity() {
                 arguments: serde_json::json!({"path": "note.txt"}),
             })],
         },
+        usage: None,
     };
     let final_response = ScriptedResponse {
         deltas: vec!["done".to_owned()],
         message: Message::text(Role::Assistant, "done"),
+        usage: None,
     };
     let (provider, _) = ScriptedChatTransport::new(vec![tool_response, final_response]);
     let agent = make_agent(provider, workspace.path(), 3);
@@ -265,6 +272,7 @@ async fn tool_round_limit_finishes_failed() {
                 arguments: serde_json::json!({"path": "note.txt"}),
             })],
         },
+        usage: None,
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 1);
@@ -285,6 +293,7 @@ async fn subscriber_drop_does_not_change_returned_message() {
     let response = ScriptedResponse {
         deltas: vec!["still works".to_owned()],
         message: Message::text(Role::Assistant, "still works"),
+        usage: None,
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
     let agent = make_agent(provider, workspace.path(), 2);
@@ -315,10 +324,12 @@ async fn prompt_prefix_remains_stable_across_streamed_tool_rounds() {
                     arguments: serde_json::json!({"path": "note.txt"}),
                 })],
             },
+            usage: None,
         },
         ScriptedResponse {
             deltas: vec!["complete".to_owned()],
             message: Message::text(Role::Assistant, "complete"),
+            usage: None,
         },
     ];
     let (provider, requests) = ScriptedChatTransport::new(responses);
@@ -338,6 +349,53 @@ async fn prompt_prefix_remains_stable_across_streamed_tool_rounds() {
     assert_eq!(requests[0][0], requests[1][0]);
     assert_eq!(requests[0][0].role, Role::System);
     assert!(requests[1].len() > requests[0].len());
+}
+
+#[tokio::test]
+async fn usage_aggregates_across_tool_rounds_without_filling_missing_fields() {
+    let workspace = tempdir().expect("temporary workspace");
+    fs::write(workspace.path().join("note.txt"), "contents").expect("fixture");
+    let responses = vec![
+        ScriptedResponse {
+            deltas: Vec::new(),
+            message: Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: "call".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: serde_json::json!({"path": "note.txt"}),
+                })],
+            },
+            usage: Some(ProviderUsage {
+                input_tokens: Some(10),
+                output_tokens: Some(2),
+                total_tokens: Some(12),
+            }),
+        },
+        ScriptedResponse {
+            deltas: Vec::new(),
+            message: Message::text(Role::Assistant, "complete"),
+            usage: Some(ProviderUsage {
+                input_tokens: Some(20),
+                output_tokens: None,
+                total_tokens: None,
+            }),
+        },
+    ];
+    let (provider, _) = ScriptedChatTransport::new(responses);
+    let agent = make_agent(provider, workspace.path(), 3);
+    let (operation_id, permissions, events, _receiver) = operation_services();
+    let mut history = vec![Message::text(Role::User, "read")];
+
+    let result = agent
+        .run_turn_with_usage(operation_id, &mut history, permissions, events)
+        .await
+        .expect("tool turn with usage");
+
+    assert_eq!(result.usage.requests, 2);
+    assert_eq!(result.usage.input_tokens, Some(30));
+    assert_eq!(result.usage.output_tokens, None);
+    assert_eq!(result.usage.total_tokens, None);
 }
 
 #[tokio::test]

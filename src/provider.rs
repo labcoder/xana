@@ -27,6 +27,15 @@ pub(crate) trait ConversationalProvider: Send + Sync {
 
 pub(crate) trait DeltaSink: Send + Sync {
     fn text_delta(&self, step_id: StepId, text: &str);
+
+    fn usage(&self, _usage: ProviderUsage) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProviderUsage {
+    pub(crate) input_tokens: Option<u64>,
+    pub(crate) output_tokens: Option<u64>,
+    pub(crate) total_tokens: Option<u64>,
 }
 
 #[derive(Debug)]

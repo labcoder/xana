@@ -105,9 +105,16 @@ pub(super) struct WireChatRequest<'a> {
     pub(super) messages: Vec<WireMessage>,
     pub(super) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stream_options: Option<WireStreamOptions>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) max_output_tokens: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) tools: Vec<WireToolDefinition<'a>>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+pub(super) struct WireStreamOptions {
+    pub(super) include_usage: bool,
 }
 
 #[cfg(test)]
@@ -124,7 +131,20 @@ pub(super) struct WireChatChoice {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct WireStreamResponse {
+    #[serde(default)]
     pub(super) choices: Vec<WireStreamChoice>,
+    #[serde(default)]
+    pub(super) usage: Option<WireUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub(super) struct WireUsage {
+    #[serde(default)]
+    pub(super) prompt_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) completion_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) total_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

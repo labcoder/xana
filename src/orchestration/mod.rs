@@ -45,10 +45,10 @@ pub(crate) use supervisor::{
 pub(crate) use types::PlanChildAttribution;
 pub(crate) use types::{
     AgentHandleSnapshot, AwaitAgentOptions, AwaitAgentOutcome, ChildActivity, ChildAdmission,
-    ChildAttribution, ChildCancellationReceipt, ChildInspection, ChildLifecycle, ChildReport,
-    ChildReportReference, ChildRestrictions, ChildResultSchema, ChildTerminalStatus, ChildUsage,
-    CollectAgentsOptions, CollectedChildResult, CollectedValue, CollectionEntryState,
-    CollectionFailurePolicy, CollectionResult, SpawnAgentRequest,
+    ChildAttribution, ChildCancellationReceipt, ChildContextHandoff, ChildInspection,
+    ChildLifecycle, ChildReport, ChildReportReference, ChildRestrictions, ChildResultSchema,
+    ChildTerminalStatus, ChildUsage, CollectAgentsOptions, CollectedChildResult, CollectedValue,
+    CollectionEntryState, CollectionFailurePolicy, CollectionResult, SpawnAgentRequest,
 };
 pub(crate) use types::{
     CHILD_REPORT_VERSION, COLLECTION_RESULT_VERSION, MAX_CHILD_TASK_PREVIEW_BYTES,

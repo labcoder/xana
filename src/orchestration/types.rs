@@ -12,6 +12,10 @@ use std::time::Duration;
 pub(crate) const CHILD_REPORT_VERSION: u32 = 1;
 pub(crate) const MAX_CHILD_TASK_BYTES: usize = 256 * 1024;
 pub(crate) const MAX_CHILD_TASK_PREVIEW_BYTES: usize = 512;
+pub(crate) const MAX_CHILD_CONTEXT_PREVIEWS: usize = 8;
+pub(crate) const MAX_CHILD_CONTEXT_PREVIEW_BYTES: usize = 16 * 1024;
+pub(crate) const MAX_CHILD_CONTEXT_HANDOFF_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_CHILD_ARTIFACT_REFS: usize = 16;
 pub(crate) const COLLECTION_RESULT_VERSION: u32 = 1;
 pub(crate) const MAX_COLLECTION_HANDLES: usize = 64;
 pub(crate) const MAX_COLLECTION_RESULT_BYTES: usize = 256 * 1024;
@@ -27,6 +31,24 @@ pub(crate) struct SpawnAgentRequest {
     pub(crate) result_schema: ChildResultSchema,
     #[serde(default)]
     pub(crate) restrictions: ChildRestrictions,
+    #[serde(default)]
+    pub(crate) handoff: ChildContextHandoff,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChildContextHandoff {
+    #[serde(default)]
+    pub(crate) previews: Vec<ChildContextPreview>,
+    #[serde(default)]
+    pub(crate) artifacts: Vec<ArtifactRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ChildContextPreview {
+    pub(crate) label: String,
+    pub(crate) content: String,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -534,6 +556,40 @@ pub(crate) fn validate_spawn_request(request: &SpawnAgentRequest) -> Result<(), 
     {
         return Err("child route must not be blank when supplied");
     }
+    if request.handoff.previews.len() > MAX_CHILD_CONTEXT_PREVIEWS {
+        return Err("child context handoff has too many previews");
+    }
+    if request.handoff.artifacts.len() > MAX_CHILD_ARTIFACT_REFS {
+        return Err("child context handoff has too many artifact references");
+    }
+    let mut context_bytes = 0_usize;
+    let mut labels = std::collections::HashSet::new();
+    for preview in &request.handoff.previews {
+        if preview.label.trim().is_empty() || preview.label.len() > 128 {
+            return Err("child context preview label must be 1..=128 bytes");
+        }
+        if preview.content.trim().is_empty() {
+            return Err("child context preview must not be blank");
+        }
+        if preview.content.len() > MAX_CHILD_CONTEXT_PREVIEW_BYTES {
+            return Err("child context preview exceeds the maximum encoded size");
+        }
+        context_bytes = context_bytes
+            .checked_add(preview.content.len())
+            .ok_or("child context handoff exceeds the aggregate encoded size")?;
+        if context_bytes > MAX_CHILD_CONTEXT_HANDOFF_BYTES {
+            return Err("child context handoff exceeds the aggregate encoded size");
+        }
+        if !labels.insert(preview.label.trim()) {
+            return Err("child context preview labels must be unique");
+        }
+    }
+    let mut artifacts = std::collections::HashSet::new();
+    for artifact in &request.handoff.artifacts {
+        if !artifacts.insert(artifact.clone()) {
+            return Err("child artifact references must be unique");
+        }
+    }
     let restrictions = &request.restrictions;
     if restrictions.max_tool_rounds == Some(0)
         || restrictions.deadline_seconds == Some(0)
@@ -571,6 +627,7 @@ mod tests {
                 task: "  ".to_owned(),
                 result_schema: ChildResultSchema::Summary,
                 restrictions: ChildRestrictions::default(),
+                handoff: ChildContextHandoff::default(),
             }),
             Err("child task must not be blank")
         );
@@ -578,6 +635,40 @@ mod tests {
         let preview = truncate_utf8(&text, MAX_CHILD_TASK_PREVIEW_BYTES);
         assert!(preview.len() <= MAX_CHILD_TASK_PREVIEW_BYTES);
         assert!(preview.is_char_boundary(preview.len()));
+    }
+
+    #[test]
+    fn context_handoff_rejects_duplicates_and_oversized_selected_content() {
+        let request = |previews| SpawnAgentRequest {
+            route: None,
+            task: "inspect".to_owned(),
+            result_schema: ChildResultSchema::Summary,
+            restrictions: ChildRestrictions::default(),
+            handoff: ChildContextHandoff {
+                previews,
+                artifacts: Vec::new(),
+            },
+        };
+        assert_eq!(
+            validate_spawn_request(&request(vec![
+                ChildContextPreview {
+                    label: "same".to_owned(),
+                    content: "one".to_owned(),
+                },
+                ChildContextPreview {
+                    label: "same".to_owned(),
+                    content: "two".to_owned(),
+                },
+            ])),
+            Err("child context preview labels must be unique")
+        );
+        assert_eq!(
+            validate_spawn_request(&request(vec![ChildContextPreview {
+                label: "large".to_owned(),
+                content: "x".repeat(MAX_CHILD_CONTEXT_PREVIEW_BYTES + 1),
+            }])),
+            Err("child context preview exceeds the maximum encoded size")
+        );
     }
 
     #[test]
