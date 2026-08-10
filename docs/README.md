@@ -68,6 +68,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   Documentation now own the shipped contract.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
+- [Release Preview development](development/release-preview.md) documents the
+  pinned native plan and local archive audit without implying publication.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
   authority and audience terms.
 - [Architecture decisions](adr/README.md) contains sparse rationale for

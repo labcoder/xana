@@ -46,3 +46,21 @@ jobs:
 
       - name: Verify packageable source crate
         run: cargo package --package xana-core --locked
+
+      - name: Install pinned release planner
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="$(mktemp)"
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh \
+            --output "$installer"
+          echo "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5  $installer" | sha256sum --check
+          sh "$installer"
+          rm -f -- "$installer"
+
+      - name: Verify Release Preview plan
+        if: runner.os == 'Linux'
+        shell: pwsh
+        run: ./scripts/check-release-plan.ps1

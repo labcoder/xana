@@ -790,10 +790,19 @@ default profile; the measured Windows smoke binary was about 8.1 MiB, and no
 cross-platform evidence yet justifies custom LTO, stripping, panic, or codegen
 settings.
 
-There is no crates.io publication, prebuilt archive, platform installer,
-package-manager channel, automatic updater, or release tag claimed by the
-current repository. Publication and tagging remain separate owner-controlled
-effects, and the manifest currently sets `publish = false` to prevent an
+The repository contains a pinned local `cargo-dist` 0.32.0 plan for exactly the
+`xana-cli` application on Windows x64 MSVC, macOS ARM64, macOS Intel, and Linux
+x64 glibc. It produces conventional native archives containing `xana`, the
+license, README, and installation documentation plus SHA-256 metadata. A
+semantic plan check fixes that inventory and GitHub attestation intent; a
+native archive audit verifies checksum, bounded contents, and version/help
+execution. The planner uses Cargo's existing release profile and performs no
+publish or install effect.
+
+There is still no crates.io publication, public prebuilt archive, platform
+installer, package-manager channel, automatic updater, or release tag claimed
+by the current repository. Publication and tagging remain separate
+owner-controlled effects, and the manifests set `publish = false` to prevent an
 accidental registry upload. The separately
 [accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)
 prescribes a bounded native preview without making any of those future
