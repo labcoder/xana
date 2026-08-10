@@ -5,9 +5,10 @@ engineering contracts used to change it.
 
 ## Using Xana
 
-- [Source installation](user/installation.md) explains prerequisites,
-  checkout and Git installation, platform `XANA_HOME` syntax, updates, and
-  uninstall behavior.
+- [Installation, updates, verification, and removal](user/installation.md)
+  explains preview installers, exact targets and trust limits, manual
+  verification, locked source alternatives, setup receipts, updates,
+  troubleshooting, and state-preserving removal.
 - [Configuration](user/configuration.md) explains setup, provider/profile
   settings, platform paths, `XANA_HOME`, doctor, validated editing, and scoped
   reset.

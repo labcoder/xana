@@ -28,29 +28,57 @@ thread, it supplies its canonical built-in identity as a developer instruction,
 so the assistant presents itself as Xana while Codex retains ownership of its
 base instructions and inner loop.
 
-## Install from source
+## Install a developer preview
 
-Xana uses the pinned Rust toolchain:
+Published previews use verified per-user installers and require no Rust, Node,
+Python, elevation, or checkout. A draft or tag alone is not a public release;
+if the latest URL is unavailable, use the locked source path below.
+
+macOS or x64 glibc Linux:
 
 ```bash
-git clone https://github.com/labcoder/xana.git
-cd xana
-cargo install --path crates/xana-cli --locked
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://github.com/labcoder/xana/releases/latest/download/xana-installer.sh \
+  | bash
+```
+
+Windows x64 PowerShell:
+
+```powershell
+$source = Invoke-RestMethod `
+  -Uri 'https://github.com/labcoder/xana/releases/latest/download/xana-installer.ps1'
+& ([scriptblock]::Create($source))
+```
+
+The installers verify one exact release manifest and SHA-256 before activation,
+then hand readiness to `xana setup --if-needed`. Preview binaries are unsigned:
+macOS is not notarized and Windows is not Authenticode-signed. Verify GitHub
+attestations when provenance matters; do not weaken host security controls.
+
+The locked Git source alternative requires the pinned Rust toolchain:
+
+```bash
+cargo install --git https://github.com/labcoder/xana.git --locked
 xana --version
 xana setup
 xana config check
 xana
 ```
 
-Git installation is also supported:
+Use `--tag v0.5.0` or `--rev COMMIT_SHA` for an exact build. Xana is not
+published to crates.io and has no automatic updater. Re-run an installer or
+locked Cargo command to update. See [Installation, updates, verification, and
+removal](docs/user/installation.md) for exact versions, manual archive and
+attestation checks, custom directories, PATH consent, source checkout, and
+state-preserving removal.
+
+Development from a checkout remains supported:
 
 ```bash
-cargo install --git https://github.com/labcoder/xana.git --locked
+git clone https://github.com/labcoder/xana.git
+cd xana
+cargo install --path crates/xana-cli --locked
 ```
-
-Use `--rev COMMIT_SHA` for a repeatable build. Xana is not published to
-crates.io and has no prebuilt installer or automatic updater. See
-[Source installation](docs/user/installation.md).
 
 ## Choose a first connection
 

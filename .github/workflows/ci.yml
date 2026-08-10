@@ -59,6 +59,12 @@ jobs:
           ./scripts/check-release-workflow.ps1
           ./scripts/test-release-bundle.ps1
 
+      - name: Verify installation documentation and removal
+        shell: pwsh
+        run: |
+          ./scripts/check-installation-docs.ps1
+          ./scripts/test-removal-recipes.ps1
+
       - name: Verify packageable source crate
         run: cargo package --package xana-core --locked
 
