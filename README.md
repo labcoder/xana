@@ -392,8 +392,9 @@ Required checks:
 
 ```text
 cargo fmt --all --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test --all-targets --all-features
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets --all-features
+cargo test --workspace --all-targets --no-default-features
 ```
 
 ## License

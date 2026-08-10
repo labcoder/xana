@@ -135,7 +135,13 @@ exactly once through the existing permission/runtime callback. Approval cards
 appear even when activity is hidden. One-shot mode continues to fail closed by
 design.
 
-The mouse wheel is an optional scrolling convenience and grants no extra
+The mouse wheel scrolls conversation history. On wide layouts, clicking a
+session inspects it, clicking the rail title toggles its width, and clicking an
+activity card expands or collapses its detail. Click or drag in the composer to
+place or extend its selection, and click a selectable overlay row to activate
+the same typed action as Enter. Terminal resizing always recomputes the
+responsive layout; terminals retain their usual modifier for selecting screen
+text outside Xana's composer. These optional mouse conveniences grant no extra
 authority. Color is never the only state indicator. Theme, Unicode/ASCII,
 reduced-motion, density, and composer preferences have safe fallbacks
 documented in [Terminal presentation](presentation.md). Terminal state is

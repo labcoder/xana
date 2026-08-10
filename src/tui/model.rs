@@ -1,5 +1,10 @@
 //! Terminal-independent state and update policy for the full-screen client.
 
+mod commands;
+mod projection;
+
+pub(super) use super::composer::MoveDirection;
+use super::composer::{Composer, MAX_INPUT_BYTES, sanitize_input};
 use super::session::{self, SessionRow};
 use super::{
     activity::{self, ActivityCard, ActivityKind, ActivityState, ApprovalPrompt, ApprovalTarget},
@@ -16,9 +21,8 @@ use crate::{
     vision::ImageAttachment,
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
-use std::{collections::VecDeque, ops::Range};
+use std::collections::VecDeque;
 
-const MAX_INPUT_BYTES: usize = 1024 * 1024;
 const MAX_VISIBLE_MESSAGES: usize = 512;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
 const MAX_ACTIVITY: usize = 256;
@@ -117,16 +121,6 @@ impl From<ActivityVisibility> for ActivityPaneChoice {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MoveDirection {
-    Left,
-    Right,
-    Up,
-    Down,
-    Home,
-    End,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum InputAction {
     Insert(String),
@@ -146,6 +140,15 @@ pub(super) enum InputAction {
     Cancel,
     Interrupt,
     Scroll(i16),
+    PlaceCursor {
+        line: usize,
+        column: usize,
+        select: bool,
+    },
+    ChooseOverlay(usize),
+    ViewSession(ConversationRef),
+    ToggleActivity(usize),
+    ToggleRail,
     Quit,
 }
 
@@ -204,110 +207,6 @@ pub(super) enum ArtifactAction {
     InsertReference,
     Reveal,
     Open,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Composer {
-    pub(super) text: String,
-    pub(super) cursor: usize,
-    anchor: Option<usize>,
-}
-
-impl Composer {
-    fn new() -> Self {
-        Self {
-            text: String::new(),
-            cursor: 0,
-            anchor: None,
-        }
-    }
-
-    pub(super) fn selection(&self) -> Option<Range<usize>> {
-        let anchor = self.anchor?;
-        (anchor != self.cursor).then(|| anchor.min(self.cursor)..anchor.max(self.cursor))
-    }
-
-    fn insert(&mut self, value: &str) -> Result<(), String> {
-        if value.len() > MAX_INPUT_BYTES {
-            return Err("composer input reached the 1 MiB limit".to_owned());
-        }
-        let value = sanitize_input(value);
-        let removed = self.selection().map_or(0, |range| range.len());
-        if self
-            .text
-            .len()
-            .saturating_sub(removed)
-            .saturating_add(value.len())
-            > MAX_INPUT_BYTES
-        {
-            return Err("composer input reached the 1 MiB limit".to_owned());
-        }
-        self.delete_selection();
-        self.text.insert_str(self.cursor, &value);
-        self.cursor += value.len();
-        Ok(())
-    }
-
-    fn move_cursor(&mut self, direction: MoveDirection, select: bool) {
-        let old = self.cursor;
-        self.cursor = match direction {
-            MoveDirection::Left => previous_boundary(&self.text, self.cursor),
-            MoveDirection::Right => next_boundary(&self.text, self.cursor),
-            MoveDirection::Home => line_start(&self.text, self.cursor),
-            MoveDirection::End => line_end(&self.text, self.cursor),
-            MoveDirection::Up => vertical_move(&self.text, self.cursor, false),
-            MoveDirection::Down => vertical_move(&self.text, self.cursor, true),
-        };
-        if select {
-            self.anchor.get_or_insert(old);
-        } else {
-            self.anchor = None;
-        }
-    }
-
-    fn backspace(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let previous = previous_boundary(&self.text, self.cursor);
-        if previous != self.cursor {
-            self.text.drain(previous..self.cursor);
-            self.cursor = previous;
-        }
-    }
-
-    fn delete(&mut self) {
-        if self.delete_selection() {
-            return;
-        }
-        let next = next_boundary(&self.text, self.cursor);
-        if next != self.cursor {
-            self.text.drain(self.cursor..next);
-        }
-    }
-
-    fn delete_selection(&mut self) -> bool {
-        let Some(range) = self.selection() else {
-            self.anchor = None;
-            return false;
-        };
-        self.text.drain(range.clone());
-        self.cursor = range.start;
-        self.anchor = None;
-        true
-    }
-
-    fn take(&mut self) -> String {
-        self.cursor = 0;
-        self.anchor = None;
-        std::mem::take(&mut self.text)
-    }
-
-    fn replace(&mut self, value: String) {
-        self.text = bounded(sanitize_input(&value), MAX_INPUT_BYTES);
-        self.cursor = self.text.len();
-        self.anchor = None;
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -512,481 +411,6 @@ impl TuiState {
     fn with_capabilities(mut self, capabilities: OwnerCapabilities) -> Self {
         self.capabilities = capabilities;
         self
-    }
-
-    pub(super) fn update_input(&mut self, action: InputAction) -> UpdateEffect {
-        if self.overlay.is_some() {
-            return self.update_overlay(action);
-        }
-        match action {
-            InputAction::Insert(text) => {
-                if let Err(reason) = self.composer.insert(&text) {
-                    self.status = reason;
-                }
-                UpdateEffect::None
-            }
-            InputAction::Paste(text) => {
-                let text = bounded(sanitize_input(&text), MAX_INPUT_BYTES);
-                if text.is_empty() {
-                    self.status = "Paste contained no displayable text".to_owned();
-                } else {
-                    self.overlay = Some(Overlay::PastePreview { text });
-                }
-                UpdateEffect::None
-            }
-            InputAction::Move { direction, select } => {
-                self.composer.move_cursor(direction, select);
-                UpdateEffect::None
-            }
-            InputAction::Backspace => {
-                self.composer.backspace();
-                UpdateEffect::None
-            }
-            InputAction::Delete => {
-                self.composer.delete();
-                UpdateEffect::None
-            }
-            InputAction::Submit => self.submit_composer(),
-            InputAction::Newline => {
-                if let Err(reason) = self.composer.insert("\n") {
-                    self.status = reason;
-                }
-                UpdateEffect::None
-            }
-            InputAction::OpenPalette => {
-                self.overlay = Some(Overlay::Palette {
-                    query: String::new(),
-                    selected: 0,
-                });
-                UpdateEffect::None
-            }
-            InputAction::Interrupt => self.interrupt(),
-            InputAction::Scroll(delta) => {
-                self.scroll = if delta.is_negative() {
-                    self.scroll.saturating_add(delta.unsigned_abs())
-                } else {
-                    self.scroll.saturating_sub(delta as u16)
-                };
-                if delta.is_negative()
-                    && self.history_has_older
-                    && usize::from(self.scroll) >= self.messages.len().saturating_sub(1)
-                {
-                    UpdateEffect::LoadOlder(self.viewed_conversation.clone())
-                } else {
-                    UpdateEffect::None
-                }
-            }
-            InputAction::Cancel => {
-                self.composer.anchor = None;
-                UpdateEffect::None
-            }
-            InputAction::Quit => UpdateEffect::Quit,
-            InputAction::PaletteUp | InputAction::PaletteDown | InputAction::Confirm => {
-                UpdateEffect::None
-            }
-        }
-    }
-
-    fn update_overlay(&mut self, action: InputAction) -> UpdateEffect {
-        match action {
-            InputAction::Cancel => {
-                self.overlay = None;
-                UpdateEffect::None
-            }
-            InputAction::Insert(text) => {
-                match &mut self.overlay {
-                    Some(Overlay::Palette { query, selected })
-                    | Some(Overlay::SessionPicker {
-                        query, selected, ..
-                    }) => {
-                        append_bounded(query, &sanitize_input(&text), 256);
-                        *selected = 0;
-                    }
-                    _ => {}
-                }
-                UpdateEffect::None
-            }
-            InputAction::Backspace => {
-                match &mut self.overlay {
-                    Some(Overlay::Palette { query, selected })
-                    | Some(Overlay::SessionPicker {
-                        query, selected, ..
-                    }) => {
-                        query.pop();
-                        *selected = 0;
-                    }
-                    _ => {}
-                }
-                UpdateEffect::None
-            }
-            InputAction::PaletteUp => {
-                self.move_overlay_selection(false);
-                UpdateEffect::None
-            }
-            InputAction::PaletteDown => {
-                self.move_overlay_selection(true);
-                UpdateEffect::None
-            }
-            InputAction::Confirm | InputAction::Submit => self.confirm_overlay(),
-            InputAction::Quit => UpdateEffect::Quit,
-            _ => UpdateEffect::None,
-        }
-    }
-
-    fn move_overlay_selection(&mut self, down: bool) {
-        let (selected, len) = match &mut self.overlay {
-            Some(Overlay::Palette { query, selected }) => (selected, command::search(query).len()),
-            Some(Overlay::ModelPicker { choices, selected })
-            | Some(Overlay::ReasoningPicker { choices, selected }) => (selected, choices.len()),
-            Some(Overlay::Approval { prompt, selected }) => {
-                (selected, approval_choice_count(prompt))
-            }
-            Some(Overlay::Artifact { selected, .. }) => (selected, 4),
-            Some(Overlay::SessionPicker {
-                query,
-                choices,
-                selected,
-            }) => (
-                selected,
-                choices
-                    .iter()
-                    .filter(|row| session_matches(row, query))
-                    .count(),
-            ),
-            _ => return,
-        };
-        if len == 0 {
-            *selected = 0;
-        } else if down {
-            *selected = (*selected + 1).min(len - 1);
-        } else {
-            *selected = selected.saturating_sub(1);
-        }
-    }
-
-    fn confirm_overlay(&mut self) -> UpdateEffect {
-        let Some(overlay) = self.overlay.take() else {
-            return UpdateEffect::None;
-        };
-        match overlay {
-            Overlay::PastePreview { text } => {
-                if let Err(reason) = self.composer.insert(&text) {
-                    self.status = reason;
-                } else {
-                    self.status = "Pasted text inserted as untrusted draft data".to_owned();
-                }
-                UpdateEffect::None
-            }
-            Overlay::Palette { query, selected } => {
-                let Some(command) = command::search(&query).get(selected).copied() else {
-                    return UpdateEffect::None;
-                };
-                self.execute_command(
-                    ParsedCommand {
-                        id: command.id,
-                        arguments: String::new(),
-                    },
-                    true,
-                )
-            }
-            Overlay::ModelPicker { choices, selected } => choices
-                .get(selected)
-                .cloned()
-                .map_or(UpdateEffect::None, UpdateEffect::SelectModel),
-            Overlay::ReasoningPicker { choices, selected } => choices
-                .get(selected)
-                .cloned()
-                .map_or(UpdateEffect::None, UpdateEffect::SetReasoning),
-            Overlay::SessionPicker {
-                query,
-                choices,
-                selected,
-            } => choices
-                .into_iter()
-                .filter(|row| session_matches(row, &query))
-                .nth(selected)
-                .map_or(UpdateEffect::None, |row| {
-                    UpdateEffect::ViewSession(row.conversation)
-                }),
-            Overlay::Approval { prompt, selected } => self.confirm_approval(*prompt, selected),
-            Overlay::Artifact {
-                artifact, selected, ..
-            } => {
-                let action = [
-                    ArtifactAction::Preview,
-                    ArtifactAction::InsertReference,
-                    ArtifactAction::Reveal,
-                    ArtifactAction::Open,
-                ]
-                .get(selected)
-                .copied();
-                action.map_or(UpdateEffect::None, |action| UpdateEffect::ArtifactAction {
-                    record: artifact.record.clone(),
-                    action,
-                })
-            }
-            Overlay::Help | Overlay::Queue => UpdateEffect::None,
-        }
-    }
-
-    fn submit_composer(&mut self) -> UpdateEffect {
-        let trimmed = self.composer.text.trim();
-        if trimmed.starts_with('/') {
-            return match command::parse(trimmed) {
-                Ok(command) => self.execute_command(command, false),
-                Err(reason) => {
-                    self.status = reason;
-                    UpdateEffect::None
-                }
-            };
-        }
-        let input = self.composer.take().trim().to_owned();
-        self.submit_text(input)
-    }
-
-    fn execute_command(&mut self, command: ParsedCommand, from_palette: bool) -> UpdateEffect {
-        match command.id {
-            CommandId::Help => {
-                self.overlay = Some(Overlay::Help);
-                UpdateEffect::None
-            }
-            CommandId::Send => {
-                let input = if command.arguments.is_empty() {
-                    if from_palette {
-                        self.composer.take().trim().to_owned()
-                    } else {
-                        self.status = "/send requires MESSAGE when used as slash input".to_owned();
-                        return UpdateEffect::None;
-                    }
-                } else {
-                    self.composer.take();
-                    command.arguments
-                };
-                self.submit_text(input)
-            }
-            CommandId::Newline => {
-                self.composer.take();
-                if let Err(reason) = self.composer.insert("\n") {
-                    self.status = reason;
-                }
-                UpdateEffect::None
-            }
-            CommandId::Interrupt => {
-                self.composer.take();
-                self.interrupt()
-            }
-            CommandId::Steer => {
-                self.composer.take();
-                let Some(operation_id) = self.active_operation else {
-                    self.status = "Steering requires an active turn".to_owned();
-                    return UpdateEffect::None;
-                };
-                if !self.capabilities.steer {
-                    self.status = "This execution owner does not support same-turn steering; submit a queued follow-up instead".to_owned();
-                    return UpdateEffect::None;
-                }
-                if command.arguments.is_empty() {
-                    self.status = command_usage(CommandId::Steer);
-                    return UpdateEffect::None;
-                }
-                UpdateEffect::Steer {
-                    operation_id,
-                    input: command.arguments,
-                }
-            }
-            CommandId::Model => {
-                self.composer.take();
-                if !self.capabilities.model {
-                    self.status = "This execution owner cannot change models in place".to_owned();
-                    return UpdateEffect::None;
-                }
-                if self.busy {
-                    self.status =
-                        "Wait for or interrupt the active turn before changing model".to_owned();
-                    return UpdateEffect::None;
-                }
-                if command.arguments.is_empty() {
-                    UpdateEffect::OpenModelPicker
-                } else {
-                    UpdateEffect::SelectModel(command.arguments)
-                }
-            }
-            CommandId::Reasoning => {
-                self.composer.take();
-                if !self.capabilities.reasoning {
-                    self.status = "Native Xana reasoning is selected by the model; this owner has no in-thread reasoning control".to_owned();
-                    return UpdateEffect::None;
-                }
-                if command.arguments.is_empty() {
-                    UpdateEffect::OpenReasoningPicker
-                } else {
-                    UpdateEffect::SetReasoning(command.arguments)
-                }
-            }
-            CommandId::Sessions => {
-                self.composer.take();
-                match command.arguments.as_str() {
-                    "" => UpdateEffect::OpenSessionPicker,
-                    "expanded" => {
-                        self.rail_expanded = true;
-                        self.status = "Wide session rail expanded".to_owned();
-                        UpdateEffect::PersistRail(true)
-                    }
-                    "collapsed" => {
-                        self.rail_expanded = false;
-                        self.status = "Wide session rail collapsed".to_owned();
-                        UpdateEffect::PersistRail(false)
-                    }
-                    _ => {
-                        self.status = command_usage(CommandId::Sessions);
-                        UpdateEffect::None
-                    }
-                }
-            }
-            CommandId::Setup => {
-                self.composer.take();
-                if self.busy {
-                    self.status = "Wait for or interrupt the active turn before setup".to_owned();
-                    UpdateEffect::None
-                } else {
-                    match crate::setup::args_for_request(&command.arguments) {
-                        Ok(_) => UpdateEffect::Setup(command.arguments),
-                        Err(error) => {
-                            self.status = error.to_string();
-                            UpdateEffect::None
-                        }
-                    }
-                }
-            }
-            CommandId::Doctor => {
-                self.composer.take();
-                if self.busy {
-                    self.status = "Wait for or interrupt the active turn before doctor".to_owned();
-                    UpdateEffect::None
-                } else {
-                    UpdateEffect::Doctor
-                }
-            }
-            CommandId::Reset => {
-                self.composer.take();
-                if !from_palette {
-                    self.status =
-                        "Reset is a guarded command-palette lifecycle action, not a slash command"
-                            .to_owned();
-                    UpdateEffect::None
-                } else if self.busy {
-                    self.status = "Wait for or interrupt the active turn before reset".to_owned();
-                    UpdateEffect::None
-                } else {
-                    UpdateEffect::Reset
-                }
-            }
-            CommandId::Activity => {
-                self.composer.take();
-                self.activity_visibility = match command.arguments.as_str() {
-                    "hidden" | "quiet" => ActivityVisibility::Hidden,
-                    "open" | "verbose" => ActivityVisibility::Open,
-                    "auto" | "normal" | "" => ActivityVisibility::Auto,
-                    _ => {
-                        self.status = command_usage(CommandId::Activity);
-                        return UpdateEffect::None;
-                    }
-                };
-                self.status = format!("Activity display: {:?}", self.activity_visibility);
-                UpdateEffect::PersistActivity(self.activity_visibility.into())
-            }
-            CommandId::Artifact => {
-                self.composer.take();
-                let requested = command.arguments.trim();
-                if requested.is_empty() {
-                    self.status = command_usage(CommandId::Artifact);
-                    return UpdateEffect::None;
-                }
-                let artifact = self.messages.iter().rev().find_map(|message| {
-                    message
-                        .document
-                        .artifacts
-                        .iter()
-                        .find(|artifact| artifact.record.reference.id.to_string() == requested)
-                });
-                if let Some(artifact) = artifact.cloned() {
-                    self.overlay = Some(Overlay::Artifact {
-                        artifact: Box::new(artifact),
-                        selected: 0,
-                        preview: None,
-                    });
-                } else {
-                    self.status =
-                        "Artifact is not visible in the bounded conversation view".to_owned();
-                }
-                UpdateEffect::None
-            }
-            CommandId::Attach => {
-                self.composer.take();
-                if command.arguments.is_empty() {
-                    self.status = command_usage(CommandId::Attach);
-                    UpdateEffect::None
-                } else {
-                    UpdateEffect::Attach(command.arguments)
-                }
-            }
-            CommandId::Queue => {
-                self.composer.take();
-                self.queue_command(&command.arguments)
-            }
-            CommandId::Clear => {
-                self.composer.take();
-                if self.busy {
-                    self.status = "Interrupt or finish the active turn before clearing".to_owned();
-                    UpdateEffect::None
-                } else {
-                    UpdateEffect::ClearConversation
-                }
-            }
-            CommandId::Composer => {
-                self.composer.take();
-                let preset = match command.arguments.as_str() {
-                    "submit" => ComposerPreset::Submit,
-                    "newline" => ComposerPreset::Newline,
-                    _ => {
-                        self.status = command_usage(CommandId::Composer);
-                        return UpdateEffect::None;
-                    }
-                };
-                self.composer_preset = preset;
-                self.status = format!("Composer preset: {preset:?}");
-                UpdateEffect::PersistComposer(preset)
-            }
-            CommandId::Quit => UpdateEffect::Quit,
-        }
-    }
-
-    fn queue_command(&mut self, arguments: &str) -> UpdateEffect {
-        let mut parts = arguments.split_whitespace();
-        match parts.next() {
-            None => {
-                self.overlay = Some(Overlay::Queue);
-            }
-            Some("remove") => match parse_queue_index(parts.next(), self.followups.len()) {
-                Ok(index) => {
-                    self.followups.remove(index);
-                    self.status = format!("Removed queued follow-up {}", index + 1);
-                }
-                Err(reason) => self.status = reason,
-            },
-            Some("edit") => match parse_queue_index(parts.next(), self.followups.len()) {
-                Ok(index) => {
-                    if let Some(turn) = self.followups.remove(index) {
-                        self.composer.replace(turn.input);
-                        self.pending_images = turn.images;
-                        self.status = format!("Editing queued follow-up {}", index + 1);
-                    }
-                }
-                Err(reason) => self.status = reason,
-            },
-            Some(_) => self.status = command_usage(CommandId::Queue),
-        }
-        UpdateEffect::None
     }
 
     fn submit_text(&mut self, input: String) -> UpdateEffect {
@@ -1254,427 +678,6 @@ impl TuiState {
         }
     }
 
-    pub(super) fn apply_runtime(&mut self, event: &AgentEvent) {
-        let viewing_background = self.viewed_conversation != self.runtime_conversation;
-        if viewing_background {
-            let background = self.background_messages.get_or_insert_with(VecDeque::new);
-            std::mem::swap(&mut self.messages, background);
-        }
-        match event {
-            AgentEvent::OperationStateChanged {
-                operation_id,
-                state: OperationState::Running,
-            } => {
-                self.busy = true;
-                self.active_operation = Some(*operation_id);
-                self.status = "Working…".to_owned();
-            }
-            AgentEvent::OperationStateChanged {
-                operation_id,
-                state: OperationState::Finished(outcome),
-            } => {
-                self.busy = false;
-                self.active_operation = None;
-                self.status = format!("Turn {outcome:?}");
-                self.push_card(ActivityCard::new(
-                    "Xana root",
-                    operation_id.to_string(),
-                    ActivityKind::Status,
-                    ActivityState::Complete,
-                    format!("operation {outcome:?}"),
-                    "",
-                ));
-            }
-            AgentEvent::OperationStateChanged {
-                operation_id,
-                state: OperationState::Suspended,
-            } => {
-                self.busy = false;
-                self.active_operation = None;
-                self.status =
-                    "Turn interrupted; any uncertain effects remain recoverable".to_owned();
-                self.push_card(ActivityCard::new(
-                    "Xana root",
-                    operation_id.to_string(),
-                    ActivityKind::Warning,
-                    ActivityState::Failed,
-                    "operation suspended",
-                    "Any uncertain effects remain recoverable.",
-                ));
-            }
-            AgentEvent::AssistantTextDelta {
-                operation_id, text, ..
-            } => self.push_assistant_delta(*operation_id, text),
-            AgentEvent::AssistantMessage {
-                operation_id,
-                message,
-            } => self.finish_assistant(*operation_id, message),
-            AgentEvent::PermissionRequested { request } => {
-                self.status = format!("Approval required: {}", request.tool_name);
-                self.open_approval(ApprovalPrompt::native(request.clone()));
-            }
-            AgentEvent::OperationFailed { reason, .. } => {
-                self.busy = false;
-                self.active_operation = None;
-                self.status = bounded(reason.clone(), MAX_ACTIVITY_BYTES);
-                self.push_card(ActivityCard::new(
-                    "Xana root",
-                    "turn",
-                    ActivityKind::Error,
-                    ActivityState::Failed,
-                    "turn failed",
-                    reason.clone(),
-                ));
-            }
-            AgentEvent::ConversationCleared => {
-                self.messages.clear();
-                self.status = "Conversation cleared".to_owned();
-            }
-            AgentEvent::CommandRejected { reason } => {
-                self.status = bounded(format!("Command rejected: {reason}"), MAX_ACTIVITY_BYTES);
-            }
-            AgentEvent::InvocationIntentCommitted { intent } => self.push_card(ActivityCard::new(
-                "Xana root",
-                intent.invocation_id.to_string(),
-                ActivityKind::Tool,
-                ActivityState::Running,
-                format!("tool planned: {}", intent.permission.request.tool_name),
-                intent.permission.request.final_arguments.to_string(),
-            )),
-            AgentEvent::ToolFinished { invocation_id, .. } => self.push_card(ActivityCard::new(
-                "Xana root",
-                invocation_id.to_string(),
-                ActivityKind::Tool,
-                ActivityState::Complete,
-                "tool finished",
-                "",
-            )),
-            AgentEvent::ChildLifecycleChanged {
-                attribution,
-                lifecycle,
-            } => self.push_card(ActivityCard::new(
-                format!("Xana child {}", attribution.agent_id),
-                attribution.agent_id.to_string(),
-                ActivityKind::Child,
-                ActivityState::Running,
-                format!("{}: {lifecycle:?}", attribution.route),
-                format!(
-                    "{}/{} via {}",
-                    attribution.connection, attribution.model, attribution.profile
-                ),
-            )),
-            AgentEvent::ChildActivity {
-                attribution,
-                activity,
-            } => match activity {
-                crate::orchestration::ChildActivity::PermissionRequested { request } => {
-                    self.open_approval(ApprovalPrompt::child(attribution.clone(), request.clone()));
-                }
-                crate::orchestration::ChildActivity::ManagedRuntime { notification } => {
-                    if let Some(event) = ManagedClientEvent::from_notification(notification.clone())
-                    {
-                        self.apply_managed_activity(
-                            format!("Codex child {}", attribution.agent_id),
-                            &event,
-                        );
-                    }
-                }
-                crate::orchestration::ChildActivity::Warning { message } => {
-                    self.push_card(ActivityCard::new(
-                        format!("Xana child {}", attribution.agent_id),
-                        attribution.agent_id.to_string(),
-                        ActivityKind::Warning,
-                        ActivityState::Failed,
-                        "child warning",
-                        message.clone(),
-                    ))
-                }
-                crate::orchestration::ChildActivity::AssistantTextDelta { .. }
-                | crate::orchestration::ChildActivity::PermissionAudited { .. }
-                | crate::orchestration::ChildActivity::ToolFinished { .. }
-                | crate::orchestration::ChildActivity::Suspended => {
-                    self.push_card(ActivityCard::new(
-                        format!("Xana child {}", attribution.agent_id),
-                        attribution.agent_id.to_string(),
-                        ActivityKind::Child,
-                        ActivityState::Running,
-                        format!("{} activity", attribution.route),
-                        "",
-                    ))
-                }
-            },
-            AgentEvent::ChildReportCommitted { report } => self.push_card(ActivityCard::new(
-                format!("Xana child {}", report.attribution.agent_id),
-                report.attribution.agent_id.to_string(),
-                ActivityKind::Child,
-                ActivityState::Complete,
-                format!("child report: {:?}", report.status),
-                report
-                    .output
-                    .clone()
-                    .or_else(|| report.error.clone())
-                    .unwrap_or_default(),
-            )),
-            AgentEvent::InvocationResultCommitted { .. }
-            | AgentEvent::PermissionAudited { .. }
-            | AgentEvent::ChildListSnapshot { .. }
-            | AgentEvent::ChildInspectionSnapshot { .. }
-            | AgentEvent::ChildCancellationRequested { .. } => {}
-        }
-        if viewing_background {
-            let background = self.background_messages.get_or_insert_with(VecDeque::new);
-            std::mem::swap(&mut self.messages, background);
-            if let Some(row) = self
-                .sessions
-                .iter_mut()
-                .find(|row| row.conversation == self.runtime_conversation)
-            {
-                row.unread = matches!(
-                    event,
-                    AgentEvent::AssistantMessage { .. }
-                        | AgentEvent::OperationStateChanged {
-                            state: OperationState::Finished(_),
-                            ..
-                        }
-                );
-                row.error |= matches!(event, AgentEvent::OperationFailed { .. });
-            }
-        }
-    }
-
-    fn interrupt(&mut self) -> UpdateEffect {
-        let Some(operation_id) = self.active_operation else {
-            self.status = "No root turn is active".to_owned();
-            return UpdateEffect::None;
-        };
-        if !self.capabilities.interrupt {
-            self.status = "This execution owner does not support interruption".to_owned();
-            return UpdateEffect::None;
-        }
-        self.status = "Interrupt requested…".to_owned();
-        UpdateEffect::Interrupt { operation_id }
-    }
-
-    fn push_assistant_delta(&mut self, operation_id: OperationId, text: &str) {
-        if self.active_operation != Some(operation_id)
-            || !matches!(self.messages.back(), Some(message) if message.kind == MessageKind::Assistant)
-        {
-            self.push_message(MessageKind::Assistant, String::new());
-            self.active_operation = Some(operation_id);
-        }
-        if let Some(message) = self.messages.back_mut() {
-            append_bounded(&mut message.text, text, MAX_MESSAGE_BYTES);
-            message.document.stream_append(text);
-        }
-    }
-
-    fn finish_assistant(&mut self, operation_id: OperationId, message: &Message) {
-        let final_message = message_projection(message);
-        if self.active_operation == Some(operation_id)
-            && matches!(self.messages.back(), Some(message) if message.kind == MessageKind::Assistant)
-        {
-            if let Some(message) = self.messages.back_mut() {
-                *message = final_message;
-            }
-        } else {
-            if self.scroll > 0 {
-                self.scroll = self.scroll.saturating_add(1);
-            }
-            self.messages.push_back(final_message);
-            trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
-        }
-    }
-
-    fn push_message(&mut self, kind: MessageKind, text: impl Into<String>) {
-        let text = bounded(text.into(), MAX_MESSAGE_BYTES);
-        if self.scroll > 0 {
-            self.scroll = self.scroll.saturating_add(1);
-        }
-        self.messages.push_back(VisibleMessage {
-            kind,
-            document: RichDocument::plain(&text),
-            text,
-        });
-        trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
-    }
-
-    fn push_activity(&mut self, text: impl Into<String>) {
-        self.push_card(ActivityCard::new(
-            "Xana",
-            format!("event-{}", self.activity.len()),
-            ActivityKind::Status,
-            ActivityState::Complete,
-            text,
-            "",
-        ));
-    }
-
-    fn push_card(&mut self, card: ActivityCard) {
-        if self.activity_visibility == ActivityVisibility::Auto && card.is_substantive() {
-            self.auto_activity_open = true;
-        }
-        activity::push(&mut self.activity, card);
-        trim_front(&mut self.activity, MAX_ACTIVITY);
-    }
-
-    fn open_approval(&mut self, prompt: ApprovalPrompt) {
-        self.push_card(ActivityCard::new(
-            prompt.owner.clone(),
-            "approval",
-            ActivityKind::Approval,
-            ActivityState::Waiting,
-            prompt.title.clone(),
-            prompt.details.join("\n"),
-        ));
-        self.overlay = Some(Overlay::Approval {
-            prompt: Box::new(prompt),
-            selected: 0,
-        });
-        self.status = "Waiting for approval".to_owned();
-    }
-
-    pub(super) fn open_managed_approval(
-        &mut self,
-        request: crate::managed::codex::ApprovalRequest,
-    ) {
-        self.open_approval(ApprovalPrompt::managed(request));
-    }
-
-    fn confirm_approval(&mut self, prompt: ApprovalPrompt, selected: usize) -> UpdateEffect {
-        let choice = approval_choices(&prompt).get(selected).copied();
-        let Some(choice) = choice else {
-            self.status = "Approval offered no safe decision".to_owned();
-            return UpdateEffect::None;
-        };
-        self.status = format!("Approval decision: {choice:?}");
-        match prompt.target {
-            ApprovalTarget::Native(request) => UpdateEffect::DecideNativeApproval {
-                operation_id: request.operation_id,
-                invocation_id: request.invocation_id,
-                decision: controller_decision(choice, request.scope),
-            },
-            ApprovalTarget::Child {
-                attribution,
-                request,
-            } => UpdateEffect::DecideChildApproval {
-                agent_id: attribution.agent_id,
-                operation_id: request.operation_id,
-                invocation_id: request.invocation_id,
-                decision: controller_decision(choice, request.scope),
-            },
-            ApprovalTarget::Managed(request) => {
-                let decision = match choice {
-                    ApprovalChoice::Once => crate::managed::codex::ApprovalDecision::AcceptOnce,
-                    ApprovalChoice::Session => {
-                        crate::managed::codex::ApprovalDecision::AcceptForSession
-                    }
-                    ApprovalChoice::Deny if request.available_decisions.contains("decline") => {
-                        crate::managed::codex::ApprovalDecision::Decline
-                    }
-                    ApprovalChoice::Deny => crate::managed::codex::ApprovalDecision::Cancel,
-                };
-                UpdateEffect::DecideManagedApproval(decision)
-            }
-        }
-    }
-
-    pub(super) fn apply_managed_event(&mut self, event: &ManagedClientEvent) {
-        match event {
-            ManagedClientEvent::AssistantDelta(delta) => {
-                let operation_id = self.active_operation.unwrap_or_else(OperationId::new);
-                self.push_assistant_delta(operation_id, delta);
-            }
-            ManagedClientEvent::TurnCompleted { status, error } => {
-                self.busy = false;
-                self.active_operation = None;
-                self.status = error.as_ref().map_or_else(
-                    || format!("Managed turn {status}"),
-                    |error| format!("Managed turn failed: {error}"),
-                );
-            }
-            ManagedClientEvent::ModelRerouted { to_model, .. } => {
-                self.model = to_model.clone();
-            }
-            _ => {}
-        }
-        self.apply_managed_activity("Codex".to_owned(), event);
-    }
-
-    pub(super) fn set_managed_thread(&mut self, connection: &str, thread_id: String) {
-        self.session = thread_id.clone();
-        let conversation = ConversationRef::Managed {
-            connection: connection.to_owned(),
-            thread_id,
-        };
-        self.runtime_conversation = conversation.clone();
-        self.viewed_conversation = conversation;
-    }
-
-    pub(super) fn finish_managed_turn(&mut self, operation_id: OperationId, error: Option<String>) {
-        if self.active_operation == Some(operation_id) {
-            self.active_operation = None;
-            self.busy = false;
-        }
-        if let Some(error) = error {
-            self.status = bounded(format!("Managed turn failed: {error}"), MAX_ACTIVITY_BYTES);
-            self.push_card(ActivityCard::new(
-                "Codex",
-                operation_id.to_string(),
-                ActivityKind::Error,
-                ActivityState::Failed,
-                "managed turn failed",
-                error,
-            ));
-        } else {
-            self.status = "Managed turn completed".to_owned();
-        }
-    }
-
-    pub(super) fn managed_cleared(&mut self, connection: &str) {
-        self.messages.clear();
-        self.activity.clear();
-        self.session = "new".to_owned();
-        self.runtime_conversation = ConversationRef::NewManaged {
-            connection: connection.to_owned(),
-        };
-        self.viewed_conversation = self.runtime_conversation.clone();
-        self.status = "New managed thread will start with the next message".to_owned();
-    }
-
-    pub(super) fn set_model(&mut self, model: String) {
-        self.model = model;
-        self.status = "Model updated for subsequent turns; managed context is unchanged".to_owned();
-    }
-
-    pub(super) fn show_artifact_preview(
-        &mut self,
-        record: crate::artifact::ArtifactRecord,
-        preview: String,
-    ) {
-        let label = format!("{} · {} bytes", record.media_type, record.byte_len);
-        self.overlay = Some(Overlay::Artifact {
-            artifact: Box::new(ArtifactView { record, label }),
-            selected: 0,
-            preview: Some(bounded(preview, 64 * 1024)),
-        });
-    }
-
-    pub(super) fn insert_artifact_reference(&mut self, record: &crate::artifact::ArtifactRecord) {
-        let reference = format!("artifact:{}", record.reference.id);
-        if let Err(reason) = self.composer.insert(&reference) {
-            self.status = reason;
-        } else {
-            self.status = "Artifact reference inserted into the draft".to_owned();
-        }
-    }
-
-    fn apply_managed_activity(&mut self, owner: String, event: &ManagedClientEvent) {
-        if let Some(mut card) = activity::from_managed(event) {
-            card.owner = owner;
-            self.push_card(card);
-        }
-    }
-
     fn take_pending_images(&mut self) -> Vec<ImageAttachment> {
         self.pending_images.drain(..).collect()
     }
@@ -1689,16 +692,6 @@ impl TuiState {
             .map(|turn| turn.input.len().saturating_add(image_bytes(&turn.images)))
             .sum()
     }
-}
-
-fn command_usage(id: CommandId) -> String {
-    command::COMMANDS
-        .iter()
-        .find(|command| command.id == id)
-        .map_or_else(
-            || "Invalid command".to_owned(),
-            |command| format!("Usage: {}", command.usage),
-        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1745,19 +738,6 @@ fn session_matches(row: &SessionRow, query: &str) -> bool {
         || row.model.to_ascii_lowercase().contains(&query)
         || row.execution_owner.contains(&query)
         || row.state.to_string().contains(&query)
-}
-
-fn parse_queue_index(value: Option<&str>, len: usize) -> Result<usize, String> {
-    let index = value
-        .ok_or_else(|| command_usage(CommandId::Queue))?
-        .parse::<usize>()
-        .map_err(|_| command_usage(CommandId::Queue))?;
-    if index == 0 || index > len {
-        return Err(format!(
-            "Queued follow-up index must be between 1 and {len}"
-        ));
-    }
-    Ok(index - 1)
 }
 
 fn image_bytes(images: &[ImageAttachment]) -> usize {
@@ -1810,80 +790,6 @@ fn message_projection(message: &Message) -> VisibleMessage {
         text,
         document,
     }
-}
-
-fn sanitize_input(value: &str) -> String {
-    let mut output = String::with_capacity(value.len().min(MAX_INPUT_BYTES));
-    let mut characters = value.chars().peekable();
-    while let Some(character) = characters.next() {
-        let character = if character == '\r' {
-            if characters.peek() == Some(&'\n') {
-                characters.next();
-            }
-            '\n'
-        } else {
-            character
-        };
-        match character {
-            '\n' => output.push('\n'),
-            '\t' => output.push_str("    "),
-            character if !character.is_control() => output.push(character),
-            _ => {}
-        }
-        if output.len() >= MAX_INPUT_BYTES {
-            break;
-        }
-    }
-    while output.len() > MAX_INPUT_BYTES || !output.is_char_boundary(output.len()) {
-        output.pop();
-    }
-    output
-}
-
-fn previous_boundary(value: &str, cursor: usize) -> usize {
-    value[..cursor]
-        .char_indices()
-        .next_back()
-        .map_or(0, |(index, _)| index)
-}
-
-fn next_boundary(value: &str, cursor: usize) -> usize {
-    value[cursor..]
-        .char_indices()
-        .nth(1)
-        .map_or(value.len(), |(index, _)| cursor + index)
-}
-
-fn line_start(value: &str, cursor: usize) -> usize {
-    value[..cursor].rfind('\n').map_or(0, |index| index + 1)
-}
-
-fn line_end(value: &str, cursor: usize) -> usize {
-    value[cursor..]
-        .find('\n')
-        .map_or(value.len(), |index| cursor + index)
-}
-
-fn vertical_move(value: &str, cursor: usize, down: bool) -> usize {
-    let start = line_start(value, cursor);
-    let column = value[start..cursor].chars().count();
-    let target = if down {
-        let end = line_end(value, cursor);
-        if end == value.len() {
-            return cursor;
-        }
-        end + 1
-    } else {
-        if start == 0 {
-            return cursor;
-        }
-        line_start(value, start - 1)
-    };
-    let target_end = line_end(value, target);
-    value[target..target_end]
-        .char_indices()
-        .nth(column)
-        .map_or(target_end, |(index, _)| target + index)
 }
 
 fn bounded(mut value: String, limit: usize) -> String {
@@ -2124,6 +1030,43 @@ mod tests {
                 .any(|card| { card.kind == ActivityKind::Tool && card.identity == "command-1" })
         );
         assert_eq!(state.messages.back().unwrap().kind, MessageKind::Assistant);
+    }
+
+    #[test]
+    fn pointer_actions_preserve_typed_selection_and_activation() {
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.composer.text = "one\ntwo".to_owned();
+        state.composer.cursor = state.composer.text.len();
+        assert_eq!(
+            state.update_input(InputAction::PlaceCursor {
+                line: 1,
+                column: 1,
+                select: false,
+            }),
+            UpdateEffect::None
+        );
+        assert_eq!(state.composer.cursor, 5);
+        assert_eq!(state.composer.selection(), None);
+
+        state.open_model_picker(vec!["first".to_owned(), "second".to_owned()]);
+        assert_eq!(
+            state.update_input(InputAction::ChooseOverlay(1)),
+            UpdateEffect::SelectModel("second".to_owned())
+        );
+
+        let conversation = ConversationRef::NewManaged {
+            connection: "codex".to_owned(),
+        };
+        assert_eq!(
+            state.update_input(InputAction::ViewSession(conversation.clone())),
+            UpdateEffect::ViewSession(conversation)
+        );
+        let expanded = state.activity[0].expanded;
+        assert_eq!(
+            state.update_input(InputAction::ToggleActivity(0)),
+            UpdateEffect::None
+        );
+        assert_ne!(state.activity[0].expanded, expanded);
     }
 
     #[test]

@@ -27,7 +27,7 @@ default = ["documents-csv"]
 documents-csv = ["dep:csv"]
 
 [[bin]]
-name = "xana"
+name = "xana-dev"
 path = "src/main.rs"
 
 [dependencies]

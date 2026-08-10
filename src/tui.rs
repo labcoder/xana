@@ -5,6 +5,7 @@
 
 mod activity;
 mod command;
+mod composer;
 mod lifecycle;
 mod model;
 mod rich_text;
@@ -24,7 +25,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use crossterm::event::{
-    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use futures::StreamExt;
 use lifecycle::TerminalSession;
@@ -113,6 +114,7 @@ pub(crate) async fn run_native(
         {
             return Ok(exit);
         }
+        let terminal_area = prepared.terminal.terminal_mut().size()?;
         prepared
             .terminal
             .terminal_mut()
@@ -126,7 +128,7 @@ pub(crate) async fn run_native(
                     return Ok(ChatExit::Quit);
                 };
                 let terminal_event = terminal_event.context("terminal input failed")?;
-                if let Some(action) = input_action(terminal_event, &state) {
+                if let Some(action) = input_action(terminal_event, &state, terminal_area.into()) {
                     let effect = state.update_input(action);
                     if let Some(exit) = dispatch_effect(
                         effect,
@@ -231,6 +233,7 @@ pub(crate) async fn run_managed(
         {
             break requested_exit;
         }
+        let terminal_area = prepared.terminal.terminal_mut().size()?;
         prepared
             .terminal
             .terminal_mut()
@@ -242,7 +245,7 @@ pub(crate) async fn run_managed(
                     break ChatExit::Quit;
                 };
                 let terminal_event = terminal_event.context("terminal input failed")?;
-                if let Some(action) = input_action(terminal_event, &state) {
+                if let Some(action) = input_action(terminal_event, &state, terminal_area.into()) {
                     let effect = state.update_input(action);
                     if let Some(requested_exit) = dispatch_managed_effect(
                         effect,
@@ -830,7 +833,11 @@ async fn dispatch_effect(
     Ok(None)
 }
 
-fn input_action(event: Event, state: &TuiState) -> Option<InputAction> {
+fn input_action(
+    event: Event,
+    state: &TuiState,
+    area: ratatui::layout::Rect,
+) -> Option<InputAction> {
     match event {
         Event::Key(KeyEvent {
             code: KeyCode::Char('q'),
@@ -958,6 +965,12 @@ fn input_action(event: Event, state: &TuiState) -> Option<InputAction> {
         Event::Mouse(mouse) => match mouse.kind {
             MouseEventKind::ScrollUp => Some(InputAction::Scroll(-3)),
             MouseEventKind::ScrollDown => Some(InputAction::Scroll(3)),
+            MouseEventKind::Down(MouseButton::Left) => {
+                view::pointer_action(mouse.column, mouse.row, false, state, area)
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                view::pointer_action(mouse.column, mouse.row, true, state, area)
+            }
             _ => None,
         },
         Event::Resize(_, _) | Event::FocusGained | Event::FocusLost | Event::Key(_) => None,
@@ -1196,24 +1209,28 @@ mod tests {
 
     #[test]
     fn terminal_events_map_paste_resize_and_cancellation_without_runtime_authority() {
+        let area = ratatui::layout::Rect::new(0, 0, 80, 24);
         assert_eq!(
             input_action(
                 Event::Paste("pasted text".to_owned()),
-                &TuiState::starting(ComposerPreset::Submit)
+                &TuiState::starting(ComposerPreset::Submit),
+                area,
             ),
             Some(InputAction::Paste("pasted text".to_owned()))
         );
         assert_eq!(
             input_action(
                 Event::Resize(80, 24),
-                &TuiState::starting(ComposerPreset::Submit)
+                &TuiState::starting(ComposerPreset::Submit),
+                area,
             ),
             None
         );
         assert_eq!(
             input_action(
                 Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-                &TuiState::starting(ComposerPreset::Submit)
+                &TuiState::starting(ComposerPreset::Submit),
+                area,
             ),
             Some(InputAction::Interrupt)
         );
@@ -1222,14 +1239,18 @@ mod tests {
         let newline = TuiState::starting(ComposerPreset::Newline);
         let alternate = Event::Key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
         assert_eq!(
-            input_action(alternate.clone(), &submit),
+            input_action(alternate.clone(), &submit, area),
             Some(InputAction::Newline)
         );
-        assert_eq!(input_action(alternate, &newline), Some(InputAction::Submit));
+        assert_eq!(
+            input_action(alternate, &newline, area),
+            Some(InputAction::Submit)
+        );
         assert_eq!(
             input_action(
                 Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL)),
                 &newline,
+                area,
             ),
             Some(InputAction::Submit)
         );
