@@ -28,6 +28,10 @@ $installDirectory = Join-Path $testRoot "install"
 $userPathFile = Join-Path $testRoot "user-path.txt"
 [IO.Directory]::CreateDirectory($fixture) | Out-Null
 [IO.Directory]::CreateDirectory($payload) | Out-Null
+$preexistingInstallerTemps = @(
+    Get-ChildItem -Directory -LiteralPath $testParent -Filter "xana-install-*" -ErrorAction SilentlyContinue |
+        ForEach-Object FullName
+)
 
 function New-FixtureArchive {
     param([switch]$ExtraEntry, [switch]$InvalidExecutable)
@@ -114,12 +118,18 @@ try {
     New-FixtureArchive
     Write-FixtureManifest
 
+    $firstTimer = [Diagnostics.Stopwatch]::StartNew()
     $first = Invoke-Installer ($baseArguments + @("-NoSetup", "-NoModifyPath"))
+    $firstTimer.Stop()
     if ($first.ExitCode -ne 0 -or $first.Stdout -notmatch "Xana install: $([regex]::Escape($version))") {
         throw "clean PowerShell fixture install failed: $($first.Stderr)"
     }
     $finalPath = Join-Path $installDirectory "xana.exe"
     $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $finalPath).Hash
+    $archiveBytes = (Get-Item -LiteralPath (Join-Path $fixture "xana-cli-x86_64-pc-windows-msvc.zip")).Length
+    $manifestBytes = (Get-Item -LiteralPath (Join-Path $fixture "xana-release-manifest.txt")).Length
+    $binaryBytes = (Get-Item -LiteralPath $finalPath).Length
+    $temporaryPayloadBytes = $archiveBytes + $manifestBytes + $binaryBytes
 
     $second = Invoke-Installer ($baseArguments + @("-NoSetup", "-NoModifyPath"))
     if ($second.ExitCode -ne 0 -or $second.Stdout -notmatch "Xana reinstall:") {
@@ -199,7 +209,14 @@ try {
 
     $combined = $first.Stdout + $first.Stderr + $second.Stdout + $setup.Stdout + $setup.Stderr
     if ($combined.Contains("setup-secret-sentinel")) { throw "seeded secret appeared in installer output" }
+    $newInstallerTemps = @(
+        Get-ChildItem -Directory -LiteralPath $testParent -Filter "xana-install-*" -ErrorAction SilentlyContinue |
+            Where-Object FullName -ne $testRoot |
+            Where-Object FullName -notin $preexistingInstallerTemps
+    )
+    if ($newInstallerTemps.Count -ne 0) { throw "PowerShell installer left temporary directories behind" }
     Write-Output "PowerShell installer verified: install/reinstall, exact version, PATH idempotence, setup pending, checksum, ZIP inventory, smoke, lock, PATH rollback"
+    Write-Output "PowerShell fixture metrics: first_install_ms=$($firstTimer.ElapsedMilliseconds) archive_bytes=$archiveBytes binary_bytes=$binaryBytes temporary_payload_bytes=$temporaryPayloadBytes cleanup_residue=0"
 } finally {
     $fullRoot = [IO.Path]::GetFullPath($testRoot)
     $fullParent = [IO.Path]::GetFullPath($testParent).TrimEnd('\') + '\'

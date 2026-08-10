@@ -81,7 +81,8 @@ try {
 } finally {
     $resolvedStaging = (Resolve-Path -LiteralPath $staging).Path
     $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-    if (-not $resolvedStaging.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) {
+    $requiredPrefix = $tempRoot + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedStaging.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw "refusing to clean a non-temporary audit directory"
     }
     Remove-Item -Recurse -Force -LiteralPath $resolvedStaging

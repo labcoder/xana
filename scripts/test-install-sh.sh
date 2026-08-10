@@ -13,7 +13,7 @@ trap 'rm -rf -- "${test_root}"' EXIT INT TERM HUP
 fixture="${test_root}/fixture"
 payload="${test_root}/payload"
 home="${test_root}/home"
-install_dir="${test_root}/install"
+install_dir="${test_root}/in'stall"
 mkdir -p -- "${fixture}" "${payload}" "${home}"
 
 version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\([0-9][0-9.]*\)"/\1/p' "${repo_root}/Cargo.toml" | head -n 1)
@@ -86,6 +86,7 @@ grep -F "Xana reinstall: ${version}" <<<"${second_output}" >/dev/null
 
 path_output=$(run_installer --version "${version}" --no-setup --modify-path)
 grep -F "xana-installer-path-v1" "${home}/.profile" >/dev/null
+bash -n "${home}/.profile"
 [[ "$(grep -Fc 'xana-installer-path-v1' "${home}/.profile")" -eq 1 ]]
 run_installer --version "${version}" --no-setup --modify-path >/dev/null
 [[ "$(grep -Fc 'xana-installer-path-v1' "${home}/.profile")" -eq 1 ]]

@@ -233,13 +233,16 @@ selected_size=""
 seen_targets=" "
 artifact_count=0
 line_number=0
+manifest_version_seen="false"
 while IFS=' ' read -r field first second third fourth extra || [[ -n "${field:-}" ]]; do
   line_number=$((line_number + 1))
   fourth=${fourth%$'\r'}
   [[ -z "${extra:-}" ]] || fail "release manifest line ${line_number} has extra fields"
   case "${field:-}" in
     manifest-version)
-      [[ "${first:-}" == "1" && -z "${second:-}" ]] || fail "unsupported release manifest version"
+      [[ "${manifest_version_seen}" == "false" && "${first:-}" == "1" && -z "${second:-}" ]] ||
+        fail "unsupported or duplicate release manifest version"
+      manifest_version_seen="true"
       ;;
     release-version)
       [[ -z "${release_version}" && "${first:-}" =~ ^[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ && -z "${second:-}" ]] ||
@@ -277,7 +280,7 @@ while IFS=' ' read -r field first second third fourth extra || [[ -n "${field:-}
   esac
 done <"${manifest_path}"
 
-[[ "${artifact_count}" -eq 4 && "${seen_targets}" == *" aarch64-apple-darwin "* && "${seen_targets}" == *" x86_64-apple-darwin "* && "${seen_targets}" == *" x86_64-pc-windows-msvc "* && "${seen_targets}" == *" x86_64-unknown-linux-gnu "* ]] ||
+[[ "${manifest_version_seen}" == "true" && "${artifact_count}" -eq 4 && "${seen_targets}" == *" aarch64-apple-darwin "* && "${seen_targets}" == *" x86_64-apple-darwin "* && "${seen_targets}" == *" x86_64-pc-windows-msvc "* && "${seen_targets}" == *" x86_64-unknown-linux-gnu "* ]] ||
   fail "release manifest does not contain the exact four-target inventory"
 [[ -n "${release_version}" && -n "${selected_hash}" ]] || fail "release manifest does not select this target"
 if [[ "${requested_version}" != "latest" && "${release_version}" != "${requested_version}" ]]; then
@@ -351,7 +354,7 @@ if [[ -f "${final_path}" ]]; then
   if [[ "${existing_version}" == "${release_version}" ]]; then
     action="reinstall"
   elif [[ -z "${existing_version}" ]]; then
-    action="replace an unrecognized existing executable with"
+    action="replace-unrecognized"
   else
     IFS=. read -r old_major old_minor old_patch <<<"${existing_version}"
     IFS=. read -r new_major new_minor new_patch <<<"${release_version}"
@@ -428,14 +431,15 @@ modify_path_if_requested() {
   mkdir -p -- "$(dirname -- "${profile}")" || return 1
   temp_profile=$(mktemp "${profile}.xana.XXXXXXXX") || return 1
   if [[ -f "${profile}" ]]; then
-    cat -- "${profile}" >"${temp_profile}" || { rm -f -- "${temp_profile}"; return 1; }
+    cp -p -- "${profile}" "${temp_profile}" || { rm -f -- "${temp_profile}"; return 1; }
+  else
+    chmod 600 "${temp_profile}" || { rm -f -- "${temp_profile}"; return 1; }
   fi
   quoted_dir=$(printf '%s' "${install_dir}" | sed "s/'/'\\\\''/g")
   printf '\nexport PATH='"'"'%s'"'"':"$PATH" # %s\n' "${quoted_dir}" "${PATH_MARKER}" >>"${temp_profile}" || {
     rm -f -- "${temp_profile}"
     return 1
   }
-  chmod 600 "${temp_profile}" || { rm -f -- "${temp_profile}"; return 1; }
   mv -f -- "${temp_profile}" "${profile}" || { rm -f -- "${temp_profile}"; return 1; }
   printf 'PATH: added %s in %s; start a new shell or source that file.\n' "${install_dir}" "${profile}"
 }

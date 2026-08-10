@@ -26,7 +26,9 @@ foreach ($archive in $archives) {
     $archivePath = Join-Path $root $archive
     $sidecarPath = "$archivePath.sha256"
     $sidecar = (Get-Content -Raw -LiteralPath $sidecarPath).Trim() -split '\s+'
-    if ($sidecar.Count -lt 1 -or $sidecar[0] -cnotmatch '^[0-9a-fA-F]{64}$') {
+    $sidecarName = if ($sidecar.Count -ge 2) { $sidecar[1].TrimStart('*') } else { "" }
+    if ($sidecar.Count -ne 2 -or $sidecar[0] -cnotmatch '^[0-9a-fA-F]{64}$' -or
+        $sidecarName -cne $archive) {
         throw "invalid checksum sidecar: $archive.sha256"
     }
     $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash
