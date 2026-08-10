@@ -15,10 +15,13 @@ Xana projects only the activity and approval callbacks app-server emits.
 
 ## Composer and portable keys
 
-The composer is multiline, UTF-8 aware, and bounded to 1 MiB. Arrow, Home, and
-End keys move the cursor; Shift with those keys extends a selection. Backspace
-and Delete edit the draft. Draft text and staged images are not added to model
-context until a turn is accepted.
+The composer is multiline, UTF-8 aware, and bounded to 1 MiB. It grows from
+one to six visible text rows, then scrolls internally to keep the cursor in
+view without taking over the conversation. Arrow, Home, and End keys move the
+cursor; Shift with those keys extends a composer selection. Backspace and
+Delete edit the draft. Draft text and staged images are not added to model
+context until a turn is accepted. The border states the active Enter behavior
+instead of referring to an unnamed preset.
 
 Two machine-local presets decide the unmodified Enter key:
 
@@ -58,14 +61,14 @@ app-server contract advertises it.
 Ctrl+P opens the searchable command palette. Palette actions and slash input
 use one typed registry:
 
-- `/help`, `/send [MESSAGE]`, `/newline`, `/quit`
+- `/help`, `/header [expanded|collapsed]`, `/send [MESSAGE]`, `/newline`, `/quit`
 - `/interrupt`, `/steer MESSAGE`
 - `/model [CONNECTION/MODEL]`, `/reasoning [EFFORT]`
 - `/activity auto|open|hidden`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
-- `/sessions [expanded|collapsed]`
-- `/setup [full|connection|permissions-shell|profiles-routes|appearance]`
+- `/sessions [expanded|collapsed|archive]`
+- `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/doctor`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
@@ -103,7 +106,13 @@ application. See [Rich terminal content and artifacts](rich-content.md).
 
 `/sessions` opens a searchable, keyboard-complete picker backed by the bounded
 workspace-host snapshot. On wide terminals `/sessions expanded` and
-`/sessions collapsed` persist the default rail state for this workspace.
+`/sessions collapsed` persist the default rail state for this workspace. A
+collapsed rail is fully hidden and returns all of its columns to the
+conversation. After viewing an inactive managed conversation, `/sessions
+archive` removes only Xana's local retained handle. It does not delete the
+Codex-owned thread. The active runtime conversation and native journals cannot
+be archived through this command. `/clear` remains different: it starts a new
+active conversation while retaining the old managed handle for later use.
 Selecting another native conversation opens its committed history for
 inspection while leaving an active root attached to its original conversation;
 managed history remains owned by Codex. Drafting remains local, but Xana will
@@ -113,6 +122,10 @@ Native history initially loads at most 128 messages; scrolling to the older
 edge requests another bounded page while preserving the current anchor.
 
 ## Layout and accessibility
+
+The header starts expanded with Xana's wordmark, version, connection, model,
+session, and status. Typing or pasting a draft collapses it to the compact
+status bar. Click the header or use `/header` to expand it again.
 
 Wide terminals show session, conversation, and activity columns. Medium and
 narrow terminals prioritize conversation and composer content and show
@@ -136,13 +149,16 @@ appear even when activity is hidden. One-shot mode continues to fail closed by
 design.
 
 The mouse wheel scrolls conversation history. On wide layouts, clicking a
-session inspects it, clicking the rail title toggles its width, and clicking an
-activity card expands or collapses its detail. Click or drag in the composer to
-place or extend its selection, and click a selectable overlay row to activate
-the same typed action as Enter. Terminal resizing always recomputes the
-responsive layout; terminals retain their usual modifier for selecting screen
-text outside Xana's composer. These optional mouse conveniences grant no extra
-authority. Color is never the only state indicator. Theme, Unicode/ASCII,
+session inspects it and clicking an activity card expands or collapses its
+detail. Click or drag in the composer to place or extend its selection, and
+click a selectable overlay row to activate the same typed action as Enter.
+Hold Shift while dragging to use the terminal's native screen-text selection
+and copy behavior; ordinary unmodified clicks remain available to Xana.
+Terminal resizing always recomputes both rendering and mouse hit targets from
+the same responsive layout. These optional mouse conveniences grant no extra
+authority. User message separators and text are right-aligned; Xana messages
+are left-aligned; activity retains its owner-aware left-aligned cards. Color is
+never the only state indicator. Theme, Unicode/ASCII,
 reduced-motion, density, and composer preferences have safe fallbacks
 documented in [Terminal presentation](presentation.md). Terminal state is
 restored on normal exit, error, cancellation, and panic unwind. Closing the

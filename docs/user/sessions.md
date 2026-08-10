@@ -30,12 +30,16 @@ resumes that saved handle; managed
 one-shot starts a new thread unless `--continue` requests the saved compatible
 handle. `/clear` deselects the current handle and starts a new thread while
 retaining the old opaque id; model or reasoning changes retain the selection.
+`archive-managed` instead removes exactly one inactive local handle from
+Xana's catalog. It never deletes the vendor-owned thread or Codex history and
+refuses an active or locked handle.
 
 ## Workspace host ownership
 
 ```text
 xana session list
 xana session select-managed codex THREAD_ID
+xana session archive-managed codex THREAD_ID
 ```
 
 The process-owned workspace host uses one canonical workspace identity and can
@@ -90,6 +94,9 @@ state in a version-1 workspace/frontend preference beneath
 active work, selection, unread/error state, transcript data, and controller
 ownership are always recomputed from runtime/host truth. Medium and narrow
 layouts use the picker overlay regardless of the saved rail choice.
+Collapsed means hidden: it reserves no placeholder columns. View an inactive
+managed row and run `/sessions archive` to remove the same local handle from
+inside the TUI.
 
 ## Storage
 
@@ -198,8 +205,8 @@ useful only while the corresponding Codex-owned thread remains available to
 the same Codex account/home and workspace identity. Otherwise resume fails
 visibly and `/clear` starts a new thread.
 
-There is no session deletion, garbage collection, portable-workspace rewrite,
-durable session grant, invocation
+There is no native-session deletion, vendor-thread deletion, garbage
+collection, portable-workspace rewrite, durable session grant, invocation
 auto-replay, or database migration tool yet. Explicit conservative operation
 recovery is described separately. Unknown future record versions and artifact
 hash mismatches fail visibly.

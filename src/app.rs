@@ -185,7 +185,7 @@ async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
                 );
             }
             eprintln!("xana: configuration is absent or invalid: {error}");
-            eprintln!("xana: starting provider-neutral Quick Setup");
+            eprintln!("xana: starting provider-neutral guided setup");
             let _ = run_setup_command(&cli::SetupArgs::default(), paths).await?;
             XanaConfig::load_from(paths.config_file())
                 .context("setup ended without installing a valid configuration")?;
@@ -711,23 +711,27 @@ async fn run_default(
     one_shot: Option<String>,
 ) -> Result<Option<OneShotSuccess>> {
     let presentation = surface.profile();
-    if one_shot.is_none() && matches!(&surface, ChatSurface::Plain(_)) {
-        let mut output = anstream::stdout().lock();
-        if let ChatSurface::Plain(mode) = &surface {
+    match (&surface, one_shot.is_none()) {
+        (ChatSurface::Plain(mode), true) => {
+            let mut output = anstream::stdout().lock();
             presentation::write_banner(&mut output, *mode)
                 .context("could not write Xana banner")?;
+            writeln!(
+                output,
+                "loading Xana config from {}",
+                paths.config_file().display()
+            )?;
         }
-        writeln!(
-            output,
-            "loading Xana config from {}",
-            paths.config_file().display()
-        )?;
-    } else {
-        writeln!(
-            anstream::stderr().lock(),
-            "loading Xana config from {}",
-            paths.config_file().display()
-        )?;
+        // A full-screen surface must only be mutated through Ratatui. Direct
+        // stderr output here survives the redraw and corrupts the composer.
+        (ChatSurface::Tui { .. }, _) => {}
+        _ => {
+            writeln!(
+                anstream::stderr().lock(),
+                "loading Xana config from {}",
+                paths.config_file().display()
+            )?;
+        }
     }
 
     let config = match XanaConfig::load_from(paths.config_file()) {
@@ -1362,6 +1366,29 @@ fn run_session_command<W: Write>(
             )?;
             Ok(())
         }
+        SessionCommand::ArchiveManaged {
+            connection,
+            thread_id,
+        } => {
+            let workspace = std::env::current_dir()
+                .context("could not resolve current workspace")?
+                .canonicalize()
+                .context("could not canonicalize current workspace")?;
+            let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+            let conversation = ConversationRef::Managed {
+                connection,
+                thread_id,
+            };
+            if host.archive_managed_conversation(&conversation)? {
+                writeln!(
+                    output,
+                    "archived local handle {conversation}; the vendor-owned thread was not deleted"
+                )?;
+            } else {
+                anyhow::bail!("managed conversation {conversation} is not retained locally");
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1514,9 +1541,19 @@ async fn run_setup_command(
 ) -> Result<crate::setup::SetupOutcome> {
     let stdin = io::stdin();
     let input_is_terminal = stdin.is_terminal();
+    let output_is_terminal = io::stdout().is_terminal();
+    let profile = banner_mode(paths, true, input_is_terminal, output_is_terminal, false).profile();
     let mut input = stdin.lock();
     let mut output = anstream::stdout().lock();
-    crate::setup::run(args, paths, input_is_terminal, &mut input, &mut output).await
+    crate::setup::run(
+        args,
+        paths,
+        input_is_terminal,
+        &mut input,
+        &mut output,
+        profile,
+    )
+    .await
 }
 
 async fn run_setup_if_needed_command(paths: &XanaPaths) -> Result<()> {

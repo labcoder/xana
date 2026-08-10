@@ -82,8 +82,10 @@ cargo install --path crates/xana-cli --locked
 
 ## Choose a first connection
 
-`xana setup` is the canonical first-run and rerunnable Quick Setup. Xana does
-not preselect or recommend a provider. It first establishes the chosen local,
+`xana setup` is the canonical first-run and rerunnable guided entry point. It
+asks for Quick Setup, Full Setup, or a focused section; `xana setup --quick`
+selects Quick directly. Xana does not preselect or recommend a provider. It
+first establishes the chosen local,
 API-key, or managed Codex connection and fetches its live catalog; only then
 does it offer model and reasoning choices. Ordinary configuration remains in
 memory until the redacted review is confirmed, then the credential reference
@@ -321,7 +323,9 @@ require full-screen initialization. The native TUI has a bounded multiline
 composer, confirmed paste, ordered follow-ups, exact interruption, a shared
 slash-command/command palette, model picker, image staging, streamed turns,
 bounded Markdown/code/diff rendering, explicit artifact actions, paged native
-history, and adaptive wide/medium/narrow layouts. Ctrl+C interrupts the active turn;
+history, an expandable identity/status header, a one-to-six-row scrolling
+composer, and adaptive wide/medium/narrow layouts. Shift+drag uses native
+terminal text selection; ordinary clicks control Xana. Ctrl+C interrupts the active turn;
 Ctrl+Q exits. Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization
@@ -362,11 +366,15 @@ drafting but cannot submit competing work. Exact resume fails with controlling
 terminal/attach guidance. Xana does not lock the workspace filesystem: use
 separate worktrees when parallel conversations might edit the same files.
 Retained Codex handles can be selected with
-`xana session select-managed CONNECTION THREAD_ID`.
+`xana session select-managed CONNECTION THREAD_ID` and removed locally with
+`xana session archive-managed CONNECTION THREAD_ID`. Archiving never deletes
+the vendor-owned thread.
 In the full-screen client, `/sessions` opens the same bounded workspace catalog
 for searchable read-only history navigation. Wide terminals also show a
 session rail; `/sessions expanded` or `/sessions collapsed` persists only that
-workspace-local layout preference. Viewing another transcript never transfers
+workspace-local layout preference, and collapsed reserves no columns. After
+viewing an inactive managed row, `/sessions archive` removes its local handle.
+Viewing another transcript never transfers
 the active root or submits its local draft.
 
 Run exactly one turn with `xana -p "PROMPT"` or pipe one prompt into

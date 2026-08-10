@@ -15,11 +15,14 @@ xana config path
 xana config check
 ```
 
-Quick Setup offers every supported connection kind without recommending or
-preselecting one. It validates endpoint or executable first, then credential
-or Codex-owned account, then fetches the live catalog before model and
-reasoning selection. The platform shell and bounded native defaults are used;
-full profile, route, and shell editing remains an advanced configuration task.
+Bare `xana setup` first asks whether to run Quick Setup, Full Setup, or one
+focused section. Quick Setup is the setup-path default, but it still offers
+every supported connection kind without recommending or preselecting a
+provider. Use `xana setup --quick` to bypass the path menu. It validates the
+endpoint or executable first, then the credential or Codex-owned account, then
+fetches the live catalog before model and reasoning selection. The platform
+shell and bounded native defaults are used; full profile, route, and shell
+editing remains an advanced configuration task.
 
 `xana setup` is safe to rerun. It stages ordinary configuration in memory,
 shows a bounded redacted review, and replaces `config.toml` atomically only
@@ -28,10 +31,13 @@ The confirmed connection and model become the next conversation's effective
 choice: any separate `data/selection.toml` override is cleared within the same
 rollback-safe transaction so it cannot keep a removed or previously selected
 connection active.
-Cancellation and connection failures write nothing. If a newly staged OS-store
-key cannot be followed by a config commit, the prior key is restored. Codex
-OAuth remains vendor-owned and is never represented as part of that rollback.
-`--dry-run` establishes and validates without committing.
+After a commit, setup prints a completion receipt with the config, backup,
+data, and cache locations; it identifies the OS credential store rather than
+inventing a secret file, and lists installed-binary plus source-checkout next
+commands. Cancellation and connection failures write nothing. If a newly
+staged OS-store key cannot be followed by a config commit, the prior key is
+restored. Codex OAuth remains vendor-owned and is never represented as part of
+that rollback. `--dry-run` establishes and validates without committing.
 
 ### Check readiness after installation
 
@@ -85,11 +91,11 @@ printf '%s' "$OPENAI_API_KEY" | xana setup --non-interactive --kind open-ai \
   --permission-mode ask --yes
 ```
 
-Bare interactive `xana` offers Quick Setup when configuration is missing or
-invalid. Non-TTY startup fails promptly with the exact noninteractive command
-shape. Inside plain or full-screen chat, `/setup` closes the current foreground
-owner, restores the terminal, runs the same setup transaction, and starts a
-new conversation using the installed choice.
+Bare interactive `xana` offers the guided setup-path menu when configuration
+is missing or invalid. Non-TTY startup fails promptly with the exact
+noninteractive command shape. Inside plain or full-screen chat, `/setup` closes
+the current foreground owner, restores the terminal, runs the same setup
+transaction, and starts a new conversation using the installed choice.
 
 ## Full Custom and focused sections
 
@@ -206,7 +212,7 @@ and run Quick Setup again:
 xana reset                         # interactive scope and confirmation
 xana reset --scope setup --dry-run
 xana reset --scope setup --yes     # compatibility default
-xana setup
+xana setup --quick
 ```
 
 From a source checkout, the equivalents are `cargo run -- reset` and `cargo

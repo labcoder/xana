@@ -143,12 +143,14 @@ pub(super) enum InputAction {
     PlaceCursor {
         line: usize,
         column: usize,
+        width: u16,
+        scroll: u16,
         select: bool,
     },
     ChooseOverlay(usize),
     ViewSession(ConversationRef),
     ToggleActivity(usize),
-    ToggleRail,
+    ToggleHeader,
     Quit,
 }
 
@@ -181,6 +183,7 @@ pub(super) enum UpdateEffect {
     ViewSession(ConversationRef),
     LoadOlder(ConversationRef),
     PersistRail(bool),
+    ArchiveConversation(ConversationRef),
     PersistActivity(ActivityPaneChoice),
     ArtifactAction {
         record: crate::artifact::ArtifactRecord,
@@ -268,6 +271,7 @@ pub(super) struct TuiState {
     pub(super) scroll: u16,
     pub(super) sessions: Vec<SessionRow>,
     pub(super) rail_expanded: bool,
+    pub(super) header_expanded: bool,
     pub(super) runtime_conversation: ConversationRef,
     pub(super) viewed_conversation: ConversationRef,
     capabilities: OwnerCapabilities,
@@ -285,13 +289,7 @@ impl TuiState {
             session: "not opened".to_owned(),
             status: "Starting Xana locally…".to_owned(),
             composer: Composer::new(),
-            messages: VecDeque::from([VisibleMessage {
-                kind: MessageKind::System,
-                text: "Xana is preparing the workspace runtime. The interface is ready.".to_owned(),
-                document: RichDocument::plain(
-                    "Xana is preparing the workspace runtime. The interface is ready.",
-                ),
-            }]),
+            messages: VecDeque::new(),
             activity: VecDeque::from([ActivityCard::new(
                 "Xana",
                 "frontend",
@@ -310,6 +308,7 @@ impl TuiState {
             scroll: 0,
             sessions: Vec::new(),
             rail_expanded: true,
+            header_expanded: true,
             runtime_conversation: ConversationRef::NewNative,
             viewed_conversation: ConversationRef::NewNative,
             capabilities: OwnerCapabilities::native(),
@@ -351,6 +350,7 @@ impl TuiState {
             scroll: 0,
             sessions: Vec::new(),
             rail_expanded: true,
+            header_expanded: true,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
             capabilities: OwnerCapabilities::native(),
@@ -379,13 +379,7 @@ impl TuiState {
             session,
             status: "Ready".to_owned(),
             composer: Composer::new(),
-            messages: VecDeque::from([VisibleMessage {
-                kind: MessageKind::System,
-                text: "Codex owns this managed thread and inner loop; Xana projects its emitted activity and approvals.".to_owned(),
-                document: RichDocument::plain(
-                    "Codex owns this managed thread and inner loop; Xana projects its emitted activity and approvals.",
-                ),
-            }]),
+            messages: VecDeque::new(),
             activity: VecDeque::new(),
             busy: false,
             active_operation: None,
@@ -397,6 +391,7 @@ impl TuiState {
             scroll: 0,
             sessions: Vec::new(),
             rail_expanded: true,
+            header_expanded: true,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
             capabilities: OwnerCapabilities::managed(),
@@ -657,6 +652,17 @@ impl TuiState {
             "Loaded {} older message(s); {} remain outside the viewport",
             added, self.history_start
         );
+    }
+
+    pub(super) fn archived_conversation(&mut self, conversation: &ConversationRef) {
+        self.sessions
+            .retain(|row| &row.conversation != conversation);
+        if &self.viewed_conversation == conversation {
+            self.view_session_page(self.runtime_conversation.clone(), None);
+        }
+        self.status =
+            "Managed conversation handle archived locally; the vendor thread was not deleted"
+                .to_owned();
     }
 
     pub(super) fn history_before(&self) -> Option<usize> {
@@ -1041,6 +1047,8 @@ mod tests {
             state.update_input(InputAction::PlaceCursor {
                 line: 1,
                 column: 1,
+                width: 20,
+                scroll: 0,
                 select: false,
             }),
             UpdateEffect::None
@@ -1067,6 +1075,18 @@ mod tests {
             UpdateEffect::None
         );
         assert_ne!(state.activity[0].expanded, expanded);
+    }
+
+    #[test]
+    fn typing_collapses_the_startup_header_and_header_command_reopens_it() {
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        assert!(state.header_expanded);
+
+        state.update_input(InputAction::Insert("h".to_owned()));
+        assert!(!state.header_expanded);
+        state.composer.replace("/header".to_owned());
+        assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+        assert!(state.header_expanded);
     }
 
     #[test]

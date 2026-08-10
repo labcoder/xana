@@ -45,6 +45,17 @@ const WORDMARK: &[&str] = &[
     "███▀ ▀███ ▀█▄██ ██ ██ ▀█▄██",
 ];
 
+const ASCII_WORDMARK: &[&str] = &[
+    r"__  __    _    _   _    _   ",
+    r"\ \/ /   / \  | \ | |  / \  ",
+    r" >  <   / _ \ |  \| | / _ \ ",
+    r"/_/\_\ /_/ \_\|_|\__|/_/ \_\",
+];
+
+pub(crate) fn tui_wordmark(unicode: bool) -> &'static [&'static str] {
+    if unicode { WORDMARK } else { ASCII_WORDMARK }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThemeChoice {
@@ -369,6 +380,16 @@ impl SemanticToken {
 }
 
 impl ResolvedPresentation {
+    pub(crate) const fn plain() -> Self {
+        Self {
+            theme: ResolvedTheme::Monochrome,
+            color_depth: ColorDepth::None,
+            unicode: false,
+            width: WidthClass::Narrow,
+            reduced_motion: true,
+        }
+    }
+
     pub(crate) fn color(self, token: SemanticToken) -> Option<PresentationColor> {
         let slot = token_slot(self.theme, token);
         match self.color_depth {
@@ -391,13 +412,7 @@ impl ResolvedPresentation {
 
     #[cfg(test)]
     pub(crate) const fn test_plain() -> Self {
-        Self {
-            theme: ResolvedTheme::Monochrome,
-            color_depth: ColorDepth::None,
-            unicode: false,
-            width: WidthClass::Narrow,
-            reduced_motion: true,
-        }
+        Self::plain()
     }
 }
 

@@ -310,6 +310,34 @@ impl WorkspaceHost {
         }
     }
 
+    pub(crate) fn archive_managed_conversation(
+        &self,
+        conversation: &ConversationRef,
+    ) -> Result<bool, WorkspaceHostError> {
+        let ConversationRef::Managed {
+            connection,
+            thread_id,
+        } = conversation
+        else {
+            return Err(WorkspaceHostError::Invalid(
+                "only managed conversation handles can be archived".to_owned(),
+            ));
+        };
+        if self
+            .active_descriptor()?
+            .is_some_and(|active| active.conversation == *conversation)
+        {
+            return Err(WorkspaceHostError::Invalid(
+                "an active managed conversation cannot be archived".to_owned(),
+            ));
+        }
+        let mut store = ManagedThreadStore::open(&self.data_root, connection, &self.workspace)
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?;
+        store
+            .archive_thread(thread_id)
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))
+    }
+
     fn active_descriptor(&self) -> Result<Option<ActiveRootDescriptor>, WorkspaceHostError> {
         let lock = match open_lock(&self.lock_path) {
             Ok(lock) => lock,
@@ -519,6 +547,40 @@ mod tests {
         assert_eq!(snapshot.workspace, workspace.canonicalize().unwrap());
         assert_eq!(snapshot.conversations.len(), 4);
         assert!(snapshot.active.is_none());
+    }
+
+    #[test]
+    fn managed_archive_refuses_the_active_root_then_removes_only_its_local_handle() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        let conversation = ConversationRef::Managed {
+            connection: "codex".to_owned(),
+            thread_id: "thread-active".to_owned(),
+        };
+        let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(Some("thread-active".into()), Some("identity-v1"))
+            .unwrap();
+        drop(store);
+        let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
+        let lease = host.acquire_root(conversation.clone()).unwrap();
+
+        assert!(matches!(
+            host.archive_managed_conversation(&conversation),
+            Err(WorkspaceHostError::Invalid(reason)) if reason.contains("active")
+        ));
+
+        drop(lease);
+        assert!(host.archive_managed_conversation(&conversation).unwrap());
+        assert!(
+            host.snapshot()
+                .unwrap()
+                .conversations
+                .iter()
+                .all(|entry| entry.conversation != conversation)
+        );
     }
 
     #[test]
