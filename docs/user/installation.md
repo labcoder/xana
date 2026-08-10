@@ -147,8 +147,8 @@ Alternatively, `cargo install --path crates/xana-cli --locked` installs the
 `xana` command used throughout the documentation. `cargo init` is Cargo's
 command for creating a new Rust package; it does not initialize Xana.
 
-To return only Xana's setup state to first run while preserving sessions,
-artifacts, stored credentials, and external Codex state:
+To return only Xana's setup state to first run while preserving native
+sessions, artifacts, stored credentials, and external Codex state:
 
 ```bash
 cargo run -- reset
@@ -156,6 +156,11 @@ cargo run -- setup
 ```
 
 Use `cargo run -- reset --yes` when no interactive confirmation is possible.
+Preview exact recovery scopes with `xana reset --scope SCOPE --dry-run`; OS
+credential removal requires the separate `--credentials-yes` flag. Run `xana
+doctor` for redacted read-only health checks and `xana config edit` for a
+validated atomic manual edit. The old hidden `xana init` path is deprecated
+through v0.5.0 and exists only for compatibility; setup is authoritative.
 
 See [Configuration](configuration.md) for paths and schema,
 [Permissions](permissions.md) for host authority, [Project context and system

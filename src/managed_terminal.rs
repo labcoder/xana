@@ -128,7 +128,7 @@ pub(crate) async fn run_codex_chat(
         }
     }
     println!(
-        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
+        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /doctor pauses for read-only diagnostics; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
     );
 
     let mut editor = DefaultEditor::new().context("could not initialize terminal editor")?;
@@ -151,6 +151,10 @@ pub(crate) async fn run_codex_chat(
             continue;
         }
         if input == "/quit" {
+            break;
+        }
+        if input == "/doctor" {
+            exit = ChatExit::Doctor(None);
             break;
         }
         let setup_request = input

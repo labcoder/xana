@@ -12,6 +12,23 @@ use zeroize::Zeroize;
 const DESCRIPTOR_VERSION: u16 = 1;
 const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DescriptorHealth {
+    Absent,
+    Active {
+        process_id: u32,
+        endpoint: SocketAddr,
+    },
+    Stale {
+        path: PathBuf,
+        reason: String,
+    },
+    InvalidActive {
+        path: PathBuf,
+        reason: String,
+    },
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RuntimeDescriptor {
@@ -125,6 +142,114 @@ pub(crate) fn discover(runtime_root: &Path, workspace: &Path) -> Result<RuntimeD
     Ok(descriptor)
 }
 
+pub(crate) fn inspect_health(
+    runtime_root: &Path,
+    workspace: &Path,
+) -> Result<DescriptorHealth, String> {
+    let canonical = workspace
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize diagnostic workspace: {error}"))?;
+    let key = workspace_identity(&canonical);
+    let directory = descriptor_directory(runtime_root);
+    let path = directory.join(format!("{key}.json"));
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(DescriptorHealth::Absent);
+        }
+        Err(error) => return Err(format!("could not inspect local-host descriptor: {error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+        return Ok(DescriptorHealth::InvalidActive {
+            path,
+            reason: "descriptor target is not a regular file".into(),
+        });
+    }
+
+    let lock_path = directory.join(format!("{key}.lock"));
+    let lock = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+    {
+        Ok(lock) => lock,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let reason = discover_path(&path)
+                .and_then(|value| validate_descriptor(&value, &canonical))
+                .map(|_| "descriptor has no owner lock".to_owned())
+                .unwrap_or_else(|reason| reason);
+            return Ok(DescriptorHealth::Stale { path, reason });
+        }
+        Err(error) => {
+            return Err(format!(
+                "could not open existing local-host diagnostic lock: {error}"
+            ));
+        }
+    };
+    let unlocked = match lock.try_lock() {
+        Ok(()) => true,
+        Err(fs::TryLockError::WouldBlock) => false,
+        Err(fs::TryLockError::Error(error)) => {
+            return Err(format!(
+                "could not inspect local-host diagnostic lock: {error}"
+            ));
+        }
+    };
+    let descriptor = discover_path(&path).and_then(|value| {
+        validate_descriptor(&value, &canonical)?;
+        Ok(value)
+    });
+    if unlocked {
+        let _ = fs::File::unlock(&lock);
+        return Ok(DescriptorHealth::Stale {
+            path,
+            reason: descriptor
+                .map(|_| "descriptor has no active lock owner".to_owned())
+                .unwrap_or_else(|reason| reason),
+        });
+    }
+    Ok(match descriptor {
+        Ok(descriptor) => DescriptorHealth::Active {
+            process_id: descriptor.process_id,
+            endpoint: descriptor.endpoint,
+        },
+        Err(reason) => DescriptorHealth::InvalidActive { path, reason },
+    })
+}
+
+pub(crate) fn remove_stale(runtime_root: &Path, workspace: &Path) -> Result<bool, String> {
+    let canonical = workspace
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize diagnostic workspace: {error}"))?;
+    let key = workspace_identity(&canonical);
+    let directory = descriptor_directory(runtime_root);
+    let path = directory.join(format!("{key}.json"));
+    let lock_path = directory.join(format!("{key}.lock"));
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|error| format!("could not open local-host repair lock: {error}"))?;
+    match lock.try_lock() {
+        Ok(()) => {}
+        Err(fs::TryLockError::WouldBlock) => {
+            return Err("refusing to remove a descriptor whose owner lock is active".into());
+        }
+        Err(fs::TryLockError::Error(error)) => {
+            return Err(format!("could not acquire local-host repair lock: {error}"));
+        }
+    }
+    let removed = match fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+        Err(error) => return Err(format!("could not remove stale descriptor: {error}")),
+    };
+    let _ = fs::File::unlock(&lock);
+    Ok(removed)
+}
+
 fn discover_path(path: &Path) -> Result<RuntimeDescriptor, String> {
     let bytes = bounded_file::read(path, MAX_DESCRIPTOR_BYTES)
         .map_err(|error| format!("could not read local-host descriptor: {error}"))?;
@@ -169,6 +294,30 @@ fn write_descriptor(path: &Path, descriptor: &RuntimeDescriptor) -> Result<(), S
         .map_err(|error| format!("could not write local-host descriptor: {error}"))?;
     file.commit()
         .map_err(|error| format!("could not install local-host descriptor: {error}"))
+}
+
+#[cfg(test)]
+pub(crate) fn write_stale_for_test(runtime_root: &Path, workspace: &Path) -> PathBuf {
+    let workspace = workspace.canonicalize().expect("test workspace");
+    let key = workspace_identity(&workspace);
+    let directory = descriptor_directory(runtime_root);
+    fs::create_dir_all(&directory).expect("test descriptor directory");
+    let path = directory.join(format!("{key}.json"));
+    let descriptor = RuntimeDescriptor::new(
+        Uuid::new_v4(),
+        workspace,
+        "127.0.0.1:12345".parse().expect("test endpoint"),
+        "x".repeat(64),
+    );
+    write_descriptor(&path, &descriptor).expect("test descriptor");
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.join(format!("{key}.lock")))
+        .expect("test descriptor lock");
+    path
 }
 
 #[cfg(unix)]

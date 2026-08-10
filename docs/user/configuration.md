@@ -103,6 +103,44 @@ conversation snapshot, so config edits affect a new conversation only.
 `--start-new` prints the explicit new-conversation action; Xana never silently
 discards an open native session or Codex thread.
 
+## Diagnose and edit configuration
+
+Run the complete read-only installation report with:
+
+```bash
+xana doctor
+xana doctor --output json
+```
+
+Findings use stable codes and `ok`, `info`, `warning`, or `error` severity.
+Each includes a bounded evidence source and exact next command. The report
+checks the current schema, credential reference/backend availability, live
+native catalogs, Codex executable/version/app-server/account/home/catalog and
+rate limits, Xana-owned path protection, presentation preferences, terminal
+mode, selected model, and the current workspace's runtime descriptor. Catalog
+probes do not update caches. Untrusted parse failures and provider response
+bodies are omitted rather than echoed, so seeded secrets do not become
+diagnostic output.
+
+`xana doctor --fix` first prints a separate repair preview and confirmation.
+It can tighten existing Xana-owned Unix paths to owner-only modes and remove
+an exact workspace descriptor only after acquiring its otherwise-unowned lock.
+Those operations are idempotent. Doctor never logs in, refreshes Xana's model
+cache, chooses a provider/model, changes permission policy, removes history,
+or kills a process. Noninteractive repair requires `--yes`; JSON mode remains
+read-only.
+
+For free-form TOML changes, use `xana config edit [--editor PROGRAM]`. Xana
+copies at most 1 MiB to an owner-protected sibling draft, launches the exact
+editor executable without a shell, and validates the complete production
+schema after it exits. `XANA_EDITOR`, `VISUAL`, and `EDITOR` are consulted in
+that order when `--editor` is absent; each value names one executable, not a
+shell command with arguments. A valid edit installs atomically after checking
+that no other writer changed the live file, and the exact prior config becomes
+`config.toml.bak`. Cancellation, nonzero editor exit, invalid UTF-8/TOML/schema,
+oversize, concurrent change, or commit failure preserves the live file and
+reports the retained draft path. Changes apply to a new conversation.
+
 For a managed Codex first connection, no HTTP base URL or Xana credential is
 accepted:
 
@@ -123,15 +161,15 @@ available and verifies the exact model and optional reasoning effort against
 the live app-server catalog. Login remains an explicit vendor-owned action;
 run `codex login` or `xana connection login codex` before retrying setup.
 
-## Reset first-run setup
+## Scoped reset
 
 Use `reset` (or its `clean` alias) when you want to discard the current setup
 and run Quick Setup again:
 
 ```bash
-xana reset
-# Noninteractive confirmation:
-xana reset --yes
+xana reset                         # interactive scope and confirmation
+xana reset --scope setup --dry-run
+xana reset --scope setup --yes     # compatibility default
 xana setup
 ```
 
@@ -139,19 +177,34 @@ From a source checkout, the equivalents are `cargo run -- reset` and `cargo
 run -- setup`. Without `--yes`, an interactive terminal previews every target
 and asks for confirmation; redirected input fails closed.
 
-Reset removes only:
+Scopes are independently selectable and repeatable:
 
-- `config.toml`;
-- `data/selection.toml`;
-- cached model catalogs beneath `cache/models/`; and
-- Xana's managed-thread handles beneath `data/managed-threads/`.
+- `setup` removes configuration and backup last, selection, model catalogs,
+  managed-thread handles, and presentation preferences;
+- `sessions` removes Xana-owned native journals, artifacts, managed-thread
+  handles, and inactive workspace ownership state while preserving config;
+- `caches` removes only known Xana model/setup probe caches;
+- `credentials` removes only OS-stored credential ids still referenced by a
+  valid config; environment variables are never changed; and
+- `all` combines those four persistent scopes.
 
-It preserves native session journals, artifacts, OS credential-manager API
-keys, Codex authentication, and Codex-owned conversations. Removing a managed
-thread handle means Xana will not automatically resume that external thread,
-but it does not delete the thread from Codex. Use `/clear` to clear only the
-active conversation, `connection delete-key` to remove an API key, and
-`connection logout` for an explicit managed-account logout.
+`--dry-run` never prompts or mutates. Filesystem removal requires `--yes` when
+noninteractive. Credential removal always requires the separate
+`--credentials-yes` confirmation; `--yes` alone is insufficient. Reset derives
+exact absolute targets from Xana's path policy, unlinks symlinks instead of
+following them, refuses active workspace owner locks, and removes config last.
+It does not remove arbitrary cache entries or unreferenced keyring entries.
+
+Every scope preserves Codex authentication and Codex-owned conversations.
+Removing a managed-thread handle only stops Xana from automatically resuming
+that external thread. Active or unverified runtime descriptors are also
+preserved; `doctor --fix` removes only an exact unlocked stale descriptor. Use
+`/clear` to start a new active conversation, `connection delete-key` for one
+API key, and `connection logout` for an explicit vendor-owned logout.
+
+The hidden `xana init` command remains a deprecated create-new compatibility
+path through v0.5.0. It prints the migration notice on every use. New and
+existing users should use provider-neutral `xana setup`.
 
 ## Connections and models
 
@@ -504,5 +557,6 @@ Quick Setup intentionally creates one functional default connection/profile.
 It does not edit the full profile, route, orchestration, or shell schema. Xana
 has no hosted OAuth service, direct ChatGPT backend transport, Claude
 subscription login, automatic catalog refresh at ordinary startup, automatic
-model routing, plaintext secret fallback, or automatic legacy repair. Use the
-advanced connection/model commands or edit validated TOML for those concerns.
+model routing, plaintext secret fallback, or nondeterministic repair. Use
+setup sections, advanced connection/model commands, or `xana config edit` for
+those concerns.

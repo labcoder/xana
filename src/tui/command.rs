@@ -17,6 +17,8 @@ pub(super) enum CommandId {
     Queue,
     Clear,
     Composer,
+    Doctor,
+    Reset,
     Quit,
 }
 
@@ -58,6 +60,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "composer",
         usage: "/composer submit|newline",
         summary: "Persist the Enter-key composer preset",
+    },
+    CommandSpec {
+        id: CommandId::Doctor,
+        name: "doctor",
+        usage: "/doctor",
+        summary: "Pause the owner, run read-only installation diagnostics, and resume",
     },
     CommandSpec {
         id: CommandId::Help,
@@ -127,6 +135,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     },
 ];
 
+const PALETTE_ONLY: &[CommandSpec] = &[CommandSpec {
+    id: CommandId::Reset,
+    name: "reset Xana state",
+    usage: "Reset Xana state…",
+    summary: "Stop active work, restore the terminal, preview an exact reset scope, and confirm",
+}];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ParsedCommand {
     pub(super) id: CommandId,
@@ -153,6 +168,7 @@ pub(super) fn search(query: &str) -> Vec<CommandSpec> {
     let query = query.trim().to_ascii_lowercase();
     COMMANDS
         .iter()
+        .chain(PALETTE_ONLY)
         .copied()
         .filter(|command| {
             query.is_empty()
@@ -181,6 +197,12 @@ mod tests {
             parse("/not-a-command")
                 .unwrap_err()
                 .contains("command palette")
+        );
+        assert!(parse("/reset").is_err());
+        assert!(
+            search("reset")
+                .iter()
+                .any(|command| command.id == CommandId::Reset)
         );
     }
 }

@@ -7,6 +7,12 @@ records the correlated result afterward. If the process stops between those
 records, the effect's outcome is unknown. Missing local result data does not
 mean the effect did not happen.
 
+Installation diagnosis is a separate boundary. Use `xana doctor` (or
+`/doctor` while idle) for redacted config, connection, Codex, path, terminal,
+and stale-host findings; it never reconciles an interrupted tool effect.
+Conversely, operation plan/resume never repairs installation state. See
+[Configuration](configuration.md#diagnose-and-edit-configuration).
+
 Restoring a session is always passive:
 
 ```text

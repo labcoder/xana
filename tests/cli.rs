@@ -326,6 +326,61 @@ fn reset_requires_confirmation_preserves_history_and_allows_reinitialization() {
 }
 
 #[test]
+fn doctor_json_is_versioned_redacted_and_read_only() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+    let before = std::fs::read(home.join("config.toml")).expect("config before doctor");
+
+    let output = xana(&home)
+        .args(["doctor", "--output", "json"])
+        .output()
+        .expect("run doctor");
+
+    assert_success(&output);
+    let report: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("versioned doctor JSON");
+    assert_eq!(report["version"], 1);
+    assert!(
+        report["findings"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("secret"));
+    assert_eq!(
+        std::fs::read(home.join("config.toml")).expect("config after doctor"),
+        before
+    );
+    assert!(!home.join("cache/models").exists());
+}
+
+#[test]
+fn reset_dry_run_and_session_scope_preserve_configuration() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+    let session = home.join("data/sessions/keep.jsonl");
+    std::fs::create_dir_all(session.parent().expect("session parent")).unwrap();
+    std::fs::write(&session, b"fixture").unwrap();
+
+    let preview = xana(&home)
+        .args(["reset", "--scope", "sessions", "--dry-run"])
+        .output()
+        .expect("preview sessions reset");
+    assert_success(&preview);
+    assert!(session.is_file());
+    assert!(home.join("config.toml").is_file());
+
+    let reset = xana(&home)
+        .args(["reset", "--scope", "sessions", "--yes"])
+        .output()
+        .expect("reset sessions");
+    assert_success(&reset);
+    assert!(!session.exists());
+    assert!(home.join("config.toml").is_file());
+}
+
+#[test]
 fn one_shot_text_keeps_payload_on_stdout_and_diagnostics_on_stderr() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");

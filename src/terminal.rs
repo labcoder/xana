@@ -44,6 +44,8 @@ pub(crate) struct ChatHeader {
 pub(crate) enum ChatExit {
     Quit,
     Restart,
+    Doctor(Option<SessionId>),
+    Reset,
     Setup(String),
 }
 
@@ -53,6 +55,7 @@ enum InputAction<'a> {
     Clear,
     Attach(&'a str),
     Model(&'a str),
+    Doctor,
     Setup(&'a str),
     Agents,
     Agent(&'a str),
@@ -80,6 +83,9 @@ fn classify_input(line: &str) -> InputAction<'_> {
     }
     if trimmed == "/setup" {
         return InputAction::Setup("");
+    }
+    if trimmed == "/doctor" {
+        return InputAction::Doctor;
     }
     if let Some(section) = trimmed.strip_prefix("/setup ") {
         return InputAction::Setup(section.trim());
@@ -533,6 +539,11 @@ pub(crate) async fn run_chat(
                     }
                     Err(error) => println!("xana> {error}"),
                 },
+                InputAction::Doctor => {
+                    runtime.send(RuntimeCommand::Shutdown).await?;
+                    exit = ChatExit::Doctor(Some(header.session_id));
+                    break;
+                }
                 InputAction::Agents => {
                     runtime.send(RuntimeCommand::ListChildren).await?;
                     render_until_child_control_result(&mut runtime, &mut renderer).await?;
@@ -979,6 +990,7 @@ mod tests {
     #[test]
     fn classifies_commands_blanks_and_messages() {
         assert_eq!(classify_input("/quit"), InputAction::Quit);
+        assert_eq!(classify_input("/doctor"), InputAction::Doctor);
         assert_eq!(classify_input("/setup"), InputAction::Setup(""));
         assert_eq!(
             classify_input("/setup appearance"),
