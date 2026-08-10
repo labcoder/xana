@@ -50,8 +50,17 @@ $Target = "x86_64-pc-windows-msvc"
 $ArchiveName = "xana-cli-$Target.zip"
 
 if ($Help) {
-    Get-Help $PSCommandPath -Detailed
-    exit 0
+    Write-Output @"
+Install or update Xana from a verified Windows x64 Release Preview archive.
+
+Usage: install.ps1 [-Version X.Y.Z] [-InstallDir DIR] [-NoSetup]
+                   [-ModifyPath | -NoModifyPath]
+
+The default version is latest and the default destination is
+%LOCALAPPDATA%\Programs\Xana\bin. The installer never requests elevation,
+uses XANA_HOME for executable placement, or installs a language runtime.
+"@
+    return
 }
 if ($ModifyPath -and $NoModifyPath) {
     throw "-ModifyPath conflicts with -NoModifyPath"
@@ -585,6 +594,8 @@ try {
     }
     Write-Output "Install receipt: version=$($manifest.Version) action=$action target=$Target setup=$setupResult"
 } catch {
+    $originalError = $_.Exception.Message
+    $restoreError = $null
     if ($activationStarted -and -not $activationCommitted -and $null -ne $finalPath) {
         try {
             if ($hadPrevious -and $null -ne $backupPath -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
@@ -594,11 +605,13 @@ try {
                 [IO.File]::Delete($finalPath)
             }
         } catch {
-            Write-Error "installer failed and could not restore the prior executable"
+            $restoreError = $_.Exception.Message
         }
     }
-    Write-Error "Xana installer error: $($_.Exception.Message)"
-    exit 1
+    if ($null -ne $restoreError) {
+        throw "Xana installer error: $originalError; the prior executable could not be restored: $restoreError"
+    }
+    throw "Xana installer error: $originalError"
 } finally {
     if ($null -ne $stageDirectory) {
         Remove-SafeDirectory -Path $stageDirectory -RequiredParent $InstallDir -RequiredPrefix ".xana-stage-"
