@@ -74,6 +74,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   workflow without implying publication.
 - [Release Preview draft review](development/release-review-checklist.md) is the
   owner checklist for an exact complete unpublished bundle.
+- [Xana 0.5.0 Release Preview evidence](development/release-preview-evidence-0.5.0.md)
+  separates passed local candidate gates from still-unexecuted remote,
+  provenance, draft, and publication evidence.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
