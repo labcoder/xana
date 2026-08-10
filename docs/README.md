@@ -54,10 +54,14 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their
   lifecycle status.
-- [Accepted Phase 5 local frontend and workspace host](proposals/0017-bounded-local-frontends-and-workspace-host.md)
-  is the prescriptive contract for the bounded embedded client, TUI, loopback
-  host, presentation preferences, attachment security, backpressure, and
-  shutdown work that is not yet fully implemented.
+- [Accepted Release Preview](proposals/0018-release-preview-distribution.md)
+  is the prescriptive contract for the bounded four-target native preview,
+  source-controlled installers, Xana-owned readiness handoff, attributable
+  draft assembly, and explicit Product Distribution deferrals.
+- [Implemented Phase 5 local frontend and workspace host](proposals/0017-bounded-local-frontends-and-workspace-host.md)
+  records the historical bounded embedded-client, TUI, loopback-host,
+  presentation, attachment-security, backpressure, and shutdown decision.
+  Architecture and User Documentation now own the shipped contract.
 - [Implemented Phase 4 orchestration](proposals/0016-bounded-child-orchestration-and-task-routes.md)
   records the historical bounded-child, exact-route, report, budget,
   native/managed owner, and orchestration-plan decision. Architecture and User

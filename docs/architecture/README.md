@@ -794,7 +794,10 @@ There is no crates.io publication, prebuilt archive, platform installer,
 package-manager channel, automatic updater, or release tag claimed by the
 current repository. Publication and tagging remain separate owner-controlled
 effects, and the manifest currently sets `publish = false` to prevent an
-accidental registry upload.
+accidental registry upload. The separately
+[accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)
+prescribes a bounded native preview without making any of those future
+artifacts part of the current descriptive architecture before they exist.
 
 ## Source organization
 
