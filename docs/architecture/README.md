@@ -808,9 +808,18 @@ native archive audit verifies checksum, bounded contents, and version/help
 execution. The planner uses Cargo's existing release profile and performs no
 publish or install effect.
 
-There is still no crates.io publication, public prebuilt archive, platform
-installer, package-manager channel, automatic updater, or release tag claimed
-by the current repository. Publication and tagging remain separate
+The source-controlled Bash installer is the Unix Release Preview activation
+boundary. It accepts only the three planned macOS/Linux targets and one exact
+four-target release manifest, verifies bounded SHA-256-addressed archives
+before inspecting or extracting them, smokes the staged `xana`, and replaces a
+per-user executable failure-safely. PATH mutation is a separate explicit
+profile edit, and configuration readiness is delegated only to `setup
+--if-needed`. Its local fixture authority requires three conspicuous test-only
+arguments together and cannot redirect an ordinary production invocation.
+
+There is still no crates.io publication, public prebuilt archive, published
+installer asset, package-manager channel, automatic updater, or release tag
+claimed by the current repository. Publication and tagging remain separate
 owner-controlled effects, and the manifests set `publish = false` to prevent an
 accidental registry upload. The separately
 [accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)

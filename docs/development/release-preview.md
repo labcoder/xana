@@ -5,7 +5,7 @@
 Xana uses `cargo-dist` 0.32.0 as a pinned planner for one terminal application
 and four native targets. The reviewed [Release Preview proposal](../proposals/0018-release-preview-distribution.md)
 owns the product boundary. This document describes local implementation tools;
-it does not claim that a public archive or installer exists.
+it does not claim that a public archive or published installer asset exists.
 
 ## Plan the release
 
@@ -30,6 +30,38 @@ planner, and semantically verifies:
 `dist-workspace.toml` leaves generated installers disabled. Xana's Bash and
 PowerShell wrappers are separately reviewed product code; the release workflow
 attaches those exact source files later.
+
+## Audit the Bash installer
+
+The reviewed Unix wrapper lives at `install/install.sh`. It supports `latest`
+or one exact `X.Y.Z`, an explicit install directory, `--no-setup`, and explicit
+`--modify-path`/`--no-modify-path` behavior. Production authority is fixed to
+HTTPS assets in `labcoder/xana`; the offline fixture seam requires
+`--allow-test-fixture`, `--test-fixture-root`, and `--test-target` together and
+prints a test-only warning.
+
+Run its syntax and offline behavior matrix from Bash:
+
+```bash
+bash -n install/install.sh scripts/test-install-sh.sh
+./scripts/test-install-sh.sh
+```
+
+The matrix covers exact-version install and reinstall, idempotent profile
+editing, noninteractive setup-pending translation, checksum mismatch,
+unexpected archive inventory, unsupported targets, and preservation of the
+previous executable. The checked-in release manifest generator is:
+
+```powershell
+./scripts/new-release-manifest.ps1 \
+  -ArtifactDirectory target/distrib \
+  -Version 0.5.0
+```
+
+It accepts only the exact four archive names, hashes their bytes itself, bounds
+their sizes, and writes the line-oriented `xana-release-manifest.txt` consumed
+equivalently by both installers. The draft workflow will own invoking it only
+after all four native artifacts have been assembled.
 
 ## Build and audit the current target
 

@@ -28,6 +28,8 @@ $required = @(
     "docs/user/presentation.md",
     "docs/user/project-context.md",
     "docs/user/sessions.md",
+    "install/install.sh",
+    "scripts/new-release-manifest.ps1",
     "src/main.rs"
 )
 
