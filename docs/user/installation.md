@@ -1,78 +1,223 @@
-# Source installation
+# Installation, updates, verification, and removal
 
-> Audience: People installing, updating, or removing Xana from source.
+> Audience: People installing, updating, verifying, or removing Xana.
 
-Xana's developer preview is distributed as Rust source. It has no prebuilt
-binary archive, platform installer, package-manager channel, automatic updater,
-or crates.io release. Source compilation happens on the local machine.
+Xana has a four-platform developer-preview delivery path for Apple Silicon
+macOS (`aarch64-apple-darwin`), Intel macOS (`x86_64-apple-darwin`), Windows
+x64 (`x86_64-pc-windows-msvc`), and x64 glibc Linux
+(`x86_64-unknown-linux-gnu`).
 
-## Prerequisites
+The GitHub commands below apply only after the owner publishes an ordinary
+preview. A release workflow run, local version tag, or `REVIEW READY` draft is
+not a public release. If the `latest` URL returns 404, use the locked Git Cargo
+or checkout path; do not substitute an unrelated asset or weaken TLS.
 
-Install Git and Rust through [rustup](https://rustup.rs/). Xana pins Rust
-`1.97.1` in `rust-toolchain.toml`; Cargo, rustfmt, and Clippy use that toolchain
-inside a checkout. Platform-default shell execution also requires `sh` on
-macOS/Linux or PowerShell on Windows. Git Bash and `cmd` are explicit Windows
-alternatives.
+Preview binaries are unsigned. macOS archives are not Developer-ID-signed or
+notarized, and the Windows executable is not Authenticode-signed. SHA-256
+detects bytes that differ from the release manifest. GitHub attestations bind
+assets to this repository, workflow, and commit. Neither is an operating-system
+publisher signature.
 
-ChatGPT subscription access additionally requires a compatible `codex`
-executable on `PATH` (or an explicit connection `codex_program`). API-key and
-Ollama connections do not require Codex.
+ChatGPT subscription use additionally requires a compatible `codex`
+executable on `PATH` or an explicit `codex_program`. API-key and Ollama
+connections do not require Codex.
 
-## Install from a checkout
+## Install a published preview
+
+The installers require no Rust, Node, Python, repository checkout, elevation,
+or system-wide directory. They verify the selected release before activation
+and then delegate configuration readiness to Xana.
+
+### macOS or x64 glibc Linux
+
+Review the source-controlled installer before executing the published copy:
+
+```bash
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://github.com/labcoder/xana/releases/latest/download/xana-installer.sh \
+  | bash
+```
+
+The default destination is `~/.local/bin/xana`. Options are passed after
+`bash -s --`:
+
+```bash
+# Exact release
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://github.com/labcoder/xana/releases/latest/download/xana-installer.sh \
+  | bash -s -- --version 0.5.0
+
+# Custom directory, no setup, and no profile edit
+curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+  https://github.com/labcoder/xana/releases/latest/download/xana-installer.sh \
+  | bash -s -- --install-dir "$HOME/bin" --no-setup --no-modify-path
+```
+
+`--modify-path` explicitly adds the selected directory to the user shell
+profile. With neither PATH flag, an interactive installer asks and defaults to
+no; a noninteractive installer never changes a profile. Start a new shell or
+source the named profile after accepting a change. Bash is required. Linux
+must be x64 glibc; musl, ARM Linux, and other targets use the source fallback.
+
+### Windows x64 PowerShell
+
+Fetch the published script over HTTPS and invoke the resulting script block;
+this does not require changing PowerShell execution policy:
+
+```powershell
+$source = Invoke-RestMethod `
+  -Uri 'https://github.com/labcoder/xana/releases/latest/download/xana-installer.ps1'
+& ([scriptblock]::Create($source))
+```
+
+The default destination is
+`%LOCALAPPDATA%\Programs\Xana\bin\xana.exe`. The same invocation accepts
+parameters:
+
+```powershell
+$source = Invoke-RestMethod `
+  -Uri 'https://github.com/labcoder/xana/releases/latest/download/xana-installer.ps1'
+
+# Exact release
+& ([scriptblock]::Create($source)) -Version 0.5.0
+
+# Custom directory, no setup, and no user-PATH change
+& ([scriptblock]::Create($source)) `
+  -InstallDir "$env:LOCALAPPDATA\Programs\Xana\bin" `
+  -NoSetup `
+  -NoModifyPath
+```
+
+`-ModifyPath` explicitly changes the user PATH. With neither PATH switch, an
+interactive invocation asks and defaults to no; redirected/noninteractive use
+does not mutate PATH. Open a new terminal after accepting. Windows ARM64, x86,
+and emulated x64 processes are not preview targets.
+
+`XANA_HOME` never chooses the executable destination on either platform.
+
+## Understand the install receipt
+
+The wrapper reports binary state separately from setup state:
+
+- `install`, `reinstall`, `upgrade`, or `downgrade` describes executable
+  activation relative to the previous recognizable Xana version;
+- `setup=ready-or-configured` means existing valid setup was preserved or an
+  interactive setup transaction completed;
+- `setup=pending` means verified binary activation succeeded but a person must
+  run `xana setup`; and
+- `setup=skipped` means `--no-setup`/`-NoSetup` was selected.
+
+The wrappers never parse configuration, inspect credentials, log in, select a
+provider, or grant permissions. `xana setup --if-needed` owns readiness.
+Healthy state returns without provider, credential, or filesystem effects.
+Interactive missing/invalid/incompatible state enters the canonical confirmed
+flow; noninteractive state returns a versioned `XANA_SETUP_RESULT` and exit 10.
+Unexpected readiness errors remain installer errors after an otherwise
+successful binary activation.
+
+Finish or inspect setup with:
+
+```bash
+xana setup
+xana doctor
+xana config check
+xana
+```
+
+## Verify an archive manually
+
+Choose exactly one archive from the GitHub release matching the target list at
+the top of this page. Download that archive, its `.sha256` sidecar,
+`xana-release-manifest.txt`, and `sha256.sum` from the same immutable version.
+Do not mix `latest` redirects with a pinned asset after selection.
+
+macOS or Linux:
+
+```bash
+# Replace TARGET and VERSION with one supported exact pair.
+VERSION=0.5.0
+TARGET=x86_64-unknown-linux-gnu
+ASSET="xana-cli-${TARGET}.tar.gz"
+BASE="https://github.com/labcoder/xana/releases/download/v${VERSION}"
+
+curl --proto '=https' --tlsv1.2 --fail --location --remote-name \
+  "${BASE}/${ASSET}"
+curl --proto '=https' --tlsv1.2 --fail --location --remote-name \
+  "${BASE}/${ASSET}.sha256"
+
+# Linux
+sha256sum --check "${ASSET}.sha256"
+# macOS
+shasum -a 256 --check "${ASSET}.sha256"
+
+gh attestation verify "${ASSET}" --repo labcoder/xana
+tar -tzf "${ASSET}"
+tar -xzf "${ASSET}"
+./xana --version
+./xana --help
+```
+
+Windows PowerShell:
+
+```powershell
+$version = '0.5.0'
+$asset = 'xana-cli-x86_64-pc-windows-msvc.zip'
+$base = "https://github.com/labcoder/xana/releases/download/v$version"
+Invoke-WebRequest -Uri "$base/$asset" -OutFile $asset
+Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile "$asset.sha256"
+
+$expected = ((Get-Content -Raw "$asset.sha256").Trim() -split '\s+')[0]
+$actual = (Get-FileHash -Algorithm SHA256 $asset).Hash
+if ($actual -ine $expected) { throw 'Xana archive SHA-256 mismatch' }
+
+gh attestation verify $asset --repo labcoder/xana
+Expand-Archive -LiteralPath $asset -DestinationPath .\xana-preview
+.\xana-preview\xana.exe --version
+.\xana-preview\xana.exe --help
+```
+
+The GitHub CLI is needed only for the optional provenance command. A failed
+checksum or attestation is a stop condition: delete the download and inspect
+the release/tag/workflow rather than executing it.
+
+## Install from Git or a checkout
+
+The source channel requires Git and Rust from [rustup](https://rustup.rs/).
+Xana pins Rust `1.97.1` and uses its checked-in lockfile. It is not published to
+crates.io.
+
+Install the default branch or one exact published tag:
+
+```bash
+cargo install --git https://github.com/labcoder/xana.git --locked
+cargo install --git https://github.com/labcoder/xana.git --tag v0.5.0 --locked
+```
+
+For development from a checkout:
 
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
 cargo install --path crates/xana-cli --locked
-```
-
-`--locked` uses Xana's checked-in application dependency graph. Repeating the
-command rebuilds and replaces the installed Cargo binary when the source
-version changes.
-
-## Install from Git
-
-```bash
-cargo install --git https://github.com/labcoder/xana.git --locked
-```
-
-That command follows the repository's current default branch. For a reviewed,
-repeatable build, add `--rev COMMIT_SHA`. No Phase 2 release tag is claimed
-until one actually exists.
-
-Confirm which binary is on the path:
-
-```bash
 xana --version
-xana --help
 ```
 
-For a repeatable isolated smoke test, use the repository helper with a
-temporary or dedicated install prefix:
+Use `--rev COMMIT_SHA` instead of `--tag` for an exact unreleased revision.
+When running without installing, pass Xana arguments after Cargo's separator:
 
 ```bash
-scripts/run-isolated.sh /tmp/xana-install --version
-scripts/run-isolated.sh /tmp/xana-install setup \
-  --non-interactive \
-  --kind ollama \
-  --connection ollama \
-  --base-url http://localhost:11434/v1 \
-  --model qwen3:1.7b \
-  --permission-mode ask \
-  --yes
+cargo run -- setup
+cargo run -- connection status codex
+cargo run -- model list --connection codex
+cargo run -- --plain
 ```
 
-The helper installs from the checkout with `--locked`, runs the installed
-binary from an empty temporary workspace, and supplies a temporary
-`XANA_HOME`. Its temporary configuration, sessions, artifacts, and workspace
-are removed when the command exits. The install prefix is retained so a later
-invocation can rebuild it; it is safe to remove that prefix when finished.
+`cargo init` creates a Rust package; it does not initialize Xana.
 
 ## Choose Xana's home
 
-An unset `XANA_HOME` uses platform-standard directories. When set, it must be
-a nonempty native absolute path; Xana does not expand `~` and Windows Rust does
-not treat Git Bash's `/c/...` spelling as absolute.
+An unset `XANA_HOME` uses platform-standard data/configuration locations. When
+set, it must be a nonempty native absolute path. Xana does not expand `~`.
 
 macOS or Linux:
 
@@ -86,105 +231,90 @@ Windows PowerShell:
 $env:XANA_HOME = 'C:\Users\you\.xana'
 ```
 
-Windows Git Bash:
+Windows Git Bash must convert its shell path for the Windows executable:
 
 ```bash
 export XANA_HOME="$(cygpath -m "$HOME/.xana")"
 ```
 
-The shell expands `$HOME` before Xana starts. On Git Bash, `cygpath` converts
-the shell path to a Windows absolute path; do not pass `/c/...` or a literal
-`~/.xana` to the Windows executable.
+Do not pass Git Bash `/c/...` or a literal `~/.xana` to the Windows binary.
 
-## Initialize and verify
+## Update or select an older preview
 
-Interactive setup:
+Rerun the same installer. Omit the version for the newest published ordinary
+preview, or pass an exact version for a repeatable reinstall, upgrade, or
+downgrade. The selected manifest and archive are bound to one version before
+activation.
 
-```bash
-xana setup
-xana config check
-xana
-```
+There is no `xana update`, background or launch-time update, channel selector,
+retained installer rollback, Homebrew/WinGet/Linux package, or automatic
+desktop update. Source installations update by repeating the locked Cargo
+command at a reviewed revision.
 
-Installers use `xana setup --if-needed` instead. Healthy configuration is
-preserved without network, credential, or filesystem mutation. Interactive
-missing/invalid/incompatible state enters the same confirmed setup transaction;
-noninteractive use exits `10` with a versioned pending receipt and exact
-`xana setup` and `xana doctor` commands. This is a readiness handoff, not an
-updater, provider recommendation, login, reset, or permission grant.
+## Remove only the installed executable
 
-Bare interactive `xana` starts the full-screen terminal UI. Use `xana --plain`
-for append-only chat or when diagnosing terminal behavior, and `xana --tui` to
-require full-screen initialization. From a checkout the equivalents are
-`cargo run -- --plain` and `cargo run -- --tui`. Redirected stdin/stdout always
-uses plain mode; see [Terminal and one-shot modes](automation.md).
+Removal is manual and deliberately narrow. It is not `xana reset` and never
+deletes configuration, sessions, artifacts, credentials, workspaces, or
+external Codex authentication/conversations.
 
-For a disposable noninteractive local Ollama setup:
+macOS/Linux default:
 
 ```bash
-xana setup --non-interactive \
-  --kind ollama \
-  --connection ollama \
-  --base-url http://localhost:11434/v1 \
-  --model qwen3:1.7b \
-  --permission-mode ask \
-  --yes
-xana config check
+rm -- "$HOME/.local/bin/xana"
 ```
 
-Quick Setup can instead create a managed Codex connection for a ChatGPT
-subscription. Install and log into the Codex CLI, then choose Codex. Xana
-checks the executable, app-server, Codex-owned account, and live model catalog
-in that order before model selection. Model IDs therefore cannot be
-provisional or stale at commit time. Xana delegates OAuth and credential
-storage to Codex; it does not need a hosted callback server.
+If the installer added PATH, open the profile it reported (`~/.zprofile`,
+`~/.bash_profile`, or `~/.profile`) and remove only the line ending:
 
-When developing from this checkout, pass Xana arguments after Cargo's `--`:
-
-```bash
-cargo run -- connection status codex
-cargo run -- connection login codex
-cargo run -- connection refresh codex
-cargo run -- model list --connection codex
-cargo run -- model use codex/ADVERTISED_MODEL_ID
-cargo run
+```text
+# xana-installer-path-v1
 ```
 
-Alternatively, `cargo install --path crates/xana-cli --locked` installs the
-`xana` command used throughout the documentation. `cargo init` is Cargo's
-command for creating a new Rust package; it does not initialize Xana.
+For a custom directory, remove only its `xana` file and the exact marked line
+the installer added. Do not recursively remove the custom directory.
 
-To return only Xana's setup state to first run while preserving native
-sessions, artifacts, stored credentials, and external Codex state:
+Windows default:
 
-```bash
-cargo run -- reset
-cargo run -- setup
+```powershell
+$installDir = Join-Path $env:LOCALAPPDATA 'Programs\Xana\bin'
+Remove-Item -LiteralPath (Join-Path $installDir 'xana.exe')
+
+# Run only if the installer added this exact user-PATH entry.
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$entries = @($userPath -split ';' | Where-Object {
+  -not [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\').Equals(
+    $installDir.TrimEnd('\'),
+    [StringComparison]::OrdinalIgnoreCase
+  )
+})
+[Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
 ```
 
-Use `cargo run -- reset --yes` when no interactive confirmation is possible.
-Preview exact recovery scopes with `xana reset --scope SCOPE --dry-run`; OS
-credential removal requires the separate `--credentials-yes` flag. Run `xana
-doctor` for redacted read-only health checks and `xana config edit` for a
-validated atomic manual edit. The old hidden `xana init` path is deprecated
-through v0.5.0 and exists only for compatibility; setup is authoritative.
+For a Cargo installation, use `cargo uninstall xana-cli`. All removal methods
+preserve Xana-owned and vendor-owned personal state.
 
-See [Configuration](configuration.md) for paths and schema,
-[Permissions](permissions.md) for host authority, [Project context and system
-prompt](project-context.md) for `AGENTS.md`, [Sessions](sessions.md) for durable
-history, and [Operation recovery](operations.md) for interrupted effects.
+## Troubleshooting
 
-## Update or remove
+- **Unsupported target:** use only the exact four targets listed above. There
+  is no closest-match fallback. Use the locked Cargo path for other supported
+  Rust hosts or wait for Product Distribution work.
+- **TLS, redirect, or download failure:** confirm HTTPS access to GitHub and
+  retry. Do not disable certificate verification or use an untrusted mirror.
+- **Checksum or provenance failure:** do not extract or run the archive. Confirm
+  the version/tag and release workflow; report a mismatch with no secret logs.
+- **Command not found after installation:** open a new terminal. If PATH was not
+  accepted, add the reported directory manually or invoke the absolute binary.
+- **Locked Windows destination:** close running Xana processes and retry. The
+  installer preserves the prior executable when replacement cannot occur.
+- **Setup pending:** binary installation succeeded. Run `xana setup`, then
+  `xana doctor`. Invalid/incompatible repair remains explicit, confirmed,
+  backed up, and atomic.
+- **Unsigned OS warning:** verify SHA-256 and GitHub provenance, then follow
+  your operating-system or organization trust policy. Xana does not recommend
+  disabling Gatekeeper, SmartScreen, antivirus, or PowerShell execution policy.
+- **Wrong `XANA_HOME`:** use a native absolute path as shown above. Executable
+  placement and state placement are independent.
 
-Pull or select a reviewed Git revision, then repeat the relevant `cargo
-install ... --locked` command. This source channel does not update itself.
-
-Remove the Cargo-installed binary with:
-
-```bash
-cargo uninstall xana-cli
-```
-
-Uninstalling the binary does not delete Xana's configuration, sessions, or
-artifacts. Report platform or installation failures at the repository's
-[issue tracker](https://github.com/labcoder/xana/issues).
+Report reproducible installation failures at the repository
+[issue tracker](https://github.com/labcoder/xana/issues) without credentials,
+raw invalid config, authentication headers, or private owner paths.

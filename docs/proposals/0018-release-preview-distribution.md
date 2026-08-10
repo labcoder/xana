@@ -169,8 +169,9 @@ updated in the same change as each shipped slice.
 The reproducible native plan, Xana-owned `setup --if-needed` readiness
 contract, four-target manifest grammar, equivalent verified Bash and
 PowerShell installers, and least-privilege draft assembly workflow are
-implemented. Reconciled public documentation and the executed four-platform
-release gate remain outstanding.
+implemented. Public installation, verification, update, troubleshooting, and
+state-preserving removal documentation is reconciled. The executed
+four-platform release gate remains outstanding.
 
 Until every slice exists, this proposal remains Accepted and Architecture's
 source-only distribution description remains authoritative. Publishing a
