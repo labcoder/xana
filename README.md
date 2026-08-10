@@ -62,6 +62,18 @@ memory until the redacted review is confirmed, then the credential reference
 and valid config are committed atomically. Cancelling preserves the previous
 installation. A minimal Ollama document is:
 
+Installers and automation can ask Xana to own the readiness decision:
+
+```bash
+xana setup --if-needed
+```
+
+Healthy configuration returns success without mutation or provider traffic.
+When setup or repair is needed, an interactive terminal enters the same
+canonical flow; redirected/noninteractive use returns exit code `10` with a
+versioned `XANA_SETUP_RESULT` receipt and exact `xana setup`/`xana doctor`
+next steps. Shell wrappers never parse or repair `config.toml` themselves.
+
 ```toml
 version = 3
 default_profile = "default"

@@ -237,6 +237,117 @@ fn noninteractive_init_creates_once_and_config_check_loads_it() {
 }
 
 #[test]
+fn setup_if_needed_has_stable_noninteractive_ready_and_pending_results() {
+    let directory = tempdir().expect("temporary Xana home");
+
+    let missing_home = directory.path().join("missing");
+    let missing = xana(&missing_home)
+        .args(["setup", "--if-needed"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("check missing setup readiness");
+    assert_eq!(missing.status.code(), Some(10));
+    let missing_stdout = String::from_utf8_lossy(&missing.stdout);
+    assert!(missing_stdout.contains("XANA_SETUP_RESULT"));
+    assert!(missing_stdout.contains(r#""status":"pending""#));
+    assert!(missing_stdout.contains(r#""reason":"missing""#));
+    assert!(missing_stdout.contains("Next: xana setup"));
+    assert!(!missing_home.exists());
+
+    let healthy_home = directory.path().join("healthy");
+    init_native(&healthy_home, "http://127.0.0.1:9/v1");
+    let config_path = healthy_home.join("config.toml");
+    let before = std::fs::read(&config_path).expect("read healthy config");
+    let healthy = xana(&healthy_home)
+        .args(["setup", "--if-needed"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("check healthy setup readiness");
+    assert_success(&healthy);
+    let healthy_stdout = String::from_utf8_lossy(&healthy.stdout);
+    assert!(healthy_stdout.contains(r#""status":"ready""#));
+    assert!(healthy_stdout.contains(r#""reason":"healthy""#));
+    assert_eq!(std::fs::read(&config_path).expect("reread config"), before);
+    assert!(!config_path.with_extension("toml.bak").exists());
+}
+
+#[test]
+fn setup_if_needed_classifies_bad_state_without_disclosing_or_mutating_it() {
+    let directory = tempdir().expect("temporary Xana home");
+    for (name, contents, reason) in [
+        (
+            "invalid",
+            "version = [\nsecret = 'setup-secret-sentinel'",
+            "invalid",
+        ),
+        (
+            "future",
+            "version = 99\nfuture_secret = 'setup-secret-sentinel'",
+            "incompatible",
+        ),
+    ] {
+        let home = directory.path().join(name);
+        std::fs::create_dir_all(&home).expect("create Xana home");
+        let config_path = home.join("config.toml");
+        std::fs::write(&config_path, contents).expect("write setup fixture");
+        let before = std::fs::read(&config_path).expect("read setup fixture");
+
+        let output = xana(&home)
+            .args(["setup", "--if-needed"])
+            .stdin(Stdio::null())
+            .output()
+            .expect("check bad setup readiness");
+        assert_eq!(output.status.code(), Some(10));
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains(&format!(r#""reason":"{reason}""#)));
+        assert!(!combined.contains("setup-secret-sentinel"));
+        assert_eq!(std::fs::read(&config_path).expect("reread fixture"), before);
+        assert!(!config_path.with_extension("toml.bak").exists());
+    }
+}
+
+#[test]
+fn setup_if_needed_does_not_mislabel_indeterminate_filesystem_state() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("indeterminate");
+    std::fs::create_dir_all(home.join("config.toml")).expect("create conflicting config path");
+
+    let output = xana(&home)
+        .args(["setup", "--if-needed"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("check indeterminate setup readiness");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("could not determine Xana setup readiness")
+    );
+    assert!(home.join("config.toml").is_dir());
+}
+
+#[test]
+fn setup_if_needed_rejects_setup_choices_without_mutation() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("combined");
+
+    let output = xana(&home)
+        .args(["setup", "--if-needed", "--model", "llama3.2"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("reject combined setup options");
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("--if-needed cannot be combined with other setup options")
+    );
+    assert!(!home.exists());
+}
+
+#[test]
 fn noninteractive_codex_init_creates_a_valid_managed_connection() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");

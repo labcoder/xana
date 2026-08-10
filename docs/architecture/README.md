@@ -718,6 +718,15 @@ rollback. Receipts classify managed model/reasoning as subsequent-turn state
 and resolved owner/policy/profile changes as new-conversation state. No setup
 operation mutates an already running agent or managed thread implicitly.
 
+The installer-facing `setup --if-needed` operation is a thin readiness owner
+over that same setup transaction. It classifies the bounded local config as
+healthy, missing, invalid, incompatible, or indeterminate through Xana's
+existing schema and path policy. Healthy state returns without credential,
+provider, or filesystem effects; recognized repair state enters canonical
+setup only when both input and output are terminals. Otherwise Xana emits a
+versioned pending receipt and distinct process status. Shell installers consume
+that outcome but never parse, migrate, or repair configuration themselves.
+
 The diagnostic boundary emits a versioned redacted set of stable findings
 across the production config/credential/model/Codex/path/presentation/terminal/
 host probes. Native catalog checks are live but non-persisting. Default doctor

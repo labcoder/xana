@@ -226,6 +226,10 @@ pub(crate) struct AttachArgs {
 
 #[derive(Debug, Args, PartialEq, Eq, Default)]
 pub(crate) struct SetupArgs {
+    /// Check local readiness and enter setup only when an interactive repair is needed.
+    #[arg(long)]
+    pub(crate) if_needed: bool,
+
     /// Never prompt; require durable choices as flags.
     #[arg(long)]
     pub(crate) non_interactive: bool,
@@ -1017,6 +1021,36 @@ mod tests {
                 dry_run: false,
                 ..SetupArgs::default()
             })))
+        );
+    }
+
+    #[test]
+    fn parses_installer_owned_setup_readiness_handoff() {
+        let cli = Cli::try_parse_from(["xana", "setup", "--if-needed"])
+            .expect("parse setup readiness handoff");
+        assert!(matches!(
+            cli.command,
+            Some(Command::Setup(args)) if *args == SetupArgs {
+                if_needed: true,
+                ..SetupArgs::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn setup_readiness_handoff_rejects_setup_choices() {
+        let cli = Cli::try_parse_from(["xana", "setup", "--if-needed", "--model", "llama3.2"])
+            .expect("parse before application validation");
+        let Some(Command::Setup(args)) = cli.command else {
+            panic!("expected setup command");
+        };
+        assert!(args.if_needed);
+        assert_ne!(
+            *args,
+            SetupArgs {
+                if_needed: true,
+                ..SetupArgs::default()
+            }
         );
     }
 

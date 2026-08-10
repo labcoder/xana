@@ -106,6 +106,13 @@ xana config check
 xana
 ```
 
+Installers use `xana setup --if-needed` instead. Healthy configuration is
+preserved without network, credential, or filesystem mutation. Interactive
+missing/invalid/incompatible state enters the same confirmed setup transaction;
+noninteractive use exits `10` with a versioned pending receipt and exact
+`xana setup` and `xana doctor` commands. This is a readiness handoff, not an
+updater, provider recommendation, login, reset, or permission grant.
+
 Bare interactive `xana` starts the full-screen terminal UI. Use `xana --plain`
 for append-only chat or when diagnosing terminal behavior, and `xana --tui` to
 require full-screen initialization. From a checkout the equivalents are
