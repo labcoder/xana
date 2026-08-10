@@ -1,0 +1,291 @@
+name: Release Preview
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact workspace version to build without creating a release"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: release-preview-${{ github.ref }}-${{ inputs.version || 'tag' }}
+  cancel-in-progress: false
+
+env:
+  CARGO_DIST_VERSION: "0.32.0"
+  CARGO_DIST_INSTALLER_SHA256: "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5"
+
+jobs:
+  plan:
+    name: Validate version and release plan
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Install verified release planner
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="$(mktemp)"
+          trap 'rm -f -- "$installer"' EXIT
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
+            --output "$installer"
+          echo "${CARGO_DIST_INSTALLER_SHA256}  $installer" | sha256sum --check
+          sh "$installer"
+
+      - name: Bind tag, Cargo, and manifest version
+        id: version
+        shell: pwsh
+        env:
+          REQUESTED_VERSION: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
+        run: |
+          if ('${{ github.event_name }}' -eq 'workflow_dispatch' -and '${{ github.ref }}' -ne 'refs/heads/main') {
+            throw "manual no-publish builds must use the reviewed main branch"
+          }
+          $requested = $env:REQUESTED_VERSION
+          if ($requested.StartsWith("v", [StringComparison]::Ordinal)) {
+            $requested = $requested.Substring(1)
+          }
+          if ($requested -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw "release version must be an exact X.Y.Z"
+          }
+          $cargo = Get-Content -Raw -LiteralPath Cargo.toml
+          $match = [regex]::Match($cargo, '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(?<version>[^"]+)"')
+          if (-not $match.Success -or $match.Groups['version'].Value -ne $requested) {
+            throw "requested version does not match the workspace version"
+          }
+          $tag = "v$requested"
+          "version=$requested" >> $env:GITHUB_OUTPUT
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+          ./scripts/check-release-plan.ps1 -Tag $tag
+          $json = (& dist manifest --artifacts=all --tag $tag --allow-dirty --output-format json --no-local-paths | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw "could not generate dist manifest" }
+          New-Item -ItemType Directory -Path .release-plan | Out-Null
+          [IO.File]::WriteAllText(
+            (Join-Path (Resolve-Path .release-plan).Path 'dist-manifest.json'),
+            $json,
+            [Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Upload immutable release plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-plan
+          path: .release-plan/dist-manifest.json
+          if-no-files-found: error
+
+  quality:
+    name: Quality (${{ matrix.os }})
+    needs: plan
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-24.04
+          - macos-15
+          - windows-latest
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run warning-denied Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Run all-feature tests
+        run: cargo test --workspace --all-targets --all-features
+
+      - name: Run no-default-feature tests
+        run: cargo test --workspace --all-targets --no-default-features
+
+      - name: Audit source package
+        shell: pwsh
+        run: ./scripts/check-package-contents.ps1
+
+      - name: Verify Bash installer
+        shell: bash
+        run: ./scripts/test-install-sh.sh
+
+      - name: Verify PowerShell installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install-ps1.ps1
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [plan, quality]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            archive: xana-cli-aarch64-apple-darwin.tar.gz
+          - target: x86_64-apple-darwin
+            runner: macos-15-intel
+            archive: xana-cli-x86_64-apple-darwin.tar.gz
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: xana-cli-x86_64-pc-windows-msvc.zip
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+            archive: xana-cli-x86_64-unknown-linux-gnu.tar.gz
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+
+      - name: Install verified release builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="$(mktemp)"
+          trap 'rm -f -- "$installer"' EXIT
+          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
+            "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
+            --output "$installer"
+          if command -v sha256sum >/dev/null 2>&1; then
+            echo "${CARGO_DIST_INSTALLER_SHA256}  $installer" | sha256sum --check
+          else
+            actual="$(shasum -a 256 "$installer" | awk '{print $1}')"
+            test "$actual" = "$CARGO_DIST_INSTALLER_SHA256"
+          fi
+          sh "$installer"
+
+      - name: Build exact native archive
+        shell: pwsh
+        run: dist build --artifacts=local --target '${{ matrix.target }}' --tag '${{ needs.plan.outputs.tag }}'
+
+      - name: Audit native archive
+        shell: pwsh
+        run: >-
+          ./scripts/check-release-archive.ps1
+          -Archive 'target/distrib/${{ matrix.archive }}'
+          -Target '${{ matrix.target }}'
+
+      - name: Upload native archive and checksum
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-${{ matrix.target }}
+          path: |
+            target/distrib/${{ matrix.archive }}
+            target/distrib/${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+  assemble:
+    name: Assemble exact no-publish bundle
+    needs: [plan, quality, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Download native artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          pattern: native-*
+          path: release-bundle
+          merge-multiple: true
+
+      - name: Download exact release plan
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: release-plan
+          path: release-bundle
+
+      - name: Assemble and audit complete bundle
+        shell: pwsh
+        run: >-
+          ./scripts/assemble-release-bundle.ps1
+          -ArtifactDirectory release-bundle
+          -Version '${{ needs.plan.outputs.version }}'
+          -Tag '${{ needs.plan.outputs.tag }}'
+
+      - name: Upload complete no-publish bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: xana-${{ needs.plan.outputs.version }}-release-bundle
+          path: release-bundle/*
+          if-no-files-found: error
+          retention-days: 14
+
+  attest:
+    name: Attest complete bundle
+    needs: [plan, assemble]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    steps:
+      - name: Download complete bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: xana-${{ needs.plan.outputs.version }}-release-bundle
+          path: release-bundle
+
+      - name: Generate repository build provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: release-bundle/*
+
+  draft:
+    name: Create review-only GitHub draft
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [plan, assemble, attest]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Download attested bundle
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: xana-${{ needs.plan.outputs.version }}-release-bundle
+          path: release-bundle
+
+      - name: Create or reconcile incomplete draft, then mark review-ready
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: ./scripts/create-release-draft.ps1 -ArtifactDirectory release-bundle

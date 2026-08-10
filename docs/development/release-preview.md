@@ -84,6 +84,37 @@ pending, corrupt and unexpected ZIPs, staged smoke failure, locked destination,
 and PATH failure rollback. CI runs the Bash matrix on every platform and this
 native PowerShell matrix on Windows.
 
+## Build a no-publish bundle
+
+`.github/workflows/release.yml` has two entry paths. Manual dispatch accepts an
+exact workspace version, repeats the complete quality gates, builds the four
+targets natively, assembles and attests the exact bundle, and retains it as a
+workflow artifact. Manual dispatch has no draft-creation job. An exact matching
+`vX.Y.Z` tag performs the same work, then gives only the final job
+`contents: write` so it can leave an unpublished GitHub draft.
+
+The workflow uses immutable action commits, verified cargo-dist 0.32.0, current
+standard `macos-15` ARM64 and `macos-15-intel` runners, and fixed Windows/Linux
+runners. Run the local authority and assembly checks before any remote run:
+
+```powershell
+./scripts/check-release-workflow.ps1
+./scripts/test-release-bundle.ps1
+```
+
+An assembled bundle has exactly fifteen assets: four archives, four archive
+checksum sidecars, `dist-manifest.json`, `xana-release-manifest.txt`, the two
+source-controlled installers, versioned release notes, the reviewer checklist,
+and `sha256.sum`. Missing, duplicate, mismatched, or extra inputs fail before
+upload. A tag job initially labels the draft `INCOMPLETE`; only exact remote
+inventory and tag-commit verification changes the title to `REVIEW READY`.
+Neither title publishes the release.
+
+The owner follows [the draft review checklist](release-review-checklist.md),
+including independent GitHub attestation verification, before a separate
+manual publish action. Published tags and assets are immutable by policy; a
+correction uses a new patch version.
+
 ## Build and audit the current target
 
 Build the current native archive using the target triple for the current host:

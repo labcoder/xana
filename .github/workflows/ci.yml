@@ -53,6 +53,12 @@ jobs:
         shell: pwsh
         run: ./scripts/test-install-ps1.ps1
 
+      - name: Verify release workflow and bundle assembly
+        shell: pwsh
+        run: |
+          ./scripts/check-release-workflow.ps1
+          ./scripts/test-release-bundle.ps1
+
       - name: Verify packageable source crate
         run: cargo package --package xana-core --locked
 

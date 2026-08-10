@@ -32,6 +32,8 @@ $required = @(
     "install/install.ps1",
     "scripts/new-release-manifest.ps1",
     "scripts/test-install-ps1.ps1",
+    "scripts/check-release-workflow.ps1",
+    "scripts/test-release-bundle.ps1",
     "src/main.rs"
 )
 

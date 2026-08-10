@@ -826,9 +826,21 @@ and are idempotent; failure restores the prior executable. Reparse points,
 emulated or unsupported architectures, locked destinations, and unsigned or
 incorrect staged executables fail closed.
 
+The dedicated Release Preview workflow first binds an exact tag/input to Cargo
+and the pinned dist plan, then gates four native builds behind the complete
+three-platform quality matrix. A read-only assembly job refuses anything other
+than the exact fifteen-asset bundle. A separate least-privilege job attests that
+bundle; only an exact tag-push job receives `contents: write`. That job creates
+or reconciles an explicitly `INCOMPLETE` draft, verifies the tag commit and
+remote inventory, and only then labels the still-unpublished draft `REVIEW
+READY`. Manual dispatch can build and attest but has no draft job. Every action
+and release tool is commit/version pinned and ordinary CI statically audits the
+authority boundary.
+
 There is still no crates.io publication, public prebuilt archive, published
-installer asset, package-manager channel, automatic updater, or release tag
-claimed by the current repository. Publication and tagging remain separate
+installer asset, package-manager channel, automatic updater, executed release
+draft, or release tag claimed by the current repository. Publication and
+tagging remain separate
 owner-controlled effects, and the manifests set `publish = false` to prevent an
 accidental registry upload. The separately
 [accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)
