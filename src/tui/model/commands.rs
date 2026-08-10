@@ -53,6 +53,7 @@ impl TuiState {
             }
             InputAction::Interrupt => self.interrupt(),
             InputAction::Scroll(delta) => {
+                self.conversation_selection = None;
                 let maximum = self
                     .conversation_row_estimate()
                     .saturating_sub(1)
@@ -67,6 +68,33 @@ impl TuiState {
                     UpdateEffect::LoadOlder(self.viewed_conversation.clone())
                 } else {
                     UpdateEffect::None
+                }
+            }
+            InputAction::BeginConversationSelection(start) => {
+                self.conversation_selection = Some(ConversationSelection {
+                    start,
+                    end: start,
+                    dragged: false,
+                });
+                UpdateEffect::None
+            }
+            InputAction::ExtendConversationSelection(end) => {
+                if let Some(selection) = self.conversation_selection.as_mut() {
+                    selection.end = end;
+                    selection.dragged |= end != selection.start;
+                }
+                UpdateEffect::None
+            }
+            InputAction::FinishConversationSelection { end, text } => {
+                let copied = self
+                    .conversation_selection
+                    .take()
+                    .is_some_and(|selection| selection.dragged || end != selection.start);
+                match (copied, text) {
+                    (true, Some(text)) if !text.is_empty() => {
+                        UpdateEffect::CopyText(bounded(text, MAX_MESSAGE_BYTES))
+                    }
+                    _ => UpdateEffect::None,
                 }
             }
             InputAction::PlaceCursor {
@@ -106,6 +134,7 @@ impl TuiState {
                 UpdateEffect::None
             }
             InputAction::Cancel => {
+                self.conversation_selection = None;
                 self.composer.clear_selection();
                 UpdateEffect::None
             }

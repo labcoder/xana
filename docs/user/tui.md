@@ -163,10 +163,13 @@ clicking the sessions title hides that panel, and clicking an activity card
 expands or collapses its detail. Click or drag in the composer to place or
 extend its selection, and click a selectable overlay row to activate the same
 typed action as Enter.
-Hold Shift while dragging to use the terminal's native screen-text selection
-and copy behavior. Full-screen terminal mouse capture cannot give the same
-unmodified drag both to the terminal selector and to Xana, so unmodified mouse
-events remain available for panel clicks, composer placement, and scrolling.
+An ordinary drag inside the conversation highlights its visible rendered cells
+and copies them to the platform text clipboard on release. Xana reports success
+or clipboard unavailability in the status line. Hold Shift while dragging to
+use the terminal's native screen-text selection anywhere instead. Full-screen
+terminal mouse capture is global rather than panel-aware, so Xana implements
+conversation selection itself while retaining ordinary panel clicks, composer
+placement, and scrolling.
 Terminal resizing always recomputes both rendering and mouse hit targets from
 the same responsive layout. These optional mouse conveniences grant no extra
 authority. User message separators and text are right-aligned; Xana messages

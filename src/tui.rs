@@ -4,6 +4,7 @@
 //! provider-neutral snapshots and runtime events and emits runtime commands.
 
 mod activity;
+mod clipboard;
 mod command;
 mod composer;
 mod lifecycle;
@@ -38,6 +39,7 @@ pub(crate) struct PreparedTui {
     profile: ResolvedPresentation,
     preferences: PresentationPreferences,
     preferences_path: PathBuf,
+    clipboard: clipboard::Clipboard,
 }
 
 impl PreparedTui {
@@ -61,6 +63,7 @@ pub(crate) fn prepare(
         profile,
         preferences,
         preferences_path,
+        clipboard: clipboard::Clipboard::default(),
     })
 }
 
@@ -109,6 +112,7 @@ pub(crate) async fn run_native(
                 &mut _active_root,
                 &prepared.preferences_path,
                 &mut session_preferences,
+                &mut prepared.clipboard,
             )
             .await?
         {
@@ -140,6 +144,7 @@ pub(crate) async fn run_native(
                         &mut _active_root,
                         &prepared.preferences_path,
                         &mut session_preferences,
+                        &mut prepared.clipboard,
                     )
                     .await?
                     {
@@ -228,6 +233,7 @@ pub(crate) async fn run_managed(
                 &prepared.preferences_path,
                 &mut session_preferences,
                 &mut pending_approval,
+                &mut prepared.clipboard,
             )
             .await?
         {
@@ -258,6 +264,7 @@ pub(crate) async fn run_managed(
                         &prepared.preferences_path,
                         &mut session_preferences,
                         &mut pending_approval,
+                        &mut prepared.clipboard,
                     ).await? {
                         break requested_exit;
                     }
@@ -312,6 +319,7 @@ async fn dispatch_managed_effect(
     preferences_path: &std::path::Path,
     session_preferences: &mut session::SessionPreferenceStore,
     pending_approval: &mut Option<oneshot::Sender<ApprovalDecision>>,
+    clipboard: &mut clipboard::Clipboard,
 ) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
@@ -456,6 +464,7 @@ async fn dispatch_managed_effect(
                 state.set_status(format!("could not save activity preference: {error}"));
             }
         }
+        UpdateEffect::CopyText(text) => copy_text(state, clipboard, text),
         UpdateEffect::ArtifactAction { record, action } => {
             apply_artifact_action(state, artifact_store, record, action)?;
         }
@@ -519,6 +528,16 @@ fn apply_artifact_action(
     Ok(())
 }
 
+fn copy_text(state: &mut TuiState, clipboard: &mut clipboard::Clipboard, text: String) {
+    let characters = text.chars().count();
+    match clipboard.set_text(text) {
+        Ok(()) => state.set_status(format!(
+            "Copied {characters} characters from the conversation"
+        )),
+        Err(error) => state.set_status(error),
+    }
+}
+
 fn open_artifact_path(path: &std::path::Path, reveal: bool) -> io::Result<()> {
     #[cfg(target_os = "windows")]
     let mut command = {
@@ -563,6 +582,7 @@ async fn dispatch_effect(
     active_root: &mut Option<ActiveRootLease>,
     preferences_path: &std::path::Path,
     session_preferences: &mut session::SessionPreferenceStore,
+    clipboard: &mut clipboard::Clipboard,
 ) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
@@ -805,6 +825,7 @@ async fn dispatch_effect(
                 state.set_status(format!("could not save activity preference: {error}"));
             }
         }
+        UpdateEffect::CopyText(text) => copy_text(state, clipboard, text),
         UpdateEffect::ArtifactAction { record, action } => {
             apply_artifact_action(state, &header.artifact_store, record, action)?;
         }
@@ -996,6 +1017,9 @@ fn input_action(
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 view::pointer_action(mouse.column, mouse.row, true, state, area)
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                view::pointer_release_action(mouse.column, mouse.row, state, area)
             }
             _ => None,
         },

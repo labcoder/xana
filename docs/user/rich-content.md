@@ -42,8 +42,9 @@ Nothing opens automatically during rendering, selection, resize, or preview.
 Before reveal/open Xana re-verifies the content-addressed file and declared
 size inside its artifact store. Missing, corrupt, oversized, inaccessible, or
 non-UTF-8 content produces a bounded error. The current terminal surface does
-not copy through OSC 52 or place data on the system clipboard; “insert
-reference” keeps the operation visible and portable.
+not copy artifacts through OSC 52. “Insert reference” keeps artifact operations
+visible and portable. A separate explicit mouse drag over visible conversation
+text copies only the selected rendered cells to the platform text clipboard.
 
 ## Bounds
 
@@ -53,6 +54,8 @@ reference” keeps the operation visible and portable.
 - Historical page: 128 messages.
 - Retained projected conversation: 512 messages.
 - Rendered message window: derived from terminal height, never more than 128.
+- Explicit visible conversation selection: 256 Ki terminal cells, then bounded
+  again to the 1 MiB projected-message limit before clipboard delivery.
 - Artifact text preview: 64 KiB; binary content is not embedded.
 
 Truncation is labeled. Durable session records and the artifact store remain
