@@ -40,11 +40,11 @@ pub(crate) struct ChatHeader {
     pub(crate) presentation: ResolvedPresentation,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChatExit {
     Quit,
     Restart,
-    Setup,
+    Setup(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -53,7 +53,7 @@ enum InputAction<'a> {
     Clear,
     Attach(&'a str),
     Model(&'a str),
-    Setup,
+    Setup(&'a str),
     Agents,
     Agent(&'a str),
     CancelAgent(&'a str),
@@ -78,9 +78,14 @@ fn classify_input(line: &str) -> InputAction<'_> {
     if let Some(selection) = trimmed.strip_prefix("/model") {
         return InputAction::Model(selection.trim());
     }
+    if trimmed == "/setup" {
+        return InputAction::Setup("");
+    }
+    if let Some(section) = trimmed.strip_prefix("/setup ") {
+        return InputAction::Setup(section.trim());
+    }
     match trimmed {
         "/quit" => InputAction::Quit,
-        "/setup" => InputAction::Setup,
         "/clear" => InputAction::Clear,
         "" => InputAction::Ignore,
         input => InputAction::Send(input),
@@ -520,11 +525,14 @@ pub(crate) async fn run_chat(
                         Err(error) => println!("xana> could not select model: {error}"),
                     }
                 }
-                InputAction::Setup => {
-                    runtime.send(RuntimeCommand::Shutdown).await?;
-                    exit = ChatExit::Setup;
-                    break;
-                }
+                InputAction::Setup(section) => match crate::setup::args_for_request(section) {
+                    Ok(_) => {
+                        runtime.send(RuntimeCommand::Shutdown).await?;
+                        exit = ChatExit::Setup(section.to_owned());
+                        break;
+                    }
+                    Err(error) => println!("xana> {error}"),
+                },
                 InputAction::Agents => {
                     runtime.send(RuntimeCommand::ListChildren).await?;
                     render_until_child_control_result(&mut runtime, &mut renderer).await?;
@@ -971,7 +979,12 @@ mod tests {
     #[test]
     fn classifies_commands_blanks_and_messages() {
         assert_eq!(classify_input("/quit"), InputAction::Quit);
-        assert_eq!(classify_input("/setup"), InputAction::Setup);
+        assert_eq!(classify_input("/setup"), InputAction::Setup(""));
+        assert_eq!(
+            classify_input("/setup appearance"),
+            InputAction::Setup("appearance")
+        );
+        assert_eq!(classify_input("/setupfoo"), InputAction::Send("/setupfoo"));
         assert_eq!(classify_input("  /clear  "), InputAction::Clear);
         assert_eq!(classify_input("   "), InputAction::Ignore);
         assert_eq!(

@@ -138,6 +138,24 @@ pub(crate) struct PreferenceLoad {
 }
 
 impl PresentationPreferences {
+    pub(crate) fn parse(input: &str) -> io::Result<Self> {
+        let preferences: Self = toml::from_str(input).map_err(io::Error::other)?;
+        if preferences.version != PREFERENCE_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported presentation preference version {}",
+                    preferences.version
+                ),
+            ));
+        }
+        Ok(preferences)
+    }
+
+    pub(crate) fn render(&self) -> io::Result<String> {
+        toml::to_string_pretty(self).map_err(io::Error::other)
+    }
+
     pub(crate) fn load(path: &Path) -> PreferenceLoad {
         let bytes = match bounded_file::read(path, MAX_PREFERENCE_BYTES) {
             Ok(bytes) => bytes,
@@ -173,7 +191,7 @@ impl PresentationPreferences {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let rendered = toml::to_string_pretty(self).map_err(io::Error::other)?;
+        let rendered = self.render()?;
         let mut file = atomic_write_file::AtomicWriteFile::open(path)?;
         file.write_all(rendered.as_bytes())?;
         file.commit()

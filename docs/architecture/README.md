@@ -702,6 +702,17 @@ non-TTY startup emits the exact flag-driven form. The legacy hidden `init`
 command remains create-new compatibility only. Path and configuration
 diagnostics do not construct an agent.
 
+Full Custom Setup extends that staged transaction across shell, permission
+rules, logical capabilities, exact profiles/routes, orchestration limits, and
+machine-local presentation. Focused connection, permissions/shell, and
+profiles/routes operations use `toml_edit` to preserve unrelated fields and
+comments, then validate the complete document before one atomic replacement.
+Appearance is a separately versioned frontend file and applies immediately;
+when included in Full Custom, its write participates in config/credential
+rollback. Receipts classify managed model/reasoning as subsequent-turn state
+and resolved owner/policy/profile changes as new-conversation state. No setup
+operation mutates an already running agent or managed thread implicitly.
+
 The guarded `reset`/`clean` boundary removes configuration last, after
 configuration-derived selection, catalog, and managed-thread-handle state.
 It enumerates exact Xana-owned targets, unlinks symlinks instead of following

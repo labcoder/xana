@@ -152,7 +152,7 @@ pub(super) enum InputAction {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum UpdateEffect {
     None,
-    Setup,
+    Setup(String),
     Submit {
         operation_id: OperationId,
         input: String,
@@ -847,7 +847,13 @@ impl TuiState {
                     self.status = "Wait for or interrupt the active turn before setup".to_owned();
                     UpdateEffect::None
                 } else {
-                    UpdateEffect::Setup
+                    match crate::setup::args_for_request(&command.arguments) {
+                        Ok(_) => UpdateEffect::Setup(command.arguments),
+                        Err(error) => {
+                            self.status = error.to_string();
+                            UpdateEffect::None
+                        }
+                    }
                 }
             }
             CommandId::Activity => {

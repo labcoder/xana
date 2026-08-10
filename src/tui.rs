@@ -313,7 +313,7 @@ async fn dispatch_managed_effect(
     match effect {
         UpdateEffect::None => {}
         UpdateEffect::Quit => return Ok(Some(ChatExit::Quit)),
-        UpdateEffect::Setup => return Ok(Some(ChatExit::Setup)),
+        UpdateEffect::Setup(section) => return Ok(Some(ChatExit::Setup(section))),
         UpdateEffect::Submit {
             operation_id,
             input,
@@ -547,9 +547,9 @@ async fn dispatch_effect(
             let _ = client.send(RuntimeCommand::Shutdown).await;
             return Ok(Some(ChatExit::Quit));
         }
-        UpdateEffect::Setup => {
+        UpdateEffect::Setup(section) => {
             let _ = client.send(RuntimeCommand::Shutdown).await;
-            return Ok(Some(ChatExit::Setup));
+            return Ok(Some(ChatExit::Setup(section)));
         }
         UpdateEffect::Submit {
             operation_id,

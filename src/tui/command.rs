@@ -116,7 +116,7 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Setup,
         name: "setup",
-        usage: "/setup",
+        usage: "/setup [full|connection|permissions-shell|profiles-routes|appearance]",
         summary: "Leave the conversation and run provider-neutral Quick Setup",
     },
     CommandSpec {
