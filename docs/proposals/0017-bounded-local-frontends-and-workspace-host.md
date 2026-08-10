@@ -2,7 +2,7 @@
 
 > Audience: Contributors and coding agents  
 > Authority: Prescriptive  
-> Status: Accepted
+> Status: Implemented
 
 ## Context
 
@@ -190,4 +190,6 @@ native, child, and managed approval cards retain exact correlation even when
 activity is hidden. The rich-content slice now supplies bounded Markdown,
 control sanitization, viewport virtualization, native history pages, inert
 links, and explicit verified artifact actions.
-This proposal therefore remains Accepted.
+The complete bounded local-frontend and workspace-host contract is implemented.
+Architecture and User Documentation now own the shipped behavior; this proposal
+is historical rationale.
