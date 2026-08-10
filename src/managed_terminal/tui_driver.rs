@@ -1,6 +1,9 @@
 //! Bounded actor that lets the TUI observe and control a Codex-owned inner loop.
 
-use super::{ManagedChatConfig, ManagedThreadState, checked_original_path, ensure_thread_loaded};
+use super::{
+    ManagedChatConfig, ManagedThreadState, checked_original_path, ensure_thread_loaded,
+    initial_managed_thread,
+};
 use crate::{
     frontend::ManagedClientEvent,
     identity::OperationId,
@@ -101,14 +104,12 @@ impl ManagedTuiDriver {
         let store =
             ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
                 .map_err(|error| CodexError::Io(error.to_string()))?;
-        let initial_thread = store.thread_id().map(str::to_owned);
-        let thread = initial_thread
-            .clone()
-            .map(|thread_id| ManagedThreadState::NeedsResume {
-                thread_id,
-                identity_is_current: store.identity_version() == Some(config.identity_version),
-            })
-            .unwrap_or(ManagedThreadState::New);
+        let (initial_thread, thread) = initial_managed_thread(
+            &conversation,
+            &store,
+            &config.connection,
+            config.identity_version,
+        )?;
         let version = server.version.clone();
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(EVENT_CAPACITY);

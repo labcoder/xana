@@ -100,8 +100,10 @@ Compatible managed model/reasoning choices affect subsequent turns without
 replacing Codex context. Connection/execution owner, shell, permissions,
 profiles, routes, capabilities, and orchestration limits are frozen into a
 conversation snapshot, so config edits affect a new conversation only.
-`--start-new` prints the explicit new-conversation action; Xana never silently
-discards an open native session or Codex thread.
+`--start-new` launches a fresh conversation after a committed change that
+requires a new execution snapshot. A canceled or dry-run setup, and an
+appearance-only change, do not launch one. Xana never silently discards an
+open native session or Codex thread.
 
 ## Diagnose and edit configuration
 

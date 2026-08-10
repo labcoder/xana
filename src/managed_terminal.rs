@@ -55,6 +55,33 @@ enum ManagedThreadState {
     Loaded(String),
 }
 
+fn initial_managed_thread(
+    conversation: &ConversationRef,
+    store: &ManagedThreadStore,
+    connection: &str,
+    identity_version: &str,
+) -> Result<(Option<String>, ManagedThreadState), CodexError> {
+    match conversation {
+        ConversationRef::NewManaged {
+            connection: requested,
+        } if requested == connection => Ok((None, ManagedThreadState::New)),
+        ConversationRef::Managed {
+            connection: requested,
+            thread_id,
+        } if requested == connection => Ok((
+            Some(thread_id.clone()),
+            ManagedThreadState::NeedsResume {
+                thread_id: thread_id.clone(),
+                identity_is_current: store.thread_id() == Some(thread_id.as_str())
+                    && store.identity_version() == Some(identity_version),
+            },
+        )),
+        _ => Err(CodexError::Protocol(
+            "managed conversation does not match the selected Codex connection".to_owned(),
+        )),
+    }
+}
+
 pub(crate) async fn run_codex_chat(
     mut server: CodexAppServer,
     models: ModelManager,
@@ -82,13 +109,12 @@ pub(crate) async fn run_codex_chat(
 
     let mut thread_store =
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)?;
-    let mut thread = thread_store
-        .thread_id()
-        .map(|id| ManagedThreadState::NeedsResume {
-            thread_id: id.to_owned(),
-            identity_is_current: thread_store.identity_version() == Some(config.identity_version),
-        })
-        .unwrap_or(ManagedThreadState::New);
+    let (_, mut thread) = initial_managed_thread(
+        &conversation,
+        &thread_store,
+        &config.connection,
+        config.identity_version,
+    )?;
     let mut activity = ActivityLevel::Normal;
     let mut last_activity = RetainedActivity::default();
 
@@ -785,6 +811,7 @@ mod tests {
         model::DescriptorSource,
     };
     use std::collections::BTreeSet;
+    use tempfile::tempdir;
 
     fn model(id: &str, is_default: bool) -> ModelDescriptor {
         ModelDescriptor {
@@ -814,6 +841,30 @@ mod tests {
         assert!(message.contains("xana model use codex/MODEL"));
         assert!(message.contains("cargo run -- model use codex/MODEL"));
         assert!(!message.contains("model refresh"));
+    }
+
+    #[test]
+    fn explicit_new_managed_conversation_does_not_resume_the_selected_thread() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(Some("existing-thread".to_owned()), Some("identity-v1"))
+            .unwrap();
+
+        let (initial, state) = initial_managed_thread(
+            &ConversationRef::NewManaged {
+                connection: "codex".to_owned(),
+            },
+            &store,
+            "codex",
+            "identity-v1",
+        )
+        .unwrap();
+
+        assert_eq!(initial, None);
+        assert!(matches!(state, ManagedThreadState::New));
     }
 
     #[test]

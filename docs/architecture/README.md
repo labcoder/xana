@@ -14,8 +14,13 @@ terminal frontend. Native connections use one in-process foreground runtime;
 the Codex connection supervises a vendor-owned app-server process. `xana-cli` is the
 process composition root and delegates command execution to `xana-runtime`.
 The application edge resolves paths, loads configuration, initializes
-dependencies, and routes CLI commands. `xana-core` remains headless and has no
-filesystem, terminal, HTTP, or process dependencies. See
+dependencies, and routes CLI commands. Process startup gives that application
+owner one named 4 MiB stack before it enters Tokio; this bounds the one extra
+thread while preserving debug-build headroom for the large managed-runtime
+future on platforms whose process-main stack is smaller. Tokio retains
+ownership of asynchronous workers and cancellation beneath that edge.
+`xana-core` remains headless and has no filesystem, terminal, HTTP, or process
+dependencies. See
 [composition services](composition-services.md) for the capability,
 self-documentation, and document-extraction boundaries.
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md)
@@ -773,7 +778,8 @@ home unless the connection explicitly sets an absolute `codex_home`.
 
 Xana is a Cargo-installable source application pinned to Rust 1.97.1. The
 checked-in lockfile is part of its package contract, and supported checkout or
-Git installs use `cargo install ... --locked`. CI runs formatting, Clippy,
+Git installs use `cargo install ... --locked`. CI runs formatting,
+warning-denied all-feature Clippy, all-feature and no-default-feature workspace
 tests, a reviewed package-path audit, and `cargo package --package xana-core
 --locked` on Linux, macOS, and Windows. The root runtime source archive is
 audited with `cargo package --list --locked`; it is intentionally not verified
@@ -794,13 +800,20 @@ accidental registry upload.
 
 The workspace and runtime modules establish responsibility and I/O boundaries:
 
-- `main.rs` composes the process.
-- `app` owns command routing and dependency construction.
+- `main.rs` composes the source-checkout-only `xana-dev` compatibility process;
+  the installed `xana` binary belongs to `xana-cli`. The distinct target names
+  prevent parallel workspace builds from racing over one executable path.
+- `app` owns command routing and dependency construction. Its private
+  `connections` and `recovery` children keep provider/catalog commands and
+  guarded doctor/config/reset orchestration behind small app-facing
+  interfaces.
 - `terminal`, `managed_terminal`, `tui`, and `presentation` own frontend behavior.
   Managed terminal activity filtering/retention is isolated in
   `managed_terminal/activity` so display policy does not enter the process or
   conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
   terminal-independent model/update policy, and pure adaptive view modules.
+  Composer editing, command reduction, and native/managed event projection
+  are private focused children of that state/update interface.
 - `frontend` owns the typed embedded application contract; `local_host` owns
   only its authenticated loopback projection, protected discovery descriptor,
   atomic host snapshot/sequence boundary, observer fan-out, and one explicit
@@ -838,7 +851,9 @@ The workspace and runtime modules establish responsibility and I/O boundaries:
   primitives for child output and small structured state files.
 - `tool` is a narrow facade over capability-composed private implementations.
 - `config`, `paths`, and `init` own validated input and filesystem policy at
-  the application edge.
+  the application edge. Advanced setup isolates machine-local appearance
+  editing from structured runtime configuration, while `doctor` isolates live
+  connection probes from redacted report and repair policy.
 
 Initialization separates pure planning from create-new filesystem writes.
 Large private test suites live in child modules; package-level executable smoke

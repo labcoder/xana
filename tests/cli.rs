@@ -11,7 +11,7 @@ use std::{
 use tempfile::tempdir;
 
 fn xana(home: &Path) -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_xana"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_xana-dev"));
     command.env("XANA_HOME", home).env("NO_COLOR", "1");
     command
 }

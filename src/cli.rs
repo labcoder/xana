@@ -138,7 +138,11 @@ pub(crate) struct Cli {
     pub(crate) print: Option<Option<String>>,
 
     /// Select the latest compatible conversation for this workspace and owner.
-    #[arg(long, conflicts_with = "resume")]
+    #[arg(
+        long = "continue",
+        visible_alias = "continue-chat",
+        conflicts_with = "resume"
+    )]
     pub(crate) continue_chat: bool,
 
     /// Select one-shot output encoding.
@@ -684,8 +688,21 @@ mod tests {
         assert!(json.json);
         assert_eq!(json.output, None);
 
+        let continued = Cli::try_parse_from(["xana", "--continue"]).expect("continuation");
+        assert!(continued.continue_chat);
+        let compatibility =
+            Cli::try_parse_from(["xana", "--continue-chat"]).expect("continuation alias");
+        assert!(compatibility.continue_chat);
+
         assert!(Cli::try_parse_from(["xana", "--plain", "--tui"]).is_err());
-        assert!(Cli::try_parse_from(["xana", "--resume", "bad", "--continue"]).is_err());
+        let conflict = Cli::try_parse_from([
+            "xana",
+            "--resume",
+            "9eb8cfe0-2b3a-4c7b-9dc9-0a34f6490bf3",
+            "--continue",
+        ])
+        .expect_err("resume and continue conflict");
+        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
     }
 
     #[test]

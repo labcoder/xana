@@ -27,17 +27,61 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedP
     render_overlay(frame, area, state, profile);
 }
 
+pub(super) fn pointer_action(
+    column: u16,
+    row: u16,
+    selecting: bool,
+    state: &TuiState,
+    area: Rect,
+) -> Option<super::model::InputAction> {
+    if let Some(overlay) = &state.overlay {
+        let popup = overlay_area(area);
+        let content_row = row.checked_sub(popup.y.saturating_add(1))?;
+        if column <= popup.x || column >= popup.right().saturating_sub(1) {
+            return None;
+        }
+        return overlay_choice_at(overlay, content_row)
+            .map(super::model::InputAction::ChooseOverlay);
+    }
+
+    let rows = shell_rows_for(LayoutClass::for_width(area.width), area);
+    if contains(rows[2], column, row) {
+        return Some(super::model::InputAction::PlaceCursor {
+            line: usize::from(row.saturating_sub(rows[2].y.saturating_add(1))),
+            column: usize::from(column.saturating_sub(rows[2].x.saturating_add(1))),
+            select: selecting,
+        });
+    }
+    if LayoutClass::for_width(area.width) == LayoutClass::Wide {
+        let columns = wide_columns(rows[1], state);
+        if contains(columns[0], column, row) {
+            if row == columns[0].y {
+                return Some(super::model::InputAction::ToggleRail);
+            }
+            let line = usize::from(row.saturating_sub(columns[0].y.saturating_add(1)));
+            let index = if state.rail_expanded { line / 2 } else { line };
+            return state.sessions.get(index).map(|session| {
+                super::model::InputAction::ViewSession(session.conversation.clone())
+            });
+        }
+        if activity_visible(state) && contains(columns[2], column, row) {
+            return activity_at(state, row.saturating_sub(columns[2].y.saturating_add(1)))
+                .map(super::model::InputAction::ToggleActivity);
+        }
+    } else if activity_visible(state) {
+        let drawer = activity_drawer_area(area);
+        if contains(drawer, column, row) {
+            return activity_at(state, row.saturating_sub(drawer.y.saturating_add(1)))
+                .map(super::model::InputAction::ToggleActivity);
+        }
+    }
+    None
+}
+
 fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: ResolvedPresentation) {
     let rows = shell_rows(area);
     render_header(frame, rows[0], state, profile, false);
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(if state.rail_expanded { 32 } else { 9 }),
-            Constraint::Min(36),
-            Constraint::Length(if activity_visible(state) { 30 } else { 0 }),
-        ])
-        .split(rows[1]);
+    let columns = wide_columns(rows[1], state);
     frame.render_widget(session_rail(state, profile), columns[0]);
     frame.render_widget(conversation(state, profile, columns[1].height), columns[1]);
     if activity_visible(state) {
@@ -91,6 +135,89 @@ fn shell_rows(area: Rect) -> std::rc::Rc<[Rect]> {
             Constraint::Length(1),
         ])
         .split(area)
+}
+
+fn shell_rows_for(layout: LayoutClass, area: Rect) -> std::rc::Rc<[Rect]> {
+    if layout == LayoutClass::Narrow {
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(4),
+                Constraint::Length(4),
+                Constraint::Length(1),
+            ])
+            .split(area)
+    } else {
+        shell_rows(area)
+    }
+}
+
+fn wide_columns(area: Rect, state: &TuiState) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(if state.rail_expanded { 32 } else { 9 }),
+            Constraint::Min(36),
+            Constraint::Length(if activity_visible(state) { 30 } else { 0 }),
+        ])
+        .split(area)
+}
+
+fn contains(area: Rect, column: u16, row: u16) -> bool {
+    column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
+}
+
+fn activity_at(state: &TuiState, content_row: u16) -> Option<usize> {
+    let mut start = 0u16;
+    for (index, card) in state.activity.iter().enumerate() {
+        let height = if card.expanded && !card.detail.is_empty() {
+            2
+        } else {
+            1
+        };
+        if content_row >= start && content_row < start.saturating_add(height) {
+            return Some(index);
+        }
+        start = start.saturating_add(height);
+    }
+    None
+}
+
+fn overlay_choice_at(overlay: &super::model::Overlay, content_row: u16) -> Option<usize> {
+    let first = match overlay {
+        super::model::Overlay::Palette { .. } | super::model::Overlay::SessionPicker { .. } => 1,
+        super::model::Overlay::ModelPicker { .. }
+        | super::model::Overlay::ReasoningPicker { .. } => 0,
+        super::model::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
+        super::model::Overlay::Artifact { preview, .. } => {
+            if preview.is_some() {
+                6
+            } else {
+                4
+            }
+        }
+        super::model::Overlay::PastePreview { .. }
+        | super::model::Overlay::Help
+        | super::model::Overlay::Queue => return None,
+    };
+    usize::from(content_row).checked_sub(first)
+}
+
+fn overlay_area(area: Rect) -> Rect {
+    centered(
+        area,
+        72.min(area.width.saturating_sub(2)),
+        16.min(area.height.saturating_sub(2)),
+    )
+}
+
+fn activity_drawer_area(area: Rect) -> Rect {
+    centered(
+        area,
+        area.width.saturating_sub(4).min(72),
+        area.height.saturating_sub(6).min(18),
+    )
 }
 
 fn render_header(
@@ -322,11 +449,7 @@ fn render_activity_drawer(
     state: &TuiState,
     profile: ResolvedPresentation,
 ) {
-    let popup = centered(
-        area,
-        area.width.saturating_sub(4).min(72),
-        area.height.saturating_sub(6).min(18),
-    );
+    let popup = activity_drawer_area(area);
     frame.render_widget(Clear, popup);
     frame.render_widget(activity(state, profile), popup);
 }
@@ -412,11 +535,7 @@ fn render_overlay(
     let Some(overlay) = &state.overlay else {
         return;
     };
-    let popup = centered(
-        area,
-        72.min(area.width.saturating_sub(2)),
-        16.min(area.height.saturating_sub(2)),
-    );
+    let popup = overlay_area(area);
     let (title, lines) = match overlay {
         Overlay::Palette { query, selected } => {
             let mut lines = vec![Line::from(vec![
@@ -786,6 +905,99 @@ mod tests {
         assert!(rendered.contains("message 9999"));
         assert!(!rendered.contains("message 0"));
         assert!(rendered.contains("older message(s) outside this viewport"));
+    }
+
+    #[test]
+    #[ignore = "manual release-profile timing evidence; not a wall-clock CI gate"]
+    fn phase5_reference_first_frame_and_input_render_probe() {
+        let backend = TestBackend::new(130, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        let started = std::time::Instant::now();
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let first_frame = started.elapsed();
+
+        state.messages.clear();
+        for index in 0..10_000 {
+            let text = format!("message {index}");
+            state
+                .messages
+                .push_back(super::super::model::VisibleMessage {
+                    kind: MessageKind::Assistant,
+                    document: super::super::rich_text::RichDocument::plain(&text),
+                    text,
+                });
+        }
+        let mut samples = Vec::with_capacity(256);
+        for _ in 0..256 {
+            let started = std::time::Instant::now();
+            state.update_input(super::super::model::InputAction::Insert("x".to_owned()));
+            state.update_input(super::super::model::InputAction::Backspace);
+            terminal
+                .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+                .unwrap();
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
+        eprintln!(
+            "phase5_reference first_frame_us={} input_render_p95_us={} fixture_messages={} visible_rows={}",
+            first_frame.as_micros(),
+            p95.as_micros(),
+            state.messages.len(),
+            terminal.backend().buffer().area.height,
+        );
+        assert!(buffer_text(terminal.backend().buffer()).contains("message 9999"));
+    }
+
+    #[test]
+    fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
+        let area = Rect::new(0, 0, 130, 24);
+        let conversation = ConversationRef::Native {
+            session_id: SessionId::new(),
+        };
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.activity_visibility = ActivityVisibility::Open;
+        state.refresh_sessions(WorkspaceSnapshot {
+            workspace: std::env::current_dir().unwrap(),
+            conversations: vec![ConversationProjection {
+                conversation: conversation.clone(),
+                state: ConversationState::Inactive,
+                record_count: Some(2),
+                modified: None,
+                selected: false,
+            }],
+            active: None,
+        });
+
+        assert_eq!(
+            pointer_action(1, 4, false, &state, area),
+            Some(super::super::model::InputAction::ViewSession(conversation))
+        );
+        assert_eq!(
+            pointer_action(1, 3, false, &state, area),
+            Some(super::super::model::InputAction::ToggleRail)
+        );
+        assert_eq!(
+            pointer_action(101, 4, false, &state, area),
+            Some(super::super::model::InputAction::ToggleActivity(0))
+        );
+        assert_eq!(
+            pointer_action(3, 19, true, &state, area),
+            Some(super::super::model::InputAction::PlaceCursor {
+                line: 0,
+                column: 2,
+                select: true,
+            })
+        );
+
+        state.open_model_picker(vec!["openai/gpt-test".to_owned()]);
+        assert_eq!(
+            pointer_action(5, 5, false, &state, Rect::new(0, 0, 80, 24)),
+            Some(super::super::model::InputAction::ChooseOverlay(0))
+        );
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

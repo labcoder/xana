@@ -1,19 +1,14 @@
 //! Advanced and sectional setup over the same validated transaction boundary.
 
-use super::{atomic_write, confirm, prompt_default};
+mod appearance;
+
+use super::{SetupOutcome, atomic_write, confirm, prompt_default};
 use crate::{
-    cli::{
-        ActivityChoice, ComposerChoice, DensityChoice, GlyphChoice, MotionChoice, SetupArgs,
-        SetupSectionChoice, ThemeChoice,
-    },
+    cli::{SetupArgs, SetupSectionChoice},
     config::XanaConfig,
     credential::OsSecretStore,
     paths::XanaPaths,
-    presentation::{
-        ActivityPaneChoice, ComposerPreset, DensityChoice as PresentationDensity,
-        GlyphChoice as PresentationGlyphs, MotionChoice as PresentationMotion,
-        PresentationPreferences, ThemeChoice as PresentationTheme,
-    },
+    presentation::PresentationPreferences,
 };
 use anyhow::{Context, Result, bail};
 use std::{fs, io::BufRead, io::Write};
@@ -57,7 +52,7 @@ pub(super) fn customize_quick(
     let mut document = rendered.parse::<DocumentMut>()?;
     edit_permissions_shell(&mut document, args, input, output, true, true)?;
     edit_profiles_routes(&mut document, args, input, output, true)?;
-    let preferences = edit_appearance(args, paths, input, output, true)?;
+    let preferences = appearance::edit(args, paths, input, output, true)?;
     let config = validate_document(document)?;
     Ok(Customization {
         config,
@@ -75,13 +70,13 @@ pub(super) fn run_section(
     paths: &XanaPaths,
     input: &mut impl BufRead,
     output: &mut impl Write,
-) -> Result<()> {
+) -> Result<SetupOutcome> {
     let section = args.section.context("missing setup section")?;
     if section == SetupSectionChoice::Appearance {
-        if args.non_interactive && appearance_flags_empty(args) {
+        if args.non_interactive && appearance::flags_empty(args) {
             bail!("noninteractive appearance setup requires at least one appearance option");
         }
-        let preferences = edit_appearance(args, paths, input, output, !args.non_interactive)?;
+        let preferences = appearance::edit(args, paths, input, output, !args.non_interactive)?;
         let rendered = preferences.render()?;
         PresentationPreferences::parse(&rendered)?;
         writeln!(output, "Review")?;
@@ -92,15 +87,17 @@ pub(super) fn run_section(
         )?;
         if args.dry_run {
             writeln!(output, "Validated preview only; no durable state changed.")?;
-            return Ok(());
+            return Ok(SetupOutcome::Unchanged);
         }
         if !args.yes && !confirm(input, output, "Apply appearance changes? [y/N]: ")? {
             writeln!(output, "No changes made.")?;
-            return Ok(());
+            return Ok(SetupOutcome::Unchanged);
         }
         atomic_write(&paths.presentation_file(), rendered.as_bytes())?;
         writeln!(output, "Appearance preferences applied immediately.")?;
-        return Ok(());
+        return Ok(SetupOutcome::Committed {
+            requires_new_conversation: false,
+        });
     }
 
     let source = fs::read_to_string(paths.config_file()).with_context(|| {
@@ -169,11 +166,11 @@ pub(super) fn run_section(
     }
     if args.dry_run {
         writeln!(output, "Validated preview only; no durable state changed.")?;
-        return Ok(());
+        return Ok(SetupOutcome::Unchanged);
     }
     if !args.yes && !confirm(input, output, "Apply this section? [y/N]: ")? {
         writeln!(output, "No changes made.")?;
-        return Ok(());
+        return Ok(SetupOutcome::Unchanged);
     }
     super::install(paths.config_file(), &rendered, None, &OsSecretStore)?;
     writeln!(
@@ -183,10 +180,12 @@ pub(super) fn run_section(
     if args.start_new {
         writeln!(
             output,
-            "Start a new conversation with `xana`; no active thread was discarded."
+            "Starting a new conversation; no active thread was discarded."
         )?;
     }
-    Ok(())
+    Ok(SetupOutcome::Committed {
+        requires_new_conversation: true,
+    })
 }
 
 fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
@@ -512,93 +511,6 @@ fn edit_profiles_routes(
     Ok(())
 }
 
-fn edit_appearance(
-    args: &SetupArgs,
-    paths: &XanaPaths,
-    input: &mut impl BufRead,
-    output: &mut impl Write,
-    full: bool,
-) -> Result<PresentationPreferences> {
-    let mut preferences = PresentationPreferences::load(&paths.presentation_file()).preferences;
-    if args.non_interactive && !full && appearance_flags_empty(args) {
-        bail!("noninteractive appearance setup requires at least one appearance option");
-    }
-    preferences.theme = match args.theme {
-        Some(value) => map_theme(value),
-        None if full && !args.non_interactive => parse_theme(&prompt_default(
-            input,
-            output,
-            "Theme",
-            theme_name(preferences.theme),
-        )?)
-        .context("theme must be auto, dark, light, or monochrome")?,
-        None => preferences.theme,
-    };
-    if let Some(value) = args.glyphs {
-        preferences.glyphs = map_glyphs(value);
-    } else if full && !args.non_interactive {
-        preferences.glyphs = parse_glyphs(&prompt_default(
-            input,
-            output,
-            "Glyphs",
-            glyph_name(preferences.glyphs),
-        )?)
-        .context("glyphs must be auto, unicode, or ascii")?;
-    }
-    if let Some(value) = args.motion {
-        preferences.motion = map_motion(value);
-    } else if full && !args.non_interactive {
-        preferences.motion = parse_motion(&prompt_default(
-            input,
-            output,
-            "Motion",
-            motion_name(preferences.motion),
-        )?)
-        .context("motion must be auto, full, or reduced")?;
-    }
-    if let Some(value) = args.density {
-        preferences.density = map_density(value);
-    } else if full && !args.non_interactive {
-        preferences.density = parse_density(&prompt_default(
-            input,
-            output,
-            "Density",
-            density_name(preferences.density),
-        )?)
-        .context("density must be auto, comfortable, or compact")?;
-    }
-    if let Some(value) = args.composer {
-        preferences.composer = match value {
-            ComposerChoice::Submit => ComposerPreset::Submit,
-            ComposerChoice::Newline => ComposerPreset::Newline,
-        };
-    } else if full && !args.non_interactive {
-        preferences.composer = parse_composer(&prompt_default(
-            input,
-            output,
-            "Enter key",
-            composer_name(preferences.composer),
-        )?)
-        .context("composer must be submit or newline")?;
-    }
-    if let Some(value) = args.activity {
-        preferences.activity = match value {
-            ActivityChoice::Auto => ActivityPaneChoice::Auto,
-            ActivityChoice::Open => ActivityPaneChoice::Open,
-            ActivityChoice::Hidden => ActivityPaneChoice::Hidden,
-        };
-    } else if full && !args.non_interactive {
-        preferences.activity = parse_activity(&prompt_default(
-            input,
-            output,
-            "Activity pane",
-            activity_name(preferences.activity),
-        )?)
-        .context("activity must be auto, open, or hidden")?;
-    }
-    Ok(preferences)
-}
-
 fn validate_document(document: DocumentMut) -> Result<String> {
     let rendered = document.to_string();
     XanaConfig::parse(&rendered).context("advanced setup produced an invalid configuration")?;
@@ -698,154 +610,12 @@ fn section_name(section: SetupSectionChoice) -> &'static str {
     }
 }
 
-fn appearance_flags_empty(args: &SetupArgs) -> bool {
-    args.theme.is_none()
-        && args.glyphs.is_none()
-        && args.motion.is_none()
-        && args.density.is_none()
-        && args.composer.is_none()
-        && args.activity.is_none()
-}
-
-fn map_theme(value: ThemeChoice) -> PresentationTheme {
-    match value {
-        ThemeChoice::Auto => PresentationTheme::Auto,
-        ThemeChoice::Dark => PresentationTheme::Dark,
-        ThemeChoice::Light => PresentationTheme::Light,
-        ThemeChoice::Monochrome => PresentationTheme::Monochrome,
-    }
-}
-
-fn map_glyphs(value: GlyphChoice) -> PresentationGlyphs {
-    match value {
-        GlyphChoice::Auto => PresentationGlyphs::Auto,
-        GlyphChoice::Unicode => PresentationGlyphs::Unicode,
-        GlyphChoice::Ascii => PresentationGlyphs::Ascii,
-    }
-}
-
-fn map_motion(value: MotionChoice) -> PresentationMotion {
-    match value {
-        MotionChoice::Auto => PresentationMotion::Auto,
-        MotionChoice::Full => PresentationMotion::Full,
-        MotionChoice::Reduced => PresentationMotion::Reduced,
-    }
-}
-
-fn map_density(value: DensityChoice) -> PresentationDensity {
-    match value {
-        DensityChoice::Auto => PresentationDensity::Auto,
-        DensityChoice::Comfortable => PresentationDensity::Comfortable,
-        DensityChoice::Compact => PresentationDensity::Compact,
-    }
-}
-
-fn theme_name(value: PresentationTheme) -> &'static str {
-    match value {
-        PresentationTheme::Auto => "auto",
-        PresentationTheme::Dark => "dark",
-        PresentationTheme::Light => "light",
-        PresentationTheme::Monochrome => "monochrome",
-    }
-}
-
-fn parse_theme(value: &str) -> Option<PresentationTheme> {
-    match value {
-        "auto" => Some(PresentationTheme::Auto),
-        "dark" => Some(PresentationTheme::Dark),
-        "light" => Some(PresentationTheme::Light),
-        "monochrome" => Some(PresentationTheme::Monochrome),
-        _ => None,
-    }
-}
-
-fn glyph_name(value: PresentationGlyphs) -> &'static str {
-    match value {
-        PresentationGlyphs::Auto => "auto",
-        PresentationGlyphs::Unicode => "unicode",
-        PresentationGlyphs::Ascii => "ascii",
-    }
-}
-
-fn parse_glyphs(value: &str) -> Option<PresentationGlyphs> {
-    match value {
-        "auto" => Some(PresentationGlyphs::Auto),
-        "unicode" => Some(PresentationGlyphs::Unicode),
-        "ascii" => Some(PresentationGlyphs::Ascii),
-        _ => None,
-    }
-}
-
-fn motion_name(value: PresentationMotion) -> &'static str {
-    match value {
-        PresentationMotion::Auto => "auto",
-        PresentationMotion::Full => "full",
-        PresentationMotion::Reduced => "reduced",
-    }
-}
-
-fn parse_motion(value: &str) -> Option<PresentationMotion> {
-    match value {
-        "auto" => Some(PresentationMotion::Auto),
-        "full" => Some(PresentationMotion::Full),
-        "reduced" => Some(PresentationMotion::Reduced),
-        _ => None,
-    }
-}
-
-fn density_name(value: PresentationDensity) -> &'static str {
-    match value {
-        PresentationDensity::Auto => "auto",
-        PresentationDensity::Comfortable => "comfortable",
-        PresentationDensity::Compact => "compact",
-    }
-}
-
-fn parse_density(value: &str) -> Option<PresentationDensity> {
-    match value {
-        "auto" => Some(PresentationDensity::Auto),
-        "comfortable" => Some(PresentationDensity::Comfortable),
-        "compact" => Some(PresentationDensity::Compact),
-        _ => None,
-    }
-}
-
-fn composer_name(value: ComposerPreset) -> &'static str {
-    match value {
-        ComposerPreset::Submit => "submit",
-        ComposerPreset::Newline => "newline",
-    }
-}
-
-fn parse_composer(value: &str) -> Option<ComposerPreset> {
-    match value {
-        "submit" => Some(ComposerPreset::Submit),
-        "newline" => Some(ComposerPreset::Newline),
-        _ => None,
-    }
-}
-
-fn activity_name(value: ActivityPaneChoice) -> &'static str {
-    match value {
-        ActivityPaneChoice::Auto => "auto",
-        ActivityPaneChoice::Open => "open",
-        ActivityPaneChoice::Hidden => "hidden",
-    }
-}
-
-fn parse_activity(value: &str) -> Option<ActivityPaneChoice> {
-    match value {
-        "auto" => Some(ActivityPaneChoice::Auto),
-        "open" => Some(ActivityPaneChoice::Open),
-        "hidden" => Some(ActivityPaneChoice::Hidden),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::ThemeChoice;
     use crate::config::{InitialConfig, InitialConnection, PermissionMode, ProviderKind};
+    use crate::presentation::ThemeChoice as PresentationTheme;
     use crate::shell::ShellConfig;
     use tempfile::tempdir;
 
@@ -949,13 +719,19 @@ mod tests {
             yes: true,
             ..SetupArgs::default()
         };
-        run_section(
+        let outcome = run_section(
             &args,
             &paths,
             &mut std::io::Cursor::new(Vec::<u8>::new()),
             &mut Vec::new(),
         )
         .unwrap();
+        assert_eq!(
+            outcome,
+            SetupOutcome::Committed {
+                requires_new_conversation: false
+            }
+        );
         assert_eq!(fs::read(paths.config_file()).unwrap(), original);
         let preferences = PresentationPreferences::load(&paths.presentation_file()).preferences;
         assert_eq!(preferences.theme, PresentationTheme::Monochrome);

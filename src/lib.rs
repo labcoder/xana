@@ -52,12 +52,18 @@ use cli::Cli;
 use paths::XanaPaths;
 use std::process::ExitCode;
 
+const APPLICATION_STACK_BYTES: usize = 4 * 1024 * 1024;
+
 /// Run the process-bound command using the runtime's stable CLI adapter.
 pub fn run() -> Result<()> {
     run_cli(Cli::parse())
 }
 
 fn run_cli(cli: Cli) -> Result<()> {
+    run_on_application_stack(move || run_cli_on_application_thread(cli))?
+}
+
+fn run_cli_on_application_thread(cli: Cli) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -67,6 +73,22 @@ fn run_cli(cli: Cli) -> Result<()> {
             .context("could not resolve Xana paths")?;
         app::run(cli, paths).await
     })
+}
+
+fn run_on_application_stack<T, F>(operation: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let thread = std::thread::Builder::new()
+        .name("xana-application".to_owned())
+        .stack_size(APPLICATION_STACK_BYTES)
+        .spawn(operation)
+        .context("could not create Xana application thread")?;
+    match thread.join() {
+        Ok(result) => Ok(result),
+        Err(payload) => std::panic::resume_unwind(payload),
+    }
 }
 
 /// Run Xana as a process and return its stable process status.
@@ -94,5 +116,32 @@ pub fn entry() -> ExitCode {
             eprintln!("Error: {error:#}");
             ExitCode::from(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[inline(never)]
+    fn debug_stack_probe() -> usize {
+        let mut bytes = [0_u8; 2 * 1024 * 1024];
+        bytes[0] = 1;
+        bytes[bytes.len() - 1] = 2;
+        std::hint::black_box(&mut bytes);
+        usize::from(bytes[0]) + usize::from(bytes[bytes.len() - 1])
+    }
+
+    #[test]
+    fn application_entry_has_bounded_debug_stack_headroom() {
+        let (name, total) = run_on_application_stack(|| {
+            (
+                std::thread::current().name().map(str::to_owned),
+                debug_stack_probe(),
+            )
+        })
+        .unwrap();
+        assert_eq!(name.as_deref(), Some("xana-application"));
+        assert_eq!(total, 3);
     }
 }

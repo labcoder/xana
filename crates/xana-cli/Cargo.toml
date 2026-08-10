@@ -7,9 +7,13 @@ license.workspace = true
 repository.workspace = true
 description = "Xana's terminal command-line frontend"
 
+[features]
+default = ["documents-csv"]
+documents-csv = ["xana-runtime/documents-csv"]
+
 [[bin]]
 name = "xana"
 path = "src/main.rs"
 
 [dependencies]
-xana-runtime = { version = "0.4.0", path = "../.." }
+xana-runtime = { version = "0.4.0", path = "../..", default-features = false }

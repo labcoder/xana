@@ -29,6 +29,27 @@ use std::{
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SetupOutcome {
+    Unchanged,
+    Committed { requires_new_conversation: bool },
+}
+
+impl SetupOutcome {
+    pub(crate) fn requires_new_conversation(self) -> bool {
+        matches!(
+            self,
+            Self::Committed {
+                requires_new_conversation: true
+            }
+        )
+    }
+
+    pub(crate) fn starts_new_conversation(self, requested: bool) -> bool {
+        requested && self.requires_new_conversation()
+    }
+}
+
 pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
     let mut args = SetupArgs::default();
     match request.trim() {
@@ -126,7 +147,7 @@ pub(crate) async fn run(
     input_is_terminal: bool,
     input: &mut impl BufRead,
     output: &mut impl Write,
-) -> Result<()> {
+) -> Result<SetupOutcome> {
     if args.non_interactive && input_is_terminal {
         // This is allowed, but the mode contract remains flag-driven.
     }
@@ -229,11 +250,11 @@ pub(crate) async fn run(
 
     if args.dry_run {
         writeln!(output, "Validated preview only; no durable state changed.")?;
-        return Ok(());
+        return Ok(SetupOutcome::Unchanged);
     }
     if !args.yes && !confirm(input, output, "Install this configuration? [y/N]: ")? {
         writeln!(output, "No changes made.")?;
-        return Ok(());
+        return Ok(SetupOutcome::Unchanged);
     }
 
     install_with_preferences(
@@ -258,7 +279,9 @@ pub(crate) async fn run(
         )?;
     }
     writeln!(output, "  Next: xana")?;
-    Ok(())
+    Ok(SetupOutcome::Committed {
+        requires_new_conversation: true,
+    })
 }
 
 fn choose_kind(
@@ -858,5 +881,28 @@ mod tests {
         assert!(choose_kind(&args, &mut input, &mut output).is_err());
         let transcript = String::from_utf8(output).unwrap();
         assert!(!transcript.to_ascii_lowercase().contains("recommended"));
+    }
+
+    #[test]
+    fn start_new_requires_both_a_request_and_new_conversation_commit() {
+        assert!(
+            SetupOutcome::Committed {
+                requires_new_conversation: true
+            }
+            .starts_new_conversation(true)
+        );
+        assert!(
+            !SetupOutcome::Committed {
+                requires_new_conversation: false
+            }
+            .starts_new_conversation(true)
+        );
+        assert!(
+            !SetupOutcome::Committed {
+                requires_new_conversation: true
+            }
+            .starts_new_conversation(false)
+        );
+        assert!(!SetupOutcome::Unchanged.starts_new_conversation(true));
     }
 }
