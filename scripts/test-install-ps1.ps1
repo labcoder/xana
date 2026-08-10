@@ -6,6 +6,11 @@ Set-StrictMode -Version Latest
 
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $installer = Join-Path $repository "install\install.ps1"
+$powerShellExecutable = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+if ([string]::IsNullOrWhiteSpace($powerShellExecutable) -or
+    -not (Test-Path -LiteralPath $powerShellExecutable -PathType Leaf)) {
+    throw "could not resolve the current PowerShell executable"
+}
 $workspaceManifest = Get-Content -Raw -LiteralPath (Join-Path $repository "Cargo.toml")
 $versionMatch = [regex]::Match(
     $workspaceManifest,
@@ -83,7 +88,10 @@ function Invoke-Installer {
 
     $process = [Diagnostics.Process]::new()
     $process.StartInfo = [Diagnostics.ProcessStartInfo]::new()
-    $process.StartInfo.FileName = "powershell.exe"
+    # Keep the child on the same PowerShell edition as the test runner. A
+    # Windows PowerShell child can inherit incompatible PowerShell 7 module
+    # paths and fail before the installer reaches its behavior under test.
+    $process.StartInfo.FileName = $powerShellExecutable
     $allArguments = @(
         "-NoLogo",
         "-NoProfile",
