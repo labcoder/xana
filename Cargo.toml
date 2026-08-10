@@ -60,3 +60,8 @@ zeroize = { version = "=1.8.2", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+# `cargo-dist` requires a named profile; no settings override Cargo's existing
+# release profile for the developer preview.
+[profile.dist]
+inherits = "release"

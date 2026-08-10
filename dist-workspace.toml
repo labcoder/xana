@@ -1,0 +1,26 @@
+[workspace]
+members = ["cargo:."]
+
+# `dist` is the pinned release planner. Xana-owned installers remain reviewed
+# source files and are attached by the release workflow rather than generated.
+[dist]
+cargo-dist-version = "0.32.0"
+packages = ["xana-cli"]
+display-name = "Xana"
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
+ci = "github"
+hosting = "github"
+installers = []
+checksum = "sha256"
+source-tarball = false
+unix-archive = ".tar.gz"
+windows-archive = ".zip"
+auto-includes = false
+include = ["LICENSE", "README.md", "docs/user/installation.md"]
+github-attestations = true
+github-attestations-filters = ["*.tar.gz", "*.zip", "dist-manifest.json"]
