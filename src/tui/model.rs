@@ -150,6 +150,7 @@ pub(super) enum InputAction {
     ChooseOverlay(usize),
     ViewSession(ConversationRef),
     ToggleActivity(usize),
+    ToggleSessionsView,
     ToggleHeader,
     Quit,
 }
@@ -669,6 +670,12 @@ impl TuiState {
         self.history_has_older.then_some(self.history_start)
     }
 
+    fn conversation_row_estimate(&self) -> usize {
+        self.messages.iter().fold(0usize, |total, message| {
+            total.saturating_add(message_row_estimate(message))
+        })
+    }
+
     pub(super) fn set_rail_expanded(&mut self, expanded: bool) {
         self.rail_expanded = expanded;
     }
@@ -698,6 +705,14 @@ impl TuiState {
             .map(|turn| turn.input.len().saturating_add(image_bytes(&turn.images)))
             .sum()
     }
+}
+
+fn message_row_estimate(message: &VisibleMessage) -> usize {
+    2usize
+        .saturating_add(message.document.lines.len())
+        .saturating_add(message.document.links.len())
+        .saturating_add(message.document.artifacts.len())
+        .saturating_add(usize::from(message.document.truncated))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1090,6 +1105,92 @@ mod tests {
     }
 
     #[test]
+    fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids() {
+        let runtime = ConversationRef::Native {
+            session_id: SessionId::new(),
+        };
+        let archived = ConversationRef::Managed {
+            connection: "codex".to_owned(),
+            thread_id: "thread-to-archive".to_owned(),
+        };
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.runtime_conversation = runtime.clone();
+        state.viewed_conversation = runtime.clone();
+        state.refresh_sessions(WorkspaceSnapshot {
+            workspace: std::env::current_dir().unwrap(),
+            conversations: vec![
+                ConversationProjection {
+                    conversation: runtime,
+                    state: ConversationState::Controlled,
+                    record_count: Some(1),
+                    modified: None,
+                    selected: true,
+                },
+                ConversationProjection {
+                    conversation: archived.clone(),
+                    state: ConversationState::Inactive,
+                    record_count: None,
+                    modified: None,
+                    selected: false,
+                },
+            ],
+            active: None,
+        });
+
+        state
+            .composer
+            .replace("/sessions archive thread-to-archive".to_owned());
+        assert_eq!(
+            state.update_input(InputAction::Submit),
+            UpdateEffect::ArchiveConversation(archived)
+        );
+
+        state.composer.replace("/sessions view hide".to_owned());
+        assert_eq!(
+            state.update_input(InputAction::Submit),
+            UpdateEffect::PersistRail(false)
+        );
+        assert!(!state.rail_expanded);
+
+        state.composer.replace("/activity view show".to_owned());
+        assert_eq!(
+            state.update_input(InputAction::Submit),
+            UpdateEffect::PersistActivity(ActivityPaneChoice::Open)
+        );
+        assert_eq!(state.activity_visibility, ActivityVisibility::Open);
+    }
+
+    #[test]
+    fn clicking_the_sessions_title_persists_the_hidden_state() {
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+
+        assert_eq!(
+            state.update_input(InputAction::ToggleSessionsView),
+            UpdateEffect::PersistRail(false)
+        );
+        assert!(!state.rail_expanded);
+        assert!(state.status.contains("/sessions view show"));
+    }
+
+    #[test]
+    fn mouse_wheel_moves_the_command_palette_selection() {
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.update_input(InputAction::OpenPalette);
+
+        state.update_input(InputAction::Scroll(4));
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::Palette { selected: 4, .. })
+        ));
+
+        state.update_input(InputAction::Scroll(-2));
+        assert!(matches!(
+            state.overlay,
+            Some(Overlay::Palette { selected: 2, .. })
+        ));
+    }
+
+    #[test]
     fn streaming_at_bottom_and_scrolled_history_preserve_the_expected_anchor() {
         let mut state = TuiState::starting(ComposerPreset::Submit);
         state.messages.clear();
@@ -1100,8 +1201,8 @@ mod tests {
         state.update_input(InputAction::Scroll(-6));
         assert_eq!(state.scroll, 6);
         state.push_message(MessageKind::Assistant, "late message");
-        assert_eq!(state.scroll, 7, "distance from the newest edge is anchored");
-        state.update_input(InputAction::Scroll(7));
+        assert_eq!(state.scroll, 9, "distance from the newest edge is anchored");
+        state.update_input(InputAction::Scroll(9));
         assert_eq!(state.scroll, 0);
         state.push_message(MessageKind::Assistant, "newest message");
         assert_eq!(state.scroll, 0, "the newest edge stays anchored");

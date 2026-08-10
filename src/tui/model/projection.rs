@@ -227,7 +227,9 @@ impl TuiState {
             }
         } else {
             if self.scroll > 0 {
-                self.scroll = self.scroll.saturating_add(1);
+                self.scroll = self.scroll.saturating_add(
+                    message_row_estimate(&final_message).min(usize::from(u16::MAX)) as u16,
+                );
             }
             self.messages.push_back(final_message);
             trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
@@ -236,14 +238,17 @@ impl TuiState {
 
     pub(super) fn push_message(&mut self, kind: MessageKind, text: impl Into<String>) {
         let text = bounded(text.into(), MAX_MESSAGE_BYTES);
-        if self.scroll > 0 {
-            self.scroll = self.scroll.saturating_add(1);
-        }
-        self.messages.push_back(VisibleMessage {
+        let message = VisibleMessage {
             kind,
             document: RichDocument::plain(&text),
             text,
-        });
+        };
+        if self.scroll > 0 {
+            self.scroll = self
+                .scroll
+                .saturating_add(message_row_estimate(&message).min(usize::from(u16::MAX)) as u16);
+        }
+        self.messages.push_back(message);
         trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
     }
 

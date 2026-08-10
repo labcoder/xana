@@ -58,16 +58,21 @@ app-server contract advertises it.
 
 ## Commands and pickers
 
-Ctrl+P opens the searchable command palette. Palette actions and slash input
-use one typed registry:
+Ctrl+P opens the searchable command palette. It renders the typed registry as
+a table with fixed Command, Mode or Parameters, and Description headings. The
+selected row stays in view while Up/Down or the mouse wheel moves through the
+scrollable body. Filtering matches command names, modes, parameters, and
+descriptions; both `ses` and `/ses` find `/sessions`.
 
-- `/help`, `/header [expanded|collapsed]`, `/send [MESSAGE]`, `/newline`, `/quit`
+Palette actions and slash input use that one registry:
+
+- `/help`, `/header view hide|show`, `/send [MESSAGE]`, `/newline`, `/quit`
 - `/interrupt`, `/steer MESSAGE`
 - `/model [CONNECTION/MODEL]`, `/reasoning [EFFORT]`
-- `/activity auto|open|hidden`
+- `/activity view auto|hide|show`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
-- `/sessions [expanded|collapsed|archive]`
+- `/sessions`, `/sessions archive [ID]`, `/sessions view hide|show`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/doctor`
 
@@ -105,14 +110,17 @@ application. See [Rich terminal content and artifacts](rich-content.md).
 ## Conversation navigation
 
 `/sessions` opens a searchable, keyboard-complete picker backed by the bounded
-workspace-host snapshot. On wide terminals `/sessions expanded` and
-`/sessions collapsed` persist the default rail state for this workspace. A
-collapsed rail is fully hidden and returns all of its columns to the
-conversation. After viewing an inactive managed conversation, `/sessions
-archive` removes only Xana's local retained handle. It does not delete the
-Codex-owned thread. The active runtime conversation and native journals cannot
-be archived through this command. `/clear` remains different: it starts a new
-active conversation while retaining the old managed handle for later use.
+workspace-host snapshot and displays each exact session or managed-thread ID.
+On wide terminals `/sessions view show` and `/sessions view hide` persist the
+panel state for this workspace; clicking the visible panel title also hides
+it. A hidden panel returns all of its columns to the conversation. After
+viewing an inactive managed session, `/sessions archive` removes only Xana's
+local retained handle; `/sessions archive ID` targets an exact retained
+managed ID. Neither form deletes the Codex-owned thread. The active runtime
+session and native journals cannot be archived through this command.
+`/clear` remains different: it clears the active owner while retaining the old
+managed handle for later use. Xana does not yet claim a distinct `/sessions
+new` lifecycle operation.
 Selecting another native conversation opens its committed history for
 inspection while leaving an active root attached to its original conversation;
 managed history remains owned by Codex. Drafting remains local, but Xana will
@@ -125,15 +133,15 @@ edge requests another bounded page while preserving the current anchor.
 
 The header starts expanded with Xana's wordmark, version, connection, model,
 session, and status. Typing or pasting a draft collapses it to the compact
-status bar. Click the header or use `/header` to expand it again.
+status bar. Click the header or use `/header view show` to expand it again.
 
 Wide terminals show session, conversation, and activity columns. Medium and
 narrow terminals prioritize conversation and composer content and show
-activity as a drawer. `auto` opens for substantive plans, tools, children,
-commands, diffs, managed work, warnings, errors, or approvals and collapses
-after the next submitted message. `open` pins it; `hidden` keeps a compact
-status, but cannot conceal an approval or critical failure. The explicit mode
-is persisted in `data/frontend/presentation.toml`.
+activity as a drawer. `/activity view auto` shows it for substantive plans,
+tools, children, commands, diffs, managed work, warnings, errors, or approvals
+and hides it after the next submitted message. `view show` pins it; `view hide`
+keeps a compact status, but cannot conceal an approval or critical failure.
+The explicit mode is persisted in `data/frontend/presentation.toml`.
 
 Activity cards retain execution ownership: Xana roots, Xana children, Codex
 managed turns, and Codex-owned collaboration are not merged. Reasoning
@@ -148,12 +156,17 @@ exactly once through the existing permission/runtime callback. Approval cards
 appear even when activity is hidden. One-shot mode continues to fail closed by
 design.
 
-The mouse wheel scrolls conversation history. On wide layouts, clicking a
-session inspects it and clicking an activity card expands or collapses its
-detail. Click or drag in the composer to place or extend its selection, and
-click a selectable overlay row to activate the same typed action as Enter.
+The conversation is anchored to its newest visual rows. Mouse-wheel scrolling
+moves by visual rows, including within one long wrapped message, instead of
+skipping whole messages. On wide layouts, clicking a session inspects it,
+clicking the sessions title hides that panel, and clicking an activity card
+expands or collapses its detail. Click or drag in the composer to place or
+extend its selection, and click a selectable overlay row to activate the same
+typed action as Enter.
 Hold Shift while dragging to use the terminal's native screen-text selection
-and copy behavior; ordinary unmodified clicks remain available to Xana.
+and copy behavior. Full-screen terminal mouse capture cannot give the same
+unmodified drag both to the terminal selector and to Xana, so unmodified mouse
+events remain available for panel clicks, composer placement, and scrolling.
 Terminal resizing always recomputes both rendering and mouse hit targets from
 the same responsive layout. These optional mouse conveniences grant no extra
 authority. User message separators and text are right-aligned; Xana messages

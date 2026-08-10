@@ -222,7 +222,7 @@ thread.
 During a managed turn Xana projects the activity that Codex app-server emits:
 reasoning summaries, plans, command and tool progress, file changes, context
 compaction, Codex-owned subagent activity, model reroutes, and approval
-requests. The full-screen TUI uses `/activity auto|open|hidden` to persist an
+requests. The full-screen TUI uses `/activity view auto|hide|show` to persist an
 automatic, pinned, or hidden activity pane. It shows correlated approval cards
 even when hidden and labels Codex-owned work separately from Xana-native
 children. The plain renderer keeps `/activity quiet|normal|verbose` for
@@ -325,8 +325,9 @@ slash-command/command palette, model picker, image staging, streamed turns,
 bounded Markdown/code/diff rendering, explicit artifact actions, paged native
 history, an expandable identity/status header, a one-to-six-row scrolling
 composer, and adaptive wide/medium/narrow layouts. Shift+drag uses native
-terminal text selection; ordinary clicks control Xana. Ctrl+C interrupts the active turn;
-Ctrl+Q exits. Managed Codex uses the same full-screen shell while Codex retains
+terminal text selection because ordinary mouse events remain available for
+Xana's clicks and scrolling. Ctrl+C interrupts the active turn; Ctrl+Q exits.
+Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization
 failure restores the terminal, warns, and falls back to plain, while explicit
@@ -371,9 +372,10 @@ Retained Codex handles can be selected with
 the vendor-owned thread.
 In the full-screen client, `/sessions` opens the same bounded workspace catalog
 for searchable read-only history navigation. Wide terminals also show a
-session rail; `/sessions expanded` or `/sessions collapsed` persists only that
-workspace-local layout preference, and collapsed reserves no columns. After
-viewing an inactive managed row, `/sessions archive` removes its local handle.
+session rail; `/sessions view show` or `/sessions view hide` persists only that
+workspace-local layout preference, and hidden reserves no columns. Click the
+panel title to hide it. `/sessions archive` removes the viewed inactive managed
+handle, while `/sessions archive ID` selects an exact retained managed ID.
 Viewing another transcript never transfers
 the active root or submits its local draft.
 

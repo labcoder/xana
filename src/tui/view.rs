@@ -2,6 +2,7 @@
 
 use super::{
     activity::{ActivityKind, ActivityState},
+    command,
     model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState},
     rich_text::RichLineKind,
 };
@@ -11,7 +12,9 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
@@ -40,7 +43,7 @@ pub(super) fn pointer_action(
         if column <= popup.x || column >= popup.right().saturating_sub(1) {
             return None;
         }
-        return overlay_choice_at(overlay, content_row)
+        return overlay_choice_at(overlay, content_row, popup.height.saturating_sub(2))
             .map(super::model::InputAction::ChooseOverlay);
     }
 
@@ -63,6 +66,9 @@ pub(super) fn pointer_action(
     if LayoutClass::for_width(area.width) == LayoutClass::Wide {
         let columns = wide_columns(layout.body, state);
         if state.rail_expanded && contains(columns[0], column, row) {
+            if row == columns[0].y {
+                return Some(super::model::InputAction::ToggleSessionsView);
+            }
             let line = usize::from(row.saturating_sub(columns[0].y.saturating_add(1)));
             let index = line / 2;
             return state.sessions.get(index).map(|session| {
@@ -90,7 +96,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: Res
     if state.rail_expanded {
         frame.render_widget(session_rail(state, profile), columns[0]);
     }
-    frame.render_widget(conversation(state, profile, columns[1].height), columns[1]);
+    frame.render_widget(conversation(state, profile, columns[1]), columns[1]);
     if activity_visible(state) {
         frame.render_widget(activity(state, profile), columns[2]);
     }
@@ -106,7 +112,7 @@ fn render_medium(
 ) {
     let shell = shell_layout(area, state);
     render_header(frame, shell.header, state, profile, false);
-    frame.render_widget(conversation(state, profile, shell.body.height), shell.body);
+    frame.render_widget(conversation(state, profile, shell.body), shell.body);
     render_composer(frame, shell.composer, state, profile);
     render_footer(frame, shell.footer, state, profile, "medium");
 }
@@ -119,7 +125,7 @@ fn render_narrow(
 ) {
     let shell = shell_layout(area, state);
     render_header(frame, shell.header, state, profile, true);
-    frame.render_widget(conversation(state, profile, shell.body.height), shell.body);
+    frame.render_widget(conversation(state, profile, shell.body), shell.body);
     render_composer(frame, shell.composer, state, profile);
     render_footer(frame, shell.footer, state, profile, "narrow");
 }
@@ -203,9 +209,22 @@ fn activity_at(state: &TuiState, content_row: u16) -> Option<usize> {
     None
 }
 
-fn overlay_choice_at(overlay: &super::model::Overlay, content_row: u16) -> Option<usize> {
+fn overlay_choice_at(
+    overlay: &super::model::Overlay,
+    content_row: u16,
+    content_height: u16,
+) -> Option<usize> {
     let first = match overlay {
-        super::model::Overlay::Palette { .. } | super::model::Overlay::SessionPicker { .. } => 1,
+        super::model::Overlay::Palette { query, selected } => {
+            let choices = command::search(query).len();
+            let visible = usize::from(content_height.saturating_sub(3));
+            let start = palette_window_start(*selected, choices, visible);
+            return usize::from(content_row)
+                .checked_sub(3)
+                .map(|row| start.saturating_add(row))
+                .filter(|index| *index < choices);
+        }
+        super::model::Overlay::SessionPicker { .. } => 1,
         super::model::Overlay::ModelPicker { .. }
         | super::model::Overlay::ReasoningPicker { .. } => 0,
         super::model::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
@@ -226,9 +245,20 @@ fn overlay_choice_at(overlay: &super::model::Overlay, content_row: u16) -> Optio
 fn overlay_area(area: Rect) -> Rect {
     centered(
         area,
-        72.min(area.width.saturating_sub(2)),
-        16.min(area.height.saturating_sub(2)),
+        100.min(area.width.saturating_sub(2)),
+        18.min(area.height.saturating_sub(2)),
     )
+}
+
+fn palette_window_start(selected: usize, len: usize, visible: usize) -> usize {
+    if visible == 0 || len <= visible {
+        0
+    } else {
+        selected
+            .saturating_add(1)
+            .saturating_sub(visible)
+            .min(len - visible)
+    }
 }
 
 fn activity_drawer_area(area: Rect) -> Rect {
@@ -375,108 +405,31 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
     }
     Paragraph::new(Text::from(lines)).block(
         Block::default()
-            .title(" Sessions · /sessions collapsed ")
+            .title(" Sessions (click to hide) ")
             .borders(Borders::ALL),
     )
 }
 
-fn conversation(
-    state: &TuiState,
-    profile: ResolvedPresentation,
-    viewport_height: u16,
-) -> Paragraph<'static> {
-    let mut lines = Vec::new();
-    let render_limit = usize::from(viewport_height)
-        .saturating_sub(2)
-        .saturating_div(3)
-        .clamp(1, 128);
-    let end = state
-        .messages
-        .len()
-        .saturating_sub(usize::from(state.scroll));
-    let start = end.saturating_sub(render_limit);
-    if start > 0 {
-        lines.push(Line::styled(
-            format!("[{} older message(s) outside this viewport]", start),
-            semantic_style(profile, SemanticToken::Muted),
-        ));
+fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> Paragraph<'static> {
+    let width = area.width.saturating_sub(2).max(1);
+    let visible_rows = usize::from(area.height.saturating_sub(2).max(1));
+    let target_rows = visible_rows.saturating_add(usize::from(state.scroll));
+    let mut batches = Vec::new();
+    let mut selected_rows = 0usize;
+    let mut start = state.messages.len();
+    for (index, message) in state.messages.iter().enumerate().rev() {
+        let batch = conversation_message_lines(message, profile);
+        selected_rows = selected_rows.saturating_add(wrapped_height(&batch, width));
+        batches.push(batch);
+        start = index;
+        if selected_rows >= target_rows {
+            break;
+        }
     }
-    for message in state.messages.iter().skip(start).take(end - start) {
-        let (label, token) = match message.kind {
-            MessageKind::User => ("you", SemanticToken::User),
-            MessageKind::Assistant => ("xana", SemanticToken::Assistant),
-            MessageKind::Tool => ("tool", SemanticToken::Tool),
-            MessageKind::System => ("status", SemanticToken::Muted),
-        };
-        let header = match message.kind {
-            MessageKind::User => Line::styled(
-                "-------------------< you",
-                semantic_style(profile, token).add_modifier(Modifier::BOLD),
-            )
-            .alignment(Alignment::Right),
-            MessageKind::Assistant => Line::styled(
-                "xana >-------------------",
-                semantic_style(profile, token).add_modifier(Modifier::BOLD),
-            ),
-            MessageKind::Tool | MessageKind::System => Line::styled(
-                format!("{label}>"),
-                semantic_style(profile, token).add_modifier(Modifier::BOLD),
-            ),
-        };
-        lines.push(header);
-        for rich in &message.document.lines {
-            let (prefix, style) = match rich.kind {
-                RichLineKind::Heading => (
-                    "# ",
-                    semantic_style(profile, token).add_modifier(Modifier::BOLD),
-                ),
-                RichLineKind::List => ("  ", Style::default()),
-                RichLineKind::Quote => ("> ", semantic_style(profile, SemanticToken::Muted)),
-                RichLineKind::Table => ("  ", semantic_style(profile, SemanticToken::Tool)),
-                RichLineKind::Code => ("  ", semantic_style(profile, SemanticToken::Tool)),
-                RichLineKind::DiffAdd => ("+ ", semantic_style(profile, SemanticToken::DiffAdd)),
-                RichLineKind::DiffRemove => {
-                    ("- ", semantic_style(profile, SemanticToken::DiffRemove))
-                }
-                RichLineKind::Warning => ("! ", semantic_style(profile, SemanticToken::Warning)),
-                RichLineKind::Paragraph => ("  ", Style::default()),
-            };
-            let mut style = style;
-            if rich.emphasized {
-                style = style.add_modifier(Modifier::BOLD);
-            }
-            if rich.inline_code {
-                style = style.add_modifier(Modifier::DIM);
-            }
-            let line = Line::styled(format!("{prefix}{}", rich.text), style);
-            lines.push(if message.kind == MessageKind::User {
-                line.alignment(Alignment::Right)
-            } else {
-                line
-            });
-        }
-        for (index, link) in message.document.links.iter().enumerate() {
-            lines.push(Line::styled(
-                format!("  link {}: {} -> {}", index + 1, link.label, link.target),
-                semantic_style(profile, SemanticToken::Muted),
-            ));
-        }
-        for artifact in &message.document.artifacts {
-            lines.push(Line::styled(
-                format!(
-                    "  artifact {}: {} (/artifact {})",
-                    artifact.record.reference.id, artifact.label, artifact.record.reference.id
-                ),
-                semantic_style(profile, SemanticToken::Accent),
-            ));
-        }
-        if message.document.truncated {
-            lines.push(Line::styled(
-                "  [rich preview truncated at its safety bound]",
-                semantic_style(profile, SemanticToken::Warning),
-            ));
-        }
-        lines.push(Line::raw(""));
+
+    let mut lines = Vec::new();
+    for batch in batches.into_iter().rev() {
+        lines.extend(batch);
     }
     if lines.is_empty() {
         lines.push(Line::styled(
@@ -484,13 +437,106 @@ fn conversation(
             semantic_style(profile, SemanticToken::Muted),
         ));
     }
-    Paragraph::new(Text::from(lines))
-        .block(
-            Block::default()
-                .title(" Conversation ")
-                .borders(Borders::ALL),
+    let total_rows = wrapped_height(&lines, width);
+    let title = if start > 0 {
+        format!(" Conversation · {start} older message(s) outside this viewport ")
+    } else {
+        " Conversation ".to_owned()
+    };
+    let paragraph = Paragraph::new(Text::from(lines))
+        .block(Block::default().title(title).borders(Borders::ALL))
+        .wrap(Wrap { trim: false });
+    let bottom = total_rows.saturating_sub(visible_rows);
+    let offset = bottom.saturating_sub(usize::from(state.scroll));
+    paragraph.scroll((offset.min(usize::from(u16::MAX)) as u16, 0))
+}
+
+fn conversation_message_lines(
+    message: &super::model::VisibleMessage,
+    profile: ResolvedPresentation,
+) -> Vec<Line<'static>> {
+    let (label, token) = match message.kind {
+        MessageKind::User => ("you", SemanticToken::User),
+        MessageKind::Assistant => ("xana", SemanticToken::Assistant),
+        MessageKind::Tool => ("tool", SemanticToken::Tool),
+        MessageKind::System => ("status", SemanticToken::Muted),
+    };
+    let header = match message.kind {
+        MessageKind::User => Line::styled(
+            "-------------------< you",
+            semantic_style(profile, token).add_modifier(Modifier::BOLD),
         )
-        .wrap(Wrap { trim: false })
+        .alignment(Alignment::Right),
+        MessageKind::Assistant => Line::styled(
+            "xana >-------------------",
+            semantic_style(profile, token).add_modifier(Modifier::BOLD),
+        ),
+        MessageKind::Tool | MessageKind::System => Line::styled(
+            format!("{label}>"),
+            semantic_style(profile, token).add_modifier(Modifier::BOLD),
+        ),
+    };
+    let mut lines = vec![header];
+    for rich in &message.document.lines {
+        let (prefix, style) = match rich.kind {
+            RichLineKind::Heading => (
+                "# ",
+                semantic_style(profile, token).add_modifier(Modifier::BOLD),
+            ),
+            RichLineKind::List => ("  ", Style::default()),
+            RichLineKind::Quote => ("> ", semantic_style(profile, SemanticToken::Muted)),
+            RichLineKind::Table => ("  ", semantic_style(profile, SemanticToken::Tool)),
+            RichLineKind::Code => ("  ", semantic_style(profile, SemanticToken::Tool)),
+            RichLineKind::DiffAdd => ("+ ", semantic_style(profile, SemanticToken::DiffAdd)),
+            RichLineKind::DiffRemove => ("- ", semantic_style(profile, SemanticToken::DiffRemove)),
+            RichLineKind::Warning => ("! ", semantic_style(profile, SemanticToken::Warning)),
+            RichLineKind::Paragraph => ("  ", Style::default()),
+        };
+        let mut style = style;
+        if rich.emphasized {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        if rich.inline_code {
+            style = style.add_modifier(Modifier::DIM);
+        }
+        let line = Line::styled(format!("{prefix}{}", rich.text), style);
+        lines.push(if message.kind == MessageKind::User {
+            line.alignment(Alignment::Right)
+        } else {
+            line
+        });
+    }
+    for (index, link) in message.document.links.iter().enumerate() {
+        lines.push(Line::styled(
+            format!("  link {}: {} -> {}", index + 1, link.label, link.target),
+            semantic_style(profile, SemanticToken::Muted),
+        ));
+    }
+    for artifact in &message.document.artifacts {
+        lines.push(Line::styled(
+            format!(
+                "  artifact {}: {} (/artifact {})",
+                artifact.record.reference.id, artifact.label, artifact.record.reference.id
+            ),
+            semantic_style(profile, SemanticToken::Accent),
+        ));
+    }
+    if message.document.truncated {
+        lines.push(Line::styled(
+            "  [rich preview truncated at its safety bound]",
+            semantic_style(profile, SemanticToken::Warning),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines
+}
+
+fn wrapped_height(lines: &[Line<'static>], width: u16) -> usize {
+    let width = usize::from(width.max(1));
+    lines
+        .iter()
+        .map(|line| line.width().max(1).div_ceil(width))
+        .sum()
 }
 
 fn activity(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'static> {
@@ -662,26 +708,12 @@ fn render_overlay(
         return;
     };
     let popup = overlay_area(area);
+    if let Overlay::Palette { query, selected } = overlay {
+        render_command_palette(frame, popup, state, query, *selected, profile);
+        return;
+    }
     let (title, lines) = match overlay {
-        Overlay::Palette { query, selected } => {
-            let mut lines = vec![Line::from(vec![
-                Span::styled("> ", semantic_style(profile, SemanticToken::Focus)),
-                Span::raw(query.clone()),
-            ])];
-            for (index, command) in state.palette_entries().into_iter().enumerate() {
-                let marker = if index == *selected { ">" } else { " " };
-                let style = if index == *selected {
-                    semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                lines.push(Line::styled(
-                    format!("{marker} {:<13} {}", command.usage, command.summary),
-                    style,
-                ));
-            }
-            (" Commands ", lines)
-        }
+        Overlay::Palette { .. } => unreachable!("palette is rendered as a stateful table"),
         Overlay::PastePreview { text } => (
             " Confirm pasted draft ",
             vec![
@@ -700,7 +732,7 @@ fn render_overlay(
                 Line::raw("Enter primary     Ctrl+J alternate     Shift+Enter newline"),
                 Line::raw("Ctrl+Enter submit   arrows move/select   mouse wheel scrolls"),
                 Line::raw(
-                    "Shift+drag selects terminal text for native copy; ordinary clicks control Xana.",
+                    "Shift+drag asks the terminal to select screen text; ordinary mouse events control Xana.",
                 ),
                 Line::raw("Slash commands and palette entries share one registry."),
             ],
@@ -737,13 +769,26 @@ fn render_overlay(
             ])];
             lines.extend(filtered.into_iter().enumerate().map(|(index, row)| {
                 let marker = if index == *selected { ">" } else { " " };
+                let identifier = match &row.conversation {
+                    crate::workspace_host::ConversationRef::Native { session_id } => {
+                        session_id.to_string()
+                    }
+                    crate::workspace_host::ConversationRef::Managed {
+                        connection,
+                        thread_id,
+                    } => format!("{connection}/{thread_id}"),
+                    crate::workspace_host::ConversationRef::NewNative => "new-native".to_owned(),
+                    crate::workspace_host::ConversationRef::NewManaged { connection } => {
+                        format!("{connection}/new")
+                    }
+                };
                 let recency = row.modified_unix.map_or_else(
                     || "recency unknown".to_owned(),
                     |value| format!("updated {value}"),
                 );
                 Line::styled(
                     format!(
-                        "{marker} {} [{} · {}/{} · {} · {recency}{}]",
+                        "{marker} {} · {identifier} [{} · {}/{} · {} · {recency}{}]",
                         row.title,
                         row.execution_owner,
                         row.connection,
@@ -759,7 +804,7 @@ fn render_overlay(
                     },
                 )
             }));
-            (" Conversations ", lines)
+            (" Sessions ", lines)
         }
         Overlay::Approval { prompt, selected } => {
             let mut lines = vec![
@@ -854,6 +899,74 @@ fn render_overlay(
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+fn render_command_palette(
+    frame: &mut Frame<'_>,
+    popup: Rect,
+    state: &TuiState,
+    query: &str,
+    selected: usize,
+    profile: ResolvedPresentation,
+) {
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Commands ")
+        .border_style(semantic_style(profile, SemanticToken::Focus))
+        .borders(Borders::ALL);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let sections = Layout::vertical([Constraint::Length(2), Constraint::Min(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(vec![
+                Span::styled("Filter: ", semantic_style(profile, SemanticToken::Muted)),
+                Span::styled(
+                    query.to_owned(),
+                    semantic_style(profile, SemanticToken::Focus),
+                ),
+            ]),
+            Line::styled(
+                "Type a command, mode, parameter, or description; a leading / is optional.",
+                semantic_style(profile, SemanticToken::Muted),
+            ),
+        ]),
+        sections[0],
+    );
+
+    let entries = state.palette_entries();
+    let rows = entries.iter().map(|command| {
+        Row::new(vec![
+            Cell::from(if command.id == super::command::CommandId::Reset {
+                "Reset Xana state…".to_owned()
+            } else {
+                format!("/{}", command.name)
+            }),
+            Cell::from(command.mode),
+            Cell::from(command.summary),
+        ])
+    });
+    let header = Row::new(vec!["COMMAND", "MODE OR PARAMETERS", "DESCRIPTION"])
+        .style(semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD));
+    let visible = usize::from(sections[1].height.saturating_sub(1));
+    let offset = palette_window_start(selected, entries.len(), visible);
+    let mut table_state = TableState::new()
+        .with_offset(offset)
+        .with_selected((!entries.is_empty()).then_some(selected));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(14),
+            Constraint::Length(27),
+            Constraint::Min(20),
+        ],
+    )
+    .header(header)
+    .column_spacing(1)
+    .row_highlight_style(semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD))
+    .highlight_symbol("> ")
+    .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, sections[1], &mut table_state);
 }
 
 fn session_marker(
@@ -1007,8 +1120,51 @@ mod tests {
             .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
             .unwrap();
         let rendered = buffer_text(terminal.backend().buffer());
-        assert!(rendered.contains("Conversations"));
+        assert!(rendered.contains("Sessions"));
         assert!(rendered.contains("12 records"));
+    }
+
+    #[test]
+    fn command_palette_keeps_the_keyboard_selection_inside_its_viewport() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.update_input(super::super::model::InputAction::OpenPalette);
+        for _ in 0..64 {
+            state.update_input(super::super::model::InputAction::PaletteDown);
+        }
+
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+
+        let expected = format!(
+            "> /{}",
+            state.palette_entries().last().expect("palette entry").name
+        );
+        assert!(buffer_text(terminal.backend().buffer()).contains(&expected));
+    }
+
+    #[test]
+    fn command_palette_renders_session_modes_as_a_fixed_header_table() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.update_input(super::super::model::InputAction::OpenPalette);
+        state.update_input(super::super::model::InputAction::Insert(
+            "/sessions".to_owned(),
+        ));
+
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+
+        assert!(rendered.contains("COMMAND"));
+        assert!(rendered.contains("MODE OR PARAMETERS"));
+        assert!(rendered.contains("archive [ID]"));
+        assert!(rendered.contains("view hide"));
+        assert!(rendered.contains("view show"));
     }
 
     #[test]
@@ -1034,6 +1190,39 @@ mod tests {
         assert!(rendered.contains("message 9999"));
         assert!(!rendered.contains("message 0"));
         assert!(rendered.contains("older message(s) outside this viewport"));
+    }
+
+    #[test]
+    fn conversation_follows_the_visual_bottom_and_scrolls_within_a_long_message() {
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.header_expanded = false;
+        state.messages.clear();
+        let text = (0..40)
+            .map(|index| format!("answer-line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        state
+            .messages
+            .push_back(super::super::model::VisibleMessage {
+                kind: MessageKind::Assistant,
+                document: super::super::rich_text::RichDocument::plain(&text),
+                text,
+            });
+
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        assert!(buffer_text(terminal.backend().buffer()).contains("answer-line-39"));
+
+        state.update_input(super::super::model::InputAction::Scroll(-3));
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        assert!(rendered.contains("answer-line-36"));
+        assert!(!rendered.contains("Start a conversation below"));
     }
 
     #[test]
@@ -1104,6 +1293,11 @@ mod tests {
         let columns = wide_columns(shell.body, &state);
 
         assert_eq!(
+            pointer_action(columns[0].x + 1, columns[0].y, false, &state, area),
+            Some(super::super::model::InputAction::ToggleSessionsView)
+        );
+
+        assert_eq!(
             pointer_action(
                 columns[0].x.saturating_add(1),
                 columns[0].y.saturating_add(1),
@@ -1145,8 +1339,15 @@ mod tests {
         );
 
         state.open_model_picker(vec!["openai/gpt-test".to_owned()]);
+        let popup = overlay_area(Rect::new(0, 0, 80, 24));
         assert_eq!(
-            pointer_action(5, 5, false, &state, Rect::new(0, 0, 80, 24)),
+            pointer_action(
+                popup.x + 1,
+                popup.y + 1,
+                false,
+                &state,
+                Rect::new(0, 0, 80, 24),
+            ),
             Some(super::super::model::InputAction::ChooseOverlay(0))
         );
     }
