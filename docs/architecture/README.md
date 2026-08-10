@@ -817,6 +817,15 @@ profile edit, and configuration readiness is delegated only to `setup
 --if-needed`. Its local fixture authority requires three conspicuous test-only
 arguments together and cannot redirect an ordinary production invocation.
 
+The source-controlled PowerShell installer implements the equivalent boundary
+for native Windows x64 MSVC. It uses bounded .NET HTTPS reads, validates the
+same manifest grammar, inspects ZIP paths, entry types, expanded sizes, and
+duplicates before extracting only `xana.exe`, and uses same-volume
+failure-safe replacement. User PATH updates preserve the raw unrelated value
+and are idempotent; failure restores the prior executable. Reparse points,
+emulated or unsupported architectures, locked destinations, and unsigned or
+incorrect staged executables fail closed.
+
 There is still no crates.io publication, public prebuilt archive, published
 installer asset, package-manager channel, automatic updater, or release tag
 claimed by the current repository. Publication and tagging remain separate

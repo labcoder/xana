@@ -63,6 +63,27 @@ their sizes, and writes the line-oriented `xana-release-manifest.txt` consumed
 equivalently by both installers. The draft workflow will own invoking it only
 after all four native artifacts have been assembled.
 
+## Audit the PowerShell installer
+
+The reviewed Windows x64 wrapper lives at `install/install.ps1` and exposes the
+same latest/exact-version, custom-directory, setup, and explicit PATH choices.
+It does not request elevation or require an execution-policy change. Its
+fixture authority likewise requires explicit local root and target switches;
+the optional test user-PATH file prevents the offline matrix from touching the
+real user environment.
+
+Run its offline matrix from PowerShell:
+
+```powershell
+./scripts/test-install-ps1.ps1
+```
+
+The matrix rebuilds the current debug binary, then covers install/reinstall,
+exact release binding, idempotent isolated PATH updates, noninteractive setup
+pending, corrupt and unexpected ZIPs, staged smoke failure, locked destination,
+and PATH failure rollback. CI runs the Bash matrix on every platform and this
+native PowerShell matrix on Windows.
+
 ## Build and audit the current target
 
 Build the current native archive using the target triple for the current host:
