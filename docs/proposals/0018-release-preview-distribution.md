@@ -167,9 +167,10 @@ four-platform release gate. Architecture and User Documentation must be
 updated in the same change as each shipped slice.
 
 The reproducible native plan, Xana-owned `setup --if-needed` readiness
-contract, four-target manifest grammar, and equivalent verified Bash and
-PowerShell installers are implemented. The draft workflow, reconciled public
-documentation, and four-platform release gate remain outstanding.
+contract, four-target manifest grammar, equivalent verified Bash and
+PowerShell installers, and least-privilege draft assembly workflow are
+implemented. Reconciled public documentation and the executed four-platform
+release gate remain outstanding.
 
 Until every slice exists, this proposal remains Accepted and Architecture's
 source-only distribution description remains authoritative. Publishing a

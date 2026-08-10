@@ -69,7 +69,12 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
 - [Release Preview development](development/release-preview.md) documents the
-  pinned native plan and local archive audit without implying publication.
+  pinned native plan, verified installers, local audits, and draft-only release
+  workflow without implying publication.
+- [Release Preview draft review](development/release-review-checklist.md) is the
+  owner checklist for an exact complete unpublished bundle.
+- [Release notes](releases/) are versioned source inputs to release assembly,
+  not evidence that the corresponding release has been published.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
   authority and audience terms.
 - [Architecture decisions](adr/README.md) contains sparse rationale for
