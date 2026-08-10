@@ -8,8 +8,9 @@ engineering contracts used to change it.
 - [Source installation](user/installation.md) explains prerequisites,
   checkout and Git installation, platform `XANA_HOME` syntax, updates, and
   uninstall behavior.
-- [Configuration](user/configuration.md) explains initialization, provider and
-  profile settings, platform paths, `XANA_HOME`, and configuration diagnostics.
+- [Configuration](user/configuration.md) explains setup, provider/profile
+  settings, platform paths, `XANA_HOME`, doctor, validated editing, and scoped
+  reset.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, input budgets, and instruction
   boundaries.

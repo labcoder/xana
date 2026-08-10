@@ -713,13 +713,24 @@ rollback. Receipts classify managed model/reasoning as subsequent-turn state
 and resolved owner/policy/profile changes as new-conversation state. No setup
 operation mutates an already running agent or managed thread implicitly.
 
-The guarded `reset`/`clean` boundary removes configuration last, after
-configuration-derived selection, catalog, and managed-thread-handle state.
-It enumerates exact Xana-owned targets, unlinks symlinks instead of following
-them, and preserves session journals, artifacts, credential-manager entries,
-and externally owned Codex state. Interactive reset requires confirmation and
-noninteractive reset requires `--yes`; a partial derived-state failure leaves
-the current configuration in place whenever possible.
+The diagnostic boundary emits a versioned redacted set of stable findings
+across the production config/credential/model/Codex/path/presentation/terminal/
+host probes. Native catalog checks are live but non-persisting. Default doctor
+does not construct an agent or mutate Xana state. `doctor --fix` admits only
+typed deterministic repairs: owner-only Unix modes and exact stale descriptor
+removal after proving the owner lock is free. Its preview and confirmation are
+separate from observation.
+
+Manual config editing stages an owner-protected bounded sibling file, invokes
+an exact editor executable without a shell, validates the complete schema,
+detects a concurrent live-file change, writes an exact backup, and atomically
+replaces config. Invalid or failed drafts never replace live state. Scoped
+`reset`/`clean` derives exact setup, session, cache, and referenced credential
+targets from typed paths. It unlinks symlinks, refuses active workspace locks,
+confirms filesystem and OS-credential effects separately, and removes config
+last. Every scope preserves Codex-owned authentication/conversations and
+unverified runtime state. The hidden `init` implementation is deprecated
+compatibility through v0.5.0; provider-neutral setup is canonical.
 
 Xana loads a strict version 1, 2, or 3 `config.toml`, capped at 1 MiB. It validates
 named native and managed connections, tagged credential references,

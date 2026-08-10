@@ -174,6 +174,10 @@ the redacted reviewed config, backup, and rollback-safe credential reference.
 Full Custom and focused sectional setup reuse that boundary for shell,
 permissions, capabilities, exact profiles/routes, orchestration limits, and
 presentation, with explicit immediate/subsequent-turn/new-conversation timing.
+Read-only doctor, deterministic confirmed repair, validated atomic editor, and
+scoped reset now share those typed path/config/provider boundaries. `/doctor`
+restores the terminal around a diagnostic pause; destructive reset is exposed
+in the TUI only as a guarded idle command-palette lifecycle action.
 The
 TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,

@@ -152,6 +152,8 @@ pub(super) enum InputAction {
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum UpdateEffect {
     None,
+    Doctor,
+    Reset,
     Setup(String),
     Submit {
         operation_id: OperationId,
@@ -854,6 +856,29 @@ impl TuiState {
                             UpdateEffect::None
                         }
                     }
+                }
+            }
+            CommandId::Doctor => {
+                self.composer.take();
+                if self.busy {
+                    self.status = "Wait for or interrupt the active turn before doctor".to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::Doctor
+                }
+            }
+            CommandId::Reset => {
+                self.composer.take();
+                if !from_palette {
+                    self.status =
+                        "Reset is a guarded command-palette lifecycle action, not a slash command"
+                            .to_owned();
+                    UpdateEffect::None
+                } else if self.busy {
+                    self.status = "Wait for or interrupt the active turn before reset".to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::Reset
                 }
             }
             CommandId::Activity => {

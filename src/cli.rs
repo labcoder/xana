@@ -59,8 +59,9 @@ pub(crate) enum InitConnectionKindChoice {
     Codex,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub(crate) enum OutputChoice {
+    #[default]
     Text,
     Json,
 }
@@ -164,7 +165,9 @@ pub(crate) enum Command {
     Attach(AttachArgs),
     /// Establish a provider connection and atomically install a quick configuration.
     Setup(Box<SetupArgs>),
-    /// Create Xana's first configuration.
+    /// Diagnose this Xana installation without mutating it by default.
+    Doctor(DoctorArgs),
+    /// Deprecated through v0.5.0; use `xana setup`.
     #[command(hide = true)]
     Init(InitArgs),
     /// Clear setup state so Xana can be initialized again.
@@ -348,11 +351,47 @@ pub(crate) struct SetupArgs {
     pub(crate) start_new: bool,
 }
 
-#[derive(Debug, Args, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ResetScopeChoice {
+    Setup,
+    Sessions,
+    Caches,
+    Credentials,
+    All,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Default)]
 pub(crate) struct ResetArgs {
+    /// Select one or more exact reset scopes; the compatibility default is setup.
+    #[arg(long, value_enum, action = clap::ArgAction::Append)]
+    pub(crate) scope: Vec<ResetScopeChoice>,
+
     /// Confirm removal without reading from the terminal.
     #[arg(long)]
     pub(crate) yes: bool,
+
+    /// Separately confirm deletion of referenced OS-stored API credentials.
+    #[arg(long)]
+    pub(crate) credentials_yes: bool,
+
+    /// Print exact targets and preservation promises without changing state.
+    #[arg(long)]
+    pub(crate) dry_run: bool,
+}
+
+#[derive(Debug, Args, PartialEq, Eq, Default)]
+pub(crate) struct DoctorArgs {
+    /// Apply only the deterministic repairs listed in the diagnostic preview.
+    #[arg(long)]
+    pub(crate) fix: bool,
+
+    /// Confirm deterministic repairs without reading from the terminal.
+    #[arg(long, requires = "fix")]
+    pub(crate) yes: bool,
+
+    /// Select human-readable or versioned JSON output.
+    #[arg(long, value_enum, default_value_t = OutputChoice::Text)]
+    pub(crate) output: OutputChoice,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -561,6 +600,12 @@ pub(crate) enum ConfigCommand {
     Path,
     /// Load and validate the active config.toml.
     Check,
+    /// Edit a bounded temporary copy and install it only after validation.
+    Edit {
+        /// Exact editor executable; defaults to XANA_EDITOR, VISUAL, EDITOR, or a platform editor.
+        #[arg(long, value_name = "PROGRAM")]
+        editor: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -771,10 +816,50 @@ mod tests {
         let reset = Cli::try_parse_from(["xana", "reset", "--yes"]).expect("reset command");
         let clean = Cli::try_parse_from(["xana", "clean"]).expect("clean alias");
 
-        assert_eq!(reset.command, Some(Command::Reset(ResetArgs { yes: true })));
+        assert_eq!(
+            reset.command,
+            Some(Command::Reset(ResetArgs {
+                yes: true,
+                ..ResetArgs::default()
+            }))
+        );
         assert_eq!(
             clean.command,
-            Some(Command::Reset(ResetArgs { yes: false }))
+            Some(Command::Reset(ResetArgs {
+                yes: false,
+                ..ResetArgs::default()
+            }))
+        );
+
+        let scoped = Cli::try_parse_from([
+            "xana",
+            "reset",
+            "--scope",
+            "sessions",
+            "--scope",
+            "credentials",
+            "--yes",
+            "--credentials-yes",
+        ])
+        .expect("scoped reset");
+        assert_eq!(
+            scoped.command,
+            Some(Command::Reset(ResetArgs {
+                scope: vec![ResetScopeChoice::Sessions, ResetScopeChoice::Credentials],
+                yes: true,
+                credentials_yes: true,
+                dry_run: false,
+            }))
+        );
+
+        let doctor =
+            Cli::try_parse_from(["xana", "doctor", "--output", "json"]).expect("doctor command");
+        assert_eq!(
+            doctor.command,
+            Some(Command::Doctor(DoctorArgs {
+                output: OutputChoice::Json,
+                ..DoctorArgs::default()
+            }))
         );
     }
 
@@ -1007,9 +1092,11 @@ mod tests {
     }
 
     #[test]
-    fn parses_config_path_and_check() {
+    fn parses_config_path_check_and_edit() {
         let path = Cli::try_parse_from(["xana", "config", "path"]).expect("config path command");
         let check = Cli::try_parse_from(["xana", "config", "check"]).expect("config check command");
+        let edit = Cli::try_parse_from(["xana", "config", "edit", "--editor", "code"])
+            .expect("config edit command");
 
         assert_eq!(
             path.command,
@@ -1021,6 +1108,14 @@ mod tests {
             check.command,
             Some(Command::Config(ConfigArgs {
                 command: ConfigCommand::Check,
+            }))
+        );
+        assert_eq!(
+            edit.command,
+            Some(Command::Config(ConfigArgs {
+                command: ConfigCommand::Edit {
+                    editor: Some(PathBuf::from("code")),
+                },
             }))
         );
     }

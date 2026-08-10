@@ -16,6 +16,12 @@ use crate::{
 use anyhow::{Context, Result};
 use std::{io::Write as _, net::IpAddr, path::Path, sync::Arc};
 
+#[cfg(test)]
+pub(crate) use descriptor::write_stale_for_test;
+pub(crate) use descriptor::{
+    DescriptorHealth, inspect_health as inspect_descriptor_health,
+    remove_stale as remove_stale_descriptor,
+};
 pub(crate) use protocol::HostSnapshotSeed;
 pub(crate) use transport::{
     ControlledExecution, LocalHostError, LocalHostServer, connect_observer, reconnect_controller,

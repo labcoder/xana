@@ -66,6 +66,7 @@ use one typed registry:
 - `/clear`, `/composer submit|newline`
 - `/sessions [expanded|collapsed]`
 - `/setup [full|connection|permissions-shell|profiles-routes|appearance]`
+- `/doctor`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
 Esc closes the overlay. `/model` without an argument opens choices from the
@@ -80,6 +81,13 @@ model reasoning effort.
 the CLI command. A focused section is available from slash input or the
 searchable palette; configuration changes end the current foreground owner
 explicitly and restart only after the reviewed setup operation completes.
+
+`/doctor` pauses an idle foreground owner, restores the terminal, runs the
+same redacted read-only report as `xana doctor`, then resumes the selected
+conversation without translating history. Reset is intentionally not a slash
+command. The searchable `Reset Xana state…` palette action is available only
+while idle; it stops the owner, restores the terminal, previews an exact scope,
+and requires the same filesystem and credential confirmations as the CLI.
 
 `/attach` accepts a workspace-relative regular image through Xana's existing
 bounded artifact ingestion. It refuses traversal, symlink escape, unsupported

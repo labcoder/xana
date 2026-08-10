@@ -19,6 +19,7 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
     str::FromStr,
+    time::Duration,
 };
 
 const CATALOG_VERSION: u32 = 1;
@@ -247,7 +248,11 @@ impl ModelManager {
             registry,
             cache_root,
             selection_path,
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .timeout(Duration::from_secs(20))
+                .build()
+                .expect("static model-catalog client configuration is valid"),
             credentials: CredentialResolver::default(),
         }
     }

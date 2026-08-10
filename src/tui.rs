@@ -313,6 +313,8 @@ async fn dispatch_managed_effect(
     match effect {
         UpdateEffect::None => {}
         UpdateEffect::Quit => return Ok(Some(ChatExit::Quit)),
+        UpdateEffect::Doctor => return Ok(Some(ChatExit::Doctor(None))),
+        UpdateEffect::Reset => return Ok(Some(ChatExit::Reset)),
         UpdateEffect::Setup(section) => return Ok(Some(ChatExit::Setup(section))),
         UpdateEffect::Submit {
             operation_id,
@@ -546,6 +548,14 @@ async fn dispatch_effect(
         UpdateEffect::Quit => {
             let _ = client.send(RuntimeCommand::Shutdown).await;
             return Ok(Some(ChatExit::Quit));
+        }
+        UpdateEffect::Doctor => {
+            let _ = client.send(RuntimeCommand::Shutdown).await;
+            return Ok(Some(ChatExit::Doctor(Some(header.session_id))));
+        }
+        UpdateEffect::Reset => {
+            let _ = client.send(RuntimeCommand::Shutdown).await;
+            return Ok(Some(ChatExit::Reset));
         }
         UpdateEffect::Setup(section) => {
             let _ = client.send(RuntimeCommand::Shutdown).await;

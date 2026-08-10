@@ -96,6 +96,30 @@ profile, and route changes never mutate the open conversation; start a new
 conversation explicitly to use their new immutable snapshot. Every durable
 section has a flag-driven `--non-interactive ... --yes` form.
 
+## Diagnose and recover an installation
+
+`xana doctor` performs bounded read-only checks of configuration, credential
+references, live native catalogs, Codex executable/app-server/account/catalog/
+rate-limit state, Xana-owned paths, presentation preferences, terminal mode,
+and the current workspace's host descriptor. Each stable finding includes its
+evidence source and an exact next command. `--output json` emits the versioned
+redacted report. `xana doctor --fix` separately previews and confirms only
+deterministic owner-permission repairs on Unix and unlocked stale-descriptor
+removal; it never logs in, selects a provider/model, weakens permissions,
+kills a process, or deletes conversations.
+
+Use `xana config edit` for a manual edit through a bounded temporary copy. The
+live file is replaced only after full schema validation and a concurrent-change
+check, with the exact prior file retained as `config.toml.bak`. Invalid or
+failed edits preserve both the live file and the draft for correction.
+
+`xana reset --dry-run --scope SCOPE` previews `setup`, `sessions`, `caches`,
+`credentials`, or `all`. Filesystem removal and referenced OS credentials have
+separate confirmations; every scope preserves Codex-owned authentication and
+conversations. The TUI exposes reset only as a guarded command-palette
+lifecycle action. The legacy hidden `xana init` command remains a deprecated
+compatibility path through v0.5.0; `xana setup` is canonical.
+
 ## Add a remote API provider
 
 Keys can be stored in the OS credential manager or referenced through one

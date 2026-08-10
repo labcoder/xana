@@ -100,7 +100,7 @@ impl XanaPaths {
     }
 
     pub(crate) fn presentation_file(&self) -> PathBuf {
-        self.data_dir.join("frontend/presentation.toml")
+        self.data_dir.join("frontend").join("presentation.toml")
     }
 }
 
