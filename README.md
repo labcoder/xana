@@ -325,8 +325,10 @@ slash-command/command palette, model picker, image staging, streamed turns,
 bounded Markdown/code/diff rendering, explicit artifact actions, paged native
 history, an expandable identity/status header, a one-to-six-row scrolling
 composer, and adaptive wide/medium/narrow layouts. Shift+drag uses native
-terminal text selection because ordinary mouse events remain available for
-Xana's clicks and scrolling. Ctrl+C interrupts the active turn; Ctrl+Q exits.
+terminal text selection. An ordinary drag inside the conversation highlights
+the visible cells and copies them through the platform clipboard; other
+ordinary mouse events remain available for Xana's clicks and scrolling. Ctrl+C
+interrupts the active turn; Ctrl+Q exits.
 Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization

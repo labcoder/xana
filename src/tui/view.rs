@@ -3,19 +3,23 @@
 use super::{
     activity::{ActivityKind, ActivityState},
     command,
-    model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, TuiState},
+    model::{ActivityVisibility, LayoutClass, MessageKind, Overlay, ScreenPoint, TuiState},
     rich_text::RichLineKind,
 };
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Widget,
+        Wrap,
     },
 };
+
+const MAX_COPY_CELLS: usize = 256 * 1024;
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
     let area = frame.area();
@@ -48,6 +52,13 @@ pub(super) fn pointer_action(
     }
 
     let layout = shell_layout(area, state);
+    let conversation_area = conversation_area(layout, state, area.width);
+    let conversation_content = panel_content(conversation_area);
+    if selecting && state.conversation_selection.is_some() {
+        return Some(super::model::InputAction::ExtendConversationSelection(
+            clamp_point(conversation_content, column, row),
+        ));
+    }
     if contains(layout.header, column, row) {
         return Some(super::model::InputAction::ToggleHeader);
     }
@@ -86,7 +97,28 @@ pub(super) fn pointer_action(
                 .map(super::model::InputAction::ToggleActivity);
         }
     }
+    if contains(conversation_content, column, row) {
+        return Some(super::model::InputAction::BeginConversationSelection(
+            ScreenPoint { column, row },
+        ));
+    }
     None
+}
+
+pub(super) fn pointer_release_action(
+    column: u16,
+    row: u16,
+    state: &TuiState,
+    area: Rect,
+) -> Option<super::model::InputAction> {
+    let selection = state.conversation_selection?;
+    let layout = shell_layout(area, state);
+    let conversation_area = conversation_area(layout, state, area.width);
+    let end = clamp_point(panel_content(conversation_area), column, row);
+    let text = (selection.dragged || end != selection.start)
+        .then(|| selected_conversation_text(state, conversation_area, selection.start, end))
+        .filter(|text| !text.is_empty());
+    Some(super::model::InputAction::FinishConversationSelection { end, text })
 }
 
 fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: ResolvedPresentation) {
@@ -96,7 +128,7 @@ fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: Res
     if state.rail_expanded {
         frame.render_widget(session_rail(state, profile), columns[0]);
     }
-    frame.render_widget(conversation(state, profile, columns[1]), columns[1]);
+    render_conversation(frame, columns[1], state, profile);
     if activity_visible(state) {
         frame.render_widget(activity(state, profile), columns[2]);
     }
@@ -112,7 +144,7 @@ fn render_medium(
 ) {
     let shell = shell_layout(area, state);
     render_header(frame, shell.header, state, profile, false);
-    frame.render_widget(conversation(state, profile, shell.body), shell.body);
+    render_conversation(frame, shell.body, state, profile);
     render_composer(frame, shell.composer, state, profile);
     render_footer(frame, shell.footer, state, profile, "medium");
 }
@@ -125,7 +157,7 @@ fn render_narrow(
 ) {
     let shell = shell_layout(area, state);
     render_header(frame, shell.header, state, profile, true);
-    frame.render_widget(conversation(state, profile, shell.body), shell.body);
+    render_conversation(frame, shell.body, state, profile);
     render_composer(frame, shell.composer, state, profile);
     render_footer(frame, shell.footer, state, profile, "narrow");
 }
@@ -187,6 +219,30 @@ fn wide_columns(area: Rect, state: &TuiState) -> std::rc::Rc<[Rect]> {
             Constraint::Length(if activity_visible(state) { 30 } else { 0 }),
         ])
         .split(area)
+}
+
+fn conversation_area(layout: ShellLayout, state: &TuiState, width: u16) -> Rect {
+    if LayoutClass::for_width(width) == LayoutClass::Wide {
+        wide_columns(layout.body, state)[1]
+    } else {
+        layout.body
+    }
+}
+
+fn panel_content(area: Rect) -> Rect {
+    Rect::new(
+        area.x.saturating_add(1),
+        area.y.saturating_add(1),
+        area.width.saturating_sub(2),
+        area.height.saturating_sub(2),
+    )
+}
+
+fn clamp_point(area: Rect, column: u16, row: u16) -> ScreenPoint {
+    ScreenPoint {
+        column: column.min(area.right().saturating_sub(1)).max(area.x),
+        row: row.min(area.bottom().saturating_sub(1)).max(area.y),
+    }
 }
 
 fn contains(area: Rect, column: u16, row: u16) -> bool {
@@ -410,6 +466,23 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
     )
 }
 
+fn render_conversation(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    state: &TuiState,
+    profile: ResolvedPresentation,
+) {
+    frame.render_widget(conversation(state, profile, area), area);
+    if let Some(selection) = state.conversation_selection {
+        highlight_selection(
+            frame.buffer_mut(),
+            panel_content(area),
+            selection.start,
+            selection.end,
+        );
+    }
+}
+
 fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> Paragraph<'static> {
     let width = area.width.saturating_sub(2).max(1);
     let visible_rows = usize::from(area.height.saturating_sub(2).max(1));
@@ -449,6 +522,102 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> 
     let bottom = total_rows.saturating_sub(visible_rows);
     let offset = bottom.saturating_sub(usize::from(state.scroll));
     paragraph.scroll((offset.min(usize::from(u16::MAX)) as u16, 0))
+}
+
+fn selected_conversation_text(
+    state: &TuiState,
+    area: Rect,
+    start: ScreenPoint,
+    end: ScreenPoint,
+) -> String {
+    let mut buffer = Buffer::empty(area);
+    conversation(state, ResolvedPresentation::plain(), area).render(area, &mut buffer);
+    selection_text(&buffer, panel_content(area), start, end)
+}
+
+fn highlight_selection(buffer: &mut Buffer, area: Rect, start: ScreenPoint, end: ScreenPoint) {
+    for point in selected_points(area, start, end) {
+        if let Some(cell) = buffer.cell_mut((point.column, point.row)) {
+            cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
+        }
+    }
+}
+
+fn selection_text(buffer: &Buffer, area: Rect, start: ScreenPoint, end: ScreenPoint) -> String {
+    let (start, end) = ordered_points(
+        clamp_point(area, start.column, start.row),
+        clamp_point(area, end.column, end.row),
+    );
+    let mut output = String::new();
+    let mut cells = 0usize;
+    let mut wrote_row = false;
+    for row in start.row..=end.row {
+        let first = if row == start.row {
+            start.column
+        } else {
+            area.x
+        };
+        let last = if row == end.row {
+            end.column
+        } else {
+            area.right().saturating_sub(1)
+        };
+        let mut line = String::new();
+        let mut reached_limit = false;
+        for column in first..=last {
+            if cells >= MAX_COPY_CELLS {
+                reached_limit = true;
+                break;
+            }
+            if let Some(cell) = buffer.cell((column, row)) {
+                line.push_str(cell.symbol());
+            }
+            cells += 1;
+        }
+        if wrote_row {
+            output.push('\n');
+        }
+        output.push_str(line.trim_end());
+        wrote_row = true;
+        if reached_limit {
+            break;
+        }
+    }
+    output.trim_end().to_owned()
+}
+
+fn selected_points(
+    area: Rect,
+    start: ScreenPoint,
+    end: ScreenPoint,
+) -> impl Iterator<Item = ScreenPoint> {
+    let (start, end) = ordered_points(
+        clamp_point(area, start.column, start.row),
+        clamp_point(area, end.column, end.row),
+    );
+    (start.row..=end.row)
+        .flat_map(move |row| {
+            let first = if row == start.row {
+                start.column
+            } else {
+                area.x
+            };
+            let last = if row == end.row {
+                end.column
+            } else {
+                area.right().saturating_sub(1)
+            };
+            (first..=last).map(move |column| ScreenPoint { column, row })
+        })
+        .take(MAX_COPY_CELLS)
+}
+
+fn ordered_points(left: ScreenPoint, right: ScreenPoint) -> (ScreenPoint, ScreenPoint) {
+    if (left.row, left.column) <= (right.row, right.column) {
+        (left, right)
+    } else {
+        (right, left)
+    }
 }
 
 fn conversation_message_lines(
@@ -689,7 +858,7 @@ fn render_footer(
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "{layout} | Ctrl+P commands | Shift+drag copy | Ctrl+Q quit | {motion} | {} queued | {}",
+            "{layout} | Ctrl+P commands | drag conversation to copy | Ctrl+Q quit | {motion} | {} queued | {}",
             state.followups.len(),
             state.status
         ))
@@ -732,7 +901,7 @@ fn render_overlay(
                 Line::raw("Enter primary     Ctrl+J alternate     Shift+Enter newline"),
                 Line::raw("Ctrl+Enter submit   arrows move/select   mouse wheel scrolls"),
                 Line::raw(
-                    "Shift+drag asks the terminal to select screen text; ordinary mouse events control Xana.",
+                    "Drag conversation text to copy; Shift+drag uses terminal-native selection anywhere.",
                 ),
                 Line::raw("Slash commands and palette entries share one registry."),
             ],
@@ -1226,6 +1395,72 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_conversation_drag_highlights_and_copies_rendered_text() {
+        let area = Rect::new(0, 0, 80, 24);
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.header_expanded = false;
+        state.messages.clear();
+        state
+            .messages
+            .push_back(super::super::model::VisibleMessage {
+                kind: MessageKind::Assistant,
+                text: "copy me".to_owned(),
+                document: super::super::rich_text::RichDocument::plain("copy me"),
+            });
+        let conversation = conversation_area(shell_layout(area, &state), &state, area.width);
+        let start = ScreenPoint {
+            column: conversation.x + 3,
+            row: conversation.y + 2,
+        };
+        let end = ScreenPoint {
+            column: start.column + 6,
+            row: start.row,
+        };
+
+        let begin = pointer_action(start.column, start.row, false, &state, area).unwrap();
+        assert_eq!(
+            state.update_input(begin),
+            super::super::model::UpdateEffect::None
+        );
+        let extend = pointer_action(end.column, end.row, true, &state, area).unwrap();
+        assert_eq!(
+            state.update_input(extend),
+            super::super::model::UpdateEffect::None
+        );
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .buffer()
+                .cell((start.column, start.row))
+                .unwrap()
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)
+        );
+
+        let finish = pointer_release_action(end.column, end.row, &state, area).unwrap();
+        assert_eq!(
+            state.update_input(finish),
+            super::super::model::UpdateEffect::CopyText("copy me".to_owned())
+        );
+        assert!(state.conversation_selection.is_none());
+
+        let begin = pointer_action(start.column, start.row, false, &state, area).unwrap();
+        state.update_input(begin);
+        let finish = pointer_release_action(start.column, start.row, &state, area).unwrap();
+        assert_eq!(
+            state.update_input(finish),
+            super::super::model::UpdateEffect::None,
+            "an ordinary click must not copy one cell"
+        );
+    }
+
+    #[test]
     #[ignore = "manual release-profile timing evidence; not a wall-clock CI gate"]
     fn phase5_reference_first_frame_and_input_render_probe() {
         let backend = TestBackend::new(130, 24);
@@ -1425,7 +1660,7 @@ mod tests {
         assert_eq!(shell.composer.height, 8);
         assert!(!rendered.contains("draft-line-0"));
         assert!(rendered.contains("draft-line-7"));
-        assert!(rendered.contains("Shift+drag copy"));
+        assert!(rendered.contains("drag conversation to copy"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

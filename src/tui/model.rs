@@ -67,6 +67,19 @@ pub(super) struct VisibleMessage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ScreenPoint {
+    pub(super) column: u16,
+    pub(super) row: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ConversationSelection {
+    pub(super) start: ScreenPoint,
+    pub(super) end: ScreenPoint,
+    pub(super) dragged: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct OwnerCapabilities {
     pub(super) interrupt: bool,
     pub(super) steer: bool,
@@ -140,6 +153,12 @@ pub(super) enum InputAction {
     Cancel,
     Interrupt,
     Scroll(i16),
+    BeginConversationSelection(ScreenPoint),
+    ExtendConversationSelection(ScreenPoint),
+    FinishConversationSelection {
+        end: ScreenPoint,
+        text: Option<String>,
+    },
     PlaceCursor {
         line: usize,
         column: usize,
@@ -186,6 +205,7 @@ pub(super) enum UpdateEffect {
     PersistRail(bool),
     ArchiveConversation(ConversationRef),
     PersistActivity(ActivityPaneChoice),
+    CopyText(String),
     ArtifactAction {
         record: crate::artifact::ArtifactRecord,
         action: ArtifactAction,
@@ -273,6 +293,7 @@ pub(super) struct TuiState {
     pub(super) sessions: Vec<SessionRow>,
     pub(super) rail_expanded: bool,
     pub(super) header_expanded: bool,
+    pub(super) conversation_selection: Option<ConversationSelection>,
     pub(super) runtime_conversation: ConversationRef,
     pub(super) viewed_conversation: ConversationRef,
     capabilities: OwnerCapabilities,
@@ -310,6 +331,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            conversation_selection: None,
             runtime_conversation: ConversationRef::NewNative,
             viewed_conversation: ConversationRef::NewNative,
             capabilities: OwnerCapabilities::native(),
@@ -352,6 +374,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            conversation_selection: None,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
             capabilities: OwnerCapabilities::native(),
@@ -393,6 +416,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            conversation_selection: None,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
             capabilities: OwnerCapabilities::managed(),

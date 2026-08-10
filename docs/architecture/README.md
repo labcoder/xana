@@ -654,6 +654,13 @@ session projection, and command policy as small domain modules instead of
 adding a second opinionated widget framework. The direct `unicode-width`
 dependency is the shared visual-column metric for composer rendering, cursor
 placement, scrolling, and pointer hit-testing.
+Conversation-only normal-drag selection is Xana-owned because terminal mouse
+reporting is process-global rather than panel-aware. It extracts only the
+explicitly selected cells from the bounded visible Ratatui projection and
+copies on release through a lazy, long-lived text-only `arboard` adapter. The
+adapter disables image features, initializes only after an explicit drag, and
+keeps Linux clipboard ownership alive for the TUI session. Clipboard failure is
+reported as presentation status and does not affect runtime authority.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.
