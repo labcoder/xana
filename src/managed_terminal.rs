@@ -153,9 +153,21 @@ pub(crate) async fn run_codex_chat(
         if input == "/quit" {
             break;
         }
-        if input == "/setup" {
-            exit = ChatExit::Setup;
-            break;
+        let setup_request = input
+            .strip_prefix("/setup ")
+            .map(str::trim)
+            .or_else(|| (input == "/setup").then_some(""));
+        if let Some(section) = setup_request {
+            match crate::setup::args_for_request(section) {
+                Ok(_) => {
+                    exit = ChatExit::Setup(section.to_owned());
+                    break;
+                }
+                Err(error) => {
+                    println!("xana> {error}");
+                    continue;
+                }
+            }
         }
         if input == "/clear" {
             thread_store.set_thread(None, None)?;

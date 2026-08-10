@@ -1644,8 +1644,9 @@ async fn continue_after_chat_exit(
     if exit == terminal::ChatExit::Quit {
         return Ok(None);
     }
-    if exit == terminal::ChatExit::Setup {
-        run_setup_command(&cli::SetupArgs::default(), paths).await?;
+    if let terminal::ChatExit::Setup(request) = &exit {
+        let args = crate::setup::args_for_request(request)?;
+        run_setup_command(&args, paths).await?;
     }
     let restart_surface = if restart_tui {
         let preferences =

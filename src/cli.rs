@@ -65,6 +65,58 @@ pub(crate) enum OutputChoice {
     Json,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum SetupSectionChoice {
+    Connection,
+    #[value(name = "permissions-shell")]
+    PermissionsShell,
+    #[value(name = "profiles-routes")]
+    ProfilesRoutes,
+    Appearance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ThemeChoice {
+    Auto,
+    Dark,
+    Light,
+    Monochrome,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum GlyphChoice {
+    Auto,
+    Unicode,
+    Ascii,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum MotionChoice {
+    Auto,
+    Full,
+    Reduced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum DensityChoice {
+    Auto,
+    Comfortable,
+    Compact,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ComposerChoice {
+    Submit,
+    Newline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ActivityChoice {
+    Auto,
+    Open,
+    Hidden,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "xana", version, about = "A small personal AI agent harness")]
 pub(crate) struct Cli {
@@ -111,7 +163,7 @@ pub(crate) enum Command {
     /// Attach to this workspace's foreground host; observation is the default.
     Attach(AttachArgs),
     /// Establish a provider connection and atomically install a quick configuration.
-    Setup(SetupArgs),
+    Setup(Box<SetupArgs>),
     /// Create Xana's first configuration.
     #[command(hide = true)]
     Init(InitArgs),
@@ -218,6 +270,82 @@ pub(crate) struct SetupArgs {
     /// Establish and validate the connection but do not mutate durable state.
     #[arg(long)]
     pub(crate) dry_run: bool,
+
+    /// Run every advanced setup section in one staged review.
+    #[arg(long, conflicts_with = "section")]
+    pub(crate) full: bool,
+
+    /// Rerun one focused setup section.
+    #[arg(long, value_enum)]
+    pub(crate) section: Option<SetupSectionChoice>,
+
+    /// Configure the native command shell.
+    #[arg(long, value_enum)]
+    pub(crate) shell: Option<ShellChoice>,
+
+    /// Override the selected shell executable.
+    #[arg(long, requires = "shell")]
+    pub(crate) shell_program: Option<PathBuf>,
+
+    /// Set a comma-separated logical capability set on the edited profile.
+    #[arg(long)]
+    pub(crate) capabilities: Option<String>,
+
+    /// Name the profile edited by profiles/routes setup.
+    #[arg(long)]
+    pub(crate) profile: Option<String>,
+
+    /// Select the exact connection for the edited profile.
+    #[arg(long)]
+    pub(crate) profile_connection: Option<String>,
+
+    /// Select the exact model for the edited profile.
+    #[arg(long)]
+    pub(crate) profile_model: Option<String>,
+
+    /// Name the exact task route edited by profiles/routes setup.
+    #[arg(long)]
+    pub(crate) route: Option<String>,
+
+    /// Select the exact profile for the edited route.
+    #[arg(long)]
+    pub(crate) route_profile: Option<String>,
+
+    #[arg(long)]
+    pub(crate) max_fan_out: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_descendants: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_concurrency: Option<usize>,
+    #[arg(long)]
+    pub(crate) deadline_seconds: Option<u64>,
+    #[arg(long)]
+    pub(crate) max_context_tokens: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_report_bytes: Option<usize>,
+    #[arg(long)]
+    pub(crate) max_artifact_bytes: Option<usize>,
+
+    /// Add a validated permission rule as ID:DECISION:EFFECT[:WORKSPACE].
+    #[arg(long, value_name = "RULE")]
+    pub(crate) permission_rule: Vec<String>,
+
+    #[arg(long, value_enum)]
+    pub(crate) theme: Option<ThemeChoice>,
+    #[arg(long, value_enum)]
+    pub(crate) glyphs: Option<GlyphChoice>,
+    #[arg(long, value_enum)]
+    pub(crate) motion: Option<MotionChoice>,
+    #[arg(long, value_enum)]
+    pub(crate) density: Option<DensityChoice>,
+    #[arg(long, value_enum)]
+    pub(crate) composer: Option<ComposerChoice>,
+    #[arg(long, value_enum)]
+    pub(crate) activity: Option<ActivityChoice>,
+
+    /// Start a new conversation immediately after a new-session change.
+    #[arg(long)]
+    pub(crate) start_new: bool,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -771,7 +899,7 @@ mod tests {
 
         assert_eq!(
             cli.command,
-            Some(Command::Setup(SetupArgs {
+            Some(Command::Setup(Box::new(SetupArgs {
                 non_interactive: true,
                 kind: Some(ConnectionKindChoice::OpenRouter),
                 connection: Some("openrouter".into()),
@@ -785,8 +913,67 @@ mod tests {
                 permission_mode: Some(PermissionChoice::Ask),
                 yes: true,
                 dry_run: false,
-            }))
+                ..SetupArgs::default()
+            })))
         );
+    }
+
+    #[test]
+    fn parses_exact_sectional_setup_operations() {
+        let appearance = Cli::try_parse_from([
+            "xana",
+            "setup",
+            "--non-interactive",
+            "--section",
+            "appearance",
+            "--theme",
+            "monochrome",
+            "--motion",
+            "reduced",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(
+            appearance.command,
+            Some(Command::Setup(args)) if matches!(*args, SetupArgs {
+                section: Some(SetupSectionChoice::Appearance),
+                theme: Some(ThemeChoice::Monochrome),
+                motion: Some(MotionChoice::Reduced),
+                ..
+            })
+        ));
+
+        let routes = Cli::try_parse_from([
+            "xana",
+            "setup",
+            "--non-interactive",
+            "--section",
+            "profiles-routes",
+            "--profile",
+            "reviewer",
+            "--profile-connection",
+            "ollama",
+            "--profile-model",
+            "qwen",
+            "--route",
+            "review",
+            "--route-profile",
+            "reviewer",
+            "--max-concurrency",
+            "2",
+            "--yes",
+        ])
+        .unwrap();
+        assert!(matches!(
+            routes.command,
+            Some(Command::Setup(args)) if matches!(*args, SetupArgs {
+                section: Some(SetupSectionChoice::ProfilesRoutes),
+                profile: Some(_),
+                route: Some(_),
+                max_concurrency: Some(2),
+                ..
+            })
+        ));
     }
 
     #[test]

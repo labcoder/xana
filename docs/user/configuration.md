@@ -57,6 +57,52 @@ shape. Inside plain or full-screen chat, `/setup` closes the current foreground
 owner, restores the terminal, runs the same setup transaction, and starts a
 new conversation using the installed choice.
 
+## Full Custom and focused sections
+
+`xana setup --full` continues past the provider-neutral connection flow and
+stages shell, permission rules, logical capabilities, exact profile/route
+bindings, orchestration bounds, and machine-local appearance in one review.
+The production configuration, permission, capability, route, and budget
+validators run before commit. A rule entered by flags uses the bounded form
+`ID:DECISION:EFFECT[:WORKSPACE]`; setup does not add automatic routing or
+provider scoring.
+
+Rerun only one semantic section when the whole installation does not need to
+be replaced:
+
+```bash
+xana setup --section permissions-shell
+xana setup --section profiles-routes
+xana setup --section appearance
+xana setup --section connection
+```
+
+The connection section performs the same live availability and catalog checks
+as Quick Setup, then structurally replaces only the chosen provider and
+default profile selection while preserving comments and unrelated config.
+Permissions/shell and profiles/routes use comment-preserving structured TOML
+edits. Appearance writes only `data/frontend/presentation.toml`.
+
+An exact noninteractive example is:
+
+```bash
+xana setup --non-interactive --section profiles-routes \
+  --profile reviewer --profile-connection openrouter \
+  --profile-model anthropic/claude-sonnet-4 \
+  --capabilities read,documents --route review --route-profile reviewer \
+  --max-fan-out 2 --max-descendants 4 --max-concurrency 2 \
+  --deadline-seconds 300 --max-context-tokens 8192 \
+  --max-report-bytes 32768 --max-artifact-bytes 8388608 --yes
+```
+
+Receipts distinguish timing. Appearance is immediate and policy-neutral.
+Compatible managed model/reasoning choices affect subsequent turns without
+replacing Codex context. Connection/execution owner, shell, permissions,
+profiles, routes, capabilities, and orchestration limits are frozen into a
+conversation snapshot, so config edits affect a new conversation only.
+`--start-new` prints the explicit new-conversation action; Xana never silently
+discards an open native session or Codex thread.
+
 For a managed Codex first connection, no HTTP base URL or Xana credential is
 accepted:
 

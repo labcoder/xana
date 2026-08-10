@@ -87,6 +87,15 @@ max_tool_rounds = 8
 profile = "default"
 ```
 
+Use `xana setup --full` for the guided advanced path. Focused reruns use
+`--section connection|permissions-shell|profiles-routes|appearance`; the same
+entries are available as `/setup SECTION` in plain chat and the TUI command
+palette. Appearance applies immediately. Managed model/reasoning changes apply
+to subsequent turns when compatible. Connection owner, shell, permission,
+profile, and route changes never mutate the open conversation; start a new
+conversation explicitly to use their new immutable snapshot. Every durable
+section has a flag-driven `--non-interactive ... --yes` form.
+
 ## Add a remote API provider
 
 Keys can be stored in the OS credential manager or referenced through one

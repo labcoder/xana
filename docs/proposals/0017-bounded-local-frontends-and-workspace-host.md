@@ -171,6 +171,9 @@ preview; the host owns two-second graceful and five-second hard shutdown of its
 exact client/execution tasks. Provider-neutral Quick Setup now establishes a
 live native or managed connection before model selection and atomically commits
 the redacted reviewed config, backup, and rollback-safe credential reference.
+Full Custom and focused sectional setup reuse that boundary for shell,
+permissions, capabilities, exact profiles/routes, orchestration limits, and
+presentation, with explicit immediate/subsequent-turn/new-conversation timing.
 The
 TUI now owns adaptive state/update/view
 rendering, terminal restoration, a bounded multiline composer, safe paste,

@@ -14,6 +14,12 @@ background agent.
 
 Configuration version 3 separates reusable profiles from stable task routes:
 
+Full Custom Setup or `xana setup --section profiles-routes` can create or edit
+these exact bindings and their bounded orchestration limits through the same
+production validator. Sectional edits preserve unrelated TOML and comments.
+They affect a new conversation only; setup never changes an already resolved
+child route or grants capabilities absent from the root snapshot.
+
 ```toml
 version = 3
 default_profile = "default"

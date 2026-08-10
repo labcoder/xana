@@ -65,6 +65,7 @@ use one typed registry:
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
 - `/sessions [expanded|collapsed]`
+- `/setup [full|connection|permissions-shell|profiles-routes|appearance]`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
 Esc closes the overlay. `/model` without an argument opens choices from the
@@ -74,6 +75,11 @@ or models. A managed Codex model or reasoning change applies to subsequent
 turns and preserves the Codex thread. Native reasoning control is unavailable.
 Activity visibility changes only what the frontend renders and never changes
 model reasoning effort.
+
+`/setup` restores the terminal before opening the same transient setup flow as
+the CLI command. A focused section is available from slash input or the
+searchable palette; configuration changes end the current foreground owner
+explicitly and restart only after the reviewed setup operation completes.
 
 `/attach` accepts a workspace-relative regular image through Xana's existing
 bounded artifact ingestion. It refuses traversal, symlink escape, unsupported

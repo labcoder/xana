@@ -36,8 +36,16 @@ queries that could delay or hang startup.
 Presentation preferences are separate from `config.toml`. The version 1 file
 is `data/frontend/presentation.toml` under `XANA_HOME`; platform-default
 installations place the same file under Xana's platform data directory.
-Advanced setup will manage this file later in Phase 5. It can currently be
-created by hand:
+Full Custom Setup and the focused appearance section manage this file:
+
+```bash
+xana setup --section appearance
+xana setup --non-interactive --section appearance \
+  --theme monochrome --glyphs ascii --motion reduced \
+  --density compact --composer newline --activity hidden --yes
+```
+
+It can also be created by hand:
 
 ```toml
 version = 1

@@ -5,6 +5,8 @@
 //! confirmed; the installer then rolls credential mutation back if the atomic
 //! configuration replacement fails.
 
+mod custom;
+
 use crate::{
     cli::SetupArgs,
     config::{
@@ -26,6 +28,26 @@ use std::{
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
+    let mut args = SetupArgs::default();
+    match request.trim() {
+        "" | "quick" => {}
+        "full" => args.full = true,
+        "connection" => args.section = Some(crate::cli::SetupSectionChoice::Connection),
+        "permissions-shell" => {
+            args.section = Some(crate::cli::SetupSectionChoice::PermissionsShell);
+        }
+        "profiles-routes" => {
+            args.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes);
+        }
+        "appearance" => args.section = Some(crate::cli::SetupSectionChoice::Appearance),
+        value => bail!(
+            "unknown setup section {value:?}; use quick, full, connection, permissions-shell, profiles-routes, or appearance"
+        ),
+    }
+    Ok(args)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SetupCredential {
@@ -116,6 +138,12 @@ pub(crate) async fn run(
     if args.non_interactive && !args.dry_run && !args.yes {
         bail!("noninteractive setup requires --yes before changing durable state");
     }
+    if args
+        .section
+        .is_some_and(|section| section != crate::cli::SetupSectionChoice::Connection)
+    {
+        return custom::run_section(args, paths, input, output);
+    }
 
     writeln!(output, "Xana Quick Setup")?;
     writeln!(output, "No provider is selected or recommended by Xana.")?;
@@ -166,6 +194,8 @@ pub(crate) async fn run(
     };
     let rendered = XanaConfig::render_initial(draft.initial_config())
         .context("could not render the validated setup configuration")?;
+    let customization = custom::customize_quick(rendered, args, paths, input, output)?;
+    let rendered = customization.config;
 
     writeln!(output)?;
     writeln!(output, "Review")?;
@@ -193,6 +223,9 @@ pub(crate) async fn run(
     }
     writeln!(output, "  Permissions: {}", draft.permission_mode.as_str())?;
     writeln!(output, "  Config:      {}", paths.config_file().display())?;
+    for effect in &customization.effects {
+        writeln!(output, "  Applies:     {effect}")?;
+    }
 
     if args.dry_run {
         writeln!(output, "Validated preview only; no durable state changed.")?;
@@ -203,7 +236,7 @@ pub(crate) async fn run(
         return Ok(());
     }
 
-    install(
+    install_with_preferences(
         paths.config_file(),
         &rendered,
         match (&draft.credential, draft.staged_secret.as_ref()) {
@@ -211,6 +244,10 @@ pub(crate) async fn run(
             _ => None,
         },
         &OsSecretStore,
+        customization
+            .preferences
+            .as_ref()
+            .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
     )?;
     writeln!(output, "Configuration installed atomically.")?;
     if paths.config_file().with_extension("toml.bak").exists() {
@@ -531,7 +568,7 @@ fn choose_permission(
     }
 }
 
-fn prompt_required(
+pub(super) fn prompt_required(
     input: &mut impl BufRead,
     output: &mut impl Write,
     label: &str,
@@ -549,7 +586,7 @@ fn prompt_required(
     Ok(value)
 }
 
-fn prompt_default(
+pub(super) fn prompt_default(
     input: &mut impl BufRead,
     output: &mut impl Write,
     label: &str,
@@ -565,7 +602,11 @@ fn prompt_default(
     Ok(if value.is_empty() { default } else { value }.to_owned())
 }
 
-fn confirm(input: &mut impl BufRead, output: &mut impl Write, label: &str) -> Result<bool> {
+pub(super) fn confirm(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    label: &str,
+) -> Result<bool> {
     write!(output, "{label}")?;
     output.flush()?;
     let mut value = String::new();
@@ -596,10 +637,29 @@ fn install(
     credential: Option<(&str, &SecretString)>,
     store: &impl SecretStore,
 ) -> Result<()> {
+    install_with_preferences(path, rendered, credential, store, None)
+}
+
+fn install_with_preferences(
+    path: &Path,
+    rendered: &str,
+    credential: Option<(&str, &SecretString)>,
+    store: &impl SecretStore,
+    preference: Option<(PathBuf, &[u8])>,
+) -> Result<()> {
     XanaConfig::parse(rendered).context("refusing to install an invalid configuration")?;
+    if let Some((_, bytes)) = &preference {
+        let input = std::str::from_utf8(bytes).context("presentation preferences are not UTF-8")?;
+        crate::presentation::PresentationPreferences::parse(input)
+            .context("refusing to install invalid presentation preferences")?;
+    }
     let previous_config = read_optional_bounded(path, MAX_CONFIG_BYTES)?;
     let backup = path.with_extension("toml.bak");
     let previous_backup = read_optional_bounded(&backup, MAX_CONFIG_BYTES)?;
+    let previous_preference = match &preference {
+        Some((path, _)) => read_optional_bounded(path, 32 * 1024)?,
+        None => None,
+    };
     let previous_secret = match credential {
         Some((id, _)) => Some((id, store.get(id)?)),
         None => None,
@@ -612,7 +672,11 @@ fn install(
         if let Some(previous) = &previous_config {
             atomic_write(&backup, previous)?;
         }
-        atomic_write(path, rendered.as_bytes())
+        atomic_write(path, rendered.as_bytes())?;
+        if let Some((preference_path, bytes)) = &preference {
+            atomic_write(preference_path, bytes)?;
+        }
+        Ok(())
     })();
     if let Err(error) = result {
         if let Some((id, previous)) = previous_secret {
@@ -624,6 +688,10 @@ fn install(
             }
         }
         restore_optional(&backup, previous_backup.as_deref())?;
+        if let Some((preference_path, _)) = &preference {
+            restore_optional(preference_path, previous_preference.as_deref())?;
+        }
+        restore_optional(path, previous_config.as_deref())?;
         return Err(error).context("setup transaction rolled back");
     }
     Ok(())
@@ -642,7 +710,7 @@ fn read_optional_bounded(path: &Path, limit: u64) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -783,6 +851,7 @@ mod tests {
             permission_mode: None,
             yes: false,
             dry_run: false,
+            ..SetupArgs::default()
         };
         let mut input = io::Cursor::new("\n");
         let mut output = Vec::new();

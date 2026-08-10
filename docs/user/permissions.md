@@ -21,6 +21,13 @@ Existing version 1 files that explicitly use `allow` remain valid and retain
 automatic authority. To adopt the safer interactive default, change the value
 to `ask` and run `xana config check`.
 
+Full Custom Setup and `xana setup --section permissions-shell` edit the
+default, validated rules, and shell without mutating an open conversation. The
+noninteractive rule form is `--permission-rule
+ID:DECISION:EFFECT[:WORKSPACE]`; multiple flags append multiple rules. The
+receipt requires a new conversation because its permission and shell snapshot
+is immutable for the current owner.
+
 ## Rule matching and precedence
 
 Rules are top-level TOML array entries. Each rule needs a unique, nonblank id,
