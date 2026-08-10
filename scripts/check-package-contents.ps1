@@ -29,7 +29,9 @@ $required = @(
     "docs/user/project-context.md",
     "docs/user/sessions.md",
     "install/install.sh",
+    "install/install.ps1",
     "scripts/new-release-manifest.ps1",
+    "scripts/test-install-ps1.ps1",
     "src/main.rs"
 )
 

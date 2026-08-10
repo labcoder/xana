@@ -48,6 +48,11 @@ jobs:
         shell: bash
         run: ./scripts/test-install-sh.sh
 
+      - name: Verify PowerShell installer behavior
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install-ps1.ps1
+
       - name: Verify packageable source crate
         run: cargo package --package xana-core --locked
 
