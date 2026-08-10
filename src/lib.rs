@@ -113,6 +113,9 @@ pub fn entry() -> ExitCode {
             {
                 return failure.exit_code();
             }
+            if let Some(pending) = error.downcast_ref::<setup::SetupPending>() {
+                return pending.exit_code();
+            }
             eprintln!("Error: {error:#}");
             ExitCode::from(1)
         }

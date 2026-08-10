@@ -29,6 +29,36 @@ key cannot be followed by a config commit, the prior key is restored. Codex
 OAuth remains vendor-owned and is never represented as part of that rollback.
 `--dry-run` establishes and validates without committing.
 
+### Check readiness after installation
+
+Use the installer-facing handoff when setup should run only if local
+configuration requires it:
+
+```bash
+xana setup --if-needed
+```
+
+Xana classifies its own configuration as healthy, missing, invalid,
+incompatible, or indeterminate. Healthy compatible state returns success and
+does not write files, access the credential store, contact a provider, or open
+setup. Missing, invalid, or incompatible state enters the ordinary confirmed
+setup flow only when both input and output are terminals. Replacing an invalid
+or incompatible file retains the same atomic-install and exact-backup guarantees
+as an ordinary setup rerun.
+
+Without an interactive terminal, needed setup remains untouched and exits with
+status `10`. Standard output ends with a bounded versioned line such as:
+
+```text
+XANA_SETUP_RESULT {"version":1,"status":"pending","reason":"missing","next":"xana setup","diagnose":"xana doctor"}
+```
+
+`ready` means existing setup was preserved; `configured` means an interactive
+flow committed a configuration; `pending` means binary installation may have
+succeeded but setup still needs a person. Indeterminate filesystem state is an
+ordinary failure, not a new-install claim. `--if-needed` cannot be combined
+with provider, model, repair, or setup-choice flags.
+
 ```bash
 xana setup --non-interactive \
   --kind ollama \

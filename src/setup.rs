@@ -6,6 +6,9 @@
 //! configuration replacement fails.
 
 mod custom;
+mod readiness;
+
+pub(crate) use readiness::{SetupPending, run as run_if_needed};
 
 use crate::{
     cli::SetupArgs,
@@ -21,13 +24,25 @@ use crate::{
 };
 use anyhow::{Context, Result, bail};
 use std::{
-    fs, io,
+    error::Error,
+    fmt, fs, io,
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
 };
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+#[derive(Debug)]
+struct SetupCancelled;
+
+impl fmt::Display for SetupCancelled {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("setup cancelled at end of input; no changes made")
+    }
+}
+
+impl Error for SetupCancelled {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupOutcome {
@@ -148,6 +163,9 @@ pub(crate) async fn run(
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<SetupOutcome> {
+    if args.if_needed {
+        bail!("--if-needed must be dispatched through Xana's readiness owner");
+    }
     if args.non_interactive && input_is_terminal {
         // This is allowed, but the mode contract remains flag-driven.
     }
@@ -600,7 +618,7 @@ pub(super) fn prompt_required(
     output.flush()?;
     let mut value = String::new();
     if input.read_line(&mut value)? == 0 {
-        bail!("setup cancelled at end of input; no changes made");
+        return Err(SetupCancelled.into());
     }
     let value = value.trim().to_owned();
     if value.is_empty() {
@@ -619,7 +637,7 @@ pub(super) fn prompt_default(
     output.flush()?;
     let mut value = String::new();
     if input.read_line(&mut value)? == 0 {
-        bail!("setup cancelled at end of input; no changes made");
+        return Err(SetupCancelled.into());
     }
     let value = value.trim();
     Ok(if value.is_empty() { default } else { value }.to_owned())

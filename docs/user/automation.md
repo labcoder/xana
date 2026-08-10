@@ -2,6 +2,17 @@
 
 > Audience: People using Xana interactively, from shell pipelines, or from scripts.
 
+## Installation readiness
+
+`xana setup --if-needed` is the stable checked-in installer handoff. With
+redirected input or output it never prompts. Healthy setup exits `0`; required
+setup exits `10` after a final `XANA_SETUP_RESULT` JSON receipt; indeterminate
+filesystem or unexpected setup failures exit `1`. Exit `10` means the binary
+operation may still be successful while configuration remains pending—it must
+not be collapsed into either generic success or generic failure by an
+installer. The receipt is versioned for Xana's checked-in wrappers but is not a
+general third-party configuration API.
+
 Bare `xana` selects the full-screen TUI when stdin and stdout are interactive.
 Redirected or piped launches select the permanent append-only surface and emit
 no terminal control sequences. Select either behavior explicitly with:

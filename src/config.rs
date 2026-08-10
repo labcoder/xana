@@ -446,6 +446,41 @@ pub(crate) enum ConfigError {
     InvalidPermissionPolicy(PolicyError),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConfigReadiness {
+    Healthy,
+    Missing,
+    Invalid,
+    Incompatible,
+    Indeterminate,
+}
+
+impl ConfigReadiness {
+    pub(crate) fn inspect(path: &Path) -> Self {
+        match XanaConfig::load_from(path) {
+            Ok(_) => Self::Healthy,
+            Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                Self::Missing
+            }
+            Err(ConfigError::UnsupportedVersion { .. } | ConfigError::LegacyConfigFound { .. }) => {
+                Self::Incompatible
+            }
+            Err(ConfigError::Io { .. } | ConfigError::Encode(_)) => Self::Indeterminate,
+            Err(_) => Self::Invalid,
+        }
+    }
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Missing => "missing",
+            Self::Invalid => "invalid",
+            Self::Incompatible => "incompatible",
+            Self::Indeterminate => "indeterminate",
+        }
+    }
+}
+
 impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

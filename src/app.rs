@@ -120,6 +120,17 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Serve(args)) => run_serve_command(&args, &paths).await,
         Some(Command::Attach(args)) => run_attach_command(&args, &paths).await,
         Some(Command::Setup(args)) => {
+            if args.if_needed {
+                if *args
+                    != (cli::SetupArgs {
+                        if_needed: true,
+                        ..cli::SetupArgs::default()
+                    })
+                {
+                    anyhow::bail!("--if-needed cannot be combined with other setup options");
+                }
+                return run_setup_if_needed_command(&paths).await;
+            }
             let outcome = run_setup_command(&args, &paths).await?;
             if outcome.starts_new_conversation(args.start_new) {
                 let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
@@ -1506,6 +1517,22 @@ async fn run_setup_command(
     let mut input = stdin.lock();
     let mut output = anstream::stdout().lock();
     crate::setup::run(args, paths, input_is_terminal, &mut input, &mut output).await
+}
+
+async fn run_setup_if_needed_command(paths: &XanaPaths) -> Result<()> {
+    let stdin = io::stdin();
+    let input_is_terminal = stdin.is_terminal();
+    let output_is_terminal = io::stdout().is_terminal();
+    let mut input = stdin.lock();
+    let mut output = anstream::stdout().lock();
+    crate::setup::run_if_needed(
+        paths,
+        input_is_terminal,
+        output_is_terminal,
+        &mut input,
+        &mut output,
+    )
+    .await
 }
 
 fn banner_mode(

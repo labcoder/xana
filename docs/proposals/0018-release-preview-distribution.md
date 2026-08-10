@@ -166,6 +166,10 @@ attributable draft workflow, complete user/contributor documentation, and a
 four-platform release gate. Architecture and User Documentation must be
 updated in the same change as each shipped slice.
 
+The reproducible native plan and Xana-owned `setup --if-needed` readiness
+contract are implemented. The installers, draft workflow, reconciled public
+documentation, and four-platform release gate remain outstanding.
+
 Until every slice exists, this proposal remains Accepted and Architecture's
 source-only distribution description remains authoritative. Publishing a
 draft or public release is an external owner-controlled effect and is never
