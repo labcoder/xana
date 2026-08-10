@@ -625,16 +625,21 @@ emits only typed runtime commands. It paints a local starting frame before
 configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
-collapsed wide session rail at zero width, and bounds composer, message,
-activity, staged images,
-and an ordered follow-up queue. Frontend protocol version 2 adds exact
+wide sessions panel at zero width, and bounds composer, message, activity,
+staged images, and an ordered follow-up queue. Frontend protocol version 2 adds exact
 interrupt and capability-gated steer commands. The native TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
-registry. One shared layout calculation owns both rendering rectangles and
-mouse hit-testing. The composer grows through six visual rows, then uses a
-cursor-following bounded viewport. Paste is normalized and confirmed as
-untrusted draft data. Model
+registry. Registry rows separate command names, modes/parameters,
+descriptions, and optional exact palette arguments. A Ratatui stateful table
+keeps its heading fixed and selected row visible; normalized search accepts an
+optional leading slash and indexes modes as well as names. One shared layout
+calculation owns both rendering rectangles and mouse hit-testing. The sessions
+title owns a distinct hide action instead of falling through to its first row.
+The composer grows through six visual rows, then uses a cursor-following
+bounded viewport. Conversation rendering selects a bounded suffix, measures
+visual rows, anchors at the bottom, and interprets scroll state as rows rather
+than messages. Paste is normalized and confirmed as untrusted draft data. Model
 selection persists through `ModelManager` and restarts into a new conversation
 rather than translating history. Activity visibility is presentation state,
 not reasoning configuration. The bounded activity projection groups typed

@@ -88,15 +88,16 @@ edited while viewing another transcript, but submission is refused and the
 draft retained until the runtime conversation is selected or the user exits
 and uses exact `--resume SESSION_ID`.
 
-`/sessions expanded` and `/sessions collapsed` persist the default wide rail
+`/sessions view show` and `/sessions view hide` persist the default wide rail
 state in a version-1 workspace/frontend preference beneath
 `data/frontend/workspaces/`. The file stores only the Boolean layout choice;
 active work, selection, unread/error state, transcript data, and controller
 ownership are always recomputed from runtime/host truth. Medium and narrow
 layouts use the picker overlay regardless of the saved rail choice.
-Collapsed means hidden: it reserves no placeholder columns. View an inactive
-managed row and run `/sessions archive` to remove the same local handle from
-inside the TUI.
+Hidden means zero width: the panel reserves no placeholder columns. Clicking
+the visible panel title hides it. View an inactive managed row and run
+`/sessions archive`, or pass its exact ID with `/sessions archive ID`, to remove
+the same local handle from inside the TUI.
 
 ## Storage
 

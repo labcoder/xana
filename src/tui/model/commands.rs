@@ -53,15 +53,17 @@ impl TuiState {
             }
             InputAction::Interrupt => self.interrupt(),
             InputAction::Scroll(delta) => {
+                let maximum = self
+                    .conversation_row_estimate()
+                    .saturating_sub(1)
+                    .min(usize::from(u16::MAX)) as u16;
                 self.scroll = if delta.is_negative() {
                     self.scroll.saturating_add(delta.unsigned_abs())
                 } else {
                     self.scroll.saturating_sub(delta as u16)
-                };
-                if delta.is_negative()
-                    && self.history_has_older
-                    && usize::from(self.scroll) >= self.messages.len().saturating_sub(1)
-                {
+                }
+                .min(maximum);
+                if delta.is_negative() && self.history_has_older && self.scroll >= maximum {
                     UpdateEffect::LoadOlder(self.viewed_conversation.clone())
                 } else {
                     UpdateEffect::None
@@ -84,6 +86,15 @@ impl TuiState {
                     card.expanded = !card.expanded;
                 }
                 UpdateEffect::None
+            }
+            InputAction::ToggleSessionsView => {
+                self.rail_expanded = !self.rail_expanded;
+                self.status = if self.rail_expanded {
+                    "Sessions panel shown".to_owned()
+                } else {
+                    "Sessions panel hidden; use /sessions view show to restore it".to_owned()
+                };
+                UpdateEffect::PersistRail(self.rail_expanded)
             }
             InputAction::ToggleHeader => {
                 self.header_expanded = !self.header_expanded;
@@ -144,6 +155,12 @@ impl TuiState {
             }
             InputAction::PaletteDown => {
                 self.move_overlay_selection(true);
+                UpdateEffect::None
+            }
+            InputAction::Scroll(delta) => {
+                for _ in 0..delta.unsigned_abs() {
+                    self.move_overlay_selection(delta.is_positive());
+                }
                 UpdateEffect::None
             }
             InputAction::Confirm | InputAction::Submit => self.confirm_overlay(),
@@ -238,7 +255,7 @@ impl TuiState {
                 self.execute_command(
                     ParsedCommand {
                         id: command.id,
-                        arguments: String::new(),
+                        arguments: command.arguments.to_owned(),
                     },
                     true,
                 )
@@ -307,8 +324,8 @@ impl TuiState {
             CommandId::Header => {
                 self.composer.take();
                 self.header_expanded = match command.arguments.as_str() {
-                    "" | "expanded" | "open" => true,
-                    "collapsed" | "compact" => false,
+                    "" | "show" | "expanded" | "open" | "view show" => true,
+                    "hide" | "collapsed" | "compact" | "view hide" => false,
                     _ => {
                         self.status = command_usage(CommandId::Header);
                         return UpdateEffect::None;
@@ -396,32 +413,22 @@ impl TuiState {
             }
             CommandId::Sessions => {
                 self.composer.take();
-                match command.arguments.as_str() {
-                    "" => UpdateEffect::OpenSessionPicker,
-                    "expanded" => {
+                let mut parts = command.arguments.split_whitespace();
+                match (parts.next(), parts.next(), parts.next()) {
+                    (None, None, None) => UpdateEffect::OpenSessionPicker,
+                    (Some("view"), Some("show"), None) | (Some("expanded"), None, None) => {
                         self.rail_expanded = true;
-                        self.status = "Wide session rail expanded".to_owned();
+                        self.status = "Sessions panel shown".to_owned();
                         UpdateEffect::PersistRail(true)
                     }
-                    "collapsed" => {
+                    (Some("view"), Some("hide"), None) | (Some("collapsed"), None, None) => {
                         self.rail_expanded = false;
-                        self.status = "Wide session rail collapsed".to_owned();
+                        self.status =
+                            "Sessions panel hidden; use /sessions view show to restore it"
+                                .to_owned();
                         UpdateEffect::PersistRail(false)
                     }
-                    "archive" => {
-                        if self.viewed_conversation == self.runtime_conversation {
-                            self.status = "The active conversation cannot be archived; view an inactive managed conversation first".to_owned();
-                            UpdateEffect::None
-                        } else if matches!(
-                            self.viewed_conversation,
-                            ConversationRef::Managed { .. }
-                        ) {
-                            UpdateEffect::ArchiveConversation(self.viewed_conversation.clone())
-                        } else {
-                            self.status = "Only retained managed conversations can be archived in this release".to_owned();
-                            UpdateEffect::None
-                        }
-                    }
+                    (Some("archive"), selector, None) => self.archive_session(selector),
                     _ => {
                         self.status = command_usage(CommandId::Sessions);
                         UpdateEffect::None
@@ -469,9 +476,9 @@ impl TuiState {
             CommandId::Activity => {
                 self.composer.take();
                 self.activity_visibility = match command.arguments.as_str() {
-                    "hidden" | "quiet" => ActivityVisibility::Hidden,
-                    "open" | "verbose" => ActivityVisibility::Open,
-                    "auto" | "normal" | "" => ActivityVisibility::Auto,
+                    "view hide" | "hidden" | "quiet" => ActivityVisibility::Hidden,
+                    "view show" | "open" | "verbose" => ActivityVisibility::Open,
+                    "view auto" | "auto" | "normal" => ActivityVisibility::Auto,
                     _ => {
                         self.status = command_usage(CommandId::Activity);
                         return UpdateEffect::None;
@@ -546,6 +553,52 @@ impl TuiState {
         }
     }
 
+    fn archive_session(&mut self, selector: Option<&str>) -> UpdateEffect {
+        let conversation = if let Some(selector) = selector {
+            let matches = self
+                .sessions
+                .iter()
+                .filter_map(|row| match &row.conversation {
+                    ConversationRef::Managed {
+                        connection,
+                        thread_id,
+                    } if selector == thread_id
+                        || selector == format!("{connection}/{thread_id}") =>
+                    {
+                        Some(row.conversation.clone())
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            match matches.as_slice() {
+                [conversation] => conversation.clone(),
+                [] => {
+                    self.status = format!(
+                        "No retained managed session matches {selector:?}; use /sessions to inspect exact IDs"
+                    );
+                    return UpdateEffect::None;
+                }
+                _ => {
+                    self.status =
+                        format!("Managed session ID {selector:?} is ambiguous; use CONNECTION/ID");
+                    return UpdateEffect::None;
+                }
+            }
+        } else {
+            self.viewed_conversation.clone()
+        };
+        if conversation == self.runtime_conversation {
+            self.status = "The active session cannot be archived; view an inactive managed session or pass its ID".to_owned();
+            UpdateEffect::None
+        } else if matches!(conversation, ConversationRef::Managed { .. }) {
+            UpdateEffect::ArchiveConversation(conversation)
+        } else {
+            self.status =
+                "Only retained managed sessions can be archived in this release".to_owned();
+            UpdateEffect::None
+        }
+    }
+
     fn queue_command(&mut self, arguments: &str) -> UpdateEffect {
         let mut parts = arguments.split_whitespace();
         match parts.next() {
@@ -576,13 +629,12 @@ impl TuiState {
 }
 
 fn command_usage(id: CommandId) -> String {
-    command::COMMANDS
-        .iter()
-        .find(|command| command.id == id)
-        .map_or_else(
-            || "Invalid command".to_owned(),
-            |command| format!("Usage: {}", command.usage),
-        )
+    let usages = command::usages(id);
+    if usages.is_empty() {
+        "Invalid command".to_owned()
+    } else {
+        format!("Usage: {}", usages.join(" | "))
+    }
 }
 
 fn parse_queue_index(value: Option<&str>, len: usize) -> Result<usize, String> {
