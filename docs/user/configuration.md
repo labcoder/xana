@@ -24,6 +24,10 @@ full profile, route, and shell editing remains an advanced configuration task.
 `xana setup` is safe to rerun. It stages ordinary configuration in memory,
 shows a bounded redacted review, and replaces `config.toml` atomically only
 after confirmation. An exact prior config is retained as `config.toml.bak`.
+The confirmed connection and model become the next conversation's effective
+choice: any separate `data/selection.toml` override is cleared within the same
+rollback-safe transaction so it cannot keep a removed or previously selected
+connection active.
 Cancellation and connection failures write nothing. If a newly staged OS-store
 key cannot be followed by a config commit, the prior key is restored. Codex
 OAuth remains vendor-owned and is never represented as part of that rollback.

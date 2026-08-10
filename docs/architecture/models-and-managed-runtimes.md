@@ -88,8 +88,11 @@ staged registry, establishes the endpoint/executable plus credential/account,
 and fetches a live catalog without writing the normal catalog cache. Only an
 id from that result can become the installed default model. A hidden API key
 is held in zeroizing memory until confirmation; configuration contains only
-its OS-store id or environment-variable name. This transaction does not turn
-ordinary startup into implicit network discovery.
+its OS-store id or environment-variable name. A successful replacement clears
+the separate foreground selection in the rollback-safe transaction, making
+the installed default connection/model effective for the next conversation
+instead of resuming an older valid or now-orphaned override. This transaction
+does not turn ordinary startup into implicit network discovery.
 
 `xana model` lists the unified catalog. `xana model use
 CONNECTION/MODEL` persists the next-conversation selection. `/model` lists or

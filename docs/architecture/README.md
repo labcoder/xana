@@ -700,7 +700,10 @@ non-persistent live catalog fetch before accepting model and managed reasoning
 choices. The validated version 3 document and any hidden OS-store secret stay
 in memory through the bounded redacted review. After confirmation, the prior
 file is backed up exactly and config is atomically replaced; secret mutation
-is rolled back if the config commit fails. Codex OAuth is vendor-owned and is
+and the separate foreground model selection are reconciled within the same
+rollback boundary, so a stale selection cannot outlive a replaced default
+connection. Those mutations are rolled back if the config commit fails. Codex
+OAuth is vendor-owned and is
 reported outside that transaction. Bare interactive startup and `/setup`
 enter the same application operation after restoring any full-screen terminal;
 non-TTY startup emits the exact flag-driven form. The legacy hidden `init`
