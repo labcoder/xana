@@ -88,8 +88,7 @@ foreach ($archive in $expectedArchives) {
     Assert-True ($artifact.checksum -eq "$archive.sha256") "$archive must use its SHA-256 sidecar"
 
     $assetNames = @($artifact.assets | ForEach-Object { [string]$_.name })
-    $expectedExecutable = if ($archive.EndsWith(".zip")) { "xana" } else { "xana" }
-    Assert-SameSet $assetNames @("LICENSE", "README.md", "installation.md", $expectedExecutable) "$archive contents"
+    Assert-SameSet $assetNames @("LICENSE", "README.md", "installation.md", "xana") "$archive contents"
 }
 Assert-SameSet $actualTargets $expectedTargets "release target matrix"
 

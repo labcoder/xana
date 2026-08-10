@@ -16,4 +16,4 @@ name = "xana"
 path = "src/main.rs"
 
 [dependencies]
-xana-runtime = { version = "0.4.0", path = "../..", default-features = false }
+xana-runtime = { version = "0.5.0", path = "../..", default-features = false }

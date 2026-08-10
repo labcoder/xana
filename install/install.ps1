@@ -431,6 +431,9 @@ try {
     $zip = [IO.Compression.ZipFile]::OpenRead($archivePath)
     try {
         $expectedEntries = @("LICENSE", "README.md", "installation.md", "xana.exe")
+        if ($zip.Entries.Count -ne $expectedEntries.Count) {
+            throw "Xana archive does not contain the exact four-file inventory"
+        }
         $seenEntries = @{}
         $expandedLength = 0L
         foreach ($entry in $zip.Entries) {
@@ -539,13 +542,13 @@ try {
         }
     }
 
+    $activationStarted = $true
     if ($hadPrevious) {
         $backupPath = Join-Path $InstallDir (".xana-backup-" + [Guid]::NewGuid().ToString("N"))
         [IO.File]::Replace($stagedExecutable, $finalPath, $backupPath, $true)
     } else {
         [IO.File]::Move($stagedExecutable, $finalPath)
     }
-    $activationStarted = $true
     try {
         Update-UserPath -Directory $InstallDir
     } catch {
