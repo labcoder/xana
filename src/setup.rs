@@ -32,6 +32,7 @@ use std::{
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+const MAX_SELECTION_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug)]
 struct SetupCancelled;
@@ -275,6 +276,7 @@ pub(crate) async fn run(
         return Ok(SetupOutcome::Unchanged);
     }
 
+    let selection_path = paths.data_dir().join("selection.toml");
     install_with_preferences(
         paths.config_file(),
         &rendered,
@@ -287,6 +289,7 @@ pub(crate) async fn run(
             .preferences
             .as_ref()
             .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
+        Some(&selection_path),
     )?;
     writeln!(output, "Configuration installed atomically.")?;
     if paths.config_file().with_extension("toml.bak").exists() {
@@ -678,7 +681,7 @@ fn install(
     credential: Option<(&str, &SecretString)>,
     store: &impl SecretStore,
 ) -> Result<()> {
-    install_with_preferences(path, rendered, credential, store, None)
+    install_with_preferences(path, rendered, credential, store, None, None)
 }
 
 fn install_with_preferences(
@@ -687,6 +690,7 @@ fn install_with_preferences(
     credential: Option<(&str, &SecretString)>,
     store: &impl SecretStore,
     preference: Option<(PathBuf, &[u8])>,
+    selection_path: Option<&Path>,
 ) -> Result<()> {
     XanaConfig::parse(rendered).context("refusing to install an invalid configuration")?;
     if let Some((_, bytes)) = &preference {
@@ -701,6 +705,10 @@ fn install_with_preferences(
         Some((path, _)) => read_optional_bounded(path, 32 * 1024)?,
         None => None,
     };
+    let previous_selection = match selection_path {
+        Some(path) => read_optional_bounded(path, MAX_SELECTION_BYTES)?,
+        None => None,
+    };
     let previous_secret = match credential {
         Some((id, _)) => Some((id, store.get(id)?)),
         None => None,
@@ -710,6 +718,9 @@ fn install_with_preferences(
         store.set(id, secret.expose())?;
     }
     let result = (|| -> Result<()> {
+        if let Some(path) = selection_path {
+            restore_optional(path, None)?;
+        }
         if let Some(previous) = &previous_config {
             atomic_write(&backup, previous)?;
         }
@@ -733,6 +744,9 @@ fn install_with_preferences(
             restore_optional(preference_path, previous_preference.as_deref())?;
         }
         restore_optional(path, previous_config.as_deref())?;
+        if let Some(path) = selection_path {
+            restore_optional(path, previous_selection.as_deref())?;
+        }
         return Err(error).context("setup transaction rolled back");
     }
     Ok(())
@@ -786,6 +800,7 @@ mod tests {
     use super::*;
     use std::{collections::BTreeMap, sync::Mutex};
     use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[derive(Default)]
     struct FakeStore(Mutex<BTreeMap<String, String>>);
@@ -839,6 +854,87 @@ mod tests {
             fs::read_to_string(path.with_extension("toml.bak")).unwrap(),
             original
         );
+    }
+
+    #[tokio::test]
+    async fn replacing_connection_reconciles_the_persisted_model_selection() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).await.unwrap();
+            assert!(
+                String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1")
+            );
+            let body = r#"{"models":[{"name":"qwen3:1.7b"}]}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let directory = tempdir().unwrap();
+        let root = directory.path().join("xana-home");
+        let paths = XanaPaths::resolve(Some(root.into_os_string())).unwrap();
+        fs::create_dir_all(paths.data_dir()).unwrap();
+        let prior = XanaConfig::render_initial(InitialConfig {
+            connection: InitialConnection::Codex {
+                name: "codex".into(),
+                program: "codex".into(),
+                home: None,
+            },
+            model: "gpt-5.6-sol".into(),
+            max_tool_rounds: 8,
+            shell: ShellConfig::default(),
+            permission_mode: PermissionMode::Ask,
+            reasoning_effort: Some("medium".into()),
+        })
+        .unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(paths.config_file(), prior).unwrap();
+        fs::write(
+            paths.data_dir().join("selection.toml"),
+            "version = 2\nconnection = \"codex\"\nmodel = \"gpt-5.6-sol\"\nreasoning_effort = \"medium\"\nreasoning_summary = \"auto\"\n",
+        )
+        .unwrap();
+        let args = SetupArgs {
+            non_interactive: true,
+            kind: Some(crate::cli::ConnectionKindChoice::Ollama),
+            connection: Some("ollama".into()),
+            base_url: Some(format!("http://{address}/v1")),
+            model: Some("qwen3:1.7b".into()),
+            permission_mode: Some(crate::cli::PermissionChoice::Ask),
+            yes: true,
+            ..SetupArgs::default()
+        };
+        let mut input = io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let outcome = run(&args, &paths, false, &mut input, &mut output)
+            .await
+            .unwrap();
+        assert!(outcome.requires_new_conversation());
+        let manager = ModelManager::new(
+            XanaConfig::load_registry_from(paths.config_file()).unwrap(),
+            paths.cache_dir().to_owned(),
+            paths.data_dir().join("selection.toml"),
+        );
+        assert_eq!(
+            manager.selected().unwrap(),
+            crate::model::ModelSelection {
+                connection: "ollama".into(),
+                model: "qwen3:1.7b".into(),
+                reasoning_effort: None,
+                reasoning_summary: None,
+            }
+        );
+        server.await.unwrap();
     }
 
     #[test]
