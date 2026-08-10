@@ -86,7 +86,16 @@ pub(crate) async fn run(
     }
 
     let args = SetupArgs::default();
-    match super::run(&args, paths, true, input, output).await {
+    match super::run(
+        &args,
+        paths,
+        true,
+        input,
+        output,
+        crate::presentation::ResolvedPresentation::plain(),
+    )
+    .await
+    {
         Ok(SetupOutcome::Committed { .. }) => write_receipt(output, "configured", readiness, None),
         Ok(SetupOutcome::Unchanged) => {
             writeln!(output, "Xana setup remains pending; no changes were made.")?;

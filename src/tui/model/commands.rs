@@ -9,12 +9,14 @@ impl TuiState {
         }
         match action {
             InputAction::Insert(text) => {
+                self.header_expanded = false;
                 if let Err(reason) = self.composer.insert(&text) {
                     self.status = reason;
                 }
                 UpdateEffect::None
             }
             InputAction::Paste(text) => {
+                self.header_expanded = false;
                 let text = bounded(sanitize_input(&text), MAX_INPUT_BYTES);
                 if text.is_empty() {
                     self.status = "Paste contained no displayable text".to_owned();
@@ -68,9 +70,12 @@ impl TuiState {
             InputAction::PlaceCursor {
                 line,
                 column,
+                width,
+                scroll,
                 select,
             } => {
-                self.composer.place_cursor(line, column, select);
+                self.composer
+                    .place_visual_cursor(line, column, width, scroll, select);
                 UpdateEffect::None
             }
             InputAction::ViewSession(conversation) => UpdateEffect::ViewSession(conversation),
@@ -80,14 +85,14 @@ impl TuiState {
                 }
                 UpdateEffect::None
             }
-            InputAction::ToggleRail => {
-                self.rail_expanded = !self.rail_expanded;
-                self.status = if self.rail_expanded {
-                    "Wide session rail expanded".to_owned()
+            InputAction::ToggleHeader => {
+                self.header_expanded = !self.header_expanded;
+                self.status = if self.header_expanded {
+                    "Xana header expanded".to_owned()
                 } else {
-                    "Wide session rail collapsed".to_owned()
+                    "Xana header collapsed".to_owned()
                 };
-                UpdateEffect::PersistRail(self.rail_expanded)
+                UpdateEffect::None
             }
             InputAction::Cancel => {
                 self.composer.clear_selection();
@@ -299,6 +304,23 @@ impl TuiState {
                 self.overlay = Some(Overlay::Help);
                 UpdateEffect::None
             }
+            CommandId::Header => {
+                self.composer.take();
+                self.header_expanded = match command.arguments.as_str() {
+                    "" | "expanded" | "open" => true,
+                    "collapsed" | "compact" => false,
+                    _ => {
+                        self.status = command_usage(CommandId::Header);
+                        return UpdateEffect::None;
+                    }
+                };
+                self.status = if self.header_expanded {
+                    "Xana header expanded".to_owned()
+                } else {
+                    "Xana header collapsed".to_owned()
+                };
+                UpdateEffect::None
+            }
             CommandId::Send => {
                 let input = if command.arguments.is_empty() {
                     if from_palette {
@@ -385,6 +407,20 @@ impl TuiState {
                         self.rail_expanded = false;
                         self.status = "Wide session rail collapsed".to_owned();
                         UpdateEffect::PersistRail(false)
+                    }
+                    "archive" => {
+                        if self.viewed_conversation == self.runtime_conversation {
+                            self.status = "The active conversation cannot be archived; view an inactive managed conversation first".to_owned();
+                            UpdateEffect::None
+                        } else if matches!(
+                            self.viewed_conversation,
+                            ConversationRef::Managed { .. }
+                        ) {
+                            UpdateEffect::ArchiveConversation(self.viewed_conversation.clone())
+                        } else {
+                            self.status = "Only retained managed conversations can be archived in this release".to_owned();
+                            UpdateEffect::None
+                        }
                     }
                     _ => {
                         self.status = command_usage(CommandId::Sessions);

@@ -433,6 +433,24 @@ async fn dispatch_managed_effect(
                 state.set_status(format!("could not save session rail preference: {error}"));
             }
         }
+        UpdateEffect::ArchiveConversation(conversation) => {
+            let archived = match &conversation {
+                ConversationRef::Managed {
+                    connection,
+                    thread_id,
+                } if connection == &state.connection => driver
+                    .archive(thread_id.clone())
+                    .await
+                    .map_err(anyhow::Error::msg)?,
+                _ => workspace_host.archive_managed_conversation(&conversation)?,
+            };
+            if archived {
+                state.archived_conversation(&conversation);
+                state.refresh_sessions(workspace_host.snapshot()?);
+            } else {
+                state.set_status("Managed conversation was already absent from the local catalog");
+            }
+        }
         UpdateEffect::PersistActivity(activity) => {
             if let Err(error) = PresentationPreferences::set_activity(preferences_path, activity) {
                 state.set_status(format!("could not save activity preference: {error}"));
@@ -772,6 +790,14 @@ async fn dispatch_effect(
         UpdateEffect::PersistRail(expanded) => {
             if let Err(error) = session_preferences.set_rail_expanded(expanded) {
                 state.set_status(format!("could not save session rail preference: {error}"));
+            }
+        }
+        UpdateEffect::ArchiveConversation(conversation) => {
+            if workspace_host.archive_managed_conversation(&conversation)? {
+                state.archived_conversation(&conversation);
+                state.refresh_sessions(workspace_host.snapshot()?);
+            } else {
+                state.set_status("Managed conversation was already absent from the local catalog");
             }
         }
         UpdateEffect::PersistActivity(activity) => {

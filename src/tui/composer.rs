@@ -1,6 +1,7 @@
 //! Bounded multiline composer editing and selection.
 
 use std::ops::Range;
+use unicode_width::UnicodeWidthChar;
 
 pub(super) const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
@@ -19,6 +20,14 @@ pub(super) struct Composer {
     pub(super) text: String,
     pub(super) cursor: usize,
     anchor: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ComposerViewport {
+    pub(super) rows: u16,
+    pub(super) scroll: u16,
+    pub(super) cursor_row: u16,
+    pub(super) cursor_column: u16,
 }
 
 impl Composer {
@@ -73,23 +82,44 @@ impl Composer {
         }
     }
 
-    pub(super) fn place_cursor(&mut self, line: usize, column: usize, select: bool) {
-        let old = self.cursor;
-        let mut line_start = 0usize;
-        for _ in 0..line {
-            let Some(offset) = self.text[line_start..].find('\n') else {
-                line_start = self.text.len();
-                break;
-            };
-            line_start += offset + 1;
+    pub(super) fn viewport(&self, width: u16, maximum_rows: u16) -> ComposerViewport {
+        let width = usize::from(width.max(1));
+        let maximum_rows = maximum_rows.max(1);
+        let (cursor_row, cursor_column) = visual_position(&self.text, self.cursor, width);
+        let (last_row, _) = visual_position(&self.text, self.text.len(), width);
+        let total_rows = last_row.saturating_add(1).min(usize::from(u16::MAX)) as u16;
+        let rows = total_rows.clamp(1, maximum_rows);
+        let cursor_row = cursor_row.min(usize::from(u16::MAX)) as u16;
+        let scroll = cursor_row.saturating_sub(rows.saturating_sub(1));
+        ComposerViewport {
+            rows,
+            scroll,
+            cursor_row: cursor_row.saturating_sub(scroll),
+            cursor_column: cursor_column.min(usize::from(u16::MAX)) as u16,
         }
-        let line_end = self.text[line_start..]
-            .find('\n')
-            .map_or(self.text.len(), |offset| line_start + offset);
-        self.cursor = self.text[line_start..line_end]
-            .char_indices()
-            .nth(column)
-            .map_or(line_end, |(offset, _)| line_start + offset);
+    }
+
+    pub(super) fn visible_lines(&self, width: u16, viewport: ComposerViewport) -> Vec<String> {
+        visual_window(
+            &self.text,
+            usize::from(width.max(1)),
+            usize::from(viewport.scroll),
+            usize::from(viewport.rows),
+        )
+    }
+
+    pub(super) fn place_visual_cursor(
+        &mut self,
+        visible_row: usize,
+        column: usize,
+        width: u16,
+        scroll: u16,
+        select: bool,
+    ) {
+        let old = self.cursor;
+        let target_row = visible_row.saturating_add(usize::from(scroll));
+        self.cursor =
+            byte_at_visual_position(&self.text, target_row, column, usize::from(width.max(1)));
         if select {
             self.anchor.get_or_insert(old);
         } else {
@@ -143,6 +173,109 @@ impl Composer {
         self.text = sanitize_input(&value);
         self.cursor = self.text.len();
         self.anchor = None;
+    }
+}
+
+fn visual_position(value: &str, byte: usize, width: usize) -> (usize, usize) {
+    let mut row = 0usize;
+    let mut column = 0usize;
+    for (index, character) in value.char_indices() {
+        if index == byte {
+            break;
+        }
+        advance_visual(character, width, &mut row, &mut column);
+    }
+    (row, column)
+}
+
+fn visual_window(value: &str, width: usize, start: usize, count: usize) -> Vec<String> {
+    let end = start.saturating_add(count);
+    let mut lines = Vec::with_capacity(count);
+    let mut row = 0usize;
+    let mut column = 0usize;
+    if start == 0 && count > 0 {
+        lines.push(String::new());
+    }
+    for character in value.chars() {
+        if character == '\n' {
+            row = row.saturating_add(1);
+            column = 0;
+            push_visible_row(&mut lines, row, start, end);
+            continue;
+        }
+        let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+        if column > 0 && column.saturating_add(character_width) > width {
+            row = row.saturating_add(1);
+            column = 0;
+            push_visible_row(&mut lines, row, start, end);
+        }
+        if row >= start && row < end {
+            lines[row - start].push(character);
+        }
+        column = column.saturating_add(character_width);
+        if column >= width {
+            row = row.saturating_add(1);
+            column = 0;
+            push_visible_row(&mut lines, row, start, end);
+        }
+        if row >= end {
+            break;
+        }
+    }
+    lines
+}
+
+fn push_visible_row(lines: &mut Vec<String>, row: usize, start: usize, end: usize) {
+    if row >= start && row < end {
+        lines.push(String::new());
+    }
+}
+
+fn byte_at_visual_position(
+    value: &str,
+    target_row: usize,
+    target_column: usize,
+    width: usize,
+) -> usize {
+    let mut row = 0usize;
+    let mut column = 0usize;
+    let mut last_on_row = 0usize;
+    for (index, character) in value.char_indices() {
+        if row == target_row {
+            last_on_row = index;
+            if column >= target_column {
+                return index;
+            }
+        } else if row > target_row {
+            return last_on_row;
+        }
+        advance_visual(character, width, &mut row, &mut column);
+        if row == target_row {
+            last_on_row = index + character.len_utf8();
+        }
+    }
+    if row <= target_row {
+        value.len()
+    } else {
+        last_on_row
+    }
+}
+
+fn advance_visual(character: char, width: usize, row: &mut usize, column: &mut usize) {
+    if character == '\n' {
+        *row = row.saturating_add(1);
+        *column = 0;
+        return;
+    }
+    let character_width = UnicodeWidthChar::width(character).unwrap_or(0);
+    if *column > 0 && column.saturating_add(character_width) > width {
+        *row = row.saturating_add(1);
+        *column = 0;
+    }
+    *column = column.saturating_add(character_width);
+    if *column >= width {
+        *row = row.saturating_add(1);
+        *column = 0;
     }
 }
 
@@ -218,4 +351,37 @@ fn vertical_move(value: &str, cursor: usize, down: bool) -> usize {
         .char_indices()
         .nth(column)
         .map_or(target_end, |(index, _)| target + index)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn viewport_grows_to_six_rows_then_follows_the_cursor() {
+        let mut composer = Composer::new();
+        composer.replace(
+            (0..8)
+                .map(|index| format!("line-{index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        let viewport = composer.viewport(40, 6);
+
+        assert_eq!(viewport.rows, 6);
+        assert_eq!(viewport.scroll, 2);
+        assert_eq!(viewport.cursor_row, 5);
+        assert_eq!(viewport.cursor_column, 6);
+    }
+
+    #[test]
+    fn visual_pointer_placement_accounts_for_wrapping_and_scroll() {
+        let mut composer = Composer::new();
+        composer.replace("abcdefghij\nsecond".to_owned());
+
+        composer.place_visual_cursor(0, 2, 5, 1, false);
+
+        assert_eq!(&composer.text[..composer.cursor], "abcdefg");
+    }
 }

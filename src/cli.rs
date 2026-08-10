@@ -167,7 +167,7 @@ pub(crate) enum Command {
     Serve(ServeArgs),
     /// Attach to this workspace's foreground host; observation is the default.
     Attach(AttachArgs),
-    /// Establish a provider connection and atomically install a quick configuration.
+    /// Run guided, quick, full, or focused atomic configuration setup.
     Setup(Box<SetupArgs>),
     /// Diagnose this Xana installation without mutating it by default.
     Doctor(DoctorArgs),
@@ -224,7 +224,7 @@ pub(crate) struct AttachArgs {
     pub(crate) artifact: Option<ArtifactId>,
 }
 
-#[derive(Debug, Args, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Args, PartialEq, Eq, Default)]
 pub(crate) struct SetupArgs {
     /// Check local readiness and enter setup only when an interactive repair is needed.
     #[arg(long)]
@@ -233,6 +233,10 @@ pub(crate) struct SetupArgs {
     /// Never prompt; require durable choices as flags.
     #[arg(long)]
     pub(crate) non_interactive: bool,
+
+    /// Run provider-neutral Quick Setup without asking which setup path to use.
+    #[arg(long, conflicts_with_all = ["full", "section"])]
+    pub(crate) quick: bool,
 
     /// Select a provider or managed-runtime kind.
     #[arg(long, value_enum, value_name = "KIND")]
@@ -630,6 +634,11 @@ pub(crate) enum SessionCommand {
     Inspect { session_id: SessionId },
     /// Select one retained managed conversation for its next resume.
     SelectManaged {
+        connection: String,
+        thread_id: String,
+    },
+    /// Remove one local managed conversation handle without deleting the vendor thread.
+    ArchiveManaged {
         connection: String,
         thread_id: String,
     },
@@ -1038,6 +1047,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_explicit_quick_setup_without_the_path_menu() {
+        assert!(matches!(
+            Cli::try_parse_from(["xana", "setup", "--quick"])
+                .unwrap()
+                .command,
+            Some(Command::Setup(args)) if args.quick
+        ));
+    }
+
+    #[test]
     fn setup_readiness_handoff_rejects_setup_choices() {
         let cli = Cli::try_parse_from(["xana", "setup", "--if-needed", "--model", "llama3.2"])
             .expect("parse before application validation");
@@ -1201,6 +1220,14 @@ mod tests {
                 .command,
             Some(Command::Session(SessionArgs {
                 command: SessionCommand::SelectManaged { .. }
+            }))
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["xana", "session", "archive-managed", "codex", "thread-1"])
+                .unwrap()
+                .command,
+            Some(Command::Session(SessionArgs {
+                command: SessionCommand::ArchiveManaged { .. }
             }))
         ));
     }

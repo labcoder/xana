@@ -7,6 +7,7 @@
 
 mod custom;
 mod readiness;
+mod ui;
 
 pub(crate) use readiness::{SetupPending, run as run_if_needed};
 
@@ -20,6 +21,7 @@ use crate::{
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig},
     model::{ModelDescriptor, ModelManager},
     paths::XanaPaths,
+    presentation::{ResolvedPresentation, SemanticToken},
     shell::ShellConfig,
 };
 use anyhow::{Context, Result, bail};
@@ -29,6 +31,7 @@ use std::{
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
 };
+use ui::{choose_setup_path, write_completion_receipt, write_setup_heading};
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -69,7 +72,8 @@ impl SetupOutcome {
 pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
     let mut args = SetupArgs::default();
     match request.trim() {
-        "" | "quick" => {}
+        "" => {}
+        "quick" => args.quick = true,
         "full" => args.full = true,
         "connection" => args.section = Some(crate::cli::SetupSectionChoice::Connection),
         "permissions-shell" => {
@@ -163,6 +167,7 @@ pub(crate) async fn run(
     input_is_terminal: bool,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    profile: ResolvedPresentation,
 ) -> Result<SetupOutcome> {
     if args.if_needed {
         bail!("--if-needed must be dispatched through Xana's readiness owner");
@@ -178,17 +183,33 @@ pub(crate) async fn run(
     if args.non_interactive && !args.dry_run && !args.yes {
         bail!("noninteractive setup requires --yes before changing durable state");
     }
+    let Some(args) = choose_setup_path(args, input, output, profile)? else {
+        writeln!(output, "Setup cancelled; no changes made.")?;
+        return Ok(SetupOutcome::Unchanged);
+    };
+    let args = &args;
     if args
         .section
         .is_some_and(|section| section != crate::cli::SetupSectionChoice::Connection)
     {
-        return custom::run_section(args, paths, input, output);
+        let outcome = custom::run_section(args, paths, input, output)?;
+        if matches!(outcome, SetupOutcome::Committed { .. }) {
+            write_completion_receipt(output, paths, profile)?;
+        }
+        return Ok(outcome);
     }
 
-    writeln!(output, "Xana Quick Setup")?;
-    writeln!(output, "No provider is selected or recommended by Xana.")?;
+    write_setup_heading(output, profile, "Xana Quick Setup")?;
+    writeln!(
+        output,
+        "{}",
+        profile.paint(
+            SemanticToken::Muted,
+            "No provider is selected or recommended by Xana. Press Ctrl+C to cancel safely."
+        )
+    )?;
 
-    let kind = choose_kind(args, input, output)?;
+    let kind = choose_kind(args, input, output, profile)?;
     let connection = choose_connection(args, kind, input, output)?;
     let base_url = choose_base_url(args, kind, input, output)?;
     let (codex_program, codex_home) = choose_codex(args, kind, input, output)?;
@@ -214,11 +235,17 @@ pub(crate) async fn run(
     }
     writeln!(
         output,
-        "Connection established; {} model(s) available.",
-        models.len()
+        "{}",
+        profile.paint(
+            SemanticToken::Success,
+            &format!(
+                "[OK] Connection established; {} model(s) available.",
+                models.len()
+            )
+        )
     )?;
 
-    let model = choose_model(args, &models, input, output)?;
+    let model = choose_model(args, &models, input, output, profile)?;
     let descriptor = models
         .iter()
         .find(|candidate| candidate.id == model)
@@ -238,7 +265,7 @@ pub(crate) async fn run(
     let rendered = customization.config;
 
     writeln!(output)?;
-    writeln!(output, "Review")?;
+    writeln!(output, "{}", profile.paint(SemanticToken::Accent, "Review"))?;
     writeln!(output, "  Connection:  {}", draft.connection)?;
     writeln!(output, "  Kind:        {}", draft.kind.as_str())?;
     if let Some(base_url) = &draft.base_url {
@@ -291,15 +318,7 @@ pub(crate) async fn run(
             .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
         Some(&selection_path),
     )?;
-    writeln!(output, "Configuration installed atomically.")?;
-    if paths.config_file().with_extension("toml.bak").exists() {
-        writeln!(
-            output,
-            "  Backup: {}",
-            paths.config_file().with_extension("toml.bak").display()
-        )?;
-    }
-    writeln!(output, "  Next: xana")?;
+    write_completion_receipt(output, paths, profile)?;
     Ok(SetupOutcome::Committed {
         requires_new_conversation: true,
     })
@@ -309,6 +328,7 @@ fn choose_kind(
     args: &SetupArgs,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    profile: ResolvedPresentation,
 ) -> Result<ProviderKind> {
     if let Some(kind) = args.kind {
         return Ok(kind.into());
@@ -317,19 +337,35 @@ fn choose_kind(
         bail!("noninteractive setup requires --kind");
     }
     writeln!(output)?;
-    writeln!(output, "Choose a connection kind:")?;
-    writeln!(output, "  1. Ollama - local Ollama endpoint; no API key")?;
     writeln!(
         output,
-        "  2. OpenAI-compatible - custom endpoint; key may be optional"
+        "{}",
+        profile.paint(SemanticToken::Accent, "Choose a connection kind:")
     )?;
-    writeln!(output, "  3. OpenAI API - OpenAI platform API key")?;
-    writeln!(output, "  4. OpenRouter - OpenRouter API key")?;
-    writeln!(output, "  5. Anthropic - Anthropic API key")?;
-    writeln!(
-        output,
-        "  6. Codex - local Codex CLI and vendor-owned account"
-    )?;
+    for (number, label, detail) in [
+        (1, "Ollama", "local Ollama endpoint; no API key"),
+        (
+            2,
+            "OpenAI-compatible",
+            "custom endpoint; key may be optional",
+        ),
+        (3, "OpenAI API", "OpenAI platform API key"),
+        (4, "OpenRouter", "OpenRouter API key"),
+        (5, "Anthropic", "Anthropic API key"),
+        (6, "Codex", "local Codex CLI and vendor-owned account"),
+    ] {
+        writeln!(
+            output,
+            "  {} {}. {}  {}",
+            profile.paint(
+                SemanticToken::Muted,
+                if profile.unicode { "○" } else { "o" }
+            ),
+            profile.paint(SemanticToken::Focus, &number.to_string()),
+            label,
+            profile.paint(SemanticToken::Muted, detail),
+        )?;
+    }
     match prompt_required(input, output, "Choice [1-6]: ")?.as_str() {
         "1" | "ollama" => Ok(ProviderKind::Ollama),
         "2" | "openai_compat" => Ok(ProviderKind::OpenAiCompat),
@@ -515,6 +551,7 @@ fn choose_model(
     models: &[ModelDescriptor],
     input: &mut impl BufRead,
     output: &mut impl Write,
+    profile: ResolvedPresentation,
 ) -> Result<String> {
     if let Some(requested) = &args.model {
         if models.iter().any(|model| model.id == *requested) {
@@ -528,9 +565,22 @@ fn choose_model(
     if args.non_interactive {
         bail!("noninteractive setup requires --model");
     }
-    writeln!(output, "Available models:")?;
+    writeln!(
+        output,
+        "{}",
+        profile.paint(SemanticToken::Accent, "Available models:")
+    )?;
     for (index, model) in models.iter().enumerate() {
-        writeln!(output, "  {}. {}", index + 1, model.id)?;
+        writeln!(
+            output,
+            "  {} {}. {}",
+            profile.paint(
+                SemanticToken::Muted,
+                if profile.unicode { "○" } else { "o" }
+            ),
+            profile.paint(SemanticToken::Focus, &(index + 1).to_string()),
+            model.id
+        )?;
     }
     let selection = prompt_required(input, output, "Model number or exact id: ")?;
     if let Ok(index) = selection.parse::<usize>()
@@ -916,9 +966,16 @@ mod tests {
         let mut input = io::Cursor::new(Vec::<u8>::new());
         let mut output = Vec::new();
 
-        let outcome = run(&args, &paths, false, &mut input, &mut output)
-            .await
-            .unwrap();
+        let outcome = run(
+            &args,
+            &paths,
+            false,
+            &mut input,
+            &mut output,
+            ResolvedPresentation::test_plain(),
+        )
+        .await
+        .unwrap();
         assert!(outcome.requires_new_conversation());
         let manager = ModelManager::new(
             XanaConfig::load_registry_from(paths.config_file()).unwrap(),
@@ -992,9 +1049,56 @@ mod tests {
         };
         let mut input = io::Cursor::new("\n");
         let mut output = Vec::new();
-        assert!(choose_kind(&args, &mut input, &mut output).is_err());
+        assert!(
+            choose_kind(
+                &args,
+                &mut input,
+                &mut output,
+                ResolvedPresentation::test_plain(),
+            )
+            .is_err()
+        );
         let transcript = String::from_utf8(output).unwrap();
         assert!(!transcript.to_ascii_lowercase().contains("recommended"));
+    }
+
+    #[test]
+    fn bare_interactive_setup_asks_for_a_path_and_defaults_to_quick() {
+        let args = SetupArgs::default();
+        let mut input = io::Cursor::new("\n");
+        let mut output = Vec::new();
+
+        let selected = choose_setup_path(
+            &args,
+            &mut input,
+            &mut output,
+            ResolvedPresentation::test_plain(),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(selected.quick);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Choose a guided path"));
+        assert!(transcript.contains("Quick Setup"));
+        assert!(transcript.contains("Appearance"));
+    }
+
+    #[test]
+    fn completion_receipt_names_owned_paths_and_source_checkout_commands() {
+        let directory = tempdir().unwrap();
+        let paths = XanaPaths::resolve(Some(directory.path().as_os_str().to_owned())).unwrap();
+        let mut output = Vec::new();
+
+        write_completion_receipt(&mut output, &paths, ResolvedPresentation::test_plain()).unwrap();
+
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("[OK] Setup Complete!"));
+        assert!(transcript.contains(&paths.config_file().display().to_string()));
+        assert!(transcript.contains(&paths.data_dir().display().to_string()));
+        assert!(transcript.contains("operating-system credential store"));
+        assert!(transcript.contains("cargo run -- doctor"));
+        assert!(!transcript.contains(".env"));
     }
 
     #[test]

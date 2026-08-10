@@ -8,7 +8,7 @@ use super::{
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -44,22 +44,27 @@ pub(super) fn pointer_action(
             .map(super::model::InputAction::ChooseOverlay);
     }
 
-    let rows = shell_rows_for(LayoutClass::for_width(area.width), area);
-    if contains(rows[2], column, row) {
+    let layout = shell_layout(area, state);
+    if contains(layout.header, column, row) {
+        return Some(super::model::InputAction::ToggleHeader);
+    }
+    if contains(layout.composer, column, row) {
+        let width = layout.composer.width.saturating_sub(2).max(1);
+        let maximum_rows = layout.composer.height.saturating_sub(2).clamp(1, 6);
+        let viewport = state.composer.viewport(width, maximum_rows);
         return Some(super::model::InputAction::PlaceCursor {
-            line: usize::from(row.saturating_sub(rows[2].y.saturating_add(1))),
-            column: usize::from(column.saturating_sub(rows[2].x.saturating_add(1))),
+            line: usize::from(row.saturating_sub(layout.composer.y.saturating_add(1))),
+            column: usize::from(column.saturating_sub(layout.composer.x.saturating_add(1))),
+            width,
+            scroll: viewport.scroll,
             select: selecting,
         });
     }
     if LayoutClass::for_width(area.width) == LayoutClass::Wide {
-        let columns = wide_columns(rows[1], state);
-        if contains(columns[0], column, row) {
-            if row == columns[0].y {
-                return Some(super::model::InputAction::ToggleRail);
-            }
+        let columns = wide_columns(layout.body, state);
+        if state.rail_expanded && contains(columns[0], column, row) {
             let line = usize::from(row.saturating_sub(columns[0].y.saturating_add(1)));
-            let index = if state.rail_expanded { line / 2 } else { line };
+            let index = line / 2;
             return state.sessions.get(index).map(|session| {
                 super::model::InputAction::ViewSession(session.conversation.clone())
             });
@@ -79,16 +84,18 @@ pub(super) fn pointer_action(
 }
 
 fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: ResolvedPresentation) {
-    let rows = shell_rows(area);
-    render_header(frame, rows[0], state, profile, false);
-    let columns = wide_columns(rows[1], state);
-    frame.render_widget(session_rail(state, profile), columns[0]);
+    let shell = shell_layout(area, state);
+    render_header(frame, shell.header, state, profile, false);
+    let columns = wide_columns(shell.body, state);
+    if state.rail_expanded {
+        frame.render_widget(session_rail(state, profile), columns[0]);
+    }
     frame.render_widget(conversation(state, profile, columns[1].height), columns[1]);
     if activity_visible(state) {
         frame.render_widget(activity(state, profile), columns[2]);
     }
-    render_composer(frame, rows[2], state, profile);
-    render_footer(frame, rows[3], state, profile, "wide");
+    render_composer(frame, shell.composer, state, profile);
+    render_footer(frame, shell.footer, state, profile, "wide");
 }
 
 fn render_medium(
@@ -97,11 +104,11 @@ fn render_medium(
     state: &TuiState,
     profile: ResolvedPresentation,
 ) {
-    let rows = shell_rows(area);
-    render_header(frame, rows[0], state, profile, false);
-    frame.render_widget(conversation(state, profile, rows[1].height), rows[1]);
-    render_composer(frame, rows[2], state, profile);
-    render_footer(frame, rows[3], state, profile, "medium");
+    let shell = shell_layout(area, state);
+    render_header(frame, shell.header, state, profile, false);
+    frame.render_widget(conversation(state, profile, shell.body.height), shell.body);
+    render_composer(frame, shell.composer, state, profile);
+    render_footer(frame, shell.footer, state, profile, "medium");
 }
 
 fn render_narrow(
@@ -110,46 +117,58 @@ fn render_narrow(
     state: &TuiState,
     profile: ResolvedPresentation,
 ) {
+    let shell = shell_layout(area, state);
+    render_header(frame, shell.header, state, profile, true);
+    frame.render_widget(conversation(state, profile, shell.body.height), shell.body);
+    render_composer(frame, shell.composer, state, profile);
+    render_footer(frame, shell.footer, state, profile, "narrow");
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ShellLayout {
+    header: Rect,
+    body: Rect,
+    composer: Rect,
+    footer: Rect,
+}
+
+fn shell_layout(area: Rect, state: &TuiState) -> ShellLayout {
+    let class = LayoutClass::for_width(area.width);
+    let expanded = state.header_expanded && area.height >= 20;
+    let header_height = if expanded {
+        8
+    } else if class == LayoutClass::Narrow {
+        2
+    } else {
+        3
+    };
+    let composer_width = area.width.saturating_sub(2).max(1);
+    let maximum_composer_rows = area
+        .height
+        .saturating_sub(header_height)
+        .saturating_sub(1)
+        .saturating_sub(4)
+        .saturating_sub(2)
+        .clamp(1, 6);
+    let composer_height = state
+        .composer
+        .viewport(composer_width, maximum_composer_rows)
+        .rows
+        .saturating_add(2);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(header_height),
             Constraint::Min(4),
-            Constraint::Length(4),
+            Constraint::Length(composer_height),
             Constraint::Length(1),
         ])
         .split(area);
-    render_header(frame, rows[0], state, profile, true);
-    frame.render_widget(conversation(state, profile, rows[1].height), rows[1]);
-    render_composer(frame, rows[2], state, profile);
-    render_footer(frame, rows[3], state, profile, "narrow");
-}
-
-fn shell_rows(area: Rect) -> std::rc::Rc<[Rect]> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(5),
-            Constraint::Length(1),
-        ])
-        .split(area)
-}
-
-fn shell_rows_for(layout: LayoutClass, area: Rect) -> std::rc::Rc<[Rect]> {
-    if layout == LayoutClass::Narrow {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Min(4),
-                Constraint::Length(4),
-                Constraint::Length(1),
-            ])
-            .split(area)
-    } else {
-        shell_rows(area)
+    ShellLayout {
+        header: rows[0],
+        body: rows[1],
+        composer: rows[2],
+        footer: rows[3],
     }
 }
 
@@ -157,7 +176,7 @@ fn wide_columns(area: Rect, state: &TuiState) -> std::rc::Rc<[Rect]> {
     Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(if state.rail_expanded { 32 } else { 9 }),
+            Constraint::Length(if state.rail_expanded { 32 } else { 0 }),
             Constraint::Min(36),
             Constraint::Length(if activity_visible(state) { 30 } else { 0 }),
         ])
@@ -227,6 +246,78 @@ fn render_header(
     profile: ResolvedPresentation,
     narrow: bool,
 ) {
+    if state.header_expanded && area.height >= 8 {
+        let block = Block::default()
+            .title(format!(" Xana v{} ", env!("CARGO_PKG_VERSION")))
+            .title_style(
+                semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+            )
+            .borders(Borders::ALL)
+            .border_style(semantic_style(profile, SemanticToken::Accent));
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let details = vec![
+            Line::from(vec![
+                Span::styled(
+                    "Connection  ",
+                    semantic_style(profile, SemanticToken::Muted),
+                ),
+                Span::raw(state.connection.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Model       ",
+                    semantic_style(profile, SemanticToken::Muted),
+                ),
+                Span::raw(state.model.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Session     ",
+                    semantic_style(profile, SemanticToken::Muted),
+                ),
+                Span::raw(state.session.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled(
+                    "Status      ",
+                    semantic_style(profile, SemanticToken::Muted),
+                ),
+                Span::raw(state.status.clone()),
+            ]),
+            Line::styled(
+                if profile.unicode {
+                    "Type to collapse · click this panel or use /header to reopen"
+                } else {
+                    "Type to collapse - click this panel or use /header to reopen"
+                },
+                semantic_style(profile, SemanticToken::Muted),
+            ),
+        ];
+        if narrow {
+            frame.render_widget(Paragraph::new(details).wrap(Wrap { trim: false }), inner);
+        } else {
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(36), Constraint::Min(20)])
+                .split(inner);
+            let mark = crate::presentation::tui_wordmark(profile.unicode)
+                .iter()
+                .map(|line| {
+                    Line::styled(
+                        (*line).to_owned(),
+                        semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+                    )
+                })
+                .collect::<Vec<_>>();
+            frame.render_widget(Paragraph::new(mark), columns[0]);
+            frame.render_widget(
+                Paragraph::new(details).wrap(Wrap { trim: false }),
+                columns[1],
+            );
+        }
+        return;
+    }
     let title = Span::styled(
         if profile.unicode {
             "✦ Xana"
@@ -244,8 +335,13 @@ fn render_header(
         )
     };
     frame.render_widget(
-        Paragraph::new(Line::from(vec![title, Span::raw("  "), Span::raw(details)]))
-            .block(Block::default().borders(Borders::BOTTOM)),
+        Paragraph::new(Line::from(vec![
+            title,
+            Span::raw("  "),
+            Span::raw(details),
+            Span::styled("  [/header]", semantic_style(profile, SemanticToken::Muted)),
+        ]))
+        .block(Block::default().borders(Borders::BOTTOM)),
         area,
     );
 }
@@ -255,28 +351,21 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
     for row in &state.sessions {
         let focused = row.conversation == state.viewed_conversation;
         let marker = session_marker(row.state, row.unread, row.error);
-        if state.rail_expanded {
-            lines.push(Line::styled(
-                format!("{} {marker} {}", if focused { ">" } else { " " }, row.title),
-                if focused {
-                    semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                },
-            ));
-            lines.push(Line::styled(
-                format!(
-                    "  {} · {}/{} · {}",
-                    row.execution_owner, row.connection, row.model, row.state
-                ),
-                semantic_style(profile, SemanticToken::Muted),
-            ));
-        } else {
-            lines.push(Line::styled(
-                format!("{} {marker}", if focused { ">" } else { " " }),
-                semantic_style(profile, SemanticToken::Focus),
-            ));
-        }
+        lines.push(Line::styled(
+            format!("{} {marker} {}", if focused { ">" } else { " " }, row.title),
+            if focused {
+                semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            },
+        ));
+        lines.push(Line::styled(
+            format!(
+                "  {} · {}/{} · {}",
+                row.execution_owner, row.connection, row.model, row.state
+            ),
+            semantic_style(profile, SemanticToken::Muted),
+        ));
     }
     if lines.is_empty() {
         lines.push(Line::styled(
@@ -284,9 +373,11 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
             semantic_style(profile, SemanticToken::Muted),
         ));
     }
-    Paragraph::new(Text::from(lines))
-        .block(Block::default().title(" Sessions ").borders(Borders::ALL))
-        .wrap(Wrap { trim: false })
+    Paragraph::new(Text::from(lines)).block(
+        Block::default()
+            .title(" Sessions · /sessions collapsed ")
+            .borders(Borders::ALL),
+    )
 }
 
 fn conversation(
@@ -317,10 +408,22 @@ fn conversation(
             MessageKind::Tool => ("tool", SemanticToken::Tool),
             MessageKind::System => ("status", SemanticToken::Muted),
         };
-        lines.push(Line::styled(
-            format!("{label}>"),
-            semantic_style(profile, token).add_modifier(Modifier::BOLD),
-        ));
+        let header = match message.kind {
+            MessageKind::User => Line::styled(
+                "-------------------< you",
+                semantic_style(profile, token).add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Right),
+            MessageKind::Assistant => Line::styled(
+                "xana >-------------------",
+                semantic_style(profile, token).add_modifier(Modifier::BOLD),
+            ),
+            MessageKind::Tool | MessageKind::System => Line::styled(
+                format!("{label}>"),
+                semantic_style(profile, token).add_modifier(Modifier::BOLD),
+            ),
+        };
+        lines.push(header);
         for rich in &message.document.lines {
             let (prefix, style) = match rich.kind {
                 RichLineKind::Heading => (
@@ -345,7 +448,12 @@ fn conversation(
             if rich.inline_code {
                 style = style.add_modifier(Modifier::DIM);
             }
-            lines.push(Line::styled(format!("{prefix}{}", rich.text), style));
+            let line = Line::styled(format!("{prefix}{}", rich.text), style);
+            lines.push(if message.kind == MessageKind::User {
+                line.alignment(Alignment::Right)
+            } else {
+                line
+            });
         }
         for (index, link) in message.document.links.iter().enumerate() {
             lines.push(Line::styled(
@@ -460,18 +568,45 @@ fn render_composer(
     state: &TuiState,
     profile: ResolvedPresentation,
 ) {
-    let title = if state.busy {
-        " Working - submit queues; Ctrl+C interrupts "
+    let mut title = if state.busy {
+        " Message - Enter queues / Ctrl+C interrupts ".to_owned()
     } else {
-        " Message - Enter/Ctrl+J use composer preset "
+        match state.composer_preset {
+            crate::presentation::ComposerPreset::Submit => {
+                " Message - Enter to send / Shift+Enter or Ctrl+J for newline ".to_owned()
+            }
+            crate::presentation::ComposerPreset::Newline => {
+                " Message - Enter for newline / Ctrl+Enter or Ctrl+J to send ".to_owned()
+            }
+        }
     };
-    let attachment_note = if state.pending_image_count() == 0 {
-        String::new()
+    if state.pending_image_count() > 0 {
+        title.push_str(&format!("[{} image(s)] ", state.pending_image_count()));
+    }
+    let width = area.width.saturating_sub(2).max(1);
+    let maximum_rows = area.height.saturating_sub(2).clamp(1, 6);
+    let viewport = state.composer.viewport(width, maximum_rows);
+    let text = if state.composer.text.is_empty() {
+        Text::from(Line::styled(
+            if profile.unicode {
+                "Type a message…"
+            } else {
+                "Type a message..."
+            },
+            semantic_style(profile, SemanticToken::Muted),
+        ))
     } else {
-        format!("\n[{} image(s) staged]", state.pending_image_count())
+        Text::from(
+            state
+                .composer
+                .visible_lines(width, viewport)
+                .into_iter()
+                .map(Line::raw)
+                .collect::<Vec<_>>(),
+        )
     };
     frame.render_widget(
-        Paragraph::new(format!("{}{}", state.composer.text, attachment_note))
+        Paragraph::new(text)
             .style(semantic_style(profile, SemanticToken::User))
             .block(
                 Block::default()
@@ -482,23 +617,14 @@ fn render_composer(
         area,
     );
 
-    let before_cursor = &state.composer.text[..state.composer.cursor];
-    let row = before_cursor
-        .chars()
-        .filter(|character| *character == '\n')
-        .count() as u16;
-    let column = before_cursor
-        .rsplit('\n')
-        .next()
-        .map_or(0, |line| line.chars().count()) as u16;
     frame.set_cursor_position((
         area.x
             .saturating_add(1)
-            .saturating_add(column)
+            .saturating_add(viewport.cursor_column)
             .min(area.right().saturating_sub(2)),
         area.y
             .saturating_add(1)
-            .saturating_add(row)
+            .saturating_add(viewport.cursor_row)
             .min(area.bottom().saturating_sub(2)),
     ));
 }
@@ -517,7 +643,7 @@ fn render_footer(
     };
     frame.render_widget(
         Paragraph::new(format!(
-            "Ctrl+P commands | Ctrl+Q quit | {layout} | {motion} | {} queued | {}",
+            "{layout} | Ctrl+P commands | Shift+drag copy | Ctrl+Q quit | {motion} | {} queued | {}",
             state.followups.len(),
             state.status
         ))
@@ -573,6 +699,9 @@ fn render_overlay(
                 Line::raw("Ctrl+P commands   Ctrl+Q quit   Ctrl+C interrupt"),
                 Line::raw("Enter primary     Ctrl+J alternate     Shift+Enter newline"),
                 Line::raw("Ctrl+Enter submit   arrows move/select   mouse wheel scrolls"),
+                Line::raw(
+                    "Shift+drag selects terminal text for native copy; ordinary clicks control Xana.",
+                ),
                 Line::raw("Slash commands and palette entries share one registry."),
             ],
         ),
@@ -971,24 +1100,46 @@ mod tests {
             }],
             active: None,
         });
+        let shell = shell_layout(area, &state);
+        let columns = wide_columns(shell.body, &state);
 
         assert_eq!(
-            pointer_action(1, 4, false, &state, area),
+            pointer_action(
+                columns[0].x.saturating_add(1),
+                columns[0].y.saturating_add(1),
+                false,
+                &state,
+                area,
+            ),
             Some(super::super::model::InputAction::ViewSession(conversation))
         );
         assert_eq!(
-            pointer_action(1, 3, false, &state, area),
-            Some(super::super::model::InputAction::ToggleRail)
+            pointer_action(1, 1, false, &state, area),
+            Some(super::super::model::InputAction::ToggleHeader)
         );
         assert_eq!(
-            pointer_action(101, 4, false, &state, area),
+            pointer_action(
+                columns[2].x.saturating_add(1),
+                columns[2].y.saturating_add(1),
+                false,
+                &state,
+                area,
+            ),
             Some(super::super::model::InputAction::ToggleActivity(0))
         );
         assert_eq!(
-            pointer_action(3, 19, true, &state, area),
+            pointer_action(
+                shell.composer.x.saturating_add(3),
+                shell.composer.y.saturating_add(1),
+                true,
+                &state,
+                area,
+            ),
             Some(super::super::model::InputAction::PlaceCursor {
                 line: 0,
                 column: 2,
+                width: 128,
+                scroll: 0,
                 select: true,
             })
         );
@@ -998,6 +1149,82 @@ mod tests {
             pointer_action(5, 5, false, &state, Rect::new(0, 0, 80, 24)),
             Some(super::super::model::InputAction::ChooseOverlay(0))
         );
+    }
+
+    #[test]
+    fn hidden_session_rail_releases_all_horizontal_space() {
+        let area = Rect::new(0, 0, 130, 24);
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.header_expanded = false;
+        state.rail_expanded = false;
+        let shell = shell_layout(area, &state);
+        let columns = wide_columns(shell.body, &state);
+
+        assert_eq!(columns[0].width, 0);
+        assert_eq!(columns[1].x, area.x);
+        assert_eq!(columns[1].width, area.width);
+    }
+
+    #[test]
+    fn every_fixed_height_session_row_has_the_same_click_target() {
+        let area = Rect::new(0, 0, 130, 24);
+        let conversations = (0..3)
+            .map(|_| ConversationProjection {
+                conversation: ConversationRef::Native {
+                    session_id: SessionId::new(),
+                },
+                state: ConversationState::Inactive,
+                record_count: Some(2),
+                modified: None,
+                selected: false,
+            })
+            .collect::<Vec<_>>();
+        let expected = conversations[2].conversation.clone();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.refresh_sessions(WorkspaceSnapshot {
+            workspace: std::env::current_dir().unwrap(),
+            conversations,
+            active: None,
+        });
+        let shell = shell_layout(area, &state);
+        let columns = wide_columns(shell.body, &state);
+
+        assert_eq!(
+            pointer_action(
+                columns[0].x.saturating_add(1),
+                columns[0].y.saturating_add(5),
+                false,
+                &state,
+                area,
+            ),
+            Some(super::super::model::InputAction::ViewSession(expected))
+        );
+    }
+
+    #[test]
+    fn composer_expands_then_scrolls_without_rendering_over_the_footer() {
+        let backend = TestBackend::new(130, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut state = TuiState::starting(ComposerPreset::Submit);
+        state.header_expanded = false;
+        state.busy = false;
+        state.composer.replace(
+            (0..8)
+                .map(|index| format!("draft-line-{index}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+
+        terminal
+            .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+            .unwrap();
+        let rendered = buffer_text(terminal.backend().buffer());
+        let shell = shell_layout(Rect::new(0, 0, 130, 24), &state);
+
+        assert_eq!(shell.composer.height, 8);
+        assert!(!rendered.contains("draft-line-0"));
+        assert!(rendered.contains("draft-line-7"));
+        assert!(rendered.contains("Shift+drag copy"));
     }
 
     fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {

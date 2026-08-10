@@ -462,7 +462,10 @@ then delegates `thread/resume` to Codex on the next
 process's first interactive turn. The bounded, atomically written handle is
 neither history nor a credential. `--resume` therefore applies only to native
 conversations; managed one-shot starts fresh unless `--continue` selects the
-workspace handle, and `/clear` replaces the saved handle.
+workspace handle. `/clear` deselects the current handle and starts a new
+thread while retaining the prior catalog entry. `session archive-managed` and
+the TUI's `/sessions archive` atomically remove one inactive local handle; they
+do not call a vendor deletion API or claim to delete managed history.
 
 Every compact newline-terminated envelope has format version 1, record id,
 session id, and one typed record. The initial record owns the thread and
@@ -619,13 +622,19 @@ non-TTY launch chooses it automatically, and `--tui` makes terminal
 initialization mandatory. The TUI owns an explicit state/update/view model,
 consumes the same bounded embedded snapshot/events as plain native chat, and
 emits only typed runtime commands. It paints a local starting frame before
-configuration/provider composition, adapts side panes into drawer labels at
-medium/narrow widths, and bounds composer, message, activity, staged images,
+configuration/provider composition. The startup header is expanded identity
+and status state, collapses on draft input, and reopens through the same update
+model. It adapts side panes into drawer labels at medium/narrow widths, hides a
+collapsed wide session rail at zero width, and bounds composer, message,
+activity, staged images,
 and an ordered follow-up queue. Frontend protocol version 2 adds exact
 interrupt and capability-gated steer commands. The native TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
-registry. Paste is normalized and confirmed as untrusted draft data. Model
+registry. One shared layout calculation owns both rendering rectangles and
+mouse hit-testing. The composer grows through six visual rows, then uses a
+cursor-following bounded viewport. Paste is normalized and confirmed as
+untrusted draft data. Model
 selection persists through `ModelManager` and restarts into a new conversation
 rather than translating history. Activity visibility is presentation state,
 not reasoning configuration. The bounded activity projection groups typed
@@ -634,6 +643,12 @@ labels exposed reasoning separately, never requests an extra summary, and
 forces approvals and critical failures into a modal even when activity is
 hidden. Native and managed decisions return through their original correlated
 control path rather than through display text.
+Ratatui supplies terminal-native layout/widgets and its deterministic test
+backend; Crossterm owns input and terminal modes. Xana keeps the composer,
+session projection, and command policy as small domain modules instead of
+adding a second opinionated widget framework. The direct `unicode-width`
+dependency is the shared visual-column metric for composer rendering, cursor
+placement, scrolling, and pointer hit-testing.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.
@@ -693,8 +708,11 @@ human-authored configuration and apply to subsequent turns without replacing
 the Codex thread. Activity level is process-local presentation of typed
 runtime events and never changes model effort.
 
-Provider-neutral Quick Setup is the canonical first-run and rerunnable path.
-It stages a typed native or managed connection without filesystem effects,
+Provider-neutral guided setup is the canonical first-run and rerunnable entry.
+Bare interactive `setup` first chooses Quick, Full, or a focused setup path;
+Quick is the setup-path default and `--quick` selects it directly. This default
+does not recommend or preselect a provider. The Quick connection flow stages a
+typed native or managed connection without filesystem effects,
 establishes the endpoint/executable and credential/account, and performs a
 non-persistent live catalog fetch before accepting model and managed reasoning
 choices. The validated version 3 document and any hidden OS-store secret stay
@@ -720,6 +738,9 @@ when included in Full Custom, its write participates in config/credential
 rollback. Receipts classify managed model/reasoning as subsequent-turn state
 and resolved owner/policy/profile changes as new-conversation state. No setup
 operation mutates an already running agent or managed thread implicitly.
+The completion receipt derives config, backup, data, and cache locations from
+`XanaPaths`, identifies API keys as OS-store state, and prints only commands
+Xana actually implements.
 
 The installer-facing `setup --if-needed` operation is a thin readiness owner
 over that same setup transaction. It classifies the bounded local config as

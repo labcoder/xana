@@ -205,6 +205,39 @@ impl ManagedThreadStore {
                 threads.remove(0);
             }
         }
+        self.commit(thread_id, identity_version, threads)
+    }
+
+    pub(crate) fn archive_thread(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<bool, ManagedThreadStoreError> {
+        validate_thread_state(Some(thread_id), None)?;
+        let mut threads = self.threads.clone();
+        let original_len = threads.len();
+        threads.retain(|entry| entry.thread_id != thread_id);
+        if threads.len() == original_len {
+            return Ok(false);
+        }
+        let current = (self.thread_id.as_deref() != Some(thread_id))
+            .then(|| self.thread_id.clone())
+            .flatten();
+        let identity = current.as_deref().and_then(|current| {
+            threads
+                .iter()
+                .find(|entry| entry.thread_id == current)
+                .and_then(|entry| entry.identity_version.clone())
+        });
+        self.commit(current, identity, threads)?;
+        Ok(true)
+    }
+
+    fn commit(
+        &mut self,
+        thread_id: Option<String>,
+        identity_version: Option<String>,
+        threads: Vec<ManagedThreadEntry>,
+    ) -> Result<(), ManagedThreadStoreError> {
         let document = ManagedThreadDocument {
             version: DOCUMENT_VERSION,
             connection: self.connection.clone(),
@@ -491,6 +524,26 @@ mod tests {
                 .iter()
                 .any(|entry| entry.thread_id == "thr_second" && !entry.current)
         );
+    }
+
+    #[test]
+    fn archiving_removes_only_the_named_local_handle() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(Some("thr_first".into()), Some("identity-v1"))
+            .unwrap();
+        store
+            .set_thread(Some("thr_second".into()), Some("identity-v1"))
+            .unwrap();
+
+        assert!(store.archive_thread("thr_first").unwrap());
+        assert!(!store.archive_thread("thr_missing").unwrap());
+        assert_eq!(store.thread_id(), Some("thr_second"));
+        assert_eq!(store.threads.len(), 1);
+        assert_eq!(store.threads[0].thread_id, "thr_second");
     }
 
     #[test]

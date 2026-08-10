@@ -52,6 +52,10 @@ enum ManagedTuiCommand {
     SelectModel(String),
     SetReasoning(Option<String>),
     Clear,
+    Archive {
+        thread_id: String,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
     Shutdown,
 }
 
@@ -189,6 +193,17 @@ impl ManagedTuiDriver {
             .send(ManagedTuiCommand::Clear)
             .await
             .map_err(|_| "managed runtime stopped".to_owned())
+    }
+
+    pub(crate) async fn archive(&self, thread_id: String) -> Result<bool, String> {
+        let (reply, response) = oneshot::channel();
+        self.commands
+            .send(ManagedTuiCommand::Archive { thread_id, reply })
+            .await
+            .map_err(|_| "managed runtime stopped".to_owned())?;
+        response
+            .await
+            .map_err(|_| "managed runtime stopped before archiving the conversation".to_owned())?
     }
 
     pub(crate) async fn next_event(&mut self) -> Option<ManagedTuiEvent> {
@@ -341,6 +356,12 @@ async fn run_actor(
                     connection: config.connection.clone(),
                 };
                 send_event(&events, ManagedTuiEvent::Cleared).await?;
+            }
+            ManagedTuiCommand::Archive { thread_id, reply } => {
+                let result = store
+                    .archive_thread(&thread_id)
+                    .map_err(|error| error.to_string());
+                let _ = reply.send(result);
             }
             ManagedTuiCommand::Shutdown => break,
         }

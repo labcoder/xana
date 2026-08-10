@@ -3,6 +3,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CommandId {
     Help,
+    Header,
     Send,
     Newline,
     Interrupt,
@@ -68,6 +69,12 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         summary: "Pause the owner, run read-only installation diagnostics, and resume",
     },
     CommandSpec {
+        id: CommandId::Header,
+        name: "header",
+        usage: "/header [expanded|collapsed]",
+        summary: "Show or collapse Xana's startup identity and status panel",
+    },
+    CommandSpec {
         id: CommandId::Help,
         name: "help",
         usage: "/help",
@@ -118,14 +125,14 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Sessions,
         name: "sessions",
-        usage: "/sessions [expanded|collapsed]",
-        summary: "Search conversations or persist the wide session rail",
+        usage: "/sessions [expanded|collapsed|archive]",
+        summary: "Search, hide, or archive the viewed managed conversation",
     },
     CommandSpec {
         id: CommandId::Setup,
         name: "setup",
-        usage: "/setup [full|connection|permissions-shell|profiles-routes|appearance]",
-        summary: "Leave the conversation and run provider-neutral Quick Setup",
+        usage: "/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]",
+        summary: "Leave the conversation and run guided or focused setup",
     },
     CommandSpec {
         id: CommandId::Steer,
