@@ -1,6 +1,9 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. "$PSScriptRoot/fixture-cleanup.ps1"
+Assert-FixtureCleanupGuardContract
+
 $testParent = [IO.Path]::GetTempPath()
 $testRoot = Join-Path $testParent ("xana-removal-test-" + [Guid]::NewGuid().ToString("N"))
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
@@ -66,9 +69,12 @@ try {
     Write-Output "removal recipes verified: executable and owned PATH entry removed; config, sessions, artifacts, unrelated PATH preserved"
 } finally {
     $fullRoot = [IO.Path]::GetFullPath($testRoot)
-    $fullParent = [IO.Path]::GetFullPath($testParent).TrimEnd('\') + '\'
-    if (-not $fullRoot.StartsWith($fullParent, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [IO.Path]::GetFileName($fullRoot).StartsWith("xana-removal-test-")) {
+    $fullParent = [IO.Path]::GetFullPath($testParent)
+    if (-not (Test-SafeFixtureCleanupRoot `
+            -Parent $fullParent `
+            -Root $fullRoot `
+            -Separator ([IO.Path]::DirectorySeparatorChar) `
+            -RequiredPrefix "xana-removal-test-")) {
         throw "refusing unsafe removal-test cleanup"
     }
     if (Test-Path -LiteralPath $fullRoot) {
