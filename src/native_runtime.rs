@@ -1,4 +1,4 @@
-//! Foreground owner for one durable session, conversation, and operation state.
+//! Xana-owned foreground runtime for one durable native conversation.
 //!
 //! Commands may affect execution. Events are passive observations; except for
 //! the explicit permission request transport, a closed receiver never changes an

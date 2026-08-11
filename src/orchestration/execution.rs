@@ -1,8 +1,8 @@
 use super::{ChildAttribution, ChildUsage, ResolvedAgentConfig, SpawnAgentRequest};
 use crate::{
     identity::OperationId,
+    native_runtime::AgentEventSender,
     permission::{PermissionBrokerHandle, PermissionPolicy},
-    runtime::AgentEventSender,
 };
 use futures::future::BoxFuture;
 use tokio_util::sync::CancellationToken;

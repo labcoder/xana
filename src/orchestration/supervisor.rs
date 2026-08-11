@@ -27,8 +27,8 @@ use super::{
 use crate::{
     artifact::ArtifactStore,
     identity::{AgentId, OperationId, OrchestrationPlanId, ThreadId, ToolInvocationId},
+    native_runtime::{AgentEvent, AgentEventSender, DroppedAgentEvents, OperationState},
     permission::{ControllerDecision, PermissionBroker, PermissionBrokerHandle},
-    runtime::{AgentEvent, AgentEventSender, DroppedAgentEvents, OperationState},
     session::SessionRecord,
 };
 use encoded::encoded_len;

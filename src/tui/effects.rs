@@ -8,10 +8,10 @@ use super::{
 use crate::{
     frontend::EmbeddedClient,
     managed::codex::ApprovalDecision,
-    managed_terminal::ManagedTuiDriver,
+    managed_execution::ManagedTuiDriver,
+    native_runtime::RuntimeCommand,
+    plain_terminal::{ChatExit, ChatHeader},
     presentation::PresentationPreferences,
-    runtime::RuntimeCommand,
-    terminal::{ChatExit, ChatHeader},
     vision::{ImageIngestor, ImageLimits},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };

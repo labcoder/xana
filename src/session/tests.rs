@@ -8,6 +8,7 @@ use crate::{
     },
     identity::*,
     message::{Message, Role},
+    native_runtime::{OperationOutcome, OperationState},
     operation::{
         DurableValueRef, InvocationIntent, InvocationOutcome, InvocationResultRecord,
         InvocationTarget, NamedValueRecord, RecoveryDecision, SuspensionReason,
@@ -18,7 +19,6 @@ use crate::{
         OrchestrationPlanStart, PlanChildAttribution,
     },
     permission::{PermissionAuditFact, PermissionRequest, PermissionScope, PolicyDecision},
-    runtime::{OperationOutcome, OperationState},
     tool::{EffectClass, ReplaySafety},
 };
 use std::{fs, io::Write, path::PathBuf};

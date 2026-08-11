@@ -7,6 +7,7 @@
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
     message::{ContentBlock, Message, ToolCall},
+    native_runtime::{AgentEvent, AgentEventSender},
     operation::{
         BoundaryObserver, CrashSite, DurableOperationSender, NoopBoundaryObserver,
         OperationExecutor,
@@ -14,7 +15,6 @@ use crate::{
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
     provider::{ConversationalProvider, DeltaSink, ProviderUsage},
-    runtime::{AgentEvent, AgentEventSender},
     tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};

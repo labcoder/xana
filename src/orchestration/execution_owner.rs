@@ -438,13 +438,13 @@ mod tests {
     use super::*;
     use crate::config::XanaConfig;
     use crate::identity::{AgentId, OperationId, ThreadId};
+    use crate::native_runtime::AgentEvent;
     use crate::orchestration::types::ChildContextPreview;
     use crate::orchestration::{
         ChildActivity, ChildCommitSender, ChildContextHandoff, ChildRestrictions,
         ChildResultSchema, ChildSupervisor, ChildTerminalStatus, ParentExecution,
     };
     use crate::permission::{PermissionBroker, PermissionRequest, PermissionScope, PolicyDecision};
-    use crate::runtime::AgentEvent;
     use crate::shell::ShellConfig;
     use crate::tool::EffectClass;
     use std::fs;

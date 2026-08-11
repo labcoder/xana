@@ -22,9 +22,9 @@ responsibility, ownership, and I/O boundaries.
   introduce new `mod.rs` files.
 - Keep items private by default. Expose the smallest useful `pub(crate)`
   surface from each facade.
-- Keep `main.rs` thin. Application routing belongs in `app`;
-  native and managed terminal interaction belongs in `terminal` and
-  `managed_terminal`.
+- Keep `main.rs` thin. Application routing belongs in `app`; Xana-owned native
+  execution belongs in `native_runtime`, append-only interaction in
+  `plain_terminal`, and vendor-loop adaptation in `managed_execution`.
 - Keep control-plane routing in `app`; put interactive/one-shot provider,
   session, runtime, and surface construction behind `app::chat`'s small
   interface. Keep hosting, automation output, operation recovery, and session

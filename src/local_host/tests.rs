@@ -13,7 +13,7 @@ use super::{
 };
 use crate::{
     frontend::{ClientCommand, ClientEvent},
-    runtime::{AgentEvent, RuntimeCommand},
+    native_runtime::{AgentEvent, RuntimeCommand},
     workspace_host::WorkspaceHost,
 };
 use futures::{SinkExt, StreamExt};
@@ -277,7 +277,7 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
             .contains("already has a controller")
     );
     let accepted = first
-        .send_command(crate::runtime::RuntimeCommand::ClearConversation)
+        .send_command(crate::native_runtime::RuntimeCommand::ClearConversation)
         .await
         .unwrap();
     assert!(accepted.accepted);
@@ -294,7 +294,7 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
         .unwrap();
     assert!(
         !first
-            .send_command(crate::runtime::RuntimeCommand::ClearConversation)
+            .send_command(crate::native_runtime::RuntimeCommand::ClearConversation)
             .await
             .unwrap()
             .accepted

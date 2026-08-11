@@ -54,7 +54,7 @@ pub(super) async fn run_attach(args: &cli::AttachArgs, paths: &XanaPaths) -> Res
             eprintln!("xana attach: controller authority acquired");
             if let Some(prompt) = &args.prompt {
                 let result = observer
-                    .send_command(crate::runtime::RuntimeCommand::SubmitTurn {
+                    .send_command(crate::native_runtime::RuntimeCommand::SubmitTurn {
                         operation_id: crate::identity::OperationId::new(),
                         input: prompt.clone(),
                     })

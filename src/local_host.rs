@@ -9,8 +9,8 @@ mod transport;
 
 use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
-    runtime::RuntimeHandle,
-    terminal::ChatHeader,
+    native_runtime::RuntimeHandle,
+    plain_terminal::ChatHeader,
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};
@@ -93,7 +93,7 @@ pub(crate) async fn run_managed_host(
     let workspace_host = Arc::new(workspace_host);
     let seed = HostSnapshotSeed::from_workspace(&workspace_host.snapshot()?);
     let artifacts = config.artifact_store.clone();
-    let driver = crate::managed_terminal::ManagedTuiDriver::start(
+    let driver = crate::managed_execution::ManagedTuiDriver::start(
         server,
         models,
         config,
@@ -121,7 +121,7 @@ pub(crate) async fn run_managed_host(
 pub(crate) struct ManagedHostExecution {
     pub(crate) server: crate::managed::codex::CodexAppServer,
     pub(crate) models: crate::model::ModelManager,
-    pub(crate) config: crate::managed_terminal::ManagedChatConfig,
+    pub(crate) config: crate::managed_execution::ManagedChatConfig,
     pub(crate) workspace_host: WorkspaceHost,
     pub(crate) conversation: ConversationRef,
 }

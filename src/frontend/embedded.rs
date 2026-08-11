@@ -4,7 +4,7 @@ use super::protocol::{
     ClientCommand, ClientCommandResult, ClientEvent, ClientObservation, ClientSnapshot,
     ClientSnapshotSeed, FRONTEND_PROTOCOL_VERSION,
 };
-use crate::runtime::{AgentEvent, RuntimeCommand, RuntimeHandle, RuntimeUnavailable};
+use crate::native_runtime::{AgentEvent, RuntimeCommand, RuntimeHandle, RuntimeUnavailable};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},

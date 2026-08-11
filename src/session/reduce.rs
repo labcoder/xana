@@ -4,6 +4,7 @@ use crate::{
     context::persisted::{ContextRecord, ContextViewRecord},
     identity::*,
     message::Message,
+    native_runtime::{OperationOutcome, OperationState},
     operation::{
         DurableValueRef, InvocationIntent, InvocationResultRecord, NamedValueRecord,
         RecoveryDecision,
@@ -13,7 +14,6 @@ use crate::{
         ChildReportReference, ChildTerminalStatus,
     },
     permission::PermissionAuditFact,
-    runtime::{OperationOutcome, OperationState},
 };
 use std::{
     collections::{BTreeMap, HashSet},

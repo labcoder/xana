@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     identity::{SessionId, StepId},
-    runtime::OperationOutcome,
+    native_runtime::OperationOutcome,
     workspace_host::{ConversationProjection, ConversationState, WorkspaceSnapshot},
 };
 

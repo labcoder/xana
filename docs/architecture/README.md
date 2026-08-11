@@ -64,10 +64,13 @@ flowchart LR
     BROKER --> SHELL["configured shell execution"]
 ```
 
-`runtime` owns the sole open session writer, reduced conversation history, and
+`native_runtime` owns the sole open native session writer, reduced conversation history, and
 at most one active root operation. `frontend` owns the repository-private
-versioned client vocabulary and the reference embedded adapter. `terminal` is
-a client that owns readline input, permission answers, and human rendering.
+versioned client vocabulary and the reference embedded adapter.
+`plain_terminal` is a client that owns readline input, permission answers, and
+append-only human rendering. `managed_execution` adapts a vendor-owned loop
+into the same Xana conversation/frontend vocabulary without owning Codex's
+inner loop.
 `presentation` owns semantic presentation tokens, adaptive terminal-mark
 selection, and the pure resolution of injected terminal facts plus bounded
 machine-local preferences. The application edge samples TTY state, color
@@ -919,9 +922,9 @@ The application modules establish responsibility and I/O boundaries:
   `sessions` children keep chat composition, provider/catalog commands,
   loopback hosting, automation output, recovery, and durable inspection behind
   small app-facing interfaces.
-- `terminal`, `managed_terminal`, `tui`, and `presentation` own frontend behavior.
-  Managed terminal activity filtering/retention is isolated in
-  `managed_terminal/activity` so display policy does not enter the process or
+- `plain_terminal`, `managed_execution`, `tui`, and `presentation` own surface
+  behavior and managed-loop adaptation. Managed activity filtering/retention is isolated in
+  `managed_execution/activity` so display policy does not enter the process or
   conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
   shared runner, terminal-independent model/update policy, and pure adaptive
   view modules. Conversation virtualization/selection and overlays are focused
@@ -934,7 +937,7 @@ The application modules establish responsibility and I/O boundaries:
   controller/reconnect lease, bounded visible-artifact catalog, and exact
   foreground shutdown registry. Native and managed hosted execution adapters
   translate that authority back into their existing owners.
-- `runtime` and `identity` own foreground state, typed commands and events,
+- `native_runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
   queued owner-neutral supervision, cancellation/inspection, durable

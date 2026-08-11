@@ -36,7 +36,8 @@ cargo test --all-targets --all-features
   it does not load global state, inspect environment variables, or render a
   frontend.
 - `main.rs` remains the process composition root. Application routing belongs
-  in `app`; terminal interaction belongs in `terminal`.
+  in `app`; append-only interaction belongs in `plain_terminal`, managed-loop
+  adaptation in `managed_execution`, and full-screen presentation in `tui`.
 - Use Rust path APIs and explicit platform behavior. Keep Linux, macOS, and
   Windows validation meaningful.
 - Keep optional capabilities, authority, containment, and context budgets
