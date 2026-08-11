@@ -11,19 +11,19 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 
 Xana is a terminal-first agent application running on Tokio's multi-thread
 runtime. Native connections use one in-process foreground runtime; the Codex
-connection supervises a vendor-owned app-server process. The installed
-`xana-cli` package is a thin executable facade over `xana-runtime::entry`;
-process composition and command execution currently live in `xana-runtime`.
+connection supervises a vendor-owned app-server process. One Cargo application
+package named `xana` owns the installed `xana` executable, process composition,
+headless agent, application policy, provider adapters, and current frontends.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. Process startup gives that application
 owner one named 4 MiB stack before it enters Tokio; this bounds the one extra
 thread while preserving debug-build headroom for the large managed-runtime
 future on platforms whose process-main stack is smaller. Tokio retains
 ownership of asynchronous workers and cancellation beneath that edge.
-`xana-core` currently owns only validated capability/tool identifiers and an
-immutable capability snapshot. It remains headless and has no filesystem,
-terminal, HTTP, or process dependencies; the agent loop itself still lives in
-`xana-runtime`. See
+The capability module owns validated capability/tool identifiers and an
+immutable capability snapshot. Capability discovery remains pure metadata;
+the headless agent is independently kept free of terminal, process-global,
+and provider-wire concerns. See
 [composition services](composition-services.md) for the capability,
 self-documentation, and document-extraction boundaries.
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md)
@@ -848,19 +848,18 @@ home unless the connection explicitly sets an absolute `codex_home`.
 Xana is a Cargo-installable source application pinned to Rust 1.97.1. The
 checked-in lockfile is part of its package contract, and supported checkout or
 Git installs use `cargo install ... --locked`. CI runs formatting,
-warning-denied all-feature Clippy, all-feature and no-default-feature workspace
-tests, a reviewed package-path audit, and `cargo package --package xana-core
---locked` on Linux, macOS, and Windows. The root runtime source archive is
-audited with `cargo package --list --locked`; it is intentionally not verified
-as a registry package because `xana-runtime` is `publish = false` and still
-depends on the unpublished workspace crate `xana-core`. The package includes
-its license, README, and User Documentation. Release builds retain Cargo's
+warning-denied all-feature Clippy, all-feature and no-default-feature tests, a
+reviewed package-path audit, and `cargo package --package xana --locked` on
+Linux, macOS, and Windows. The application package remains `publish = false`
+to prevent accidental registry publication, while its source archive is still
+audited as part of the distribution contract. The package includes its license,
+README, and User Documentation. Release builds retain Cargo's
 default profile; the measured Windows smoke binary was about 8.1 MiB, and no
 cross-platform evidence yet justifies custom LTO, stripping, panic, or codegen
 settings.
 
 The repository contains a pinned local `cargo-dist` 0.32.0 plan for exactly the
-`xana-cli` application on Windows x64 MSVC, macOS ARM64, macOS Intel, and Linux
+`xana` application on Windows x64 MSVC, macOS ARM64, macOS Intel, and Linux
 x64 glibc. It produces conventional native archives containing `xana`, the
 license, README, and installation documentation plus SHA-256 metadata. A
 semantic plan check fixes that inventory and GitHub attestation intent; a
@@ -909,13 +908,12 @@ artifacts part of the current descriptive architecture before they exist.
 
 ## Source organization
 
-The workspace and runtime modules establish responsibility and I/O boundaries:
+The application modules establish responsibility and I/O boundaries:
 
-- `main.rs` composes the source-checkout-only `xana-dev` compatibility process;
-  the installed `xana` binary belongs to the thin `xana-cli` executable facade,
-  while `xana-runtime::entry` currently owns process composition. The distinct
-  target names prevent parallel workspace builds from racing over one
-  executable path.
+- `main.rs` is the thin process entry for the package's single `xana` binary;
+  the library entry owns argument parsing, bounded application-thread startup,
+  and handoff to `app`. Library visibility exists for that executable and
+  integration tests, not as a stable public SDK.
 - `app` owns command routing and dependency construction. Its private
   `chat`, `connections`, `hosting`, `one_shot`, `operations`, `recovery`, and
   `sessions` children keep chat composition, provider/catalog commands,

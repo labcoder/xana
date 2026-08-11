@@ -27,7 +27,7 @@ repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
 mkdir -p -- "$install_root"
 install_root=$(cd -- "$install_root" && pwd -P)
 
-cargo install --path "$repo_root/crates/xana-cli" --locked --root "$install_root"
+cargo install --path "$repo_root" --locked --root "$install_root"
 
 state_root=$(mktemp -d)
 workspace=$(mktemp -d)

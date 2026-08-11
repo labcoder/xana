@@ -285,7 +285,7 @@ impl ToolRegistry {
 
     pub(crate) fn builtins_for_snapshot(
         shell: Shell,
-        snapshot: &xana_core::AgentCapabilitySnapshot,
+        snapshot: &crate::capability::AgentCapabilitySnapshot,
     ) -> Result<Self, RegistryError> {
         let exposed = snapshot
             .tool_ids()

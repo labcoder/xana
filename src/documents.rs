@@ -1,4 +1,4 @@
-//! Focused, bounded document extraction outside `xana-core`.
+//! Focused, bounded document extraction outside the headless agent loop.
 //!
 //! The extractor accepts bytes rather than paths. The runtime owns the one
 //! checked open/read, workspace policy, artifact persistence, and provenance;

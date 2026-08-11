@@ -137,7 +137,7 @@ macOS or Linux:
 # Replace TARGET and VERSION with one supported exact pair.
 VERSION=0.5.0
 TARGET=x86_64-unknown-linux-gnu
-ASSET="xana-cli-${TARGET}.tar.gz"
+ASSET="xana-${TARGET}.tar.gz"
 BASE="https://github.com/labcoder/xana/releases/download/v${VERSION}"
 
 curl --proto '=https' --tlsv1.2 --fail --location --remote-name \
@@ -161,7 +161,7 @@ Windows PowerShell:
 
 ```powershell
 $version = '0.5.0'
-$asset = 'xana-cli-x86_64-pc-windows-msvc.zip'
+$asset = 'xana-x86_64-pc-windows-msvc.zip'
 $base = "https://github.com/labcoder/xana/releases/download/v$version"
 Invoke-WebRequest -Uri "$base/$asset" -OutFile $asset
 Invoke-WebRequest -Uri "$base/$asset.sha256" -OutFile "$asset.sha256"
@@ -198,7 +198,7 @@ For development from a checkout:
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
-cargo install --path crates/xana-cli --locked
+cargo install --path . --locked
 xana --version
 ```
 
@@ -290,7 +290,7 @@ $entries = @($userPath -split ';' | Where-Object {
 [Environment]::SetEnvironmentVariable('Path', ($entries -join ';'), 'User')
 ```
 
-For a Cargo installation, use `cargo uninstall xana-cli`. All removal methods
+For a Cargo installation, use `cargo uninstall xana`. All removal methods
 preserve Xana-owned and vendor-owned personal state.
 
 ## Troubleshooting

@@ -1,4 +1,5 @@
 use super::types::ChildRestrictions;
+use crate::capability::AgentCapabilitySnapshot;
 use crate::{
     capability::resolve_builtin_capability_snapshot,
     config::{ConnectionRegistry, OrchestrationLimits, PermissionMode, ProviderKind},
@@ -7,7 +8,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, error::Error, fmt};
-use xana_core::AgentCapabilitySnapshot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

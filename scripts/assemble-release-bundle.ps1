@@ -10,10 +10,10 @@ Set-StrictMode -Version Latest
 
 $root = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $archives = @(
-    "xana-cli-aarch64-apple-darwin.tar.gz",
-    "xana-cli-x86_64-apple-darwin.tar.gz",
-    "xana-cli-x86_64-pc-windows-msvc.zip",
-    "xana-cli-x86_64-unknown-linux-gnu.tar.gz"
+    "xana-aarch64-apple-darwin.tar.gz",
+    "xana-x86_64-apple-darwin.tar.gz",
+    "xana-x86_64-pc-windows-msvc.zip",
+    "xana-x86_64-unknown-linux-gnu.tar.gz"
 )
 $initial = @($archives | ForEach-Object { $_; "$_.sha256" }) + @("dist-manifest.json")
 $actualInitial = @(Get-ChildItem -File -LiteralPath $root | ForEach-Object Name | Sort-Object)
@@ -42,7 +42,7 @@ $distManifest = Get-Content -Raw -LiteralPath $distManifestPath | ConvertFrom-Js
 if ($distManifest.dist_version -ne "0.32.0" -or
     $distManifest.announcement_tag -ne $Tag -or
     @($distManifest.releases).Count -ne 1 -or
-    $distManifest.releases[0].app_name -ne "xana-cli" -or
+    $distManifest.releases[0].app_name -ne "xana" -or
     $distManifest.releases[0].app_version -ne $Version) {
     throw "dist manifest does not match the pinned Xana release"
 }

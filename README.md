@@ -77,7 +77,7 @@ Development from a checkout remains supported:
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
-cargo install --path crates/xana-cli --locked
+cargo install --path . --locked
 ```
 
 ## Choose a first connection

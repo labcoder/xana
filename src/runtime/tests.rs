@@ -345,7 +345,7 @@ impl ChildExecutionFactory for SupervisorManagedFactory {
         resolved.model.id = "gpt-managed".to_owned();
         resolved.model.display_name = "GPT Managed".to_owned();
         resolved.capabilities =
-            xana_core::AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new());
+            crate::capability::AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new());
         let policy = PermissionPolicy::new(PolicyDecision::Ask, Vec::new(), &self.workspace)
             .map_err(|error| error.to_string())?;
         Ok(PreparedChild::new(
@@ -537,7 +537,10 @@ fn scripted_child_config(request: &SpawnAgentRequest) -> ResolvedAgentConfig {
         },
         reasoning_effort: None,
         reasoning_summary: None,
-        capabilities: xana_core::AgentCapabilitySnapshot::new(BTreeSet::new(), BTreeSet::new()),
+        capabilities: crate::capability::AgentCapabilitySnapshot::new(
+            BTreeSet::new(),
+            BTreeSet::new(),
+        ),
         permission_mode: PermissionMode::Allow,
         max_tool_rounds: 2,
         orchestration: OrchestrationLimits::default(),

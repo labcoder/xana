@@ -9,7 +9,72 @@ use std::{
     fmt,
 };
 
-use xana_core::{AgentCapabilitySnapshot, CapabilityId, LogicalToolId};
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CapabilityId(String);
+
+impl CapabilityId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, CapabilityIdError> {
+        let value = value.into();
+        validate_id(&value).map(|()| Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CapabilityId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct LogicalToolId(String);
+
+impl LogicalToolId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, CapabilityIdError> {
+        let value = value.into();
+        validate_id(&value).map(|()| Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for LogicalToolId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCapabilitySnapshot {
+    capabilities: BTreeSet<CapabilityId>,
+    tools: BTreeSet<LogicalToolId>,
+}
+
+impl AgentCapabilitySnapshot {
+    pub fn new(capabilities: BTreeSet<CapabilityId>, tools: BTreeSet<LogicalToolId>) -> Self {
+        Self {
+            capabilities,
+            tools,
+        }
+    }
+
+    pub fn contains(&self, id: &CapabilityId) -> bool {
+        self.capabilities.contains(id)
+    }
+
+    pub fn capabilities(&self) -> &BTreeSet<CapabilityId> {
+        &self.capabilities
+    }
+
+    pub fn tool_ids(&self) -> &BTreeSet<LogicalToolId> {
+        &self.tools
+    }
+}
 
 const BUILTIN_CAPABILITIES: &[(&str, &str)] = &[
     ("fs.read", "read_file"),

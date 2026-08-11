@@ -47,7 +47,7 @@ $ManifestName = "xana-release-manifest.txt"
 $ManifestLimit = 65536L
 $ArchiveLimit = 134217728L
 $Target = "x86_64-pc-windows-msvc"
-$ArchiveName = "xana-cli-$Target.zip"
+$ArchiveName = "xana-$Target.zip"
 
 if ($Help) {
     Write-Output @"
@@ -257,10 +257,10 @@ function Read-ReleaseManifest {
                 }
                 $artifactTarget = $fields[1]
                 $expectedName = switch ($artifactTarget) {
-                    "aarch64-apple-darwin" { "xana-cli-$artifactTarget.tar.gz" }
-                    "x86_64-apple-darwin" { "xana-cli-$artifactTarget.tar.gz" }
-                    "x86_64-pc-windows-msvc" { "xana-cli-$artifactTarget.zip" }
-                    "x86_64-unknown-linux-gnu" { "xana-cli-$artifactTarget.tar.gz" }
+                    "aarch64-apple-darwin" { "xana-$artifactTarget.tar.gz" }
+                    "x86_64-apple-darwin" { "xana-$artifactTarget.tar.gz" }
+                    "x86_64-pc-windows-msvc" { "xana-$artifactTarget.zip" }
+                    "x86_64-unknown-linux-gnu" { "xana-$artifactTarget.tar.gz" }
                     default { throw "release manifest contains an unsupported target" }
                 }
                 if ($fields[2] -cne $expectedName -or $fields[3] -cnotmatch '^[0-9a-f]{64}$') {

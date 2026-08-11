@@ -5,7 +5,7 @@ members = ["cargo:."]
 # source files and are attached by the release workflow rather than generated.
 [dist]
 cargo-dist-version = "0.32.0"
-packages = ["xana-cli"]
+packages = ["xana"]
 display-name = "Xana"
 targets = [
   "aarch64-apple-darwin",
