@@ -5,6 +5,9 @@ members = ["cargo:."]
 # source files and are attached by the release workflow rather than generated.
 [dist]
 cargo-dist-version = "0.32.0"
+# Xana owns a stricter no-publish/draft-only workflow. Keep cargo-dist as the
+# planner and builder without asking it to replace that reviewed CI file.
+allow-dirty = ["ci"]
 packages = ["xana"]
 display-name = "Xana"
 targets = [
