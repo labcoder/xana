@@ -1,6 +1,35 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Test-SafeReleaseBundleCleanupRoot {
+    param(
+        [Parameter(Mandatory)][string]$Parent,
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][char]$Separator
+    )
+
+    $parentPrefix = $Parent.TrimEnd([char[]]@('/', '\')) + [string]$Separator
+    if (-not $Root.StartsWith($parentPrefix, [StringComparison]::Ordinal)) {
+        return $false
+    }
+    $relative = $Root.Substring($parentPrefix.Length)
+    return $relative.StartsWith("xana-release-bundle-test-", [StringComparison]::Ordinal) -and
+        $relative.IndexOfAny([char[]]@('/', '\')) -lt 0
+}
+
+$cleanupGuardCases = @(
+    @("/var/folders/ab/cd/T/", "/var/folders/ab/cd/T/xana-release-bundle-test-0123", '/', $true),
+    @("C:\Temp\", "C:\Temp\xana-release-bundle-test-0123", '\', $true),
+    @("/tmp/", "/tmp/nested/xana-release-bundle-test-0123", '/', $false)
+)
+foreach ($case in $cleanupGuardCases) {
+    $actual = Test-SafeReleaseBundleCleanupRoot `
+        -Parent $case[0] -Root $case[1] -Separator $case[2]
+    if ($actual -ne $case[3]) {
+        throw "release-bundle cleanup guard regression"
+    }
+}
+
 $version = "0.5.0"
 $tag = "v$version"
 $testParent = [IO.Path]::GetTempPath()
@@ -72,9 +101,11 @@ try {
     Write-Output "release bundle verified: exact inventory, source wrappers, checksums, mismatch rejection"
 } finally {
     $fullRoot = [IO.Path]::GetFullPath($testRoot)
-    $fullParent = [IO.Path]::GetFullPath($testParent).TrimEnd('\') + '\'
-    if (-not $fullRoot.StartsWith($fullParent, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [IO.Path]::GetFileName($fullRoot).StartsWith("xana-release-bundle-test-")) {
+    $fullParent = [IO.Path]::GetFullPath($testParent)
+    if (-not (Test-SafeReleaseBundleCleanupRoot `
+            -Parent $fullParent `
+            -Root $fullRoot `
+            -Separator ([IO.Path]::DirectorySeparatorChar))) {
         throw "refusing unsafe release-bundle test cleanup"
     }
     if (Test-Path -LiteralPath $fullRoot) {
