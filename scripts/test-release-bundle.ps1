@@ -1,34 +1,8 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Test-SafeReleaseBundleCleanupRoot {
-    param(
-        [Parameter(Mandatory)][string]$Parent,
-        [Parameter(Mandatory)][string]$Root,
-        [Parameter(Mandatory)][char]$Separator
-    )
-
-    $parentPrefix = $Parent.TrimEnd([char[]]@('/', '\')) + [string]$Separator
-    if (-not $Root.StartsWith($parentPrefix, [StringComparison]::Ordinal)) {
-        return $false
-    }
-    $relative = $Root.Substring($parentPrefix.Length)
-    return $relative.StartsWith("xana-release-bundle-test-", [StringComparison]::Ordinal) -and
-        $relative.IndexOfAny([char[]]@('/', '\')) -lt 0
-}
-
-$cleanupGuardCases = @(
-    @("/var/folders/ab/cd/T/", "/var/folders/ab/cd/T/xana-release-bundle-test-0123", '/', $true),
-    @("C:\Temp\", "C:\Temp\xana-release-bundle-test-0123", '\', $true),
-    @("/tmp/", "/tmp/nested/xana-release-bundle-test-0123", '/', $false)
-)
-foreach ($case in $cleanupGuardCases) {
-    $actual = Test-SafeReleaseBundleCleanupRoot `
-        -Parent $case[0] -Root $case[1] -Separator $case[2]
-    if ($actual -ne $case[3]) {
-        throw "release-bundle cleanup guard regression"
-    }
-}
+. "$PSScriptRoot/fixture-cleanup.ps1"
+Assert-FixtureCleanupGuardContract
 
 $version = "0.5.0"
 $tag = "v$version"
@@ -102,10 +76,11 @@ try {
 } finally {
     $fullRoot = [IO.Path]::GetFullPath($testRoot)
     $fullParent = [IO.Path]::GetFullPath($testParent)
-    if (-not (Test-SafeReleaseBundleCleanupRoot `
+    if (-not (Test-SafeFixtureCleanupRoot `
             -Parent $fullParent `
             -Root $fullRoot `
-            -Separator ([IO.Path]::DirectorySeparatorChar))) {
+            -Separator ([IO.Path]::DirectorySeparatorChar) `
+            -RequiredPrefix "xana-release-bundle-test-")) {
         throw "refusing unsafe release-bundle test cleanup"
     }
     if (Test-Path -LiteralPath $fullRoot) {
