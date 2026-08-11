@@ -1,6 +1,14 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+if ($null -eq (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue)) {
+    Set-Variable `
+        -Name IsWindows `
+        -Value $true `
+        -Option ReadOnly, AllScope `
+        -Scope Script
+}
+
 . "$PSScriptRoot/release-archive-contract.ps1"
 
 function Assert-Rejected {

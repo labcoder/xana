@@ -26,11 +26,11 @@ function Resolve-ReleaseArchiveLayout {
         }
     }
 
-    $isWindows = $Target -eq "x86_64-pc-windows-msvc"
-    $executable = if ($isWindows) { "xana.exe" } else { "xana" }
+    $usesWindowsArchive = $Target -eq "x86_64-pc-windows-msvc"
+    $executable = if ($usesWindowsArchive) { "xana.exe" } else { "xana" }
     $expectedEntries = @("LICENSE", "README.md", "installation.md", $executable) | Sort-Object
 
-    if ($isWindows) {
+    if ($usesWindowsArchive) {
         $payloadRoot = ""
         $logicalEntries = $normalizedEntries
     } else {
