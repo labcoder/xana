@@ -42,7 +42,7 @@ Full Custom Setup and the focused appearance section manage this file:
 xana setup --section appearance
 xana setup --non-interactive --section appearance \
   --theme monochrome --glyphs ascii --motion reduced \
-  --density compact --composer newline --activity hidden --yes
+  --density compact --composer newline --activity hide --yes
 ```
 
 It can also be created by hand:

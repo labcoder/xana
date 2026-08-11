@@ -106,9 +106,12 @@ local contract that implementation must now follow is Proposal 0017.
 
 ## Broader proposed physical workspace
 
-The current Cargo workspace already separates `xana-core`, `xana-runtime`, and
-`xana-cli` at the boundaries described by Architecture. The broader topology
-would continue that separation into:
+The current Cargo workspace has packages named `xana-core`, `xana-runtime`,
+and `xana-cli`, but those names do not mean this proposed physical topology is
+implemented. Today `xana-core` contains only capability vocabulary,
+`xana-runtime` contains the headless agent implementation plus application and
+terminal composition, and `xana-cli` is a thin installed executable facade.
+The broader topology would deepen those packages into:
 
 ```text
 xana-core       headless engine and public internal types

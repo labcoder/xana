@@ -4,9 +4,11 @@
 > Authority: Descriptive
 
 Xana is a Cargo workspace with dependency direction `xana-cli` ->
-`xana-runtime` -> `xana-core`. Core contains headless semantic contracts;
-runtime owns configuration, policy, persistence, provider and managed-runtime
-adapters, and built-in effects; CLI owns the installed binary facade.
+`xana-runtime` -> `xana-core`. Core currently contains only headless capability
+and logical-tool identities plus their immutable snapshot; the headless agent
+loop remains in runtime. Runtime owns process composition, configuration,
+policy, persistence, provider and managed-runtime adapters, frontend adapters,
+and built-in effects; CLI owns the installed binary facade.
 
 The capability resolver separates installed descriptors, enabled/selected
 capabilities, dependency availability, logical tool conflicts, and the final

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Xana's terminal command-line frontend"
+description = "Installed Xana command-line executable"
 
 [features]
 default = ["documents-csv"]

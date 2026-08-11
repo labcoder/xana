@@ -9,18 +9,21 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 
 ## System overview
 
-Xana is a Cargo workspace running on Tokio's multi-thread runtime with a
-terminal frontend. Native connections use one in-process foreground runtime;
-the Codex connection supervises a vendor-owned app-server process. `xana-cli` is the
-process composition root and delegates command execution to `xana-runtime`.
+Xana is a terminal-first agent application running on Tokio's multi-thread
+runtime. Native connections use one in-process foreground runtime; the Codex
+connection supervises a vendor-owned app-server process. The installed
+`xana-cli` package is a thin executable facade over `xana-runtime::entry`;
+process composition and command execution currently live in `xana-runtime`.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. Process startup gives that application
 owner one named 4 MiB stack before it enters Tokio; this bounds the one extra
 thread while preserving debug-build headroom for the large managed-runtime
 future on platforms whose process-main stack is smaller. Tokio retains
 ownership of asynchronous workers and cancellation beneath that edge.
-`xana-core` remains headless and has no filesystem, terminal, HTTP, or process
-dependencies. See
+`xana-core` currently owns only validated capability/tool identifiers and an
+immutable capability snapshot. It remains headless and has no filesystem,
+terminal, HTTP, or process dependencies; the agent loop itself still lives in
+`xana-runtime`. See
 [composition services](composition-services.md) for the capability,
 self-documentation, and document-extraction boundaries.
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md)
@@ -463,7 +466,7 @@ process's first interactive turn. The bounded, atomically written handle is
 neither history nor a credential. `--resume` therefore applies only to native
 conversations; managed one-shot starts fresh unless `--continue` selects the
 workspace handle. `/clear` deselects the current handle and starts a new
-thread while retaining the prior catalog entry. `session archive-managed` and
+thread while retaining the prior catalog entry. `session archive` and
 the TUI's `/sessions archive` atomically remove one inactive local handle; they
 do not call a vendor deletion API or claim to delete managed history.
 
@@ -630,7 +633,12 @@ staged images, and an ordered follow-up queue. Frontend protocol version 2 adds 
 interrupt and capability-gated steer commands. The native TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
-registry. Registry rows separate command names, modes/parameters,
+registry. Native runtime and managed Codex are two private adapters to one TUI
+runner, which owns input ordering, follow-up dispatch, shutdown, and a dirty
+frame clock capped at roughly 60 draws per second. Input and execution events
+mark view state dirty; a biased frame tick renders the newest state and skips
+missed ticks, so streaming text and pointer motion cannot force one synchronous
+full redraw per event. Registry rows separate command names, modes/parameters,
 descriptions, and optional exact palette arguments. A Ratatui stateful table
 keeps its heading fixed and selected row visible; normalized search accepts an
 optional leading slash and indexes modes as well as names. One shared layout
@@ -639,7 +647,14 @@ title owns a distinct hide action instead of falling through to its first row.
 The composer grows through six visual rows, then uses a cursor-following
 bounded viewport. Conversation rendering selects a bounded suffix, measures
 visual rows, anchors at the bottom, and interprets scroll state as rows rather
-than messages. Paste is normalized and confirmed as untrusted draft data. Model
+than messages. A bounded terminal-input adapter preserves ordinary keys but
+uses a short, adaptive quiet window to coalesce key-stream paste, including
+fallback newlines, before command interpretation. Once a paste is detected, a
+wider quiet window absorbs terminal delivery jitter. Replaceable pointer-drag
+motion is sampled at its latest queued coordinate instead of replaying stale
+cursor positions through separate renders. Bracketed and detected fallback
+paste therefore enter one normalized confirmation as untrusted draft data
+rather than repeated submits. Model
 selection persists through `ModelManager` and restarts into a new conversation
 rather than translating history. Activity visibility is presentation state,
 not reasoning configuration. The bounded activity projection groups typed
@@ -651,16 +666,25 @@ control path rather than through display text.
 Ratatui supplies terminal-native layout/widgets and its deterministic test
 backend; Crossterm owns input and terminal modes. Xana keeps the composer,
 session projection, and command policy as small domain modules instead of
-adding a second opinionated widget framework. The direct `unicode-width`
+adding a second opinionated widget framework. Current textarea crates would
+still require Xana-owned byte bounds, sanitization, paste confirmation, Enter
+policy, and pointer semantics, so they do not yet pass the deletion test. The direct `unicode-width`
 dependency is the shared visual-column metric for composer rendering, cursor
 placement, scrolling, and pointer hit-testing.
 Conversation-only normal-drag selection is Xana-owned because terminal mouse
-reporting is process-global rather than panel-aware. It extracts only the
-explicitly selected cells from the bounded visible Ratatui projection and
-copies on release through a lazy, long-lived text-only `arboard` adapter. The
-adapter disables image features, initializes only after an explicit drag, and
+reporting is process-global rather than panel-aware. It retains only the
+explicitly selected cells from the bounded visible Ratatui projection. Ctrl+C
+copies the retained text and otherwise remains the exact interrupt key;
+mouse-down panel targets remain independent and an ordinary click away clears
+the selection. Copying uses a lazy, long-lived text-only `arboard` adapter. The
+adapter disables image features, initializes only after an explicit copy, and
 keeps Linux clipboard ownership alive for the TUI session. Clipboard failure is
-reported as presentation status and does not affect runtime authority.
+reported as presentation status and does not affect runtime authority. The
+typed `/sessions new` action is idle-only: it shuts down the current frontend
+owner and re-enters the application composition boundary with `NewNative` or
+`NewManaged`, preserving the prior session and current resolved configuration
+without translating history. The workspace root gate prevents the action while
+a root turn is active.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.
@@ -888,19 +912,24 @@ artifacts part of the current descriptive architecture before they exist.
 The workspace and runtime modules establish responsibility and I/O boundaries:
 
 - `main.rs` composes the source-checkout-only `xana-dev` compatibility process;
-  the installed `xana` binary belongs to `xana-cli`. The distinct target names
-  prevent parallel workspace builds from racing over one executable path.
+  the installed `xana` binary belongs to the thin `xana-cli` executable facade,
+  while `xana-runtime::entry` currently owns process composition. The distinct
+  target names prevent parallel workspace builds from racing over one
+  executable path.
 - `app` owns command routing and dependency construction. Its private
-  `connections` and `recovery` children keep provider/catalog commands and
-  guarded doctor/config/reset orchestration behind small app-facing
-  interfaces.
+  `chat`, `connections`, `hosting`, `one_shot`, `operations`, `recovery`, and
+  `sessions` children keep chat composition, provider/catalog commands,
+  loopback hosting, automation output, recovery, and durable inspection behind
+  small app-facing interfaces.
 - `terminal`, `managed_terminal`, `tui`, and `presentation` own frontend behavior.
   Managed terminal activity filtering/retention is isolated in
   `managed_terminal/activity` so display policy does not enter the process or
   conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
-  terminal-independent model/update policy, and pure adaptive view modules.
-  Composer editing, command reduction, and native/managed event projection
-  are private focused children of that state/update interface.
+  shared runner, terminal-independent model/update policy, and pure adaptive
+  view modules. Conversation virtualization/selection and overlays are focused
+  view children. Composer editing, input normalization, command reduction,
+  native/managed effect interpretation, and execution-owner adapters are
+  private focused children of that state/update interface.
 - `frontend` owns the typed embedded application contract; `local_host` owns
   only its authenticated loopback projection, protected discovery descriptor,
   atomic host snapshot/sequence boundary, observer fan-out, and one explicit

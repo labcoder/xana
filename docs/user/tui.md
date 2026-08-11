@@ -9,8 +9,10 @@ separator: `cargo run -- --tui`.
 
 The TUI is a client of Xana's bounded frontend protocol. It cannot bypass the
 workspace root gate, runtime permissions, model capabilities, or execution
-owner. Native execution and managed Codex use the same state/update/view
-shell. Codex still owns its thread, inner loop, tools, sandbox, and history;
+owner. Native execution and managed Codex use the same state/update/view shell
+and one bounded dirty-frame runner; input and execution events request a redraw
+instead of drawing synchronously for every event. Codex still owns its thread,
+inner loop, tools, sandbox, and history;
 Xana projects only the activity and approval callbacks app-server emits.
 
 ## Composer and portable keys
@@ -35,10 +37,14 @@ modified Enter. `/composer submit` and `/composer newline` change and persist
 the preset in `data/frontend/presentation.toml`. The command palette always
 offers Send.
 
-Bracketed paste opens a confirmation preview. Xana removes terminal control
-characters, normalizes line endings and tabs, and bounds the result before it
-can enter the draft. A pasted `/command` remains untrusted text and is never
-executed by the paste event. Enter confirms the preview; Esc discards it.
+Bracketed paste opens a confirmation preview. Some terminals deliver a paste
+as a paced sequence of ordinary key events instead; Xana uses a short adaptive
+quiet window to coalesce that bounded stream before interpreting Enter, so a
+multiline paste cannot become several submitted messages or redraw one
+character at a time. Xana removes terminal control characters, normalizes line
+endings and tabs, and bounds the result before it can enter the draft. A pasted
+`/command` remains untrusted text and is never executed by the paste event.
+Enter confirms the preview; Esc discards it.
 
 ## Turns, follow-ups, and cancellation
 
@@ -49,7 +55,8 @@ references). `/queue` shows the queue, `/queue edit N` returns one item to the
 composer, and `/queue remove N` removes one item. A follow-up starts only after
 the preceding root reaches a terminal state and releases its lease.
 
-Ctrl+C or `/interrupt` requests interruption of the exact active operation;
+Ctrl+C copies a retained conversation selection when one exists. Otherwise it,
+or `/interrupt`, requests interruption of the exact active operation;
 Ctrl+Q or `/quit` shuts down the foreground client. Interruption and steering
 are different commands. Native execution does not support same-turn steering,
 so `/steer MESSAGE` reports that limitation instead of approximating it with a
@@ -72,7 +79,7 @@ Palette actions and slash input use that one registry:
 - `/activity view auto|hide|show`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
-- `/sessions`, `/sessions archive [ID]`, `/sessions view hide|show`
+- `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/doctor`
 
@@ -118,9 +125,14 @@ viewing an inactive managed session, `/sessions archive` removes only Xana's
 local retained handle; `/sessions archive ID` targets an exact retained
 managed ID. Neither form deletes the Codex-owned thread. The active runtime
 session and native journals cannot be archived through this command.
-`/clear` remains different: it clears the active owner while retaining the old
-managed handle for later use. Xana does not yet claim a distinct `/sessions
-new` lifecycle operation.
+`/sessions new` stops the idle frontend owner and restarts through Xana's normal
+composition boundary with the current resolved connection, model, permissions,
+workspace, and profile. The previous session remains retained. Native Xana
+creates a new durable session; managed Codex creates its vendor-owned thread on
+the first turn. An active turn must finish or be interrupted first so this
+command cannot create a competing workspace root. `/clear` remains different:
+it clears the active owner's context rather than creating and navigating to a
+separate session.
 Selecting another native conversation opens its committed history for
 inspection while leaving an active root attached to its original conversation;
 managed history remains owned by Codex. Drafting remains local, but Xana will
@@ -164,12 +176,17 @@ expands or collapses its detail. Click or drag in the composer to place or
 extend its selection, and click a selectable overlay row to activate the same
 typed action as Enter.
 An ordinary drag inside the conversation highlights its visible rendered cells
-and copies them to the platform text clipboard on release. Xana reports success
-or clipboard unavailability in the status line. Hold Shift while dragging to
-use the terminal's native screen-text selection anywhere instead. Full-screen
-terminal mouse capture is global rather than panel-aware, so Xana implements
-conversation selection itself while retaining ordinary panel clicks, composer
-placement, and scrolling.
+and retains that selection. Ctrl+C copies it to the platform text clipboard
+without removing the highlight; an ordinary click elsewhere or Esc clears it.
+When no conversation selection exists, Ctrl+C keeps its interrupt meaning.
+Xana reports copy success or clipboard unavailability in the status line. Hold
+Shift while dragging to use the terminal's native screen-text selection
+anywhere instead. Full-screen terminal mouse capture is global rather than
+panel-aware, so Xana implements conversation selection itself while retaining
+mouse-down activation for panel headers, session rows, activity cards,
+composer placement, and scrolling. Queued drag motion is replaceable input:
+Xana renders the newest available pointer coordinate rather than animating
+through stale intermediate positions.
 Terminal resizing always recomputes both rendering and mouse hit targets from
 the same responsive layout. These optional mouse conveniences grant no extra
 authority. User message separators and text are right-aligned; Xana messages

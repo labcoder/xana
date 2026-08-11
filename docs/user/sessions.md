@@ -30,7 +30,7 @@ resumes that saved handle; managed
 one-shot starts a new thread unless `--continue` requests the saved compatible
 handle. `/clear` deselects the current handle and starts a new thread while
 retaining the old opaque id; model or reasoning changes retain the selection.
-`archive-managed` instead removes exactly one inactive local handle from
+`xana session archive` instead removes exactly one inactive local handle from
 Xana's catalog. It never deletes the vendor-owned thread or Codex history and
 refuses an active or locked handle.
 
@@ -38,9 +38,17 @@ refuses an active or locked handle.
 
 ```text
 xana session list
-xana session select-managed codex THREAD_ID
-xana session archive-managed codex THREAD_ID
+xana session new
+xana session select codex THREAD_ID
+xana session archive codex THREAD_ID
 ```
+
+`xana session new` starts the adaptive interactive frontend with a fresh
+conversation using the current connection, model, profile, permissions, and
+workspace. It preserves every prior session. Native Xana creates the durable
+session during launch; managed Codex creates its vendor-owned thread on the
+first turn. Use `/sessions new` for the same lifecycle while the full-screen
+frontend is already open.
 
 The process-owned workspace host uses one canonical workspace identity and can
 list multiple native sessions and retained managed handles. It permits one
@@ -98,6 +106,12 @@ Hidden means zero width: the panel reserves no placeholder columns. Clicking
 the visible panel title hides it. View an inactive managed row and run
 `/sessions archive`, or pass its exact ID with `/sessions archive ID`, to remove
 the same local handle from inside the TUI.
+
+`/sessions new` is a separate idle lifecycle action. It exits the current TUI
+owner and composes a fresh native session or managed Codex thread with the
+current resolved configuration; it does not erase or translate the previous
+history. An active root must finish or be interrupted first. Managed Codex
+creates the vendor-owned thread lazily on the new session's first turn.
 
 ## Storage
 

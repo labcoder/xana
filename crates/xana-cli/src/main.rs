@@ -1,5 +1,7 @@
-//! Installed Xana command. Process and terminal concerns are composed here;
-//! the runtime crate remains reusable by tests and future frontends.
+//! Installed Xana executable facade.
+//!
+//! Process composition currently lives in `xana-runtime::entry`; future
+//! frontends consume Xana's application contract rather than this binary.
 
 fn main() -> std::process::ExitCode {
     xana_runtime::entry()

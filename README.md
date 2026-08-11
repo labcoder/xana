@@ -168,14 +168,14 @@ Keys can be stored in the OS credential manager or referenced through one
 named environment variable. Plaintext keys never belong in `config.toml`.
 
 ```bash
-xana connection add openrouter --kind open-router --model openai/gpt-4.1
+xana connection add openrouter --kind openrouter --model openai/gpt-4.1
 xana connection set-key openrouter
-xana connection refresh openrouter
+xana model refresh openrouter
 xana model use openrouter/openai/gpt-4.1
 xana
 ```
 
-Use `--kind open-ai` for the OpenAI API or `--kind anthropic` for Anthropic.
+Use `--kind openai` for the OpenAI API or `--kind anthropic` for Anthropic.
 Anthropic is API-key-only; Xana does not offer Claude subscription OAuth.
 
 ## Use a ChatGPT subscription through Codex
@@ -191,7 +191,7 @@ To add Codex to an existing Xana configuration instead:
 xana connection add codex --kind codex --model ADVERTISED_MODEL_ID
 xana connection status codex
 xana connection login codex
-xana connection refresh codex
+xana model refresh codex
 xana model
 xana model use codex/ADVERTISED_MODEL_ID --effort high --summary auto
 xana
@@ -325,10 +325,13 @@ slash-command/command palette, model picker, image staging, streamed turns,
 bounded Markdown/code/diff rendering, explicit artifact actions, paged native
 history, an expandable identity/status header, a one-to-six-row scrolling
 composer, and adaptive wide/medium/narrow layouts. Shift+drag uses native
-terminal text selection. An ordinary drag inside the conversation highlights
-the visible cells and copies them through the platform clipboard; other
-ordinary mouse events remain available for Xana's clicks and scrolling. Ctrl+C
-interrupts the active turn; Ctrl+Q exits.
+terminal text selection. An ordinary drag inside the conversation retains a
+visible selection; Ctrl+C copies it and otherwise interrupts the active turn.
+Other ordinary mouse events remain available for Xana's mouse-down clicks and
+scrolling; queued drag motion samples the newest pointer position instead of
+replaying stale coordinates. Ctrl+Q exits. Bracketed and detected key-stream
+pastes are coalesced into one bounded confirmation, so pasted newlines do not
+submit separate messages.
 Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization
@@ -368,9 +371,10 @@ processes; another plain client may open a new inactive conversation for
 drafting but cannot submit competing work. Exact resume fails with controlling
 terminal/attach guidance. Xana does not lock the workspace filesystem: use
 separate worktrees when parallel conversations might edit the same files.
-Retained Codex handles can be selected with
-`xana session select-managed CONNECTION THREAD_ID` and removed locally with
-`xana session archive-managed CONNECTION THREAD_ID`. Archiving never deletes
+`xana session new` starts an interactive fresh native session or managed Codex
+thread with the current configuration. Retained Codex handles can be selected
+with `xana session select CONNECTION THREAD_ID` and removed locally with
+`xana session archive CONNECTION THREAD_ID`. Archiving never deletes
 the vendor-owned thread.
 In the full-screen client, `/sessions` opens the same bounded workspace catalog
 for searchable read-only history navigation. Wide terminals also show a
@@ -378,6 +382,9 @@ session rail; `/sessions view show` or `/sessions view hide` persists only that
 workspace-local layout preference, and hidden reserves no columns. Click the
 panel title to hide it. `/sessions archive` removes the viewed inactive managed
 handle, while `/sessions archive ID` selects an exact retained managed ID.
+`/sessions new` restarts an idle frontend into a fresh native session or managed
+Codex thread using the current resolved configuration while retaining the old
+session. It refuses to compete with an active workspace root.
 Viewing another transcript never transfers
 the active root or submits its local draft.
 

@@ -44,7 +44,8 @@ size inside its artifact store. Missing, corrupt, oversized, inaccessible, or
 non-UTF-8 content produces a bounded error. The current terminal surface does
 not copy artifacts through OSC 52. “Insert reference” keeps artifact operations
 visible and portable. A separate explicit mouse drag over visible conversation
-text copies only the selected rendered cells to the platform text clipboard.
+text retains a bounded rendered-cell selection; Ctrl+C explicitly copies that
+selection to the platform text clipboard.
 
 ## Bounds
 

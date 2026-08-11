@@ -15,7 +15,7 @@ use std::{net::IpAddr, path::PathBuf};
 pub(crate) enum ShellChoice {
     Platform,
     Posix,
-    #[value(name = "git_bash")]
+    #[value(name = "git-bash", alias = "git_bash")]
     GitBash,
     #[value(name = "powershell")]
     PowerShell,
@@ -54,7 +54,7 @@ impl From<PermissionChoice> for PermissionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum InitConnectionKindChoice {
     Ollama,
-    #[value(name = "openai_compat")]
+    #[value(name = "openai-compatible", alias = "openai_compat")]
     OpenAiCompat,
     Codex,
 }
@@ -114,12 +114,19 @@ pub(crate) enum ComposerChoice {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ActivityChoice {
     Auto,
+    #[value(name = "show", alias = "open")]
     Open,
+    #[value(name = "hide", alias = "hidden")]
     Hidden,
 }
 
 #[derive(Debug, Parser)]
-#[command(name = "xana", version, about = "A small personal AI agent harness")]
+#[command(
+    name = "xana",
+    version,
+    about = "A personal AI agent harness for interactive and automated work",
+    after_help = "Run `xana` to start an interactive conversation, `xana -p PROMPT` for one automated turn, or `xana setup` to configure connections."
+)]
 pub(crate) struct Cli {
     /// Suppress Xana's terminal banner.
     #[arg(long, global = true)]
@@ -163,31 +170,41 @@ pub(crate) struct Cli {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum Command {
-    /// Host Xana explicitly for authenticated local frontend attachment.
-    Serve(ServeArgs),
-    /// Attach to this workspace's foreground host; observation is the default.
-    Attach(AttachArgs),
     /// Run guided, quick, full, or focused atomic configuration setup.
+    #[command(display_order = 1)]
     Setup(Box<SetupArgs>),
     /// Diagnose this Xana installation without mutating it by default.
+    #[command(display_order = 2)]
     Doctor(DoctorArgs),
+    /// Inspect the active configuration.
+    #[command(display_order = 3)]
+    Config(ConfigArgs),
+    /// Clear setup state so Xana can be initialized again.
+    #[command(visible_alias = "clean", display_order = 4)]
+    Reset(ResetArgs),
+    /// Inspect or manage model-provider connections.
+    #[command(display_order = 5)]
+    Connection(ConnectionArgs),
+    /// List, refresh, and select connection-owned models.
+    #[command(display_order = 6)]
+    Model(ModelArgs),
+    /// List, create, inspect, select, or archive conversations.
+    #[command(display_order = 7)]
+    Session(SessionArgs),
+    /// Host Xana explicitly for authenticated local frontend attachment.
+    #[command(display_order = 20)]
+    Serve(ServeArgs),
+    /// Attach to this workspace's foreground host; observation is the default.
+    #[command(display_order = 21)]
+    Attach(AttachArgs),
     /// Deprecated through v0.5.0; use `xana setup`.
     #[command(hide = true)]
     Init(InitArgs),
-    /// Clear setup state so Xana can be initialized again.
-    #[command(visible_alias = "clean")]
-    Reset(ResetArgs),
-    /// Inspect the active configuration.
-    Config(ConfigArgs),
-    /// List, inspect, or select conversations without entering chat.
-    Session(SessionArgs),
     /// Inspect or explicitly reconcile interrupted operations.
+    #[command(display_order = 22)]
     Operation(OperationArgs),
-    /// Inspect or manage model-provider connections.
-    Connection(ConnectionArgs),
-    /// List, refresh, and select connection-owned models.
-    Model(ModelArgs),
     /// Inspect exact child task routes without starting work.
+    #[command(display_order = 23)]
     Route(RouteArgs),
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
@@ -227,139 +244,166 @@ pub(crate) struct AttachArgs {
 #[derive(Debug, Clone, Args, PartialEq, Eq, Default)]
 pub(crate) struct SetupArgs {
     /// Check local readiness and enter setup only when an interactive repair is needed.
-    #[arg(long)]
+    #[arg(long, help_heading = "Setup mode")]
     pub(crate) if_needed: bool,
 
     /// Never prompt; require durable choices as flags.
-    #[arg(long)]
+    #[arg(long, help_heading = "Setup mode")]
     pub(crate) non_interactive: bool,
 
     /// Run provider-neutral Quick Setup without asking which setup path to use.
-    #[arg(long, conflicts_with_all = ["full", "section"])]
+    #[arg(
+        long,
+        conflicts_with_all = ["full", "section"],
+        help_heading = "Setup mode"
+    )]
     pub(crate) quick: bool,
 
     /// Select a provider or managed-runtime kind.
-    #[arg(long, value_enum, value_name = "KIND")]
+    #[arg(long, value_enum, value_name = "KIND", help_heading = "Connection")]
     pub(crate) kind: Option<ConnectionKindChoice>,
 
     /// Name the connection.
-    #[arg(long, value_name = "NAME")]
+    #[arg(long, value_name = "NAME", help_heading = "Connection")]
     pub(crate) connection: Option<String>,
 
     /// Override the provider's absolute HTTP(S) base URL.
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "URL", help_heading = "Connection")]
     pub(crate) base_url: Option<String>,
 
     /// Override the managed Codex executable.
-    #[arg(long, value_name = "PROGRAM")]
+    #[arg(long, value_name = "PROGRAM", help_heading = "Connection")]
     pub(crate) codex_program: Option<String>,
 
     /// Isolate managed Codex in an absolute CODEX_HOME.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", help_heading = "Connection")]
     pub(crate) codex_home: Option<PathBuf>,
 
     /// Resolve an API key from this environment variable.
-    #[arg(long, value_name = "VARIABLE", conflicts_with = "key_from_stdin")]
+    #[arg(
+        long,
+        value_name = "VARIABLE",
+        conflicts_with = "key_from_stdin",
+        help_heading = "Connection"
+    )]
     pub(crate) credential_env: Option<String>,
 
     /// Read one API key from stdin; never place secrets in argv.
-    #[arg(long, conflicts_with = "credential_env")]
+    #[arg(long, conflicts_with = "credential_env", help_heading = "Connection")]
     pub(crate) key_from_stdin: bool,
 
     /// Select an exact model from the established live catalog.
-    #[arg(long, value_name = "MODEL")]
+    #[arg(long, value_name = "MODEL", help_heading = "Connection")]
     pub(crate) model: Option<String>,
 
     /// Select a managed model's advertised reasoning effort.
-    #[arg(long, value_name = "EFFORT")]
+    #[arg(long, value_name = "EFFORT", help_heading = "Connection")]
     pub(crate) reasoning_effort: Option<String>,
 
     /// Select the default permission policy.
-    #[arg(long, value_enum, value_name = "MODE")]
+    #[arg(
+        long,
+        value_enum,
+        value_name = "MODE",
+        help_heading = "Permissions and shell"
+    )]
     pub(crate) permission_mode: Option<PermissionChoice>,
 
     /// Confirm installation without a final terminal prompt.
-    #[arg(long)]
+    #[arg(long, help_heading = "Setup mode")]
     pub(crate) yes: bool,
 
     /// Establish and validate the connection but do not mutate durable state.
-    #[arg(long)]
+    #[arg(long, help_heading = "Setup mode")]
     pub(crate) dry_run: bool,
 
     /// Run every advanced setup section in one staged review.
-    #[arg(long, conflicts_with = "section")]
+    #[arg(long, conflicts_with = "section", help_heading = "Setup mode")]
     pub(crate) full: bool,
 
     /// Rerun one focused setup section.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help_heading = "Setup mode")]
     pub(crate) section: Option<SetupSectionChoice>,
 
     /// Configure the native command shell.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, help_heading = "Permissions and shell")]
     pub(crate) shell: Option<ShellChoice>,
 
     /// Override the selected shell executable.
-    #[arg(long, requires = "shell")]
+    #[arg(long, requires = "shell", help_heading = "Permissions and shell")]
     pub(crate) shell_program: Option<PathBuf>,
 
     /// Set a comma-separated logical capability set on the edited profile.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) capabilities: Option<String>,
 
     /// Name the profile edited by profiles/routes setup.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) profile: Option<String>,
 
     /// Select the exact connection for the edited profile.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) profile_connection: Option<String>,
 
     /// Select the exact model for the edited profile.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) profile_model: Option<String>,
 
     /// Name the exact task route edited by profiles/routes setup.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) route: Option<String>,
 
     /// Select the exact profile for the edited route.
-    #[arg(long)]
+    #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) route_profile: Option<String>,
 
-    #[arg(long)]
+    /// Limit the number of children admitted by one orchestration step.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_fan_out: Option<usize>,
-    #[arg(long)]
+    /// Limit total descendants admitted beneath one root.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_descendants: Option<usize>,
-    #[arg(long)]
+    /// Limit concurrently running child executions.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_concurrency: Option<usize>,
-    #[arg(long)]
+    /// Bound orchestration wall-clock time in seconds.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) deadline_seconds: Option<u64>,
-    #[arg(long)]
+    /// Bound cumulative child context usage.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_context_tokens: Option<usize>,
-    #[arg(long)]
+    /// Bound retained child report bytes.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_report_bytes: Option<usize>,
-    #[arg(long)]
+    /// Bound retained child artifact bytes.
+    #[arg(long, help_heading = "Orchestration limits")]
     pub(crate) max_artifact_bytes: Option<usize>,
 
     /// Add a validated permission rule as ID:DECISION:EFFECT[:WORKSPACE].
-    #[arg(long, value_name = "RULE")]
+    #[arg(long, value_name = "RULE", help_heading = "Permissions and shell")]
     pub(crate) permission_rule: Vec<String>,
 
-    #[arg(long, value_enum)]
+    /// Select the semantic color theme.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) theme: Option<ThemeChoice>,
-    #[arg(long, value_enum)]
+    /// Select Unicode or ASCII presentation glyphs.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) glyphs: Option<GlyphChoice>,
-    #[arg(long, value_enum)]
+    /// Select full or reduced presentation motion.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) motion: Option<MotionChoice>,
-    #[arg(long, value_enum)]
+    /// Select comfortable or compact terminal density.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) density: Option<DensityChoice>,
-    #[arg(long, value_enum)]
+    /// Select whether Enter submits or inserts a newline.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) composer: Option<ComposerChoice>,
-    #[arg(long, value_enum)]
+    /// Select automatic, shown, or hidden activity presentation.
+    #[arg(long, value_enum, help_heading = "Appearance")]
     pub(crate) activity: Option<ActivityChoice>,
 
     /// Start a new conversation immediately after a new-session change.
-    #[arg(long)]
+    #[arg(long, help_heading = "Setup mode")]
     pub(crate) start_new: bool,
 }
 
@@ -409,9 +453,11 @@ pub(crate) struct DoctorArgs {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ConnectionKindChoice {
     Ollama,
-    #[value(name = "openai_compat")]
+    #[value(name = "openai-compatible", alias = "openai_compat")]
     OpenAiCompat,
+    #[value(name = "openai", alias = "open-ai")]
     OpenAi,
+    #[value(name = "openrouter", alias = "open-router")]
     OpenRouter,
     Anthropic,
     Codex,
@@ -483,6 +529,7 @@ pub(crate) enum ConnectionCommand {
     /// Delete an API key from the operating-system credential store.
     DeleteKey { id: String },
     /// Refresh and cache non-secret model metadata.
+    #[command(hide = true)]
     Refresh { id: String },
     /// Remove an unreferenced connection declaration.
     Remove {
@@ -630,14 +677,18 @@ pub(crate) struct SessionArgs {
 pub(crate) enum SessionCommand {
     /// List bounded conversations for the canonical current workspace.
     List,
+    /// Start Xana in a fresh native session or managed thread.
+    New,
     /// Print bounded metadata without conversation content.
     Inspect { session_id: SessionId },
     /// Select one retained managed conversation for its next resume.
+    #[command(name = "select", alias = "select-managed")]
     SelectManaged {
         connection: String,
         thread_id: String,
     },
     /// Remove one local managed conversation handle without deleting the vendor thread.
+    #[command(name = "archive", alias = "archive-managed")]
     ArchiveManaged {
         connection: String,
         thread_id: String,
@@ -667,607 +718,4 @@ pub(crate) enum OperationCommand {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::error::ErrorKind;
-
-    #[test]
-    fn no_subcommand_means_normal_chat() {
-        let cli = Cli::try_parse_from(["xana"]).expect("bare invocation");
-
-        assert!(!cli.no_banner);
-        assert_eq!(cli.resume, None);
-        assert_eq!(cli.command, None);
-    }
-
-    #[test]
-    fn parses_plain_tui_and_one_shot_surface_contracts() {
-        let plain = Cli::try_parse_from(["xana", "--plain"]).expect("plain surface");
-        assert!(plain.plain);
-        assert!(!plain.tui);
-
-        let tui = Cli::try_parse_from(["xana", "--tui"]).expect("TUI surface");
-        assert!(tui.tui);
-        assert!(!tui.plain);
-
-        let argument =
-            Cli::try_parse_from(["xana", "-p", "hello"]).expect("one-shot argument surface");
-        assert_eq!(argument.print, Some(Some("hello".to_owned())));
-
-        let stdin = Cli::try_parse_from(["xana", "--print"]).expect("one-shot stdin surface");
-        assert_eq!(stdin.print, Some(None));
-
-        let json = Cli::try_parse_from(["xana", "--json", "-p", "hello"]).expect("JSON alias");
-        assert!(json.json);
-        assert_eq!(json.output, None);
-
-        let continued = Cli::try_parse_from(["xana", "--continue"]).expect("continuation");
-        assert!(continued.continue_chat);
-        let compatibility =
-            Cli::try_parse_from(["xana", "--continue-chat"]).expect("continuation alias");
-        assert!(compatibility.continue_chat);
-
-        assert!(Cli::try_parse_from(["xana", "--plain", "--tui"]).is_err());
-        let conflict = Cli::try_parse_from([
-            "xana",
-            "--resume",
-            "9eb8cfe0-2b3a-4c7b-9dc9-0a34f6490bf3",
-            "--continue",
-        ])
-        .expect_err("resume and continue conflict");
-        assert_eq!(conflict.kind(), ErrorKind::ArgumentConflict);
-    }
-
-    #[test]
-    fn parses_auth_lifecycle_commands() {
-        assert_eq!(
-            Cli::try_parse_from(["xana", "auth", "status", "codex"])
-                .expect("auth status")
-                .command,
-            Some(Command::Auth(AuthArgs {
-                command: AuthCommand::Status {
-                    provider: "codex".to_owned(),
-                },
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_connection_and_model_control_plane() {
-        assert_eq!(
-            Cli::try_parse_from([
-                "xana",
-                "connection",
-                "add",
-                "codex",
-                "--kind",
-                "codex",
-                "--model",
-                "gpt-5.3-codex",
-            ])
-            .unwrap()
-            .command,
-            Some(Command::Connection(ConnectionArgs {
-                command: ConnectionCommand::Add {
-                    id: "codex".into(),
-                    kind: ConnectionKindChoice::Codex,
-                    base_url: None,
-                    env: None,
-                    credential_id: None,
-                    model: "gpt-5.3-codex".into(),
-                    codex_program: None,
-                    codex_home: None,
-                }
-            }))
-        );
-        assert_eq!(
-            Cli::try_parse_from(["xana", "model", "use", "openrouter/openai/gpt-4.1"])
-                .unwrap()
-                .command,
-            Some(Command::Model(ModelArgs {
-                command: Some(ModelCommand::Use {
-                    selection: "openrouter/openai/gpt-4.1".into(),
-                    effort: None,
-                    summary: None,
-                })
-            }))
-        );
-        assert_eq!(
-            Cli::try_parse_from([
-                "xana",
-                "model",
-                "use",
-                "codex/gpt-5.6-sol",
-                "--effort",
-                "xhigh",
-                "--summary",
-                "detailed",
-            ])
-            .unwrap()
-            .command,
-            Some(Command::Model(ModelArgs {
-                command: Some(ModelCommand::Use {
-                    selection: "codex/gpt-5.6-sol".into(),
-                    effort: Some("xhigh".into()),
-                    summary: Some("detailed".into()),
-                })
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_read_only_route_diagnostics() {
-        assert_eq!(
-            Cli::try_parse_from(["xana", "route", "list"])
-                .expect("route list")
-                .command,
-            Some(Command::Route(RouteArgs {
-                command: RouteCommand::List,
-            }))
-        );
-        assert_eq!(
-            Cli::try_parse_from(["xana", "route", "check", "worker"])
-                .expect("route check")
-                .command,
-            Some(Command::Route(RouteArgs {
-                command: RouteCommand::Check {
-                    route: "worker".into(),
-                },
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_interactive_init() {
-        let cli =
-            Cli::try_parse_from(["xana", "init", "--dry-run"]).expect("interactive initialization");
-
-        assert_eq!(
-            cli.command,
-            Some(Command::Init(InitArgs {
-                non_interactive: false,
-                kind: None,
-                provider_name: None,
-                base_url: None,
-                codex_program: None,
-                codex_home: None,
-                model: None,
-                max_tool_rounds: None,
-                shell: None,
-                shell_program: None,
-                permission_mode: None,
-                dry_run: true,
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_guarded_reset_and_clean_alias() {
-        let reset = Cli::try_parse_from(["xana", "reset", "--yes"]).expect("reset command");
-        let clean = Cli::try_parse_from(["xana", "clean"]).expect("clean alias");
-
-        assert_eq!(
-            reset.command,
-            Some(Command::Reset(ResetArgs {
-                yes: true,
-                ..ResetArgs::default()
-            }))
-        );
-        assert_eq!(
-            clean.command,
-            Some(Command::Reset(ResetArgs {
-                yes: false,
-                ..ResetArgs::default()
-            }))
-        );
-
-        let scoped = Cli::try_parse_from([
-            "xana",
-            "reset",
-            "--scope",
-            "sessions",
-            "--scope",
-            "credentials",
-            "--yes",
-            "--credentials-yes",
-        ])
-        .expect("scoped reset");
-        assert_eq!(
-            scoped.command,
-            Some(Command::Reset(ResetArgs {
-                scope: vec![ResetScopeChoice::Sessions, ResetScopeChoice::Credentials],
-                yes: true,
-                credentials_yes: true,
-                dry_run: false,
-            }))
-        );
-
-        let doctor =
-            Cli::try_parse_from(["xana", "doctor", "--output", "json"]).expect("doctor command");
-        assert_eq!(
-            doctor.command,
-            Some(Command::Doctor(DoctorArgs {
-                output: OutputChoice::Json,
-                ..DoctorArgs::default()
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_loopback_serve_and_workspace_attach() {
-        let serve = Cli::try_parse_from(["xana", "serve", "--bind", "::1", "--port", "43123"])
-            .expect("serve command");
-        let attach = Cli::try_parse_from(["xana", "attach"]).expect("attach command");
-
-        assert_eq!(
-            serve.command,
-            Some(Command::Serve(ServeArgs {
-                bind: "::1".parse().unwrap(),
-                port: 43123,
-            }))
-        );
-
-        let artifact_id = ArtifactId::new();
-        let artifact =
-            Cli::try_parse_from(["xana", "attach", "--artifact", &artifact_id.to_string()])
-                .expect("artifact attachment");
-        assert!(matches!(
-            artifact.command,
-            Some(Command::Attach(AttachArgs {
-                artifact: Some(actual),
-                ..
-            })) if actual == artifact_id
-        ));
-        assert_eq!(
-            attach.command,
-            Some(Command::Attach(AttachArgs {
-                control: false,
-                takeover: false,
-                prompt: None,
-                artifact: None,
-            }))
-        );
-
-        let controller = Cli::try_parse_from([
-            "xana",
-            "attach",
-            "--control",
-            "--takeover",
-            "--prompt",
-            "continue",
-        ])
-        .expect("controller attach");
-        assert_eq!(
-            controller.command,
-            Some(Command::Attach(AttachArgs {
-                control: true,
-                takeover: true,
-                prompt: Some("continue".into()),
-                artifact: None,
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_complete_noninteractive_init() {
-        let cli = Cli::try_parse_from([
-            "xana",
-            "init",
-            "--non-interactive",
-            "--kind",
-            "ollama",
-            "--provider-name",
-            "ollama",
-            "--base-url",
-            "http://localhost:11434/v1",
-            "--model",
-            "qwen3:1.7b",
-            "--max-tool-rounds",
-            "12",
-            "--shell",
-            "powershell",
-            "--shell-program",
-            "pwsh.exe",
-            "--permission-mode",
-            "ask",
-        ])
-        .expect("complete noninteractive initialization");
-
-        assert_eq!(
-            cli.command,
-            Some(Command::Init(InitArgs {
-                non_interactive: true,
-                kind: Some(InitConnectionKindChoice::Ollama),
-                provider_name: Some("ollama".to_owned()),
-                base_url: Some("http://localhost:11434/v1".to_owned()),
-                codex_program: None,
-                codex_home: None,
-                model: Some("qwen3:1.7b".to_owned()),
-                max_tool_rounds: Some(12),
-                shell: Some(ShellChoice::PowerShell),
-                shell_program: Some(PathBuf::from("pwsh.exe")),
-                permission_mode: Some(PermissionChoice::Ask),
-                dry_run: false,
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_provider_neutral_noninteractive_setup_without_secret_argv() {
-        let cli = Cli::try_parse_from([
-            "xana",
-            "setup",
-            "--non-interactive",
-            "--kind",
-            "open-router",
-            "--connection",
-            "openrouter",
-            "--credential-env",
-            "OPENROUTER_API_KEY",
-            "--model",
-            "openai/gpt-4.1",
-            "--permission-mode",
-            "ask",
-            "--yes",
-        ])
-        .expect("complete setup");
-
-        assert_eq!(
-            cli.command,
-            Some(Command::Setup(Box::new(SetupArgs {
-                non_interactive: true,
-                kind: Some(ConnectionKindChoice::OpenRouter),
-                connection: Some("openrouter".into()),
-                base_url: None,
-                codex_program: None,
-                codex_home: None,
-                credential_env: Some("OPENROUTER_API_KEY".into()),
-                key_from_stdin: false,
-                model: Some("openai/gpt-4.1".into()),
-                reasoning_effort: None,
-                permission_mode: Some(PermissionChoice::Ask),
-                yes: true,
-                dry_run: false,
-                ..SetupArgs::default()
-            })))
-        );
-    }
-
-    #[test]
-    fn parses_installer_owned_setup_readiness_handoff() {
-        let cli = Cli::try_parse_from(["xana", "setup", "--if-needed"])
-            .expect("parse setup readiness handoff");
-        assert!(matches!(
-            cli.command,
-            Some(Command::Setup(args)) if *args == SetupArgs {
-                if_needed: true,
-                ..SetupArgs::default()
-            }
-        ));
-    }
-
-    #[test]
-    fn parses_explicit_quick_setup_without_the_path_menu() {
-        assert!(matches!(
-            Cli::try_parse_from(["xana", "setup", "--quick"])
-                .unwrap()
-                .command,
-            Some(Command::Setup(args)) if args.quick
-        ));
-    }
-
-    #[test]
-    fn setup_readiness_handoff_rejects_setup_choices() {
-        let cli = Cli::try_parse_from(["xana", "setup", "--if-needed", "--model", "llama3.2"])
-            .expect("parse before application validation");
-        let Some(Command::Setup(args)) = cli.command else {
-            panic!("expected setup command");
-        };
-        assert!(args.if_needed);
-        assert_ne!(
-            *args,
-            SetupArgs {
-                if_needed: true,
-                ..SetupArgs::default()
-            }
-        );
-    }
-
-    #[test]
-    fn parses_exact_sectional_setup_operations() {
-        let appearance = Cli::try_parse_from([
-            "xana",
-            "setup",
-            "--non-interactive",
-            "--section",
-            "appearance",
-            "--theme",
-            "monochrome",
-            "--motion",
-            "reduced",
-            "--yes",
-        ])
-        .unwrap();
-        assert!(matches!(
-            appearance.command,
-            Some(Command::Setup(args)) if matches!(*args, SetupArgs {
-                section: Some(SetupSectionChoice::Appearance),
-                theme: Some(ThemeChoice::Monochrome),
-                motion: Some(MotionChoice::Reduced),
-                ..
-            })
-        ));
-
-        let routes = Cli::try_parse_from([
-            "xana",
-            "setup",
-            "--non-interactive",
-            "--section",
-            "profiles-routes",
-            "--profile",
-            "reviewer",
-            "--profile-connection",
-            "ollama",
-            "--profile-model",
-            "qwen",
-            "--route",
-            "review",
-            "--route-profile",
-            "reviewer",
-            "--max-concurrency",
-            "2",
-            "--yes",
-        ])
-        .unwrap();
-        assert!(matches!(
-            routes.command,
-            Some(Command::Setup(args)) if matches!(*args, SetupArgs {
-                section: Some(SetupSectionChoice::ProfilesRoutes),
-                profile: Some(_),
-                route: Some(_),
-                max_concurrency: Some(2),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn parses_managed_codex_init() {
-        let cli = Cli::try_parse_from([
-            "xana",
-            "init",
-            "--non-interactive",
-            "--kind",
-            "codex",
-            "--provider-name",
-            "codex",
-            "--codex-program",
-            "codex-preview",
-            "--model",
-            "gpt-5.6-sol",
-            "--permission-mode",
-            "ask",
-        ])
-        .expect("managed Codex initialization");
-
-        assert!(matches!(
-            cli.command,
-            Some(Command::Init(InitArgs {
-                kind: Some(InitConnectionKindChoice::Codex),
-                codex_program: Some(program),
-                base_url: None,
-                ..
-            })) if program == "codex-preview"
-        ));
-    }
-
-    #[test]
-    fn parses_config_path_check_and_edit() {
-        let path = Cli::try_parse_from(["xana", "config", "path"]).expect("config path command");
-        let check = Cli::try_parse_from(["xana", "config", "check"]).expect("config check command");
-        let edit = Cli::try_parse_from(["xana", "config", "edit", "--editor", "code"])
-            .expect("config edit command");
-
-        assert_eq!(
-            path.command,
-            Some(Command::Config(ConfigArgs {
-                command: ConfigCommand::Path,
-            }))
-        );
-        assert_eq!(
-            check.command,
-            Some(Command::Config(ConfigArgs {
-                command: ConfigCommand::Check,
-            }))
-        );
-        assert_eq!(
-            edit.command,
-            Some(Command::Config(ConfigArgs {
-                command: ConfigCommand::Edit {
-                    editor: Some(PathBuf::from("code")),
-                },
-            }))
-        );
-    }
-
-    #[test]
-    fn parses_explicit_resume_and_session_inspection() {
-        let id = SessionId::new();
-        let resume =
-            Cli::try_parse_from(["xana", "--resume", &id.to_string()]).expect("resume argument");
-        let inspect = Cli::try_parse_from(["xana", "session", "inspect", &id.to_string()])
-            .expect("session inspect command");
-
-        assert_eq!(resume.resume, Some(id));
-        assert_eq!(resume.command, None);
-        assert_eq!(
-            inspect.command,
-            Some(Command::Session(SessionArgs {
-                command: SessionCommand::Inspect { session_id: id },
-            }))
-        );
-        assert!(matches!(
-            Cli::try_parse_from(["xana", "session", "list"])
-                .unwrap()
-                .command,
-            Some(Command::Session(SessionArgs {
-                command: SessionCommand::List
-            }))
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["xana", "session", "select-managed", "codex", "thread-1"])
-                .unwrap()
-                .command,
-            Some(Command::Session(SessionArgs {
-                command: SessionCommand::SelectManaged { .. }
-            }))
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["xana", "session", "archive-managed", "codex", "thread-1"])
-                .unwrap()
-                .command,
-            Some(Command::Session(SessionArgs {
-                command: SessionCommand::ArchiveManaged { .. }
-            }))
-        ));
-    }
-
-    #[test]
-    fn parses_operation_plan_and_resume() {
-        let session_id = SessionId::new();
-        let operation_id = crate::identity::OperationId::new();
-        for action in ["plan", "resume"] {
-            let parsed = Cli::try_parse_from([
-                "xana",
-                "operation",
-                action,
-                "--session",
-                &session_id.to_string(),
-                &operation_id.to_string(),
-            ])
-            .expect("operation command");
-            assert!(matches!(parsed.command, Some(Command::Operation(_))));
-        }
-    }
-
-    #[test]
-    fn rejects_unknown_commands_and_invalid_round_counts() {
-        let unknown =
-            Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");
-        let invalid_rounds =
-            Cli::try_parse_from(["xana", "init", "--max-tool-rounds", "not-a-number"])
-                .expect_err("invalid count should fail");
-
-        assert_eq!(unknown.kind(), ErrorKind::InvalidSubcommand);
-        assert_eq!(invalid_rounds.kind(), ErrorKind::ValueValidation);
-    }
-
-    #[test]
-    fn no_banner_is_global() {
-        let bare = Cli::try_parse_from(["xana", "--no-banner"]).expect("bare no-banner");
-        let init = Cli::try_parse_from(["xana", "init", "--no-banner"]).expect("init no-banner");
-
-        assert!(bare.no_banner);
-        assert!(init.no_banner);
-    }
-}
+mod tests;
