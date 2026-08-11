@@ -17,10 +17,6 @@ impl CapabilityId {
         let value = value.into();
         validate_id(&value).map(|()| Self(value))
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 impl fmt::Display for CapabilityId {
@@ -63,7 +59,8 @@ impl AgentCapabilitySnapshot {
         }
     }
 
-    pub fn contains(&self, id: &CapabilityId) -> bool {
+    #[cfg(test)]
+    fn contains(&self, id: &CapabilityId) -> bool {
         self.capabilities.contains(id)
     }
 
@@ -92,10 +89,6 @@ impl ProviderId {
     pub fn parse(value: impl Into<String>) -> Result<Self, CapabilityIdError> {
         let value = value.into();
         validate_id(&value).map(|()| Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -161,8 +154,6 @@ pub enum UnavailableReason {
     MissingRequired { dependency: CapabilityId },
     DependencyUnavailable { dependency: CapabilityId },
     Cycle { path: Vec<CapabilityId> },
-    DuplicateCapability { providers: Vec<ProviderId> },
-    DuplicateTool { providers: Vec<ProviderId> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +236,7 @@ pub struct ResolutionInput {
 
 pub struct ResolvedCapabilities {
     pub snapshot: AgentCapabilitySnapshot,
+    #[cfg(test)]
     pub unavailable: BTreeMap<CapabilityId, UnavailableReason>,
 }
 
@@ -385,6 +377,12 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
     let mut tool_ids = BTreeSet::<LogicalToolId>::new();
     for provider in &providers {
         for tool in &provider.tools {
+            if !capabilities.contains_key(&tool.capability) {
+                return Err(ResolutionError::ToolCapabilityMissing {
+                    tool: tool.id.clone(),
+                    capability: tool.capability.clone(),
+                });
+            }
             if !resolved.contains(&tool.capability) {
                 continue;
             }
@@ -406,6 +404,7 @@ pub fn resolve(input: ResolutionInput) -> Result<ResolvedCapabilities, Resolutio
 
     Ok(ResolvedCapabilities {
         snapshot: AgentCapabilitySnapshot::new(resolved, tool_ids),
+        #[cfg(test)]
         unavailable,
     })
 }
@@ -612,6 +611,26 @@ mod tests {
             selected: BTreeSet::new(),
         });
         assert!(matches!(result, Err(ResolutionError::DuplicateTool { .. })));
+    }
+
+    #[test]
+    fn tool_without_a_declared_capability_is_rejected() {
+        let result = resolve(ResolutionInput {
+            providers: vec![ProviderDescriptor {
+                provider_id: ProviderId::parse("p").unwrap(),
+                capabilities: vec![],
+                tools: vec![ToolContribution {
+                    id: LogicalToolId::parse("tool.read").unwrap(),
+                    capability: id("missing"),
+                }],
+            }],
+            enabled: BTreeSet::new(),
+            selected: BTreeSet::new(),
+        });
+        assert!(matches!(
+            result,
+            Err(ResolutionError::ToolCapabilityMissing { .. })
+        ));
     }
 
     #[test]

@@ -31,35 +31,45 @@ describes native inference, Codex delegation, catalogs, selection, and
 credential ownership.
 
 ```mermaid
-flowchart LR
-    MAIN["main<br/>process composition"] --> APP["app<br/>command orchestration"]
-    APP --> INIT["init<br/>configuration planning and creation"]
-    APP --> TERMINAL["terminal<br/>native and managed clients"]
+flowchart TB
+    MAIN["main<br/>process composition"] --> APP["app<br/>control-plane orchestration"]
+    APP --> INIT["init + setup<br/>configuration transactions"]
+    APP --> CONFIG["config + paths + credentials"]
+    APP --> CATALOG["model_catalog<br/>connection-owned discovery and selection"]
+    APP --> PLAIN["plain_terminal<br/>append-only client"]
+    APP --> TUI["tui<br/>Ratatui/Crossterm client"]
     APP --> LOCAL["local_host<br/>authenticated loopback projection"]
-    APP --> CONFIG["config + paths"]
-    APP --> SESSION["durable session<br/>JSONL owner"]
+    APP --> NATIVE["native_runtime<br/>Xana-owned foreground execution"]
+    APP --> MANAGED_EXEC["managed_execution<br/>Xana-facing foreign-loop adapter"]
+    APP --> SESSION["session<br/>durable JSONL owner"]
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
     SESSION --> CONTEXT["versioned project context"]
     SESSION --> OPERATION["durable operation log<br/>intent + result"]
     CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
     PROMPT --> AGENT
-    TERMINAL <-->|"client commands + observations"| FRONTEND["embedded frontend client<br/>snapshot + sequence + bounds"]
-    LOCAL -.->|"same repository-private semantics"| FRONTEND
+    PLAIN -->|"shared application behavior"| NATIVE
+    PLAIN -->|"shared application behavior"| MANAGED_EXEC
+    TUI <-->|"embedded commands + observations"| FRONTEND["frontend<br/>repository-private typed contract"]
+    LOCAL -.->|"loopback projection of same semantics"| FRONTEND
     CLIENT["attached observer / one controller"] <-->|"capability + snapshot + ordered events / commands"| LOCAL
-    FRONTEND <-->|"runtime commands + events"| RUNTIME["foreground runtime<br/>history + active operation"]
-    RUNTIME --> AGENT["Agent<br/>bounded native loop"]
-    RUNTIME --> SUPERVISOR["child supervisor<br/>durable handles + ownership"]
+    FRONTEND <-->|"native commands + events"| NATIVE
+    FRONTEND <-->|"provider-neutral managed events"| MANAGED_EXEC
+    NATIVE --> AGENT["agent<br/>bounded headless native loop"]
+    NATIVE --> SUPERVISOR["orchestration supervisor<br/>durable handles + ownership"]
     SUPERVISOR --> OWNER["execution-owner factory<br/>exact route snapshot"]
     OWNER --> CHILD["fresh native child Agent"]
     OWNER --> MC_CHILD["fresh ephemeral Codex child<br/>app-server + thread"]
     SUPERVISOR --> SESSION
     AGENT --> PROVIDER["ConversationalProvider"]
-    APP --> MANAGED["Codex app-server<br/>managed inner loop"]
+    CATALOG --> PROVIDER
+    CATALOG --> MANAGED["managed/codex<br/>app-server transport + account/catalog RPC"]
+    MANAGED_EXEC --> MANAGED
     AGENT --> OPERATION
     OPERATION --> TOOLS["tool registry<br/>plan + invoke"]
     TOOLS --> BROKER["permission broker<br/>policy + grants + pending"]
     MC_CHILD -->|"approval callbacks"| BROKER
-    TERMINAL -->|"typed decision"| BROKER
+    PLAIN -->|"typed decision"| BROKER
+    TUI -->|"typed decision"| BROKER
     BROKER --> HOST["workspace-scoped host tools"]
     BROKER --> SHELL["configured shell execution"]
 ```
@@ -79,6 +89,13 @@ per surface. Redirected, dumb, monochrome, and `NO_COLOR` profiles resolve to
 plain text with no control sequences. Preference failure falls back safely and
 cannot change runtime policy. None of those frontend concerns enters the
 headless agent loop.
+
+All of these boundaries currently live in the one `xana` application package.
+Their Rust visibility is private or `pub(crate)` except for the executable
+entry required by `main`. They are not a promised SDK. A public engine or
+frontend crate should be extracted only after a second real frontend proves
+the smallest reusable contract; desktop, web, or mobile intent alone is not an
+extraction trigger.
 
 The embedded client captures an initial snapshot before it begins forwarding
 live events. The snapshot carries the native conversation, connection, model,

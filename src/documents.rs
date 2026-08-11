@@ -37,11 +37,10 @@ pub struct ExtractedDocument {
 pub enum DocumentErrorKind {
     Unsupported,
     Malformed,
-    Encrypted,
     InputLimit,
+    #[cfg(feature = "documents-csv")]
     WorkLimit,
     OutputLimit,
-    Extractor,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,11 +68,10 @@ impl fmt::Display for DocumentErrorKind {
         f.write_str(match self {
             Self::Unsupported => "unsupported",
             Self::Malformed => "malformed",
-            Self::Encrypted => "encrypted",
             Self::InputLimit => "input limit",
+            #[cfg(feature = "documents-csv")]
             Self::WorkLimit => "work limit",
             Self::OutputLimit => "output limit",
-            Self::Extractor => "extractor",
         })
     }
 }
@@ -85,6 +83,7 @@ pub trait DocumentExtractor: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinDocumentExtractor {
     pub max_input_bytes: usize,
+    #[cfg(feature = "documents-csv")]
     pub max_cells: usize,
 }
 
@@ -92,6 +91,7 @@ impl Default for BuiltinDocumentExtractor {
     fn default() -> Self {
         Self {
             max_input_bytes: 16 * 1024 * 1024,
+            #[cfg(feature = "documents-csv")]
             max_cells: 100_000,
         }
     }

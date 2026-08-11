@@ -7,14 +7,16 @@ use std::{fmt, ops::Range};
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DocAudience {
     User,
     Contributor,
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DocAuthority {
     Descriptive,
     Prescriptive,
@@ -24,9 +26,7 @@ pub enum DocAuthority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DocStatus {
     Shipped,
-    Accepted,
     Proposed,
-    Historical,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -44,6 +44,8 @@ pub struct BundledDoc {
 pub struct DocSummary {
     pub id: &'static str,
     pub title: &'static str,
+    pub audience: &'static [DocAudience],
+    pub authority: DocAuthority,
     pub status: DocStatus,
     pub topics: &'static [&'static str],
 }
@@ -84,28 +86,16 @@ impl std::error::Error for DocReadError {}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ProductDocCatalog {
-    product_version: &'static str,
     entries: &'static [BundledDoc],
     max_read_bytes: usize,
 }
 
 impl ProductDocCatalog {
-    pub const fn new(
-        product_version: &'static str,
-        entries: &'static [BundledDoc],
-        max_read_bytes: usize,
-    ) -> Self {
+    pub const fn new(entries: &'static [BundledDoc], max_read_bytes: usize) -> Self {
         Self {
-            product_version,
             entries,
             max_read_bytes,
         }
-    }
-    pub fn product_version(&self) -> &str {
-        self.product_version
-    }
-    pub fn entries(&self) -> &[BundledDoc] {
-        self.entries
     }
     pub fn list(&self, topic: Option<&str>) -> Vec<DocSummary> {
         let mut entries = self
@@ -115,6 +105,8 @@ impl ProductDocCatalog {
             .map(|entry| DocSummary {
                 id: entry.id,
                 title: entry.title,
+                audience: entry.audience,
+                authority: entry.authority,
                 status: entry.status,
                 topics: entry.topics,
             })
@@ -328,7 +320,7 @@ static ENTRIES: &[BundledDoc] = &[
 ];
 
 pub fn default_catalog() -> ProductDocCatalog {
-    ProductDocCatalog::new(env!("CARGO_PKG_VERSION"), ENTRIES, 32 * 1024)
+    ProductDocCatalog::new(ENTRIES, 32 * 1024)
 }
 
 #[cfg(test)]
@@ -344,18 +336,18 @@ mod tests {
             .map(|summary| summary.id)
             .collect::<Vec<_>>();
         assert!(ids.windows(2).all(|pair| pair[0] < pair[1]));
-        assert_eq!(catalog.product_version(), env!("CARGO_PKG_VERSION"));
     }
 
     #[test]
     fn proposed_entry_has_no_prescriptive_authority() {
         let catalog = default_catalog();
         let proposal = catalog
-            .entries()
-            .iter()
+            .list(None)
+            .into_iter()
             .find(|entry| entry.status == DocStatus::Proposed)
             .unwrap();
         assert_eq!(proposal.authority, DocAuthority::None);
+        assert!(proposal.audience.contains(&DocAudience::Agent));
     }
 
     #[test]

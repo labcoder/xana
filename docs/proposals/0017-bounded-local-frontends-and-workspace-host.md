@@ -6,9 +6,9 @@
 
 ## Context
 
-Xana currently has a headless engine, a foreground application runtime, a
-single append-only terminal client, durable native sessions, and managed Codex
-threads. The current foreground protocol in historical
+At acceptance time, Xana had a headless engine, a foreground application
+runtime, a single append-only terminal client, durable native sessions, and
+managed Codex threads. The current foreground protocol in historical
 [Proposal 0010](0010-foreground-runtime-protocol.md) has one bounded command
 channel and one unbounded live event receiver. It has no client snapshot,
 multi-client attachment, local host, or full-screen TUI.
@@ -18,10 +18,10 @@ boundary without accepting the broader daemon, remote hosting, retained work,
 extension, or public-protocol designs in Proposals
 [0001](0001-runtime-and-frontend-boundaries.md),
 [0005](0005-runtime-protocol-threads-and-concurrency.md), and
-[0007](0007-state-ownership-and-configuration.md). This proposal accepts only
-that bounded local slice. Until implementation is complete,
-[Architecture](../architecture/README.md) remains authoritative for what Xana
-does today.
+[0007](0007-state-ownership-and-configuration.md). This proposal accepted only
+that bounded local slice. [Architecture](../architecture/README.md) is now
+authoritative for the implemented result; this proposal preserves the decision
+and its original scope.
 
 ## Accepted component boundary
 
@@ -133,15 +133,16 @@ Those ideas remain non-authoritative unless separately accepted.
 
 ## Implementation and status
 
-Implementation proceeds in independently verified slices: a frontend-safe
+Implementation proceeded in independently verified slices: a frontend-safe
 embedded client, plain and one-shot contracts, workspace host ownership,
 presentation capabilities, the adaptive TUI, the authenticated loopback
 projection, transactional setup, and bounded shutdown. Each slice updates
 Architecture and User Documentation in the same change that ships it.
 
-When the complete accepted contract is implemented, this proposal becomes
-historical and Architecture owns the resulting description. Partial delivery
-does not permit unimplemented sections to be described as current behavior.
+The complete accepted contract is implemented, so this proposal is historical
+and Architecture owns the resulting description. During delivery, partial
+implementation did not permit unimplemented sections to be described as
+current behavior.
 
 The frontend-safe embedded-client, permanent plain/one-shot, embedded
 workspace-host ownership, presentation-capability, and native adaptive-TUI
