@@ -16,7 +16,7 @@ use crate::{
         codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
         thread_store::ManagedThreadStore,
     },
-    model::{ModelDescriptor, ModelManager, ReasoningSummary},
+    model_catalog::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     plain_terminal::ChatExit,
     presentation::{ResolvedPresentation, SemanticToken},
@@ -730,7 +730,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     Ok(id)
 }
 
-fn print_models(models: &[crate::model::ModelDescriptor], selected: &str) {
+fn print_models(models: &[crate::model_catalog::ModelDescriptor], selected: &str) {
     for descriptor in models {
         let marker = if descriptor.id == selected { "*" } else { " " };
         let efforts = descriptor
@@ -758,8 +758,8 @@ fn print_models(models: &[crate::model::ModelDescriptor], selected: &str) {
 }
 
 fn print_reasoning_status(
-    selection: &crate::model::ModelSelection,
-    models: &[crate::model::ModelDescriptor],
+    selection: &crate::model_catalog::ModelSelection,
+    models: &[crate::model_catalog::ModelDescriptor],
     model: &str,
 ) {
     println!(
@@ -811,7 +811,7 @@ mod tests {
     use super::*;
     use crate::{
         managed::codex::{ApprovalRequest, ManagedEventHandler, ManagedNotification},
-        model::DescriptorSource,
+        model_catalog::DescriptorSource,
     };
     use std::collections::BTreeSet;
     use tempfile::tempdir;

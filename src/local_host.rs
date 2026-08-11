@@ -120,7 +120,7 @@ pub(crate) async fn run_managed_host(
 
 pub(crate) struct ManagedHostExecution {
     pub(crate) server: crate::managed::codex::CodexAppServer,
-    pub(crate) models: crate::model::ModelManager,
+    pub(crate) models: crate::model_catalog::ModelManager,
     pub(crate) config: crate::managed_execution::ManagedChatConfig,
     pub(crate) workspace_host: WorkspaceHost,
     pub(crate) conversation: ConversationRef,

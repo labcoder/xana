@@ -5,7 +5,7 @@ use crate::{
     config::{ConnectionConfig, CredentialReference, ProviderKind, XanaConfig},
     credential::CredentialAvailability,
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig},
-    model::ModelManager,
+    model_catalog::ModelManager,
     paths::XanaPaths,
 };
 use std::time::Duration;

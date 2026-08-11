@@ -1,4 +1,4 @@
-use super::model::{ArtifactAction, UpdateEffect};
+use super::state::{ArtifactAction, UpdateEffect};
 use super::*;
 use crate::{
     agent::Agent,
@@ -100,7 +100,7 @@ async fn scripted_turn_crosses_the_real_embedded_client_and_finishes_in_view_sta
     let mut state = TuiState::from_client(
         &client,
         ComposerPreset::Submit,
-        model::ActivityVisibility::Auto,
+        state::ActivityVisibility::Auto,
         ConversationRef::NewNative,
     );
     state.update_input(InputAction::Insert("hi".to_owned()));
@@ -151,7 +151,7 @@ async fn delayed_provider_does_not_block_frontend_updates() {
     let mut state = TuiState::from_client(
         &client,
         ComposerPreset::Submit,
-        model::ActivityVisibility::Auto,
+        state::ActivityVisibility::Auto,
         ConversationRef::NewNative,
     );
     state.update_input(InputAction::Insert("wait".to_owned()));
@@ -212,7 +212,7 @@ fn artifact_preview_and_reference_actions_are_explicit_and_bounded() {
         .unwrap();
     assert!(matches!(
         state.overlay,
-        Some(model::Overlay::Artifact {
+        Some(state::Overlay::Artifact {
             preview: Some(ref preview),
             ..
         }) if preview == "bounded artifact preview"

@@ -3,7 +3,7 @@
 mod events;
 
 use crate::{
-    model::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary},
+    model_catalog::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary},
     process_capture,
 };
 use events::normalize_notification;

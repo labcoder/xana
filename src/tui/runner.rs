@@ -8,14 +8,15 @@ use super::{
     PreparedTui, clipboard,
     effects::{dispatch_effect, dispatch_managed_effect},
     input::TerminalInput,
-    model::{TuiState, UpdateEffect},
-    session, terminal_input_action, view,
+    session,
+    state::{TuiState, UpdateEffect},
+    terminal_input_action, view,
 };
 use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     managed::{codex::ApprovalDecision, codex::CodexAppServer},
     managed_execution::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
-    model::ModelManager,
+    model_catalog::ModelManager,
     native_runtime::{AgentEvent, OperationState, RuntimeHandle},
     plain_terminal::{ChatExit, ChatHeader},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},

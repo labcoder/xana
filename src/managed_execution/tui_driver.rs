@@ -14,7 +14,7 @@ use crate::{
         },
         thread_store::ManagedThreadStore,
     },
-    model::{ModelDescriptor, ModelManager},
+    model_catalog::{ModelDescriptor, ModelManager},
     vision::ImageAttachment,
     workspace_host::{ConversationRef, WorkspaceHost},
 };

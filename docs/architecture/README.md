@@ -625,7 +625,7 @@ does not claim atomic or crash-safe writes.
 Bare `xana` chooses the Ratatui/Crossterm full-screen frontend only when stdin
 and stdout are interactive. `--plain` selects the permanent append-only client;
 non-TTY launch chooses it automatically, and `--tui` makes terminal
-initialization mandatory. The TUI owns an explicit state/update/view model,
+initialization mandatory. The TUI owns an explicit state/update/view architecture,
 consumes the same bounded embedded snapshot/events as plain native chat, and
 emits only typed runtime commands. It paints a local starting frame before
 configuration/provider composition. The startup header is expanded identity
@@ -926,7 +926,7 @@ The application modules establish responsibility and I/O boundaries:
   behavior and managed-loop adaptation. Managed activity filtering/retention is isolated in
   `managed_execution/activity` so display policy does not enter the process or
   conversation loop. `tui` confines Ratatui/Crossterm types to its lifecycle,
-  shared runner, terminal-independent model/update policy, and pure adaptive
+  shared runner, terminal-independent `tui/state` update policy, and pure adaptive
   view modules. Conversation virtualization/selection and overlays are focused
   view children. Composer editing, input normalization, command reduction,
   native/managed effect interpretation, and execution-owner adapters are
@@ -944,7 +944,7 @@ The application modules establish responsibility and I/O boundaries:
   handle/report types, native child composition, and the crate-private managed
   Codex child adapter. Its supervisor facade delegates admission, lifecycle,
   bounded activity projection, command-side handles, and allocation-free JSON
-  size accounting to focused child modules. The runtime remains the only
+  size accounting to focused child modules. The native runtime remains the only
   session writer.
 - `operation` owns invocation intent/result ordering, bounded durable values,
   replay classification, and explicit recovery execution.
@@ -960,7 +960,7 @@ The application modules establish responsibility and I/O boundaries:
 - `prompt` and `context` own per-turn versioned assembly, transient prompt
   selection, durable context records, provenance, previewing, and input-budget
   enforcement.
-- `provider`, `model`, `credential`, and `managed` separate native generation,
+- `provider`, `model_catalog`, `credential`, and `managed` separate native generation,
   catalogs/selection, static secret ownership, and foreign runtime control.
   `managed/codex/events` is the bounded wire-to-domain event normalizer;
   `managed/thread_store` owns only opaque managed thread handles.

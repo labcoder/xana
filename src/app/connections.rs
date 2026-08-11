@@ -5,7 +5,7 @@ use crate::{
     config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
     credential::{SecretString, delete_secret, store_secret},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
-    model::{ExecutionKind, ModelManager},
+    model_catalog::{ExecutionKind, ModelManager},
     paths::XanaPaths,
 };
 use anyhow::{Context, Result};
@@ -344,7 +344,7 @@ pub(super) async fn run_model_command<W: Write>(
             let manager = model_manager(paths)?;
             let effort = effort.and_then(|value| (value != "auto").then_some(value));
             let summary = summary
-                .map(|value| value.parse::<crate::model::ReasoningSummary>())
+                .map(|value| value.parse::<crate::model_catalog::ReasoningSummary>())
                 .transpose()?;
             let selected = manager.select_with_options(connection, model, effort, summary)?;
             writeln!(

@@ -1,9 +1,8 @@
 //! Native and managed execution-owner interpretation of TUI update effects.
 
 use super::{
-    clipboard,
-    model::{ArtifactAction, TuiState, UpdateEffect},
-    session,
+    clipboard, session,
+    state::{ArtifactAction, TuiState, UpdateEffect},
 };
 use crate::{
     frontend::EmbeddedClient,
