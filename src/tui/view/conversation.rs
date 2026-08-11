@@ -1,8 +1,8 @@
 //! Bounded conversation projection, viewport rendering, and cell selection.
 
 use super::super::{
-    model::{MessageKind, ScreenPoint, TuiState},
     rich_text::RichLineKind,
+    state::{MessageKind, ScreenPoint, TuiState},
 };
 use super::{clamp_point, panel_content, semantic_style};
 use crate::presentation::{ResolvedPresentation, SemanticToken};
@@ -172,7 +172,7 @@ fn ordered_points(left: ScreenPoint, right: ScreenPoint) -> (ScreenPoint, Screen
 }
 
 fn conversation_message_lines(
-    message: &super::super::model::VisibleMessage,
+    message: &super::super::state::VisibleMessage,
     profile: ResolvedPresentation,
 ) -> Vec<Line<'static>> {
     let (label, token) = match message.kind {

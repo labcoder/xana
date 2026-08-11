@@ -18,7 +18,7 @@ use crate::{
     credential::CredentialResolver,
     managed::codex::{CodexLaunchConfig, ManagedTurnOptions},
     message::{ContentBlock, Message, Role},
-    model::ModelManager,
+    model_catalog::ModelManager,
     permission::{PermissionPolicy, PermissionRule},
     prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
     provider::{

@@ -10,10 +10,10 @@ mod composer;
 mod effects;
 mod input;
 mod lifecycle;
-mod model;
 mod rich_text;
 mod runner;
 mod session;
+mod state;
 mod view;
 
 use crate::presentation::{ComposerPreset, PresentationPreferences, ResolvedPresentation};
@@ -22,7 +22,7 @@ use crossterm::event::{
 };
 use input::TerminalInputEvent;
 use lifecycle::TerminalSession;
-use model::{InputAction, MoveDirection, TuiState};
+use state::{InputAction, MoveDirection, TuiState};
 use std::{io, path::PathBuf};
 
 pub(crate) use runner::{run_managed, run_native};

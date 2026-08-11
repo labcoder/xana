@@ -8,7 +8,7 @@ use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
-    model::{ExecutionKind, ModelManager},
+    model_catalog::{ExecutionKind, ModelManager},
     native_runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},

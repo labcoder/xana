@@ -1,4 +1,4 @@
-use super::super::model::MessageKind;
+use super::super::state::MessageKind;
 use super::*;
 use crate::presentation::{ComposerPreset, ResolvedPresentation};
 use crate::{
@@ -37,8 +37,8 @@ fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;
-    state.update_input(super::super::model::InputAction::OpenPalette);
-    state.update_input(super::super::model::InputAction::Insert("mod".to_owned()));
+    state.update_input(super::super::state::InputAction::OpenPalette);
+    state.update_input(super::super::state::InputAction::Insert("mod".to_owned()));
     terminal
         .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
         .unwrap();
@@ -80,9 +80,9 @@ fn command_palette_keeps_the_keyboard_selection_inside_its_viewport() {
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = TuiState::starting(ComposerPreset::Submit);
-    state.update_input(super::super::model::InputAction::OpenPalette);
+    state.update_input(super::super::state::InputAction::OpenPalette);
     for _ in 0..64 {
-        state.update_input(super::super::model::InputAction::PaletteDown);
+        state.update_input(super::super::state::InputAction::PaletteDown);
     }
 
     terminal
@@ -101,8 +101,8 @@ fn command_palette_renders_session_modes_as_a_fixed_header_table() {
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = TuiState::starting(ComposerPreset::Submit);
-    state.update_input(super::super::model::InputAction::OpenPalette);
-    state.update_input(super::super::model::InputAction::Insert(
+    state.update_input(super::super::state::InputAction::OpenPalette);
+    state.update_input(super::super::state::InputAction::Insert(
         "/sessions".to_owned(),
     ));
 
@@ -128,7 +128,7 @@ fn ten_thousand_message_fixture_renders_only_the_bounded_viewport_window() {
         let text = format!("message {index}");
         state
             .messages
-            .push_back(super::super::model::VisibleMessage {
+            .push_back(super::super::state::VisibleMessage {
                 kind: MessageKind::Assistant,
                 document: super::super::rich_text::RichDocument::plain(&text),
                 text,
@@ -156,7 +156,7 @@ fn conversation_follows_the_visual_bottom_and_scrolls_within_a_long_message() {
         .join("\n");
     state
         .messages
-        .push_back(super::super::model::VisibleMessage {
+        .push_back(super::super::state::VisibleMessage {
             kind: MessageKind::Assistant,
             document: super::super::rich_text::RichDocument::plain(&text),
             text,
@@ -167,7 +167,7 @@ fn conversation_follows_the_visual_bottom_and_scrolls_within_a_long_message() {
         .unwrap();
     assert!(buffer_text(terminal.backend().buffer()).contains("answer-line-39"));
 
-    state.update_input(super::super::model::InputAction::Scroll(-3));
+    state.update_input(super::super::state::InputAction::Scroll(-3));
     terminal
         .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
         .unwrap();
@@ -186,7 +186,7 @@ fn ordinary_conversation_drag_keeps_highlight_until_explicit_copy_or_click() {
     state.messages.clear();
     state
         .messages
-        .push_back(super::super::model::VisibleMessage {
+        .push_back(super::super::state::VisibleMessage {
             kind: MessageKind::Assistant,
             text: "copy me".to_owned(),
             document: super::super::rich_text::RichDocument::plain("copy me"),
@@ -204,12 +204,12 @@ fn ordinary_conversation_drag_keeps_highlight_until_explicit_copy_or_click() {
     let begin = pointer_action(start.column, start.row, false, &state, area).unwrap();
     assert_eq!(
         state.update_input(begin),
-        super::super::model::UpdateEffect::None
+        super::super::state::UpdateEffect::None
     );
     let extend = pointer_action(end.column, end.row, true, &state, area).unwrap();
     assert_eq!(
         state.update_input(extend),
-        super::super::model::UpdateEffect::None
+        super::super::state::UpdateEffect::None
     );
     terminal
         .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
@@ -228,12 +228,12 @@ fn ordinary_conversation_drag_keeps_highlight_until_explicit_copy_or_click() {
     let finish = pointer_release_action(end.column, end.row, &state, area).unwrap();
     assert_eq!(
         state.update_input(finish),
-        super::super::model::UpdateEffect::None
+        super::super::state::UpdateEffect::None
     );
     assert!(state.conversation_selection.is_some());
     assert_eq!(
-        state.update_input(super::super::model::InputAction::CopyOrInterrupt),
-        super::super::model::UpdateEffect::CopyText("copy me".to_owned())
+        state.update_input(super::super::state::InputAction::CopyOrInterrupt),
+        super::super::state::UpdateEffect::CopyText("copy me".to_owned())
     );
     assert!(state.conversation_selection.is_some());
 
@@ -242,7 +242,7 @@ fn ordinary_conversation_drag_keeps_highlight_until_explicit_copy_or_click() {
     let finish = pointer_release_action(start.column, start.row, &state, area).unwrap();
     assert_eq!(
         state.update_input(finish),
-        super::super::model::UpdateEffect::None,
+        super::super::state::UpdateEffect::None,
         "an ordinary click must not copy one cell"
     );
     assert!(state.conversation_selection.is_none());
@@ -265,7 +265,7 @@ fn phase5_reference_first_frame_and_input_render_probe() {
         let text = format!("message {index}");
         state
             .messages
-            .push_back(super::super::model::VisibleMessage {
+            .push_back(super::super::state::VisibleMessage {
                 kind: MessageKind::Assistant,
                 document: super::super::rich_text::RichDocument::plain(&text),
                 text,
@@ -274,8 +274,8 @@ fn phase5_reference_first_frame_and_input_render_probe() {
     let mut samples = Vec::with_capacity(256);
     for _ in 0..256 {
         let started = std::time::Instant::now();
-        state.update_input(super::super::model::InputAction::Insert("x".to_owned()));
-        state.update_input(super::super::model::InputAction::Backspace);
+        state.update_input(super::super::state::InputAction::Insert("x".to_owned()));
+        state.update_input(super::super::state::InputAction::Backspace);
         terminal
             .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
             .unwrap();
@@ -317,7 +317,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
 
     assert_eq!(
         pointer_action(columns[0].x + 1, columns[0].y, false, &state, area),
-        Some(super::super::model::InputAction::ToggleSessionsView)
+        Some(super::super::state::InputAction::ToggleSessionsView)
     );
 
     assert_eq!(
@@ -328,11 +328,11 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
             &state,
             area,
         ),
-        Some(super::super::model::InputAction::ViewSession(conversation))
+        Some(super::super::state::InputAction::ViewSession(conversation))
     );
     assert_eq!(
         pointer_action(1, 1, false, &state, area),
-        Some(super::super::model::InputAction::ToggleHeader)
+        Some(super::super::state::InputAction::ToggleHeader)
     );
     assert_eq!(
         pointer_action(
@@ -342,7 +342,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
             &state,
             area,
         ),
-        Some(super::super::model::InputAction::ToggleActivity(0))
+        Some(super::super::state::InputAction::ToggleActivity(0))
     );
     assert_eq!(
         pointer_action(
@@ -352,7 +352,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
             &state,
             area,
         ),
-        Some(super::super::model::InputAction::PlaceCursor {
+        Some(super::super::state::InputAction::PlaceCursor {
             line: 0,
             column: 2,
             width: 128,
@@ -371,7 +371,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
             &state,
             Rect::new(0, 0, 80, 24),
         ),
-        Some(super::super::model::InputAction::ChooseOverlay(0))
+        Some(super::super::state::InputAction::ChooseOverlay(0))
     );
 }
 
@@ -421,7 +421,7 @@ fn every_fixed_height_session_row_has_the_same_click_target() {
             &state,
             area,
         ),
-        Some(super::super::model::InputAction::ViewSession(expected))
+        Some(super::super::state::InputAction::ViewSession(expected))
     );
 }
 

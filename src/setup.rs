@@ -19,7 +19,7 @@ use crate::{
     },
     credential::{OsSecretStore, SecretStore, SecretString},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig},
-    model::{ModelDescriptor, ModelManager},
+    model_catalog::{ModelDescriptor, ModelManager},
     paths::XanaPaths,
     presentation::{ResolvedPresentation, SemanticToken},
     shell::ShellConfig,
@@ -984,7 +984,7 @@ mod tests {
         );
         assert_eq!(
             manager.selected().unwrap(),
-            crate::model::ModelSelection {
+            crate::model_catalog::ModelSelection {
                 connection: "ollama".into(),
                 model: "qwen3:1.7b".into(),
                 reasoning_effort: None,

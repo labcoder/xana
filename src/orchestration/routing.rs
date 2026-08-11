@@ -4,7 +4,7 @@ use crate::{
     capability::resolve_builtin_capability_snapshot,
     config::{ConnectionRegistry, OrchestrationLimits, PermissionMode, ProviderKind},
     credential::CredentialAvailability,
-    model::{ModelDescriptor, ModelManager, ReasoningSummary},
+    model_catalog::{ModelDescriptor, ModelManager, ReasoningSummary},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, error::Error, fmt};

@@ -4,7 +4,7 @@ use super::load_config;
 use crate::{
     cli::{OperationCommand, RouteCommand},
     config::XanaConfig,
-    model::ModelManager,
+    model_catalog::ModelManager,
     native_runtime::RuntimeCommand,
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     orchestration::{ExecutionOwner, ResolvedAgentConfig, RouteResolver},

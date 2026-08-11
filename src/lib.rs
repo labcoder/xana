@@ -24,7 +24,7 @@ mod local_host;
 mod managed;
 mod managed_execution;
 mod message;
-mod model;
+mod model_catalog;
 mod native_runtime;
 mod oneshot;
 mod operation;

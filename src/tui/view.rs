@@ -6,7 +6,7 @@ mod popup;
 use super::{
     activity::{ActivityKind, ActivityState},
     command,
-    model::{ActivityVisibility, LayoutClass, ScreenPoint, TuiState},
+    state::{ActivityVisibility, LayoutClass, ScreenPoint, TuiState},
 };
 use crate::presentation::{PresentationColor, ResolvedPresentation, SemanticToken};
 use ratatui::{
@@ -36,28 +36,28 @@ pub(super) fn pointer_action(
     selecting: bool,
     state: &TuiState,
     area: Rect,
-) -> Option<super::model::InputAction> {
+) -> Option<super::state::InputAction> {
     if let Some(overlay) = &state.overlay {
         let popup = overlay_area(area);
         let Some(content_row) = row.checked_sub(popup.y.saturating_add(1)) else {
             return state
                 .conversation_selection
                 .is_some()
-                .then_some(super::model::InputAction::ClearConversationSelection);
+                .then_some(super::state::InputAction::ClearConversationSelection);
         };
         if column <= popup.x || column >= popup.right().saturating_sub(1) {
             return state
                 .conversation_selection
                 .is_some()
-                .then_some(super::model::InputAction::ClearConversationSelection);
+                .then_some(super::state::InputAction::ClearConversationSelection);
         }
         return overlay_choice_at(overlay, content_row, popup.height.saturating_sub(2))
-            .map(super::model::InputAction::ChooseOverlay)
+            .map(super::state::InputAction::ChooseOverlay)
             .or_else(|| {
                 state
                     .conversation_selection
                     .is_some()
-                    .then_some(super::model::InputAction::ClearConversationSelection)
+                    .then_some(super::state::InputAction::ClearConversationSelection)
             });
     }
 
@@ -65,18 +65,18 @@ pub(super) fn pointer_action(
     let conversation_area = conversation_area(layout, state, area.width);
     let conversation_content = panel_content(conversation_area);
     if selecting && state.conversation_selection.is_some() {
-        return Some(super::model::InputAction::ExtendConversationSelection(
+        return Some(super::state::InputAction::ExtendConversationSelection(
             clamp_point(conversation_content, column, row),
         ));
     }
     if contains(layout.header, column, row) {
-        return Some(super::model::InputAction::ToggleHeader);
+        return Some(super::state::InputAction::ToggleHeader);
     }
     if contains(layout.composer, column, row) {
         let width = layout.composer.width.saturating_sub(2).max(1);
         let maximum_rows = layout.composer.height.saturating_sub(2).clamp(1, 6);
         let viewport = state.composer.viewport(width, maximum_rows);
-        return Some(super::model::InputAction::PlaceCursor {
+        return Some(super::state::InputAction::PlaceCursor {
             line: usize::from(row.saturating_sub(layout.composer.y.saturating_add(1))),
             column: usize::from(column.saturating_sub(layout.composer.x.saturating_add(1))),
             width,
@@ -88,34 +88,34 @@ pub(super) fn pointer_action(
         let columns = wide_columns(layout.body, state);
         if state.rail_expanded && contains(columns[0], column, row) {
             if row == columns[0].y {
-                return Some(super::model::InputAction::ToggleSessionsView);
+                return Some(super::state::InputAction::ToggleSessionsView);
             }
             let line = usize::from(row.saturating_sub(columns[0].y.saturating_add(1)));
             let index = line / 2;
             return state.sessions.get(index).map(|session| {
-                super::model::InputAction::ViewSession(session.conversation.clone())
+                super::state::InputAction::ViewSession(session.conversation.clone())
             });
         }
         if activity_visible(state) && contains(columns[2], column, row) {
             return activity_at(state, row.saturating_sub(columns[2].y.saturating_add(1)))
-                .map(super::model::InputAction::ToggleActivity);
+                .map(super::state::InputAction::ToggleActivity);
         }
     } else if activity_visible(state) {
         let drawer = activity_drawer_area(area);
         if contains(drawer, column, row) {
             return activity_at(state, row.saturating_sub(drawer.y.saturating_add(1)))
-                .map(super::model::InputAction::ToggleActivity);
+                .map(super::state::InputAction::ToggleActivity);
         }
     }
     if contains(conversation_content, column, row) {
-        return Some(super::model::InputAction::BeginConversationSelection(
+        return Some(super::state::InputAction::BeginConversationSelection(
             ScreenPoint { column, row },
         ));
     }
     state
         .conversation_selection
         .is_some()
-        .then_some(super::model::InputAction::ClearConversationSelection)
+        .then_some(super::state::InputAction::ClearConversationSelection)
 }
 
 pub(super) fn pointer_release_action(
@@ -123,7 +123,7 @@ pub(super) fn pointer_release_action(
     row: u16,
     state: &TuiState,
     area: Rect,
-) -> Option<super::model::InputAction> {
+) -> Option<super::state::InputAction> {
     let selection = state.conversation_selection.as_ref()?;
     let layout = shell_layout(area, state);
     let conversation_area = conversation_area(layout, state, area.width);
@@ -131,7 +131,7 @@ pub(super) fn pointer_release_action(
     let text = (selection.dragged || end != selection.start)
         .then(|| conversation::selected_text(state, conversation_area, selection.start, end))
         .filter(|text| !text.is_empty());
-    Some(super::model::InputAction::FinishConversationSelection { end, text })
+    Some(super::state::InputAction::FinishConversationSelection { end, text })
 }
 
 fn render_wide(frame: &mut Frame<'_>, area: Rect, state: &TuiState, profile: ResolvedPresentation) {
@@ -279,12 +279,12 @@ fn activity_at(state: &TuiState, content_row: u16) -> Option<usize> {
 }
 
 fn overlay_choice_at(
-    overlay: &super::model::Overlay,
+    overlay: &super::state::Overlay,
     content_row: u16,
     content_height: u16,
 ) -> Option<usize> {
     let first = match overlay {
-        super::model::Overlay::Palette { query, selected } => {
+        super::state::Overlay::Palette { query, selected } => {
             let choices = command::search(query).len();
             let visible = usize::from(content_height.saturating_sub(3));
             let start = palette_window_start(*selected, choices, visible);
@@ -293,20 +293,20 @@ fn overlay_choice_at(
                 .map(|row| start.saturating_add(row))
                 .filter(|index| *index < choices);
         }
-        super::model::Overlay::SessionPicker { .. } => 1,
-        super::model::Overlay::ModelPicker { .. }
-        | super::model::Overlay::ReasoningPicker { .. } => 0,
-        super::model::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
-        super::model::Overlay::Artifact { preview, .. } => {
+        super::state::Overlay::SessionPicker { .. } => 1,
+        super::state::Overlay::ModelPicker { .. }
+        | super::state::Overlay::ReasoningPicker { .. } => 0,
+        super::state::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
+        super::state::Overlay::Artifact { preview, .. } => {
             if preview.is_some() {
                 6
             } else {
                 4
             }
         }
-        super::model::Overlay::PastePreview { .. }
-        | super::model::Overlay::Help
-        | super::model::Overlay::Queue => return None,
+        super::state::Overlay::PastePreview { .. }
+        | super::state::Overlay::Help
+        | super::state::Overlay::Queue => return None,
     };
     usize::from(content_row).checked_sub(first)
 }

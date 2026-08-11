@@ -4,7 +4,7 @@ use crate::{
     context::ContextBudget,
     identity::{OrchestrationPlanId, StepId, ToolInvocationId},
     message::{ContentBlock, Role, ToolCall, ToolResult},
-    model::{DescriptorSource, ModelDescriptor},
+    model_catalog::{DescriptorSource, ModelDescriptor},
     operation::{BoundaryObserver, CrashSite},
     orchestration::{
         AwaitAgentOptions, AwaitAgentOutcome, ChildAttribution, ChildCommitSender, ChildExecution,

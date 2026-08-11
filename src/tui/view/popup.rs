@@ -1,9 +1,8 @@
 //! Overlay and command-palette rendering for the adaptive terminal shell.
 
 use super::super::{
-    command,
-    model::{Overlay, TuiState},
-    session,
+    command, session,
+    state::{Overlay, TuiState},
 };
 use super::{overlay_area, palette_window_start, semantic_style};
 use crate::presentation::{ResolvedPresentation, SemanticToken};
