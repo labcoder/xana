@@ -83,10 +83,10 @@ API keys are either referenced by name or read from the explicit stdin secret
 channel; they never appear in argv or TOML:
 
 ```bash
-xana setup --non-interactive --kind open-router --connection openrouter \
+xana setup --non-interactive --kind openrouter --connection openrouter \
   --credential-env OPENROUTER_API_KEY --model PROVIDER/MODEL \
   --permission-mode ask --yes
-printf '%s' "$OPENAI_API_KEY" | xana setup --non-interactive --kind open-ai \
+printf '%s' "$OPENAI_API_KEY" | xana setup --non-interactive --kind openai \
   --connection openai --key-from-stdin --model MODEL \
   --permission-mode ask --yes
 ```
@@ -277,7 +277,6 @@ xana connection set-key ID
 xana connection delete-key ID
 xana connection login ID [--device-code]
 xana connection logout ID --yes
-xana connection refresh ID
 xana connection remove ID --yes
 ```
 
@@ -327,17 +326,17 @@ Add a connection, store its key in the operating-system credential store, and
 refresh models:
 
 ```bash
-xana connection add openai --kind open-ai --model gpt-4.1
+xana connection add openai --kind openai --model gpt-4.1
 xana connection set-key openai
-xana connection refresh openai
+xana model refresh openai
 
-xana connection add openrouter --kind open-router --model openai/gpt-4.1
+xana connection add openrouter --kind openrouter --model openai/gpt-4.1
 xana connection set-key openrouter
-xana connection refresh openrouter
+xana model refresh openrouter
 
 xana connection add anthropic --kind anthropic --model claude-sonnet-4-5
 xana connection set-key anthropic
-xana connection refresh anthropic
+xana model refresh anthropic
 ```
 
 Use `--from-stdin` for a bounded noninteractive key read. Avoid putting a key
@@ -355,10 +354,10 @@ The default endpoints are:
 | Kind | Default | Catalog |
 |---|---|---|
 | `ollama` | `http://localhost:11434/v1` | `/api/tags` |
-| `open-ai` | `https://api.openai.com/v1` | `/v1/models` |
-| `open-router` | `https://openrouter.ai/api/v1` | `/api/v1/models/user` |
+| `openai` | `https://api.openai.com/v1` | `/v1/models` |
+| `openrouter` | `https://openrouter.ai/api/v1` | `/api/v1/models/user` |
 | `anthropic` | `https://api.anthropic.com` | `/v1/models` |
-| `open-ai-compat` | requires `--base-url` | `/v1/models` |
+| `openai-compatible` | requires `--base-url` | `/v1/models` |
 
 Custom OpenAI-compatible and Ollama connections may also declare a stored or
 environment bearer credential.
@@ -373,7 +372,7 @@ xana connection status codex
 xana connection login codex
 # Headless alternative:
 xana connection login codex --device-code
-xana connection refresh codex
+xana model refresh codex
 xana model use codex/ADVERTISED_MODEL_ID
 xana
 ```

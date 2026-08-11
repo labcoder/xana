@@ -6,8 +6,12 @@
 Xana is a Cargo workspace: `xana-cli` depends on `xana-runtime`, which depends
 on the small, headless `xana-core` capability-vocabulary crate. `xana-core`
 contains validated capability/tool identifiers and immutable snapshots, not a
-second tool or message domain model. Modules within the runtime continue to
-separate responsibility, ownership, and I/O boundaries.
+second tool or message domain model or the current agent loop. `xana-cli` is
+the installed executable facade; `xana-runtime::entry` currently owns process
+composition. Future frontend reuse starts at the repository-private typed
+frontend command/event/snapshot seam, not by exposing every internal Rust type.
+Modules within the runtime continue to separate responsibility, ownership, and
+I/O boundaries.
 
 ## Module boundaries
 
@@ -22,6 +26,10 @@ separate responsibility, ownership, and I/O boundaries.
 - Keep the CLI `main.rs` thin. Runtime application routing belongs in `app`;
   native and managed terminal interaction belongs in `terminal` and
   `managed_terminal`.
+- Keep control-plane routing in `app`; put interactive/one-shot provider,
+  session, runtime, and surface construction behind `app::chat`'s small
+  interface. Keep hosting, automation output, operation recovery, and session
+  inspection in their focused private app children.
 - Do not move configuration, environment reads, provider wire types, or
   terminal rendering into the headless agent loop.
 - Keep native generation in `provider`, connection-owned catalog/selection in

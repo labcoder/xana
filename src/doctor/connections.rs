@@ -154,7 +154,7 @@ async fn inspect_native(
                 connection.id,
                 connection.kind.as_str()
             ),
-            Some(format!("xana connection refresh {}", connection.id)),
+            Some(format!("xana model refresh {}", connection.id)),
         )),
     }
 }

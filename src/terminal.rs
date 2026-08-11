@@ -44,6 +44,7 @@ pub(crate) struct ChatHeader {
 pub(crate) enum ChatExit {
     Quit,
     Restart,
+    NewConversation,
     Doctor(Option<SessionId>),
     Reset,
     Setup(String),

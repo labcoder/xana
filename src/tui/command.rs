@@ -207,6 +207,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Sessions,
         name: "sessions",
+        mode: "new",
+        summary: "Start a new session with the current resolved configuration",
+        arguments: "new",
+    },
+    CommandSpec {
+        id: CommandId::Sessions,
+        name: "sessions",
         mode: "view hide",
         summary: "Hide the wide sessions panel",
         arguments: "view hide",

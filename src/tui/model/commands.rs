@@ -51,7 +51,17 @@ impl TuiState {
                 });
                 UpdateEffect::None
             }
-            InputAction::Interrupt => self.interrupt(),
+            InputAction::CopyOrInterrupt => {
+                if let Some(text) = self
+                    .conversation_selection
+                    .as_ref()
+                    .and_then(|selection| selection.text.clone())
+                {
+                    UpdateEffect::CopyText(text)
+                } else {
+                    self.interrupt()
+                }
+            }
             InputAction::Scroll(delta) => {
                 self.conversation_selection = None;
                 let maximum = self
@@ -75,6 +85,7 @@ impl TuiState {
                     start,
                     end: start,
                     dragged: false,
+                    text: None,
                 });
                 UpdateEffect::None
             }
@@ -82,20 +93,26 @@ impl TuiState {
                 if let Some(selection) = self.conversation_selection.as_mut() {
                     selection.end = end;
                     selection.dragged |= end != selection.start;
+                    selection.text = None;
                 }
                 UpdateEffect::None
             }
             InputAction::FinishConversationSelection { end, text } => {
-                let copied = self
-                    .conversation_selection
-                    .take()
-                    .is_some_and(|selection| selection.dragged || end != selection.start);
-                match (copied, text) {
-                    (true, Some(text)) if !text.is_empty() => {
-                        UpdateEffect::CopyText(bounded(text, MAX_MESSAGE_BYTES))
+                if let Some(selection) = self.conversation_selection.as_mut() {
+                    selection.end = end;
+                    selection.dragged |= end != selection.start;
+                    selection.text = text
+                        .filter(|text| !text.is_empty())
+                        .map(|text| bounded(text, MAX_MESSAGE_BYTES));
+                    if selection.text.is_none() {
+                        self.conversation_selection = None;
                     }
-                    _ => UpdateEffect::None,
                 }
+                UpdateEffect::None
+            }
+            InputAction::ClearConversationSelection => {
+                self.conversation_selection = None;
+                UpdateEffect::None
             }
             InputAction::PlaceCursor {
                 line,
@@ -104,18 +121,24 @@ impl TuiState {
                 scroll,
                 select,
             } => {
+                self.conversation_selection = None;
                 self.composer
                     .place_visual_cursor(line, column, width, scroll, select);
                 UpdateEffect::None
             }
-            InputAction::ViewSession(conversation) => UpdateEffect::ViewSession(conversation),
+            InputAction::ViewSession(conversation) => {
+                self.conversation_selection = None;
+                UpdateEffect::ViewSession(conversation)
+            }
             InputAction::ToggleActivity(index) => {
+                self.conversation_selection = None;
                 if let Some(card) = self.activity.get_mut(index) {
                     card.expanded = !card.expanded;
                 }
                 UpdateEffect::None
             }
             InputAction::ToggleSessionsView => {
+                self.conversation_selection = None;
                 self.rail_expanded = !self.rail_expanded;
                 self.status = if self.rail_expanded {
                     "Sessions panel shown".to_owned()
@@ -125,6 +148,7 @@ impl TuiState {
                 UpdateEffect::PersistRail(self.rail_expanded)
             }
             InputAction::ToggleHeader => {
+                self.conversation_selection = None;
                 self.header_expanded = !self.header_expanded;
                 self.status = if self.header_expanded {
                     "Xana header expanded".to_owned()
@@ -194,6 +218,7 @@ impl TuiState {
             }
             InputAction::Confirm | InputAction::Submit => self.confirm_overlay(),
             InputAction::ChooseOverlay(index) => {
+                self.conversation_selection = None;
                 if self.select_overlay(index) {
                     self.confirm_overlay()
                 } else {
@@ -458,6 +483,14 @@ impl TuiState {
                         UpdateEffect::PersistRail(false)
                     }
                     (Some("archive"), selector, None) => self.archive_session(selector),
+                    (Some("new"), None, None) => {
+                        if self.busy {
+                            self.status = "Wait for or interrupt the active turn before starting a new session".to_owned();
+                            UpdateEffect::None
+                        } else {
+                            UpdateEffect::NewConversation
+                        }
+                    }
                     _ => {
                         self.status = command_usage(CommandId::Sessions);
                         UpdateEffect::None

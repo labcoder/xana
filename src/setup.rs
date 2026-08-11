@@ -368,7 +368,7 @@ fn choose_kind(
     }
     match prompt_required(input, output, "Choice [1-6]: ")?.as_str() {
         "1" | "ollama" => Ok(ProviderKind::Ollama),
-        "2" | "openai_compat" => Ok(ProviderKind::OpenAiCompat),
+        "2" | "openai-compatible" | "openai_compat" => Ok(ProviderKind::OpenAiCompat),
         "3" | "openai" => Ok(ProviderKind::OpenAi),
         "4" | "openrouter" => Ok(ProviderKind::OpenRouter),
         "5" | "anthropic" => Ok(ProviderKind::Anthropic),
@@ -423,7 +423,7 @@ fn choose_base_url(
         }));
     }
     if args.non_interactive {
-        bail!("openai_compat setup requires --base-url");
+        bail!("openai-compatible setup requires --base-url");
     }
     Ok(Some(prompt_required(input, output, "Endpoint URL: ")?))
 }
