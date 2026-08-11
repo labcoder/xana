@@ -34,6 +34,10 @@ function Assert-SameSet {
 }
 
 $workspaceManifest = Get-Content -Raw -LiteralPath "Cargo.toml"
+$distConfig = Get-Content -Raw -LiteralPath "dist-workspace.toml"
+Assert-True ($distConfig -match '(?m)^allow-dirty\s*=\s*\["ci"\]\s*$') (
+    "cargo-dist must leave Xana's reviewed release workflow under repository control"
+)
 $versionMatch = [regex]::Match(
     $workspaceManifest,
     '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(?<version>[^"]+)"'

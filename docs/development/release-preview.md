@@ -29,7 +29,11 @@ planner, and semantically verifies:
 
 `dist-workspace.toml` leaves generated installers disabled. Xana's Bash and
 PowerShell wrappers are separately reviewed product code; the release workflow
-attaches those exact source files later.
+attaches those exact source files later. Xana also owns a stricter
+no-publish/draft-only workflow than cargo-dist generates, so `allow-dirty =
+["ci"]` disables only cargo-dist's generated-CI freshness check. The checked-in
+workflow remains covered by `check-release-workflow.ps1` and release-bundle
+fixtures; cargo-dist still owns planning and native archive construction.
 
 ## Audit the Bash installer
 

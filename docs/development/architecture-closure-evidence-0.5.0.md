@@ -44,6 +44,11 @@ The closure review found two issues hidden by the former topology:
    crates.io publication is disabled. The package now opts into prebuilt
    distribution explicitly with `package.metadata.dist.dist = true` while
    retaining `publish = false`.
+3. Cargo-dist's generated-CI freshness check attempted to replace Xana's
+   deliberately stricter no-publish/draft-only workflow. The configuration now
+   excludes only generated CI from cargo-dist ownership; repository checks and
+   fixtures continue to validate the source-controlled workflow while
+   cargo-dist remains the planner and native archive builder.
 
 The capability resolver also now rejects a tool whose declared capability is
 absent instead of silently dropping that malformed contribution. The existing
@@ -66,11 +71,14 @@ The following checks passed on Windows x64 with Rust 1.97.1:
 | verified cargo-dist 0.32.0 release plan | One application, four native targets, SHA-256, attestations |
 | release workflow and bundle fixtures | Exact inventory, immutable actions, least privilege, draft-only boundary |
 | installation/removal documentation checks | Passed |
+| clean source-package audit | 243 paths; required public files present and runtime state absent |
+| Bash installer fixture | Install/reinstall, exact version, PATH, setup-pending, tamper/inventory, unsupported target, rollback passed |
+| PowerShell installer fixture | Equivalent Windows matrix passed; first install 3,812 ms, 10,802,355-byte fixture archive, zero cleanup residue |
+| native Windows cargo-dist archive | 7,363,096-byte ZIP; checksum, inventory, `--version`, and `--help` passed |
 
-The package audit, installer fixtures, native Windows archive build/smoke, and
-remote platform matrix are release gates recorded separately. A local pass
-cannot substitute for Windows, macOS ARM64, macOS Intel, and Linux CI from the
-exact pushed candidate.
+The remote platform matrix remains a separate release gate. A local pass cannot
+substitute for Windows, macOS ARM64, macOS Intel, and Linux CI from the exact
+pushed candidate.
 
 ## Intentionally deferred
 
