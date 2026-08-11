@@ -6,10 +6,10 @@ use crate::{
     },
     identity::{AgentId, OperationId, ToolInvocationId},
     managed::codex::ApprovalDecision,
-    managed_terminal::{ManagedTuiDriver, ManagedTuiEvent},
+    managed_execution::{ManagedTuiDriver, ManagedTuiEvent},
+    native_runtime::{AgentEvent, OperationState, RuntimeCommand},
     orchestration::ChildActivity,
     permission::ControllerDecision,
-    runtime::{AgentEvent, OperationState, RuntimeCommand},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use std::{collections::HashMap, sync::Arc};

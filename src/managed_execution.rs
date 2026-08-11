@@ -1,4 +1,7 @@
-//! Terminal projection for a foreign managed-agent runtime.
+//! Xana execution adapter for a foreign managed-agent runtime.
+//!
+//! Codex retains its inner loop. This module owns the bounded Xana-facing
+//! conversation, one-shot, activity, and TUI-driver projections around it.
 
 mod activity;
 mod tui_driver;
@@ -15,8 +18,8 @@ use crate::{
     },
     model::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
+    plain_terminal::ChatExit,
     presentation::{ResolvedPresentation, SemanticToken},
-    terminal::ChatExit,
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
 };

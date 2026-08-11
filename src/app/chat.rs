@@ -15,22 +15,22 @@ use crate::{
     context::{ContextBudget, ContextPlanReport},
     credential::CredentialResolver,
     managed::codex::CodexAppServer,
-    managed_terminal::{
+    managed_execution::{
         ManagedChatConfig, ManagedOneShotRequest, run_codex_chat, run_codex_one_shot,
     },
+    native_runtime::RuntimeHandle,
     oneshot::OneShotSuccess,
     orchestration::{
         ChildExecutionOwnerFactory, ChildSupervisor, OrchestrationBudget, ParentExecution,
     },
     paths::XanaPaths,
     permission::PermissionPolicy,
+    plain_terminal::{self, ChatHeader},
     presentation::{self, BannerMode},
     prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
     provider::{anthropic::AnthropicClient, openai_compat::OpenAiCompatClient},
-    runtime::RuntimeHandle,
     session::DurableSession,
     shell::Shell,
-    terminal::{self, ChatHeader},
     tool::ToolRegistry,
     tui,
     vision::MediaResolver,
@@ -276,7 +276,7 @@ pub(super) async fn run(
                             },
                         )
                         .await?;
-                        terminal::ChatExit::Quit
+                        plain_terminal::ChatExit::Quit
                     }
                 };
                 continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
@@ -506,7 +506,7 @@ pub(super) async fn run(
 
     if let Some(input) = one_shot {
         let mut activity = anstream::stderr().lock();
-        return terminal::run_one_shot(
+        return plain_terminal::run_one_shot(
             runtime,
             &header,
             input,
@@ -523,7 +523,7 @@ pub(super) async fn run(
     let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
     let exit = match surface {
         ChatSurface::Plain(_) => {
-            terminal::run_chat(runtime, header, workspace_host, conversation).await?
+            plain_terminal::run_chat(runtime, header, workspace_host, conversation).await?
         }
         ChatSurface::Tui { prepared, .. } => {
             tui::run_native(prepared, runtime, &header, workspace_host, conversation).await?
@@ -539,7 +539,7 @@ pub(super) async fn run(
                 conversation,
             )
             .await?;
-            terminal::ChatExit::Quit
+            plain_terminal::ChatExit::Quit
         }
     };
     continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
@@ -547,28 +547,28 @@ pub(super) async fn run(
 
 async fn continue_after_chat_exit(
     paths: &XanaPaths,
-    exit: terminal::ChatExit,
+    exit: plain_terminal::ChatExit,
     presentation: presentation::ResolvedPresentation,
     restart_tui: bool,
     tui_required: bool,
 ) -> Result<Option<OneShotSuccess>> {
-    if exit == terminal::ChatExit::Quit {
+    if exit == plain_terminal::ChatExit::Quit {
         return Ok(None);
     }
-    let mut force_new_conversation = exit == terminal::ChatExit::NewConversation;
-    if let terminal::ChatExit::Setup(request) = &exit {
+    let mut force_new_conversation = exit == plain_terminal::ChatExit::NewConversation;
+    if let plain_terminal::ChatExit::Setup(request) = &exit {
         let args = crate::setup::args_for_request(request)?;
         force_new_conversation = run_setup_command(&args, paths)
             .await?
             .requires_new_conversation();
     }
-    let doctor_resume = if let terminal::ChatExit::Doctor(session_id) = &exit {
+    let doctor_resume = if let plain_terminal::ChatExit::Doctor(session_id) = &exit {
         run_doctor_command(&cli::DoctorArgs::default(), paths).await?;
         *session_id
     } else {
         None
     };
-    if exit == terminal::ChatExit::Reset {
+    if exit == plain_terminal::ChatExit::Reset {
         run_reset_command(&cli::ResetArgs::default(), paths)?;
         if XanaConfig::load_from(paths.config_file()).is_err() {
             return Ok(None);

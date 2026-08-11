@@ -14,10 +14,10 @@ use super::{
 use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     managed::{codex::ApprovalDecision, codex::CodexAppServer},
-    managed_terminal::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
+    managed_execution::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
     model::ModelManager,
-    runtime::{AgentEvent, OperationState, RuntimeHandle},
-    terminal::{ChatExit, ChatHeader},
+    native_runtime::{AgentEvent, OperationState, RuntimeHandle},
+    plain_terminal::{ChatExit, ChatHeader},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};

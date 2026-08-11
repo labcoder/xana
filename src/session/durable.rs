@@ -18,10 +18,10 @@ use crate::{
         SessionId, ThreadId,
     },
     message::Message,
+    native_runtime::OperationState,
     operation::{DurableValueRef, MAX_INLINE_VALUE_BYTES},
     orchestration::ChildInspection,
     permission::PermissionAuditFact,
-    runtime::OperationState,
 };
 use anyhow::{Context, Result, bail};
 use std::{

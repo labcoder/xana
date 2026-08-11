@@ -1,4 +1,4 @@
-//! Terminal client for Xana's foreground runtime protocol.
+//! Append-only terminal client for Xana's native runtime protocol.
 //!
 //! This module owns readline input, permission prompts, and human rendering. It
 //! does not own conversation history or call providers and tools directly.
@@ -9,11 +9,11 @@ use crate::{
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
     message::{ContentBlock, Message},
     model::{ExecutionKind, ModelManager},
+    native_runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     presentation::{ResolvedPresentation, SemanticToken},
-    runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
 };

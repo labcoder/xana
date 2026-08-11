@@ -1,8 +1,8 @@
 use super::*;
 use crate::message::ToolResultStatus;
 use crate::{
+    native_runtime::AgentEvent,
     permission::{ControllerDecision, PermissionBroker, PermissionPolicy, PolicyDecision},
-    runtime::AgentEvent,
 };
 use futures::future::BoxFuture;
 use serde_json::json;
@@ -465,7 +465,7 @@ async fn ask_waits_for_matching_control_decision_and_audit_uses_final_arguments(
         events.recv().await,
         Some(AgentEvent::OperationStateChanged {
             operation_id: actual,
-            state: crate::runtime::OperationState::Suspended,
+            state: crate::native_runtime::OperationState::Suspended,
         }) if actual == operation_id
     ));
     let request = match events.recv().await.expect("permission request") {
@@ -485,7 +485,7 @@ async fn ask_waits_for_matching_control_decision_and_audit_uses_final_arguments(
     assert!(matches!(
         events.recv().await,
         Some(AgentEvent::OperationStateChanged {
-            state: crate::runtime::OperationState::Running,
+            state: crate::native_runtime::OperationState::Running,
             ..
         })
     ));

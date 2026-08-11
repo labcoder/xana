@@ -15,9 +15,9 @@ use crate::{
     frontend::{EmbeddedClient, ManagedClientEvent},
     identity::{AgentId, OperationId, ToolInvocationId},
     message::{ContentBlock, Message, Role},
+    native_runtime::{AgentEvent, OperationState},
     permission::ControllerDecision,
     presentation::{ActivityPaneChoice, ComposerPreset},
-    runtime::{AgentEvent, OperationState},
     vision::ImageAttachment,
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };

@@ -9,9 +9,9 @@ use super::managed::ManagedClientEvent;
 use crate::{
     identity::{AgentId, OperationId, SessionId, ToolInvocationId},
     message::Message,
+    native_runtime::{AgentEvent, RuntimeCommand},
     orchestration::{ChildInspection, ChildLifecycle},
     permission::ControllerDecision,
-    runtime::{AgentEvent, RuntimeCommand},
     vision::ImageRef,
 };
 use serde::{Deserialize, Serialize};
@@ -370,11 +370,11 @@ impl ClientSnapshot {
                 AgentEvent::OperationStateChanged {
                     operation_id,
                     state:
-                        crate::runtime::OperationState::Running
-                        | crate::runtime::OperationState::Suspended,
+                        crate::native_runtime::OperationState::Running
+                        | crate::native_runtime::OperationState::Suspended,
                 } => self.active_operation = Some(*operation_id),
                 AgentEvent::OperationStateChanged {
-                    state: crate::runtime::OperationState::Finished(_),
+                    state: crate::native_runtime::OperationState::Finished(_),
                     ..
                 }
                 | AgentEvent::OperationFailed { .. } => self.active_operation = None,

@@ -809,7 +809,7 @@ impl AttachedObserver {
 
     pub(crate) async fn send_command(
         &mut self,
-        command: crate::runtime::RuntimeCommand,
+        command: crate::native_runtime::RuntimeCommand,
     ) -> Result<ClientCommandResult, LocalHostError> {
         let command = crate::frontend::ClientCommand::new(command);
         let command_id = command.id;

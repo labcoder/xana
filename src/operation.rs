@@ -8,8 +8,8 @@ use crate::{
     artifact::ArtifactRef,
     identity::{ContextId, NamedValueId, OperationId, StepId, ToolInvocationId, ToolResultId},
     message::{ToolCall, ToolResult},
+    native_runtime::AgentEvent,
     permission::{Authorization, PermissionAuditFact, PermissionBrokerHandle},
-    runtime::AgentEvent,
     session::SessionRecord,
     tool::{ReplaySafety, ToolRegistry},
 };

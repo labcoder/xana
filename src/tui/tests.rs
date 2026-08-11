@@ -6,10 +6,10 @@ use crate::{
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     identity::StepId,
     message::{Message, Role},
+    native_runtime::{AgentEvent, OperationState, RuntimeCommand, RuntimeHandle},
     permission::{PermissionPolicy, PolicyDecision},
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::{ConversationalProvider, DeltaSink, ProviderError},
-    runtime::{AgentEvent, OperationState, RuntimeCommand, RuntimeHandle},
     tool::{ToolDefinition, ToolRegistry},
     workspace_host::ConversationRef,
 };

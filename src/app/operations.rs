@@ -5,14 +5,14 @@ use crate::{
     cli::{OperationCommand, RouteCommand},
     config::XanaConfig,
     model::ModelManager,
+    native_runtime::RuntimeCommand,
     operation::{RecoveryAction, execute_recovery, plan_recovery},
     orchestration::{ExecutionOwner, ResolvedAgentConfig, RouteResolver},
     paths::XanaPaths,
     permission::{PermissionBroker, PermissionPolicy},
-    runtime::RuntimeCommand,
+    plain_terminal,
     session::{DurableSession, RestoredOperation},
     shell::Shell,
-    terminal,
     tool::ToolRegistry,
 };
 use anyhow::{Context, Result};
@@ -194,7 +194,7 @@ async fn execute_recovery_command<W: Write>(
                 tools,
                 &permissions,
                 &mut event_receiver,
-                |request| terminal::prompt_permission_decision(request).map_err(Into::into),
+                |request| plain_terminal::prompt_permission_decision(request).map_err(Into::into),
             )
             .await?;
             permissions.shutdown();

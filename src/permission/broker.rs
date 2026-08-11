@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     identity::{OperationId, ToolInvocationId},
-    runtime::{AgentEvent, AgentEventSender, OperationState},
+    native_runtime::{AgentEvent, AgentEventSender, OperationState},
 };
 use std::{collections::HashMap, error::Error, fmt};
 use tokio::{

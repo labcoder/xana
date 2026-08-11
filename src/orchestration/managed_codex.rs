@@ -12,8 +12,8 @@ use crate::{
         CodexLaunchConfig, ManagedApprovalPolicy, ManagedEventHandler, ManagedNotification,
         ManagedSandbox, ManagedThreadPolicy, ManagedTurnInput, ManagedTurnOptions,
     },
+    native_runtime::{AgentEvent, AgentEventSender},
     permission::{Authorization, PermissionBrokerHandle, PermissionRequest, PermissionScope},
-    runtime::{AgentEvent, AgentEventSender},
     tool::EffectClass,
 };
 use futures::future::BoxFuture;

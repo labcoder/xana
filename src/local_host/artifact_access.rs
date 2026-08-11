@@ -6,7 +6,7 @@ use crate::{
     frontend::{ClientEvent, ClientSnapshot},
     identity::ArtifactId,
     message::{ContentBlock, Message},
-    runtime::AgentEvent,
+    native_runtime::AgentEvent,
 };
 use std::{
     collections::HashMap,
@@ -100,7 +100,7 @@ mod tests {
         frontend::ClientEvent,
         identity::{OperationId, PrincipalId},
         message::{ContentBlock, Message, Role},
-        runtime::AgentEvent,
+        native_runtime::AgentEvent,
         vision::ImageRef,
     };
     use tempfile::tempdir;

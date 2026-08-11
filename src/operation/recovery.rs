@@ -5,8 +5,8 @@ use super::{
 use crate::{
     identity::{OperationId, ToolInvocationId, ToolResultId},
     message::{Message, ToolCall, ToolResult},
+    native_runtime::{AgentEvent, OperationOutcome},
     permission::{Authorization, ControllerDecision, PermissionBrokerHandle, PermissionRequest},
-    runtime::{AgentEvent, OperationOutcome},
     session::{DurableSession, RestoredOperation, SessionRecord},
     tool::{ReplaySafety, ToolRegistry},
 };

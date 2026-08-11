@@ -2,10 +2,10 @@ use super::*;
 use crate::{
     identity::{ConversationEntryId, ThreadId},
     message::{Message, Role},
+    native_runtime::OperationOutcome,
     permission::{
         PermissionBroker, PermissionPolicy, PermissionRequest, PermissionScope, PolicyDecision,
     },
-    runtime::OperationOutcome,
     session::{DurableSession, RestoredOperation, SessionRecord, SessionStore},
     tool::{EffectClass, PlannedToolInvocation, Tool, ToolDefinition},
 };

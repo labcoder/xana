@@ -3,13 +3,13 @@ use crate::{
     context::persisted::{ContextRecord, ContextViewRecord},
     identity::*,
     message::Message,
+    native_runtime::OperationState,
     operation::{
         InvocationIntent, InvocationResultRecord, NamedValueRecord, RecoveryDecision,
         SuspensionReason,
     },
     orchestration::{AgentHandleSnapshot, ChildLifecycle, ChildReport, OrchestrationPlanStart},
     permission::PermissionAuditFact,
-    runtime::OperationState,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -93,7 +93,7 @@ pub(crate) enum SessionRecord {
     },
     OperationFinished {
         operation_id: OperationId,
-        outcome: crate::runtime::OperationOutcome,
+        outcome: crate::native_runtime::OperationOutcome,
     },
     RecoveryDecisionAppended {
         operation_id: OperationId,

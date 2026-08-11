@@ -2,7 +2,7 @@ use super::broker::DecisionError;
 use super::*;
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
-    runtime::{AgentEvent, AgentEventSender},
+    native_runtime::{AgentEvent, AgentEventSender},
     tool::EffectClass,
 };
 use std::path::{Path, PathBuf};
