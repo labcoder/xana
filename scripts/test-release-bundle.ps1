@@ -8,10 +8,10 @@ $testRoot = Join-Path $testParent ("xana-release-bundle-test-" + [Guid]::NewGuid
 [IO.Directory]::CreateDirectory($testRoot) | Out-Null
 
 $archives = @(
-    "xana-cli-aarch64-apple-darwin.tar.gz",
-    "xana-cli-x86_64-apple-darwin.tar.gz",
-    "xana-cli-x86_64-pc-windows-msvc.zip",
-    "xana-cli-x86_64-unknown-linux-gnu.tar.gz"
+    "xana-aarch64-apple-darwin.tar.gz",
+    "xana-x86_64-apple-darwin.tar.gz",
+    "xana-x86_64-pc-windows-msvc.zip",
+    "xana-x86_64-unknown-linux-gnu.tar.gz"
 )
 
 function Reset-Fixture {
@@ -25,7 +25,7 @@ function Reset-Fixture {
     $distManifest = [ordered]@{
         dist_version = "0.32.0"
         announcement_tag = $tag
-        releases = @([ordered]@{ app_name = "xana-cli"; app_version = $version })
+        releases = @([ordered]@{ app_name = "xana"; app_version = $version })
     } | ConvertTo-Json -Depth 4
     [IO.File]::WriteAllText(
         (Join-Path $testRoot "dist-manifest.json"),
@@ -59,8 +59,8 @@ try {
 
     Reset-Fixture
     [IO.File]::WriteAllText(
-        (Join-Path $testRoot "xana-cli-x86_64-pc-windows-msvc.zip.sha256"),
-        ("0" * 64) + "  xana-cli-x86_64-pc-windows-msvc.zip`n"
+        (Join-Path $testRoot "xana-x86_64-pc-windows-msvc.zip.sha256"),
+        ("0" * 64) + "  xana-x86_64-pc-windows-msvc.zip`n"
     )
     $rejectedHash = $false
     try {

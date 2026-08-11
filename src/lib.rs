@@ -1,9 +1,9 @@
-//! Xana runtime package.
+//! Xana application package.
 //!
-//! This package owns state, policy, persistence, services, and provider
-//! adapters. The `xana-cli` workspace member is the preferred installed
-//! binary; this library also exposes a small compatibility runner for source
-//! checkouts and integration tests.
+//! This package owns the headless agent, application policy, persistence,
+//! services, provider adapters, and current terminal frontends. Its library
+//! entry point exists for the package's executable and integration tests; it
+//! is not a stable public SDK boundary.
 
 mod agent;
 mod app;

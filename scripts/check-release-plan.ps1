@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $expectedDistVersion = "0.32.0"
-$expectedApp = "xana-cli"
+$expectedApp = "xana"
 $expectedTargets = @(
     "aarch64-apple-darwin",
     "x86_64-apple-darwin",

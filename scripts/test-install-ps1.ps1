@@ -20,7 +20,7 @@ if (-not $versionMatch.Success) { throw "could not read workspace version" }
 $version = $versionMatch.Groups["version"].Value
 
 $binary = Join-Path $repository "target\debug\xana.exe"
-& cargo build --package xana-cli
+& cargo build --package xana
 if ($LASTEXITCODE -ne 0) { throw "could not build the installer fixture binary" }
 $binaryVersion = (& $binary --version | Out-String).Trim()
 if ($binaryVersion -ne "xana $version") { throw "fixture binary version does not match Cargo" }
@@ -58,7 +58,7 @@ function New-FixtureArchive {
         [IO.File]::WriteAllText((Join-Path $payload "unexpected"), "unexpected")
     }
 
-    $archive = Join-Path $fixture "xana-cli-x86_64-pc-windows-msvc.zip"
+    $archive = Join-Path $fixture "xana-x86_64-pc-windows-msvc.zip"
     if (Test-Path -LiteralPath $archive) { [IO.File]::Delete($archive) }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($payload, $archive)
@@ -66,9 +66,9 @@ function New-FixtureArchive {
 
 function Write-FixtureManifest {
     foreach ($name in @(
-        "xana-cli-aarch64-apple-darwin.tar.gz",
-        "xana-cli-x86_64-apple-darwin.tar.gz",
-        "xana-cli-x86_64-unknown-linux-gnu.tar.gz"
+        "xana-aarch64-apple-darwin.tar.gz",
+        "xana-x86_64-apple-darwin.tar.gz",
+        "xana-x86_64-unknown-linux-gnu.tar.gz"
     )) {
         [IO.File]::WriteAllText((Join-Path $fixture $name), "fixture $name")
     }
@@ -134,7 +134,7 @@ try {
     }
     $finalPath = Join-Path $installDirectory "xana.exe"
     $installedHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $finalPath).Hash
-    $archiveBytes = (Get-Item -LiteralPath (Join-Path $fixture "xana-cli-x86_64-pc-windows-msvc.zip")).Length
+    $archiveBytes = (Get-Item -LiteralPath (Join-Path $fixture "xana-x86_64-pc-windows-msvc.zip")).Length
     $manifestBytes = (Get-Item -LiteralPath (Join-Path $fixture "xana-release-manifest.txt")).Length
     $binaryBytes = (Get-Item -LiteralPath $finalPath).Length
     $temporaryPayloadBytes = $archiveBytes + $manifestBytes + $binaryBytes
@@ -169,7 +169,7 @@ try {
     }
 
     [IO.File]::AppendAllText(
-        (Join-Path $fixture "xana-cli-x86_64-pc-windows-msvc.zip"),
+        (Join-Path $fixture "xana-x86_64-pc-windows-msvc.zip"),
         "corruption"
     )
     $corrupt = Invoke-Installer ($baseArguments + @("-NoSetup", "-NoModifyPath"))

@@ -39,9 +39,9 @@ mutate durable state outside runtime commands, grant itself authority, or
 receive secrets, provider-native payloads, hidden reasoning, unbounded output,
 or unrestricted filesystem paths through the client contract.
 
-`xana-core` remains free of terminal, network, environment-discovery, and
-presentation dependencies. Terminal and network adapters remain outside
-runtime policy. Plain and non-TTY clients consume the same application
+The headless agent remains free of terminal, network, environment-discovery,
+and presentation dependencies. Terminal and network adapters remain outside
+agent/runtime policy. Plain and non-TTY clients consume the same application
 semantics and remain permanently supported; the full-screen frontend cannot
 become the only way to control Xana safely.
 

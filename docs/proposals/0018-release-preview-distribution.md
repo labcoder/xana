@@ -21,9 +21,9 @@ numbered product milestone or a stable compatibility promise.
 ## Accepted product boundary
 
 The public `labcoder/xana` repository is the source and release authority. One
-terminal application, built from the `xana-cli` package, is distributed. Core,
-runtime, and development compatibility packages do not become separate
-end-user products or crates.io promises.
+terminal application, built from the `xana` package, is distributed. Internal
+engine, runtime, and frontend modules do not become separate end-user products
+or crates.io promises.
 
 The initial target matrix is exactly:
 

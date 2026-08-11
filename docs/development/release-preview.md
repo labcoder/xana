@@ -19,7 +19,7 @@ run:
 The check derives `v<workspace-version>` from `Cargo.toml`, invokes the real
 planner, and semantically verifies:
 
-- one application, the `xana` binary from package `xana-cli`;
+- one application, the `xana` binary from package `xana`;
 - macOS ARM64, macOS Intel, Windows x64 MSVC, and Linux x64 glibc only;
 - `.tar.gz` Unix archives and one Windows `.zip`;
 - `LICENSE`, `README.md`, `installation.md`, and the executable only;
@@ -122,7 +122,7 @@ Build the current native archive using the target triple for the current host:
 ```powershell
 dist build --artifacts=local --target x86_64-pc-windows-msvc
 ./scripts/check-release-archive.ps1 \
-  -Archive target/distrib/xana-cli-x86_64-pc-windows-msvc.zip \
+  -Archive target/distrib/xana-x86_64-pc-windows-msvc.zip \
   -Target x86_64-pc-windows-msvc
 ```
 
@@ -134,6 +134,5 @@ an isolated temporary directory, and executes `xana --version` and `xana
 
 Release archives intentionally retain Cargo's existing release profile. The
 preview has no measured justification for custom LTO, stripping, panic, or
-codegen settings. `publish = false` and the unpublished workspace package
-relationships remain unchanged; prebuilt distribution is not crates.io
-publication.
+codegen settings. `publish = false` prevents registry publication; prebuilt
+distribution is not crates.io publication.

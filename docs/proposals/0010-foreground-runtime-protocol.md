@@ -29,9 +29,8 @@ it does not read terminal input or mutate frontend state.
 
 The implementation becomes asynchronous end to end through the provider and
 tool turn path. The executable uses a Tokio multi-thread runtime. The logical
-boundary is exercised before the proposed `xana-core`, `xana-runtime`, and
-`xana-cli` workspace split; this decision neither accepts nor implements that
-split.
+boundary is exercised without requiring a physical crate split; this decision
+neither accepts nor implements one.
 
 ## Implemented protocol
 

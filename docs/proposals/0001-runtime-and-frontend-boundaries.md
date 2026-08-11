@@ -6,12 +6,12 @@
 
 ## Context
 
-[Architecture](../architecture/README.md) describes Xana's implemented Cargo
-workspace and logical boundaries. This proposal explores the broader physical
+[Architecture](../architecture/README.md) describes Xana's implemented
+application package and logical boundaries. This proposal explores the broader physical
 and hosting topology that keeps the engine headless, puts application policy
 in one runtime layer, and treats every frontend as a client of that layer.
 
-The Cargo workspace and single-process foreground command/event boundary have
+The single application package and foreground command/event boundary have
 been implemented through current Architecture and historical
 [Proposal 0010](0010-foreground-runtime-protocol.md). This proposal remains
 Proposed for the broader package topology, shared capability catalog, and
@@ -28,8 +28,8 @@ flowchart TB
     GUI["Desktop / Web"]
     CLIENT["Supervising client"]
 
-    RUNTIME["xana-runtime<br/>configuration · sessions · threads · coordination<br/>capabilities · permissions · artifacts"]
-    CORE["xana-core<br/>agent loop · conversation · tool contracts<br/>events · context budgets"]
+    RUNTIME["Application runtime<br/>configuration · sessions · threads · coordination<br/>capabilities · permissions · artifacts"]
+    CORE["Headless engine<br/>agent loop · conversation · tool contracts<br/>events · context budgets"]
     CATALOG["Capability catalog and resolver"]
 
     PROVIDERS["Conversational provider adapters"]
@@ -59,7 +59,7 @@ flowchart TB
 
 ### Headless engine
 
-The proposed `xana-core` package owns:
+The proposed headless engine boundary owns:
 
 - the agent loop as a value;
 - internal message, content, tool-call, and event types;
@@ -74,7 +74,7 @@ through ambient process authority.
 
 ### Application runtime
 
-The proposed `xana-runtime` package owns:
+The proposed application-runtime boundary owns:
 
 - resolving and validating shared configuration;
 - capability discovery, dependency resolution, and immutable per-agent tool
@@ -106,25 +106,20 @@ local contract that implementation must now follow is Proposal 0017.
 
 ## Broader proposed physical workspace
 
-The current Cargo workspace has packages named `xana-core`, `xana-runtime`,
-and `xana-cli`, but those names do not mean this proposed physical topology is
-implemented. Today `xana-core` contains only capability vocabulary,
-`xana-runtime` contains the headless agent implementation plus application and
-terminal composition, and `xana-cli` is a thin installed executable facade.
-The broader topology would deepen those packages into:
+The current implementation is one Cargo application package named `xana`.
+Its headless agent, application policy, provider/managed adapters, local
+frontend contract, plain terminal, and TUI are separate modules, not public
+crate contracts. That shape is intentionally honest about the one product and
+its current consumers.
 
-```text
-xana-core       headless engine and public internal types
-xana-runtime    application policy, capability routing, permissions,
-                artifacts, persistence, and coordination
-xana-cli        terminal frontend and process entry points
-```
-
-Additional frontend packages consume the runtime protocol. They do not link
-provider wire types or reimplement session mutation. Focused bundled
-capability packs may become additional crates or adapters registered at a
-composition root; the engine does not depend outward on document, media, MCP,
-WASM, or service implementations.
+A broader topology may extract a headless engine, application runtime, and
+individual frontend packages after a second real frontend proves the smallest
+shared interface. Package names are not predetermined by this proposal.
+Extracted frontends would consume the runtime protocol rather than provider
+wire types or direct session mutation. Focused bundled capability packs may
+become additional crates or adapters registered at a composition root; the
+engine would not depend outward on document, media, MCP, WASM, or service
+implementations.
 
 ## Open questions
 

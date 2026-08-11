@@ -24,7 +24,7 @@ $required = @(
     "-ModifyPath",
     "xana-installer-path-v1",
     "cargo install --git https://github.com/labcoder/xana.git --locked",
-    "cargo uninstall xana-cli",
+    "cargo uninstall xana",
     "not Authenticode-signed",
     "notarized",
     "not a public release"

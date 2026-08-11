@@ -27,7 +27,7 @@ $lines = [Collections.Generic.List[string]]::new()
 $lines.Add("manifest-version 1")
 $lines.Add("release-version $Version")
 foreach ($entry in $targets) {
-    $name = "xana-cli-$($entry.Target)$($entry.Extension)"
+    $name = "xana-$($entry.Target)$($entry.Extension)"
     $path = Join-Path $artifacts $name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "missing release archive: $name"

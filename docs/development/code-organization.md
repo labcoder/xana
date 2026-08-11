@@ -3,15 +3,14 @@
 > Audience: Contributors and coding agents  
 > Authority: Repository policy
 
-Xana is a Cargo workspace: `xana-cli` depends on `xana-runtime`, which depends
-on the small, headless `xana-core` capability-vocabulary crate. `xana-core`
-contains validated capability/tool identifiers and immutable snapshots, not a
-second tool or message domain model or the current agent loop. `xana-cli` is
-the installed executable facade; `xana-runtime::entry` currently owns process
-composition. Future frontend reuse starts at the repository-private typed
-frontend command/event/snapshot seam, not by exposing every internal Rust type.
-Modules within the runtime continue to separate responsibility, ownership, and
-I/O boundaries.
+Xana is one Cargo application package named `xana`. Its capability module owns
+validated capability/tool identifiers and immutable snapshots; process entry,
+the headless agent loop, application policy, and frontends remain separate
+modules rather than speculative crates. Future frontend reuse starts at the
+repository-private typed frontend command/event/snapshot seam, not by exposing
+every internal Rust type. Extract a crate only after a second real consumer
+proves the smallest shared contract. Modules continue to separate
+responsibility, ownership, and I/O boundaries.
 
 ## Module boundaries
 
@@ -23,7 +22,7 @@ I/O boundaries.
   introduce new `mod.rs` files.
 - Keep items private by default. Expose the smallest useful `pub(crate)`
   surface from each facade.
-- Keep the CLI `main.rs` thin. Runtime application routing belongs in `app`;
+- Keep `main.rs` thin. Application routing belongs in `app`;
   native and managed terminal interaction belongs in `terminal` and
   `managed_terminal`.
 - Keep control-plane routing in `app`; put interactive/one-shot provider,

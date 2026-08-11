@@ -39,9 +39,9 @@ cp -- "${repo_root}/docs/user/installation.md" "${payload}/installation.md"
 clean_archive="${test_root}/clean.tar.gz"
 tar -czf "${clean_archive}" -C "${payload}" LICENSE README.md installation.md xana
 for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
-  cp -- "${clean_archive}" "${fixture}/xana-cli-${target}.tar.gz"
+  cp -- "${clean_archive}" "${fixture}/xana-${target}.tar.gz"
 done
-printf 'fixture zip bytes' >"${fixture}/xana-cli-x86_64-pc-windows-msvc.zip"
+printf 'fixture zip bytes' >"${fixture}/xana-x86_64-pc-windows-msvc.zip"
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -57,7 +57,7 @@ write_manifest() {
     printf 'release-version %s\n' "${version}"
     for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
       if [[ "${target}" == "x86_64-pc-windows-msvc" ]]; then extension=.zip; else extension=.tar.gz; fi
-      name="xana-cli-${target}${extension}"
+      name="xana-${target}${extension}"
       size=$(wc -c <"${fixture}/${name}" | tr -d ' ')
       printf 'artifact %s %s %s %s\n' "${target}" "${name}" "$(sha256_file "${fixture}/${name}")" "${size}"
     done
@@ -96,16 +96,16 @@ setup_output=$(run_installer --version "${version}" --no-modify-path)
 grep -F "setup=pending" <<<"${setup_output}" >/dev/null
 grep -F "XANA_SETUP_RESULT" <<<"${setup_output}" >/dev/null
 
-printf 'corruption' >>"${fixture}/xana-cli-x86_64-unknown-linux-gnu.tar.gz"
+printf 'corruption' >>"${fixture}/xana-x86_64-unknown-linux-gnu.tar.gz"
 if run_installer --version "${version}" --no-setup --no-modify-path >"${test_root}/failure.out" 2>&1; then
   printf 'corrupt archive unexpectedly installed\n' >&2
   exit 1
 fi
 [[ "$(sha256_file "${install_dir}/xana")" == "${installed_hash}" ]]
 
-cp -- "${clean_archive}" "${fixture}/xana-cli-x86_64-unknown-linux-gnu.tar.gz"
+cp -- "${clean_archive}" "${fixture}/xana-x86_64-unknown-linux-gnu.tar.gz"
 printf 'unexpected' >"${payload}/extra"
-tar -czf "${fixture}/xana-cli-x86_64-unknown-linux-gnu.tar.gz" -C "${payload}" LICENSE README.md installation.md xana extra
+tar -czf "${fixture}/xana-x86_64-unknown-linux-gnu.tar.gz" -C "${payload}" LICENSE README.md installation.md xana extra
 write_manifest
 if run_installer --version "${version}" --no-setup --no-modify-path >"${test_root}/unsafe.out" 2>&1; then
   printf 'unexpected archive inventory installed\n' >&2

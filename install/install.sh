@@ -182,7 +182,7 @@ case "${target}" in
   aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu) ;;
   *) fail "unsupported target ${target}; supported targets: aarch64-apple-darwin, x86_64-apple-darwin, x86_64-unknown-linux-gnu" ;;
 esac
-archive_name="xana-cli-${target}.tar.gz"
+archive_name="xana-${target}.tar.gz"
 
 temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/xana-install.XXXXXXXX") || fail "could not create a temporary directory"
 chmod 700 "${temporary_dir}"
@@ -256,10 +256,10 @@ while IFS=' ' read -r field first second third fourth extra || [[ -n "${field:-}
       manifest_size=${fourth:-}
       case "${manifest_target}" in
         aarch64-apple-darwin|x86_64-apple-darwin|x86_64-unknown-linux-gnu)
-          expected_name="xana-cli-${manifest_target}.tar.gz"
+          expected_name="xana-${manifest_target}.tar.gz"
           ;;
         x86_64-pc-windows-msvc)
-          expected_name="xana-cli-${manifest_target}.zip"
+          expected_name="xana-${manifest_target}.zip"
           ;;
         *) fail "release manifest contains an unsupported target" ;;
       esac

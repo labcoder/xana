@@ -1,5 +1,10 @@
 # Xana 0.5.0 Release Preview evidence
 
+> Historical topology note: this evidence predates the single-package
+> consolidation. Commands naming `xana-core` or `crates/xana-cli` record what
+> was actually measured then; current commands live in
+> [Release Preview development](release-preview.md).
+
 > Status: Local candidate verified; remote four-target gate not yet executed
 >
 > Publication: Not authorized, not tagged, no GitHub draft, no public release
