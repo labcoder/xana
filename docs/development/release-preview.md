@@ -21,8 +21,10 @@ planner, and semantically verifies:
 
 - one application, the `xana` binary from package `xana`;
 - macOS ARM64, macOS Intel, Windows x64 MSVC, and Linux x64 glibc only;
-- `.tar.gz` Unix archives and one Windows `.zip`;
-- `LICENSE`, `README.md`, `installation.md`, and the executable only;
+- `.tar.gz` Unix archives with the canonical `xana-<target>/` cargo-dist root
+  and one flat Windows `.zip`;
+- `LICENSE`, `README.md`, `installation.md`, and the executable only beneath
+  that platform layout;
 - SHA-256 sidecars and a unified checksum file;
 - GitHub attestation intent and one native runner per target; and
 - absence of machine-local workspace paths.
@@ -47,14 +49,16 @@ prints a test-only warning.
 Run its syntax and offline behavior matrix from Bash:
 
 ```bash
-bash -n install/install.sh scripts/test-install-sh.sh
-./scripts/test-install-sh.sh
+bash -n install/install.sh scripts/test-install-sh.sh scripts/verify-sha256.sh
+bash ./scripts/test-install-sh.sh
+bash ./scripts/test-release-sha256.sh
 ```
 
-The matrix covers exact-version install and reinstall, idempotent profile
-editing, noninteractive setup-pending translation, checksum mismatch,
-unexpected archive inventory, unsupported targets, and preservation of the
-previous executable. The checked-in release manifest generator is:
+The matrix covers exact-version install and reinstall, cargo-dist's canonical
+rooted Unix archive layout, idempotent profile editing, noninteractive
+setup-pending translation, checksum mismatch, unexpected archive inventory,
+unsupported targets, and preservation of the previous executable. The
+checked-in release manifest generator is:
 
 ```powershell
 ./scripts/new-release-manifest.ps1 \
@@ -90,7 +94,9 @@ native PowerShell matrix on Windows.
 
 ## Build a no-publish bundle
 
-`.github/workflows/release.yml` has two entry paths. Manual dispatch accepts an
+`.github/workflows/release.yml` has two entry paths. Its release-builder
+downloads are checked by a source-controlled portable SHA-256 verifier that
+does not assume GNU `sha256sum` options on macOS. Manual dispatch accepts an
 exact workspace version, repeats the complete quality gates, builds the four
 targets natively, assembles and attests the exact bundle, and retains it as a
 workflow artifact. Manual dispatch has no draft-creation job. An exact matching
@@ -103,6 +109,7 @@ runners. Run the local authority and assembly checks before any remote run:
 
 ```powershell
 ./scripts/check-release-workflow.ps1
+./scripts/test-release-archive-contract.ps1
 ./scripts/test-release-bundle.ps1
 ```
 

@@ -28,6 +28,7 @@ $required = @(
     "contents: write",
     "github.event_name == 'push'",
     "manual no-publish builds must use the reviewed main branch",
+    "verify-sha256.sh",
     "check-release-plan.ps1",
     "assemble-release-bundle.ps1"
 )
@@ -38,7 +39,13 @@ if (-not $draftScript.Contains("--draft") -or
     -not $draftScript.Contains("refusing to modify an already published release")) {
     throw "draft helper does not preserve the unpublished human-review boundary"
 }
-$forbidden = @("pull_request_target", "cargo publish", "npm publish", "--latest=true")
+$forbidden = @(
+    "pull_request_target",
+    "cargo publish",
+    "npm publish",
+    "--latest=true",
+    "sha256sum --check"
+)
 foreach ($text in $forbidden) {
     if ($workflow.Contains($text)) { throw "release workflow contains forbidden behavior: $text" }
 }

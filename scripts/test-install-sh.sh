@@ -36,10 +36,32 @@ cp -- "${repo_root}/LICENSE" "${payload}/LICENSE"
 cp -- "${repo_root}/README.md" "${payload}/README.md"
 cp -- "${repo_root}/docs/user/installation.md" "${payload}/installation.md"
 
-clean_archive="${test_root}/clean.tar.gz"
-tar -czf "${clean_archive}" -C "${payload}" LICENSE README.md installation.md xana
+make_archive() {
+  local target=$1 include_extra=${2:-false}
+  local archive_root="xana-${target}"
+  local root_path="${payload}/${archive_root}"
+  mkdir -p -- "${root_path}"
+  cp -- "${payload}/LICENSE" "${root_path}/LICENSE"
+  cp -- "${payload}/README.md" "${root_path}/README.md"
+  cp -- "${payload}/installation.md" "${root_path}/installation.md"
+  cp -- "${payload}/xana" "${root_path}/xana"
+  rm -f -- "${root_path}/extra"
+
+  local entries=(
+    "${archive_root}/LICENSE"
+    "${archive_root}/README.md"
+    "${archive_root}/installation.md"
+    "${archive_root}/xana"
+  )
+  if [[ "${include_extra}" == "true" ]]; then
+    printf 'unexpected' >"${root_path}/extra"
+    entries+=("${archive_root}/extra")
+  fi
+  tar -czf "${fixture}/xana-${target}.tar.gz" -C "${payload}" "${entries[@]}"
+}
+
 for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu; do
-  cp -- "${clean_archive}" "${fixture}/xana-${target}.tar.gz"
+  make_archive "${target}"
 done
 printf 'fixture zip bytes' >"${fixture}/xana-x86_64-pc-windows-msvc.zip"
 
@@ -103,9 +125,7 @@ if run_installer --version "${version}" --no-setup --no-modify-path >"${test_roo
 fi
 [[ "$(sha256_file "${install_dir}/xana")" == "${installed_hash}" ]]
 
-cp -- "${clean_archive}" "${fixture}/xana-x86_64-unknown-linux-gnu.tar.gz"
-printf 'unexpected' >"${payload}/extra"
-tar -czf "${fixture}/xana-x86_64-unknown-linux-gnu.tar.gz" -C "${payload}" LICENSE README.md installation.md xana extra
+make_archive x86_64-unknown-linux-gnu true
 write_manifest
 if run_installer --version "${version}" --no-setup --no-modify-path >"${test_root}/unsafe.out" 2>&1; then
   printf 'unexpected archive inventory installed\n' >&2

@@ -50,7 +50,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
             --output "$installer"
-          echo "${CARGO_DIST_INSTALLER_SHA256}  $installer" | sha256sum --check
+          bash ./scripts/verify-sha256.sh "$installer" "$CARGO_DIST_INSTALLER_SHA256"
           sh "$installer"
 
       - name: Bind tag, Cargo, and manifest version
@@ -134,12 +134,18 @@ jobs:
 
       - name: Verify Bash installer
         shell: bash
-        run: ./scripts/test-install-sh.sh
+        run: |
+          bash ./scripts/test-install-sh.sh
+          bash ./scripts/test-release-sha256.sh
 
       - name: Verify PowerShell installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/test-install-ps1.ps1
+
+      - name: Verify release archive contract
+        shell: pwsh
+        run: ./scripts/test-release-archive-contract.ps1
 
   build:
     name: Build ${{ matrix.target }}
@@ -179,12 +185,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
             --output "$installer"
-          if command -v sha256sum >/dev/null 2>&1; then
-            echo "${CARGO_DIST_INSTALLER_SHA256}  $installer" | sha256sum --check
-          else
-            actual="$(shasum -a 256 "$installer" | awk '{print $1}')"
-            test "$actual" = "$CARGO_DIST_INSTALLER_SHA256"
-          fi
+          bash ./scripts/verify-sha256.sh "$installer" "$CARGO_DIST_INSTALLER_SHA256"
           sh "$installer"
 
       - name: Build exact native archive
