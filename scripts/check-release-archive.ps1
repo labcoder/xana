@@ -15,6 +15,8 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+. "$PSScriptRoot/release-archive-contract.ps1"
+
 $archivePath = (Resolve-Path -LiteralPath $Archive).Path
 $checksumPath = "$archivePath.sha256"
 if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
@@ -42,20 +44,8 @@ $entries = if ($archivePath.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCa
     @($listed | Where-Object { -not $_.EndsWith("/") })
 }
 
-foreach ($entry in $entries) {
-    $normalized = $entry.Replace("\", "/")
-    if ($normalized.StartsWith("/") -or $normalized -match '(^|/)\.\.(/|$)' -or $normalized.Contains(":")) {
-        throw "unsafe archive entry: $entry"
-    }
-}
-
 $executable = if ($Target -eq "x86_64-pc-windows-msvc") { "xana.exe" } else { "xana" }
-$expectedEntries = @("LICENSE", "README.md", "installation.md", $executable) | Sort-Object
-$actualEntries = @($entries | ForEach-Object { $_.Replace("\", "/") } | Sort-Object)
-$difference = @(Compare-Object $actualEntries $expectedEntries)
-if ($difference.Count -ne 0) {
-    throw "archive inventory differs from the bounded release contract: $($actualEntries -join ', ')"
-}
+$layout = Resolve-ReleaseArchiveLayout -Entries $entries -Target $Target
 
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("xana-archive-audit-" + [Guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Path $staging | Out-Null
@@ -69,7 +59,12 @@ try {
         }
     }
 
-    $binary = Join-Path $staging $executable
+    $payloadDirectory = if ([string]::IsNullOrEmpty($layout.PayloadRoot)) {
+        $staging
+    } else {
+        Join-Path $staging $layout.PayloadRoot
+    }
+    $binary = Join-Path $payloadDirectory $executable
     $versionOutput = (& $binary --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^xana 0\.\d+\.\d+') {
         throw "staged Xana version smoke failed: $versionOutput"

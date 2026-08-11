@@ -138,6 +138,7 @@ macOS or Linux:
 VERSION=0.5.0
 TARGET=x86_64-unknown-linux-gnu
 ASSET="xana-${TARGET}.tar.gz"
+ROOT="xana-${TARGET}"
 BASE="https://github.com/labcoder/xana/releases/download/v${VERSION}"
 
 curl --proto '=https' --tlsv1.2 --fail --location --remote-name \
@@ -153,8 +154,8 @@ shasum -a 256 --check "${ASSET}.sha256"
 gh attestation verify "${ASSET}" --repo labcoder/xana
 tar -tzf "${ASSET}"
 tar -xzf "${ASSET}"
-./xana --version
-./xana --help
+"./${ROOT}/xana" --version
+"./${ROOT}/xana" --help
 ```
 
 Windows PowerShell:

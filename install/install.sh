@@ -315,12 +315,17 @@ verbose_path="${temporary_dir}/inventory.verbose"
 tar -tzf "${archive_path}" >"${inventory_path}" || fail "could not inspect the Xana archive"
 tar -tvzf "${archive_path}" >"${verbose_path}" || fail "could not inspect Xana archive entry types"
 [[ "$(wc -l <"${inventory_path}" | tr -d ' ')" -eq 4 ]] || fail "Xana archive has an unexpected entry count"
+archive_root="xana-${target}"
 while IFS= read -r entry; do
   entry=${entry%$'\r'}
   [[ -n "${entry}" && "${entry}" != /* && "${entry}" != *:* && "${entry}" != ".." && "${entry}" != ../* && "${entry}" != */../* && "${entry}" != */.. ]] ||
     fail "Xana archive contains an unsafe path"
 done <"${inventory_path}"
-expected_inventory=$'LICENSE\nREADME.md\ninstallation.md\nxana'
+expected_inventory=$(printf '%s\n' \
+  "${archive_root}/LICENSE" \
+  "${archive_root}/README.md" \
+  "${archive_root}/installation.md" \
+  "${archive_root}/xana")
 actual_inventory=$(LC_ALL=C sort "${inventory_path}")
 [[ "${actual_inventory}" == "${expected_inventory}" ]] || fail "Xana archive contents differ from the release contract"
 while IFS= read -r details; do
@@ -335,12 +340,17 @@ fi
 install_dir=$(cd -- "${install_dir}" && pwd -P) || fail "could not resolve install directory"
 stage_dir=$(mktemp -d "${install_dir}/.xana-stage.XXXXXXXX") || fail "could not create same-filesystem staging"
 chmod 700 "${stage_dir}"
-tar -xzf "${archive_path}" -C "${stage_dir}" LICENSE README.md installation.md xana || fail "could not extract the verified Xana archive"
-chmod 755 "${stage_dir}/xana"
+tar -xzf "${archive_path}" -C "${stage_dir}" \
+  "${archive_root}/LICENSE" \
+  "${archive_root}/README.md" \
+  "${archive_root}/installation.md" \
+  "${archive_root}/xana" || fail "could not extract the verified Xana archive"
+payload_dir="${stage_dir}/${archive_root}"
+chmod 755 "${payload_dir}/xana"
 
-staged_version=$(${stage_dir}/xana --version 2>/dev/null) || fail "staged Xana version smoke failed"
+staged_version=$("${payload_dir}/xana" --version 2>/dev/null) || fail "staged Xana version smoke failed"
 [[ "${staged_version}" == "xana ${release_version}" ]] || fail "staged Xana reports '${staged_version}', expected 'xana ${release_version}'"
-"${stage_dir}/xana" --help >/dev/null 2>&1 || fail "staged Xana help smoke failed"
+"${payload_dir}/xana" --help >/dev/null 2>&1 || fail "staged Xana help smoke failed"
 
 final_path="${install_dir}/xana"
 [[ ! -L "${final_path}" ]] || fail "refusing to replace a symbolic-link destination"
@@ -450,7 +460,7 @@ if [[ -f "${final_path}" ]]; then
   [[ ! -e "${backup_path}" ]] || fail "temporary activation path already exists"
   cp -p -- "${final_path}" "${backup_path}" || fail "could not preserve the existing Xana executable"
 fi
-if ! mv -f -- "${stage_dir}/xana" "${final_path}"; then
+if ! mv -f -- "${payload_dir}/xana" "${final_path}"; then
   fail "could not activate Xana; the previous executable was preserved"
 fi
 activation_started="true"
