@@ -21,6 +21,11 @@ keywords = ["ai", "agent", "cli", "automation"]
 categories = ["command-line-utilities", "development-tools"]
 publish = false
 
+[package.metadata.dist]
+# Prebuilt archives are an explicit product path even though crates.io
+# publication remains disabled.
+dist = true
+
 [features]
 default = ["documents-csv"]
 documents-csv = ["dep:csv"]

@@ -69,6 +69,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   Documentation now own the shipped contract.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
+- [Xana 0.5.0 architecture closure evidence](development/architecture-closure-evidence-0.5.0.md)
+  records the one-package boundary audit, canonical module vocabulary, local
+  verification, and deliberately deferred public extraction.
 - [Release Preview development](development/release-preview.md) documents the
   pinned native plan, verified installers, local audits, and draft-only release
   workflow without implying publication.

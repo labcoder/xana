@@ -9,14 +9,14 @@ mod agent;
 mod app;
 mod artifact;
 mod bounded_file;
-pub mod capability;
+mod capability;
 mod cli;
 mod config;
 mod config_edit;
 mod context;
 mod credential;
 mod doctor;
-pub mod documents;
+mod documents;
 mod frontend;
 mod identity;
 mod init;
@@ -37,7 +37,7 @@ mod process_capture;
 mod prompt;
 mod provider;
 mod reset;
-pub mod self_docs;
+mod self_docs;
 mod session;
 mod setup;
 mod shell;
@@ -53,11 +53,6 @@ use paths::XanaPaths;
 use std::process::ExitCode;
 
 const APPLICATION_STACK_BYTES: usize = 4 * 1024 * 1024;
-
-/// Run the process-bound command using the runtime's stable CLI adapter.
-pub fn run() -> Result<()> {
-    run_cli(Cli::parse())
-}
 
 fn run_cli(cli: Cli) -> Result<()> {
     run_on_application_stack(move || run_cli_on_application_thread(cli))?
