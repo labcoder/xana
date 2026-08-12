@@ -3,7 +3,7 @@
 use super::wire::{WireDelta, WireToolCallDelta};
 use crate::{
     message::{ContentBlock, Message, Role, ToolCall},
-    provider::sse,
+    sse,
 };
 use std::{collections::BTreeMap, error::Error, fmt};
 

@@ -32,7 +32,8 @@ engineering contracts used to change it.
   noninteractive behavior, and content-free audit records.
 - [Model Context Protocol catalog and compatibility](user/mcp.md) explains the
   pinned modern protocol version, qualified identities, profile allowlists,
-  progressive discovery bounds, and the current no-transport limit.
+  progressive discovery bounds, owned stdio/Streamable HTTP transports, OAuth
+  credential ownership, and the current no-application-integration limit.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

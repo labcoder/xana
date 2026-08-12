@@ -8,6 +8,8 @@
 #![allow(dead_code)] // Transport and application consumers arrive in the following M3 tickets.
 
 mod catalog;
+mod http;
+mod oauth;
 mod protocol;
 mod stdio;
 
@@ -15,6 +17,17 @@ mod stdio;
 pub(crate) use catalog::{
     CatalogLimits, IndexReport, McpCatalog, McpCatalogError, McpCatalogSource, McpPaginationGuard,
     McpPrimitiveAllowlist, McpServerExposure, McpServerReadiness, McpToolDefinition,
+};
+#[allow(unused_imports)] // Application integration arrives in M3-14.
+pub(crate) use http::{
+    McpHttpClient, McpHttpEndpoint, McpHttpError, McpHttpOutboundTransport, McpHttpResponse,
+    McpHttpSecurity, McpHttpToolHeaders, mcp_http_recipient,
+};
+#[allow(unused_imports)] // Setup and command consumers arrive in M3-14/M3-23.
+pub(crate) use oauth::{
+    McpAuthChallenge, McpOAuthClient, McpOAuthDiscovery, McpOAuthError, McpOAuthFlow,
+    McpOAuthMetadata, McpOAuthReference, McpOAuthStore, McpOAuthToken,
+    McpProtectedResourceMetadata, OAuthCallback,
 };
 #[allow(unused_imports)] // Shared facade grows transport consumers in M3-12 through M3-15.
 pub(crate) use protocol::{

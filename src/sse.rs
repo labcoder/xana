@@ -5,15 +5,15 @@
 
 use std::{fmt, mem};
 
-pub(super) const MAX_FRAME_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_FRAME_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct SseEvent {
-    pub(super) data: Vec<u8>,
+pub(crate) struct SseEvent {
+    pub(crate) data: Vec<u8>,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct SseDecoder {
+pub(crate) struct SseDecoder {
     line: Vec<u8>,
     data: Vec<u8>,
     frame_bytes: usize,
@@ -22,7 +22,7 @@ pub(super) struct SseDecoder {
 }
 
 impl SseDecoder {
-    pub(super) fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, SseError> {
+    pub(crate) fn push(&mut self, chunk: &[u8]) -> Result<Vec<SseEvent>, SseError> {
         let mut events = Vec::new();
         let mut remaining = chunk;
 
@@ -36,7 +36,7 @@ impl SseDecoder {
         Ok(events)
     }
 
-    pub(super) fn finish(self) -> Result<(), SseError> {
+    pub(crate) fn finish(self) -> Result<(), SseError> {
         if !self.data_seen && !self.frame_active && self.line.iter().all(u8::is_ascii_whitespace) {
             Ok(())
         } else {
@@ -101,7 +101,7 @@ impl SseDecoder {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(super) enum SseError {
+pub(crate) enum SseError {
     FrameTooLarge { limit: usize },
     IncompleteFrame { remaining_bytes: usize },
 }

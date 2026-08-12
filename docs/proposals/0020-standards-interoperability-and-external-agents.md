@@ -270,7 +270,10 @@ negotiation, qualified identities, per-profile primitive allowlists, bounded
 progressive catalogs, schema hardening, and distinct readiness states. MCP
 stdio transport now adds exact process configuration, minimal environment,
 bounded protocol/stderr queues, cancellation/timeouts, typed health, and
-cross-platform process-tree cleanup. Streamable HTTP and application
-integration, the local server, and A2A remain unimplemented. Current behavior
-remains described by Architecture and User Documentation. Once every accepted
-slice ships, this proposal must be marked Implemented.
+cross-platform process-tree cleanup. Streamable HTTP adds exact endpoint and
+OAuth identity, pinned DNS/address policy, no redirects or inherited proxy,
+bounded JSON/request-scoped SSE, local PKCE completion, OS-store token binding,
+and serialized atomic refresh. Application integration, the local server, and
+A2A remain unimplemented. Current behavior remains described by Architecture
+and User Documentation. Once every accepted slice ships, this proposal must be
+marked Implemented.

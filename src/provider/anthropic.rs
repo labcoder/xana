@@ -8,7 +8,8 @@ use crate::{
     credential::SecretString,
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
-    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage, sse::SseDecoder},
+    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
+    sse::SseDecoder,
     tool::ToolDefinition,
     vision::MediaResolver,
 };

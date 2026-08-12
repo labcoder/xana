@@ -198,17 +198,22 @@ Connection, user, profile, and conversation policy can only narrow the allowed
 classes; concrete messages, files, artifacts, and metadata still require exact
 selection. New recipient/class combinations require approval, unresolved
 noninteractive requests fail closed, and audits retain counts and digests
-rather than selected content. MCP, A2A, and focused-service transports are not
-enabled yet. See [Outbound data approvals and privacy](docs/user/outbound-data.md).
+rather than selected content. The internal MCP HTTP adapter already implements
+that exact dispatch seam; user-facing MCP, A2A, and focused-service activation
+remain unavailable until their application integrations land. See [Outbound
+data approvals and privacy](docs/user/outbound-data.md).
 
 Xana also has a bounded client-side protocol and progressive catalog foundation
 for MCP `2026-07-28`. It pins the exact modern discovery contract, qualifies
 tool identity as `mcp.<server>.<tool>`, separates tools/resources/prompts, and
 indexes only exact profile-allowlisted primitives under deterministic memory
 limits. Its owned stdio process adapter has bounded I/O, cancellation, health,
-minimal environment, and process-tree cleanup, but is not user-configurable
-until the remaining client integration lands. See [MCP catalog and
-compatibility](docs/user/mcp.md).
+minimal environment, and process-tree cleanup. Its stateless Streamable HTTP
+adapter adds pinned endpoint/DNS identity, no redirects or inherited proxy,
+bounded JSON/request-scoped SSE, local PKCE OAuth completion, OS-store token
+rotation, and exact outbound authorization. Neither transport is
+user-configurable until the remaining client integration lands. See [MCP
+catalog and compatibility](docs/user/mcp.md).
 
 ## Diagnose and recover an installation
 
