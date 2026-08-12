@@ -262,6 +262,9 @@ automatic provider/agent routing.
 This proposal is Accepted and prescriptive. Agent Skills discovery/activation
 and Agent Plugin inspection, exact acquisition, scoped enablement, explicit
 update/reapproval, rollback, removal, and garbage collection are implemented.
-MCP, local-server, and A2A slices remain unimplemented. Current behavior remains
-described by Architecture and User Documentation. Once every accepted slice
-ships, this proposal must be marked Implemented.
+The shared outbound data-class gate, exact recipient/class decisions,
+fail-closed noninteractive behavior, private saved-policy state, and
+content-free audit model are implemented. MCP, local-server, and A2A slices
+remain unimplemented. Current behavior remains described by Architecture and
+User Documentation. Once every accepted slice ships, this proposal must be
+marked Implemented.

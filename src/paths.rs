@@ -127,6 +127,12 @@ impl XanaPaths {
             .join("endpoint-trust.json")
     }
 
+    pub(crate) fn outbound_decisions_file(&self) -> PathBuf {
+        self.data_dir
+            .join("interoperable")
+            .join("outbound-decisions.json")
+    }
+
     pub(crate) fn config_migration_lock_file(&self) -> PathBuf {
         self.runtime_dir.join("config-migration.lock")
     }
@@ -174,6 +180,10 @@ mod tests {
         assert_eq!(
             paths.endpoint_trust_file(),
             root.join("data/interoperable/endpoint-trust.json")
+        );
+        assert_eq!(
+            paths.outbound_decisions_file(),
+            root.join("data/interoperable/outbound-decisions.json")
         );
         assert_eq!(
             paths.config_migration_lock_file(),

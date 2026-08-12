@@ -131,6 +131,29 @@ pub(crate) enum OutboundDataClass {
     WorkspaceMetadata,
 }
 
+impl OutboundDataClass {
+    #[cfg(test)]
+    pub(crate) const ALL: [Self; 6] = [
+        Self::PromptText,
+        Self::XanaSummary,
+        Self::SelectedMessages,
+        Self::SelectedFileContents,
+        Self::SelectedArtifacts,
+        Self::WorkspaceMetadata,
+    ];
+
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::PromptText => "prompt_text",
+            Self::XanaSummary => "xana_summary",
+            Self::SelectedMessages => "selected_messages",
+            Self::SelectedFileContents => "selected_file_contents",
+            Self::SelectedArtifacts => "selected_artifacts",
+            Self::WorkspaceMetadata => "workspace_metadata",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EgressPolicyDeclaration {

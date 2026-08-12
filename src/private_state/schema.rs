@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
+use crate::config::OutboundDataClass;
 use crate::identity::ProjectId;
 
 pub(super) const PRIVATE_RECORD_VERSION: u32 = 1;
@@ -206,6 +207,39 @@ impl Default for EndpointTrustDocument {
         Self {
             version: PRIVATE_RECORD_VERSION,
             endpoints: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SavedOutboundDecision {
+    Allow,
+    Deny,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutboundDecisionRecord {
+    pub(crate) recipient_identity_digest: String,
+    pub(crate) data_class: OutboundDataClass,
+    pub(crate) decision: SavedOutboundDecision,
+    pub(crate) updated_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutboundDecisionDocument {
+    pub(crate) version: u32,
+    #[serde(default)]
+    pub(crate) decisions: BTreeMap<String, OutboundDecisionRecord>,
+}
+
+impl Default for OutboundDecisionDocument {
+    fn default() -> Self {
+        Self {
+            version: PRIVATE_RECORD_VERSION,
+            decisions: BTreeMap::new(),
         }
     }
 }

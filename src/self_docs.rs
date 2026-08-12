@@ -179,6 +179,7 @@ static PROFILE_TOPICS: &[&str] = &[
 ];
 static SKILL_TOPICS: &[&str] = &["skills", "agents", "profiles", "instructions", "security"];
 static PLUGIN_TOPICS: &[&str] = &["plugins", "skills", "mcp", "installation", "security"];
+static OUTBOUND_TOPICS: &[&str] = &["egress", "outbound", "privacy", "approvals", "security"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -326,6 +327,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: PLUGIN_TOPICS,
         body: include_str!("../docs/user/plugins.md"),
+    },
+    BundledDoc {
+        id: "user.outbound-data",
+        title: "Outbound data approvals and privacy",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: OUTBOUND_TOPICS,
+        body: include_str!("../docs/user/outbound-data.md"),
     },
     BundledDoc {
         id: "user.rich-content",
