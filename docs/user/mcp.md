@@ -2,9 +2,11 @@
 
 Xana implements a bounded client-side protocol and catalog foundation for
 [Model Context Protocol 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28).
-No MCP transport is user-configurable yet. Stdio, Streamable HTTP, tool
-execution, resource reads, prompt activation, and Xana's local MCP server are
-introduced by subsequent interoperability work.
+The owned stdio transport is implemented, but it is not yet user-configurable:
+profile/configuration and application integration arrive in the next MCP
+slices. Streamable HTTP, tool execution, resource reads, prompt activation, and
+Xana's local MCP server are also introduced by subsequent interoperability
+work.
 
 ## Compatibility boundary
 
@@ -66,4 +68,32 @@ network failure, protocol mismatch, health failure, or profile-policy decision
 from being presented as the same generic error.
 
 This document describes the implemented protocol/catalog boundary only. It
-will be extended as the transport and application integration become usable.
+will be extended as application integration becomes usable.
+
+## Stdio process boundary
+
+The stdio adapter launches one exact executable with an argument vector and an
+absolute working directory. It never builds a shell command. The child receives
+a cleared environment containing only a small platform bootstrap set plus
+explicitly configured entries. Explicit environment values and sensitive
+arguments are redacted from diagnostics.
+
+Stdout is newline-framed JSON-RPC only. Stderr is drained independently, capped
+at 64 KiB, represented as byte counts/truncation, and never parsed as protocol
+or inserted into a prompt. Frames are capped at 1 MiB. A process accepts at
+most 32 outstanding requests; its command queue holds at most 64 operations and
+its frame queue at most 32 frames. Writes have a two-second deadline; requests
+default to 30 seconds. Progress, cancellation, invalid response IDs, malformed
+frames, partial frames, process exit, timeout, and queue pressure remain typed.
+
+Xana owns the child and its process group. Dropping the final client, explicit
+shutdown, cancellation, a crash, or a protocol failure starts cleanup. Closing
+stdin gives the peer a two-second graceful deadline by default; Xana then kills
+the owned process tree. Restart is an explicit fresh spawn and never replays a
+request. Health distinguishes starting, discovering, ready, degraded,
+stopping, stopped, and crashed states.
+
+Until configuration is wired, there is no supported command to start this
+transport. If internal conformance fixtures fail, the actionable categories are
+spawn/pipe failure, invalid protocol, timeout, queue/full outstanding limit,
+and process exit; peer stderr content is deliberately not echoed.

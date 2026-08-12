@@ -1158,6 +1158,32 @@ references are never dereferenced, and control/bidirectional characters are
 sanitized before review or model exposure. The catalog does not own process or
 network lifetime; supervised transports consume this boundary in later slices.
 
+The stdio adapter is the first such supervised transport. `McpStdioClient`
+owns one actor, exact child process/process group, bounded writer, cancellation-
+safe frame reader, independent stderr drain, typed health projection, and
+cleanup deadline. UI and plugin code cannot own the child directly.
+
+```mermaid
+flowchart LR
+    A["Runtime-owned MCP client"] --> Q["Bounded command actor"]
+    Q --> W["Deadline-bounded stdin writer"]
+    P["Exact child process group"] --> O["Protocol-only stdout"]
+    P --> E["Bounded stderr drain"]
+    O --> F["1 MiB cancellation-safe frame reader"]
+    F --> Q
+    E --> H["Typed health/activity without content"]
+    Q --> H
+    C["Drop / shutdown / crash / protocol failure"] --> S["Graceful close then forced tree cleanup"]
+    S --> P
+```
+
+The command queue is capped at 64, the frame queue at 32, outstanding requests
+at 32, and retained stderr at 64 KiB. Each frame is at most 1 MiB. Writes have a
+two-second deadline and requests a 30-second default. The child environment is
+cleared and rebuilt from a minimal platform bootstrap plus exact configured
+entries; sensitive arguments and environment values never enter Debug output.
+Restart means a new explicit spawn and never replays an interrupted request.
+
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
 An existing snapshot cannot be replaced. A profile change allocates a new

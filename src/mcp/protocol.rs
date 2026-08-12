@@ -54,6 +54,23 @@ pub(crate) fn encode_request(
     .map_err(|_| ProtocolError::Encode)
 }
 
+pub(crate) fn encode_notification(method: &str, params: Value) -> Result<Vec<u8>, ProtocolError> {
+    validate_method(method)?;
+    let Value::Object(mut params) = params else {
+        return Err(ProtocolError::InvalidParams);
+    };
+    if params.contains_key("_meta") {
+        return Err(ProtocolError::ReservedMetadata);
+    }
+    params.insert("_meta".to_owned(), request_metadata());
+    serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    }))
+    .map_err(|_| ProtocolError::Encode)
+}
+
 fn request_metadata() -> Value {
     serde_json::json!({
         "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,

@@ -205,7 +205,9 @@ Xana also has a bounded client-side protocol and progressive catalog foundation
 for MCP `2026-07-28`. It pins the exact modern discovery contract, qualifies
 tool identity as `mcp.<server>.<tool>`, separates tools/resources/prompts, and
 indexes only exact profile-allowlisted primitives under deterministic memory
-limits. No MCP transport is available yet. See [MCP catalog and
+limits. Its owned stdio process adapter has bounded I/O, cancellation, health,
+minimal environment, and process-tree cleanup, but is not user-configurable
+until the remaining client integration lands. See [MCP catalog and
 compatibility](docs/user/mcp.md).
 
 ## Diagnose and recover an installation

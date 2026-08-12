@@ -9,6 +9,7 @@
 
 mod catalog;
 mod protocol;
+mod stdio;
 
 #[allow(unused_imports)] // Shared facade grows transport consumers in M3-12 through M3-15.
 pub(crate) use catalog::{
@@ -21,7 +22,12 @@ pub(crate) use protocol::{
     McpPromptWire, McpRequestId, McpResourceTemplateWire, McpResourceWire, McpServerCapabilities,
     McpToolWire, Page, ProtocolError, decode_discover_response, decode_notification,
     decode_prompt_page, decode_resource_page, decode_resource_template_page, decode_tool_page,
-    encode_request, negotiate,
+    encode_notification, encode_request, negotiate,
+};
+#[allow(unused_imports)] // Application integration arrives in M3-14.
+pub(crate) use stdio::{
+    McpArgument, McpEnvironmentValue, McpProcessActivity, McpProcessConfig, McpProcessHealth,
+    McpProcessPhase, McpStdioClient, McpStdioError, McpStopReport,
 };
 
 #[cfg(test)]
