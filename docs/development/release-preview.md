@@ -63,7 +63,7 @@ checked-in release manifest generator is:
 ```powershell
 ./scripts/new-release-manifest.ps1 \
   -ArtifactDirectory target/distrib \
-  -Version 0.5.0
+  -Version 0.5.1
 ```
 
 It accepts only the exact four archive names, hashes their bytes itself, bounds
@@ -97,11 +97,21 @@ native PowerShell matrix on Windows.
 `.github/workflows/release.yml` has two entry paths. Its release-builder
 downloads are checked by a source-controlled portable SHA-256 verifier that
 does not assume GNU `sha256sum` options on macOS. Manual dispatch accepts an
-exact workspace version, repeats the complete quality gates, builds the four
-targets natively, assembles and attests the exact bundle, and retains it as a
-workflow artifact. Manual dispatch has no draft-creation job. An exact matching
-`vX.Y.Z` tag performs the same work, then gives only the final job
-`contents: write` so it can leave an unpublished GitHub draft.
+exact workspace version and requires that the exact source commit already has
+a successful ordinary CI push run on `main`. It then builds the four targets
+natively, assembles and attests the exact bundle, and retains it as a workflow
+artifact. Manual dispatch has no draft-creation job. An exact matching
+`vX.Y.Z` tag performs the same work, then gives only the final job `contents:
+write` so it can leave an unpublished GitHub draft.
+
+Ordinary CI runs on pull requests and pushes to `main`, but not tag pushes. It
+uses a commit-pinned Rust cache that retains dependency build artifacts while
+excluding Xana workspace outputs and Cargo-installed binaries; only trusted
+`main` pushes save cache entries. Superseded runs are cancelled. The Release
+Preview does not consume those cached outputs or CI binaries: all public
+archives are fresh native builds of the evidenced commit. Every job has an
+explicit timeout, intermediate release-plan/native artifacts expire after one
+day, and only the complete review bundle is retained for fourteen days.
 
 The workflow uses immutable action commits, verified cargo-dist 0.32.0, current
 standard `macos-15` ARM64 and `macos-15-intel` runners, and fixed Windows/Linux
@@ -109,6 +119,7 @@ runners. Run the local authority and assembly checks before any remote run:
 
 ```powershell
 ./scripts/check-release-workflow.ps1
+./scripts/test-release-ci-evidence.ps1
 ./scripts/test-release-archive-contract.ps1
 ./scripts/test-release-bundle.ps1
 ```

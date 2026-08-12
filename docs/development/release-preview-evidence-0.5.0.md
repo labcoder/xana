@@ -9,6 +9,12 @@
 >
 > Publication: Not authorized, not tagged, no GitHub draft, no public release
 
+> Subsequent outcome: this file preserves the evidence available when it was
+> written. Later CI and native build/assembly/attestation jobs passed for the
+> `v0.5.0` candidate, but the final draft handoff failed before creating a
+> reviewable release. The immutable candidate tag was not moved; the corrected
+> release path continues as 0.5.1.
+
 This record separates completed repository evidence from external release
 effects. The locally tested code candidate is commit `565e75d` plus this
 evidence-only documentation change. The release workflow will record the exact

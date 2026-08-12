@@ -824,7 +824,7 @@ targets from typed paths. It unlinks symlinks, refuses active workspace locks,
 confirms filesystem and OS-credential effects separately, and removes config
 last. Every scope preserves Codex-owned authentication/conversations and
 unverified runtime state. The hidden `init` implementation is deprecated
-compatibility through v0.5.0; provider-neutral setup is canonical.
+compatibility during the 0.5.x preview; provider-neutral setup is canonical.
 
 Xana loads a strict version 1, 2, or 3 `config.toml`, capped at 1 MiB. It validates
 named native and managed connections, tagged credential references,
@@ -905,23 +905,32 @@ and are idempotent; failure restores the prior executable. Reparse points,
 emulated or unsupported architectures, locked destinations, and unsigned or
 incorrect staged executables fail closed.
 
-The dedicated Release Preview workflow first binds an exact tag/input to Cargo
-and the pinned dist plan, then gates four native builds behind the complete
-three-platform quality matrix. A read-only assembly job refuses anything other
-than the exact fifteen-asset bundle. A separate least-privilege job attests that
-bundle; only an exact tag-push job receives `contents: write`. That job creates
-or reconciles an explicitly `INCOMPLETE` draft, verifies the tag commit and
-remote inventory, and only then labels the still-unpublished draft `REVIEW
-READY`. Manual dispatch can build and attest but has no draft job. Every action
-and release tool is commit/version pinned and ordinary CI statically audits the
-authority boundary.
+Ordinary CI is the source-quality authority for pushes to `main` and pull
+requests. Its three-platform matrix uses a commit-pinned, dependency-only Rust
+cache; pull requests can restore but only trusted `main` pushes can save cache
+entries. Tag pushes do not start a duplicate ordinary CI run.
 
-There is still no crates.io publication, public prebuilt archive, published
-installer asset, package-manager channel, automatic updater, executed release
-draft, or release tag claimed by the current repository. Publication and
-tagging remain separate
-owner-controlled effects, and the manifests set `publish = false` to prevent an
-accidental registry upload. The separately
+The dedicated Release Preview workflow first requires a successful ordinary
+CI push run for the exact commit being released, then binds the exact tag/input
+to Cargo and the pinned dist plan. It rebuilds all four native archives from
+that source rather than consuming CI binaries or mutable prebuilt artifacts. A
+read-only assembly job refuses anything other than the exact fifteen-asset
+bundle. A separate least-privilege job attests that bundle; only an exact
+tag-push job receives `contents: write`. That job creates or reconciles an
+explicitly `INCOMPLETE` draft, verifies the tag commit and remote inventory,
+and only then labels the still-unpublished draft `REVIEW READY`. Manual
+dispatch can build and attest but has no draft job. Every action and release
+tool is commit/version pinned and ordinary CI statically audits the authority
+boundary.
+
+The repository has a `v0.5.0` candidate tag, but its workflow did not complete
+the draft handoff and it is not a published release. There is still no
+crates.io publication, public prebuilt archive, published installer asset,
+package-manager channel, automatic updater, or completed release draft. The
+corrected candidate advances as 0.5.1 rather than moving the existing tag.
+Publication and tagging remain separate owner-controlled effects, and the
+manifests set `publish = false` to prevent an accidental registry upload. The
+separately
 [accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)
 prescribes a bounded native preview without making any of those future
 artifacts part of the current descriptive architecture before they exist.

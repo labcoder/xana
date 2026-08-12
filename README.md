@@ -65,7 +65,7 @@ xana config check
 xana
 ```
 
-Use `--tag v0.5.0` or `--rev COMMIT_SHA` for an exact build. Xana is not
+Use `--tag v0.5.1` or `--rev COMMIT_SHA` for an exact build. Xana is not
 published to crates.io and has no automatic updater. Re-run an installer or
 locked Cargo command to update. See [Installation, updates, verification, and
 removal](docs/user/installation.md) for exact versions, manual archive and
@@ -160,7 +160,7 @@ failed edits preserve both the live file and the draft for correction.
 separate confirmations; every scope preserves Codex-owned authentication and
 conversations. The TUI exposes reset only as a guarded command-palette
 lifecycle action. The legacy hidden `xana init` command remains a deprecated
-compatibility path through v0.5.0; `xana setup` is canonical.
+compatibility path during the 0.5.x preview; `xana setup` is canonical.
 
 ## Add a remote API provider
 

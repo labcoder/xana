@@ -4,7 +4,13 @@ Set-StrictMode -Version Latest
 . "$PSScriptRoot/fixture-cleanup.ps1"
 Assert-FixtureCleanupGuardContract
 
-$version = "0.5.0"
+$workspaceManifest = Get-Content -Raw -LiteralPath "Cargo.toml"
+$versionMatch = [regex]::Match(
+    $workspaceManifest,
+    '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(?<version>[0-9]+\.[0-9]+\.[0-9]+)"'
+)
+if (-not $versionMatch.Success) { throw "could not read workspace version" }
+$version = $versionMatch.Groups["version"].Value
 $tag = "v$version"
 $testParent = [IO.Path]::GetTempPath()
 $testRoot = Join-Path $testParent ("xana-release-bundle-test-" + [Guid]::NewGuid().ToString("N"))

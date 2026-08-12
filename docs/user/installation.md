@@ -45,7 +45,7 @@ The default destination is `~/.local/bin/xana`. Options are passed after
 # Exact release
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
   https://github.com/labcoder/xana/releases/latest/download/xana-installer.sh \
-  | bash -s -- --version 0.5.0
+  | bash -s -- --version 0.5.1
 
 # Custom directory, no setup, and no profile edit
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
@@ -79,7 +79,7 @@ $source = Invoke-RestMethod `
   -Uri 'https://github.com/labcoder/xana/releases/latest/download/xana-installer.ps1'
 
 # Exact release
-& ([scriptblock]::Create($source)) -Version 0.5.0
+& ([scriptblock]::Create($source)) -Version 0.5.1
 
 # Custom directory, no setup, and no user-PATH change
 & ([scriptblock]::Create($source)) `
@@ -135,7 +135,7 @@ macOS or Linux:
 
 ```bash
 # Replace TARGET and VERSION with one supported exact pair.
-VERSION=0.5.0
+VERSION=0.5.1
 TARGET=x86_64-unknown-linux-gnu
 ASSET="xana-${TARGET}.tar.gz"
 ROOT="xana-${TARGET}"
@@ -161,7 +161,7 @@ tar -xzf "${ASSET}"
 Windows PowerShell:
 
 ```powershell
-$version = '0.5.0'
+$version = '0.5.1'
 $asset = 'xana-x86_64-pc-windows-msvc.zip'
 $base = "https://github.com/labcoder/xana/releases/download/v$version"
 Invoke-WebRequest -Uri "$base/$asset" -OutFile $asset
@@ -191,7 +191,7 @@ Install the default branch or one exact published tag:
 
 ```bash
 cargo install --git https://github.com/labcoder/xana.git --locked
-cargo install --git https://github.com/labcoder/xana.git --tag v0.5.0 --locked
+cargo install --git https://github.com/labcoder/xana.git --tag v0.5.1 --locked
 ```
 
 For development from a checkout:
