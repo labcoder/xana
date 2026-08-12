@@ -4,8 +4,9 @@
 
 Xana uses `cargo-dist` 0.32.0 as a pinned planner for one terminal application
 and four native targets. The reviewed [Release Preview proposal](../proposals/0018-release-preview-distribution.md)
-owns the product boundary. This document describes local implementation tools;
-it does not claim that a public archive or published installer asset exists.
+owns the product boundary. Xana 0.5.1 is the first published preview under that
+contract; this document describes the implementation and review tools used for
+it and later patch releases.
 
 ## Plan the release
 
@@ -128,9 +129,12 @@ An assembled bundle has exactly fifteen assets: four archives, four archive
 checksum sidecars, `dist-manifest.json`, `xana-release-manifest.txt`, the two
 source-controlled installers, versioned release notes, the reviewer checklist,
 and `sha256.sum`. Missing, duplicate, mismatched, or extra inputs fail before
-upload. A tag job initially labels the draft `INCOMPLETE`; only exact remote
-inventory and tag-commit verification changes the title to `REVIEW READY`.
-Neither title publishes the release.
+upload. A tag job initially labels the draft `INCOMPLETE`; exact remote
+inventory and tag-commit verification then removes that marker and installs
+the clean final public title. Neither edit publishes the release. Draft lookup
+and reconciliation use `gh release view`, whose draft-aware fields are covered
+by a fake-GitHub regression test; the published-release-by-tag REST endpoint is
+not used for draft discovery.
 
 The owner follows [the draft review checklist](release-review-checklist.md),
 including independent GitHub attestation verification, before a separate

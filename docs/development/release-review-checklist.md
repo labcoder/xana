@@ -2,9 +2,10 @@
 
 > Audience: The Xana release owner reviewing an unpublished GitHub draft.
 
-Do not publish a draft whose title still begins with `INCOMPLETE`. For a
-`REVIEW READY` draft, verify all of the following against the pushed tag and
-workflow run:
+Do not publish a draft whose title still begins with `INCOMPLETE`. A verified
+draft has the clean `Xana X.Y.Z Developer Preview` public title. Before
+publishing it, verify all of the following against the pushed tag and workflow
+run:
 
 - the tag is exact `vX.Y.Z`, points to the reviewed commit, and matches every
   Cargo package, both manifests, the release title, and release notes;

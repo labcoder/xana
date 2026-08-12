@@ -8,8 +8,8 @@ x64 (`x86_64-pc-windows-msvc`), and x64 glibc Linux
 (`x86_64-unknown-linux-gnu`).
 
 The GitHub commands below apply only after the owner publishes an ordinary
-preview. A release workflow run, local version tag, or `REVIEW READY` draft is
-not a public release. If the `latest` URL returns 404, use the locked Git Cargo
+preview. A release workflow run, local version tag, or unpublished draft is not
+a public release. If the `latest` URL returns 404, use the locked Git Cargo
 or checkout path; do not substitute an unrelated asset or weaken TLS.
 
 Preview binaries are unsigned. macOS archives are not Developer-ID-signed or

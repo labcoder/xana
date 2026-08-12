@@ -76,6 +76,7 @@ jobs:
         run: |
           ./scripts/check-release-workflow.ps1
           ./scripts/test-release-ci-evidence.ps1
+          ./scripts/test-create-release-draft.ps1
           ./scripts/test-release-archive-contract.ps1
           ./scripts/test-release-bundle.ps1
 

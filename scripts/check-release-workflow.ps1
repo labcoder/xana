@@ -55,6 +55,7 @@ $ciRequired = @(
     "cache-bin: false",
     "save-if:",
     "test-release-ci-evidence.ps1",
+    "test-create-release-draft.ps1",
     "verify-sha256.sh"
 )
 foreach ($text in $ciRequired) {
@@ -67,8 +68,13 @@ if ($workflow -match '(?m)^  quality:\s*$') {
     throw "release workflow must consume exact main CI evidence instead of repeating quality jobs"
 }
 if (-not $draftScript.Contains("--draft") -or
+    -not $draftScript.Contains("gh release view") -or
+    -not $draftScript.Contains('title "Xana $($env:RELEASE_VERSION) Developer Preview"') -or
     -not $draftScript.Contains("refusing to modify an already published release")) {
     throw "draft helper does not preserve the unpublished human-review boundary"
+}
+if ($draftScript.Contains("/releases/tags/") -or $draftScript.Contains("REVIEW READY")) {
+    throw "draft helper retains a draft-blind lookup or internal public-title marker"
 }
 
 $draftJobMatch = [regex]::Match(
