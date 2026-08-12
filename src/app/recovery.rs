@@ -23,10 +23,71 @@ pub(super) fn run_config_command<W: Write>(
         }
         ConfigCommand::Check => {
             load_config(paths)?;
+            let plan = crate::config_migration::ConfigMigrationPlan::build(paths)?;
             writeln!(
                 output,
                 "configuration is valid: {}",
                 paths.config_file().display()
+            )?;
+            writeln!(
+                output,
+                "schema: {} (current {}){}",
+                plan.source_version,
+                plan.target_version,
+                if plan.requires_apply() {
+                    "; migration pending"
+                } else {
+                    ""
+                }
+            )?;
+            for record in &plan.private_records {
+                writeln!(
+                    output,
+                    "private state: {} = {}{}",
+                    record.name,
+                    record.status.as_str(),
+                    record
+                        .version
+                        .map(|version| format!(" (version {version})"))
+                        .unwrap_or_default()
+                )?;
+            }
+            Ok(())
+        }
+        ConfigCommand::Migrate { apply } => {
+            let plan = crate::config_migration::ConfigMigrationPlan::build(paths)?;
+            writeln!(output, "Xana configuration migration")?;
+            writeln!(
+                output,
+                "  Schema: {} -> {}",
+                plan.source_version, plan.target_version
+            )?;
+            writeln!(
+                output,
+                "  Config: {}",
+                if plan.source_version == plan.target_version {
+                    "current"
+                } else {
+                    "comment-preserving version update"
+                }
+            )?;
+            for record in &plan.private_records {
+                writeln!(output, "  {}: {}", record.name, record.status.as_str())?;
+            }
+            if !apply {
+                writeln!(
+                    output,
+                    "review only; run `xana config migrate --apply` to commit"
+                )?;
+                return Ok(());
+            }
+            let outcome = plan.apply(paths)?;
+            writeln!(output, "migration committed atomically")?;
+            writeln!(output, "  Backup: {}", outcome.backup_path.display())?;
+            writeln!(
+                output,
+                "  Private records initialized: {}",
+                outcome.initialized_private_records
             )?;
             Ok(())
         }

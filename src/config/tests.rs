@@ -104,6 +104,109 @@ profile = "worker"
 }
 
 #[test]
+fn v4_registry_models_interoperable_declarations_without_secret_values() {
+    let input = r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+
+[providers.local]
+kind = "ollama"
+
+[profiles.default]
+connection = "local"
+model = "qwen"
+identity = "Help with this project."
+skills = ["repo.review"]
+plugins = ["reviewer"]
+mcp_servers = ["files"]
+external_agents = ["research"]
+service_routes = ["illustrate"]
+egress_policy = "selected"
+applies_to = ["primary"]
+
+[plugins.reviewer]
+source = { kind = "git", url = "https://example.test/reviewer.git", revision = "0123456789abcdef" }
+enabled = true
+
+[mcp_servers.files]
+transport = "stdio"
+command = "files-server"
+args = ["--read-only"]
+enabled = true
+egress_policy = "selected"
+
+[external_agents.research]
+endpoint = "https://agents.example.test/a2a"
+credential = { source = "stored", id = "research" }
+enabled = true
+egress_policy = "selected"
+
+[service_connections.images]
+adapter = "openai.images"
+credential = { source = "environment", variable = "OPENAI_API_KEY" }
+
+[service_routes.illustrate]
+operation = "image.generate"
+connection = "images"
+model = "image-model"
+egress_policy = "selected"
+
+[egress_policies.selected]
+allowed = ["prompt_text", "selected_artifacts"]
+"#;
+
+    let registry = XanaConfig::parse_registry(input).expect("v4 registry");
+
+    let profile = &registry.profiles["default"];
+    assert_eq!(profile.identity.as_deref(), Some("Help with this project."));
+    assert_eq!(profile.applies_to, vec![ProfileUse::Primary]);
+    assert_eq!(profile.skills, ["repo.review"]);
+    assert!(registry.plugins["reviewer"].enabled);
+    assert!(registry.mcp_servers["files"].enabled());
+    assert!(registry.external_agents["research"].enabled);
+    assert_eq!(
+        registry.service_routes["illustrate"].operation,
+        "image.generate"
+    );
+    assert_eq!(
+        registry.egress_policies["selected"].allowed,
+        vec![
+            interoperable::OutboundDataClass::PromptText,
+            interoperable::OutboundDataClass::SelectedArtifacts
+        ]
+    );
+    assert!(!input.contains("api_key ="));
+}
+
+#[test]
+fn interoperable_references_and_endpoint_credentials_fail_closed() {
+    let unknown = MINIMAL.replace(
+        "model = \"qwen3:1.7b\"",
+        "model = \"qwen3:1.7b\"\nplugins = [\"missing\"]",
+    );
+    assert!(matches!(
+        parse_error(&unknown),
+        ConfigError::InvalidInteroperableConfig {
+            section: "profile plugins",
+            ..
+        }
+    ));
+
+    let embedded_secret = format!(
+        "{}\n[external_agents.remote]\nendpoint = \"https://token@example.test/a2a\"\n",
+        MINIMAL.replace("version = 1", "version = 4")
+    );
+    assert!(matches!(
+        parse_error(&embedded_secret),
+        ConfigError::InvalidInteroperableConfig {
+            section: "external agent",
+            ..
+        }
+    ));
+}
+
+#[test]
 fn profile_connection_migration_rejects_conflicting_keys() {
     let input = MINIMAL.replace(
         "provider = \"local\"",
@@ -278,7 +381,7 @@ fn connection_edits_preserve_comments_and_validate_the_complete_document() {
 
     let edited = fs::read_to_string(&path).unwrap();
     assert!(edited.contains("# keep me"));
-    assert!(edited.contains("version = 3"));
+    assert!(edited.contains("version = 4"));
     let registry = XanaConfig::load_registry_from(&path).unwrap();
     assert_eq!(registry.connections["codex"].kind, ProviderKind::Codex);
 }
@@ -309,7 +412,7 @@ fn structured_writes_migrate_legacy_profile_keys_to_connection() {
 
     let edited = fs::read_to_string(&path).unwrap();
     assert!(edited.contains("# preserve this"));
-    assert!(edited.contains("version = 3"));
+    assert!(edited.contains("version = 4"));
     assert!(edited.contains("connection = \"local\""));
     assert!(!edited.contains("provider = \"local\""));
 }
@@ -640,7 +743,7 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
         }
     );
     assert!(rendered.contains("permission_mode = \"ask\""));
-    assert!(rendered.contains("version = 3"));
+    assert!(rendered.contains("version = 4"));
     assert!(rendered.contains("default_child_route = \"default\""));
     assert!(rendered.contains("connection = \"ollama\""));
     assert!(!rendered.contains("provider = \"ollama\""));

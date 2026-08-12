@@ -105,7 +105,7 @@ versioned `XANA_SETUP_RESULT` receipt and exact `xana setup`/`xana doctor`
 next steps. Shell wrappers never parse or repair `config.toml` themselves.
 
 ```toml
-version = 3
+version = 4
 default_profile = "default"
 default_child_route = "default"
 permission_mode = "ask"
@@ -137,6 +137,12 @@ to subsequent turns when compatible. Connection owner, shell, permission,
 profile, and route changes never mutate the open conversation; start a new
 conversation explicitly to use their new immutable snapshot. Every durable
 section has a flag-driven `--non-interactive ... --yes` form.
+
+Existing schema 1-3 files remain readable. `xana config migrate` prints a
+redacted, read-only migration plan; `xana config migrate --apply` takes an
+exact backup, initializes Xana's versioned private interoperability records,
+and commits schema 4 atomically. A retry is safe and byte-stable when no work
+remains.
 
 ## Diagnose and recover an installation
 

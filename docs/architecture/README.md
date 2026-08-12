@@ -826,17 +826,36 @@ last. Every scope preserves Codex-owned authentication/conversations and
 unverified runtime state. The hidden `init` implementation is deprecated
 compatibility during the 0.5.x preview; provider-neutral setup is canonical.
 
-Xana loads a strict version 1, 2, or 3 `config.toml`, capped at 1 MiB. It validates
+Xana loads a strict version 1, 2, 3, or 4 `config.toml`, capped at 1 MiB. It validates
 named native and managed connections, tagged credential references,
 connection-owned model overrides, complete agent profiles, exact task routes,
 Codex-only fields, shell policy, permission rules, and bounded orchestration
-limits.
+limits. Schema 4 also models user-global identity and activation references,
+declarative plugin sources, MCP servers, external agents, focused service
+connections/routes, and named outbound-data policies. These declarations are
+configuration only: they do not confer runtime authority or imply that a
+package, endpoint, or service is available.
 Model selection (64 KiB maximum) and bounded non-secret catalogs (8 MiB each)
 are stored separately so the control plane does not rewrite a user's normal
 selection into TOML. Structured
 connection add/remove edits preserve comments, migrate legacy profile
-`provider` keys to canonical `connection`, write version 3, and validate the
-complete result. Existing version 1 and 2 documents remain readable.
+`provider` keys to canonical `connection`, write version 4, and validate the
+complete result. Existing version 1-3 documents remain readable.
+
+Four runtime-owned, versioned JSON records live under the data root's
+`interoperable/` directory: the project registry and conversation membership,
+local project bindings, installed-package/lock state, and endpoint trust.
+They are separately bounded, owner-protected where the platform supports it,
+strictly decoded, and atomically replaced under a cross-process record lock.
+They contain references and decisions, never resolved credentials.
+
+Configuration migration is an explicit plan/review/apply transaction. The
+read-only plan snapshots the exact config bytes, validates semantic equivalence,
+and inspects private record versions. Apply acquires a migration lock, rejects a
+concurrent config edit, initializes missing private records, writes an exact
+backup, then atomically replaces `config.toml` as the final version marker.
+Corrupt or future private records fail closed and are never overwritten; an
+interrupted retry is idempotent.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.

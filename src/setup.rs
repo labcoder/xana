@@ -194,6 +194,8 @@ pub(crate) async fn run(
     {
         let outcome = custom::run_section(args, paths, input, output)?;
         if matches!(outcome, SetupOutcome::Committed { .. }) {
+            crate::private_state::ensure_interoperable_records(paths)
+                .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
             write_completion_receipt(output, paths, profile)?;
         }
         return Ok(outcome);
@@ -318,6 +320,8 @@ pub(crate) async fn run(
             .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
         Some(&selection_path),
     )?;
+    crate::private_state::ensure_interoperable_records(paths)
+        .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
     write_completion_receipt(output, paths, profile)?;
     Ok(SetupOutcome::Committed {
         requires_new_conversation: true,

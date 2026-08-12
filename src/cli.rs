@@ -659,6 +659,12 @@ pub(crate) enum ConfigCommand {
     Path,
     /// Load and validate the active config.toml.
     Check,
+    /// Review or explicitly apply the current configuration/private-state migration.
+    Migrate {
+        /// Apply the reviewed migration; without this flag the command is read-only.
+        #[arg(long)]
+        apply: bool,
+    },
     /// Edit a bounded temporary copy and install it only after validation.
     Edit {
         /// Exact editor executable; defaults to XANA_EDITOR, VISUAL, EDITOR, or a platform editor.

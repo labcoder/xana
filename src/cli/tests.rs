@@ -538,6 +538,8 @@ fn parses_config_path_check_and_edit() {
     let check = Cli::try_parse_from(["xana", "config", "check"]).expect("config check command");
     let edit = Cli::try_parse_from(["xana", "config", "edit", "--editor", "code"])
         .expect("config edit command");
+    let migrate = Cli::try_parse_from(["xana", "config", "migrate", "--apply"])
+        .expect("config migrate command");
 
     assert_eq!(
         path.command,
@@ -557,6 +559,12 @@ fn parses_config_path_check_and_edit() {
             command: ConfigCommand::Edit {
                 editor: Some(PathBuf::from("code")),
             },
+        }))
+    );
+    assert_eq!(
+        migrate.command,
+        Some(Command::Config(ConfigArgs {
+            command: ConfigCommand::Migrate { apply: true },
         }))
     );
 }
