@@ -39,6 +39,29 @@ if (-not $draftScript.Contains("--draft") -or
     -not $draftScript.Contains("refusing to modify an already published release")) {
     throw "draft helper does not preserve the unpublished human-review boundary"
 }
+
+$draftJobMatch = [regex]::Match(
+    $workflow,
+    '(?ms)^  draft:\s*$.*?(?=^  [a-zA-Z0-9_-]+:\s*$|\z)'
+)
+if (-not $draftJobMatch.Success) {
+    throw "release workflow has no draft job"
+}
+$draftJob = $draftJobMatch.Value
+$draftScriptIndex = $draftJob.IndexOf(
+    "./scripts/create-release-draft.ps1",
+    [StringComparison]::Ordinal
+)
+$draftCheckoutIndex = $draftJob.IndexOf(
+    "uses: actions/checkout@",
+    [StringComparison]::Ordinal
+)
+if ($draftScriptIndex -lt 0 -or
+    $draftCheckoutIndex -lt 0 -or
+    $draftCheckoutIndex -gt $draftScriptIndex) {
+    throw "draft job must check out the exact source before invoking its repository script"
+}
+
 $forbidden = @(
     "pull_request_target",
     "cargo publish",
