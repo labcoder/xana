@@ -497,10 +497,10 @@ impl TuiState {
                     }
                 }
             }
-            CommandId::Project | CommandId::Profile | CommandId::Skill => {
+            CommandId::Project | CommandId::Profile | CommandId::Skill | CommandId::Plugin => {
                 self.composer.take();
                 if self.busy {
-                    self.status = "Wait for or interrupt the active turn before changing project/profile/skill state".to_owned();
+                    self.status = "Wait for or interrupt the active turn before changing project/profile/skill/plugin state".to_owned();
                     UpdateEffect::None
                 } else {
                     UpdateEffect::ControlCommand {
@@ -508,6 +508,7 @@ impl TuiState {
                             CommandId::Project => "project",
                             CommandId::Profile => "profile",
                             CommandId::Skill => "skill",
+                            CommandId::Plugin => "plugin",
                             _ => unreachable!(),
                         }
                         .to_owned(),

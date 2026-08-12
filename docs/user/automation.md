@@ -34,9 +34,10 @@ active turn and Ctrl+Q shuts down. Managed Codex chat uses plain mode until its
 full-screen event and approval projection is attached. See the
 [full-screen TUI guide](tui.md) for portable keys and interactive approvals.
 
-Plain chat accepts `/project ...` and `/profile ...`. Xana stops the current
-idle execution owner, runs the exact typed command used by `xana project` or
-`xana profile`, prints its normal result, and resumes plain chat. This includes
+Plain chat accepts `/project ...`, `/profile ...`, `/skill ...`, and `/plugin
+...`. Xana stops the current idle execution owner, runs the exact typed command
+used by the matching `xana` subcommand, prints its normal result, and resumes
+plain chat. This includes
 quoted arguments, lifecycle operations, readiness, profile resolution, and
 review/apply continuation placement; malformed or oversized control commands
 fail without changing project/profile state.

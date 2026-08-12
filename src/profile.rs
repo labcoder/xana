@@ -11,6 +11,7 @@ use crate::{
     },
     identity::{ProjectId, SessionId},
     paths::XanaPaths,
+    plugin::{PluginError, PluginManager, PluginScope},
     portable_project::{PortableProjectError, PortableProjectStore},
     private_state::{
         FrozenProfileSnapshot, PrivateStateError, ProjectLifecycle, ProjectRegistryDocument,
@@ -19,7 +20,7 @@ use crate::{
     project::ProjectError,
 };
 use serde::{Deserialize, Serialize};
-use std::{error::Error, fmt, path::PathBuf};
+use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -72,6 +73,9 @@ pub(crate) struct ResolvedProfile {
     pub(crate) orchestration: ResolvedField<OrchestrationLimits>,
     pub(crate) skills: ResolvedField<Vec<String>>,
     pub(crate) plugins: ResolvedField<Vec<String>>,
+    /// Exact locally reviewed package revisions selected when this profile was resolved.
+    #[serde(default)]
+    pub(crate) plugin_revisions: BTreeMap<String, String>,
     pub(crate) mcp_servers: ResolvedField<Vec<String>>,
     pub(crate) external_agents: ResolvedField<Vec<String>>,
     pub(crate) service_routes: ResolvedField<Vec<String>>,
@@ -96,6 +100,7 @@ impl ResolvedProfile {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ProfileStore {
+    paths: XanaPaths,
     config_file: PathBuf,
     projects_file: PathBuf,
 }
@@ -103,6 +108,7 @@ pub(crate) struct ProfileStore {
 impl ProfileStore {
     pub(crate) fn open(paths: &XanaPaths) -> Self {
         Self {
+            paths: paths.clone(),
             config_file: paths.config_file().to_owned(),
             projects_file: paths.projects_file(),
         }
@@ -193,7 +199,17 @@ impl ProfileStore {
         if profile.archived {
             return Err(ProfileError::Archived(name.to_owned()));
         }
-        Ok(resolve_global_profile(name, profile, &registry))
+        let mut resolved = resolve_global_profile(name, profile, &registry);
+        let (revisions, readiness) = PluginManager::open(&self.paths).resolve_profile_plugins(
+            &resolved.plugins.value,
+            &PluginScope::Profile {
+                project: None,
+                profile: name.to_owned(),
+            },
+        )?;
+        resolved.plugin_revisions = revisions;
+        resolved.readiness.extend(readiness);
+        Ok(resolved)
     }
 
     pub(crate) fn resolve_project(
@@ -240,12 +256,20 @@ impl ProfileStore {
             None => profile.connection.clone(),
         };
         readiness.extend(integration_readiness(
-            &profile.plugins,
             &profile.mcp_servers,
             &profile.external_agents,
             &profile.service_routes,
             &registry,
         ));
+        let (plugin_revisions, plugin_readiness) = PluginManager::open(paths)
+            .resolve_profile_plugins(
+                &profile.plugins,
+                &PluginScope::Profile {
+                    project: Some(project),
+                    profile: name.to_owned(),
+                },
+            )?;
+        readiness.extend(plugin_readiness);
         let effective_permission = profile
             .permission_mode
             .unwrap_or_else(|| ceiling.permission_mode.unwrap_or(registry.permission_mode));
@@ -275,6 +299,7 @@ impl ProfileStore {
             orchestration: field(effective_limits, provenance.clone()),
             skills: field(profile.skills.clone(), provenance.clone()),
             plugins: field(profile.plugins.clone(), provenance.clone()),
+            plugin_revisions,
             mcp_servers: field(profile.mcp_servers.clone(), provenance.clone()),
             external_agents: field(profile.external_agents.clone(), provenance.clone()),
             service_routes: field(profile.service_routes.clone(), provenance.clone()),
@@ -455,12 +480,12 @@ fn resolve_global_profile(
         orchestration: field(profile.orchestration.clone(), provenance.clone()),
         skills: field(profile.skills.clone(), provenance.clone()),
         plugins: field(profile.plugins.clone(), provenance.clone()),
+        plugin_revisions: BTreeMap::new(),
         mcp_servers: field(profile.mcp_servers.clone(), provenance.clone()),
         external_agents: field(profile.external_agents.clone(), provenance.clone()),
         service_routes: field(profile.service_routes.clone(), provenance.clone()),
         egress: field(egress, provenance),
         readiness: integration_readiness(
-            &profile.plugins,
             &profile.mcp_servers,
             &profile.external_agents,
             &profile.service_routes,
@@ -470,22 +495,12 @@ fn resolve_global_profile(
 }
 
 fn integration_readiness(
-    plugins: &[String],
     mcp_servers: &[String],
     external_agents: &[String],
     service_routes: &[String],
     registry: &ConnectionRegistry,
 ) -> Vec<String> {
     let mut missing = Vec::new();
-    for plugin in plugins {
-        if registry
-            .plugins
-            .get(plugin)
-            .is_none_or(|item| !item.enabled)
-        {
-            missing.push(format!("enable or install plugin {plugin:?}"));
-        }
-    }
     for server in mcp_servers {
         if !registry.mcp_servers.contains_key(server) {
             missing.push(format!("configure MCP server {server:?}"));
@@ -523,6 +538,7 @@ pub(crate) enum ProfileError {
     Portable(PortableProjectError),
     Project(ProjectError),
     State(PrivateStateError),
+    Plugin(PluginError),
     Encode(serde_json::Error),
     Unknown(String),
     Archived(String),
@@ -538,6 +554,7 @@ impl fmt::Display for ProfileError {
             Self::Portable(error) => error.fmt(formatter),
             Self::Project(error) => error.fmt(formatter),
             Self::State(error) => error.fmt(formatter),
+            Self::Plugin(error) => error.fmt(formatter),
             Self::Encode(error) => write!(formatter, "could not encode redacted profile: {error}"),
             Self::Unknown(name) => write!(formatter, "unknown profile {name:?}"),
             Self::Archived(name) => write!(formatter, "profile {name:?} is archived"),
@@ -577,6 +594,12 @@ impl From<ProjectError> for ProfileError {
 impl From<PrivateStateError> for ProfileError {
     fn from(value: PrivateStateError) -> Self {
         Self::State(value)
+    }
+}
+
+impl From<PluginError> for ProfileError {
+    fn from(value: PluginError) -> Self {
+        Self::Plugin(value)
     }
 }
 

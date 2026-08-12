@@ -6,6 +6,7 @@ use crate::{
     config::XanaConfig,
     local_host::{DescriptorHealth, inspect_descriptor_health, remove_stale_descriptor},
     paths::XanaPaths,
+    plugin::PluginManager,
     presentation::PresentationPreferences,
 };
 use serde::Serialize;
@@ -141,8 +142,53 @@ pub(crate) async fn inspect(paths: &XanaPaths, terminal: TerminalHealth) -> Doct
     inspect_presentation(paths, &mut report);
     inspect_terminal(terminal, &mut report);
     inspect_descriptor(paths, &mut report);
+    inspect_plugins(paths, &mut report);
     connections::inspect(paths, &mut report).await;
     report
+}
+
+fn inspect_plugins(paths: &XanaPaths, report: &mut DoctorReport) {
+    match PluginManager::open(paths).list() {
+        Ok(plugins) if plugins.is_empty() => report.push(Finding::new(
+            "plugins.none",
+            Severity::Info,
+            "no Agent Plugin packages are installed",
+            paths.package_state_file().display().to_string(),
+            None,
+        )),
+        Ok(plugins) => {
+            for plugin in plugins {
+                let degraded = plugin.health.starts_with("degraded:");
+                report.push(Finding::new(
+                    format!("plugin.{}", plugin.name),
+                    if degraded {
+                        Severity::Warning
+                    } else {
+                        Severity::Ok
+                    },
+                    format!("plugin {} is {}", plugin.name, plugin.health),
+                    format!(
+                        "revision {}; scopes {}; rollback {}",
+                        plugin.active_revision,
+                        if plugin.enabled_scopes.is_empty() {
+                            "none".to_owned()
+                        } else {
+                            plugin.enabled_scopes.join(",")
+                        },
+                        plugin.rollback_available
+                    ),
+                    degraded.then(|| format!("xana plugin update-check {}", plugin.name)),
+                ));
+            }
+        }
+        Err(_) => report.push(Finding::new(
+            "plugins.unreadable",
+            Severity::Warning,
+            "Agent Plugin lifecycle state could not be inspected",
+            paths.package_state_file().display().to_string(),
+            Some("run `xana plugin list` for bounded diagnostics".into()),
+        )),
+    }
 }
 
 fn inspect_configuration(paths: &XanaPaths, report: &mut DoctorReport) {

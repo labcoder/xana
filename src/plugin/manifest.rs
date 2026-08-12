@@ -107,6 +107,9 @@ pub(super) fn inspect(
     };
     let (skills, skill_diagnostics) = inspect_skills(root, &manifest.name, mutable)?;
     diagnostics.extend(skill_diagnostics);
+    let mcp_configuration_digest = read_regular(&root.join("mcp.json"), MAX_MCP_BYTES)
+        .ok()
+        .map(|bytes| blake3::hash(&bytes).to_hex().to_string());
     let (mcp_servers, mcp_diagnostics) = inspect_mcp(root)?;
     diagnostics.extend(mcp_diagnostics);
     diagnostics.sort();
@@ -119,6 +122,7 @@ pub(super) fn inspect(
         skills,
         mcp_servers,
         diagnostics,
+        mcp_configuration_digest,
     })
 }
 

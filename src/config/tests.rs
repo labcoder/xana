@@ -183,18 +183,12 @@ allowed = ["prompt_text", "selected_artifacts"]
 }
 
 #[test]
-fn interoperable_references_and_endpoint_credentials_fail_closed() {
+fn portable_plugin_references_are_deferred_while_endpoint_credentials_fail_closed() {
     let unknown = MINIMAL.replace(
         "model = \"qwen3:1.7b\"",
         "model = \"qwen3:1.7b\"\nplugins = [\"missing\"]",
     );
-    assert!(matches!(
-        parse_error(&unknown),
-        ConfigError::InvalidInteroperableConfig {
-            section: "profile plugins",
-            ..
-        }
-    ));
+    parse_ok(&unknown);
 
     let embedded_secret = format!(
         "{}\n[external_agents.remote]\nendpoint = \"https://token@example.test/a2a\"\n",

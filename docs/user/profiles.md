@@ -63,6 +63,13 @@ without changing the resolved profile. Output contains references and redacted
 metadata only—never API keys, OAuth tokens, credential values, or provider
 thread handles.
 
+Plugin names in a profile are portable logical requirements. Local package
+installation and scoped enablement resolve each name to one reviewed content
+digest; that exact `plugin_revisions` map is included in the resolved/frozen
+snapshot. Xana never substitutes another version silently. Use `xana plugin
+enable NAME --profile PROFILE` (and add `--project PROJECT_ID` for a project
+profile) to update the portable reference and private binding together.
+
 ## Conversation snapshots
 
 ```bash

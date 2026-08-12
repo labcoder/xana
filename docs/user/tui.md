@@ -80,7 +80,7 @@ Palette actions and slash input use that one registry:
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
 - `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
-- `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`
+- `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/doctor`
 
@@ -135,8 +135,9 @@ command cannot create a competing workspace root. `/clear` remains different:
 it clears the active owner's context rather than creating and navigating to a
 separate session.
 
-Session rows show the optional local project name or `Ungrouped`. Project and
-profile commands are deliberately executed outside raw/alternate-screen mode:
+Session rows show the optional local project name or `Ungrouped`. Project,
+profile, skill, and plugin commands are deliberately executed outside
+raw/alternate-screen mode:
 Xana restores the terminal, invokes the same typed application command as the
 top-level CLI, shows its accessible result, and re-enters the TUI. This keeps
 registry, authority, movement, and recovery policy out of Ratatui while making

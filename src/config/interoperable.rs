@@ -307,9 +307,10 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
             );
         }
         validate_references("profile skills", name, &profile.skills, |_| true)?;
-        validate_references("profile plugins", name, &profile.plugins, |value| {
-            document.plugins.contains_key(value)
-        })?;
+        // Plugin names are portable requirements. Local package installation and
+        // scoped enablement resolve them later without leaking machine-local
+        // source/store identities into shared configuration.
+        validate_references("profile plugins", name, &profile.plugins, |_| true)?;
         validate_references("profile MCP servers", name, &profile.mcp_servers, |value| {
             document.mcp_servers.contains_key(value)
         })?;

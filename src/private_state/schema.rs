@@ -108,6 +108,10 @@ pub(crate) struct InstalledPackageRecord {
     pub(crate) source: Option<PackageSourceRecord>,
     #[serde(default)]
     pub(crate) revisions: BTreeMap<String, PackageRevisionRecord>,
+    #[serde(default)]
+    pub(crate) pending_revision: Option<String>,
+    #[serde(default)]
+    pub(crate) previous_revision: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +153,10 @@ pub(crate) struct PackageRevisionRecord {
     pub(crate) mcp_server_names: Vec<String>,
     #[serde(default)]
     pub(crate) capability_digest: String,
+    /// Exact scopes approved for this reviewed capability set. Active package
+    /// projection mirrors this list and rollback can restore it safely.
+    #[serde(default)]
+    pub(crate) approved_scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

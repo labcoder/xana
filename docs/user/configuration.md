@@ -550,8 +550,8 @@ readable.
 | `max_tool_rounds` | Native loop limit, `1..=64`, default 8 |
 | `profiles.<id>.orchestration` | Bounded fan-out, descendants, concurrency, deadline, context, report, and artifact defaults |
 | `profiles.<id>.identity` / `applies_to` | Optional identity text and exact `primary`/`child` use scope |
-| `profiles.<id>.skills`, `plugins`, `mcp_servers`, `external_agents`, `service_routes` | Exact activation references; declarations alone grant no authority |
-| `plugins.<id>` | Declarative directory or immutable Git source; no installed-state claim |
+| `profiles.<id>.skills`, `plugins`, `mcp_servers`, `external_agents`, `service_routes` | Portable logical activation references; local resolution and authority remain separate |
+| `plugins.<id>` | Optional declarative acquisition source; installed versions, exact scoped approvals, and health remain private state |
 | `mcp_servers.<id>` / `external_agents.<id>` | Bounded connection declarations with optional credential and egress-policy references |
 | `service_connections.<id>` / `service_routes.<id>` | Focused non-conversational service adapters and exact operation routes |
 | `egress_policies.<id>.allowed` | Exact outbound data classes that a configured integration may receive |

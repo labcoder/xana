@@ -8,18 +8,18 @@ Installation and enablement are separate. Inspecting or installing a package
 does not activate a skill, start a process, connect to an endpoint, look up a
 credential, or change a profile.
 
-## Inspect before installing
+## Review before installing
 
 Review a local directory without copying it:
 
 ```text
-xana plugin inspect PATH
+xana plugin review PATH
 ```
 
 Review an HTTPS Git source pinned to an exact 40-character commit:
 
 ```text
-xana plugin inspect https://example.com/team/plugin.git --git --revision COMMIT
+xana plugin review https://example.com/team/plugin.git --git --revision COMMIT
 ```
 
 The review shows the manifest identity, content digest, compatible skills,
@@ -59,7 +59,7 @@ revision. Package discovery never downloads schemas or other content.
 Use a linked source only when actively developing a plugin:
 
 ```text
-xana plugin inspect PATH --linked
+xana plugin review PATH --linked
 xana plugin install PATH --linked --yes
 ```
 
@@ -82,6 +82,78 @@ state replacement. A concurrent process receives a typed busy error and can
 retry. Credentials, private environment values, and raw hostile control
 sequences are excluded from package records and terminal diagnostics.
 
-Enable, update, rollback, removal, and MCP process ownership are documented
-separately as those lifecycle surfaces become available. Until a package is
-explicitly enabled for a compatible scope, its contributions remain inert.
+## Inspect and enable exact scopes
+
+Inspect installed health and lifecycle state, then enable only the intended
+scope:
+
+```text
+xana plugin inspect quality-tools
+xana plugin enable quality-tools
+xana plugin enable quality-tools --project PROJECT_ID
+xana plugin enable quality-tools --profile default
+xana plugin enable quality-tools --project PROJECT_ID --profile review
+```
+
+The first command enables the user scope. `--project` selects one local project;
+`--profile` selects a global profile; combining both selects one portable project
+profile. Profile enablement adds the portable plugin name to that profile while
+the exact installed revision and approval remain private local state. Resolution
+freezes that exact revision into the conversation profile snapshot. A missing,
+disabled, drifted, or invalid package is a readiness error rather than an
+implicit install or fallback.
+
+Enabled plugin skills join normal Agent Skills discovery under the qualified
+name `plugin:PLUGIN/SKILL`. Cross-source same-name skills therefore remain
+explicit rather than colliding silently. MCP declarations are still inert in
+this milestone: the supervised MCP runtime is introduced by the next phase, so
+no plugin lifecycle command currently starts a process or network connection.
+
+Disable the same exact scope with matching flags:
+
+```text
+xana plugin disable quality-tools --profile default
+```
+
+Disablement does not delete installed versions.
+
+## Review updates and roll back
+
+Updates are always two-step and exact:
+
+```text
+xana plugin update-check quality-tools
+xana plugin update quality-tools --digest REVIEWED_DIGEST --yes
+xana plugin update-check quality-tools --revision EXACT_GIT_COMMIT
+xana plugin update quality-tools --revision EXACT_GIT_COMMIT --digest REVIEWED_DIGEST --yes
+```
+
+`update-check` reacquires and validates the candidate, shows added/removed skill
+and MCP declarations, and records only its digest as pending. `update` reacquires
+the source again and refuses any digest, source, or active-version race. If the
+declared capability digest is unchanged, exact approved scopes carry forward.
+Any broadened or changed capability starts disabled and requires explicit new
+approval. Xana retains the prior immutable version as the rollback target:
+
+```text
+xana plugin rollback quality-tools --yes
+```
+
+Rollback atomically restores the prior version and only the scopes previously
+approved for that exact revision. Linked development packages have no false
+immutable rollback claim; source drift is reported as degraded until explicitly
+reviewed and updated.
+
+## Remove and collect unreachable data
+
+```text
+xana plugin remove quality-tools --yes
+xana plugin gc --yes
+```
+
+Removal refuses enabled scopes, global or registered portable profile
+references, and frozen conversation revisions with exact remediation. It never changes workspace content or
+unrelated profiles. Garbage collection deletes only managed version directories
+that no lifecycle record references. `xana doctor` reports installed package
+health, active revision, scopes, and rollback availability without printing
+manifest secrets or untrusted source text.
