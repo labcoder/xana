@@ -15,6 +15,7 @@ pub(super) enum CommandId {
     Profile,
     Skill,
     Plugin,
+    Mcp,
     Setup,
     Activity,
     Artifact,
@@ -178,6 +179,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "plugin",
         mode: "list|inspect|review|install|enable|disable|update-check|update|rollback|remove|gc ...",
         summary: "Manage reviewed Agent Plugin packages and scoped enablement",
+        arguments: "list",
+    },
+    CommandSpec {
+        id: CommandId::Mcp,
+        name: "mcp",
+        mode: "list|refresh|tools|resources|read|prompts|prompt ...",
+        summary: "Discover and explicitly use profile-allowlisted MCP primitives",
         arguments: "list",
     },
     CommandSpec {

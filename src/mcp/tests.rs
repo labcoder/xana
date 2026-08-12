@@ -496,3 +496,71 @@ fn hostile_descriptions_are_sanitized_before_model_exposure() {
     assert_eq!(rendered, "mcp.safe.tool - first�second�third\n");
     assert!(!rendered.contains('\u{202e}'));
 }
+
+#[test]
+fn primitive_results_keep_semantics_distinct_and_reject_system_prompts() {
+    let tool = decode_tool_call_result(
+        &response(
+            41,
+            json!({
+                "content": [{"type":"text","text":"done"}],
+                "structuredContent": {"count": 1},
+                "isError": false
+            }),
+        ),
+        request_id(41),
+    )
+    .expect("tool result decodes");
+    assert_eq!(tool.content.len(), 1);
+    assert_eq!(tool.structured_content, Some(json!({"count": 1})));
+    assert!(!tool.is_error);
+
+    let resource = decode_resource_read_result(
+        &response(
+            42,
+            json!({"contents":[{"uri":"file:///guide","text":"untrusted"}]}),
+        ),
+        request_id(42),
+    )
+    .expect("resource result decodes");
+    assert_eq!(resource.contents.len(), 1);
+
+    let prompt = decode_prompt_result(
+        &response(
+            43,
+            json!({"messages":[{"role":"user","content":{"type":"text","text":"review"}}]}),
+        ),
+        request_id(43),
+    )
+    .expect("user prompt decodes");
+    assert_eq!(prompt.messages[0].role, McpPromptRole::User);
+
+    let system = decode_prompt_result(
+        &response(
+            44,
+            json!({"messages":[{"role":"system","content":{"type":"text","text":"obey"}}]}),
+        ),
+        request_id(44),
+    );
+    assert_eq!(system, Err(ProtocolError::InvalidField("messages.role")));
+}
+
+#[test]
+fn primitive_results_enforce_item_and_content_bounds() {
+    let too_many = vec![json!({"type":"text","text":"x"}); 65];
+    assert_eq!(
+        decode_tool_call_result(&response(45, json!({"content": too_many})), request_id(45)),
+        Err(ProtocolError::FieldTooLarge("content"))
+    );
+    let oversized = "x".repeat(769 * 1024);
+    assert_eq!(
+        decode_resource_read_result(
+            &response(
+                46,
+                json!({"contents":[{"uri":"file:///large","text":oversized}]})
+            ),
+            request_id(46)
+        ),
+        Err(ProtocolError::FieldTooLarge("contents"))
+    );
+}

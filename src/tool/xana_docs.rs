@@ -26,9 +26,10 @@ enum Args {
 impl Tool for XanaDocs {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "xana_docs",
+            name: "xana_docs".into(),
             contract_version: 1,
-            description: "List or read bounded, version-matched documentation about Xana itself",
+            description: "List or read bounded, version-matched documentation about Xana itself"
+                .into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,

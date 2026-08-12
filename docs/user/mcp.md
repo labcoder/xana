@@ -2,11 +2,10 @@
 
 Xana implements a bounded client-side protocol and catalog foundation for
 [Model Context Protocol 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28).
-The owned stdio and modern Streamable HTTP transports are implemented, but they
-are not yet user-configurable: profile/configuration and application
-integration arrive in the next MCP slice. Tool execution, resource reads,
-prompt activation, and Xana's local MCP server are also introduced by
-subsequent interoperability work.
+The owned stdio and modern Streamable HTTP transports and the client
+application layer are implemented. Profiles select exact servers and maintain
+separate allowlists for tools, resource URIs, resource templates, and prompts.
+The local Xana MCP server is a separate surface described later in this guide.
 
 ## Compatibility boundary
 
@@ -67,8 +66,60 @@ Xana keeps `disabled`, `unavailable`, `incompatible`, `unhealthy`,
 network failure, protocol mismatch, health failure, or profile-policy decision
 from being presented as the same generic error.
 
-This document describes the implemented protocol/catalog boundary only. It
-will be extended as application integration becomes usable.
+## Configure profile exposure
+
+MCP is opt-in at three independent layers: the server declaration is enabled,
+the profile selects the server, and the profile allowlists each primitive.
+The server and profile must also name egress policies that allow the relevant
+data classes. Discovery/list/read identifiers use `workspace_metadata`;
+tool arguments and prompt-template arguments use `prompt_text`.
+
+```toml
+[mcp_servers.docs]
+transport = "stdio"
+command = "docs-mcp-server"
+args = ["--stdio"]
+enabled = true
+egress_policy = "mcp"
+
+[profiles.default]
+mcp_servers = ["docs"]
+egress_policy = "mcp"
+
+[profiles.default.mcp_allowlists.docs]
+tools = ["search"]
+resources = ["docs://guide"]
+resource_templates = []
+prompts = ["review"]
+
+[egress_policies.mcp]
+allowed = ["prompt_text", "workspace_metadata"]
+```
+
+Configuration alone performs no process or network work. Use these explicit
+commands to connect and inspect the bounded catalog:
+
+```text
+xana mcp list
+xana mcp refresh docs
+xana mcp tools docs
+xana mcp resources docs
+xana mcp read docs docs://guide
+xana mcp prompts docs
+xana mcp prompt docs review --arg text="review this"
+```
+
+The same command family is available as `/mcp ...` in plain chat and the TUI;
+Xana restores the conversation after the typed operation. Starting a native
+conversation activates only allowlisted MCP tools. Exact schemas load on
+demand and remote tool execution passes both the normal Xana permission broker
+and the shared outbound-data gate before transport I/O.
+
+Resource reads and prompts are intentionally not tools. `read` returns an
+attributed `untrusted = true` document only after an explicit action. `prompt`
+returns a preview with only user or assistant messages; a server-supplied
+system role is rejected. Neither is inserted ambiently into Xana's system
+prompt.
 
 ## Stdio process boundary
 
@@ -93,8 +144,7 @@ the owned process tree. Restart is an explicit fresh spawn and never replays a
 request. Health distinguishes starting, discovering, ready, degraded,
 stopping, stopped, and crashed states.
 
-Until configuration is wired, there is no supported command to start this
-transport. If internal conformance fixtures fail, the actionable categories are
+If a stdio connection fails, the actionable categories are
 spawn/pipe failure, invalid protocol, timeout, queue/full outstanding limit,
 and process exit; peer stderr content is deliberately not echoed.
 
@@ -145,7 +195,7 @@ its access token can be used. Corrupt/unavailable storage, revoked refresh,
 insufficient scope, rate limiting, and transport failure remain distinct and
 never fall back to an unrelated environment credential.
 
-The application commands for configuring, logging in, inspecting, and logging
-out of an MCP connection land with the next integration slice. Until then,
-there is deliberately no supported hand-written TOML recipe or partial setup
-path for these internal transport types.
+The MCP command family currently resolves credentials already referenced by
+configuration. Guided connect/login/logout and comprehensive doctor/recovery
+flows are added by the interoperability setup slice. OAuth tokens remain in
+the OS credential store; no CLI output includes them.

@@ -42,9 +42,9 @@ impl Tool for ReadDocument {
             "Extract bounded UTF-8 text from a document beneath the workspace"
         };
         ToolDefinition {
-            name: "read_document",
+            name: "read_document".into(),
             contract_version: 1,
-            description,
+            description: description.into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,

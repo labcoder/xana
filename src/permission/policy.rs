@@ -168,6 +168,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
         let request_path = match &request.scope {
             PermissionScope::WorkspacePath { canonical_path } => canonical_path,
             PermissionScope::Command { canonical_cwd, .. } => canonical_cwd,
+            PermissionScope::External { .. } => return false,
             PermissionScope::Unscoped => return false,
         };
         if !request_path.starts_with(workspace) {
@@ -179,6 +180,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             PermissionScope::Command { command, .. } if command == expected => {}
             PermissionScope::Command { .. }
             | PermissionScope::WorkspacePath { .. }
+            | PermissionScope::External { .. }
             | PermissionScope::Unscoped => return false,
         }
     }

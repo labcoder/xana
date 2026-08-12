@@ -339,7 +339,7 @@ fn tool_catalog_and_provider_schemas_come_from_the_same_snapshot() {
         .expect("tool catalog");
 
     for definition in definitions {
-        assert!(catalog.text.contains(definition.name));
+        assert!(catalog.text.contains(&definition.name));
     }
     assert_eq!(
         catalog.text.lines().skip(1).count(),
@@ -358,14 +358,14 @@ fn project_source_cannot_change_tool_definitions_or_permission_mode() {
     let before = registry
         .definitions()
         .iter()
-        .map(|definition| definition.name)
+        .map(|definition| definition.name.as_str())
         .collect::<Vec<_>>();
     let permission_mode = crate::config::PermissionMode::Allow;
     let snapshot = snapshot(&[source]);
     let after = registry
         .definitions()
         .iter()
-        .map(|definition| definition.name)
+        .map(|definition| definition.name.as_str())
         .collect::<Vec<_>>();
 
     assert!(system_text(&snapshot).contains("fake_admin"));

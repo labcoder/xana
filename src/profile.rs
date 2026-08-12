@@ -6,8 +6,8 @@
 
 use crate::{
     config::{
-        ConnectionRegistry, OrchestrationLimits, OutboundDataClass, PermissionMode, ProfileConfig,
-        ProfileUpdate, ProfileUse, XanaConfig,
+        ConnectionRegistry, McpPrimitiveSelection, OrchestrationLimits, OutboundDataClass,
+        PermissionMode, ProfileConfig, ProfileUpdate, ProfileUse, XanaConfig,
     },
     identity::{ProjectId, SessionId},
     paths::XanaPaths,
@@ -77,6 +77,7 @@ pub(crate) struct ResolvedProfile {
     #[serde(default)]
     pub(crate) plugin_revisions: BTreeMap<String, String>,
     pub(crate) mcp_servers: ResolvedField<Vec<String>>,
+    pub(crate) mcp_allowlists: ResolvedField<BTreeMap<String, McpPrimitiveSelection>>,
     pub(crate) external_agents: ResolvedField<Vec<String>>,
     pub(crate) service_routes: ResolvedField<Vec<String>>,
     pub(crate) egress: ResolvedField<Vec<OutboundDataClass>>,
@@ -301,6 +302,7 @@ impl ProfileStore {
             plugins: field(profile.plugins.clone(), provenance.clone()),
             plugin_revisions,
             mcp_servers: field(profile.mcp_servers.clone(), provenance.clone()),
+            mcp_allowlists: field(profile.mcp_allowlists.clone(), provenance.clone()),
             external_agents: field(profile.external_agents.clone(), provenance.clone()),
             service_routes: field(profile.service_routes.clone(), provenance.clone()),
             egress: field(profile.egress.clone(), provenance),
@@ -482,6 +484,7 @@ fn resolve_global_profile(
         plugins: field(profile.plugins.clone(), provenance.clone()),
         plugin_revisions: BTreeMap::new(),
         mcp_servers: field(profile.mcp_servers.clone(), provenance.clone()),
+        mcp_allowlists: field(profile.mcp_allowlists.clone(), provenance.clone()),
         external_agents: field(profile.external_agents.clone(), provenance.clone()),
         service_routes: field(profile.service_routes.clone(), provenance.clone()),
         egress: field(egress, provenance),

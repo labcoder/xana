@@ -193,6 +193,15 @@ operations. Enabled plugin skills enter qualified skill discovery; plugin MCP
 declarations remain inert until the supervised MCP phase. See [Agent
 Plugins](docs/user/plugins.md).
 
+Configured MCP servers can now contribute only explicitly allowlisted
+primitives. `xana mcp list` is side-effect free; `refresh`, `tools`,
+`resources`, `read`, `prompts`, and `prompt` perform explicit bounded actions.
+Native conversations expose qualified `mcp.SERVER.TOOL` capabilities through
+the ordinary permission broker and outbound-data gate. Resource content and
+prompt templates remain attributed untrusted data and never become ambient
+system instructions. The same typed commands are available as `/mcp ...` in
+plain chat and the TUI. See [MCP](docs/user/mcp.md).
+
 Data leaving Xana for an external integration passes one typed outbound gate.
 Connection, user, profile, and conversation policy can only narrow the allowed
 classes; concrete messages, files, artifacts, and metadata still require exact

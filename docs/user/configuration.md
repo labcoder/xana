@@ -551,6 +551,7 @@ readable.
 | `profiles.<id>.orchestration` | Bounded fan-out, descendants, concurrency, deadline, context, report, and artifact defaults |
 | `profiles.<id>.identity` / `applies_to` | Optional identity text and exact `primary`/`child` use scope |
 | `profiles.<id>.skills`, `plugins`, `mcp_servers`, `external_agents`, `service_routes` | Portable logical activation references; local resolution and authority remain separate |
+| `profiles.<id>.mcp_allowlists.<server>.tools`, `resources`, `resource_templates`, `prompts` | Exact per-profile MCP primitive exposure; an empty or missing list grants nothing |
 | `plugins.<id>` | Optional declarative acquisition source; installed versions, exact scoped approvals, and health remain private state |
 | `mcp_servers.<id>` / `external_agents.<id>` | Bounded connection declarations with optional credential and egress-policy references |
 | `service_connections.<id>` / `service_routes.<id>` | Focused non-conversational service adapters and exact operation routes |

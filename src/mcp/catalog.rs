@@ -490,6 +490,34 @@ impl McpCatalog {
         output
     }
 
+    pub(crate) fn tool_summaries(&self) -> Vec<McpToolSummary> {
+        self.tools.values().cloned().collect()
+    }
+
+    pub(crate) fn resource_summary(
+        &self,
+        server: &str,
+        uri: &str,
+    ) -> Result<McpResourceSummary, McpCatalogError> {
+        self.ready_exposure(server)?;
+        self.resources
+            .get(&(server.to_owned(), uri.to_owned()))
+            .cloned()
+            .ok_or(McpCatalogError::NotAuthorized)
+    }
+
+    pub(crate) fn prompt_summary(
+        &self,
+        server: &str,
+        name: &str,
+    ) -> Result<McpPromptSummary, McpCatalogError> {
+        self.ready_exposure(server)?;
+        self.prompts
+            .get(&(server.to_owned(), name.to_owned()))
+            .cloned()
+            .ok_or(McpCatalogError::NotAuthorized)
+    }
+
     pub(crate) fn tool_count(&self) -> usize {
         self.tools.len()
     }

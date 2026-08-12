@@ -181,6 +181,7 @@ fn project_profile_resolves_private_binding_and_reports_staleness_separately() {
                 skills: Vec::new(),
                 plugins: Vec::new(),
                 mcp_servers: Vec::new(),
+                mcp_allowlists: BTreeMap::new(),
                 external_agents: Vec::new(),
                 service_routes: Vec::new(),
                 egress: Vec::new(),

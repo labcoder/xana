@@ -69,7 +69,7 @@ enum InputAction<'a> {
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
-    for family in ["project", "profile", "skill", "plugin"] {
+    for family in ["project", "profile", "skill", "plugin", "mcp"] {
         let command = format!("/{family}");
         if trimmed == command {
             return InputAction::ControlCommand {
@@ -1004,6 +1004,13 @@ fn display_scope(scope: &PermissionScope) -> String {
         } => format!(
             "command {command:?} via {shell} in {}",
             canonical_cwd.display()
+        ),
+        PermissionScope::External {
+            recipient_identity_digest,
+            operation,
+        } => format!(
+            "external operation {operation:?} for recipient {}",
+            &recipient_identity_digest[..recipient_identity_digest.len().min(12)]
         ),
         PermissionScope::Unscoped => "unscoped".to_owned(),
     }

@@ -22,8 +22,9 @@ use std::{
 mod interoperable;
 
 pub(crate) use interoperable::{
-    EgressPolicyDeclaration, ExternalAgentDeclaration, McpServerDeclaration, OutboundDataClass,
-    PluginDeclaration, ProfileUse, ServiceConnectionDeclaration, ServiceRouteDeclaration,
+    EgressPolicyDeclaration, ExternalAgentDeclaration, McpPrimitiveSelection, McpServerDeclaration,
+    OutboundDataClass, PluginDeclaration, ProfileUse, ServiceConnectionDeclaration,
+    ServiceRouteDeclaration,
 };
 
 pub(crate) const CONFIG_VERSION: u32 = 4;
@@ -196,6 +197,8 @@ struct AgentProfile {
     #[serde(default)]
     mcp_servers: Vec<String>,
     #[serde(default)]
+    mcp_allowlists: BTreeMap<String, McpPrimitiveSelection>,
+    #[serde(default)]
     external_agents: Vec<String>,
     #[serde(default)]
     service_routes: Vec<String>,
@@ -323,6 +326,7 @@ pub(crate) struct ProfileConfig {
     pub(crate) skills: Vec<String>,
     pub(crate) plugins: Vec<String>,
     pub(crate) mcp_servers: Vec<String>,
+    pub(crate) mcp_allowlists: BTreeMap<String, McpPrimitiveSelection>,
     pub(crate) external_agents: Vec<String>,
     pub(crate) service_routes: Vec<String>,
     pub(crate) egress_policy: Option<String>,
@@ -884,6 +888,7 @@ impl XanaConfig {
                 skills: Vec::new(),
                 plugins: Vec::new(),
                 mcp_servers: Vec::new(),
+                mcp_allowlists: BTreeMap::new(),
                 external_agents: Vec::new(),
                 service_routes: Vec::new(),
                 egress_policy: None,
@@ -1647,6 +1652,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
                     skills: profile.skills,
                     plugins: profile.plugins,
                     mcp_servers: profile.mcp_servers,
+                    mcp_allowlists: profile.mcp_allowlists,
                     external_agents: profile.external_agents,
                     service_routes: profile.service_routes,
                     egress_policy: profile.egress_policy,

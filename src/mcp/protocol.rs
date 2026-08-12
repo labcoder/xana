@@ -15,6 +15,9 @@ const MAX_URI_BYTES: usize = 4096;
 const MAX_ARGUMENTS: usize = 128;
 const MAX_ERROR_MESSAGE_BYTES: usize = 512;
 const MAX_CAPABILITIES: usize = 64;
+const MAX_RESULT_CONTENT_ITEMS: usize = 64;
+const MAX_PROMPT_MESSAGES: usize = 64;
+const MAX_RESULT_VALUE_BYTES: usize = 768 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct McpRequestId(u64);
@@ -239,6 +242,36 @@ pub(crate) struct McpPromptWire {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpToolCallResult {
+    pub(crate) content: Vec<Value>,
+    pub(crate) structured_content: Option<Value>,
+    pub(crate) is_error: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpResourceReadResult {
+    pub(crate) contents: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpPromptRole {
+    User,
+    Assistant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpPromptMessage {
+    pub(crate) role: McpPromptRole,
+    pub(crate) content: Value,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct McpPromptResult {
+    pub(crate) description: Option<String>,
+    pub(crate) messages: Vec<McpPromptMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum McpNotification {
     ToolsChanged,
     ResourcesChanged,
@@ -318,6 +351,129 @@ pub(crate) fn decode_prompt_page(
     expected_id: McpRequestId,
 ) -> Result<Page<McpPromptWire>, ProtocolError> {
     decode_page(bytes, expected_id, "prompts")
+}
+
+pub(crate) fn decode_tool_definition_result(
+    bytes: &[u8],
+    expected_id: McpRequestId,
+) -> Result<McpToolWire, ProtocolError> {
+    let object = complete_result_object(bytes, expected_id)?;
+    let tool = object
+        .get("tool")
+        .cloned()
+        .ok_or(ProtocolError::MissingField("tool"))?;
+    serde_json::from_value(tool).map_err(|_| ProtocolError::InvalidField("tool"))
+}
+
+pub(crate) fn decode_tool_call_result(
+    bytes: &[u8],
+    expected_id: McpRequestId,
+) -> Result<McpToolCallResult, ProtocolError> {
+    let object = complete_result_object(bytes, expected_id)?;
+    let content = bounded_value_array(object.get("content"), "content")?;
+    let structured_content = object.get("structuredContent").cloned();
+    if let Some(value) = &structured_content {
+        validate_result_value(value, "structuredContent")?;
+    }
+    let is_error = match object.get("isError") {
+        None => false,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(ProtocolError::InvalidField("isError")),
+    };
+    Ok(McpToolCallResult {
+        content,
+        structured_content,
+        is_error,
+    })
+}
+
+pub(crate) fn decode_resource_read_result(
+    bytes: &[u8],
+    expected_id: McpRequestId,
+) -> Result<McpResourceReadResult, ProtocolError> {
+    let object = complete_result_object(bytes, expected_id)?;
+    Ok(McpResourceReadResult {
+        contents: bounded_value_array(object.get("contents"), "contents")?,
+    })
+}
+
+pub(crate) fn decode_prompt_result(
+    bytes: &[u8],
+    expected_id: McpRequestId,
+) -> Result<McpPromptResult, ProtocolError> {
+    let object = complete_result_object(bytes, expected_id)?;
+    let description = parse_optional_string(
+        object.get("description"),
+        "description",
+        MAX_DESCRIPTION_BYTES,
+    )?
+    .map(|value| sanitize_text(&value, MAX_DESCRIPTION_BYTES));
+    let messages = object
+        .get("messages")
+        .and_then(Value::as_array)
+        .ok_or(ProtocolError::InvalidField("messages"))?;
+    if messages.len() > MAX_PROMPT_MESSAGES {
+        return Err(ProtocolError::FieldTooLarge("messages"));
+    }
+    let messages = messages
+        .iter()
+        .map(|message| {
+            let object = message
+                .as_object()
+                .ok_or(ProtocolError::InvalidField("messages"))?;
+            let role = match object.get("role").and_then(Value::as_str) {
+                Some("user") => McpPromptRole::User,
+                Some("assistant") => McpPromptRole::Assistant,
+                _ => return Err(ProtocolError::InvalidField("messages.role")),
+            };
+            let content = object
+                .get("content")
+                .cloned()
+                .ok_or(ProtocolError::MissingField("messages.content"))?;
+            validate_result_value(&content, "messages.content")?;
+            Ok(McpPromptMessage { role, content })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(McpPromptResult {
+        description,
+        messages,
+    })
+}
+
+fn complete_result_object(
+    bytes: &[u8],
+    expected_id: McpRequestId,
+) -> Result<Map<String, Value>, ProtocolError> {
+    let value = decode_result_value(bytes, expected_id)?;
+    validate_complete(&value)?;
+    value
+        .as_object()
+        .cloned()
+        .ok_or(ProtocolError::InvalidResult)
+}
+
+fn bounded_value_array(
+    value: Option<&Value>,
+    field: &'static str,
+) -> Result<Vec<Value>, ProtocolError> {
+    let values = value
+        .and_then(Value::as_array)
+        .ok_or(ProtocolError::InvalidField(field))?;
+    if values.len() > MAX_RESULT_CONTENT_ITEMS {
+        return Err(ProtocolError::FieldTooLarge(field));
+    }
+    for value in values {
+        validate_result_value(value, field)?;
+    }
+    Ok(values.clone())
+}
+
+fn validate_result_value(value: &Value, field: &'static str) -> Result<(), ProtocolError> {
+    let bytes = serde_json::to_vec(value).map_err(|_| ProtocolError::InvalidField(field))?;
+    if bytes.len() > MAX_RESULT_VALUE_BYTES {
+        return Err(ProtocolError::FieldTooLarge(field));
+    }
+    Ok(())
 }
 
 fn decode_page<T: DeserializeOwned>(

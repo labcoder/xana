@@ -39,9 +39,9 @@ struct CountedTool {
 impl Tool for CountedTool {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: self.name,
+            name: self.name.to_owned(),
             contract_version: self.contract_version,
-            description: "Count one deterministic test effect",
+            description: "Count one deterministic test effect".into(),
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Read,
             replay_safety: self.replay_safety,

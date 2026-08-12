@@ -74,8 +74,8 @@ impl<'a> From<&'a ToolDefinition> for WireToolDefinition<'a> {
         Self {
             kind: WireToolKind::Function,
             function: WireFunctionDefinition {
-                name: definition.name,
-                description: definition.description,
+                name: &definition.name,
+                description: &definition.description,
                 parameters: &definition.parameters,
             },
         }

@@ -40,9 +40,9 @@ impl DelegateAgent {
 impl Tool for DelegateAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "delegate_agent",
+            name: "delegate_agent".into(),
             contract_version: 1,
-            description: "Delegate one explicit bounded task to an exact Xana child route and wait for its attributed report",
+            description: "Delegate one explicit bounded task to an exact Xana child route and wait for its attributed report".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,

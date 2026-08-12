@@ -3,8 +3,8 @@
 use crate::{
     bounded_file,
     config::{
-        ConnectionRegistry, OrchestrationLimits, OutboundDataClass, PermissionMode, ProfileConfig,
-        ProfileUse, XanaConfig, stable_profile_id,
+        ConnectionRegistry, McpPrimitiveSelection, OrchestrationLimits, OutboundDataClass,
+        PermissionMode, ProfileConfig, ProfileUse, XanaConfig, stable_profile_id,
     },
     paths::XanaPaths,
     private_state::{
@@ -85,6 +85,8 @@ pub(crate) struct PortableProfile {
     pub(crate) plugins: Vec<String>,
     #[serde(default)]
     pub(crate) mcp_servers: Vec<String>,
+    #[serde(default)]
+    pub(crate) mcp_allowlists: BTreeMap<String, McpPrimitiveSelection>,
     #[serde(default)]
     pub(crate) external_agents: Vec<String>,
     #[serde(default)]
@@ -1356,6 +1358,7 @@ service_routes = []
                 skills: vec!["review".into()],
                 plugins: Vec::new(),
                 mcp_servers: Vec::new(),
+                mcp_allowlists: BTreeMap::new(),
                 external_agents: Vec::new(),
                 service_routes: Vec::new(),
                 egress: Vec::new(),

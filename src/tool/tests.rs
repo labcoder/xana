@@ -17,9 +17,9 @@ struct Echo;
 impl Tool for Echo {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "echo",
+            name: "echo".into(),
             contract_version: 1,
-            description: "Return a fixed test value",
+            description: "Return a fixed test value".into(),
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Read,
             replay_safety: ReplaySafety::Safe,
@@ -52,9 +52,9 @@ struct AlwaysFails;
 impl Tool for AlwaysFails {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "always_fails",
+            name: "always_fails".into(),
             contract_version: 1,
-            description: "Return a fixed test failure",
+            description: "Return a fixed test failure".into(),
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::External,
             replay_safety: ReplaySafety::Never,
@@ -90,9 +90,9 @@ impl Tool for CountedDefinition {
     fn definition(&self) -> ToolDefinition {
         self.calls.fetch_add(1, Ordering::SeqCst);
         ToolDefinition {
-            name: "counted",
+            name: "counted".into(),
             contract_version: 1,
-            description: "Prove definitions are cached",
+            description: "Prove definitions are cached".into(),
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Read,
             replay_safety: ReplaySafety::Safe,
@@ -131,7 +131,10 @@ fn definitions_preserve_registration_order_and_metadata() {
     let definitions = registry.definitions();
 
     assert_eq!(
-        definitions.iter().map(|item| item.name).collect::<Vec<_>>(),
+        definitions
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         vec!["echo", "always_fails"]
     );
     assert_eq!(definitions[0].effect_class, EffectClass::Read);
@@ -153,7 +156,9 @@ fn definitions_are_cached_and_lookup_returns_registry_owned_value() {
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(registry.definitions()[0].name, "counted");
     assert_eq!(
-        registry.definition("counted").map(|item| item.name),
+        registry
+            .definition("counted")
+            .map(|item| item.name.as_str()),
         Some("counted")
     );
 
@@ -178,7 +183,12 @@ fn duplicate_names_are_rejected_before_dispatch() {
 
     let result = registry.register(Echo);
 
-    assert_eq!(result, Err(RegistryError::DuplicateName { name: "echo" }));
+    assert_eq!(
+        result,
+        Err(RegistryError::DuplicateName {
+            name: "echo".into(),
+        })
+    );
 }
 
 #[test]
@@ -244,7 +254,10 @@ fn builtins_have_deterministic_order_and_safety_metadata() {
     let definitions = registry.definitions();
 
     assert_eq!(
-        definitions.iter().map(|item| item.name).collect::<Vec<_>>(),
+        definitions
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect::<Vec<_>>(),
         vec![
             "read_file",
             "list_files",
@@ -323,9 +336,9 @@ struct FakeEffect {
 impl Tool for FakeEffect {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "fake_effect",
+            name: "fake_effect".into(),
             contract_version: 1,
-            description: "Test the unified permission boundary",
+            description: "Test the unified permission boundary".into(),
             parameters: json!({"type": "object"}),
             effect_class: EffectClass::Write,
             replay_safety: ReplaySafety::Never,

@@ -34,6 +34,10 @@ pub(crate) enum PermissionScope {
         canonical_cwd: PathBuf,
         command: String,
     },
+    External {
+        recipient_identity_digest: String,
+        operation: String,
+    },
     Unscoped,
 }
 
