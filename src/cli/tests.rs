@@ -758,6 +758,39 @@ fn parses_operation_plan_and_resume() {
 }
 
 #[test]
+fn parses_plugin_review_and_exact_git_install() {
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "plugin", "inspect", ".", "--linked"])
+            .unwrap()
+            .command,
+        Some(Command::Plugin(PluginArgs {
+            command: PluginCommand::Inspect { linked: true, .. }
+        }))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "plugin",
+            "install",
+            "https://example.com/plugin.git",
+            "--git",
+            "--revision",
+            "0123456789012345678901234567890123456789",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Plugin(PluginArgs {
+            command: PluginCommand::Install {
+                git: true,
+                yes: true,
+                ..
+            }
+        }))
+    ));
+}
+
+#[test]
 fn rejects_unknown_commands_and_invalid_round_counts() {
     let unknown =
         Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");

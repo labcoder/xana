@@ -24,6 +24,9 @@ engineering contracts used to change it.
 - [Agent Skills](user/skills.md) explains standards-compatible discovery,
   qualification, progressive activation, profile selection, provenance, and
   the no-authority boundary.
+- [Agent Plugins](user/plugins.md) explains inert review, exact local/Git
+  acquisition, content-addressed disabled installation, linked development
+  mode, supply-chain bounds, and private recovery state.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

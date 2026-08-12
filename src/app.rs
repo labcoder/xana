@@ -9,6 +9,7 @@ mod connections;
 mod hosting;
 mod one_shot;
 mod operations;
+mod plugins;
 mod profiles;
 mod projects;
 mod recovery;
@@ -123,6 +124,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Skill(args)) => {
             let stdout = io::stdout();
             skills::run_command(args.command, &paths, &mut stdout.lock())
+        }
+        Some(Command::Plugin(args)) => {
+            let stdout = io::stdout();
+            plugins::run_command(args.command, &paths, &mut stdout.lock())
         }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();

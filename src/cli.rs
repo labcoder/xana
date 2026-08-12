@@ -200,6 +200,9 @@ pub(crate) enum Command {
     /// Discover, validate, and explicitly activate Agent Skills.
     #[command(display_order = 10)]
     Skill(SkillArgs),
+    /// Inspect and manage declarative Agent Plugin bundles.
+    #[command(display_order = 11)]
+    Plugin(PluginArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -984,6 +987,48 @@ pub(crate) enum SkillCommand {
         profile: String,
         #[arg(long)]
         project: Option<ProjectId>,
+    },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct PluginArgs {
+    #[command(subcommand)]
+    pub(crate) command: PluginCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum PluginCommand {
+    /// List installed packages. Installation and enablement are separate.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate and review a local, linked, or exact-revision Git source.
+    Inspect {
+        source: String,
+        #[arg(long, requires = "revision", conflicts_with = "linked")]
+        git: bool,
+        #[arg(long, value_name = "COMMIT", conflicts_with = "linked")]
+        revision: Option<String>,
+        #[arg(long, conflicts_with_all = ["git", "revision"])]
+        linked: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a reviewed bundle while keeping every contribution disabled.
+    Install {
+        source: String,
+        #[arg(long, requires = "revision", conflicts_with = "linked")]
+        git: bool,
+        #[arg(long, value_name = "COMMIT", conflicts_with = "linked")]
+        revision: Option<String>,
+        #[arg(long, conflicts_with_all = ["git", "revision"])]
+        linked: bool,
+        /// Apply the reviewed install. Without this flag only a review is shown.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
     },
 }
 

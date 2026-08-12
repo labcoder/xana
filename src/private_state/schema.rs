@@ -95,12 +95,60 @@ impl Default for ProjectBindingsDocument {
 #[serde(deny_unknown_fields)]
 pub(crate) struct InstalledPackageRecord {
     pub(crate) package: String,
+    #[serde(default)]
     pub(crate) source_digest: String,
+    /// Digest of the version selected for new scopes and conversations.
+    #[serde(default)]
     pub(crate) active_revision: String,
     #[serde(default)]
     pub(crate) retained_revisions: Vec<String>,
     #[serde(default)]
     pub(crate) enabled_scopes: Vec<String>,
+    #[serde(default)]
+    pub(crate) source: Option<PackageSourceRecord>,
+    #[serde(default)]
+    pub(crate) revisions: BTreeMap<String, PackageRevisionRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PackageSourceKind {
+    Directory,
+    Git,
+    Linked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackageSourceRecord {
+    pub(crate) kind: PackageSourceKind,
+    /// User-selected location. This is private installation state and is never
+    /// copied into portable project configuration.
+    pub(crate) location: String,
+    #[serde(default)]
+    pub(crate) revision: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PackageRevisionRecord {
+    pub(crate) digest: String,
+    #[serde(default)]
+    pub(crate) manifest_version: Option<String>,
+    pub(crate) installed_unix_ms: u64,
+    pub(crate) mutable: bool,
+    /// Relative to Xana's managed plugin store for immutable versions. Linked
+    /// development versions instead use `linked_root`.
+    #[serde(default)]
+    pub(crate) managed_root: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) linked_root: Option<PathBuf>,
+    #[serde(default)]
+    pub(crate) skill_names: Vec<String>,
+    #[serde(default)]
+    pub(crate) mcp_server_names: Vec<String>,
+    #[serde(default)]
+    pub(crate) capability_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

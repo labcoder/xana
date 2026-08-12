@@ -117,6 +117,10 @@ impl XanaPaths {
         self.data_dir.join("interoperable").join("packages.json")
     }
 
+    pub(crate) fn package_store_dir(&self) -> PathBuf {
+        self.data_dir.join("interoperable").join("plugins")
+    }
+
     pub(crate) fn endpoint_trust_file(&self) -> PathBuf {
         self.data_dir
             .join("interoperable")
