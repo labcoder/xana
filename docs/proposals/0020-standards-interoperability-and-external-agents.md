@@ -268,7 +268,9 @@ content-free audit model are implemented. MCP, local-server, and A2A slices
 now include the pinned MCP 2026-07-28 private wire adapter, exact version
 negotiation, qualified identities, per-profile primitive allowlists, bounded
 progressive catalogs, schema hardening, and distinct readiness states. MCP
-transports and application integration, the local server, and A2A remain
-unimplemented. Current behavior remains described by Architecture and User
-Documentation. Once every accepted slice ships, this proposal must be marked
-Implemented.
+stdio transport now adds exact process configuration, minimal environment,
+bounded protocol/stderr queues, cancellation/timeouts, typed health, and
+cross-platform process-tree cleanup. Streamable HTTP and application
+integration, the local server, and A2A remain unimplemented. Current behavior
+remains described by Architecture and User Documentation. Once every accepted
+slice ships, this proposal must be marked Implemented.
