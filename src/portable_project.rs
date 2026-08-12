@@ -4,7 +4,7 @@ use crate::{
     bounded_file,
     config::{
         ConnectionRegistry, OrchestrationLimits, OutboundDataClass, PermissionMode, ProfileConfig,
-        XanaConfig,
+        ProfileUse, XanaConfig, stable_profile_id,
     },
     paths::XanaPaths,
     private_state::{
@@ -56,11 +56,19 @@ pub(crate) struct PortableRequirements {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PortableProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profile_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) archived: bool,
     /// Exact user-global profile that supplies the authority ceiling.
     pub(crate) authority_profile: String,
     /// Logical project binding, never a credential or endpoint.
     pub(crate) connection: String,
     pub(crate) model: String,
+    #[serde(default)]
+    pub(crate) reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub(crate) reasoning_summary: Option<String>,
     #[serde(default)]
     pub(crate) identity: Option<String>,
     #[serde(default)]
@@ -83,6 +91,16 @@ pub(crate) struct PortableProfile {
     pub(crate) service_routes: Vec<String>,
     #[serde(default)]
     pub(crate) egress: Vec<OutboundDataClass>,
+    #[serde(default = "default_profile_uses")]
+    pub(crate) applies_to: Vec<ProfileUse>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn default_profile_uses() -> Vec<ProfileUse> {
+    vec![ProfileUse::Primary, ProfileUse::Child]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -370,6 +388,242 @@ impl PortableProjectStore {
         Ok(inspection)
     }
 
+    pub(crate) fn profile_id(
+        manifest: &PortableProjectManifest,
+        name: &str,
+        profile: &PortableProfile,
+    ) -> uuid::Uuid {
+        profile.profile_id.unwrap_or_else(|| {
+            stable_profile_id(&format!("project/{}", manifest.portable_id), name)
+        })
+    }
+
+    pub(crate) fn list_profiles(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        include_archived: bool,
+    ) -> Result<Vec<(String, PortableProfile)>, PortableProjectError> {
+        let workspace = project_workspace(paths, project)?;
+        let manifest = Self::inspect_with_user_authority(&workspace, paths.config_file())?.manifest;
+        Ok(manifest
+            .profiles
+            .into_iter()
+            .filter(|(_, profile)| include_archived || !profile.archived)
+            .collect())
+    }
+
+    pub(crate) fn create_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+        mut profile: PortableProfile,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        validate_stable_name("portable profile", name)?;
+        profile.profile_id = Some(uuid::Uuid::new_v4());
+        profile.archived = false;
+        self.edit_profiles(paths, project, |manifest| {
+            if manifest.profiles.contains_key(name) {
+                return Err(PortableProjectError::Invalid(format!(
+                    "portable profile {name:?} already exists"
+                )));
+            }
+            if !manifest
+                .requirements
+                .connections
+                .contains(&profile.connection)
+            {
+                manifest
+                    .requirements
+                    .connections
+                    .push(profile.connection.clone());
+            }
+            manifest.profiles.insert(name.to_owned(), profile.clone());
+            Ok(())
+        })?;
+        Ok(profile)
+    }
+
+    pub(crate) fn inspect_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        self.list_profiles(paths, project, true)?
+            .into_iter()
+            .find_map(|(candidate, profile)| (candidate == name).then_some(profile))
+            .ok_or_else(|| {
+                PortableProjectError::Invalid(format!("unknown portable profile {name:?}"))
+            })
+    }
+
+    pub(crate) fn replace_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+        mut profile: PortableProfile,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        self.edit_profiles(paths, project, |manifest| {
+            let existing = manifest.profiles.get(name).ok_or_else(|| {
+                PortableProjectError::Invalid(format!("unknown portable profile {name:?}"))
+            })?;
+            profile.profile_id = existing
+                .profile_id
+                .or_else(|| Some(Self::profile_id(manifest, name, existing)));
+            if !manifest
+                .requirements
+                .connections
+                .contains(&profile.connection)
+            {
+                manifest
+                    .requirements
+                    .connections
+                    .push(profile.connection.clone());
+            }
+            manifest.profiles.insert(name.to_owned(), profile.clone());
+            Ok(())
+        })?;
+        Ok(profile)
+    }
+
+    pub(crate) fn duplicate_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        source: &str,
+        name: &str,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        let mut duplicate = self.inspect_profile(paths, project, source)?;
+        duplicate.profile_id = Some(uuid::Uuid::new_v4());
+        duplicate.archived = false;
+        self.create_profile(paths, project, name, duplicate)
+    }
+
+    pub(crate) fn rename_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        old: &str,
+        new: &str,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        validate_stable_name("portable profile", new)?;
+        self.edit_profiles(paths, project, |manifest| {
+            if manifest.profiles.contains_key(new) {
+                return Err(PortableProjectError::Invalid(format!(
+                    "portable profile {new:?} already exists"
+                )));
+            }
+            let profile = manifest.profiles.remove(old).ok_or_else(|| {
+                PortableProjectError::Invalid(format!("unknown portable profile {old:?}"))
+            })?;
+            manifest.profiles.insert(new.to_owned(), profile);
+            if manifest.default_profile.as_deref() == Some(old) {
+                manifest.default_profile = Some(new.to_owned());
+            }
+            Ok(())
+        })?;
+        self.inspect_profile(paths, project, new)
+    }
+
+    pub(crate) fn set_profile_archived(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+        archived: bool,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        self.edit_profiles(paths, project, |manifest| {
+            if archived && manifest.default_profile.as_deref() == Some(name) {
+                return Err(PortableProjectError::Invalid(
+                    "the default portable profile cannot be archived".into(),
+                ));
+            }
+            manifest
+                .profiles
+                .get_mut(name)
+                .ok_or_else(|| {
+                    PortableProjectError::Invalid(format!("unknown portable profile {name:?}"))
+                })?
+                .archived = archived;
+            Ok(())
+        })?;
+        self.inspect_profile(paths, project, name)
+    }
+
+    pub(crate) fn delete_profile(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+    ) -> Result<(), PortableProjectError> {
+        self.edit_profiles(paths, project, |manifest| {
+            if manifest.default_profile.as_deref() == Some(name) {
+                return Err(PortableProjectError::Invalid(
+                    "the default portable profile cannot be deleted".into(),
+                ));
+            }
+            if manifest.profiles.remove(name).is_none() {
+                return Err(PortableProjectError::Invalid(format!(
+                    "unknown portable profile {name:?}"
+                )));
+            }
+            Ok(())
+        })
+    }
+
+    fn edit_profiles<T>(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        edit: impl FnOnce(&mut PortableProjectManifest) -> Result<T, PortableProjectError>,
+    ) -> Result<T, PortableProjectError> {
+        let workspace = project_workspace(paths, project)?;
+        let path = Self::detect(&workspace)?.ok_or_else(|| {
+            PortableProjectError::Invalid(format!(
+                "project {project} is private; run `xana project share {project}` first"
+            ))
+        })?;
+        let _lock = PortableEditLock::acquire(&path)?;
+        let source =
+            bounded_file::read_to_string(&path, MAX_MANIFEST_BYTES).map_err(map_read_error)?;
+        let mut manifest: PortableProjectManifest =
+            toml::from_str(&source).map_err(PortableProjectError::Decode)?;
+        validate_manifest(&manifest)?;
+        let output = edit(&mut manifest)?;
+        validate_manifest(&manifest)?;
+        let registry = XanaConfig::load_registry_from(paths.config_file())
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
+        Self::validate_authority(&manifest, &registry)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
+        let profiles = toml::to_string(&manifest.profiles)
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
+        document["profiles"] = toml_edit::Item::Table(profiles.as_table().clone());
+        if manifest.requirements == PortableRequirements::default() {
+            document.remove("requirements");
+        } else {
+            let requirements = toml::to_string(&manifest.requirements)
+                .map_err(|error| PortableProjectError::Invalid(error.to_string()))?
+                .parse::<toml_edit::DocumentMut>()
+                .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
+            document["requirements"] = toml_edit::Item::Table(requirements.as_table().clone());
+        }
+        match &manifest.default_profile {
+            Some(value) => document["default_profile"] = toml_edit::value(value),
+            None => {
+                document.remove("default_profile");
+            }
+        }
+        atomic_replace(&path, document.to_string().as_bytes())?;
+        Ok(output)
+    }
+
     fn update<T>(
         &self,
         update: impl FnOnce(&mut ProjectBindingsDocument) -> Result<T, PortableProjectError>,
@@ -380,6 +634,17 @@ impl PortableProjectStore {
             Err(UpdateDocumentError::Update(error)) => Err(error),
         }
     }
+}
+
+fn project_workspace(
+    paths: &XanaPaths,
+    project: crate::identity::ProjectId,
+) -> Result<PathBuf, PortableProjectError> {
+    Ok(ProjectStore::open(paths)
+        .map_err(PortableProjectError::Project)?
+        .get(project)
+        .map_err(PortableProjectError::Project)?
+        .canonical_workspace)
 }
 
 fn validate_manifest(manifest: &PortableProjectManifest) -> Result<(), PortableProjectError> {
@@ -410,6 +675,23 @@ fn validate_manifest(manifest: &PortableProjectManifest) -> Result<(), PortableP
         validate_stable_name("authority profile", &profile.authority_profile)?;
         validate_stable_name("logical connection", &profile.connection)?;
         validate_text("model", &profile.model, 1, 512)?;
+        if let Some(profile_id) = profile.profile_id
+            && manifest.profiles.iter().any(|(other_name, other)| {
+                other_name != name && other.profile_id == Some(profile_id)
+            })
+        {
+            return Err(PortableProjectError::Invalid(format!(
+                "portable profiles contain duplicate profile_id {profile_id}"
+            )));
+        }
+        for (field, value) in [
+            ("reasoning effort", profile.reasoning_effort.as_deref()),
+            ("reasoning summary", profile.reasoning_summary.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_text(field, value, 1, 128)?;
+            }
+        }
         if let Some(identity) = profile.identity.as_deref() {
             validate_text("profile identity", identity, 0, MAX_TEXT_BYTES)?;
         }
@@ -422,6 +704,11 @@ fn validate_manifest(manifest: &PortableProjectManifest) -> Result<(), PortableP
             ("service routes", &profile.service_routes),
         ] {
             validate_names(field, values)?;
+        }
+        if profile.applies_to.is_empty() {
+            return Err(PortableProjectError::Invalid(format!(
+                "portable profile {name} must apply to primary, child, or both"
+            )));
         }
         if !manifest
             .requirements
@@ -716,6 +1003,61 @@ fn atomic_create(path: &Path, bytes: &[u8]) -> Result<(), PortableProjectError> 
     linked
 }
 
+fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), PortableProjectError> {
+    let mut file = atomic_write_file::AtomicWriteFile::open(path).map_err(|source| {
+        PortableProjectError::Io {
+            path: path.to_owned(),
+            source,
+        }
+    })?;
+    file.write_all(bytes)
+        .map_err(|source| PortableProjectError::Io {
+            path: path.to_owned(),
+            source,
+        })?;
+    file.commit().map_err(|source| PortableProjectError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+struct PortableEditLock {
+    file: fs::File,
+}
+
+impl PortableEditLock {
+    fn acquire(path: &Path) -> Result<Self, PortableProjectError> {
+        let lock_path = path.with_extension("toml.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|source| PortableProjectError::Io {
+                path: lock_path.clone(),
+                source,
+            })?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { file }),
+            Err(fs::TryLockError::WouldBlock) => Err(PortableProjectError::Invalid(format!(
+                "portable project is being edited by another process ({})",
+                lock_path.display()
+            ))),
+            Err(fs::TryLockError::Error(source)) => Err(PortableProjectError::Io {
+                path: lock_path,
+                source,
+            }),
+        }
+    }
+}
+
+impl Drop for PortableEditLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
 fn map_read_error(error: bounded_file::BoundedReadError) -> PortableProjectError {
     match error {
         bounded_file::BoundedReadError::TooLarge {
@@ -949,9 +1291,13 @@ service_routes = []
         profiles.insert(
             "project".into(),
             PortableProfile {
+                profile_id: None,
+                archived: false,
                 authority_profile: "limited".into(),
                 connection: "chat".into(),
                 model: "qwen".into(),
+                reasoning_effort: None,
+                reasoning_summary: None,
                 identity: None,
                 capabilities: vec!["fs.write".into()],
                 permission_mode: Some(PermissionMode::Ask),
@@ -963,6 +1309,7 @@ service_routes = []
                 external_agents: Vec::new(),
                 service_routes: Vec::new(),
                 egress: Vec::new(),
+                applies_to: default_profile_uses(),
             },
         );
         let manifest = PortableProjectManifest {

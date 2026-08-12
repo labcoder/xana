@@ -695,6 +695,51 @@ fn parses_optional_project_lifecycle_and_placement_commands() {
 }
 
 #[test]
+fn parses_profile_lifecycle_and_immutable_continuation_commands() {
+    let project = ProjectId::new();
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "profile",
+            "create",
+            "review",
+            "--connection",
+            "chat",
+            "--model",
+            "qwen",
+            "--project",
+            &project.to_string(),
+            "--authority-profile",
+            "default",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Profile(ProfileArgs {
+            command: ProfileCommand::Create {
+                name,
+                project: Some(project_id),
+                authority_profile: Some(authority),
+                ..
+            }
+        })) if name == "review" && project_id == project && authority == "default"
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "profile",
+            "continue",
+            "review",
+            "source-conversation",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Profile(ProfileArgs {
+            command: ProfileCommand::Continue { name, conversation, project: None }
+        })) if name == "review" && conversation == "source-conversation"
+    ));
+}
+
+#[test]
 fn parses_operation_plan_and_resume() {
     let session_id = SessionId::new();
     let operation_id = crate::identity::OperationId::new();

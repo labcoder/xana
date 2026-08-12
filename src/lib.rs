@@ -37,6 +37,7 @@ mod portable_project;
 mod presentation;
 mod private_state;
 mod process_capture;
+mod profile;
 mod project;
 mod prompt;
 mod provider;

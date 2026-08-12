@@ -8,8 +8,8 @@ mod schema;
 mod store;
 
 pub(crate) use schema::{
-    LocalBindingRecord, ProjectBindingsDocument, ProjectLifecycle, ProjectRecord,
-    ProjectRegistryDocument,
+    FrozenProfileSnapshot, LocalBindingRecord, ProjectBindingsDocument, ProjectLifecycle,
+    ProjectRecord, ProjectRegistryDocument,
 };
 pub(crate) use store::{
     PrivateRecordInspection, PrivateRecordStatus, PrivateStateError, UpdateDocumentError,
