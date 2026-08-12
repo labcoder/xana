@@ -961,6 +961,18 @@ activated skills, and untrusted runtime data may supply guidance/context, but
 they cannot change these typed permission, capability, egress, integration, or
 budget fields.
 
+```mermaid
+flowchart LR
+    CORE["Non-replaceable core + user policy"] --> G["User-global profile ceiling"]
+    G --> R["Pure deterministic resolver"]
+    P["Untrusted project profile"] -->|"narrow only"| R
+    B["Private logical bindings"] --> R
+    R --> S["ResolvedProfile values + provenance"]
+    S --> Q["Separate readiness reasons"]
+    S --> F["Immutable conversation snapshot"]
+    F -->|"profile change"| C["Linked continuation; source preserved"]
+```
+
 ### Agent Skills discovery and activation
 
 `SkillCatalog` implements the pinned Agent Skills metadata contract without a
@@ -987,17 +999,43 @@ flowchart LR
     S -. "cannot grant" .-> X["Typed capabilities, permissions, egress"]
 ```
 
+### Agent Plugin acquisition and disabled installation
+
+`PluginManager` owns inert Agent Plugins 1.0.0 inspection and private package
+state. A local directory is read directly for preview and copied through a
+bounded staging tree for install. An explicitly selected HTTPS Git source is
+fetched at one exact 40-character commit into a temporary bare repository with
+hooks and submodule recursion disabled, then extracted through a path-validating
+bounded archive reader. Linked development mode keeps a canonical local path
+and remains visibly mutable.
+
+`plugin.json` is the fatal package boundary. Invalid skills and MCP entries use
+the narrower failure boundaries required by the standard. Review records only
+safe capability summaries: skill identities, local executable tokens, remote
+origins/paths, and environment/header names. It does not retain values,
+credentials, or raw hostile terminal text.
+
 ```mermaid
 flowchart LR
-    CORE["Non-replaceable core + user policy"] --> G["User-global profile ceiling"]
-    G --> R["Pure deterministic resolver"]
-    P["Untrusted project profile"] -->|"narrow only"| R
-    B["Private logical bindings"] --> R
-    R --> S["ResolvedProfile values + provenance"]
-    S --> Q["Separate readiness reasons"]
-    S --> F["Immutable conversation snapshot"]
-    F -->|"profile change"| C["Linked continuation; source preserved"]
+    S["Explicit local / exact Git / linked source"] --> R["Bounded inert review"]
+    R --> D["Reviewed content digest + capability summary"]
+    D -->|"explicit --yes; digest unchanged"| T["Private staging tree"]
+    T --> I["Content-addressed immutable bundle"]
+    D -->|"linked development"| L["Visible mutable path"]
+    I --> P["Atomic installed record; contributions disabled"]
+    L --> P
+    P -. "does not start" .-> X["Skills / MCP processes / network / credentials"]
 ```
+
+The package record and managed versions live below the private
+`data/interoperable/` owner. A distinct lifecycle lock prevents cross-process
+mutation races; versioned JSON replacement remains atomic. A crash before the
+record commit can leave only unreachable staging/content data, never a partial
+installed identity. Reinstalling an identical source/digest is idempotent;
+source identity conflicts and changed content require explicit lifecycle
+operations. The enable/update/rollback/removal control plane is not implemented
+yet, so installed contributions remain unavailable to prompt or MCP runtime
+discovery.
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.

@@ -180,6 +180,15 @@ prose—including experimental `allowed-tools` metadata—never grants tools,
 permissions, credentials, egress, or execution authority. See [Agent
 Skills](docs/user/skills.md).
 
+Agent Plugins use the Agent Plugins 1.0.0 declarative package boundary.
+`xana plugin inspect PATH` reviews a local package without installing it;
+`xana plugin install PATH --yes` copies the exact reviewed tree into Xana's
+private content-addressed store while leaving every skill and MCP declaration
+disabled. Exact Git installs require `--git --revision COMMIT`. Explicit
+`--linked` development installs stay visibly mutable. No inspect/install path
+activates skills, starts MCP processes, loads extension code, or looks up
+credentials. See [Agent Plugins](docs/user/plugins.md).
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential
