@@ -574,6 +574,31 @@ impl PortableProjectStore {
         })
     }
 
+    pub(crate) fn set_profile_skill(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+        skill: &str,
+        enabled: bool,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        self.edit_profiles(paths, project, |manifest| {
+            let profile = manifest.profiles.get_mut(name).ok_or_else(|| {
+                PortableProjectError::Invalid(format!("unknown portable profile {name:?}"))
+            })?;
+            if enabled {
+                if !profile.skills.iter().any(|value| value == skill) {
+                    profile.skills.push(skill.to_owned());
+                }
+            } else {
+                profile.skills.retain(|value| value != skill);
+            }
+            profile.skills.sort();
+            Ok(())
+        })?;
+        self.inspect_profile(paths, project, name)
+    }
+
     fn edit_profiles<T>(
         &self,
         paths: &XanaPaths,

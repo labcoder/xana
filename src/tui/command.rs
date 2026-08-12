@@ -13,6 +13,7 @@ pub(super) enum CommandId {
     Sessions,
     Project,
     Profile,
+    Skill,
     Setup,
     Activity,
     Artifact,
@@ -162,6 +163,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "project",
         mode: "list|inspect|create|rename|archive|unarchive|assign|ungroup|continue|share|register|setup ...",
         summary: "Manage projects and conversation placement",
+        arguments: "list",
+    },
+    CommandSpec {
+        id: CommandId::Skill,
+        name: "skill",
+        mode: "list|inspect|validate|activate|read|enable|disable ...",
+        summary: "Discover and explicitly activate Agent Skills",
         arguments: "list",
     },
     CommandSpec {

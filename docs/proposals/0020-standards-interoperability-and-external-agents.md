@@ -259,7 +259,8 @@ automatic provider/agent routing.
 
 ## Implementation status
 
-This proposal is Accepted and prescriptive but not yet implemented. Current
-behavior remains described by Architecture and User Documentation. Once all
-accepted slices ship, the implementation change must update those documents
-and mark this proposal Implemented.
+This proposal is Accepted and prescriptive. Its Agent Skills discovery and
+activation slice is implemented; Agent Plugin, MCP, local-server, and A2A
+slices remain unimplemented. Current behavior remains described by Architecture
+and User Documentation. Once every accepted slice ships, this proposal must be
+marked Implemented.

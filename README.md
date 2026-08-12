@@ -170,6 +170,16 @@ frozen profile snapshot—never workspace deletion or silent transcript copying.
 Logical connection/service requirements are resolved through redacted private
 bindings and never copy local credentials or authority into the repository.
 
+Agent Skills use the standard `.agents/skills/NAME/SKILL.md` layout. `xana
+skill list` indexes bounded metadata, `inspect` and `validate` review exact
+sources, and `activate` loads only one selected body plus necessary contained
+references. `enable`/`disable` connect qualified skills to global or project
+profiles for future prompt snapshots. Same-name collisions require
+qualification (`user/NAME`, `project/NAME`, or `plugin:PLUGIN/NAME`), and skill
+prose—including experimental `allowed-tools` metadata—never grants tools,
+permissions, credentials, egress, or execution authority. See [Agent
+Skills](docs/user/skills.md).
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential
@@ -461,9 +471,11 @@ paths.
 
 Each native root turn freezes one versioned system-prompt snapshot containing
 Xana's built-in identity/guidelines, the actual tool catalog, runtime context,
-a concise reference to `xana_docs`, and a bounded durable root `AGENTS.md` view
-when present. Xana does not discover `XANA.md`, nested `AGENTS.md`, skills, or
-plugins yet.
+a concise reference to `xana_docs`, a bounded durable root `AGENTS.md` view when
+present, and exact explicitly activated Agent Skills from user, project, or
+enabled-plugin scope. Xana does not discover `XANA.md` or nested `AGENTS.md`.
+Inactive skill bodies/resources do not enter the prompt, and plugins remain
+disabled until their separate lifecycle explicitly enables them.
 
 Native tool intents and results are durably bracketed. Session resume performs
 no automatic recovery; use `xana operation plan` and explicit `xana operation

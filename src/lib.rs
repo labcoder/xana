@@ -46,6 +46,7 @@ mod self_docs;
 mod session;
 mod setup;
 mod shell;
+mod skill;
 mod tool;
 mod tui;
 mod vision;

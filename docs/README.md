@@ -21,6 +21,9 @@ engineering contracts used to change it.
   immutable artifacts, inspection, corruption handling, and backup limits.
 - [Projects](user/projects.md) explains optional local project identity,
   lifecycle, Ungrouped conversations, membership, and continuation review.
+- [Agent Skills](user/skills.md) explains standards-compatible discovery,
+  qualification, progressive activation, profile selection, provenance, and
+  the no-authority boundary.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

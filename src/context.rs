@@ -36,6 +36,7 @@ pub(crate) enum SourceOrigin {
     RuntimeEnvironment,
     ProductDocumentation,
     ProjectFile,
+    Skill,
     ParentHandoff,
 }
 
@@ -44,6 +45,7 @@ pub(crate) enum TrustClass {
     Xana,
     Runtime,
     Project,
+    Skill,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

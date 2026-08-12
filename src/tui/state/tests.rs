@@ -346,6 +346,16 @@ fn project_and_profile_slash_commands_use_the_shared_control_path() {
             arguments: "resolve review --json".to_owned(),
         }
     );
+    state
+        .composer
+        .replace("/skill activate project/review".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::ControlCommand {
+            family: "skill".to_owned(),
+            arguments: "activate project/review".to_owned(),
+        }
+    );
 }
 
 #[test]
