@@ -46,7 +46,10 @@ item/reference counts, byte bounds, decision source, and outcome. They do not
 contain prompts, message or file contents, artifact bytes, credentials,
 authorization headers, or hidden model reasoning.
 
-The shared guard is implemented now. Agent Plugin MCP declarations remain
-inert, and Xana does not yet expose an MCP, A2A, or focused-service command in
-this build. Those transports must use this gate when they are enabled; there is
-no independent transport-specific bypass.
+The shared guard is implemented now. The internal MCP Streamable HTTP adapter
+implements `OutboundTransport`, validates the exact recipient digest again at
+its payload-bearing send seam, and cannot send before `OutboundGuard` grants
+that request. Agent Plugin MCP declarations remain inert, and Xana does not yet
+expose an MCP, A2A, or focused-service command in this build. The later
+application integrations must use the same gate; there is no independent
+transport-specific bypass.

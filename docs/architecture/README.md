@@ -1119,9 +1119,11 @@ credentials, or hidden reasoning. Transport failures are reduced to typed safe
 categories before they cross this boundary. Noninteractive unresolved approval
 fails closed.
 
-No MCP, A2A, or focused-service transport consumes the gate yet. Those
-integrations remain unavailable rather than shipping an unguarded alternate
-path; their implementation must call `OutboundGuard::dispatch` as the only
+The internal MCP Streamable HTTP adapter implements the guarded outbound
+transport seam and revalidates the exact recipient digest before sending. Its
+application integration is not exposed yet. A2A and focused-service transports
+remain unavailable rather than shipping an unguarded alternate path; every
+application integration must call `OutboundGuard::dispatch` as the only
 payload-bearing send seam.
 
 ### MCP protocol and progressive catalog boundary
@@ -1156,7 +1158,8 @@ Page count, item count, metadata bytes, descriptions, URIs, and JSON Schema
 bytes/depth/nodes are bounded. Truncation is deterministic. External schema
 references are never dereferenced, and control/bidirectional characters are
 sanitized before review or model exposure. The catalog does not own process or
-network lifetime; supervised transports consume this boundary in later slices.
+network lifetime; the stdio and Streamable HTTP adapters consume it without
+moving protocol ownership into a frontend.
 
 The stdio adapter is the first such supervised transport. `McpStdioClient`
 owns one actor, exact child process/process group, bounded writer, cancellation-
@@ -1183,6 +1186,47 @@ two-second deadline and requests a 30-second default. The child environment is
 cleared and rebuilt from a minimal platform bootstrap plus exact configured
 entries; sensitive arguments and environment values never enter Debug output.
 Restart means a new explicit spawn and never replays an interrupted request.
+
+The Streamable HTTP adapter owns one exact HTTPS endpoint identity and one
+request at a time. It resolves and validates the destination before building a
+no-proxy, no-redirect client pinned to those addresses. Each JSON-RPC request
+is a single `POST`; the response is either bounded JSON or request-scoped SSE.
+There is no transport session, GET event stream, `Mcp-Session-Id`, reconnect,
+or automatic replay.
+
+```mermaid
+flowchart LR
+    C["Configured endpoint + auth identity"] --> I["Exact outbound recipient digest"]
+    I --> G["OutboundGuard review / saved decision"]
+    G -->|authorized| H["Pinned DNS + HTTPS + no redirects/proxy"]
+    H --> P["One POST with protocol/method/name metadata"]
+    P --> J["Bounded JSON response"]
+    P --> S["Bounded request-scoped SSE"]
+    S --> N["Typed progress notifications"]
+    S --> F["One final JSON-RPC response"]
+    X["Cancel / timeout / dropped caller"] --> S
+```
+
+OAuth remains client-owned. A bounded bearer challenge leads to exact
+protected-resource metadata and one reviewed authorization-server issuer.
+PKCE S256, state, resource indicators, and optional authorization-response
+issuer validation protect a temporary `127.0.0.1` callback. Tokens are one
+atomic OS-credential-store value bound to issuer, client, resource, and scopes;
+configuration retains only the reference and non-secret binding. In-process
+and cross-process refresh locks re-read after acquisition, so concurrent expiry
+performs one rotation and never returns a token that failed persistence.
+
+```mermaid
+flowchart LR
+    U["401 Bearer challenge"] --> R["Protected-resource metadata"]
+    R --> A["Exact authorization-server metadata"]
+    A --> K["Local PKCE + state + issuer callback"]
+    K --> T["Bound token set in OS credential store"]
+    T --> L["Locked re-read before refresh"]
+    L --> O["Persist complete rotation"]
+    O --> P["Use access token"]
+    E["Endpoint / issuer / client changes"] --> V["Invalidate trust and egress decision"]
+```
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.

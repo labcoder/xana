@@ -2,11 +2,11 @@
 
 Xana implements a bounded client-side protocol and catalog foundation for
 [Model Context Protocol 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28).
-The owned stdio transport is implemented, but it is not yet user-configurable:
-profile/configuration and application integration arrive in the next MCP
-slices. Streamable HTTP, tool execution, resource reads, prompt activation, and
-Xana's local MCP server are also introduced by subsequent interoperability
-work.
+The owned stdio and modern Streamable HTTP transports are implemented, but they
+are not yet user-configurable: profile/configuration and application
+integration arrive in the next MCP slice. Tool execution, resource reads,
+prompt activation, and Xana's local MCP server are also introduced by
+subsequent interoperability work.
 
 ## Compatibility boundary
 
@@ -97,3 +97,55 @@ Until configuration is wired, there is no supported command to start this
 transport. If internal conformance fixtures fail, the actionable categories are
 spawn/pipe failure, invalid protocol, timeout, queue/full outstanding limit,
 and process exit; peer stderr content is deliberately not echoed.
+
+## Streamable HTTP boundary
+
+Xana implements the current stateless Streamable HTTP shape: each JSON-RPC
+request is one HTTP `POST`, with either one JSON response or a request-scoped
+SSE response containing bounded progress followed by the final response.
+Closing that response stream cancels the request. Xana does not open a legacy
+SSE event endpoint, retain an `Mcp-Session-Id`, reconnect a transport session,
+or replay an interrupted paid/effectful request.
+
+Every request sends the pinned protocol version, exact method, conditional
+primitive name, and the same client metadata carried by the JSON-RPC body.
+Approved `x-mcp-header` tool-schema fields may project primitive string,
+integer, or boolean arguments into bounded request headers; null values are
+omitted and unsafe bytes use the protocol's sentinel Base64 form.
+
+HTTP endpoints are exact identities. Production endpoints require HTTPS,
+reject embedded credentials, fragments, redirects, proxy inheritance, and
+private/link-local/special DNS results, then pin the validated resolution for
+the request client. The endpoint, protocol version, OAuth issuer, and client ID
+all participate in the outbound recipient digest. Changing any of them makes a
+saved approval inapplicable.
+
+## OAuth ownership and local completion
+
+For servers that advertise OAuth, Xana follows the `WWW-Authenticate`
+protected-resource metadata link, validates the exact protected resource and
+authorization-server issuer, requires PKCE S256, and binds token requests to
+the resource. Ambiguous issuers require explicit selection; redirects and
+unsupported metadata fail closed.
+
+Xana can bind a temporary loopback callback on `127.0.0.1`, show the
+authorization URL for a browser or manual/headless opening, validate callback
+path, state, PKCE, and issuer, and then close the listener. No hosted Xana
+backend is required. MCP itself does not define a universal device-code flow,
+so Xana does not invent one. This implementation accepts pre-registered client
+identities; unsupported dynamic registration metadata is reported rather than
+silently changing clients.
+
+Access and refresh tokens are stored together as one provider-scoped value in
+the operating-system credential store. TOML and portable project files contain
+only a stable credential reference plus non-secret issuer/client/resource/scope
+metadata. Refresh is serialized by an in-process mutex and a bounded
+cross-process file lock; a rotated credential is persisted completely before
+its access token can be used. Corrupt/unavailable storage, revoked refresh,
+insufficient scope, rate limiting, and transport failure remain distinct and
+never fall back to an unrelated environment credential.
+
+The application commands for configuring, logging in, inspecting, and logging
+out of an MCP connection land with the next integration slice. Until then,
+there is deliberately no supported hand-written TOML recipe or partial setup
+path for these internal transport types.
