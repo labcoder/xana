@@ -19,6 +19,7 @@ mod context;
 mod credential;
 mod doctor;
 mod documents;
+mod focused_service;
 mod frontend;
 mod identity;
 mod init;

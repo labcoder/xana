@@ -175,7 +175,12 @@ general media editing pipelines, and desktop-only clipboard assumptions.
 
 ## Implementation status
 
-This proposal is Accepted and prescriptive but not yet implemented. Current
-behavior remains described by Architecture and User Documentation. Once all
-accepted slices ship, the implementation change must update those documents
-and mark this proposal Implemented.
+This proposal is Accepted and partially implemented. Xana now has exact typed
+operations/descriptors, deterministic frozen-profile route resolution,
+connection-owned credential references, explicit per-operation defaults,
+pre-network readiness errors, no-fallback adapter dispatch, and standardized
+artifact/provenance/usage/cost result vocabulary. Production image adapters,
+application commands, and specialist/clipboard vision remain unimplemented.
+Current behavior remains described by Architecture and User Documentation.
+Once all accepted slices ship, the implementation change must mark this
+proposal Implemented.
