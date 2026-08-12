@@ -180,6 +180,7 @@ static PROFILE_TOPICS: &[&str] = &[
 static SKILL_TOPICS: &[&str] = &["skills", "agents", "profiles", "instructions", "security"];
 static PLUGIN_TOPICS: &[&str] = &["plugins", "skills", "mcp", "installation", "security"];
 static OUTBOUND_TOPICS: &[&str] = &["egress", "outbound", "privacy", "approvals", "security"];
+static MCP_TOPICS: &[&str] = &["mcp", "tools", "resources", "prompts", "interoperability"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -336,6 +337,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: OUTBOUND_TOPICS,
         body: include_str!("../docs/user/outbound-data.md"),
+    },
+    BundledDoc {
+        id: "user.mcp",
+        title: "MCP catalog and compatibility",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: MCP_TOPICS,
+        body: include_str!("../docs/user/mcp.md"),
     },
     BundledDoc {
         id: "user.rich-content",

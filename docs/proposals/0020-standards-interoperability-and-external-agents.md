@@ -265,6 +265,10 @@ update/reapproval, rollback, removal, and garbage collection are implemented.
 The shared outbound data-class gate, exact recipient/class decisions,
 fail-closed noninteractive behavior, private saved-policy state, and
 content-free audit model are implemented. MCP, local-server, and A2A slices
-remain unimplemented. Current behavior remains described by Architecture and
-User Documentation. Once every accepted slice ships, this proposal must be
-marked Implemented.
+now include the pinned MCP 2026-07-28 private wire adapter, exact version
+negotiation, qualified identities, per-profile primitive allowlists, bounded
+progressive catalogs, schema hardening, and distinct readiness states. MCP
+transports and application integration, the local server, and A2A remain
+unimplemented. Current behavior remains described by Architecture and User
+Documentation. Once every accepted slice ships, this proposal must be marked
+Implemented.

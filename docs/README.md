@@ -30,6 +30,9 @@ engineering contracts used to change it.
 - [Outbound data approvals and privacy](user/outbound-data.md) explains typed
   data classes, exact recipient approval, saved decisions, fail-closed
   noninteractive behavior, and content-free audit records.
+- [Model Context Protocol catalog and compatibility](user/mcp.md) explains the
+  pinned modern protocol version, qualified identities, profile allowlists,
+  progressive discovery bounds, and the current no-transport limit.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

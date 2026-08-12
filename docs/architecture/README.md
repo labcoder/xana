@@ -1124,6 +1124,40 @@ integrations remain unavailable rather than shipping an unguarded alternate
 path; their implementation must call `OutboundGuard::dispatch` as the only
 payload-bearing send seam.
 
+### MCP protocol and progressive catalog boundary
+
+The private MCP wire adapter pins protocol `2026-07-28`. Every request owns the
+required protocol, client-info, and client-capability metadata. Discovery uses
+`server/discover`; older initialization/session behavior is neither emitted nor
+accepted. Exact version negotiation keeps incompatibility separate from
+disabled, unavailable, unhealthy, and profile-unauthorized states.
+
+`McpCatalog` is transport-independent. A configured server identity and exact
+profile allowlists are resolved before any primitive is indexed. Tools use the
+stable `mcp.<server>.<source-name>` identity; resources, resource templates,
+and prompts retain distinct indexes and APIs. Remote titles are display aliases
+only. Prompt declarations remain user-controlled content rather than ambient
+instructions.
+
+```mermaid
+flowchart LR
+    C["Configured server identity"] --> N["Exact 2026-07-28 discovery"]
+    P["Frozen profile allowlists"] --> X["Exposure intersection"]
+    N --> X
+    X --> T["Bounded tool summaries"]
+    X --> R["Bounded resource summaries"]
+    X --> M["Bounded prompt summaries"]
+    T --> D{"Exact tool selected?"}
+    D -->|yes| S["Load and validate bounded schema on demand"]
+    D -->|no| B["No schema/model-context cost"]
+```
+
+Page count, item count, metadata bytes, descriptions, URIs, and JSON Schema
+bytes/depth/nodes are bounded. Truncation is deterministic. External schema
+references are never dereferenced, and control/bidirectional characters are
+sanitized before review or model exposure. The catalog does not own process or
+network lifetime; supervised transports consume this boundary in later slices.
+
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
 An existing snapshot cannot be replaced. A profile change allocates a new
