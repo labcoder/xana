@@ -31,6 +31,12 @@ pub(crate) struct ProjectRegistryDocument {
     pub(crate) projects: BTreeMap<ProjectId, ProjectRecord>,
     #[serde(default)]
     pub(crate) conversation_memberships: BTreeMap<String, ProjectId>,
+    /// Immutable, redacted profile resolution recorded when a conversation starts.
+    #[serde(default)]
+    pub(crate) conversation_profiles: BTreeMap<String, FrozenProfileSnapshot>,
+    /// Explicit continuation relation; the source conversation is never mutated.
+    #[serde(default)]
+    pub(crate) conversation_predecessors: BTreeMap<String, String>,
 }
 
 impl Default for ProjectRegistryDocument {
@@ -39,8 +45,22 @@ impl Default for ProjectRegistryDocument {
             version: PRIVATE_RECORD_VERSION,
             projects: BTreeMap::new(),
             conversation_memberships: BTreeMap::new(),
+            conversation_profiles: BTreeMap::new(),
+            conversation_predecessors: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FrozenProfileSnapshot {
+    pub(crate) profile_id: String,
+    pub(crate) profile_name: String,
+    pub(crate) scope: String,
+    pub(crate) digest: String,
+    /// Typed by the profile module on both write and read. This schema-level
+    /// value keeps private-state persistence independent of profile resolution.
+    pub(crate) resolved: serde_json::Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

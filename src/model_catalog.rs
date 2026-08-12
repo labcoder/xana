@@ -853,6 +853,8 @@ mod tests {
             profiles: BTreeMap::from([(
                 "default".into(),
                 crate::config::ProfileConfig {
+                    profile_id: uuid::Uuid::new_v4(),
+                    archived: false,
                     id: "default".into(),
                     connection: "local".into(),
                     model: "qwen".into(),
@@ -911,6 +913,8 @@ mod tests {
             profiles: BTreeMap::from([(
                 "default".into(),
                 crate::config::ProfileConfig {
+                    profile_id: uuid::Uuid::new_v4(),
+                    archived: false,
                     id: "default".into(),
                     connection: "codex".into(),
                     model: "gpt-5.6-sol".into(),

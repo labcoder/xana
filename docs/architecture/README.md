@@ -920,6 +920,43 @@ into the repository. A changed manifest remains visibly stale until explicit
 refresh records its reviewed digest. Stop-sharing removes only the contained
 manifest and leaves private project, bindings, sessions, and workspace intact.
 
+### Profile resolution and conversation snapshots
+
+Profiles have stable UUID identity, arbitrary user-owned names, active/archived
+lifecycle, and explicit primary/child applicability. User-global profiles live
+in `config.toml`; project-local profiles live only in an explicitly shared
+portable manifest. There is no inheritance graph. Duplication copies values into
+a new independent profile identity.
+
+`ProfileStore` is the application-domain boundary for lifecycle, pure
+resolution, readiness, and immutable conversation snapshots. Resolution emits a
+secret-safe `ResolvedProfile`: every effective field carries value and
+provenance. User-global policy supplies the outer authority ceiling; a portable
+project profile names one global ceiling and can only narrow it. AGENTS.md,
+activated skills, and untrusted runtime data may supply guidance/context, but
+they cannot change these typed permission, capability, egress, integration, or
+budget fields.
+
+```mermaid
+flowchart LR
+    CORE["Non-replaceable core + user policy"] --> G["User-global profile ceiling"]
+    G --> R["Pure deterministic resolver"]
+    P["Untrusted project profile"] -->|"narrow only"| R
+    B["Private logical bindings"] --> R
+    R --> S["ResolvedProfile values + provenance"]
+    S --> Q["Separate readiness reasons"]
+    S --> F["Immutable conversation snapshot"]
+    F -->|"profile change"| C["Linked continuation; source preserved"]
+```
+
+Snapshot records reside beside project membership in the private versioned
+project record and contain only the redacted resolved document plus its digest.
+An existing snapshot cannot be replaced. A profile change allocates a new
+conversation identity, copies only the optional project membership, records the
+predecessor link, and freezes the new snapshot; owner-specific model/reasoning
+history in the source remains untouched. Provider/process availability never
+participates in resolution and appears only as readiness.
+
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
 

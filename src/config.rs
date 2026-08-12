@@ -168,6 +168,10 @@ struct ProviderConnection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile_id: Option<uuid::Uuid>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    archived: bool,
     #[serde(alias = "provider")]
     connection: String,
     model: String,
@@ -272,6 +276,10 @@ fn default_max_tool_rounds() -> usize {
     DEFAULT_MAX_TOOL_ROUNDS
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct XanaConfig {
     pub(crate) provider_name: String,
@@ -301,6 +309,8 @@ pub(crate) struct ConnectionConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProfileConfig {
     pub(crate) id: String,
+    pub(crate) profile_id: uuid::Uuid,
+    pub(crate) archived: bool,
     pub(crate) connection: String,
     pub(crate) model: String,
     pub(crate) max_tool_rounds: usize,
@@ -350,6 +360,24 @@ pub(crate) struct NewConnection {
     pub(crate) model: String,
     pub(crate) codex_program: Option<String>,
     pub(crate) codex_home: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewProfile {
+    pub(crate) id: String,
+    pub(crate) connection: String,
+    pub(crate) model: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProfileUpdate {
+    pub(crate) connection: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<Option<String>>,
+    pub(crate) reasoning_summary: Option<Option<String>>,
+    pub(crate) identity: Option<Option<String>>,
+    pub(crate) permission_mode: Option<Option<PermissionMode>>,
+    pub(crate) max_tool_rounds: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -842,6 +870,8 @@ impl XanaConfig {
         profiles.insert(
             "default".to_owned(),
             AgentProfile {
+                profile_id: Some(stable_profile_id("global", "default")),
+                archived: false,
                 connection: connection_name,
                 model,
                 max_tool_rounds,
@@ -1000,6 +1030,223 @@ impl XanaConfig {
         Self::parse(&rendered)?;
         atomic_config_write(path, rendered.as_bytes())
     }
+
+    pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
+        validate_name("profile", &input.id)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let profiles = profiles_table_mut(&mut document)?;
+        if profiles.contains_key(&input.id) {
+            return Err(ConfigError::Edit(format!(
+                "profile {:?} already exists",
+                input.id
+            )));
+        }
+        let mut profile = toml_edit::Table::new();
+        profile["profile_id"] = toml_edit::value(uuid::Uuid::new_v4().to_string());
+        profile["connection"] = toml_edit::value(input.connection);
+        profile["model"] = toml_edit::value(input.model);
+        profiles[&input.id] = toml_edit::Item::Table(profile);
+        validate_and_write_profile_edit(path, document)
+    }
+
+    pub(crate) fn update_profile(
+        path: &Path,
+        id: &str,
+        update: ProfileUpdate,
+    ) -> Result<(), ConfigError> {
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let profile = profile_table_mut(&mut document, id)?;
+        if let Some(value) = update.connection {
+            profile["connection"] = toml_edit::value(value);
+        }
+        if let Some(value) = update.model {
+            profile["model"] = toml_edit::value(value);
+        }
+        set_optional_string(profile, "reasoning_effort", update.reasoning_effort);
+        set_optional_string(profile, "reasoning_summary", update.reasoning_summary);
+        set_optional_string(profile, "identity", update.identity);
+        if let Some(value) = update.permission_mode {
+            match value {
+                Some(value) => profile["permission_mode"] = toml_edit::value(value.as_str()),
+                None => {
+                    profile.remove("permission_mode");
+                }
+            }
+        }
+        if let Some(value) = update.max_tool_rounds {
+            profile["max_tool_rounds"] = toml_edit::value(value as i64);
+        }
+        validate_and_write_profile_edit(path, document)
+    }
+
+    pub(crate) fn duplicate_profile(
+        path: &Path,
+        source_id: &str,
+        id: &str,
+    ) -> Result<(), ConfigError> {
+        validate_name("profile", id)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let profiles = profiles_table_mut(&mut document)?;
+        if profiles.contains_key(id) {
+            return Err(ConfigError::Edit(format!("profile {id:?} already exists")));
+        }
+        let mut duplicate = profiles
+            .get(source_id)
+            .cloned()
+            .ok_or_else(|| ConfigError::Edit(format!("unknown profile {source_id:?}")))?;
+        let table = duplicate
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit(format!("profile {source_id:?} must be a table")))?;
+        table["profile_id"] = toml_edit::value(uuid::Uuid::new_v4().to_string());
+        table.remove("archived");
+        profiles.insert(id, duplicate);
+        validate_and_write_profile_edit(path, document)
+    }
+
+    pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
+        validate_name("profile", new)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        {
+            let profiles = profiles_table_mut(&mut document)?;
+            if profiles.contains_key(new) {
+                return Err(ConfigError::Edit(format!("profile {new:?} already exists")));
+            }
+            let profile = profiles
+                .remove(old)
+                .ok_or_else(|| ConfigError::Edit(format!("unknown profile {old:?}")))?;
+            profiles.insert(new, profile);
+        }
+        if document
+            .get("default_profile")
+            .and_then(toml_edit::Item::as_str)
+            == Some(old)
+        {
+            document["default_profile"] = toml_edit::value(new);
+        }
+        if let Some(routes) = document
+            .get_mut("routes")
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            for (_, route) in routes.iter_mut() {
+                if let Some(table) = route.as_table_mut()
+                    && table.get("profile").and_then(toml_edit::Item::as_str) == Some(old)
+                {
+                    table["profile"] = toml_edit::value(new);
+                }
+            }
+        }
+        validate_and_write_profile_edit(path, document)
+    }
+
+    pub(crate) fn set_profile_archived(
+        path: &Path,
+        id: &str,
+        archived: bool,
+    ) -> Result<(), ConfigError> {
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        if archived
+            && document
+                .get("default_profile")
+                .and_then(toml_edit::Item::as_str)
+                == Some(id)
+        {
+            return Err(ConfigError::Edit(
+                "the default profile cannot be archived".into(),
+            ));
+        }
+        let profile = profile_table_mut(&mut document, id)?;
+        if archived {
+            profile["archived"] = toml_edit::value(true);
+        } else {
+            profile.remove("archived");
+        }
+        validate_and_write_profile_edit(path, document)
+    }
+
+    pub(crate) fn delete_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let registry = Self::load_registry_from(path)?;
+        if registry.default_profile == id {
+            return Err(ConfigError::Edit(
+                "the default profile cannot be deleted".into(),
+            ));
+        }
+        let routes = registry
+            .routes
+            .values()
+            .filter(|route| route.profile == id)
+            .map(|route| route.id.clone())
+            .collect::<Vec<_>>();
+        if !routes.is_empty() {
+            return Err(ConfigError::Edit(format!(
+                "profile {id:?} is referenced by route(s): {}",
+                routes.join(", ")
+            )));
+        }
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        if profiles_table_mut(&mut document)?.remove(id).is_none() {
+            return Err(ConfigError::Edit(format!("unknown profile {id:?}")));
+        }
+        validate_and_write_profile_edit(path, document)
+    }
+}
+
+fn profiles_table_mut(
+    document: &mut toml_edit::DocumentMut,
+) -> Result<&mut toml_edit::Table, ConfigError> {
+    document
+        .get_mut("profiles")
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| ConfigError::Edit("profiles must be a table".into()))
+}
+
+fn profile_table_mut<'a>(
+    document: &'a mut toml_edit::DocumentMut,
+    id: &str,
+) -> Result<&'a mut toml_edit::Table, ConfigError> {
+    profiles_table_mut(document)?
+        .get_mut(id)
+        .and_then(toml_edit::Item::as_table_mut)
+        .ok_or_else(|| ConfigError::Edit(format!("unknown profile {id:?}")))
+}
+
+fn set_optional_string(table: &mut toml_edit::Table, key: &str, value: Option<Option<String>>) {
+    if let Some(value) = value {
+        match value {
+            Some(value) => table[key] = toml_edit::value(value),
+            None => {
+                table.remove(key);
+            }
+        }
+    }
+}
+
+fn validate_and_write_profile_edit(
+    path: &Path,
+    mut document: toml_edit::DocumentMut,
+) -> Result<(), ConfigError> {
+    migrate_profile_connection_keys(&mut document)?;
+    document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+    let rendered = document.to_string();
+    XanaConfig::parse_registry(&rendered)?;
+    atomic_config_write(path, rendered.as_bytes())
 }
 
 fn migrate_profile_connection_keys(
@@ -1139,6 +1386,15 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
             }
         }
     }
+    if document
+        .profiles
+        .get(&document.default_profile)
+        .is_some_and(|profile| profile.archived)
+    {
+        return Err(ConfigError::Edit(
+            "the default profile cannot be archived".into(),
+        ));
+    }
 
     for (name, profile) in &document.profiles {
         validate_name("profile", name)?;
@@ -1211,6 +1467,17 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
             return Err(ConfigError::UnknownProfile {
                 route: name.clone(),
                 profile: route.profile.clone(),
+            });
+        }
+        if document
+            .profiles
+            .get(&route.profile)
+            .is_some_and(|profile| profile.archived)
+        {
+            return Err(ConfigError::InvalidInteroperableConfig {
+                section: "route",
+                name: name.clone(),
+                reason: format!("references archived profile {:?}", route.profile),
             });
         }
     }
@@ -1306,7 +1573,11 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
             (
                 id.clone(),
                 ProfileConfig {
+                    profile_id: profile
+                        .profile_id
+                        .unwrap_or_else(|| stable_profile_id("global", &id)),
                     id,
+                    archived: profile.archived,
                     connection: profile.connection,
                     model: profile.model,
                     max_tool_rounds: profile.max_tool_rounds,
@@ -1354,6 +1625,13 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         service_routes: document.service_routes,
         egress_policies: document.egress_policies,
     }
+}
+
+pub(crate) fn stable_profile_id(scope: &str, name: &str) -> uuid::Uuid {
+    uuid::Uuid::new_v5(
+        &uuid::Uuid::NAMESPACE_URL,
+        format!("https://github.com/labcoder/xana/profile/{scope}/{name}").as_bytes(),
+    )
 }
 
 fn default_base_url(kind: ProviderKind) -> Option<&'static str> {

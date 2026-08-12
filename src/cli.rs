@@ -194,6 +194,9 @@ pub(crate) enum Command {
     /// Organize conversations with optional local Xana projects.
     #[command(display_order = 8)]
     Project(ProjectArgs),
+    /// Create, inspect, resolve, and freeze named agent profiles.
+    #[command(display_order = 9)]
+    Profile(ProfileArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -799,6 +802,119 @@ pub(crate) enum ProjectCommand {
         project_id: ProjectId,
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ProfileArgs {
+    #[command(subcommand)]
+    pub(crate) command: ProfileCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ProfileCommand {
+    /// List active profiles in global or project scope.
+    List {
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create an arbitrary named profile. Project profiles require an authority ceiling.
+    Create {
+        name: String,
+        #[arg(long)]
+        connection: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long, requires = "project")]
+        authority_profile: Option<String>,
+    },
+    /// Inspect one profile without resolving provider or process availability.
+    Inspect {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Edit the common selection and guidance fields of one profile.
+    Edit {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        connection: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        reasoning_effort: Option<String>,
+        #[arg(long)]
+        reasoning_summary: Option<String>,
+        #[arg(long)]
+        identity: Option<String>,
+        #[arg(long, value_enum)]
+        permission_mode: Option<PermissionChoice>,
+        #[arg(long)]
+        max_tool_rounds: Option<usize>,
+    },
+    /// Copy a profile to a new independent identity; profiles never inherit.
+    Duplicate {
+        source: String,
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Rename a profile while preserving its stable identity.
+    Rename {
+        old: String,
+        new: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Hide a profile from active selection without deleting it.
+    Archive {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Restore an archived profile.
+    Unarchive {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Delete a profile after an explicit confirmation flag.
+    Delete {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Show exact effective values, provenance, and readiness.
+    Resolve {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Freeze a resolved profile for a new or existing conversation identity.
+    Freeze {
+        name: String,
+        conversation: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Inspect the immutable redacted profile snapshot for a conversation.
+    Snapshot { conversation: String },
+    /// Create a linked continuation with a different immutable profile snapshot.
+    Continue {
+        name: String,
+        conversation: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
     },
 }
 

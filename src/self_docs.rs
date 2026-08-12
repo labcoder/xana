@@ -170,6 +170,13 @@ static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
 static PROJECT_TOPICS: &[&str] = &["projects", "workspaces", "sessions", "organization"];
+static PROFILE_TOPICS: &[&str] = &[
+    "profiles",
+    "projects",
+    "models",
+    "permissions",
+    "configuration",
+];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -290,6 +297,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: PROJECT_TOPICS,
         body: include_str!("../docs/user/projects.md"),
+    },
+    BundledDoc {
+        id: "user.profiles",
+        title: "Profiles, resolution, and conversation snapshots",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: PROFILE_TOPICS,
+        body: include_str!("../docs/user/profiles.md"),
     },
     BundledDoc {
         id: "user.rich-content",

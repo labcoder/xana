@@ -153,6 +153,13 @@ cross-workspace continuation rules.
 Portable sharing stays opt-in: `xana project share PROJECT_ID` creates the
 strict non-secret `.agents/xana/project.toml`; another installation can run
 `xana project inspect-portable` before choosing `xana project register`.
+
+Named profiles are first-class rather than fixed roles. `xana profile create`,
+`list`, `edit`, `duplicate`, `resolve`, and lifecycle commands work globally or
+with `--project PROJECT_ID`. Resolution shows exact effective values,
+provenance, and readiness; each conversation can freeze an immutable snapshot,
+and changing profiles creates a linked continuation. See
+[Profiles](docs/user/profiles.md).
 Logical connection/service requirements are resolved through redacted private
 bindings and never copy local credentials or authority into the repository.
 
