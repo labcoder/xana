@@ -174,6 +174,7 @@ async fn remote_tool_does_zero_transport_io_when_permission_denies() {
                 operation_id: OperationId::new(),
                 invocation_id: ToolInvocationId::new(),
                 permissions: &permissions,
+                events: None,
             },
         )
         .await;
@@ -211,6 +212,7 @@ async fn remote_tool_runs_after_exact_permission_and_reports_provenance() {
                 operation_id: OperationId::new(),
                 invocation_id: ToolInvocationId::new(),
                 permissions: &permissions,
+                events: None,
             },
         )
         .await;

@@ -4,6 +4,13 @@
 //! Cached cards are normalized untrusted metadata; trust binds one exact
 //! declaration and semantic card identity.
 
+mod delegation;
+
+pub(crate) use delegation::{
+    A2aDelegationActivation, ExternalAgentActivity, ExternalAgentActivityKind,
+    activate_profile_delegation_tools, cancel_tracked_task,
+};
+
 use crate::{
     config::{ConnectionRegistry, ExternalAgentDeclaration},
     credential::{CredentialResolver, SecretString},
@@ -12,8 +19,8 @@ use crate::{
     paths::XanaPaths,
     private_state::{
         ExternalAgentSkillRecord, ExternalAgentStateDocument, ExternalAgentStateRecord,
-        PrivateStateError, UpdateDocumentError, ensure_interoperable_records, read_document,
-        update_document,
+        ExternalAgentTaskRecord, PrivateStateError, UpdateDocumentError,
+        ensure_interoperable_records, read_document, update_document,
     },
 };
 use futures::StreamExt;
@@ -34,6 +41,7 @@ const MAX_TEXT_BYTES: usize = 16 * 1024;
 const MAX_SHORT_TEXT_BYTES: usize = 512;
 const MAX_COLLECTION_ITEMS: usize = 128;
 const CARD_TIMEOUT: Duration = Duration::from_secs(15);
+const MAX_RETAINED_TASKS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExternalAgentView {
@@ -170,6 +178,7 @@ impl ExternalAgentManager {
     pub(crate) fn remove_cache(&self, name: &str) -> Result<(), A2aError> {
         self.update(|document| {
             document.agents.remove(name);
+            document.tasks.retain(|_, task| task.connection != name);
             Ok(())
         })
     }
@@ -213,6 +222,88 @@ impl ExternalAgentManager {
         Ok(issues)
     }
 
+    pub(crate) fn record_task(
+        &self,
+        connection: &str,
+        agent_identity_digest: &str,
+        task_id: &str,
+        context_id: Option<&str>,
+        state: &str,
+        remote_cancel: &str,
+    ) -> Result<ExternalAgentTaskRecord, A2aError> {
+        for value in [
+            connection,
+            agent_identity_digest,
+            task_id,
+            state,
+            remote_cancel,
+        ] {
+            if value.is_empty() || value.len() > 512 || value.chars().any(char::is_control) {
+                return Err(A2aError::InvalidTaskState);
+            }
+        }
+        if context_id.is_some_and(|value| {
+            value.is_empty() || value.len() > 512 || value.chars().any(char::is_control)
+        }) {
+            return Err(A2aError::InvalidTaskState);
+        }
+        let key = task_key(connection, task_id);
+        let mut record = ExternalAgentTaskRecord {
+            key: key.clone(),
+            connection: connection.to_owned(),
+            agent_identity_digest: agent_identity_digest.to_owned(),
+            task_id: task_id.to_owned(),
+            context_id: context_id.map(str::to_owned),
+            state: state.to_owned(),
+            remote_cancel: remote_cancel.to_owned(),
+            updated_unix_ms: now_unix_ms()?,
+        };
+        self.update(|document| {
+            if record.context_id.is_none()
+                && let Some(existing) = document.tasks.get(&key)
+            {
+                record.context_id = existing.context_id.clone();
+            }
+            if !document.tasks.contains_key(&key) && document.tasks.len() >= MAX_RETAINED_TASKS {
+                let oldest = document
+                    .tasks
+                    .iter()
+                    .min_by_key(|(_, task)| task.updated_unix_ms)
+                    .map(|(key, _)| key.clone())
+                    .ok_or(A2aError::TaskStateLimit)?;
+                document.tasks.remove(&oldest);
+            }
+            document.tasks.insert(key, record.clone());
+            Ok(record.clone())
+        })
+    }
+
+    pub(crate) fn task(
+        &self,
+        connection: &str,
+        task_id: &str,
+    ) -> Result<Option<ExternalAgentTaskRecord>, A2aError> {
+        Ok(self
+            .state()?
+            .tasks
+            .get(&task_key(connection, task_id))
+            .cloned())
+    }
+
+    pub(crate) fn tasks_for(
+        &self,
+        connection: &str,
+    ) -> Result<Vec<ExternalAgentTaskRecord>, A2aError> {
+        let mut tasks = self
+            .state()?
+            .tasks
+            .into_values()
+            .filter(|task| task.connection == connection)
+            .collect::<Vec<_>>();
+        tasks.sort_by_key(|task| std::cmp::Reverse(task.updated_unix_ms));
+        Ok(tasks)
+    }
+
     fn state(&self) -> Result<ExternalAgentStateDocument, A2aError> {
         ensure_interoperable_records(&self.paths)?;
         read_document(&self.paths.external_agent_state_file()).map_err(A2aError::State)
@@ -229,6 +320,12 @@ impl ExternalAgentManager {
             Err(UpdateDocumentError::Update(error)) => Err(error),
         }
     }
+}
+
+fn task_key(connection: &str, task_id: &str) -> String {
+    blake3::hash(format!("{connection}\0{task_id}").as_bytes())
+        .to_hex()
+        .to_string()
 }
 
 fn view(
@@ -616,6 +713,8 @@ pub(crate) enum A2aError {
     Clock,
     NotDiscovered(String),
     NotTrusted(String),
+    InvalidTaskState,
+    TaskStateLimit,
 }
 
 impl fmt::Display for A2aError {
@@ -676,6 +775,12 @@ impl fmt::Display for A2aError {
                 formatter,
                 "external agent {name:?} is not trusted for its current identity"
             ),
+            Self::InvalidTaskState => {
+                formatter.write_str("external-agent task state is invalid or oversized")
+            }
+            Self::TaskStateLimit => {
+                formatter.write_str("external-agent task-state limit has been reached")
+            }
         }
     }
 }

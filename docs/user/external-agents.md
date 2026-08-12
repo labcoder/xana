@@ -68,5 +68,45 @@ selects an external agent, profile readiness does not even open or create the
 private A2A record. A selected missing, disabled, changed, or untrusted agent is
 reported as not ready with exact refresh/trust remediation.
 
-Task delegation is a separate capability. Trust does not silently send a
-prompt, transcript, workspace, file, artifact, or metadata to the endpoint.
+## Delegate one bounded task
+
+A profile-selected, ready agent contributes one qualified tool named
+`a2a__NAME__delegate`. The model can propose that tool, but ordinary tool
+permission and outbound-data approval still happen before Xana opens a network
+connection. The call must supply one task and may explicitly select only:
+
+- prior message text in `selected_messages`;
+- workspace-relative regular files in `selected_files`;
+- immutable Xana artifact records in `selected_artifacts`; and
+- the canonical workspace name/path in `include_workspace_metadata`.
+
+Xana does not infer selections from the conversation and never sends the whole
+transcript, hidden reasoning, credentials, environment, directory tree, or
+ambient session state. Connection policy, user policy, and profile policy can
+only narrow the allowed data classes. A denied approval sends zero request
+bytes.
+
+The remote endpoint owns its task loop. Xana streams bounded A2A status,
+messages, and artifacts into the same typed activity feed used by plain mode
+and the TUI. Returned content stays attributed and untrusted. Inline text,
+JSON, and base64 byte parts become immutable, content-addressed Xana artifacts.
+Public HTTPS artifact URLs without credentials, fragments, or query strings
+remain safe external references; Xana does not fetch them implicitly.
+
+Xana retains only bounded task identity/status metadata so interrupted work is
+visible and cancelable:
+
+```text
+xana external-agent tasks research
+xana external-agent cancel research TASK_ID --yes
+```
+
+Dropping an in-flight delegation triggers a best-effort remote cancellation.
+If cancellation cannot be confirmed, Xana reports and records the task as
+`detached_unknown`; it never claims that the remote effect stopped. Removing an
+external-agent declaration also removes its local Card and task records, not
+the remote agent's own history.
+
+Trust does not silently send a prompt, transcript, workspace, file, artifact,
+or metadata to the endpoint. It establishes recipient identity only; each
+delegation still passes the ordinary permission and outbound-data gates.

@@ -172,7 +172,10 @@ where
                     decision: RecoveryDecision::Replay,
                 })?;
                 let (tool_result, outcome) = match planned
-                    .execute(crate::tool::ToolExecutionContext { operation_id })
+                    .execute(crate::tool::ToolExecutionContext {
+                        operation_id,
+                        events: None,
+                    })
                     .await
                 {
                     Ok(output) => {

@@ -214,8 +214,9 @@ classes; concrete messages, files, artifacts, and metadata still require exact
 selection. New recipient/class combinations require approval, unresolved
 noninteractive requests fail closed, and audits retain counts and digests
 rather than selected content. MCP application calls already implement that
-exact dispatch seam; A2A task payloads and focused-service activation remain
-unavailable until their application integrations land. See [Outbound
+exact dispatch seam. A2A delegation uses it for explicitly selected messages,
+files, artifacts, and workspace metadata; focused-service activation remains
+unavailable until its application integration lands. See [Outbound
 data approvals and privacy](docs/user/outbound-data.md).
 
 Xana also has a bounded client-side protocol and progressive catalog foundation
@@ -234,6 +235,9 @@ Remote A2A agents can be declared, explicitly refreshed, inspected, trusted,
 untrusted, and removed with `xana external-agent ...`. Xana pins an A2A 1.0
 JSONRPC/text compatibility subset, caches sanitized Agent Card metadata in
 private state, and invalidates trust whenever meaningful identity changes.
+Profile-selected trusted agents expose a bounded qualified delegation tool;
+Xana gates exact selected data, streams attributed activity, ingests immutable
+artifacts, tracks task state, and supports explicit or best-effort cancellation.
 Startup never discovers endpoints implicitly, and trust alone sends no task or
 local data. See [External A2A agents](docs/user/external-agents.md).
 

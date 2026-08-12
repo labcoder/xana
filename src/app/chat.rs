@@ -433,7 +433,7 @@ pub(super) async fn run(
         };
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
-    let (profile_mcp_servers, profile_mcp_allowlists, profile_mcp_egress) =
+    let (profile_mcp_servers, profile_mcp_allowlists, profile_egress) =
         frozen_profile.as_ref().map_or_else(
             || {
                 child_registry
@@ -462,13 +462,23 @@ pub(super) async fn run(
                 )
             },
         );
+    let profile_external_agents = frozen_profile.as_ref().map_or_else(
+        || {
+            child_registry
+                .profiles
+                .get(&child_registry.default_profile)
+                .map(|profile| profile.external_agents.clone())
+                .unwrap_or_default()
+        },
+        |profile| profile.external_agents.value.clone(),
+    );
     super::mcp_commands::activate_profile_tools(
         &child_registry,
         paths,
         &workspace_root,
         &profile_mcp_servers,
         &profile_mcp_allowlists,
-        &profile_mcp_egress,
+        &profile_egress,
         &mut tools,
     )
     .await?;
@@ -518,6 +528,19 @@ pub(super) async fn run(
         };
     let workspace_root = session.workspace_root().to_owned();
     let artifact_owner = session.artifact_owner();
+    crate::a2a::activate_profile_delegation_tools(
+        &child_registry,
+        crate::a2a::A2aDelegationActivation {
+            paths,
+            workspace: &workspace_root,
+            external_agents: &profile_external_agents,
+            profile_egress: &profile_egress,
+            artifacts: artifact_store.clone(),
+            owner: artifact_owner,
+        },
+        &mut tools,
+    )
+    .context("could not activate profile external-agent delegation tools")?;
     let restored_plans = session.started_orchestration_plans();
     let child_supervisor = if child_registry.routes.is_empty() {
         None

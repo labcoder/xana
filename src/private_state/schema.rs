@@ -252,6 +252,21 @@ pub(crate) struct ExternalAgentStateDocument {
     pub(crate) version: u32,
     #[serde(default)]
     pub(crate) agents: BTreeMap<String, ExternalAgentStateRecord>,
+    #[serde(default)]
+    pub(crate) tasks: BTreeMap<String, ExternalAgentTaskRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExternalAgentTaskRecord {
+    pub(crate) key: String,
+    pub(crate) connection: String,
+    pub(crate) agent_identity_digest: String,
+    pub(crate) task_id: String,
+    pub(crate) context_id: Option<String>,
+    pub(crate) state: String,
+    pub(crate) remote_cancel: String,
+    pub(crate) updated_unix_ms: u64,
 }
 
 impl Default for ExternalAgentStateDocument {
@@ -259,6 +274,7 @@ impl Default for ExternalAgentStateDocument {
         Self {
             version: PRIVATE_RECORD_VERSION,
             agents: BTreeMap::new(),
+            tasks: BTreeMap::new(),
         }
     }
 }

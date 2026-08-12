@@ -134,6 +134,10 @@ pub(crate) enum AgentEvent {
     ChildCancellationRequested {
         receipt: ChildCancellationReceipt,
     },
+    ExternalAgentActivity {
+        operation_id: OperationId,
+        activity: crate::a2a::ExternalAgentActivity,
+    },
 }
 
 #[derive(Clone)]

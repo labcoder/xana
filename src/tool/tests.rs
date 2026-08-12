@@ -419,6 +419,7 @@ async fn invoke_fake(
                 operation_id,
                 invocation_id,
                 permissions,
+                events: None,
             },
         )
         .await
@@ -569,6 +570,7 @@ async fn invalid_arguments_never_reach_permission_evaluation() {
                 operation_id: OperationId::new(),
                 invocation_id: ToolInvocationId::new(),
                 permissions: &broker,
+                events: None,
             },
         )
         .await;

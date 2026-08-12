@@ -245,6 +245,7 @@ impl Agent {
                         permissions.clone(),
                         durable.operations.clone(),
                         Arc::clone(&self.boundary_observer),
+                        Some(events.clone()),
                     )
                     .invoke_tool(operation_id, step_id, invocation_id, call.clone())
                     .await?
@@ -257,6 +258,7 @@ impl Agent {
                                 operation_id,
                                 invocation_id,
                                 permissions: &permissions,
+                                events: Some(&events),
                             },
                         )
                         .await

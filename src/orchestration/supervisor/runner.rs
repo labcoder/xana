@@ -212,6 +212,9 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
             ..
         } => Some(ChildActivity::Suspended),
         AgentEvent::ChildActivity { activity, .. } => Some(activity),
+        AgentEvent::ExternalAgentActivity { activity, .. } => {
+            Some(ChildActivity::ExternalAgent { activity })
+        }
         AgentEvent::OperationStateChanged { .. }
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }

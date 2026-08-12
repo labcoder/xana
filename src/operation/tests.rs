@@ -645,6 +645,7 @@ async fn invoke_until_crash(site: CrashSite) -> (Vec<SessionRecord>, usize, Oper
         permissions.clone(),
         commits.clone(),
         observer.clone(),
+        None,
     );
 
     let result = executor

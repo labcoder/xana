@@ -200,6 +200,7 @@ pub(crate) struct OperationExecutor<'a> {
     permissions: PermissionBrokerHandle,
     commits: DurableOperationSender,
     observer: Arc<dyn BoundaryObserver>,
+    events: Option<crate::native_runtime::AgentEventSender>,
 }
 
 impl<'a> OperationExecutor<'a> {
@@ -209,6 +210,7 @@ impl<'a> OperationExecutor<'a> {
         permissions: PermissionBrokerHandle,
         commits: DurableOperationSender,
         observer: Arc<dyn BoundaryObserver>,
+        events: Option<crate::native_runtime::AgentEventSender>,
     ) -> Self {
         Self {
             tools,
@@ -216,6 +218,7 @@ impl<'a> OperationExecutor<'a> {
             permissions,
             commits,
             observer,
+            events,
         }
     }
 
@@ -289,7 +292,10 @@ impl<'a> OperationExecutor<'a> {
             )
         } else {
             let execution = planned
-                .execute(crate::tool::ToolExecutionContext { operation_id })
+                .execute(crate::tool::ToolExecutionContext {
+                    operation_id,
+                    events: self.events.clone(),
+                })
                 .await;
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;
             match execution {

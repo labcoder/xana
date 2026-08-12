@@ -103,6 +103,9 @@ pub(crate) enum ChildActivity {
     ManagedRuntime {
         notification: crate::managed::codex::ManagedNotification,
     },
+    ExternalAgent {
+        activity: crate::a2a::ExternalAgentActivity,
+    },
     Suspended,
 }
 

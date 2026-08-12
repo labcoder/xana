@@ -128,6 +128,17 @@ impl TuiState {
                         );
                     }
                 }
+                crate::orchestration::ChildActivity::ExternalAgent { activity } => {
+                    let (state, summary, detail) = external_activity_card(activity);
+                    self.push_card(ActivityCard::new(
+                        format!("External A2A {}", activity.agent_name),
+                        attribution.agent_id.to_string(),
+                        ActivityKind::Child,
+                        state,
+                        summary,
+                        detail,
+                    ));
+                }
                 crate::orchestration::ChildActivity::Warning { message } => {
                     self.push_card(ActivityCard::new(
                         format!("Xana child {}", attribution.agent_id),
@@ -164,6 +175,20 @@ impl TuiState {
                     .or_else(|| report.error.clone())
                     .unwrap_or_default(),
             )),
+            AgentEvent::ExternalAgentActivity {
+                operation_id,
+                activity,
+            } => {
+                let (state, summary, detail) = external_activity_card(activity);
+                self.push_card(ActivityCard::new(
+                    format!("External A2A {}", activity.agent_name),
+                    operation_id.to_string(),
+                    ActivityKind::Child,
+                    state,
+                    summary,
+                    detail,
+                ));
+            }
             AgentEvent::InvocationResultCommitted { .. }
             | AgentEvent::PermissionAudited { .. }
             | AgentEvent::ChildListSnapshot { .. }
@@ -438,5 +463,59 @@ impl TuiState {
             card.owner = owner;
             self.push_card(card);
         }
+    }
+}
+
+fn external_activity_card(
+    activity: &crate::a2a::ExternalAgentActivity,
+) -> (ActivityState, String, String) {
+    use crate::a2a::ExternalAgentActivityKind;
+
+    let detail = format!(
+        "connection={} ownership={}",
+        activity.connection, activity.ownership
+    );
+    match &activity.activity {
+        ExternalAgentActivityKind::Sending { total_bytes, .. } => (
+            ActivityState::Running,
+            format!("sending {total_bytes} reviewed bytes"),
+            detail,
+        ),
+        ExternalAgentActivityKind::TaskIdentified { task_id, .. } => (
+            ActivityState::Running,
+            format!("remote task {task_id}"),
+            detail,
+        ),
+        ExternalAgentActivityKind::Status { state, message } => (
+            if matches!(state.as_str(), "completed" | "canceled") {
+                ActivityState::Complete
+            } else if matches!(state.as_str(), "failed" | "rejected") {
+                ActivityState::Failed
+            } else {
+                ActivityState::Running
+            },
+            format!("status {state}"),
+            message.clone().unwrap_or(detail),
+        ),
+        ExternalAgentActivityKind::Message { text } => (
+            ActivityState::Running,
+            "remote message".into(),
+            text.clone(),
+        ),
+        ExternalAgentActivityKind::Artifact { name, byte_len, .. } => (
+            ActivityState::Running,
+            format!("artifact {name} ({byte_len} bytes)"),
+            detail,
+        ),
+        ExternalAgentActivityKind::CancellationRequested { task_id } => (
+            ActivityState::Running,
+            format!("cancelling remote task {task_id}"),
+            detail,
+        ),
+        ExternalAgentActivityKind::Detached { task_id } => (
+            ActivityState::Failed,
+            format!("remote task {task_id} detached"),
+            "Remote cancellation could not be confirmed; outcome is unknown.".into(),
+        ),
     }
 }

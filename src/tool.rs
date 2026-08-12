@@ -83,9 +83,10 @@ pub(crate) trait Tool: Send + Sync {
     ) -> BoxFuture<'a, Result<String, String>>;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct ToolExecutionContext {
     pub(crate) operation_id: OperationId,
+    pub(crate) events: Option<crate::native_runtime::AgentEventSender>,
 }
 
 pub(crate) struct PlannedToolInvocation {
@@ -155,6 +156,7 @@ pub(crate) struct ToolContext<'a> {
     pub(crate) operation_id: OperationId,
     pub(crate) invocation_id: ToolInvocationId,
     pub(crate) permissions: &'a PermissionBrokerHandle,
+    pub(crate) events: Option<&'a crate::native_runtime::AgentEventSender>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -245,6 +247,7 @@ impl ToolRegistry {
         match planned
             .execute(ToolExecutionContext {
                 operation_id: context.operation_id,
+                events: context.events.cloned(),
             })
             .await
         {
@@ -372,6 +375,7 @@ impl ToolRegistry {
                     operation_id: OperationId::new(),
                     invocation_id: ToolInvocationId::new(),
                     permissions: &permissions,
+                    events: None,
                 },
             )
             .await

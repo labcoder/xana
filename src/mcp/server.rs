@@ -377,6 +377,7 @@ async fn handle_request(
                             operation_id: OperationId::new(),
                             invocation_id: ToolInvocationId::new(),
                             permissions: &permissions,
+                            events: None,
                         },
                     );
                     match tokio::select! {
