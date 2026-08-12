@@ -143,8 +143,54 @@ pub(crate) async fn inspect(paths: &XanaPaths, terminal: TerminalHealth) -> Doct
     inspect_terminal(terminal, &mut report);
     inspect_descriptor(paths, &mut report);
     inspect_plugins(paths, &mut report);
+    inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report).await;
     report
+}
+
+fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
+    let Ok(registry) = XanaConfig::load_registry_from(paths.config_file()) else {
+        return;
+    };
+    report.push(Finding::new(
+        "interop.inventory",
+        Severity::Info,
+        "interoperable declarations were inspected without discovery or process startup",
+        format!(
+            "profiles={} plugins={} mcp={} external_agents={} service_routes={}",
+            registry.profiles.len(),
+            registry.plugins.len(),
+            registry.mcp_servers.len(),
+            registry.external_agents.len(),
+            registry.service_routes.len()
+        ),
+        Some("xana connect".into()),
+    ));
+    let Ok(descriptors) = crate::focused_service::image_descriptor_registry() else {
+        return;
+    };
+    for (profile_name, profile) in &registry.profiles {
+        for route in &profile.service_routes {
+            let status = descriptors.inspect(&registry, &profile.service_routes, route);
+            report.push(Finding::new(
+                format!("service.{profile_name}.{route}"),
+                if status.ready {
+                    Severity::Ok
+                } else {
+                    Severity::Warning
+                },
+                if status.ready {
+                    format!("focused route {route} is structurally ready")
+                } else {
+                    format!("focused route {route} is not ready")
+                },
+                status
+                    .reason
+                    .unwrap_or_else(|| "configured and exposed".into()),
+                (!status.ready).then(|| format!("xana image inspect {route}")),
+            ));
+        }
+    }
 }
 
 fn inspect_plugins(paths: &XanaPaths, report: &mut DoctorReport) {

@@ -152,6 +152,42 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdin = io::stdin();
             image_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
         }
+        Some(Command::Connect(args)) => match args.integration {
+            Some(cli::ConnectIntegration::Provider) => {
+                let setup = cli::SetupArgs {
+                    section: Some(cli::SetupSectionChoice::Connection),
+                    ..cli::SetupArgs::default()
+                };
+                run_setup_command(&setup, &paths).await.map(|_| ())
+            }
+            Some(cli::ConnectIntegration::Profile) => {
+                let setup = cli::SetupArgs {
+                    section: Some(cli::SetupSectionChoice::ProfilesRoutes),
+                    ..cli::SetupArgs::default()
+                };
+                run_setup_command(&setup, &paths).await.map(|_| ())
+            }
+            integration => {
+                let mut output = io::stdout().lock();
+                writeln!(
+                    output,
+                    "Xana integration hub (read-only until you choose an exact command)"
+                )?;
+                writeln!(output, "  provider        xana connect provider")?;
+                writeln!(output, "  profile         xana connect profile")?;
+                writeln!(output, "  plugin          xana plugin list")?;
+                writeln!(output, "  MCP             xana mcp list")?;
+                writeln!(output, "  external agent  xana external-agent list")?;
+                writeln!(output, "  image routes    xana image list")?;
+                if let Some(integration) = integration {
+                    writeln!(
+                        output,
+                        "Selected {integration:?}; use the exact command shown above so review, cancellation, and failures remain explicit."
+                    )?;
+                }
+                Ok(())
+            }
+        },
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();
             operations::run_operation(args.command, &paths, &mut stdout.lock()).await

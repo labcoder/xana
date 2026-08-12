@@ -212,6 +212,9 @@ pub(crate) enum Command {
     /// List, inspect, or invoke focused image-generation routes.
     #[command(display_order = 14)]
     Image(ImageArgs),
+    /// Open the provider-neutral integration hub or one focused setup path.
+    #[command(display_order = 15)]
+    Connect(ConnectArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -230,6 +233,24 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ConnectArgs {
+    /// Open one integration path; omit to inspect the hub without mutation.
+    #[arg(value_enum)]
+    pub(crate) integration: Option<ConnectIntegration>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum ConnectIntegration {
+    Provider,
+    Profile,
+    Plugin,
+    Mcp,
+    #[value(name = "external-agent")]
+    ExternalAgent,
+    Image,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

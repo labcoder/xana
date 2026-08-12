@@ -2,6 +2,12 @@
 
 > Audience: People installing, configuring, or using Xana.
 
+Use `xana connect` to inspect Xana's integration hub. The command is read-only;
+choose `xana connect provider` or `xana connect profile` to enter an atomic
+guided setup section, or follow the exact typed plugin, MCP, external-agent, and
+image commands it prints. This keeps connection setup separate from the
+read-only `xana doctor` diagnostic contract.
+
 Xana loads one strict, versioned `config.toml`, with a 1 MiB file limit.
 Human-authored configuration declares connections and profiles; static
 secrets, cached catalogs, model selection, sessions, and artifacts live
