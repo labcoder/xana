@@ -5,11 +5,12 @@ use crate::{
     identity::PrincipalId,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use std::{
     collections::VecDeque,
     error::Error,
     fmt, fs,
-    io::Read,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
 };
 
@@ -22,6 +23,38 @@ pub(crate) struct ImageRef {
     pub(crate) byte_len: u64,
     pub(crate) width: Option<u32>,
     pub(crate) height: Option<u32>,
+}
+
+pub(crate) fn ingest_clipboard_image(
+    store: ArtifactStore,
+    owner: PrincipalId,
+) -> Result<ImageAttachment, String> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|error| format!("clipboard is unavailable: {error}"))?;
+    let image = clipboard
+        .get_image()
+        .map_err(|error| format!("clipboard does not contain a supported image: {error}"))?;
+    let width = u32::try_from(image.width)
+        .map_err(|_| "clipboard image width exceeds Xana's limit".to_owned())?;
+    let height = u32::try_from(image.height)
+        .map_err(|_| "clipboard image height exceeds Xana's limit".to_owned())?;
+    let expected = image
+        .width
+        .checked_mul(image.height)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "clipboard image dimensions overflow".to_owned())?;
+    if image.bytes.len() != expected || expected > 64 * 1024 * 1024 {
+        return Err(
+            "clipboard RGBA image is malformed or exceeds the 64 MiB decode bound".to_owned(),
+        );
+    }
+    let mut png = Vec::new();
+    PngEncoder::new(&mut png)
+        .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+        .map_err(|error| format!("could not encode clipboard image safely: {error}"))?;
+    ImageIngestor::new(store, ImageLimits::default())
+        .ingest_bytes("clipboard", &png, owner)
+        .map_err(|error| format!("could not ingest clipboard image: {error}"))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,10 +190,25 @@ impl ImageIngestor {
                 limit: self.limits.max_bytes,
             });
         }
-        let metadata = inspect_image(&bytes, self.limits)?;
-        let (artifact, _) = self.store.put(&bytes, metadata.media_type, owner)?;
+        self.ingest_bytes(source_path, &bytes, owner)
+    }
+
+    pub(crate) fn ingest_bytes(
+        &self,
+        source: &str,
+        bytes: &[u8],
+        owner: PrincipalId,
+    ) -> Result<ImageAttachment, ImageError> {
+        if bytes.len() > self.limits.max_bytes {
+            return Err(ImageError::TooLarge {
+                actual: bytes.len(),
+                limit: self.limits.max_bytes,
+            });
+        }
+        let metadata = inspect_image(bytes, self.limits)?;
+        let (artifact, _) = self.store.put(bytes, metadata.media_type, owner)?;
         Ok(ImageAttachment {
-            source_path: source_path.to_owned(),
+            source_path: source.to_owned(),
             image: ImageRef {
                 artifact,
                 media_type: metadata.media_type.to_owned(),
@@ -178,52 +226,37 @@ struct ImageMetadata {
     height: Option<u32>,
 }
 fn inspect_image(bytes: &[u8], limits: ImageLimits) -> Result<ImageMetadata, ImageError> {
-    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        if bytes.len() < 24 {
-            return Err(ImageError::Malformed);
-        }
-        let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-        let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-        let pixels = u64::from(width).saturating_mul(u64::from(height));
-        if pixels > limits.max_pixels {
-            return Err(ImageError::PixelLimit {
-                actual: pixels,
-                limit: limits.max_pixels,
-            });
-        }
-        return Ok(ImageMetadata {
-            media_type: "image/png",
-            width: Some(width),
-            height: Some(height),
+    let format = image::guess_format(bytes).map_err(|_| ImageError::UnsupportedFormat)?;
+    let media_type = match format {
+        image::ImageFormat::Png => "image/png",
+        image::ImageFormat::Jpeg => "image/jpeg",
+        image::ImageFormat::Gif => "image/gif",
+        _ => return Err(ImageError::UnsupportedFormat),
+    };
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), format);
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_alloc = Some(limits.max_pixels.saturating_mul(4));
+    reader.limits(decode_limits.clone());
+    let (width, height) = reader
+        .into_dimensions()
+        .map_err(|_| ImageError::Malformed)?;
+    let pixels = u64::from(width).saturating_mul(u64::from(height));
+    if pixels == 0 || pixels > limits.max_pixels {
+        return Err(ImageError::PixelLimit {
+            actual: pixels,
+            limit: limits.max_pixels,
         });
     }
-    if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
-        return Ok(ImageMetadata {
-            media_type: "image/jpeg",
-            width: None,
-            height: None,
-        });
-    }
-    if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        if bytes.len() < 10 {
-            return Err(ImageError::Malformed);
-        }
-        let width = u32::from(u16::from_le_bytes(bytes[6..8].try_into().unwrap()));
-        let height = u32::from(u16::from_le_bytes(bytes[8..10].try_into().unwrap()));
-        let pixels = u64::from(width).saturating_mul(u64::from(height));
-        if pixels > limits.max_pixels {
-            return Err(ImageError::PixelLimit {
-                actual: pixels,
-                limit: limits.max_pixels,
-            });
-        }
-        return Ok(ImageMetadata {
-            media_type: "image/gif",
-            width: Some(width),
-            height: Some(height),
-        });
-    }
-    Err(ImageError::UnsupportedFormat)
+    let mut validation = image::ImageReader::with_format(Cursor::new(bytes), format);
+    decode_limits.max_image_width = Some(width);
+    decode_limits.max_image_height = Some(height);
+    validation.limits(decode_limits);
+    validation.decode().map_err(|_| ImageError::Malformed)?;
+    Ok(ImageMetadata {
+        media_type,
+        width: Some(width),
+        height: Some(height),
+    })
 }
 
 #[derive(Clone)]
@@ -261,13 +294,32 @@ mod tests {
     use tempfile::tempdir;
 
     fn png(width: u32, height: u32) -> Vec<u8> {
-        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
-        bytes.extend_from_slice(&[0, 0, 0, 13]);
-        bytes.extend_from_slice(b"IHDR");
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&[8, 2, 0, 0, 0]);
+        let mut bytes = Vec::new();
+        PngEncoder::new(&mut bytes)
+            .write_image(
+                &vec![0; width as usize * height as usize * 4],
+                width,
+                height,
+                ExtendedColorType::Rgba8,
+            )
+            .unwrap();
         bytes
+    }
+
+    #[test]
+    fn malformed_and_decompression_bomb_images_fail_before_artifact_publication() {
+        let limits = ImageLimits {
+            max_bytes: 1024,
+            max_pixels: 4,
+        };
+        assert!(matches!(
+            inspect_image(b"\xff\xd8\xff", limits),
+            Err(ImageError::Malformed)
+        ));
+        assert!(matches!(
+            inspect_image(&png(3, 3), limits),
+            Err(ImageError::PixelLimit { .. })
+        ));
     }
 
     #[test]
