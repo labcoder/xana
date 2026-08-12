@@ -3,6 +3,7 @@
 use crate::{
     cli::{ProjectCommand, ProjectOwnerChoice},
     paths::XanaPaths,
+    portable_project::PortableProjectStore,
     private_state::ProjectLifecycle,
     project::{ContinuationOwner, ContinuationPlacement, Project, ProjectStore, WorkspaceStatus},
 };
@@ -137,6 +138,69 @@ pub(super) fn run_command(
                 )?,
             }
         }
+        ProjectCommand::Share { project_id } => {
+            let project = store.get(project_id)?;
+            let shared = PortableProjectStore::share(&project)?;
+            writeln!(output, "Portable Xana project: {}", shared.path.display())?;
+            writeln!(output, "Manifest digest: {}", shared.digest)?;
+            writeln!(
+                output,
+                "No credential, authority, history, or private path was shared."
+            )?;
+        }
+        ProjectCommand::InspectPortable { workspace } => {
+            let workspace = workspace_or_current(workspace)?;
+            let inspection =
+                PortableProjectStore::inspect_with_user_authority(&workspace, paths.config_file())?;
+            writeln!(output, "Portable project: {}", inspection.manifest.name)?;
+            writeln!(output, "Portable id: {}", inspection.manifest.portable_id)?;
+            writeln!(output, "Manifest: {}", inspection.path.display())?;
+            writeln!(
+                output,
+                "Review is read-only; nothing was registered or enabled."
+            )?;
+        }
+        ProjectCommand::Register { workspace } => {
+            let workspace = workspace_or_current(workspace)?;
+            let resolution = PortableProjectStore::open(paths).register(paths, &workspace)?;
+            writeln!(output, "Registered project {}.", resolution.project.id)?;
+            render_resolution(output, &resolution)?;
+        }
+        ProjectCommand::Refresh { project_id } => {
+            let resolution = PortableProjectStore::open(paths).refresh(paths, project_id)?;
+            writeln!(output, "Portable manifest review accepted.")?;
+            render_resolution(output, &resolution)?;
+        }
+        ProjectCommand::Diff { project_id } | ProjectCommand::Setup { project_id } => {
+            let resolution = PortableProjectStore::open(paths).resolve(paths, project_id)?;
+            render_resolution(output, &resolution)?;
+        }
+        ProjectCommand::Bind {
+            project_id,
+            logical,
+            local,
+        } => {
+            PortableProjectStore::open(paths).bind(project_id, &logical, &local)?;
+            writeln!(
+                output,
+                "Bound {logical} privately for project {project_id}; the local value is not printed or written to the workspace."
+            )?;
+        }
+        ProjectCommand::StopSharing { project_id, yes } => {
+            if !yes {
+                bail!(
+                    "stop-sharing removes `.agents/xana/project.toml`; review it, then repeat with --yes"
+                );
+            }
+            if PortableProjectStore::open(paths).stop_sharing(paths, project_id)? {
+                writeln!(
+                    output,
+                    "Portable sharing stopped; local project state is preserved."
+                )?;
+            } else {
+                writeln!(output, "Portable sharing was already absent.")?;
+            }
+        }
     }
     Ok(())
 }
@@ -165,5 +229,44 @@ fn render_project(output: &mut dyn Write, project: &Project) -> Result<()> {
         "created={} updated={}",
         project.created_unix_ms, project.updated_unix_ms
     )?;
+    Ok(())
+}
+
+fn render_resolution(
+    output: &mut dyn Write,
+    resolution: &crate::portable_project::PortableResolution,
+) -> Result<()> {
+    writeln!(
+        output,
+        "Project: {} ({})",
+        resolution.project.name, resolution.project.id
+    )?;
+    writeln!(output, "Portable id: {}", resolution.manifest.portable_id)?;
+    writeln!(
+        output,
+        "Manifest: {}",
+        if resolution.stale {
+            "changed; run `xana project refresh` after review"
+        } else {
+            "registered digest matches"
+        }
+    )?;
+    if resolution.missing.is_empty() {
+        writeln!(
+            output,
+            "Bindings: ready ({} private name(s); values redacted)",
+            resolution.bindings.len()
+        )?;
+    } else {
+        writeln!(output, "Bindings: not ready")?;
+        for logical in &resolution.missing {
+            writeln!(
+                output,
+                "  missing {logical}: `xana project bind {} {logical} LOCAL_NAME`",
+                resolution.project.id
+            )?;
+        }
+    }
+    writeln!(output, "Ready: {}", resolution.is_ready())?;
     Ok(())
 }

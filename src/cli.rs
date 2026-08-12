@@ -769,6 +769,37 @@ pub(crate) enum ProjectCommand {
         #[arg(long, value_enum, default_value = "native")]
         owner: ProjectOwnerChoice,
     },
+    /// Explicitly create the minimal `.agents/xana/project.toml` for a project.
+    Share { project_id: ProjectId },
+    /// Read and validate portable project metadata without persistent mutation.
+    InspectPortable {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    /// Register an inspected portable project locally without enabling integrations.
+    Register {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    /// Accept the currently reviewed portable manifest digest for a registered project.
+    Refresh { project_id: ProjectId },
+    /// Compare the current portable manifest with its last registered digest.
+    Diff { project_id: ProjectId },
+    /// Bind one portable logical name to a private local connection/service name.
+    Bind {
+        project_id: ProjectId,
+        logical: String,
+        local: String,
+    },
+    /// Show redacted setup/readiness without exposing private binding values.
+    #[command(visible_alias = "resolve")]
+    Setup { project_id: ProjectId },
+    /// Remove only the shared manifest; keep the local project and bindings.
+    StopSharing {
+        project_id: ProjectId,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

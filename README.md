@@ -150,6 +150,12 @@ Optional projects organize conversations without owning workspaces. Start with
 membership relation. See [Projects](docs/user/projects.md) for lifecycle and
 cross-workspace continuation rules.
 
+Portable sharing stays opt-in: `xana project share PROJECT_ID` creates the
+strict non-secret `.agents/xana/project.toml`; another installation can run
+`xana project inspect-portable` before choosing `xana project register`.
+Logical connection/service requirements are resolved through redacted private
+bindings and never copy local credentials or authority into the repository.
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential

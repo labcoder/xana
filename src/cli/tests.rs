@@ -673,6 +673,25 @@ fn parses_optional_project_lifecycle_and_placement_commands() {
             }
         })) if project_id == project
     ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "project",
+            "bind",
+            &project.to_string(),
+            "chat",
+            "ollama",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Project(ProjectArgs {
+            command: ProjectCommand::Bind {
+                project_id,
+                logical,
+                local,
+            }
+        })) if project_id == project && logical == "chat" && local == "ollama"
+    ));
 }
 
 #[test]
