@@ -1247,6 +1247,35 @@ flowchart LR
     E["Endpoint / issuer / client changes"] --> V["Invalidate trust and egress decision"]
 ```
 
+### Local MCP server boundary
+
+`xana mcp serve` is the inverse, deliberately narrower adapter. Startup
+canonicalizes one existing workspace and freezes one non-archived profile plus
+an exact primitive allowlist. The current allowlist domain contains only
+`xana_docs`; it reuses the native `ToolRegistry` and `PermissionBroker` but has
+no provider, agent loop, conversation, frontend, session selector, or ambient
+grant source. A noninteractive `ask` or `deny` outcome fails closed.
+
+```mermaid
+flowchart LR
+    C["Local MCP client process"] -->|"newline JSON-RPC over stdio"| S["Isolated xana mcp serve process"]
+    W["Canonical workspace"] --> F["Frozen startup scope"]
+    P["Exact profile + allowlist"] --> F
+    F --> S
+    S --> R["Native ToolRegistry"]
+    R --> B["Noninteractive PermissionBroker"]
+    B --> D["Bounded Xana documentation"]
+    A["Active Xana frontend/session"] -. "not reachable" .-> S
+    E["EOF / cancel / shutdown deadline"] --> X["Cancel owned requests and broker"]
+```
+
+The adapter caps frames at 1 MiB, outstanding requests at 16, and internal
+response queues at 32. It validates the pinned protocol and bounded client
+metadata on every request, rejects duplicate IDs and unallowlisted names,
+emits bounded progress, and correlates cancellation by request ID. EOF cancels
+all outstanding work and shuts down the broker under a two-second cleanup
+deadline. It never binds a socket or claims public API stability.
+
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
 An existing snapshot cannot be replaced. A profile change allocates a new

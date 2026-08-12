@@ -859,6 +859,28 @@ fn parses_mcp_discovery_read_and_prompt_commands() {
             command: McpCommand::Prompt { .. }
         }))
     ));
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "mcp",
+            "serve",
+            "--workspace",
+            ".",
+            "--profile",
+            "default",
+            "--allow",
+            "xana_docs"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::Serve {
+                workspace: PathBuf::from("."),
+                profile: "default".into(),
+                allow: vec!["xana_docs".into()],
+            },
+        }))
+    );
 }
 
 #[test]

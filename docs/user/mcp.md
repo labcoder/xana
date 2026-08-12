@@ -199,3 +199,38 @@ The MCP command family currently resolves credentials already referenced by
 configuration. Guided connect/login/logout and comprehensive doctor/recovery
 flows are added by the interoperability setup slice. OAuth tokens remain in
 the OS credential store; no CLI output includes them.
+
+## Local Xana MCP server
+
+Xana can expose one deliberately small local surface to another MCP client:
+
+```text
+xana mcp serve --workspace C:\work\project --profile automation --allow xana_docs
+```
+
+On macOS or Linux, use the same command with an absolute POSIX workspace path.
+The command speaks newline-framed JSON-RPC on stdin/stdout. Configure it in the
+client as a local stdio MCP server with the exact arguments shown above. The
+current server exposes only `xana_docs`; repeatable `--allow` exists so future
+bounded primitives can use the same explicit contract, but unknown names fail
+before the protocol loop starts.
+
+The workspace must exist and canonicalize, the profile must exist and not be
+archived, and the profile must select `xana.docs.read` when it has an explicit
+capability list. Because no interactive controller is attached, the effective
+profile permission mode must be `allow`, and any matching `ask` or `deny`
+permission rule still wins. Failure occurs before a tool or provider runs.
+
+Each invocation is an isolated process with an immutable workspace, profile,
+and allowlist. It cannot see or control Xana's active conversation, frontend,
+session list, provider, or ambient approval state. Calls receive bounded start
+and finish progress notifications, complete within the ordinary 1 MiB frame
+limit, and can be cancelled with a correlated cancellation notification. EOF
+cancels outstanding calls, shuts down the permission broker, and gives owned
+tasks a bounded cleanup deadline. The server opens no socket and does not run
+as a daemon.
+
+The local server is a private integration surface pinned to MCP `2026-07-28`,
+not a stable remote Xana API. It intentionally has no inbound OAuth, network
+listener, discovery broadcast, multi-user state, ambient session access, or
+model-backed execution today.

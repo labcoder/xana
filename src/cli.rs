@@ -278,6 +278,18 @@ pub(crate) enum McpCommand {
         #[arg(long = "arg", value_name = "KEY=VALUE")]
         arguments: Vec<String>,
     },
+    /// Serve an isolated, allowlisted Xana surface over local stdio.
+    Serve {
+        /// Existing workspace directory this server instance is confined to.
+        #[arg(long, value_name = "PATH")]
+        workspace: PathBuf,
+        /// Exact configured profile whose capability and permission policy applies.
+        #[arg(long, value_name = "PROFILE")]
+        profile: String,
+        /// Exact Xana primitive to expose; repeat for additional primitives.
+        #[arg(long = "allow", value_name = "PRIMITIVE", required = true)]
+        allow: Vec<String>,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
