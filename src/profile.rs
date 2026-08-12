@@ -13,8 +13,8 @@ use crate::{
     paths::XanaPaths,
     portable_project::{PortableProjectError, PortableProjectStore},
     private_state::{
-        FrozenProfileSnapshot, PrivateStateError, ProjectRegistryDocument, UpdateDocumentError,
-        read_document, update_document,
+        FrozenProfileSnapshot, PrivateStateError, ProjectLifecycle, ProjectRegistryDocument,
+        UpdateDocumentError, read_document, update_document,
     },
     project::ProjectError,
 };
@@ -355,6 +355,46 @@ impl ProfileStore {
             Ok(())
         })?;
         Ok(next)
+    }
+
+    pub(crate) fn commit_project_continuation(
+        &self,
+        source: &str,
+        target: &str,
+        project: ProjectId,
+        resolved: &ResolvedProfile,
+    ) -> Result<(), ProfileError> {
+        validate_conversation(source)?;
+        validate_conversation(target)?;
+        let snapshot = FrozenProfileSnapshot {
+            profile_id: resolved.profile_id.to_string(),
+            profile_name: resolved.name.clone(),
+            scope: resolved.scope.to_string(),
+            digest: resolved.digest()?,
+            resolved: resolved.redacted_json()?,
+        };
+        self.update_projects(|document| {
+            let record = document
+                .projects
+                .get(&project)
+                .ok_or(ProjectError::Unknown(project))?;
+            if record.lifecycle != ProjectLifecycle::Active {
+                return Err(ProjectError::Archived(project).into());
+            }
+            if document.conversation_profiles.contains_key(target) {
+                return Err(ProfileError::Immutable(target.to_owned()));
+            }
+            document
+                .conversation_memberships
+                .insert(target.to_owned(), project);
+            document
+                .conversation_profiles
+                .insert(target.to_owned(), snapshot);
+            document
+                .conversation_predecessors
+                .insert(target.to_owned(), source.to_owned());
+            Ok(())
+        })
     }
 
     pub(crate) fn predecessor(&self, conversation: &str) -> Result<Option<String>, ProfileError> {

@@ -497,6 +497,27 @@ impl TuiState {
                     }
                 }
             }
+            CommandId::Project | CommandId::Profile => {
+                self.composer.take();
+                if self.busy {
+                    self.status = "Wait for or interrupt the active turn before changing project/profile state".to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::ControlCommand {
+                        family: match command.id {
+                            CommandId::Project => "project",
+                            CommandId::Profile => "profile",
+                            _ => unreachable!(),
+                        }
+                        .to_owned(),
+                        arguments: if command.arguments.is_empty() {
+                            "list".to_owned()
+                        } else {
+                            command.arguments
+                        },
+                    }
+                }
+            }
             CommandId::Setup => {
                 self.composer.take();
                 if self.busy {

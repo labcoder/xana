@@ -39,6 +39,9 @@ pub(super) async fn dispatch_managed_effect(
         UpdateEffect::Doctor => return Ok(Some(ChatExit::Doctor(None))),
         UpdateEffect::Reset => return Ok(Some(ChatExit::Reset)),
         UpdateEffect::Setup(section) => return Ok(Some(ChatExit::Setup(section))),
+        UpdateEffect::ControlCommand { family, arguments } => {
+            return Ok(Some(ChatExit::ControlCommand { family, arguments }));
+        }
         UpdateEffect::Submit {
             operation_id,
             input,
@@ -317,6 +320,10 @@ pub(super) async fn dispatch_effect(
         UpdateEffect::Setup(section) => {
             let _ = client.send(RuntimeCommand::Shutdown).await;
             return Ok(Some(ChatExit::Setup(section)));
+        }
+        UpdateEffect::ControlCommand { family, arguments } => {
+            let _ = client.send(RuntimeCommand::Shutdown).await;
+            return Ok(Some(ChatExit::ControlCommand { family, arguments }));
         }
         UpdateEffect::Submit {
             operation_id,

@@ -80,6 +80,7 @@ Palette actions and slash input use that one registry:
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/composer submit|newline`
 - `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
+- `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/doctor`
 
@@ -133,6 +134,14 @@ the first turn. An active turn must finish or be interrupted first so this
 command cannot create a competing workspace root. `/clear` remains different:
 it clears the active owner's context rather than creating and navigating to a
 separate session.
+
+Session rows show the optional local project name or `Ungrouped`. Project and
+profile commands are deliberately executed outside raw/alternate-screen mode:
+Xana restores the terminal, invokes the same typed application command as the
+top-level CLI, shows its accessible result, and re-enters the TUI. This keeps
+registry, authority, movement, and recovery policy out of Ratatui while making
+the complete lifecycle discoverable in Ctrl+P and usable from the keyboard.
+An active turn must finish or be interrupted first.
 Selecting another native conversation opens its committed history for
 inspection while leaving an active root attached to its original conversation;
 managed history remains owned by Codex. Drafting remains local, but Xana will

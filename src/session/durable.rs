@@ -70,9 +70,16 @@ pub(crate) struct NativeConversationHandle {
 
 impl DurableSession {
     pub(crate) fn create(data_dir: &Path, workspace_root: PathBuf) -> Result<Self> {
+        Self::create_with_id(data_dir, workspace_root, SessionId::new())
+    }
+
+    pub(crate) fn create_with_id(
+        data_dir: &Path,
+        workspace_root: PathBuf,
+        session_id: SessionId,
+    ) -> Result<Self> {
         fs::create_dir_all(data_dir.join("artifacts"))
             .context("could not create durable artifact directory")?;
-        let session_id = SessionId::new();
         let thread_id = ThreadId::new();
         let created = RecordEnvelope::new(
             session_id,
@@ -84,6 +91,33 @@ impl DurableSession {
         let store = SessionStore::create(&data_dir.join("sessions"), created.clone())
             .context("could not create durable session")?;
         Self::from_open_store(data_dir, store, vec![created])
+    }
+
+    /// Removes a session that this process has just created but has not started.
+    ///
+    /// The consuming receiver retains the exclusive writer lock until after the
+    /// in-memory record set is checked, so another process cannot append between
+    /// validation and removal. This is intentionally narrower than a general
+    /// session-deletion operation.
+    pub(crate) fn discard_unstarted(self) -> Result<()> {
+        if self.records.len() != 1
+            || !matches!(self.records[0].record, SessionRecord::SessionCreated { .. })
+        {
+            bail!("refusing to discard a session after execution has started");
+        }
+        let path = self.store.path().to_owned();
+        let lock_path = path.with_extension("jsonl.lock");
+        drop(self);
+        fs::remove_file(&path)
+            .with_context(|| format!("could not roll back empty session {}", path.display()))?;
+        match fs::remove_file(&lock_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            // A stale, empty lock file carries no session state and can be
+            // reused safely by the next writer, so cleanup is best-effort.
+            Err(_) => {}
+        }
+        Ok(())
     }
 
     pub(crate) fn resume(data_dir: &Path, session_id: SessionId) -> Result<(Self, SessionSummary)> {

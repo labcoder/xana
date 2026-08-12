@@ -273,6 +273,7 @@ fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids
                 record_count: Some(1),
                 modified: None,
                 selected: true,
+                project: Some("Xana".to_owned()),
             },
             ConversationProjection {
                 conversation: archived.clone(),
@@ -280,10 +281,12 @@ fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids
                 record_count: None,
                 modified: None,
                 selected: false,
+                project: None,
             },
         ],
         active: None,
     });
+    assert_eq!(state.sessions[0].project.as_deref(), Some("Xana"));
 
     state
         .composer
@@ -319,6 +322,30 @@ fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids
     idle.composer.replace("/sessions new".to_owned());
     assert_eq!(idle.update_input(InputAction::Submit), UpdateEffect::None);
     assert!(idle.status.contains("active turn"));
+}
+
+#[test]
+fn project_and_profile_slash_commands_use_the_shared_control_path() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.replace("/project list --all".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::ControlCommand {
+            family: "project".to_owned(),
+            arguments: "list --all".to_owned(),
+        }
+    );
+    state
+        .composer
+        .replace("/profile resolve review --json".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::ControlCommand {
+            family: "profile".to_owned(),
+            arguments: "resolve review --json".to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -390,6 +417,7 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
                 record_count: Some(5),
                 modified: None,
                 selected: false,
+                project: Some("Xana".to_owned()),
             },
             ConversationProjection {
                 conversation: other.clone(),
@@ -397,6 +425,7 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
                 record_count: Some(3),
                 modified: None,
                 selected: false,
+                project: None,
             },
         ],
         active: None,

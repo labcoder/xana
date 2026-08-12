@@ -160,6 +160,13 @@ with `--project PROJECT_ID`. Resolution shows exact effective values,
 provenance, and readiness; each conversation can freeze an immutable snapshot,
 and changing profiles creates a linked continuation. See
 [Profiles](docs/user/profiles.md).
+
+Inside plain chat or the TUI, the same operations are available as `/project
+...` and `/profile ...`; the TUI restores ordinary terminal mode for the typed
+operation and then reopens. Session rows label their optional project or
+`Ungrouped`. `xana project continue ...` previews by default and `--apply`
+commits same-workspace assignment or a fresh owner-correct continuation with a
+frozen profile snapshot—never workspace deletion or silent transcript copying.
 Logical connection/service requirements are resolved through redacted private
 bindings and never copy local credentials or authority into the repository.
 

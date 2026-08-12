@@ -33,6 +33,7 @@ pub(super) struct SessionRow {
     pub(super) selected: bool,
     pub(super) unread: bool,
     pub(super) error: bool,
+    pub(super) project: Option<String>,
 }
 
 impl SessionRow {
@@ -91,6 +92,7 @@ impl SessionRow {
             selected: projection.selected || is_runtime,
             unread: false,
             error: false,
+            project: projection.project,
         }
     }
 }

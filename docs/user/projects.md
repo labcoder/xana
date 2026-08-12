@@ -55,11 +55,29 @@ xana project continue PROJECT_ID CONVERSATION_ID --owner native
 xana project continue PROJECT_ID CONVERSATION_ID --owner codex
 ```
 
-The review is deliberately non-executing in M3-03. It states whether the
+The command is read-only unless `--apply` is present. It states whether the
 existing conversation can be reassigned or a fresh native/Codex-owned
-conversation must start, and it never silently copies transcript text. The
-interactive execution and project/profile navigation surface land together in
-M3-06 so CLI, plain mode, and the TUI share one command path.
+conversation must start, and it never silently copies transcript text. Select a
+profile explicitly with `--profile NAME`; otherwise the project default or
+user-global default resolves deterministically.
+
+```bash
+xana project continue PROJECT_ID CONVERSATION_ID --owner native --profile review
+xana project continue PROJECT_ID CONVERSATION_ID --owner native --profile review --apply
+```
+
+An applied same-workspace continuation without a profile change assigns the
+existing conversation atomically. A cross-workspace or profile-changing native
+continuation creates an empty resumable target session, records project,
+predecessor, and frozen-profile provenance together, and preserves the source.
+A managed Codex continuation records a pending target with a frozen Codex
+profile; `xana --resume TARGET_ID` in the target workspace starts a fresh vendor
+thread on its first turn. Xana never translates provider history between owners.
+
+From plain chat or the TUI, `/project ...` and `/profile ...` restore ordinary
+terminal mode, invoke these same typed operations, then return to the prior chat
+surface. Quoted arguments are bounded and parsed consistently. The command
+palette exposes both families for keyboard-only discovery.
 
 ## Portable project configuration
 
