@@ -123,6 +123,19 @@ impl ProjectStore {
             .ok_or(ProjectError::Unknown(id))
     }
 
+    pub(crate) fn find_by_workspace(
+        &self,
+        workspace: &Path,
+    ) -> Result<Option<Project>, ProjectError> {
+        let canonical = canonical_workspace(workspace)?;
+        Ok(self
+            .read()?
+            .projects
+            .values()
+            .find(|record| record.canonical_workspace == canonical)
+            .map(Project::from))
+    }
+
     pub(crate) fn inspect(&self, id: ProjectId) -> Result<ProjectInspection, ProjectError> {
         let document = self.read()?;
         let record = document

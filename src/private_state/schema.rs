@@ -49,6 +49,8 @@ pub(crate) struct LocalBindingRecord {
     pub(crate) project_id: ProjectId,
     pub(crate) portable_root: PathBuf,
     #[serde(default)]
+    pub(crate) manifest_digest: String,
+    #[serde(default)]
     pub(crate) bindings: BTreeMap<String, String>,
 }
 

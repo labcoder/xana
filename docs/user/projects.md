@@ -61,6 +61,44 @@ conversation must start, and it never silently copies transcript text. The
 interactive execution and project/profile navigation surface land together in
 M3-06 so CLI, plain mode, and the TUI share one command path.
 
+## Portable project configuration
+
+Private projects remain the default. Sharing is an explicit effect:
+
+```bash
+xana project share PROJECT_ID
+xana project inspect-portable --workspace PATH   # pure read-only review
+xana project register --workspace PATH           # local registration only
+xana project diff PROJECT_ID
+xana project refresh PROJECT_ID                  # accept reviewed manifest digest
+xana project setup PROJECT_ID                    # redacted readiness
+xana project bind PROJECT_ID LOGICAL LOCAL_NAME  # private local mapping
+xana project stop-sharing PROJECT_ID --yes
+```
+
+`share` creates only `.agents/xana/project.toml`. This is a Xana-specific
+portable file, not part of the Agent Skills or Agent Plugins standards. It may
+declare a portable identity, safe project profiles, skill/plugin/MCP/external-
+agent references, focused-service requirements, and narrowing defaults. It may
+not contain credentials, endpoints, absolute local paths, session or provider
+thread IDs, permission grants, personal preferences, or private registry data.
+
+Repository manifests are untrusted policy. Inspection is bounded metadata I/O
+only: it does not access credentials, contact a network, start a process,
+install or enable a package, authenticate an endpoint, or change a conversation.
+Project profiles must name a user-global authority profile and may only narrow
+its permissions, capabilities, budgets, integrations, and outbound-data class
+ceiling. A broadening field fails with its exact name.
+
+Registration stores the canonical local path, reviewed manifest digest, and
+logical-to-local bindings in Xana's private versioned record. Portable logical
+names never reveal the local provider/service name. Missing or invalid local
+bindings leave the project registered but not ready; `project setup` prints an
+exact `project bind` action with binding values redacted. Editing the manifest
+makes the registration stale until `project refresh` accepts the reviewed
+digest. Stop-sharing removes only the manifest and preserves local project,
+bindings, workspace, and history.
+
 ## Private state
 
 Project identity and membership live in Xana's versioned private data record,

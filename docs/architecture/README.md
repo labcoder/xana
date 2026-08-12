@@ -891,6 +891,35 @@ accepts a replacement workspace, and it rejects a canonical collision. Every
 mutation runs beneath the private-record cross-process lock, so competing
 creations cannot commit two project identities for one workspace.
 
+### Portable project boundary
+
+`.agents/xana/project.toml` is Xana-specific, versioned, bounded repository
+metadata. Private project creation never writes it. An explicit share operation
+creates the minimal file without secrets or local identity; subsequent
+inspection validates a regular contained file, stable metadata across its
+bounded read, strict fields/version, secret/path exclusions, and authority
+subset before any registration mutation.
+
+```mermaid
+flowchart LR
+    M["Untrusted .agents/xana/project.toml"] --> V["Pure bounded validation"]
+    U["User-global profile ceilings"] --> V
+    V -->|"decline"| Z["No persistent mutation"]
+    V -->|"explicit register"| B["Private local binding + reviewed digest"]
+    C["User connections and services"] -->|"logical name resolution"| B
+    B -->|"all exact bindings valid"| R["Project ready"]
+    B -->|"missing / stale"| N["Not ready; exact setup action"]
+```
+
+Portable profiles name a user-global authority profile and can only select
+subsets or lower limits: deny/ask/allow rank, capabilities, tool rounds,
+orchestration budgets, skills, plugins, MCP/A2A names, focused-service routes,
+and outbound data classes. Logical connection/service requirements resolve
+through the private binding record; no credential reference or endpoint crosses
+into the repository. A changed manifest remains visibly stale until explicit
+refresh records its reviewed digest. Stop-sharing removes only the contained
+manifest and leaves private project, bindings, sessions, and workspace intact.
+
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
 

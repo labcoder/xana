@@ -22,8 +22,8 @@ use std::{
 mod interoperable;
 
 pub(crate) use interoperable::{
-    EgressPolicyDeclaration, ExternalAgentDeclaration, McpServerDeclaration, PluginDeclaration,
-    ProfileUse, ServiceConnectionDeclaration, ServiceRouteDeclaration,
+    EgressPolicyDeclaration, ExternalAgentDeclaration, McpServerDeclaration, OutboundDataClass,
+    PluginDeclaration, ProfileUse, ServiceConnectionDeclaration, ServiceRouteDeclaration,
 };
 
 pub(crate) const CONFIG_VERSION: u32 = 4;
