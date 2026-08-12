@@ -873,7 +873,27 @@ canonical workspace preserves the conversation identity and history; forgetting
 a project removes only its membership relations. A cross-workspace continuation
 plan allocates a new conversation identity and states that the execution owner
 must start fresh; it never mutates the source or silently copies transcript
-text. Presentation surfaces execute and explain that plan in M3-06.
+text. Presentation surfaces execute and explain the same application plan.
+
+The current application edge now executes that plan explicitly. Review is the
+default; `--apply` either assigns the existing same-workspace conversation or
+creates a fresh owner-correct target, then commits project membership,
+predecessor, and resolved-profile snapshot in the private record. Native targets
+receive an empty durable session at the planned ID. Managed targets remain
+pending until first use, when Codex app-server creates its vendor-owned thread;
+`--resume` accepts this frozen managed target without treating it as a native
+journal. No path translates or copies transcript text.
+
+```mermaid
+flowchart LR
+    CLI["Typed CLI"] --> C["Project/Profile application command"]
+    PLAIN["Plain /project and /profile"] -->|"restore owner, run, resume"| C
+    TUI["TUI palette/slash"] -->|"leave raw screen, run, reopen"| C
+    C --> D["Shared project/profile domain"]
+    D --> R["Atomic private registry + snapshot"]
+    R --> N["Native empty resumable target"]
+    R --> M["Managed pending target; vendor thread on first turn"]
+```
 
 ```mermaid
 flowchart LR

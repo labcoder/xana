@@ -460,8 +460,12 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
         ));
         lines.push(Line::styled(
             format!(
-                "  {} · {}/{} · {}",
-                row.execution_owner, row.connection, row.model, row.state
+                "  {} · {}/{} · {} · {}",
+                row.execution_owner,
+                row.connection,
+                row.model,
+                row.state,
+                row.project.as_deref().unwrap_or("Ungrouped")
             ),
             semantic_style(profile, SemanticToken::Muted),
         ));

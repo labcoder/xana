@@ -63,6 +63,7 @@ fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
             record_count: Some(12),
             modified: None,
             selected: false,
+            project: None,
         }],
         active: None,
     });
@@ -309,6 +310,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
             record_count: Some(2),
             modified: None,
             selected: false,
+            project: None,
         }],
         active: None,
     });
@@ -401,6 +403,7 @@ fn every_fixed_height_session_row_has_the_same_click_target() {
             record_count: Some(2),
             modified: None,
             selected: false,
+            project: None,
         })
         .collect::<Vec<_>>();
     let expected = conversations[2].conversation.clone();

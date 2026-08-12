@@ -37,6 +37,7 @@ use crate::{
     workspace_host::{ConversationRef, WorkspaceHost, WorkspaceHostError},
 };
 use anyhow::{Context, Result};
+use clap::Parser as _;
 use std::{io::Write, sync::Arc};
 
 const PROMPT_TOTAL_TOKENS: usize = 32_768;
@@ -118,19 +119,47 @@ pub(super) async fn run(
     let manager = model_manager(paths)?;
     let child_registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load child route registry")?;
+    let frozen_profile = resume
+        .map(|session_id| {
+            crate::profile::ProfileStore::open(paths)
+                .snapshot(&session_id.to_string())
+                .map_err(anyhow::Error::new)
+        })
+        .transpose()?
+        .flatten()
+        .map(|snapshot| {
+            serde_json::from_value::<crate::profile::ResolvedProfile>(snapshot.resolved)
+                .context("frozen profile snapshot is invalid")
+        })
+        .transpose()?;
     let selected = manager.selected()?;
-    let selected_connection = manager.connection(&selected.connection)?.clone();
+    let selected_connection_name = frozen_profile
+        .as_ref()
+        .map_or(selected.connection.as_str(), |profile| {
+            profile.connection.value.as_str()
+        });
+    let selected_model = frozen_profile
+        .as_ref()
+        .map_or(selected.model.as_str(), |profile| {
+            profile.model.value.as_str()
+        })
+        .to_owned();
+    let selected_connection = manager.connection(selected_connection_name)?.clone();
 
     let XanaConfig {
-        permission_mode,
+        mut permission_mode,
         permission_rules,
         shell,
-        max_tool_rounds,
+        mut max_tool_rounds,
         ..
     } = config;
-    let provider_name = selected.connection;
+    if let Some(profile) = &frozen_profile {
+        permission_mode = profile.permission_mode.value;
+        max_tool_rounds = profile.max_tool_rounds.value;
+    }
+    let provider_name = selected_connection_name.to_owned();
     let provider_kind = selected_connection.kind;
-    let model = selected.model;
+    let model = selected_model;
     let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
     let configured_shell = shell.prompt_description();
     let workspace_root = std::env::current_dir()
@@ -173,7 +202,7 @@ pub(super) async fn run(
         resume
     };
     let conversation = if provider_kind == ProviderKind::Codex {
-        let current = (!force_new && (one_shot.is_none() || continue_chat))
+        let current = (resume.is_none() && !force_new && (one_shot.is_none() || continue_chat))
             .then(|| {
                 host_snapshot
                     .conversations
@@ -201,9 +230,9 @@ pub(super) async fn run(
         })
     };
     if provider_kind == ProviderKind::Codex {
-        if resume.is_some() {
+        if resume.is_some() && frozen_profile.is_none() {
             anyhow::bail!(
-                "Xana durable --resume applies to native conversations; Codex owns managed thread resume"
+                "Xana durable --resume applies to native conversations or a planned managed continuation with a frozen profile; Codex owns ordinary managed thread resume"
             )
         }
         let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
@@ -556,6 +585,11 @@ async fn continue_after_chat_exit(
         return Ok(None);
     }
     let mut force_new_conversation = exit == plain_terminal::ChatExit::NewConversation;
+    if let plain_terminal::ChatExit::ControlCommand { family, arguments } = &exit
+        && let Err(error) = run_chat_control_command(paths, family, arguments)
+    {
+        eprintln!("xana: {error:#}");
+    }
     if let plain_terminal::ChatExit::Setup(request) = &exit {
         let args = crate::setup::args_for_request(request)?;
         force_new_conversation = run_setup_command(&args, paths)
@@ -604,4 +638,34 @@ async fn continue_after_chat_exit(
         None,
     ))
     .await
+}
+
+fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {
+    if arguments.len() > 16 * 1024 {
+        anyhow::bail!("project/profile command exceeds the 16 KiB input limit");
+    }
+    let values = shlex::split(arguments)
+        .ok_or_else(|| anyhow::anyhow!("project/profile command contains an unterminated quote"))?;
+    if values.len() > 128 {
+        anyhow::bail!("project/profile command exceeds the 128-argument limit");
+    }
+    let arguments = std::iter::once("xana".to_owned())
+        .chain(std::iter::once(family.to_owned()))
+        .chain(values)
+        .collect::<Vec<_>>();
+    let command = cli::Cli::try_parse_from(arguments)
+        .map_err(|error| anyhow::anyhow!(error.render().ansi().to_string()))?
+        .command;
+    let stdout = std::io::stdout();
+    match command {
+        Some(cli::Command::Project(args)) => {
+            super::projects::run_command(args.command, paths, &mut stdout.lock())
+        }
+        Some(cli::Command::Profile(args)) => {
+            super::profiles::run_command(args.command, paths, &mut stdout.lock())
+        }
+        _ => {
+            anyhow::bail!("only project and profile commands are available from this control path")
+        }
+    }
 }

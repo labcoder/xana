@@ -48,6 +48,7 @@ pub(crate) enum ChatExit {
     Doctor(Option<SessionId>),
     Reset,
     Setup(String),
+    ControlCommand { family: String, arguments: String },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -58,6 +59,7 @@ enum InputAction<'a> {
     Model(&'a str),
     Doctor,
     Setup(&'a str),
+    ControlCommand { family: &'a str, arguments: &'a str },
     Agents,
     Agent(&'a str),
     CancelAgent(&'a str),
@@ -67,6 +69,21 @@ enum InputAction<'a> {
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
+    for family in ["project", "profile"] {
+        let command = format!("/{family}");
+        if trimmed == command {
+            return InputAction::ControlCommand {
+                family,
+                arguments: "list",
+            };
+        }
+        if let Some(arguments) = trimmed.strip_prefix(&format!("{command} ")) {
+            return InputAction::ControlCommand {
+                family,
+                arguments: arguments.trim(),
+            };
+        }
+    }
     if let Some(agent_id) = trimmed.strip_prefix("/cancel-agent") {
         return InputAction::CancelAgent(agent_id.trim());
     }
@@ -540,6 +557,14 @@ pub(crate) async fn run_chat(
                     }
                     Err(error) => println!("xana> {error}"),
                 },
+                InputAction::ControlCommand { family, arguments } => {
+                    runtime.send(RuntimeCommand::Shutdown).await?;
+                    exit = ChatExit::ControlCommand {
+                        family: family.to_owned(),
+                        arguments: arguments.to_owned(),
+                    };
+                    break;
+                }
                 InputAction::Doctor => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
                     exit = ChatExit::Doctor(Some(header.session_id));
@@ -1010,6 +1035,20 @@ mod tests {
             InputAction::Attach("assets/photo.png")
         );
         assert_eq!(classify_input("/attach"), InputAction::Attach(""));
+        assert_eq!(
+            classify_input("/project"),
+            InputAction::ControlCommand {
+                family: "project",
+                arguments: "list"
+            }
+        );
+        assert_eq!(
+            classify_input("/profile resolve review --json"),
+            InputAction::ControlCommand {
+                family: "profile",
+                arguments: "resolve review --json"
+            }
+        );
         assert_eq!(classify_input("/agents"), InputAction::Agents);
         assert_eq!(
             classify_input("/agent 018f0000-0000-7000-8000-000000000000"),

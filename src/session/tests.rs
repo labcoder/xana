@@ -1301,6 +1301,24 @@ fn project_context_versions_refresh_only_on_change_and_old_bytes_remain_material
 }
 
 #[test]
+fn an_unstarted_created_session_can_be_rolled_back_exactly() {
+    let directory = tempdir().expect("Xana data tempdir");
+    let session_id = SessionId::new();
+    let session = DurableSession::create_with_id(
+        directory.path(),
+        PathBuf::from("/target-workspace"),
+        session_id,
+    )
+    .expect("create exact session");
+    let session_path = SessionStore::path_for(&directory.path().join("sessions"), session_id);
+    assert!(session_path.exists());
+
+    session.discard_unstarted().expect("discard empty session");
+
+    assert!(!session_path.exists());
+}
+
+#[test]
 fn materialization_enforces_byte_and_token_bounds_for_search() {
     let directory = tempdir().expect("Xana data tempdir");
     let workspace = tempdir().expect("workspace tempdir");

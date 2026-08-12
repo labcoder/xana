@@ -182,6 +182,10 @@ pub(super) enum UpdateEffect {
     Doctor,
     Reset,
     Setup(String),
+    ControlCommand {
+        family: String,
+        arguments: String,
+    },
     Submit {
         operation_id: OperationId,
         input: String,

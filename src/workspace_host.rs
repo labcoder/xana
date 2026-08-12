@@ -91,6 +91,8 @@ pub(crate) struct ConversationProjection {
     pub(crate) record_count: Option<usize>,
     pub(crate) modified: Option<std::time::SystemTime>,
     pub(crate) selected: bool,
+    /// Optional local organization only; `None` is the first-class Ungrouped view.
+    pub(crate) project: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -259,6 +261,19 @@ impl WorkspaceHost {
                 .into_iter()
                 .map(|entry| managed_projection(entry, active.as_ref(), controlled.as_ref())),
         );
+        if let Ok(projects) = crate::private_state::read_document::<
+            crate::private_state::ProjectRegistryDocument,
+        >(&self.data_root.join("interoperable/projects.json"))
+        {
+            for projection in &mut conversations {
+                let keys = conversation_membership_keys(&projection.conversation);
+                projection.project = keys
+                    .iter()
+                    .find_map(|key| projects.conversation_memberships.get(key))
+                    .and_then(|project| projects.projects.get(project))
+                    .map(|project| project.name.clone());
+            }
+        }
         conversations.truncate(MAX_CONVERSATIONS);
         Ok(WorkspaceSnapshot {
             workspace: self.workspace.clone(),
@@ -479,6 +494,7 @@ fn native_projection(
         record_count: Some(entry.record_count),
         modified: Some(entry.modified),
         selected: false,
+        project: None,
     }
 }
 
@@ -497,6 +513,26 @@ fn managed_projection(
         record_count: None,
         modified: None,
         selected: entry.current,
+        project: None,
+    }
+}
+
+fn conversation_membership_keys(conversation: &ConversationRef) -> Vec<String> {
+    match conversation {
+        ConversationRef::Native { session_id } => {
+            vec![session_id.to_string(), conversation.to_string()]
+        }
+        ConversationRef::Managed {
+            connection,
+            thread_id,
+        } => vec![
+            thread_id.clone(),
+            format!("{connection}/{thread_id}"),
+            conversation.to_string(),
+        ],
+        ConversationRef::NewNative | ConversationRef::NewManaged { .. } => {
+            vec![conversation.to_string()]
+        }
     }
 }
 
@@ -504,6 +540,45 @@ fn managed_projection(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn snapshot_projects_optional_local_membership_and_keeps_ungrouped_first_class() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let session =
+            DurableSession::create(directory.path(), workspace.canonicalize().unwrap()).unwrap();
+        let session_id = session.session_id();
+        drop(session);
+        let project_id = crate::identity::ProjectId::new();
+        let mut projects = crate::private_state::ProjectRegistryDocument::default();
+        projects.projects.insert(
+            project_id,
+            crate::private_state::ProjectRecord {
+                id: project_id,
+                name: "Xana".into(),
+                canonical_workspace: workspace.canonicalize().unwrap(),
+                lifecycle: crate::private_state::ProjectLifecycle::Active,
+                created_unix_ms: 1,
+                updated_unix_ms: 1,
+            },
+        );
+        projects
+            .conversation_memberships
+            .insert(session_id.to_string(), project_id);
+        fs::create_dir_all(directory.path().join("interoperable")).unwrap();
+        fs::write(
+            directory.path().join("interoperable/projects.json"),
+            serde_json::to_vec_pretty(&projects).unwrap(),
+        )
+        .unwrap();
+
+        let snapshot = WorkspaceHost::open(directory.path(), &workspace)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        assert_eq!(snapshot.conversations[0].project.as_deref(), Some("Xana"));
+    }
 
     #[test]
     fn canonical_aliases_share_one_root_gate_and_drop_releases_it() {

@@ -771,6 +771,12 @@ pub(crate) enum ProjectCommand {
         source_workspace: Option<PathBuf>,
         #[arg(long, value_enum, default_value = "native")]
         owner: ProjectOwnerChoice,
+        /// Resolve and freeze this profile for the target conversation.
+        #[arg(long)]
+        profile: Option<String>,
+        /// Commit the reviewed assignment/continuation. Without this, no state changes.
+        #[arg(long)]
+        apply: bool,
     },
     /// Explicitly create the minimal `.agents/xana/project.toml` for a project.
     Share { project_id: ProjectId },
