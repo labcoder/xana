@@ -77,12 +77,6 @@ pub(crate) enum McpServerDeclaration {
 }
 
 impl McpServerDeclaration {
-    pub(crate) fn enabled(&self) -> bool {
-        match self {
-            Self::Stdio { enabled, .. } | Self::StreamableHttp { enabled, .. } => *enabled,
-        }
-    }
-
     fn egress_policy(&self) -> Option<&str> {
         match self {
             Self::Stdio { egress_policy, .. } | Self::StreamableHttp { egress_policy, .. } => {

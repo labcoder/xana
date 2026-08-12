@@ -144,6 +144,12 @@ exact backup, initializes Xana's versioned private interoperability records,
 and commits schema 4 atomically. A retry is safe and byte-stable when no work
 remains.
 
+Optional projects organize conversations without owning workspaces. Start with
+`xana project create NAME`, inspect them with `xana project list`, and use
+`xana project assign` or `xana project ungroup` to change only the private
+membership relation. See [Projects](docs/user/projects.md) for lifecycle and
+cross-workspace continuation rules.
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential

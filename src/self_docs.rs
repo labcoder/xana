@@ -169,6 +169,7 @@ static TUI_TOPICS: &[&str] = &[
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
+static PROJECT_TOPICS: &[&str] = &["projects", "workspaces", "sessions", "organization"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -280,6 +281,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: &["terminal", "theme", "color", "accessibility", "preferences"],
         body: include_str!("../docs/user/presentation.md"),
+    },
+    BundledDoc {
+        id: "user.projects",
+        title: "Projects and conversation organization",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: PROJECT_TOPICS,
+        body: include_str!("../docs/user/projects.md"),
     },
     BundledDoc {
         id: "user.rich-content",

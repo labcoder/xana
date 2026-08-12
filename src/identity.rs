@@ -49,6 +49,7 @@ uuid_id!(PrincipalId);
 uuid_id!(ToolResultId);
 uuid_id!(NamedValueId);
 uuid_id!(OrchestrationPlanId);
+uuid_id!(ProjectId);
 
 impl Default for OrchestrationPlanId {
     fn default() -> Self {
