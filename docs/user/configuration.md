@@ -245,8 +245,8 @@ preserved; `doctor --fix` removes only an exact unlocked stale descriptor. Use
 API key, and `connection logout` for an explicit vendor-owned logout.
 
 The hidden `xana init` command remains a deprecated create-new compatibility
-path through v0.5.0. It prints the migration notice on every use. New and
-existing users should use provider-neutral `xana setup`.
+path during the 0.5.x preview. It prints the migration notice on every use.
+New and existing users should use provider-neutral `xana setup`.
 
 ## Connections and models
 

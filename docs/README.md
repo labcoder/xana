@@ -82,6 +82,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   provenance, draft, and publication evidence.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
+- [Xana 0.5.1 release notes](releases/0.5.1.md) describe the corrective
+  Release Preview candidate and its unchanged unsigned-preview trust limits.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
   authority and audience terms.
 - [Architecture decisions](adr/README.md) contains sparse rationale for
