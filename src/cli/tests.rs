@@ -884,6 +884,41 @@ fn parses_mcp_discovery_read_and_prompt_commands() {
 }
 
 #[test]
+fn parses_external_agent_discovery_and_trust_lifecycle() {
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "external-agent",
+            "add",
+            "research",
+            "--endpoint",
+            "https://agent.example/.well-known/agent-card.json",
+            "--credential-id",
+            "a2a-research"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::ExternalAgent(ExternalAgentArgs {
+            command: ExternalAgentCommand::Add {
+                name: "research".into(),
+                endpoint: "https://agent.example/.well-known/agent-card.json".into(),
+                env: None,
+                credential_id: Some("a2a-research".into()),
+                egress_policy: None,
+            },
+        }))
+    );
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "external-agent", "trust", "research", "--yes"])
+            .unwrap()
+            .command,
+        Some(Command::ExternalAgent(ExternalAgentArgs {
+            command: ExternalAgentCommand::Trust { yes: true, .. }
+        }))
+    ));
+}
+
+#[test]
 fn rejects_unknown_commands_and_invalid_round_counts() {
     let unknown =
         Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");

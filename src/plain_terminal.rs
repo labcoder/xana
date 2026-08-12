@@ -69,7 +69,14 @@ enum InputAction<'a> {
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
-    for family in ["project", "profile", "skill", "plugin", "mcp"] {
+    for family in [
+        "project",
+        "profile",
+        "skill",
+        "plugin",
+        "mcp",
+        "external-agent",
+    ] {
         let command = format!("/{family}");
         if trimmed == command {
             return InputAction::ControlCommand {

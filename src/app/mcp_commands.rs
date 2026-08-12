@@ -116,7 +116,9 @@ pub(super) async fn run(
             serde_json::to_writer_pretty(&mut *output, &preview)?;
             writeln!(output)?;
         }
-        McpCommand::Serve { .. } => unreachable!("local server is routed before text output locks"),
+        McpCommand::Serve { .. } => {
+            anyhow::bail!("`mcp serve` must be started from Xana's top-level command")
+        }
         McpCommand::List => unreachable!("handled before refresh"),
     }
     Ok(())

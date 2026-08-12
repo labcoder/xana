@@ -210,6 +210,11 @@ impl ProfileStore {
         )?;
         resolved.plugin_revisions = revisions;
         resolved.readiness.extend(readiness);
+        resolved.readiness.extend(
+            crate::a2a::ExternalAgentManager::open(&self.paths)
+                .readiness(&resolved.external_agents.value, &registry)
+                .unwrap_or_else(|_| vec!["external-agent trust state is unavailable".to_owned()]),
+        );
         Ok(resolved)
     }
 
@@ -271,6 +276,11 @@ impl ProfileStore {
                 },
             )?;
         readiness.extend(plugin_readiness);
+        readiness.extend(
+            crate::a2a::ExternalAgentManager::open(paths)
+                .readiness(&profile.external_agents, &registry)
+                .unwrap_or_else(|_| vec!["external-agent trust state is unavailable".to_owned()]),
+        );
         let effective_permission = profile
             .permission_mode
             .unwrap_or_else(|| ceiling.permission_mode.unwrap_or(registry.permission_mode));

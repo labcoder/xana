@@ -5,6 +5,7 @@
 //! entry point exists for the package's executable and integration tests; it
 //! is not a stable public SDK boundary.
 
+mod a2a;
 mod agent;
 mod app;
 mod artifact;

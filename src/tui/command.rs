@@ -16,6 +16,7 @@ pub(super) enum CommandId {
     Skill,
     Plugin,
     Mcp,
+    ExternalAgent,
     Setup,
     Activity,
     Artifact,
@@ -186,6 +187,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "mcp",
         mode: "list|refresh|tools|resources|read|prompts|prompt ...",
         summary: "Discover and explicitly use profile-allowlisted MCP primitives",
+        arguments: "list",
+    },
+    CommandSpec {
+        id: CommandId::ExternalAgent,
+        name: "external-agent",
+        mode: "list|show|add|refresh|trust|untrust|remove ...",
+        summary: "Discover and explicitly trust bounded A2A agent endpoints",
         arguments: "list",
     },
     CommandSpec {

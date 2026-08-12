@@ -213,9 +213,9 @@ Connection, user, profile, and conversation policy can only narrow the allowed
 classes; concrete messages, files, artifacts, and metadata still require exact
 selection. New recipient/class combinations require approval, unresolved
 noninteractive requests fail closed, and audits retain counts and digests
-rather than selected content. The internal MCP HTTP adapter already implements
-that exact dispatch seam; user-facing MCP, A2A, and focused-service activation
-remain unavailable until their application integrations land. See [Outbound
+rather than selected content. MCP application calls already implement that
+exact dispatch seam; A2A task payloads and focused-service activation remain
+unavailable until their application integrations land. See [Outbound
 data approvals and privacy](docs/user/outbound-data.md).
 
 Xana also has a bounded client-side protocol and progressive catalog foundation
@@ -226,9 +226,16 @@ limits. Its owned stdio process adapter has bounded I/O, cancellation, health,
 minimal environment, and process-tree cleanup. Its stateless Streamable HTTP
 adapter adds pinned endpoint/DNS identity, no redirects or inherited proxy,
 bounded JSON/request-scoped SSE, local PKCE OAuth completion, OS-store token
-rotation, and exact outbound authorization. Neither transport is
-user-configurable until the remaining client integration lands. See [MCP
+rotation, and exact outbound authorization. Both transports are explicitly
+configurable and expose only per-profile allowlisted primitives. See [MCP
 catalog and compatibility](docs/user/mcp.md).
+
+Remote A2A agents can be declared, explicitly refreshed, inspected, trusted,
+untrusted, and removed with `xana external-agent ...`. Xana pins an A2A 1.0
+JSONRPC/text compatibility subset, caches sanitized Agent Card metadata in
+private state, and invalidates trust whenever meaningful identity changes.
+Startup never discovers endpoints implicitly, and trust alone sends no task or
+local data. See [External A2A agents](docs/user/external-agents.md).
 
 ## Diagnose and recover an installation
 

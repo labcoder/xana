@@ -279,7 +279,10 @@ and prompt previews, exact permission/egress gates, bounded results, and
 CLI/plain/TUI command parity. The local Xana MCP server now exposes only the
 allowlisted `xana_docs` surface through an isolated stdio process with exact
 workspace/profile policy, bounded progress/cancellation, and no ambient
-session authority. A2A remains unimplemented.
+session authority. A2A Agent Card discovery and endpoint trust are now
+implemented with an exact 1.0 JSONRPC/text subset, pinned explicit fetches,
+private sanitized Card state, semantic identity-change invalidation, and
+offline profile-readiness checks. A2A task delegation remains unimplemented.
 Current behavior remains described by Architecture
 and User Documentation. Once every accepted slice ships, this proposal must be
 marked Implemented.

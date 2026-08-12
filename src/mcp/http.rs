@@ -72,6 +72,10 @@ impl McpHttpEndpoint {
     pub(crate) fn origin(&self) -> String {
         self.url.origin().ascii_serialization()
     }
+
+    pub(crate) fn url(&self) -> &Url {
+        &self.url
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,7 +164,7 @@ impl McpHttpClient {
     }
 }
 
-pub(super) async fn pinned_client(
+pub(crate) async fn pinned_client(
     url: &Url,
     security: McpHttpSecurity,
     timeout: Duration,

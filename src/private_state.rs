@@ -8,6 +8,7 @@ mod schema;
 mod store;
 
 pub(crate) use schema::{
+    ExternalAgentSkillRecord, ExternalAgentStateDocument, ExternalAgentStateRecord,
     FrozenProfileSnapshot, InstalledPackageRecord, LocalBindingRecord, OutboundDecisionDocument,
     OutboundDecisionRecord, PackageRevisionRecord, PackageSourceKind, PackageSourceRecord,
     PackageStateDocument, ProjectBindingsDocument, ProjectLifecycle, ProjectRecord,

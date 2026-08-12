@@ -325,7 +325,7 @@ mod tests {
         let migrated = fs::read_to_string(paths.config_file()).unwrap();
         assert!(migrated.contains("# keep this comment\nversion = 4"));
         assert_eq!(fs::read(&outcome.backup_path).unwrap(), original);
-        assert_eq!(outcome.initialized_private_records, 5);
+        assert_eq!(outcome.initialized_private_records, 6);
         assert!(XanaConfig::parse(&migrated).is_ok());
     }
 
