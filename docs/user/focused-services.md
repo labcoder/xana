@@ -1,9 +1,9 @@
 # Focused image services
 
 Focused services are named, profile-exposed operations independent from Xana's
-conversational model. The current production adapter is `openai.images` for
-direct OpenAI API-key image generation. ChatGPT/Codex subscriptions are not
-used for this path.
+conversational model. The current adapters are `openai.images` for direct
+OpenAI API-key image generation and `openrouter.images` for OpenRouter's
+dedicated Image API. ChatGPT/Codex subscriptions are not used for either path.
 
 ```toml
 [service_connections.openai-images]
@@ -43,3 +43,24 @@ Authentication, rate limit, quota, content-policy, timeout, cancellation,
 oversized response, malformed response, and artifact publication are distinct
 failures. A synchronous provider request cannot prove remote cancellation after
 dispatch, and Xana never retries an ambiguous paid generation.
+
+An OpenRouter route uses its own connection and credential. It requires a
+namespaced model and `provider_only`, which Xana sends through `provider.only`
+while forcing `allow_fallbacks = false`:
+
+```toml
+[service_connections.openrouter-images]
+adapter = "openrouter.images"
+credential = { source = "stored", id = "openrouter" }
+
+[service_routes.fast-art]
+operation = "image.generate"
+connection = "openrouter-images"
+model = "recraft/recraft-v4"
+options = { provider_only = "recraft", aspect_ratio = "16:9" }
+egress_policy = "image-prompts"
+```
+
+OpenRouter usage and authoritative response cost are retained when supplied.
+This route can coexist with `openai.images`; choosing one never changes Xana's
+conversational model and failure never invokes the other.
