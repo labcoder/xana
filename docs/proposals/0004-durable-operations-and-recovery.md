@@ -113,6 +113,13 @@ ownership are developed in
 native-plan records are developed in
 [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
+## Milestone 3 status review
+
+[Proposal 0019](0019-projects-profiles-and-portable-configuration.md) requires
+transactional migration and recoverable project/profile records, but it does
+not accept this proposal's broader durable-operation or automatic recovery
+design. This proposal remains Proposed.
+
 ## Open questions
 
 - Which record format and migration rules are required before persistence

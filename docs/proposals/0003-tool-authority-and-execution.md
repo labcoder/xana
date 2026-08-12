@@ -85,6 +85,13 @@ If evaluations later justify a general-code adapter, it enters through an
 and reports its real containment. Xana must remain fully functional without it.
 See [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
+## Milestone 3 status review
+
+[Proposal 0020](0020-standards-interoperability-and-external-agents.md)
+accepts exact recipient, outbound-data, permission, and supervised external
+integration rules. This proposal remains Proposed for its broader execution
+backend and containment design.
+
 ## Open questions
 
 - What user-owned policy language represents deny, ask, allow, and scoped

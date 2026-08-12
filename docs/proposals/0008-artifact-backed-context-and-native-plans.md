@@ -147,6 +147,15 @@ depth one under the same total-work budget. Keep general computation optional
 until the native path demonstrates a measured gap and the backend passes
 authority and recovery tests on every supported platform.
 
+## Milestone 3 status review
+
+[Proposal 0019](0019-projects-profiles-and-portable-configuration.md) accepts a
+bounded reviewable continuation handoff and
+[Proposal 0021](0021-focused-multimodal-services-and-routing.md) requires
+artifact-backed media provenance. Neither accepts generalized context views,
+automatic compaction, native plans, or general computation from this proposal,
+which remains Proposed.
+
 ## Open questions
 
 - Is `ContextRef` a distinct persisted record or a typed view over

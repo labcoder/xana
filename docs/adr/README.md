@@ -9,3 +9,4 @@ tradeoff. Architecture describes the implemented contract; an ADR explains
 why a consequential contract was chosen.
 
 - [ADR 0001: Delegate ChatGPT subscription access to Codex app-server](0001-delegate-codex-subscription-access.md)
+- [ADR 0002: Keep third-party executable integrations out of Xana's process](0002-keep-third-party-integrations-out-of-process.md)
