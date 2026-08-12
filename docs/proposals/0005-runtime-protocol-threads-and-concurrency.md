@@ -148,6 +148,15 @@ Durable operation identities and recovery are developed in
 fan-out and aggregation are developed in
 [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
+## Milestone 3 status review
+
+[Proposal 0019](0019-projects-profiles-and-portable-configuration.md) accepts
+optional project membership and explicit conversation continuation, while
+[Proposal 0020](0020-standards-interoperability-and-external-agents.md) accepts
+one bounded A2A client delegation boundary. This proposal remains Proposed for
+remote Xana clients, multi-user control, retained work, inboxes, and multiple
+writable thread heads.
+
 ## Open questions
 
 - What is the smallest command and event protocol needed by more than one

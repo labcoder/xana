@@ -103,6 +103,16 @@ External context is developed in
 revision/promotion state in
 [Proposal 0009](0009-evaluated-harness-refinement.md).
 
+## Milestone 3 status review
+
+[Proposal 0019](0019-projects-profiles-and-portable-configuration.md) accepts
+project, arbitrary-profile, portable-configuration, and migration ownership.
+[Proposal 0020](0020-standards-interoperability-and-external-agents.md) accepts
+the bounded package, enablement, and endpoint-trust records, and
+[Proposal 0021](0021-focused-multimodal-services-and-routing.md) accepts focused
+service route declarations. This proposal remains Proposed for its wider state,
+extension, and structured-editor model.
+
 ## Open questions
 
 - Which named routes, permission rules, and extension declarations belong in

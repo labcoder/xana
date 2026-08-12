@@ -88,6 +88,15 @@ context inspection and derivation use the same logical-capability resolution
 rather than becoming ambient engine methods; see
 [Proposal 0008](0008-artifact-backed-context-and-native-plans.md).
 
+## Milestone 3 status review
+
+[Proposal 0020](0020-standards-interoperability-and-external-agents.md)
+accepts the exact Agent Skills, Agent Plugins, MCP, and A2A lifecycle, while
+[Proposal 0021](0021-focused-multimodal-services-and-routing.md) accepts exact
+named image and vision routes. This proposal remains Proposed for general
+package routing, lazy sidecars beyond that contract, and automatic capability
+selection.
+
 ## Open questions
 
 - What descriptor fields are stable application contracts versus

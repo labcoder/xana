@@ -55,6 +55,17 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their
   lifecycle status.
+- [Accepted projects, profiles, and portable configuration](proposals/0019-projects-profiles-and-portable-configuration.md)
+  defines optional project ownership, frozen arbitrary profiles, portable
+  non-secret project configuration, instruction precedence, and transactional
+  migration for Milestone 3. It is prescriptive but not yet implemented.
+- [Accepted standards interoperability and external-agent boundaries](proposals/0020-standards-interoperability-and-external-agents.md)
+  defines Agent Skills and Agent Plugins v1, bounded MCP client/server roles,
+  A2A delegation, outbound-data policy, and supervised lifecycle ownership. It
+  is prescriptive but not yet implemented.
+- [Accepted focused multimodal services and routing](proposals/0021-focused-multimodal-services-and-routing.md)
+  defines exact named image-generation and specialist-vision routes separate
+  from conversational providers. It is prescriptive but not yet implemented.
 - [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
   records the bounded four-target native preview, source-controlled installers,
   Xana-owned readiness handoff, attributable draft assembly, and explicit

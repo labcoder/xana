@@ -89,6 +89,13 @@ Capability lifecycle is developed in
 [Proposal 0002](0002-capability-model-and-routing.md); execution authority is
 developed in [Proposal 0003](0003-tool-authority-and-execution.md).
 
+## Milestone 3 status review
+
+[Proposal 0021](0021-focused-multimodal-services-and-routing.md) accepts the
+exact named image-generation, native-vision, specialist-vision, and clipboard
+slice. This proposal remains Proposed for audio, speech, transcription, video,
+OCR, broad document/media services, and general parser isolation.
+
 ## Open questions
 
 - Which document formats and output structure belong in the first extractor

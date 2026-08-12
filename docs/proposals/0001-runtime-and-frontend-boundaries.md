@@ -121,6 +121,13 @@ become additional crates or adapters registered at a composition root; the
 engine would not depend outward on document, media, MCP, WASM, or service
 implementations.
 
+## Milestone 3 status review
+
+[Proposal 0020](0020-standards-interoperability-and-external-agents.md)
+accepts only the declarative-package and out-of-process interoperability
+boundary. This proposal remains Proposed for its broader physical workspace,
+public engine/frontend split, remote hosting, and general extension layout.
+
 ## Open questions
 
 - Which exercised module seams are strong enough to become public crate
