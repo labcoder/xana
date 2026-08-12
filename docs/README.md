@@ -36,7 +36,8 @@ engineering contracts used to change it.
   credential ownership, application commands, and isolated local server.
 - [External A2A agents](user/external-agents.md) explains explicit Agent Card
   discovery, private identity cache, endpoint trust, credential references,
-  profile readiness, and the boundary before task delegation.
+  profile readiness, bounded task delegation, visible streaming activity,
+  cancellation, and attributed artifact ingestion.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

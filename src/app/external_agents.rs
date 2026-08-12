@@ -135,6 +135,40 @@ pub(super) async fn run(
             manager.untrust(&name)?;
             writeln!(output, "External agent {name:?} is no longer trusted.")?;
         }
+        ExternalAgentCommand::Tasks { name } => {
+            let registry = XanaConfig::load_registry_from(paths.config_file())?;
+            if !registry.external_agents.contains_key(&name) {
+                anyhow::bail!("unknown external agent {name:?}");
+            }
+            let tasks = manager.tasks_for(&name)?;
+            if tasks.is_empty() {
+                writeln!(output, "No tracked tasks for external agent {name:?}.")?;
+            }
+            for task in tasks {
+                writeln!(
+                    output,
+                    "{}\t{}\tcancel={}\tupdated={}",
+                    task.task_id, task.state, task.remote_cancel, task.updated_unix_ms
+                )?;
+            }
+        }
+        ExternalAgentCommand::Cancel { name, task_id, yes } => {
+            if !yes {
+                anyhow::bail!("remote cancellation requires --yes");
+            }
+            let registry = XanaConfig::load_registry_from(paths.config_file())?;
+            let declaration = registry
+                .external_agents
+                .get(&name)
+                .with_context(|| format!("unknown external agent {name:?}"))?;
+            let task =
+                crate::a2a::cancel_tracked_task(&manager, &name, declaration, &task_id).await?;
+            writeln!(
+                output,
+                "Remote cancellation for {name:?} task {task_id}: {} ({})",
+                task.remote_cancel, task.state
+            )?;
+        }
         ExternalAgentCommand::Remove { name, yes } => {
             if !yes {
                 anyhow::bail!("removal requires --yes");

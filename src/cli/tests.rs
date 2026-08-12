@@ -916,6 +916,25 @@ fn parses_external_agent_discovery_and_trust_lifecycle() {
             command: ExternalAgentCommand::Trust { yes: true, .. }
         }))
     ));
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "external-agent",
+            "cancel",
+            "research",
+            "task-1",
+            "--yes"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::ExternalAgent(ExternalAgentArgs {
+            command: ExternalAgentCommand::Cancel {
+                name: "research".into(),
+                task_id: "task-1".into(),
+                yes: true,
+            },
+        }))
+    );
 }
 
 #[test]

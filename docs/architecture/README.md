@@ -1305,7 +1305,40 @@ remote instructions. Trust binds the configured Card endpoint and normalized
 owner/interface/capability/media/security/skill identity. A changed digest or
 endpoint blocks readiness until refreshed and reapproved. Empty profile
 selection returns before opening private state, preserving the zero-A2A-startup
-path. Task delegation is not part of this discovery boundary.
+path.
+
+### External-agent delegation
+
+Only a profile-selected agent whose exact normalized Card identity is trusted
+contributes an `a2a__NAME__delegate` tool. Delegation is a normal planned tool
+effect, so permission and typed outbound approval precede transport. The
+payload contains the bounded task plus only caller-selected messages, regular
+workspace files, immutable artifacts, or workspace metadata. It never derives
+authority from remote content and never sends ambient transcript, hidden
+reasoning, credentials, or a workspace tree.
+
+```mermaid
+flowchart LR
+    M["Model proposes a2a__NAME__delegate"] --> P["Plan exact selected data"]
+    P --> G["PermissionBroker + OutboundGuard"]
+    G -->|"denied: zero bytes"| D["Typed denial"]
+    G -->|"approved recipient + classes"| W["Pinned A2A JSONRPC transport"]
+    W --> R["Remote agent-owned task loop"]
+    R --> S["Bounded status and messages"]
+    R --> A["Attributed artifact parts"]
+    S --> E["Typed Xana activity stream"]
+    A --> I["Immutable ArtifactStore or safe HTTPS reference"]
+    R --> T["Bounded private task state"]
+    C["Explicit cancel or dropped execution"] --> X["Best-effort remote CancelTask"]
+    X --> T
+```
+
+The remote agent owns its loop, context, tools, and side effects. Xana owns
+recipient trust, disclosure, local observation, cancellation attempts, and
+artifact provenance. A completed or failed task yields a bounded receipt. An
+unconfirmed cancellation is recorded as detached/unknown rather than being
+reported as stopped. All remote messages and artifacts remain attributed,
+untrusted data.
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.

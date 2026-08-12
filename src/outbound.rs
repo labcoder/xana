@@ -168,6 +168,14 @@ impl OutboundItem {
         &self.bytes
     }
 
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub(crate) fn reference(&self) -> Option<&str> {
+        self.reference.as_deref()
+    }
+
     fn review(&self) -> OutboundItemReview {
         OutboundItemReview {
             class: self.class,

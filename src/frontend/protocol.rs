@@ -532,6 +532,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::ChildListSnapshot { .. } => "child list",
         AgentEvent::ChildInspectionSnapshot { .. } => "child inspection",
         AgentEvent::ChildCancellationRequested { .. } => "child cancellation",
+        AgentEvent::ExternalAgentActivity { .. } => "external-agent activity",
     }
 }
 

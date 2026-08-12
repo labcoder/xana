@@ -263,6 +263,15 @@ pub(crate) enum ExternalAgentCommand {
     },
     /// Revoke local trust without changing the declaration or cache.
     Untrust { name: String },
+    /// List Xana's bounded local records for one remote agent's tasks.
+    Tasks { name: String },
+    /// Request cancellation of one exact tracked remote task.
+    Cancel {
+        name: String,
+        task_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Remove an unreferenced declaration and its private cached state.
     Remove {
         name: String,

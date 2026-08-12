@@ -181,6 +181,13 @@ static SKILL_TOPICS: &[&str] = &["skills", "agents", "profiles", "instructions",
 static PLUGIN_TOPICS: &[&str] = &["plugins", "skills", "mcp", "installation", "security"];
 static OUTBOUND_TOPICS: &[&str] = &["egress", "outbound", "privacy", "approvals", "security"];
 static MCP_TOPICS: &[&str] = &["mcp", "tools", "resources", "prompts", "interoperability"];
+static A2A_TOPICS: &[&str] = &[
+    "a2a",
+    "external agents",
+    "delegation",
+    "artifacts",
+    "interoperability",
+];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -346,6 +353,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: MCP_TOPICS,
         body: include_str!("../docs/user/mcp.md"),
+    },
+    BundledDoc {
+        id: "user.external-agents",
+        title: "External A2A agents",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: A2A_TOPICS,
+        body: include_str!("../docs/user/external-agents.md"),
     },
     BundledDoc {
         id: "user.rich-content",

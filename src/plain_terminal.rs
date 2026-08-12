@@ -293,6 +293,10 @@ impl<W: Write> EventRenderer<W> {
                     self.finish_stream()?;
                     render_managed_child_activity(&mut self.output, attribution, notification)?;
                 }
+                ChildActivity::ExternalAgent { activity } => {
+                    self.finish_stream()?;
+                    render_external_agent_activity(&mut self.output, activity)?;
+                }
             },
             AgentEvent::ChildReportCommitted { report } => {
                 self.finish_stream()?;
@@ -342,6 +346,10 @@ impl<W: Write> EventRenderer<W> {
                     receipt.handle.lifecycle,
                 )?;
             }
+            AgentEvent::ExternalAgentActivity { activity, .. } => {
+                self.finish_stream()?;
+                render_external_agent_activity(&mut self.output, activity)?;
+            }
         }
         Ok(())
     }
@@ -353,6 +361,56 @@ impl<W: Write> EventRenderer<W> {
             self.streaming_step = None;
         }
         Ok(())
+    }
+}
+
+fn render_external_agent_activity(
+    output: &mut impl Write,
+    activity: &crate::a2a::ExternalAgentActivity,
+) -> io::Result<()> {
+    use crate::a2a::ExternalAgentActivityKind;
+
+    let prefix = format!(
+        "xana> external {} [{}]",
+        activity.agent_name, activity.connection
+    );
+    match &activity.activity {
+        ExternalAgentActivityKind::Sending {
+            classes,
+            total_bytes,
+        } => {
+            writeln!(
+                output,
+                "{prefix} sending {total_bytes} reviewed bytes as {classes:?}"
+            )
+        }
+        ExternalAgentActivityKind::TaskIdentified { task_id, .. } => {
+            writeln!(output, "{prefix} task {task_id}")
+        }
+        ExternalAgentActivityKind::Status { state, message } => writeln!(
+            output,
+            "{prefix} status {state}{}",
+            message
+                .as_deref()
+                .map(|message| format!(": {message}"))
+                .unwrap_or_default()
+        ),
+        ExternalAgentActivityKind::Message { text } => writeln!(output, "{prefix}> {text}"),
+        ExternalAgentActivityKind::Artifact {
+            name,
+            media_type,
+            byte_len,
+        } => writeln!(
+            output,
+            "{prefix} artifact {name} ({media_type}, {byte_len} bytes)"
+        ),
+        ExternalAgentActivityKind::CancellationRequested { task_id } => {
+            writeln!(output, "{prefix} requested cancellation for task {task_id}")
+        }
+        ExternalAgentActivityKind::Detached { task_id } => writeln!(
+            output,
+            "{prefix} task {task_id} detached; remote outcome is unknown"
+        ),
     }
 }
 

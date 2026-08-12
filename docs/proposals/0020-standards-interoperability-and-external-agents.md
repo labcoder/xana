@@ -282,7 +282,12 @@ workspace/profile policy, bounded progress/cancellation, and no ambient
 session authority. A2A Agent Card discovery and endpoint trust are now
 implemented with an exact 1.0 JSONRPC/text subset, pinned explicit fetches,
 private sanitized Card state, semantic identity-change invalidation, and
-offline profile-readiness checks. A2A task delegation remains unimplemented.
+offline profile-readiness checks. A2A delegation now sends only explicitly
+selected typed data through the ordinary permission and outbound gates,
+streams bounded task/message/artifact activity, ingests attributed immutable
+artifacts, retains bounded task state, and requests cancellation on explicit
+command or dropped execution. Focused-service routing remains the accepted
+unimplemented slice, so this proposal remains Accepted rather than Implemented.
 Current behavior remains described by Architecture
 and User Documentation. Once every accepted slice ships, this proposal must be
 marked Implemented.
