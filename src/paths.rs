@@ -102,6 +102,30 @@ impl XanaPaths {
     pub(crate) fn presentation_file(&self) -> PathBuf {
         self.data_dir.join("frontend").join("presentation.toml")
     }
+
+    pub(crate) fn projects_file(&self) -> PathBuf {
+        self.data_dir.join("interoperable").join("projects.json")
+    }
+
+    pub(crate) fn project_bindings_file(&self) -> PathBuf {
+        self.data_dir
+            .join("interoperable")
+            .join("project-bindings.json")
+    }
+
+    pub(crate) fn package_state_file(&self) -> PathBuf {
+        self.data_dir.join("interoperable").join("packages.json")
+    }
+
+    pub(crate) fn endpoint_trust_file(&self) -> PathBuf {
+        self.data_dir
+            .join("interoperable")
+            .join("endpoint-trust.json")
+    }
+
+    pub(crate) fn config_migration_lock_file(&self) -> PathBuf {
+        self.runtime_dir.join("config-migration.lock")
+    }
 }
 
 fn choose_runtime_dir(runtime_dir: Option<&Path>, cache_dir: &Path) -> PathBuf {
@@ -130,6 +154,26 @@ mod tests {
         assert_eq!(
             paths.presentation_file(),
             root.join("data/frontend/presentation.toml")
+        );
+        assert_eq!(
+            paths.projects_file(),
+            root.join("data/interoperable/projects.json")
+        );
+        assert_eq!(
+            paths.project_bindings_file(),
+            root.join("data/interoperable/project-bindings.json")
+        );
+        assert_eq!(
+            paths.package_state_file(),
+            root.join("data/interoperable/packages.json")
+        );
+        assert_eq!(
+            paths.endpoint_trust_file(),
+            root.join("data/interoperable/endpoint-trust.json")
+        );
+        assert_eq!(
+            paths.config_migration_lock_file(),
+            root.join("run/config-migration.lock")
         );
     }
 

@@ -862,9 +862,26 @@ mod tests {
                     capabilities: None,
                     permission_mode: None,
                     orchestration: crate::config::OrchestrationLimits::default(),
+                    identity: None,
+                    skills: Vec::new(),
+                    plugins: Vec::new(),
+                    mcp_servers: Vec::new(),
+                    external_agents: Vec::new(),
+                    service_routes: Vec::new(),
+                    egress_policy: None,
+                    applies_to: vec![
+                        crate::config::ProfileUse::Primary,
+                        crate::config::ProfileUse::Child,
+                    ],
                 },
             )]),
             routes: BTreeMap::new(),
+            plugins: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+            external_agents: BTreeMap::new(),
+            service_connections: BTreeMap::new(),
+            service_routes: BTreeMap::new(),
+            egress_policies: BTreeMap::new(),
         }
     }
 
@@ -903,9 +920,26 @@ mod tests {
                     capabilities: None,
                     permission_mode: None,
                     orchestration: crate::config::OrchestrationLimits::default(),
+                    identity: None,
+                    skills: Vec::new(),
+                    plugins: Vec::new(),
+                    mcp_servers: Vec::new(),
+                    external_agents: Vec::new(),
+                    service_routes: Vec::new(),
+                    egress_policy: None,
+                    applies_to: vec![
+                        crate::config::ProfileUse::Primary,
+                        crate::config::ProfileUse::Child,
+                    ],
                 },
             )]),
             routes: BTreeMap::new(),
+            plugins: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+            external_agents: BTreeMap::new(),
+            service_connections: BTreeMap::new(),
+            service_routes: BTreeMap::new(),
+            egress_policies: BTreeMap::new(),
         }
     }
 

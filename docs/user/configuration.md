@@ -13,6 +13,7 @@ elsewhere.
 xana setup
 xana config path
 xana config check
+xana config migrate
 ```
 
 Bare `xana setup` first asks whether to run Quick Setup, Full Setup, or one
@@ -146,6 +147,25 @@ appearance-only change, do not launch one. Xana never silently discards an
 open native session or Codex thread.
 
 ## Diagnose and edit configuration
+
+Schema 1-3 configurations remain readable, but interoperability features use
+schema 4 and four private versioned records. Review and apply that transition
+explicitly:
+
+```bash
+xana config migrate          # read-only plan
+xana config migrate --apply  # locked, backed up, atomic apply
+```
+
+The plan reports only schema numbers and redacted record health. Apply checks
+that `config.toml` is unchanged since review, creates missing private records,
+retains the exact prior file as `config.toml.bak`, and writes the new config
+version last. A second apply is a byte-stable no-op. Corrupt or unsupported
+records are preserved and reported with a recovery action rather than replaced.
+The private records are under Xana's platform data directory (or
+`XANA_HOME/data/interoperable/`) and own projects/membership, local project
+bindings, package install state, and endpoint trust. They never contain API
+keys, OAuth tokens, or environment values.
 
 Run the complete read-only installation report with:
 
@@ -438,10 +458,10 @@ isolated account, set an absolute `--codex-home` when adding the connection.
 `--codex-program` selects a compatible executable. Codex connections do not
 accept `base_url` or a Xana credential reference.
 
-## Version 3 example
+## Version 4 example
 
 ```toml
-version = 3
+version = 4
 default_profile = "default"
 default_child_route = "worker"
 permission_mode = "ask"
@@ -475,6 +495,8 @@ codex_program = "codex"
 connection = "ollama"
 model = "qwen3:1.7b"
 max_tool_rounds = 8
+identity = "A personal agent for this computer and its projects."
+applies_to = ["primary", "child"]
 
 [profiles.worker]
 connection = "openrouter"
@@ -496,9 +518,9 @@ max_artifact_bytes = 8388608
 profile = "worker"
 ```
 
-Version 1 and 2 documents remain readable. Their legacy
+Version 1, 2, and 3 documents remain readable. Their legacy
 `profiles.<id>.provider` input maps to `connection`; specifying both is an
-error. The first structured connection edit writes version 3 and the canonical
+error. Explicit migration or the first structured connection edit writes version 4 and the canonical
 key while preserving TOML comments. Model selection is stored separately in
 `data/selection.toml`, so choosing a model does not rewrite this file. The
 selection document is version 2 and may include non-secret `reasoning_effort`
@@ -509,7 +531,7 @@ readable.
 
 | Field | Meaning |
 |---|---|
-| `version` | This build accepts schema 1, 2, or 3 and writes 3 |
+| `version` | This build accepts schema 1, 2, 3, or 4 and writes 4 |
 | `default_profile` | Profile used when no separate selection exists |
 | `default_child_route` | Optional exact route used when child work omits a route name |
 | `permission_mode` | `deny`, `ask`, or `allow` |
@@ -527,6 +549,12 @@ readable.
 | `profiles.<id>.permission_mode` | Optional ceiling that can narrow but never widen the global policy |
 | `max_tool_rounds` | Native loop limit, `1..=64`, default 8 |
 | `profiles.<id>.orchestration` | Bounded fan-out, descendants, concurrency, deadline, context, report, and artifact defaults |
+| `profiles.<id>.identity` / `applies_to` | Optional identity text and exact `primary`/`child` use scope |
+| `profiles.<id>.skills`, `plugins`, `mcp_servers`, `external_agents`, `service_routes` | Exact activation references; declarations alone grant no authority |
+| `plugins.<id>` | Declarative directory or immutable Git source; no installed-state claim |
+| `mcp_servers.<id>` / `external_agents.<id>` | Bounded connection declarations with optional credential and egress-policy references |
+| `service_connections.<id>` / `service_routes.<id>` | Focused non-conversational service adapters and exact operation routes |
+| `egress_policies.<id>.allowed` | Exact outbound data classes that a configured integration may receive |
 | `routes.<id>.profile` | Exact profile selected by a child task route; no fallback |
 
 Model overrides accept `input_modalities = ["text", "image"]`, `tools`,

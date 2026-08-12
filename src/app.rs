@@ -256,6 +256,8 @@ fn run_init_with_io<R: BufRead, W: Write>(
 
     let outcome = init::write_new_config(paths.config_file(), &rendered)
         .context("could not create Xana configuration")?;
+    crate::private_state::ensure_interoperable_records(paths)
+        .context("configuration created, but private interoperable records need recovery; run `xana config migrate --apply`")?;
 
     match outcome {
         WriteOutcome::Created { path } if args.non_interactive => {

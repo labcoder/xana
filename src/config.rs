@@ -19,7 +19,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CONFIG_VERSION: u32 = 3;
+mod interoperable;
+
+pub(crate) use interoperable::{
+    EgressPolicyDeclaration, ExternalAgentDeclaration, McpServerDeclaration, PluginDeclaration,
+    ProfileUse, ServiceConnectionDeclaration, ServiceRouteDeclaration,
+};
+
+pub(crate) const CONFIG_VERSION: u32 = 4;
 const MIN_CONFIG_VERSION: u32 = 1;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_MAX_TOOL_ROUNDS: usize = 64;
@@ -53,6 +60,18 @@ struct ConfigDocument {
     profiles: BTreeMap<String, AgentProfile>,
     #[serde(default)]
     routes: BTreeMap<String, TaskRoute>,
+    #[serde(default)]
+    plugins: BTreeMap<String, PluginDeclaration>,
+    #[serde(default)]
+    mcp_servers: BTreeMap<String, McpServerDeclaration>,
+    #[serde(default)]
+    external_agents: BTreeMap<String, ExternalAgentDeclaration>,
+    #[serde(default)]
+    service_connections: BTreeMap<String, ServiceConnectionDeclaration>,
+    #[serde(default)]
+    service_routes: BTreeMap<String, ServiceRouteDeclaration>,
+    #[serde(default)]
+    egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -164,6 +183,22 @@ struct AgentProfile {
     permission_mode: Option<PermissionMode>,
     #[serde(default)]
     orchestration: OrchestrationLimits,
+    #[serde(default)]
+    identity: Option<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default)]
+    plugins: Vec<String>,
+    #[serde(default)]
+    mcp_servers: Vec<String>,
+    #[serde(default)]
+    external_agents: Vec<String>,
+    #[serde(default)]
+    service_routes: Vec<String>,
+    #[serde(default)]
+    egress_policy: Option<String>,
+    #[serde(default = "interoperable::default_profile_uses")]
+    applies_to: Vec<ProfileUse>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +309,14 @@ pub(crate) struct ProfileConfig {
     pub(crate) capabilities: Option<Vec<String>>,
     pub(crate) permission_mode: Option<PermissionMode>,
     pub(crate) orchestration: OrchestrationLimits,
+    pub(crate) identity: Option<String>,
+    pub(crate) skills: Vec<String>,
+    pub(crate) plugins: Vec<String>,
+    pub(crate) mcp_servers: Vec<String>,
+    pub(crate) external_agents: Vec<String>,
+    pub(crate) service_routes: Vec<String>,
+    pub(crate) egress_policy: Option<String>,
+    pub(crate) applies_to: Vec<ProfileUse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,6 +333,12 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) connections: BTreeMap<String, ConnectionConfig>,
     pub(crate) profiles: BTreeMap<String, ProfileConfig>,
     pub(crate) routes: BTreeMap<String, RouteConfig>,
+    pub(crate) plugins: BTreeMap<String, PluginDeclaration>,
+    pub(crate) mcp_servers: BTreeMap<String, McpServerDeclaration>,
+    pub(crate) external_agents: BTreeMap<String, ExternalAgentDeclaration>,
+    pub(crate) service_connections: BTreeMap<String, ServiceConnectionDeclaration>,
+    pub(crate) service_routes: BTreeMap<String, ServiceRouteDeclaration>,
+    pub(crate) egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -441,6 +490,11 @@ pub(crate) enum ConfigError {
         field: &'static str,
         value: u64,
         maximum: u64,
+    },
+    InvalidInteroperableConfig {
+        section: &'static str,
+        name: String,
+        reason: String,
     },
     InvalidShell(ShellError),
     InvalidPermissionPolicy(PolicyError),
@@ -594,6 +648,11 @@ impl fmt::Display for ConfigError {
                 f,
                 "profile {profile:?} has {field} = {value}; expected 1..={maximum}"
             ),
+            Self::InvalidInteroperableConfig {
+                section,
+                name,
+                reason,
+            } => write!(f, "invalid {section} {name:?}: {reason}"),
             Self::InvalidShell(source) => write!(f, "invalid shell configuration: {source}"),
             Self::InvalidPermissionPolicy(source) => {
                 write!(f, "invalid permission policy: {source}")
@@ -631,7 +690,8 @@ impl Error for ConfigError {
             | Self::InvalidProfileOption { .. }
             | Self::InvalidCapability { .. }
             | Self::DuplicateCapability { .. }
-            | Self::InvalidOrchestrationLimit { .. } => None,
+            | Self::InvalidOrchestrationLimit { .. }
+            | Self::InvalidInteroperableConfig { .. } => None,
         }
     }
 }
@@ -681,6 +741,32 @@ impl XanaConfig {
         let document: ConfigDocument = toml::from_str(input).map_err(ConfigError::Decode)?;
 
         validate_and_resolve(document)
+    }
+
+    pub(crate) fn document_version(input: &str) -> Result<u32, ConfigError> {
+        let header: VersionHeader = toml::from_str(input).map_err(ConfigError::Decode)?;
+        Ok(header.version)
+    }
+
+    pub(crate) fn migrate_to_current(input: &str) -> Result<String, ConfigError> {
+        let version = Self::document_version(input)?;
+        if !(MIN_CONFIG_VERSION..=CONFIG_VERSION).contains(&version) {
+            return Err(ConfigError::UnsupportedVersion { found: version });
+        }
+        let before = Self::parse_registry(input)?;
+        let mut document = input
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        migrate_profile_connection_keys(&mut document)?;
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        let after = Self::parse_registry(&rendered)?;
+        if before != after {
+            return Err(ConfigError::Edit(
+                "migration changed resolved configuration semantics".into(),
+            ));
+        }
+        Ok(rendered)
     }
 
     pub(crate) fn render_initial(input: InitialConfig) -> Result<String, ConfigError> {
@@ -764,6 +850,14 @@ impl XanaConfig {
                 capabilities: None,
                 permission_mode: None,
                 orchestration: OrchestrationLimits::default(),
+                identity: None,
+                skills: Vec::new(),
+                plugins: Vec::new(),
+                mcp_servers: Vec::new(),
+                external_agents: Vec::new(),
+                service_routes: Vec::new(),
+                egress_policy: None,
+                applies_to: interoperable::default_profile_uses(),
             },
         );
 
@@ -785,6 +879,12 @@ impl XanaConfig {
             providers,
             profiles,
             routes,
+            plugins: BTreeMap::new(),
+            mcp_servers: BTreeMap::new(),
+            external_agents: BTreeMap::new(),
+            service_connections: BTreeMap::new(),
+            service_routes: BTreeMap::new(),
+            egress_policies: BTreeMap::new(),
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -1115,6 +1215,8 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
         }
     }
 
+    interoperable::validate(document)?;
+
     validate_name("default profile", &document.default_profile)?;
 
     if !document.profiles.contains_key(&document.default_profile) {
@@ -1213,6 +1315,14 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
                     capabilities: profile.capabilities,
                     permission_mode: profile.permission_mode,
                     orchestration: profile.orchestration,
+                    identity: profile.identity,
+                    skills: profile.skills,
+                    plugins: profile.plugins,
+                    mcp_servers: profile.mcp_servers,
+                    external_agents: profile.external_agents,
+                    service_routes: profile.service_routes,
+                    egress_policy: profile.egress_policy,
+                    applies_to: profile.applies_to,
                 },
             )
         })
@@ -1237,6 +1347,12 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         connections,
         profiles,
         routes,
+        plugins: document.plugins,
+        mcp_servers: document.mcp_servers,
+        external_agents: document.external_agents,
+        service_connections: document.service_connections,
+        service_routes: document.service_routes,
+        egress_policies: document.egress_policies,
     }
 }
 
