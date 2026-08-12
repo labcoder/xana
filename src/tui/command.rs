@@ -17,6 +17,7 @@ pub(super) enum CommandId {
     Plugin,
     Mcp,
     ExternalAgent,
+    Image,
     Setup,
     Activity,
     Artifact,
@@ -194,6 +195,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "external-agent",
         mode: "list|show|add|refresh|trust|untrust|remove ...",
         summary: "Discover and explicitly trust bounded A2A agent endpoints",
+        arguments: "list",
+    },
+    CommandSpec {
+        id: CommandId::Image,
+        name: "image",
+        mode: "list|inspect ROUTE|generate [PROMPT] [--route ROUTE] [--yes]",
+        summary: "Inspect or invoke an exposed image-generation route",
         arguments: "list",
     },
     CommandSpec {

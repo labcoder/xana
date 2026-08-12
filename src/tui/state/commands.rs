@@ -502,7 +502,8 @@ impl TuiState {
             | CommandId::Skill
             | CommandId::Plugin
             | CommandId::Mcp
-            | CommandId::ExternalAgent => {
+            | CommandId::ExternalAgent
+            | CommandId::Image => {
                 self.composer.take();
                 if self.busy {
                     self.status = "Wait for or interrupt the active turn before changing project/profile/skill/plugin state".to_owned();
@@ -516,6 +517,7 @@ impl TuiState {
                             CommandId::Plugin => "plugin",
                             CommandId::Mcp => "mcp",
                             CommandId::ExternalAgent => "external-agent",
+                            CommandId::Image => "image",
                             _ => unreachable!(),
                         }
                         .to_owned(),

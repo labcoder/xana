@@ -246,6 +246,10 @@ first production adapter, `openai.images`, generates one bounded GPT Image 2
 artifact through the official OpenAI API-key endpoint with exact route/model/
 option provenance, usage visibility, typed failures, cancellation, and no
 silent retries or fallback. See [Focused image services](docs/user/focused-services.md).
+Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
+`xana image generate PROMPT --route ROUTE --yes`; equivalent `/image ...`
+commands work in plain and TUI conversations, and exposed routes add the
+permission-gated `generate_image` tool to native agents.
 
 ## Diagnose and recover an installation
 

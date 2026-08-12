@@ -3,8 +3,6 @@
 //! M3-18 establishes this boundary before M3-19 through M3-21 construct the
 //! production adapters and application surface.
 
-#![allow(dead_code)]
-
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore},
     config::{ConnectionRegistry, CredentialReference, OutboundDataClass, ServiceRouteDeclaration},
@@ -22,6 +20,9 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) mod openai_images;
 pub(crate) mod openrouter_images;
+mod tool;
+
+pub(crate) use tool::activate_profile_image_tool;
 
 pub(crate) const MAX_FOCUSED_PROMPT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_FOCUSED_INPUT_ARTIFACTS: usize = 16;
@@ -233,6 +234,21 @@ pub(crate) struct FocusedServiceRegistry {
 }
 
 impl FocusedServiceRegistry {
+    pub(crate) fn register_descriptor(
+        &mut self,
+        descriptor: FocusedServiceDescriptor,
+    ) -> Result<(), FocusedServiceError> {
+        descriptor.validate()?;
+        let key = (descriptor.adapter.clone(), descriptor.operation);
+        if self.descriptors.insert(key, descriptor.clone()).is_some() {
+            return Err(FocusedServiceError::DuplicateDescriptor(
+                descriptor.adapter,
+                descriptor.operation,
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn register(
         &mut self,
         adapter: Arc<dyn FocusedServiceAdapter>,
@@ -250,14 +266,7 @@ impl FocusedServiceRegistry {
             return Err(FocusedServiceError::DuplicateAdapter(adapter_id));
         }
         for descriptor in descriptors {
-            descriptor.validate()?;
-            let key = (adapter_id.clone(), descriptor.operation);
-            if self.descriptors.insert(key, descriptor.clone()).is_some() {
-                return Err(FocusedServiceError::DuplicateDescriptor(
-                    adapter_id,
-                    descriptor.operation,
-                ));
-            }
+            self.register_descriptor(descriptor.clone())?;
         }
         self.adapters.insert(adapter_id, adapter);
         Ok(())
@@ -450,6 +459,13 @@ impl FocusedServiceRegistry {
     }
 }
 
+pub(crate) fn image_descriptor_registry() -> Result<FocusedServiceRegistry, FocusedServiceError> {
+    let mut registry = FocusedServiceRegistry::default();
+    registry.register_descriptor(openai_images::descriptor())?;
+    registry.register_descriptor(openrouter_images::descriptor())?;
+    Ok(registry)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FocusedServiceError {
     UnknownRoute(String),
@@ -473,7 +489,6 @@ pub(crate) enum FocusedServiceError {
     DuplicateDescriptor(String, ServiceOperation),
     InvalidDescriptor(String),
     InvalidRequest(&'static str),
-    Unauthorized(&'static str),
     Authentication,
     RateLimited,
     Quota,
@@ -559,9 +574,7 @@ impl fmt::Display for FocusedServiceError {
             Self::InvalidDescriptor(adapter) => {
                 write!(formatter, "adapter {adapter:?} has an invalid descriptor")
             }
-            Self::InvalidRequest(reason) | Self::Unauthorized(reason) => {
-                formatter.write_str(reason)
-            }
+            Self::InvalidRequest(reason) => formatter.write_str(reason),
             Self::Authentication => formatter.write_str("focused-service authentication failed"),
             Self::RateLimited => formatter.write_str("focused-service request was rate limited"),
             Self::Quota => formatter.write_str("focused-service quota is exhausted"),

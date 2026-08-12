@@ -8,6 +8,7 @@ mod chat;
 mod connections;
 mod external_agents;
 mod hosting;
+mod image_commands;
 mod mcp_commands;
 mod one_shot;
 mod operations;
@@ -145,6 +146,11 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::ExternalAgent(args)) => {
             let stdout = io::stdout();
             external_agents::run(args.command, &paths, &mut stdout.lock()).await
+        }
+        Some(Command::Image(args)) => {
+            let stdout = io::stdout();
+            let stdin = io::stdin();
+            image_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
         }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();
