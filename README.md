@@ -193,6 +193,14 @@ operations. Enabled plugin skills enter qualified skill discovery; plugin MCP
 declarations remain inert until the supervised MCP phase. See [Agent
 Plugins](docs/user/plugins.md).
 
+Data leaving Xana for an external integration passes one typed outbound gate.
+Connection, user, profile, and conversation policy can only narrow the allowed
+classes; concrete messages, files, artifacts, and metadata still require exact
+selection. New recipient/class combinations require approval, unresolved
+noninteractive requests fail closed, and audits retain counts and digests
+rather than selected content. MCP, A2A, and focused-service transports are not
+enabled yet. See [Outbound data approvals and privacy](docs/user/outbound-data.md).
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential

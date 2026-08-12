@@ -1072,6 +1072,58 @@ flowchart LR
     K --> L["Atomic rollback"]
 ```
 
+### Outbound data authorization boundary
+
+`OutboundGuard` is the single application-policy gate for protected bytes sent
+to an external recipient. `OutboundRequest` owns an immutable in-memory
+snapshot of each explicitly selected item. It validates item and aggregate
+limits before approval, computes content digests, and exposes only a redacted
+`OutboundApprovalRequest` to controllers and observers. Request and payload
+debug representations omit selected bytes.
+
+Policy composition is a set intersection. The connection allowance is narrowed
+by the user ceiling, frozen profile, and optional conversation ceiling; no
+inner layer can add a data class. Allowed classes are prompt text, bounded Xana
+summary, selected messages, selected file contents, selected artifacts, and
+workspace metadata. Class availability never selects an item.
+
+```mermaid
+flowchart LR
+    R["Exact recipient identity + selected items"] --> B["Validate item/count/byte bounds"]
+    C["Connection allowance"] --> I["Set intersection"]
+    U["User ceiling"] --> I
+    P["Frozen profile"] --> I
+    V["Conversation ceiling"] --> I
+    B --> I
+    I --> D{"Exact saved recipient/class decision?"}
+    D -->|allow| S["Guard-owned transport send"]
+    D -->|deny| Z["Zero protected bytes sent"]
+    D -->|missing| A["Typed approval review"]
+    A -->|allow once / save allow| S
+    A -->|deny / cancel / no controller| Z
+    S --> O["Content-free outcome audit"]
+    Z --> O
+```
+
+Recipient identity binds kind, connection, destination, and transport-owned
+identity material into one BLAKE3 digest. Saved allow or deny records are exact
+to that digest and one class, so endpoint or identity changes cannot inherit
+approval. The bounded `outbound-decisions.json` record lives under the private
+`data/interoperable/` owner and uses the same locked atomic versioned update
+path as other interoperable state.
+
+Audit events cover request, decision, send, cancellation, success, and failure.
+They retain recipient identity, classes, counts, byte bounds, decision source,
+and outcome, but never payload bytes, prompts, file content, artifact content,
+credentials, or hidden reasoning. Transport failures are reduced to typed safe
+categories before they cross this boundary. Noninteractive unresolved approval
+fails closed.
+
+No MCP, A2A, or focused-service transport consumes the gate yet. Those
+integrations remain unavailable rather than shipping an unguarded alternate
+path; their implementation must call `OutboundGuard::dispatch` as the only
+payload-bearing send seam.
+
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
 An existing snapshot cannot be replaced. A profile change allocates a new
