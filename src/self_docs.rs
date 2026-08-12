@@ -188,6 +188,13 @@ static A2A_TOPICS: &[&str] = &[
     "artifacts",
     "interoperability",
 ];
+static FOCUSED_SERVICE_TOPICS: &[&str] = &[
+    "images",
+    "generation",
+    "focused services",
+    "routes",
+    "artifacts",
+];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -362,6 +369,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: A2A_TOPICS,
         body: include_str!("../docs/user/external-agents.md"),
+    },
+    BundledDoc {
+        id: "user.focused-services",
+        title: "Focused image services",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: FOCUSED_SERVICE_TOPICS,
+        body: include_str!("../docs/user/focused-services.md"),
     },
     BundledDoc {
         id: "user.rich-content",
