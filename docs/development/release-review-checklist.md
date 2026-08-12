@@ -14,8 +14,10 @@ workflow run:
 - every archive hash matches its sidecar and `sha256.sum`, and GitHub
   attestations verify for every downloadable asset against `labcoder/xana` and
   the expected workflow commit;
-- the Windows x64, macOS ARM64, macOS Intel, and Linux x64 glibc jobs each ran
-  natively and passed version/help, installer, and package checks;
+- the exact tagged commit has a successful three-platform `main` CI push run
+  covering formatting, Clippy, feature matrices, installers, and packaging;
+- the Windows x64, macOS ARM64, macOS Intel, and Linux x64 glibc release jobs
+  each rebuilt natively and passed archive inventory and version/help checks;
 - the release notes state that the preview is unsigned, not Apple-notarized,
   and not Windows-Authenticode-signed, without recommending security bypasses;
 - latest and exact-version installer URLs resolve inside this same draft, and a

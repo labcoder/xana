@@ -3,8 +3,12 @@ Set-StrictMode -Version Latest
 
 $path = ".github/workflows/release.yml"
 $workflow = Get-Content -Raw -LiteralPath $path
+$ciWorkflow = Get-Content -Raw -LiteralPath ".github/workflows/ci.yml"
 $draftScript = Get-Content -Raw -LiteralPath "scripts/create-release-draft.ps1"
-$uses = @([regex]::Matches($workflow, '(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)'))
+$uses = @([regex]::Matches(
+    $workflow + "`n" + $ciWorkflow,
+    '(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)'
+))
 if ($uses.Count -eq 0) { throw "release workflow has no pinned actions" }
 foreach ($use in $uses) {
     $reference = $use.Groups[2].Value
@@ -28,12 +32,39 @@ $required = @(
     "contents: write",
     "github.event_name == 'push'",
     "manual no-publish builds must use the reviewed main branch",
+    "check-release-ci-evidence.ps1",
     "verify-sha256.sh",
     "check-release-plan.ps1",
-    "assemble-release-bundle.ps1"
+    "assemble-release-bundle.ps1",
+    "timeout-minutes: 45",
+    "retention-days: 1",
+    "compression-level: 0"
 )
 foreach ($text in $required) {
     if (-not $workflow.Contains($text)) { throw "release workflow is missing required contract: $text" }
+}
+
+$ciRequired = @(
+    "branches:",
+    "- main",
+    "concurrency:",
+    "cancel-in-progress: true",
+    "timeout-minutes: 30",
+    "persist-credentials: false",
+    "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
+    "cache-bin: false",
+    "save-if:",
+    "test-release-ci-evidence.ps1",
+    "verify-sha256.sh"
+)
+foreach ($text in $ciRequired) {
+    if (-not $ciWorkflow.Contains($text)) { throw "CI workflow is missing required contract: $text" }
+}
+if ($ciWorkflow -match '(?m)^\s*tags:\s*$') {
+    throw "ordinary CI must not duplicate work for release tag pushes"
+}
+if ($workflow -match '(?m)^  quality:\s*$') {
+    throw "release workflow must consume exact main CI evidence instead of repeating quality jobs"
 }
 if (-not $draftScript.Contains("--draft") -or
     -not $draftScript.Contains("refusing to modify an already published release")) {
@@ -75,4 +106,4 @@ foreach ($text in $forbidden) {
 if ($workflow -match '(?m)^\s*permissions:\s*write-all') {
     throw "release workflow cannot use write-all permissions"
 }
-Write-Output "release workflow verified: immutable actions, exact matrix, least-privilege draft-only boundary"
+Write-Output "release workflow verified: exact main CI evidence, smart dependency cache, fresh native builds, least-privilege draft boundary"

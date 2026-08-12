@@ -24,9 +24,27 @@ env:
   CARGO_DIST_INSTALLER_SHA256: "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5"
 
 jobs:
+  ci_evidence:
+    name: Require exact green main CI
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Check out exact source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Verify exact source passed main CI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/check-release-ci-evidence.ps1
+
   plan:
     name: Validate version and release plan
+    needs: ci_evidence
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
@@ -38,8 +56,6 @@ jobs:
 
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
-        with:
-          components: rustfmt, clippy
 
       - name: Install verified release planner
         shell: bash
@@ -93,64 +109,13 @@ jobs:
           name: release-plan
           path: .release-plan/dist-manifest.json
           if-no-files-found: error
-
-  quality:
-    name: Quality (${{ matrix.os }})
-    needs: plan
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - ubuntu-24.04
-          - macos-15
-          - windows-latest
-    steps:
-      - name: Check out exact source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-
-      - name: Install pinned Rust
-        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
-        with:
-          components: rustfmt, clippy
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run warning-denied Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-
-      - name: Run all-feature tests
-        run: cargo test --workspace --all-targets --all-features
-
-      - name: Run no-default-feature tests
-        run: cargo test --workspace --all-targets --no-default-features
-
-      - name: Audit source package
-        shell: pwsh
-        run: ./scripts/check-package-contents.ps1
-
-      - name: Verify Bash installer
-        shell: bash
-        run: |
-          bash ./scripts/test-install-sh.sh
-          bash ./scripts/test-release-sha256.sh
-
-      - name: Verify PowerShell installer
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: ./scripts/test-install-ps1.ps1
-
-      - name: Verify release archive contract
-        shell: pwsh
-        run: ./scripts/test-release-archive-contract.ps1
+          retention-days: 1
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [plan, quality]
+    needs: plan
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -207,11 +172,14 @@ jobs:
             target/distrib/${{ matrix.archive }}
             target/distrib/${{ matrix.archive }}.sha256
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   assemble:
     name: Assemble exact no-publish bundle
-    needs: [plan, quality, build]
+    needs: [plan, build]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -246,11 +214,13 @@ jobs:
           path: release-bundle/*
           if-no-files-found: error
           retention-days: 14
+          compression-level: 0
 
   attest:
     name: Attest complete bundle
     needs: [plan, assemble]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       actions: read
       attestations: write
@@ -273,6 +243,7 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [plan, assemble, attest]
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       actions: read
       contents: write

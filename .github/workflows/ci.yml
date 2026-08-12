@@ -2,7 +2,13 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -11,6 +17,7 @@ jobs:
   checks:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -22,11 +29,20 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
 
       - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
         with:
           components: rustfmt, clippy
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -59,6 +75,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/check-release-workflow.ps1
+          ./scripts/test-release-ci-evidence.ps1
           ./scripts/test-release-archive-contract.ps1
           ./scripts/test-release-bundle.ps1
 
@@ -80,7 +97,8 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh \
             --output "$installer"
-          echo "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5  $installer" | sha256sum --check
+          bash ./scripts/verify-sha256.sh "$installer" \
+            b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5
           sh "$installer"
           rm -f -- "$installer"
 

@@ -45,8 +45,9 @@ install/update receipts, PATH consent, and the post-install readiness handoff.
 
 ```mermaid
 flowchart LR
-    TAG["Eligible v0.x.y tag"] --> CHECKS["Existing quality and package gates"]
-    CHECKS --> BUILD["Pinned four-target release plan"]
+    MAIN["Exact commit passes three-platform main CI"] --> TAG["Eligible v0.x.y tag"]
+    TAG --> EVIDENCE["Verify exact successful main CI run"]
+    EVIDENCE --> BUILD["Fresh pinned four-target release build"]
     BUILD --> ARCHIVES["Four native archives"]
     BUILD --> META["Manifest + SHA-256 + provenance"]
     SOURCE["Reviewed Bash + PowerShell wrappers"] --> DRAFT["Complete GitHub draft release"]
@@ -63,6 +64,12 @@ checksums, manifest data, attestations, or notes prevent a reviewable draft.
 The owner publishes only after verifying the exact tag, commit, inventory,
 checksums, provenance, platform smokes, and limitations. A published tag and
 its assets are immutable by policy; a correction receives a new patch version.
+
+The release workflow consumes the successful ordinary CI run for the exact
+tagged commit as source-quality evidence; it does not repeat the same
+three-platform Clippy, test, installer, and package matrix. Release archives
+are nevertheless rebuilt natively from the tagged source. Routine caches and
+CI binaries are not release inputs.
 
 ## Accepted install and update model
 
