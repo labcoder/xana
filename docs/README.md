@@ -38,6 +38,9 @@ engineering contracts used to change it.
   discovery, private identity cache, endpoint trust, credential references,
   profile readiness, bounded task delegation, visible streaming activity,
   cancellation, and attributed artifact ingestion.
+- [Focused image services](user/focused-services.md) explains exact named
+  routes, direct OpenAI API-key image generation, options, cost visibility,
+  privacy, artifacts, and no-fallback behavior.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

@@ -241,6 +241,12 @@ artifacts, tracks task state, and supports explicit or best-effort cancellation.
 Startup never discovers endpoints implicitly, and trust alone sends no task or
 local data. See [External A2A agents](docs/user/external-agents.md).
 
+Focused service routes are independent from the conversational model. The
+first production adapter, `openai.images`, generates one bounded GPT Image 2
+artifact through the official OpenAI API-key endpoint with exact route/model/
+option provenance, usage visibility, typed failures, cancellation, and no
+silent retries or fallback. See [Focused image services](docs/user/focused-services.md).
+
 ## Diagnose and recover an installation
 
 `xana doctor` performs bounded read-only checks of configuration, credential

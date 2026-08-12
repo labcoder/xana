@@ -20,6 +20,8 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod openai_images;
+
 pub(crate) const MAX_FOCUSED_PROMPT_BYTES: usize = 64 * 1024;
 pub(crate) const MAX_FOCUSED_INPUT_ARTIFACTS: usize = 16;
 pub(crate) const MAX_FOCUSED_OUTPUT_ARTIFACTS: usize = 8;
