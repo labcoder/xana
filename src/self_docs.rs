@@ -177,6 +177,7 @@ static PROFILE_TOPICS: &[&str] = &[
     "permissions",
     "configuration",
 ];
+static SKILL_TOPICS: &[&str] = &["skills", "agents", "profiles", "instructions", "security"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -306,6 +307,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: PROFILE_TOPICS,
         body: include_str!("../docs/user/profiles.md"),
+    },
+    BundledDoc {
+        id: "user.skills",
+        title: "Agent Skills discovery and activation",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: SKILL_TOPICS,
+        body: include_str!("../docs/user/skills.md"),
     },
     BundledDoc {
         id: "user.rich-content",

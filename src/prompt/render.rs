@@ -139,6 +139,7 @@ fn layer_kind_name(kind: PromptLayerKind) -> &'static str {
         PromptLayerKind::Environment => "environment",
         PromptLayerKind::Surface => "surface",
         PromptLayerKind::ProjectInstructions => "project_instructions",
+        PromptLayerKind::SkillInstructions => "skill_instructions",
     }
 }
 
@@ -147,6 +148,7 @@ fn trust_name(trust: TrustClass) -> &'static str {
         TrustClass::Xana => "xana",
         TrustClass::Runtime => "runtime",
         TrustClass::Project => "project",
+        TrustClass::Skill => "skill",
     }
 }
 
@@ -157,6 +159,7 @@ fn origin_name(origin: SourceOrigin) -> &'static str {
         SourceOrigin::RuntimeEnvironment => "runtime_environment",
         SourceOrigin::ProductDocumentation => "product_documentation",
         SourceOrigin::ProjectFile => "project_file",
+        SourceOrigin::Skill => "skill",
         SourceOrigin::ParentHandoff => "parent_handoff",
     }
 }

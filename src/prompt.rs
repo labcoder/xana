@@ -41,6 +41,7 @@ pub(crate) enum PromptLayerKind {
     Environment,
     Surface,
     ProjectInstructions,
+    SkillInstructions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +129,7 @@ pub(crate) struct PromptAssembler {
     environment: PromptEnvironment,
     product_documentation: Option<ProductDocumentationHint>,
     budget: ContextBudget,
+    base_sources: Vec<ContextSource>,
 }
 
 impl PromptAssembler {
@@ -142,7 +144,13 @@ impl PromptAssembler {
             environment,
             product_documentation,
             budget,
+            base_sources: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_context_sources(mut self, sources: Vec<ContextSource>) -> Self {
+        self.base_sources = sources;
+        self
     }
 
     pub(crate) fn assemble(
@@ -150,11 +158,13 @@ impl PromptAssembler {
         project_sources: &[ContextSource],
     ) -> Result<PromptSnapshot, PromptError> {
         let definitions = self.tool_definitions.iter().collect::<Vec<_>>();
+        let mut sources = self.base_sources.clone();
+        sources.extend_from_slice(project_sources);
         assemble_snapshot(PromptInputs {
             tool_definitions: &definitions,
             environment: &self.environment,
             product_documentation: self.product_documentation.as_ref(),
-            project_sources,
+            project_sources: &sources,
             budget: self.budget,
         })
     }
@@ -332,7 +342,11 @@ pub(crate) fn assemble_snapshot(inputs: PromptInputs<'_>) -> Result<PromptSnapsh
 
     for preview in planned.selected {
         let project_layer = layer(
-            PromptLayerKind::ProjectInstructions,
+            if preview.provenance.origin == SourceOrigin::Skill {
+                PromptLayerKind::SkillInstructions
+            } else {
+                PromptLayerKind::ProjectInstructions
+            },
             preview.source_id.as_str(),
             preview.provenance.clone(),
             preview.trust,

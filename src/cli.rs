@@ -197,6 +197,9 @@ pub(crate) enum Command {
     /// Create, inspect, resolve, and freeze named agent profiles.
     #[command(display_order = 9)]
     Profile(ProfileArgs),
+    /// Discover, validate, and explicitly activate Agent Skills.
+    #[command(display_order = 10)]
+    Skill(SkillArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -919,6 +922,66 @@ pub(crate) enum ProfileCommand {
     Continue {
         name: String,
         conversation: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct SkillArgs {
+    #[command(subcommand)]
+    pub(crate) command: SkillCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum SkillCommand {
+    /// List standards-compatible metadata without loading skill bodies.
+    List {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect one skill's metadata and source without loading its body.
+    Inspect {
+        skill: String,
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate one skill directory with full bounded activation checks.
+    Validate { path: PathBuf },
+    /// Load one exact skill and its directly referenced Markdown resources.
+    Activate {
+        skill: String,
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Read one contained resource from an exact discovered skill.
+    Read {
+        skill: String,
+        resource: PathBuf,
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Enable one exact skill for new conversations using a profile.
+    Enable {
+        skill: String,
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+    },
+    /// Disable one skill reference for new conversations using a profile.
+    Disable {
+        skill: String,
+        #[arg(long)]
+        profile: String,
         #[arg(long)]
         project: Option<ProjectId>,
     },

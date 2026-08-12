@@ -38,7 +38,7 @@ pub(crate) struct ManagedChatConfig {
     pub(crate) data_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
     pub(crate) owner: PrincipalId,
-    pub(crate) developer_instructions: &'static str,
+    pub(crate) developer_instructions: String,
     pub(crate) identity_version: &'static str,
     pub(crate) presentation: ResolvedPresentation,
 }
@@ -515,7 +515,7 @@ async fn run_codex_one_shot_inner(
                         thread_id,
                         &config.model,
                         &config.workspace,
-                        config.developer_instructions,
+                        &config.developer_instructions,
                         &mut handler,
                     )
                     .await
@@ -532,7 +532,7 @@ async fn run_codex_one_shot_inner(
             .start_thread(
                 &config.model,
                 &config.workspace,
-                config.developer_instructions,
+                &config.developer_instructions,
                 &mut handler,
             )
             .await
@@ -704,7 +704,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                 .start_thread(
                     &config.model,
                     &config.workspace,
-                    config.developer_instructions,
+                    &config.developer_instructions,
                     handler,
                 )
                 .await?;
@@ -719,7 +719,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                     thread_id,
                     &config.model,
                     &config.workspace,
-                    config.developer_instructions,
+                    &config.developer_instructions,
                     handler,
                 )
                 .await?

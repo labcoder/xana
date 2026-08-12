@@ -1085,6 +1085,44 @@ impl XanaConfig {
         validate_and_write_profile_edit(path, document)
     }
 
+    pub(crate) fn set_profile_skill(
+        path: &Path,
+        id: &str,
+        skill: &str,
+        enabled: bool,
+    ) -> Result<(), ConfigError> {
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let profile = profile_table_mut(&mut document, id)?;
+        let mut skills = profile
+            .get("skills")
+            .and_then(toml_edit::Item::as_array)
+            .map(|array| {
+                array
+                    .iter()
+                    .filter_map(toml_edit::Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if enabled {
+            if !skills.iter().any(|value| value == skill) {
+                skills.push(skill.to_owned());
+            }
+        } else {
+            skills.retain(|value| value != skill);
+        }
+        skills.sort();
+        let mut array = toml_edit::Array::new();
+        for value in skills {
+            array.push(value);
+        }
+        profile["skills"] = toml_edit::value(array);
+        validate_and_write_profile_edit(path, document)
+    }
+
     pub(crate) fn duplicate_profile(
         path: &Path,
         source_id: &str,

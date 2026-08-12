@@ -13,6 +13,7 @@ mod profiles;
 mod projects;
 mod recovery;
 mod sessions;
+mod skills;
 
 use connections::{
     codex_launch, model_manager, run_auth_command, run_connection_command, run_model_command,
@@ -118,6 +119,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Profile(args)) => {
             let stdout = io::stdout();
             profiles::run_command(args.command, &paths, &mut stdout.lock())
+        }
+        Some(Command::Skill(args)) => {
+            let stdout = io::stdout();
+            skills::run_command(args.command, &paths, &mut stdout.lock())
         }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();

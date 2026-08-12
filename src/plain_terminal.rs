@@ -69,7 +69,7 @@ enum InputAction<'a> {
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
-    for family in ["project", "profile"] {
+    for family in ["project", "profile", "skill"] {
         let command = format!("/{family}");
         if trimmed == command {
             return InputAction::ControlCommand {
@@ -1047,6 +1047,13 @@ mod tests {
             InputAction::ControlCommand {
                 family: "profile",
                 arguments: "resolve review --json"
+            }
+        );
+        assert_eq!(
+            classify_input("/skill activate project/review"),
+            InputAction::ControlCommand {
+                family: "skill",
+                arguments: "activate project/review"
             }
         );
         assert_eq!(classify_input("/agents"), InputAction::Agents);

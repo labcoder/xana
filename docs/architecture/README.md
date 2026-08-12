@@ -432,10 +432,14 @@ byte-stable across supported platforms. The labels are prompt structure, not a
 security boundary.
 
 Root `AGENTS.md` is optional, must be a non-symlink regular UTF-8 file no larger
-than 64 KiB, and has independent 16 KiB and 1,024-estimated-token view limits. Discovery does not
-walk parents or nested directories and ignores `XANA.md`, `.agents/`, skills,
-and plugins. Project instructions can guide work but cannot mutate tools,
-configuration, permission state, or Xana's non-replaceable core.
+than 64 KiB, and has independent 16 KiB and 1,024-estimated-token view limits.
+Its discovery does not walk parents or nested directories and ignores
+`XANA.md`. A separate `SkillCatalog` indexes bounded Agent Skills metadata from
+user `.agents/skills/`, workspace `.agents/skills/`, and enabled-plugin sources;
+only exact activated bodies and necessary contained references enter prompt
+planning as `SkillInstructions` with qualified source/digest provenance.
+Project instructions and skills can guide work but cannot mutate tools,
+configuration, permission state, egress, or Xana's non-replaceable core.
 
 One estimated 32,768-token budget charges rendered system layers, exact tool
 schemas, selected previews, and actual history while reserving 8,192 tokens
@@ -956,6 +960,32 @@ project profile names one global ceiling and can only narrow it. AGENTS.md,
 activated skills, and untrusted runtime data may supply guidance/context, but
 they cannot change these typed permission, capability, egress, integration, or
 budget fields.
+
+### Agent Skills discovery and activation
+
+`SkillCatalog` implements the pinned Agent Skills metadata contract without a
+general extension ABI. Discovery is metadata-only and bounded to direct child
+directories. Identities are qualified by user, project, or plugin source; an
+ambiguous unqualified name is an error rather than a precedence choice.
+
+Activation revalidates the selected metadata, performs a bounded stable read of
+`SKILL.md`, and follows only contained `references/` Markdown links under file,
+aggregate, count, and depth limits. Symlinks, traversal, special files, invalid
+UTF-8, cycles, and changing sources fail before prompt assembly. Mutable user
+and project sources are re-read for activation; installed immutable plugin
+sources can use validated cached reads. Scripts are never executed by the
+catalog.
+
+```mermaid
+flowchart LR
+    U["User .agents/skills"] --> I["Bounded metadata index"]
+    P["Project .agents/skills"] --> I
+    G["Enabled plugin skills"] --> I
+    I --> Q["Qualified exact selection"]
+    Q --> A["Bounded body + required references"]
+    A --> S["SkillInstructions prompt layer\nuntrusted + provenance-bearing"]
+    S -. "cannot grant" .-> X["Typed capabilities, permissions, egress"]
+```
 
 ```mermaid
 flowchart LR

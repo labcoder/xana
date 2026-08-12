@@ -166,6 +166,31 @@ pub(super) async fn run(
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
+    let profile_skills = frozen_profile.as_ref().map_or_else(
+        || {
+            child_registry
+                .profiles
+                .get(&child_registry.default_profile)
+                .map(|profile| profile.skills.clone())
+                .unwrap_or_default()
+        },
+        |profile| profile.skills.value.clone(),
+    );
+    let skill_catalog = super::skills::catalog(&workspace_root, std::iter::empty())?;
+    let activated_skills = skill_catalog
+        .activate_all(profile_skills.iter().map(String::as_str))
+        .context(
+            "profile Agent Skill activation failed; run `xana skill list` and qualify collisions",
+        )?;
+    let skill_sources = activated_skills
+        .iter()
+        .map(crate::skill::ActivatedSkill::context_source)
+        .collect::<Vec<_>>();
+    let managed_skill_instructions = activated_skills
+        .iter()
+        .map(crate::skill::ActivatedSkill::prompt_text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
     let artifact_store = ArtifactStore::new(paths.data_dir().join("artifacts"));
 
     let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
@@ -236,6 +261,15 @@ pub(super) async fn run(
             )
         }
         let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
+        let developer_instructions = if managed_skill_instructions.is_empty() {
+            crate::prompt::xana_identity().to_owned()
+        } else {
+            format!(
+                "{}\n\n<activated_agent_skills>\n{}\n</activated_agent_skills>",
+                crate::prompt::xana_identity(),
+                managed_skill_instructions
+            )
+        };
         let managed_config = ManagedChatConfig {
             connection: provider_name,
             model,
@@ -243,7 +277,7 @@ pub(super) async fn run(
             data_root: paths.data_dir().to_owned(),
             artifact_store,
             owner: crate::identity::PrincipalId::new(),
-            developer_instructions: crate::prompt::xana_identity(),
+            developer_instructions,
             identity_version: crate::prompt::XANA_IDENTITY_VERSION,
             presentation,
         };
@@ -477,7 +511,8 @@ pub(super) async fn run(
             total_tokens: PROMPT_TOTAL_TOKENS,
             conversation_reserve_tokens: PROMPT_CONVERSATION_RESERVE_TOKENS,
         },
-    );
+    )
+    .with_context_sources(skill_sources);
     let prompt = prompt_assembler
         .assemble(&[])
         .context("could not assemble Xana base prompt")?;
@@ -642,12 +677,12 @@ async fn continue_after_chat_exit(
 
 fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {
     if arguments.len() > 16 * 1024 {
-        anyhow::bail!("project/profile command exceeds the 16 KiB input limit");
+        anyhow::bail!("control command exceeds the 16 KiB input limit");
     }
     let values = shlex::split(arguments)
-        .ok_or_else(|| anyhow::anyhow!("project/profile command contains an unterminated quote"))?;
+        .ok_or_else(|| anyhow::anyhow!("control command contains an unterminated quote"))?;
     if values.len() > 128 {
-        anyhow::bail!("project/profile command exceeds the 128-argument limit");
+        anyhow::bail!("control command exceeds the 128-argument limit");
     }
     let arguments = std::iter::once("xana".to_owned())
         .chain(std::iter::once(family.to_owned()))
@@ -664,8 +699,13 @@ fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) ->
         Some(cli::Command::Profile(args)) => {
             super::profiles::run_command(args.command, paths, &mut stdout.lock())
         }
+        Some(cli::Command::Skill(args)) => {
+            super::skills::run_command(args.command, paths, &mut stdout.lock())
+        }
         _ => {
-            anyhow::bail!("only project and profile commands are available from this control path")
+            anyhow::bail!(
+                "only project, profile, and skill commands are available from this control path"
+            )
         }
     }
 }
