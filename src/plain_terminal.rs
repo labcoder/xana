@@ -578,12 +578,20 @@ pub(crate) async fn run_chat(
                 }
                 InputAction::Attach(path) => {
                     if path.is_empty() {
-                        println!("xana> usage: /attach WORKSPACE_RELATIVE_IMAGE_PATH");
+                        println!("xana> usage: /attach WORKSPACE_RELATIVE_IMAGE_PATH|--clipboard");
                         continue;
                     }
-                    match ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
-                        .ingest_path(&header.workspace_root, path, header.owner)
-                    {
+                    let attachment = if path == "--clipboard" {
+                        crate::vision::ingest_clipboard_image(
+                            header.artifact_store.clone(),
+                            header.owner,
+                        )
+                    } else {
+                        ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
+                            .ingest_path(&header.workspace_root, path, header.owner)
+                            .map_err(|error| format!("could not attach {path}: {error}"))
+                    };
+                    match attachment {
                         Ok(attachment) => {
                             pending_images.push(attachment);
                             println!(
@@ -591,7 +599,7 @@ pub(crate) async fn run_chat(
                                 pending_images.len()
                             );
                         }
-                        Err(error) => println!("xana> could not attach {path}: {error}"),
+                        Err(error) => println!("xana> {error}"),
                     }
                 }
                 InputAction::Model(selection) => {

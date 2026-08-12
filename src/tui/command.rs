@@ -81,8 +81,8 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         id: CommandId::Attach,
         name: "attach",
-        mode: "WORKSPACE_RELATIVE_PATH",
-        summary: "Stage an image for the next turn",
+        mode: "WORKSPACE_RELATIVE_PATH|--clipboard",
+        summary: "Stage a path or explicit clipboard image for the next turn",
         arguments: "",
     },
     CommandSpec {

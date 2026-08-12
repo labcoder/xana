@@ -91,3 +91,27 @@ explicit-route/default rule, and the ordinary external-effect permission broker
 must authorize the exact recipient and `image.generate` operation. The tool
 returns artifact IDs, hashes, media types, provenance, usage, and cost metadata;
 the conversation does not embed or duplicate the binary.
+
+## Ask questions about images
+
+For a conversational model whose catalog declares image input, `/attach
+WORKSPACE_RELATIVE_PATH` stages a PNG, JPEG, or GIF and the next turn sends the
+original immutable artifact directly once. `/attach --clipboard` performs one
+explicit system-clipboard image read in either terminal frontend; Xana never
+polls the clipboard and never captures clipboard text or file lists through
+that action. Unsupported clipboard backends/formats return a local remedy and
+leave the draft and conversation unchanged.
+
+Every attachment is bounded to 4 MiB encoded and 40 million decoded pixels,
+fully decoded before publication, then content-addressed. Absolute paths,
+parent traversal, symlinks, changing/out-of-workspace files, malformed images,
+unsupported formats, and allocation-limit violations fail before a provider
+request. Provider payload encoding happens only at the wire edge; session,
+frontend, and diagnostic records retain the artifact reference and dimensions,
+not base64 bytes.
+
+Xana does not silently spend money on a specialist when the active model lacks
+image input. Choose an image-capable conversational model or explicitly invoke
+an exposed `vision.analyze` route once a compatible specialist adapter is
+configured; native raw input and derived, untrusted specialist text are distinct
+provenance modes.

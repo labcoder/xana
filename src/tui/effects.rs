@@ -84,6 +84,10 @@ pub(super) async fn dispatch_managed_effect(
                 Err(error) => state.set_status(format!("could not attach {path}: {error}")),
             }
         }
+        UpdateEffect::AttachClipboard => match clipboard.get_image(artifact_store.clone(), owner) {
+            Ok(attachment) => state.stage_image(attachment),
+            Err(error) => state.set_status(error),
+        },
         UpdateEffect::SelectModel(selection) => {
             let requested = selection
                 .split_once('/')
@@ -436,6 +440,23 @@ pub(super) async fn dispatch_effect(
                 {
                     Ok(attachment) => state.stage_image(attachment),
                     Err(error) => state.set_status(format!("could not attach {path}: {error}")),
+                }
+            }
+        }
+        UpdateEffect::AttachClipboard => {
+            let descriptor = header
+                .models
+                .descriptor(&header.provider_name, &header.model)
+                .context("could not resolve selected model capabilities")?;
+            if !descriptor.input_modalities.contains("image") {
+                state.set_status(format!(
+                    "{}/{} is not declared image-capable",
+                    header.provider_name, header.model
+                ));
+            } else {
+                match clipboard.get_image(header.artifact_store.clone(), header.owner) {
+                    Ok(attachment) => state.stage_image(attachment),
+                    Err(error) => state.set_status(error),
                 }
             }
         }

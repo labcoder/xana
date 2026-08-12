@@ -609,7 +609,9 @@ impl TuiState {
             }
             CommandId::Attach => {
                 self.composer.take();
-                if command.arguments.is_empty() {
+                if command.arguments == "--clipboard" {
+                    UpdateEffect::AttachClipboard
+                } else if command.arguments.is_empty() {
                     self.status = command_usage(CommandId::Attach);
                     UpdateEffect::None
                 } else {

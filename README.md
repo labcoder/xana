@@ -250,6 +250,10 @@ Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
 `xana image generate PROMPT --route ROUTE --yes`; equivalent `/image ...`
 commands work in plain and TUI conversations, and exposed routes add the
 permission-gated `generate_image` tool to native agents.
+Image-capable conversational models accept bounded PNG/JPEG/GIF artifacts from
+`/attach PATH` or the explicit `/attach --clipboard` action. Xana fully decodes
+and content-addresses one copy before provider use; clipboard access is never
+ambient.
 
 ## Diagnose and recover an installation
 
