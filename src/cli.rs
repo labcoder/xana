@@ -209,6 +209,9 @@ pub(crate) enum Command {
     /// Configure, inspect, and explicitly trust remote A2A agents.
     #[command(name = "external-agent", display_order = 13)]
     ExternalAgent(ExternalAgentArgs),
+    /// List, inspect, or invoke focused image-generation routes.
+    #[command(display_order = 14)]
+    Image(ImageArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -227,6 +230,43 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ImageArgs {
+    #[command(subcommand)]
+    pub(crate) command: ImageCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ImageCommand {
+    /// List image-generation routes exposed by the default profile.
+    List {
+        /// Emit a stable JSON document on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect one named route without resolving a secret or using the network.
+    Inspect {
+        route: String,
+        /// Emit a stable JSON document on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Generate one immutable image artifact through an exact focused route.
+    Generate {
+        /// Prompt text. When omitted, Xana reads bounded UTF-8 text from stdin.
+        prompt: Option<String>,
+        /// Exact route; otherwise the profile's sole declared default is used.
+        #[arg(long)]
+        route: Option<String>,
+        /// Confirm this exact paid, outbound request in noninteractive mode.
+        #[arg(long)]
+        yes: bool,
+        /// Emit the result receipt as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

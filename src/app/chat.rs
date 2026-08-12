@@ -541,6 +541,26 @@ pub(super) async fn run(
         &mut tools,
     )
     .context("could not activate profile external-agent delegation tools")?;
+    let profile_service_routes = frozen_profile.as_ref().map_or_else(
+        || {
+            child_registry
+                .profiles
+                .get(&child_registry.default_profile)
+                .map(|profile| profile.service_routes.clone())
+                .unwrap_or_default()
+        },
+        |profile| profile.service_routes.value.clone(),
+    );
+    crate::focused_service::activate_profile_image_tool(
+        &child_registry,
+        &profile_service_routes,
+        &profile_egress,
+        artifact_store.clone(),
+        artifact_owner,
+        &mut tools,
+    )
+    .map_err(anyhow::Error::msg)
+    .context("could not activate profile image-generation tool")?;
     let restored_plans = session.started_orchestration_plans();
     let child_supervisor = if child_registry.routes.is_empty() {
         None
@@ -800,9 +820,14 @@ async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &s
         Some(cli::Command::ExternalAgent(args)) => {
             super::external_agents::run(args.command, paths, &mut stdout.lock()).await
         }
+        Some(cli::Command::Image(args)) => {
+            let stdin = std::io::stdin();
+            super::image_commands::run(args.command, paths, &mut stdin.lock(), &mut stdout.lock())
+                .await
+        }
         _ => {
             anyhow::bail!(
-                "only project, profile, skill, plugin, MCP, and external-agent commands are available from this control path"
+                "only project, profile, skill, plugin, MCP, external-agent, and image commands are available from this control path"
             )
         }
     }

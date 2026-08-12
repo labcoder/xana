@@ -258,7 +258,7 @@ struct OpenAiUsage {
     output_tokens: Option<u64>,
 }
 
-fn descriptor() -> FocusedServiceDescriptor {
+pub(crate) fn descriptor() -> FocusedServiceDescriptor {
     FocusedServiceDescriptor {
         adapter: ADAPTER_ID.into(),
         operation: ServiceOperation::ImageGenerate,

@@ -64,3 +64,30 @@ egress_policy = "image-prompts"
 OpenRouter usage and authoritative response cost are retained when supplied.
 This route can coexist with `openai.images`; choosing one never changes Xana's
 conversational model and failure never invokes the other.
+
+## Use an image route
+
+The same typed application command is available as a one-shot CLI command and
+as `/image ...` in the plain loop or TUI command palette:
+
+```console
+xana image list
+xana image inspect illustrate
+xana image generate "A clean systems diagram of a local agent" --route illustrate --yes
+printf 'A calm watercolor landscape' | xana image generate --route illustrate --yes --json
+```
+
+`list` and `inspect` are read-only and never resolve a credential. `generate`
+previews the exact route, connection, model, outbound class, and known/unknown
+cost semantics on stderr. One-shot use requires `--yes`; without it Xana fails
+closed before resolving the secret or opening the network. JSON stdout contains
+only the bounded receipt and artifact metadata, never image bytes or the API
+key. Ctrl+C requests cancellation; Xana does not claim a synchronous provider
+cancelled work that may already have reached the provider.
+
+When a profile exposes at least one compatible image route, the native agent
+also receives `generate_image`. Its optional `route` argument follows the same
+explicit-route/default rule, and the ordinary external-effect permission broker
+must authorize the exact recipient and `image.generate` operation. The tool
+returns artifact IDs, hashes, media types, provenance, usage, and cost metadata;
+the conversation does not embed or duplicate the binary.

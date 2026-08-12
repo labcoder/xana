@@ -938,6 +938,39 @@ fn parses_external_agent_discovery_and_trust_lifecycle() {
 }
 
 #[test]
+fn parses_focused_image_commands() {
+    assert_eq!(
+        Cli::try_parse_from(["xana", "image", "list", "--json"])
+            .unwrap()
+            .command,
+        Some(Command::Image(ImageArgs {
+            command: ImageCommand::List { json: true },
+        }))
+    );
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "image",
+            "generate",
+            "a safe diagram",
+            "--route",
+            "illustrate",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Image(ImageArgs {
+            command: ImageCommand::Generate {
+                prompt: Some("a safe diagram".into()),
+                route: Some("illustrate".into()),
+                yes: true,
+                json: false,
+            },
+        }))
+    );
+}
+
+#[test]
 fn rejects_unknown_commands_and_invalid_round_counts() {
     let unknown =
         Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");

@@ -76,6 +76,7 @@ fn classify_input(line: &str) -> InputAction<'_> {
         "plugin",
         "mcp",
         "external-agent",
+        "image",
     ] {
         let command = format!("/{family}");
         if trimmed == command {
