@@ -299,7 +299,7 @@ impl ToolRegistry {
         Self::builtins_from_names(shell, &exposed)
     }
 
-    fn builtins_from_names(
+    pub(crate) fn builtins_from_names(
         shell: Shell,
         exposed: &std::collections::BTreeSet<String>,
     ) -> Result<Self, RegistryError> {

@@ -838,6 +838,7 @@ mod tests {
             default_profile: "default".into(),
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,
+            permission_rules: Vec::new(),
             connections: BTreeMap::from([(
                 "local".into(),
                 ConnectionConfig {
@@ -893,6 +894,7 @@ mod tests {
             default_profile: "default".into(),
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,
+            permission_rules: Vec::new(),
             connections: BTreeMap::from([(
                 "codex".into(),
                 ConnectionConfig {

@@ -276,7 +276,10 @@ bounded JSON/request-scoped SSE, local PKCE completion, OS-store token binding,
 and serialized atomic refresh. MCP application integration now adds typed
 client commands, dynamic qualified tool registration, explicit resource reads
 and prompt previews, exact permission/egress gates, bounded results, and
-CLI/plain/TUI command parity. The local server and A2A remain unimplemented.
+CLI/plain/TUI command parity. The local Xana MCP server now exposes only the
+allowlisted `xana_docs` surface through an isolated stdio process with exact
+workspace/profile policy, bounded progress/cancellation, and no ambient
+session authority. A2A remains unimplemented.
 Current behavior remains described by Architecture
 and User Documentation. Once every accepted slice ships, this proposal must be
 marked Implemented.

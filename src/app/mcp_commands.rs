@@ -9,14 +9,19 @@ use crate::{
     credential::CredentialResolver,
     mcp::{
         McpApplication, McpArgument, McpEnvironmentValue, McpGuardedTransport, McpHttpClient,
-        McpHttpConnection, McpHttpEndpoint, McpHttpSecurity, McpPrimitiveAllowlist,
+        McpHttpConnection, McpHttpEndpoint, McpHttpSecurity, McpLocalServer, McpPrimitiveAllowlist,
         McpProcessConfig, McpServerExposure, McpStdioClient, mcp_http_recipient,
     },
     outbound::{OutboundGuard, OutboundPolicyLayers, RecipientIdentity, RecipientKind},
     paths::XanaPaths,
 };
 use anyhow::{Context, Result};
-use std::{collections::BTreeMap, io::Write, path::Path, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io::Write,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use tokio_util::sync::CancellationToken;
 
 const DISPLAY_LIMIT: usize = 64;
@@ -111,9 +116,70 @@ pub(super) async fn run(
             serde_json::to_writer_pretty(&mut *output, &preview)?;
             writeln!(output)?;
         }
+        McpCommand::Serve { .. } => unreachable!("local server is routed before text output locks"),
         McpCommand::List => unreachable!("handled before refresh"),
     }
     Ok(())
+}
+
+pub(super) async fn serve(
+    paths: &XanaPaths,
+    workspace: PathBuf,
+    profile_name: String,
+    allow: Vec<String>,
+) -> Result<()> {
+    let workspace = workspace.canonicalize().with_context(|| {
+        format!(
+            "could not canonicalize MCP workspace {}",
+            workspace.display()
+        )
+    })?;
+    if !workspace.is_dir() {
+        anyhow::bail!("MCP workspace must be an existing directory");
+    }
+    let registry = XanaConfig::load_registry_from(paths.config_file())
+        .context("could not load MCP server configuration")?;
+    let profile = registry
+        .profiles
+        .get(&profile_name)
+        .with_context(|| format!("unknown MCP server profile {profile_name:?}"))?;
+    if profile.archived {
+        anyhow::bail!("MCP server profile {profile_name:?} is archived");
+    }
+    let effective_permission = profile.permission_mode.unwrap_or(registry.permission_mode);
+    if effective_permission != crate::config::PermissionMode::Allow {
+        anyhow::bail!(
+            "MCP server profile {profile_name:?} must use permission_mode = \"allow\"; noninteractive ask/deny policy cannot authorize calls"
+        );
+    }
+
+    let allowed = allow.into_iter().collect::<std::collections::BTreeSet<_>>();
+    if allowed.is_empty() || allowed.iter().any(|name| name != "xana_docs") {
+        anyhow::bail!("the bounded local server currently supports only exact `--allow xana_docs`");
+    }
+    if profile
+        .capabilities
+        .as_ref()
+        .is_some_and(|capabilities| !capabilities.iter().any(|value| value == "xana.docs.read"))
+    {
+        anyhow::bail!(
+            "profile {profile_name:?} does not select the xana.docs.read capability required by xana_docs"
+        );
+    }
+    let shell = crate::shell::Shell::resolve(crate::shell::ShellConfig::default())
+        .context("could not resolve the platform shell")?;
+    let tools = crate::tool::ToolRegistry::builtins_from_names(shell, &allowed)
+        .context("could not compose the local MCP tool allowlist")?;
+    let policy = crate::permission::PermissionPolicy::new(
+        effective_permission.into(),
+        registry.permission_rules.clone(),
+        &workspace,
+    )
+    .context("could not resolve the local MCP permission policy")?;
+    McpLocalServer::new(workspace, profile_name, tools, policy)
+        .run_stdio()
+        .await
+        .context("local MCP server stopped with an error")
 }
 
 pub(super) async fn activate_profile_tools(
@@ -327,7 +393,7 @@ fn command_server(command: &McpCommand) -> Option<&str> {
         | McpCommand::Read { server, .. }
         | McpCommand::Prompts { server, .. }
         | McpCommand::Prompt { server, .. } => Some(server),
-        McpCommand::List => None,
+        McpCommand::List | McpCommand::Serve { .. } => None,
     }
 }
 

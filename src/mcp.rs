@@ -12,6 +12,7 @@ mod catalog;
 mod http;
 mod oauth;
 mod protocol;
+mod server;
 mod stdio;
 
 #[allow(unused_imports)]
@@ -48,6 +49,7 @@ pub(crate) use protocol::{
     decode_tool_definition_result, decode_tool_page, encode_notification, encode_request,
     negotiate,
 };
+pub(crate) use server::McpLocalServer;
 #[allow(unused_imports)] // Application integration arrives in M3-14.
 pub(crate) use stdio::{
     McpArgument, McpEnvironmentValue, McpProcessActivity, McpProcessConfig, McpProcessHealth,

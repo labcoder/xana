@@ -130,10 +130,17 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             plugins::run_command(args.command, &paths, &mut stdout.lock())
         }
-        Some(Command::Mcp(args)) => {
-            let stdout = io::stdout();
-            mcp_commands::run(args.command, &paths, &mut stdout.lock()).await
-        }
+        Some(Command::Mcp(args)) => match args.command {
+            cli::McpCommand::Serve {
+                workspace,
+                profile,
+                allow,
+            } => mcp_commands::serve(&paths, workspace, profile, allow).await,
+            command => {
+                let stdout = io::stdout();
+                mcp_commands::run(command, &paths, &mut stdout.lock()).await
+            }
+        },
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();
             operations::run_operation(args.command, &paths, &mut stdout.lock()).await

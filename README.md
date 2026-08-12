@@ -202,6 +202,12 @@ prompt templates remain attributed untrusted data and never become ambient
 system instructions. The same typed commands are available as `/mcp ...` in
 plain chat and the TUI. See [MCP](docs/user/mcp.md).
 
+For local composition, `xana mcp serve --workspace PATH --profile PROFILE
+--allow xana_docs` exposes an isolated, stdio-only, noninteractive MCP process.
+It has no ambient Xana conversation or frontend authority and opens no network
+listener. The [MCP guide](docs/user/mcp.md#local-xana-mcp-server) documents its
+exact policy and shutdown boundary.
+
 Data leaving Xana for an external integration passes one typed outbound gate.
 Connection, user, profile, and conversation policy can only narrow the allowed
 classes; concrete messages, files, artifacts, and metadata still require exact
