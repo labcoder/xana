@@ -831,6 +831,37 @@ fn parses_plugin_lifecycle_and_scopes() {
 }
 
 #[test]
+fn parses_mcp_discovery_read_and_prompt_commands() {
+    assert_eq!(
+        Cli::try_parse_from(["xana", "mcp", "tools", "docs", "--query", "read"])
+            .unwrap()
+            .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::Tools {
+                server: "docs".into(),
+                query: "read".into(),
+            },
+        }))
+    );
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "mcp",
+            "prompt",
+            "docs",
+            "review",
+            "--arg",
+            "text=hello"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::Prompt { .. }
+        }))
+    ));
+}
+
+#[test]
 fn rejects_unknown_commands_and_invalid_round_counts() {
     let unknown =
         Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");

@@ -65,6 +65,16 @@ pub(crate) fn scope_contains(grant: &PermissionScope, request: &PermissionScope)
                 && grant_cwd == request_cwd
                 && grant_command == request_command
         }
+        (
+            PermissionScope::External {
+                recipient_identity_digest: grant_recipient,
+                operation: grant_operation,
+            },
+            PermissionScope::External {
+                recipient_identity_digest: request_recipient,
+                operation: request_operation,
+            },
+        ) => grant_recipient == request_recipient && grant_operation == request_operation,
         (PermissionScope::Unscoped, PermissionScope::Unscoped) => true,
         _ => false,
     }

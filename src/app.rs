@@ -7,6 +7,7 @@
 mod chat;
 mod connections;
 mod hosting;
+mod mcp_commands;
 mod one_shot;
 mod operations;
 mod plugins;
@@ -128,6 +129,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Plugin(args)) => {
             let stdout = io::stdout();
             plugins::run_command(args.command, &paths, &mut stdout.lock())
+        }
+        Some(Command::Mcp(args)) => {
+            let stdout = io::stdout();
+            mcp_commands::run(args.command, &paths, &mut stdout.lock()).await
         }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();

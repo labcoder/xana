@@ -433,6 +433,45 @@ pub(super) async fn run(
         };
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
+    let (profile_mcp_servers, profile_mcp_allowlists, profile_mcp_egress) =
+        frozen_profile.as_ref().map_or_else(
+            || {
+                child_registry
+                    .profiles
+                    .get(&child_registry.default_profile)
+                    .map(|profile| {
+                        let egress = profile
+                            .egress_policy
+                            .as_deref()
+                            .and_then(|policy| child_registry.egress_policies.get(policy))
+                            .map(|policy| policy.allowed.clone())
+                            .unwrap_or_default();
+                        (
+                            profile.mcp_servers.clone(),
+                            profile.mcp_allowlists.clone(),
+                            egress,
+                        )
+                    })
+                    .unwrap_or_default()
+            },
+            |profile| {
+                (
+                    profile.mcp_servers.value.clone(),
+                    profile.mcp_allowlists.value.clone(),
+                    profile.egress.value.clone(),
+                )
+            },
+        );
+    super::mcp_commands::activate_profile_tools(
+        &child_registry,
+        paths,
+        &workspace_root,
+        &profile_mcp_servers,
+        &profile_mcp_allowlists,
+        &profile_mcp_egress,
+        &mut tools,
+    )
+    .await?;
     let (session, permission_policy, resumed, repair_truncate_to, unfinished, restored_children) =
         match resume {
             Some(session_id) => {
@@ -648,7 +687,7 @@ async fn continue_after_chat_exit(
     }
     let mut force_new_conversation = exit == plain_terminal::ChatExit::NewConversation;
     if let plain_terminal::ChatExit::ControlCommand { family, arguments } = &exit
-        && let Err(error) = run_chat_control_command(paths, family, arguments)
+        && let Err(error) = run_chat_control_command(paths, family, arguments).await
     {
         eprintln!("xana: {error:#}");
     }
@@ -702,7 +741,7 @@ async fn continue_after_chat_exit(
     .await
 }
 
-fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {
+async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {
     if arguments.len() > 16 * 1024 {
         anyhow::bail!("control command exceeds the 16 KiB input limit");
     }
@@ -732,9 +771,12 @@ fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) ->
         Some(cli::Command::Plugin(args)) => {
             super::plugins::run_command(args.command, paths, &mut stdout.lock())
         }
+        Some(cli::Command::Mcp(args)) => {
+            super::mcp_commands::run(args.command, paths, &mut stdout.lock()).await
+        }
         _ => {
             anyhow::bail!(
-                "only project, profile, skill, and plugin commands are available from this control path"
+                "only project, profile, skill, plugin, and MCP commands are available from this control path"
             )
         }
     }

@@ -140,9 +140,9 @@ fn default_cwd() -> String {
 impl Tool for RunCommand {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "run_command",
+            name: "run_command".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Run one command through Xana's configured local shell when runtime permission allows it. The process uses Xana's ordinary host permissions and is not sandboxed.",
+            description: "Run one command through Xana's configured local shell when runtime permission allows it. The process uses Xana's ordinary host permissions and is not sandboxed.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {

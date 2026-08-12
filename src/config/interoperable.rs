@@ -76,8 +76,21 @@ pub(crate) enum McpServerDeclaration {
     },
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct McpPrimitiveSelection {
+    #[serde(default)]
+    pub(crate) tools: Vec<String>,
+    #[serde(default)]
+    pub(crate) resources: Vec<String>,
+    #[serde(default)]
+    pub(crate) resource_templates: Vec<String>,
+    #[serde(default)]
+    pub(crate) prompts: Vec<String>,
+}
+
 impl McpServerDeclaration {
-    fn egress_policy(&self) -> Option<&str> {
+    pub(crate) fn egress_policy(&self) -> Option<&str> {
         match self {
             Self::Stdio { egress_policy, .. } | Self::StreamableHttp { egress_policy, .. } => {
                 egress_policy.as_deref()
@@ -132,7 +145,6 @@ pub(crate) enum OutboundDataClass {
 }
 
 impl OutboundDataClass {
-    #[cfg(test)]
     pub(crate) const ALL: [Self; 6] = [
         Self::PromptText,
         Self::XanaSummary,
@@ -337,6 +349,19 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
         validate_references("profile MCP servers", name, &profile.mcp_servers, |value| {
             document.mcp_servers.contains_key(value)
         })?;
+        if profile.mcp_allowlists.len() > MAX_REFERENCES_PER_PROFILE {
+            return invalid("profile", name, "too many MCP primitive allowlists");
+        }
+        for (server, selection) in &profile.mcp_allowlists {
+            if !profile.mcp_servers.contains(server) {
+                return invalid(
+                    "profile",
+                    name,
+                    "MCP primitive allowlist must name a selected server",
+                );
+            }
+            validate_mcp_selection(name, selection)?;
+        }
         validate_references(
             "profile external agents",
             name,
@@ -359,6 +384,36 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_mcp_selection(
+    profile: &str,
+    selection: &McpPrimitiveSelection,
+) -> Result<(), ConfigError> {
+    for (_label, values, max_bytes) in [
+        ("tools", &selection.tools, 128_usize),
+        ("resources", &selection.resources, 4096),
+        ("resource templates", &selection.resource_templates, 4096),
+        ("prompts", &selection.prompts, 128),
+    ] {
+        if values.len() > MAX_REFERENCES_PER_PROFILE {
+            return invalid("profile", profile, "too many MCP primitive references");
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        if values.iter().any(|value| {
+            value.is_empty()
+                || value.len() > max_bytes
+                || value.chars().any(char::is_control)
+                || !unique.insert(value)
+        }) {
+            return invalid(
+                "profile",
+                profile,
+                "MCP primitive allowlist is invalid or contains duplicates",
+            );
+        }
+    }
     Ok(())
 }
 

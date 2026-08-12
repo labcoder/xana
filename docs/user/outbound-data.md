@@ -46,10 +46,11 @@ item/reference counts, byte bounds, decision source, and outcome. They do not
 contain prompts, message or file contents, artifact bytes, credentials,
 authorization headers, or hidden model reasoning.
 
-The shared guard is implemented now. The internal MCP Streamable HTTP adapter
-implements `OutboundTransport`, validates the exact recipient digest again at
-its payload-bearing send seam, and cannot send before `OutboundGuard` grants
-that request. Agent Plugin MCP declarations remain inert, and Xana does not yet
-expose an MCP, A2A, or focused-service command in this build. The later
-application integrations must use the same gate; there is no independent
-transport-specific bypass.
+The shared guard is implemented now. MCP stdio and Streamable HTTP application
+requests both pass the same gate before their payload-bearing send seam.
+Explicit CLI resource/prompt/catalog actions reuse the command itself as the
+one-shot review action; agent-chosen MCP tools first pass the normal exact tool
+permission request. In both cases connection and profile egress ceilings still
+apply, saved denials win, recipient identity is rechecked, and a denial sends
+zero bytes. A2A and focused-service integrations must use the same gate; there
+is no transport-specific bypass.

@@ -120,9 +120,9 @@ impl CollectAgents {
 impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "spawn_agent",
+            name: "spawn_agent".into(),
             contract_version: 1,
-            description: "Admit one explicit bounded task to an exact Xana child route and return its durable handle without waiting",
+            description: "Admit one explicit bounded task to an exact Xana child route and return its durable handle without waiting".into(),
             parameters: spawn_parameters(),
             effect_class: EffectClass::External,
             replay_safety: ReplaySafety::Never,
@@ -164,9 +164,9 @@ impl Tool for SpawnAgent {
 impl Tool for SpawnMany {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "spawn_many",
+            name: "spawn_many".into(),
             contract_version: 1,
-            description: "Atomically admit a fixed bounded list of independent Xana child tasks; either every queued handle is returned in input order or none exists",
+            description: "Atomically admit a fixed bounded list of independent Xana child tasks; either every queued handle is returned in input order or none exists".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -225,9 +225,9 @@ impl Tool for SpawnMany {
 impl Tool for AwaitAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "await_agent",
+            name: "await_agent".into(),
             contract_version: 1,
-            description: "Wait for one Xana child report; timeout stops waiting unless cancel_on_timeout is explicitly true",
+            description: "Wait for one Xana child report; timeout stops waiting unless cancel_on_timeout is explicitly true".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -297,9 +297,9 @@ impl Tool for AwaitAgent {
 impl Tool for CancelAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "cancel_agent",
+            name: "cancel_agent".into(),
             contract_version: 1,
-            description: "Request cooperative cancellation of one Xana child; use await_agent to observe its terminal outcome",
+            description: "Request cooperative cancellation of one Xana child; use await_agent to observe its terminal outcome".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -337,9 +337,9 @@ impl Tool for CancelAgent {
 impl Tool for CollectAgents {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "collect_agents",
+            name: "collect_agents".into(),
             contract_version: 1,
-            description: "Collect a bounded set of Xana child reports in requested handle order with explicit timeout and failure policy",
+            description: "Collect a bounded set of Xana child reports in requested handle order with explicit timeout and failure policy".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,

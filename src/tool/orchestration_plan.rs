@@ -36,9 +36,9 @@ impl ExecuteOrchestrationPlan {
 impl Tool for ValidateOrchestrationPlan {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "validate_orchestration_plan",
+            name: "validate_orchestration_plan".into(),
             contract_version: 1,
-            description: "Purely validate one closed versioned Xana orchestration plan, including exact routes and aggregate runtime budgets, without admitting work",
+            description: "Purely validate one closed versioned Xana orchestration plan, including exact routes and aggregate runtime budgets, without admitting work".into(),
             parameters: parameters(),
             effect_class: EffectClass::Read,
             replay_safety: ReplaySafety::Safe,
@@ -69,9 +69,9 @@ impl Tool for ValidateOrchestrationPlan {
 impl Tool for ExecuteOrchestrationPlan {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "execute_orchestration_plan",
+            name: "execute_orchestration_plan".into(),
             contract_version: 1,
-            description: "Validate then execute one closed Xana spawn/await/collect/cancel plan through the canonical child supervisor",
+            description: "Validate then execute one closed Xana spawn/await/collect/cancel plan through the canonical child supervisor".into(),
             parameters: parameters(),
             effect_class: EffectClass::External,
             replay_safety: ReplaySafety::Never,

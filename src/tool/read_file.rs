@@ -206,9 +206,10 @@ fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFil
 impl Tool for ReadFile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "read_file",
+            name: "read_file".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Read a UTF-8 file beneath the workspace root using a relative path",
+            description: "Read a UTF-8 file beneath the workspace root using a relative path"
+                .into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,

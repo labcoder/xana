@@ -1119,12 +1119,11 @@ credentials, or hidden reasoning. Transport failures are reduced to typed safe
 categories before they cross this boundary. Noninteractive unresolved approval
 fails closed.
 
-The internal MCP Streamable HTTP adapter implements the guarded outbound
-transport seam and revalidates the exact recipient digest before sending. Its
-application integration is not exposed yet. A2A and focused-service transports
-remain unavailable rather than shipping an unguarded alternate path; every
-application integration must call `OutboundGuard::dispatch` as the only
-payload-bearing send seam.
+MCP stdio and Streamable HTTP application requests implement the guarded
+outbound seam and revalidate the exact recipient digest before sending. A2A
+and focused-service transports remain unavailable rather than shipping an
+unguarded alternate path; every application integration must call
+`OutboundGuard::dispatch` as the only payload-bearing send seam.
 
 ### MCP protocol and progressive catalog boundary
 
@@ -1152,6 +1151,26 @@ flowchart LR
     T --> D{"Exact tool selected?"}
     D -->|yes| S["Load and validate bounded schema on demand"]
     D -->|no| B["No schema/model-context cost"]
+```
+
+The application layer converts an exact, allowlisted tool into a dynamic
+`ToolDefinition` and registers it with the ordinary tool registry. This keeps
+native and remote tools behind one permission broker without turning the MCP
+transport into an authority source. Resources and prompts use separate
+explicit typed actions.
+
+```mermaid
+flowchart LR
+    C["Resolved profile + per-server allowlists"] --> A["MCP application"]
+    A --> T["Qualified dynamic tool"]
+    T --> P["Xana permission broker"]
+    P --> E["Outbound data-class gate"]
+    E --> W["stdio or Streamable HTTP wire"]
+    A --> R["Explicit resource read"]
+    R --> U["Attributed untrusted document"]
+    A --> M["Explicit prompt preview"]
+    M --> V["User/assistant messages only"]
+    V -. "system role rejected" .-> X["No ambient authority"]
 ```
 
 Page count, item count, metadata bytes, descriptions, URIs, and JSON Schema

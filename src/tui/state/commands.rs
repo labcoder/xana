@@ -497,7 +497,11 @@ impl TuiState {
                     }
                 }
             }
-            CommandId::Project | CommandId::Profile | CommandId::Skill | CommandId::Plugin => {
+            CommandId::Project
+            | CommandId::Profile
+            | CommandId::Skill
+            | CommandId::Plugin
+            | CommandId::Mcp => {
                 self.composer.take();
                 if self.busy {
                     self.status = "Wait for or interrupt the active turn before changing project/profile/skill/plugin state".to_owned();
@@ -509,6 +513,7 @@ impl TuiState {
                             CommandId::Profile => "profile",
                             CommandId::Skill => "skill",
                             CommandId::Plugin => "plugin",
+                            CommandId::Mcp => "mcp",
                             _ => unreachable!(),
                         }
                         .to_owned(),

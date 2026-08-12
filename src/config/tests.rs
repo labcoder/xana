@@ -125,6 +125,11 @@ service_routes = ["illustrate"]
 egress_policy = "selected"
 applies_to = ["primary"]
 
+[profiles.default.mcp_allowlists.files]
+tools = ["read"]
+resources = ["file:///guide"]
+prompts = ["review"]
+
 [plugins.reviewer]
 source = { kind = "git", url = "https://example.test/reviewer.git", revision = "0123456789abcdef" }
 enabled = true
@@ -162,6 +167,8 @@ allowed = ["prompt_text", "selected_artifacts"]
     assert_eq!(profile.identity.as_deref(), Some("Help with this project."));
     assert_eq!(profile.applies_to, vec![ProfileUse::Primary]);
     assert_eq!(profile.skills, ["repo.review"]);
+    assert_eq!(profile.mcp_allowlists["files"].tools, ["read"]);
+    assert_eq!(profile.mcp_allowlists["files"].resources, ["file:///guide"]);
     assert!(registry.plugins["reviewer"].enabled);
     assert!(matches!(
         registry.mcp_servers["files"],
@@ -180,6 +187,50 @@ allowed = ["prompt_text", "selected_artifacts"]
         ]
     );
     assert!(!input.contains("api_key ="));
+}
+
+#[test]
+fn mcp_primitive_allowlists_require_selected_servers_and_unique_bounded_values() {
+    let unselected = MINIMAL.replace(
+        "model = \"qwen3:1.7b\"",
+        "model = \"qwen3:1.7b\"\n[profiles.default.mcp_allowlists.missing]\ntools = [\"read\"]",
+    );
+    assert!(matches!(
+        parse_error(&unselected.replace("version = 1", "version = 4")),
+        ConfigError::InvalidInteroperableConfig {
+            section: "profile",
+            ..
+        }
+    ));
+
+    let duplicate = r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+[providers.local]
+kind = "ollama"
+[profiles.default]
+connection = "local"
+model = "qwen"
+mcp_servers = ["files"]
+[profiles.default.mcp_allowlists.files]
+tools = ["read", "read"]
+[mcp_servers.files]
+transport = "stdio"
+command = "server"
+enabled = true
+"#;
+    let error = parse_error(duplicate);
+    assert!(
+        matches!(
+            error,
+            ConfigError::InvalidInteroperableConfig {
+                section: "profile",
+                ..
+            }
+        ),
+        "unexpected error: {error:?}"
+    );
 }
 
 #[test]

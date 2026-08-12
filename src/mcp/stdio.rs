@@ -275,6 +275,12 @@ pub(crate) struct McpStdioClient {
     inner: Arc<ClientInner>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpRawResponse {
+    pub(crate) request_id: McpRequestId,
+    pub(crate) bytes: Vec<u8>,
+}
+
 struct ClientInner {
     commands: mpsc::Sender<ActorCommand>,
     health: watch::Receiver<McpProcessHealth>,
@@ -382,6 +388,18 @@ impl McpStdioClient {
         params: Value,
         cancellation: &CancellationToken,
     ) -> Result<Vec<u8>, McpStdioError> {
+        Ok(self
+            .request_with_id(method, params, cancellation)
+            .await?
+            .bytes)
+    }
+
+    pub(crate) async fn request_with_id(
+        &self,
+        method: &str,
+        params: Value,
+        cancellation: &CancellationToken,
+    ) -> Result<McpRawResponse, McpStdioError> {
         let request_id = self.inner.next_request_id.fetch_add(1, Ordering::Relaxed);
         let id = McpRequestId::new(request_id)?;
         let encoded = encode_request(id, method, params)?;
@@ -403,7 +421,11 @@ impl McpStdioClient {
                 mpsc::error::TrySendError::Full(_) => McpStdioError::QueueFull,
                 mpsc::error::TrySendError::Closed(_) => McpStdioError::Closed,
             })?;
-        result_rx.await.map_err(|_| McpStdioError::Closed)?
+        let bytes = result_rx.await.map_err(|_| McpStdioError::Closed)??;
+        Ok(McpRawResponse {
+            request_id: id,
+            bytes,
+        })
     }
 
     pub(crate) async fn shutdown(&self) -> Result<McpStopReport, McpStdioError> {

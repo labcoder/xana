@@ -61,6 +61,7 @@ pub(super) fn run_command(
                         skills: Vec::new(),
                         plugins: Vec::new(),
                         mcp_servers: Vec::new(),
+                        mcp_allowlists: std::collections::BTreeMap::new(),
                         external_agents: Vec::new(),
                         service_routes: Vec::new(),
                         egress: Vec::new(),

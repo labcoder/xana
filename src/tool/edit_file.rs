@@ -232,9 +232,10 @@ fn edit_file(arguments: &Value, workspace_root: &Path) -> Result<String, EditFil
 impl Tool for EditFile {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "edit_file",
+            name: "edit_file".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Replace exactly one text occurrence in an existing UTF-8 workspace file",
+            description: "Replace exactly one text occurrence in an existing UTF-8 workspace file"
+                .into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,

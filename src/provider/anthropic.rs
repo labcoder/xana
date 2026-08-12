@@ -162,8 +162,8 @@ fn convert_messages<'a>(
         tools: tools
             .iter()
             .map(|definition| WireTool {
-                name: definition.name,
-                description: definition.description,
+                name: &definition.name,
+                description: &definition.description,
                 input_schema: &definition.parameters,
             })
             .collect(),
@@ -592,9 +592,9 @@ mod tests {
 
     fn tool() -> ToolDefinition {
         ToolDefinition {
-            name: "lookup",
+            name: "lookup".into(),
             contract_version: 1,
-            description: "lookup",
+            description: "lookup".into(),
             parameters: json!({"type":"object","properties":{"q":{"type":"string"}}}),
             effect_class: crate::tool::EffectClass::Read,
             replay_safety: crate::tool::ReplaySafety::Safe,

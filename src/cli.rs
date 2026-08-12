@@ -203,6 +203,9 @@ pub(crate) enum Command {
     /// Inspect and manage declarative Agent Plugin bundles.
     #[command(display_order = 11)]
     Plugin(PluginArgs),
+    /// Inspect and use profile-allowlisted Model Context Protocol servers.
+    #[command(display_order = 12)]
+    Mcp(McpArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -221,6 +224,60 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct McpArgs {
+    #[command(subcommand)]
+    pub(crate) command: McpCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum McpCommand {
+    /// List configured servers without starting processes or network work.
+    List,
+    /// Connect to one selected server and refresh its bounded catalog.
+    Refresh {
+        #[arg(value_name = "SERVER")]
+        server: String,
+    },
+    /// List allowlisted tools after an explicit catalog refresh.
+    Tools {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, default_value = "")]
+        query: String,
+    },
+    /// List allowlisted resources after an explicit catalog refresh.
+    Resources {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, default_value = "")]
+        query: String,
+    },
+    /// Read one exact allowlisted resource as attributed untrusted content.
+    Read {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(value_name = "URI")]
+        uri: String,
+    },
+    /// List allowlisted prompt templates after an explicit catalog refresh.
+    Prompts {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(long, default_value = "")]
+        query: String,
+    },
+    /// Preview one allowlisted prompt template; it never gains system authority.
+    Prompt {
+        #[arg(value_name = "SERVER")]
+        server: String,
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(long = "arg", value_name = "KEY=VALUE")]
+        arguments: Vec<String>,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

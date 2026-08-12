@@ -59,9 +59,9 @@ pub(crate) enum ReplaySafety {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ToolDefinition {
-    pub(crate) name: &'static str,
+    pub(crate) name: String,
     pub(crate) contract_version: u32,
-    pub(crate) description: &'static str,
+    pub(crate) description: String,
     pub(crate) parameters: Value,
     pub(crate) effect_class: EffectClass,
     pub(crate) replay_safety: ReplaySafety,
@@ -118,7 +118,7 @@ impl PreparedToolInvocation<'_> {
         PermissionRequest {
             operation_id,
             invocation_id,
-            tool_name: self.definition.name.to_owned(),
+            tool_name: self.definition.name.clone(),
             effect_class: self.definition.effect_class,
             final_arguments: self.planned.final_arguments.clone(),
             scope: self.planned.scope.clone(),
@@ -159,7 +159,7 @@ pub(crate) struct ToolContext<'a> {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum RegistryError {
-    DuplicateName { name: &'static str },
+    DuplicateName { name: String },
     Composition(String),
 }
 
@@ -195,9 +195,13 @@ impl ToolRegistry {
     where
         T: Tool + 'static,
     {
+        self.register_boxed(Box::new(tool))
+    }
+
+    pub(crate) fn register_boxed(&mut self, tool: Box<dyn Tool>) -> Result<(), RegistryError> {
         let definition = tool.definition();
 
-        if self.definition(definition.name).is_some() {
+        if self.definition(&definition.name).is_some() {
             return Err(RegistryError::DuplicateName {
                 name: definition.name,
             });
@@ -205,7 +209,7 @@ impl ToolRegistry {
 
         self.tools.push(RegisteredTool {
             definition,
-            implementation: Box::new(tool),
+            implementation: tool,
         });
         Ok(())
     }

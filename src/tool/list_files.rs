@@ -222,9 +222,9 @@ fn list_files(arguments: &Value, workspace_root: &Path) -> Result<String, ListFi
 impl Tool for ListFiles {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {
-            name: "list_files",
+            name: "list_files".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "List one directory beneath the workspace as sorted JSON",
+            description: "List one directory beneath the workspace as sorted JSON".into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,
