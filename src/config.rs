@@ -374,6 +374,14 @@ pub(crate) struct NewProfile {
     pub(crate) model: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewExternalAgent {
+    pub(crate) id: String,
+    pub(crate) endpoint: String,
+    pub(crate) credential: Option<CredentialReference>,
+    pub(crate) egress_policy: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProfileUpdate {
     pub(crate) connection: Option<String>,
@@ -1034,6 +1042,86 @@ impl XanaConfig {
         document["version"] = toml_edit::value(CONFIG_VERSION as i64);
         let rendered = document.to_string();
         Self::parse(&rendered)?;
+        atomic_config_write(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn add_external_agent(
+        path: &Path,
+        input: NewExternalAgent,
+    ) -> Result<(), ConfigError> {
+        validate_name("external agent", &input.id)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        if document.get("external_agents").is_none() {
+            document["external_agents"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let agents = document
+            .get_mut("external_agents")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("external_agents must be a table".into()))?;
+        if agents.contains_key(&input.id) {
+            return Err(ConfigError::Edit(format!(
+                "external agent {:?} already exists",
+                input.id
+            )));
+        }
+        let mut agent = toml_edit::Table::new();
+        agent["endpoint"] = toml_edit::value(input.endpoint);
+        agent["enabled"] = toml_edit::value(true);
+        if let Some(reference) = input.credential {
+            let mut credential = toml_edit::InlineTable::new();
+            match reference {
+                CredentialReference::Environment { variable } => {
+                    credential.insert("source", "environment".into());
+                    credential.insert("variable", variable.into());
+                }
+                CredentialReference::Stored { id } => {
+                    credential.insert("source", "stored".into());
+                    credential.insert("id", id.into());
+                }
+            }
+            agent["credential"] = toml_edit::Item::Value(toml_edit::Value::InlineTable(credential));
+        }
+        if let Some(policy) = input.egress_policy {
+            agent["egress_policy"] = toml_edit::value(policy);
+        }
+        agents[&input.id] = toml_edit::Item::Table(agent);
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
+        atomic_config_write(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn remove_external_agent(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let registry = Self::load_registry_from(path)?;
+        if !registry.external_agents.contains_key(id) {
+            return Err(ConfigError::Edit(format!("unknown external agent {id:?}")));
+        }
+        let profiles = registry
+            .profiles
+            .values()
+            .filter(|profile| profile.external_agents.iter().any(|value| value == id))
+            .map(|profile| profile.id.clone())
+            .collect::<Vec<_>>();
+        if !profiles.is_empty() {
+            return Err(ConfigError::Edit(format!(
+                "external agent {id:?} is referenced by profiles {}",
+                profiles.join(", ")
+            )));
+        }
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        document
+            .get_mut("external_agents")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("external_agents must be a table".into()))?
+            .remove(id);
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
         atomic_config_write(path, rendered.as_bytes())
     }
 

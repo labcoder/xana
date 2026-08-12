@@ -6,6 +6,7 @@
 
 mod chat;
 mod connections;
+mod external_agents;
 mod hosting;
 mod mcp_commands;
 mod one_shot;
@@ -141,6 +142,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 mcp_commands::run(command, &paths, &mut stdout.lock()).await
             }
         },
+        Some(Command::ExternalAgent(args)) => {
+            let stdout = io::stdout();
+            external_agents::run(args.command, &paths, &mut stdout.lock()).await
+        }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();
             operations::run_operation(args.command, &paths, &mut stdout.lock()).await

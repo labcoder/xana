@@ -206,6 +206,9 @@ pub(crate) enum Command {
     /// Inspect and use profile-allowlisted Model Context Protocol servers.
     #[command(display_order = 12)]
     Mcp(McpArgs),
+    /// Configure, inspect, and explicitly trust remote A2A agents.
+    #[command(name = "external-agent", display_order = 13)]
+    ExternalAgent(ExternalAgentArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -224,6 +227,48 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ExternalAgentArgs {
+    #[command(subcommand)]
+    pub(crate) command: ExternalAgentCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ExternalAgentCommand {
+    /// List configured agents and cached trust/readiness.
+    List,
+    /// Inspect one cached Agent Card and identity without network work.
+    Show { name: String },
+    /// Add a declaration; refresh and trust are separate explicit actions.
+    Add {
+        name: String,
+        #[arg(long)]
+        endpoint: String,
+        #[arg(long, conflicts_with = "credential_id")]
+        env: Option<String>,
+        #[arg(long, conflicts_with = "env")]
+        credential_id: Option<String>,
+        #[arg(long)]
+        egress_policy: Option<String>,
+    },
+    /// Explicitly fetch and cache the bounded Agent Card.
+    Refresh { name: String },
+    /// Trust the exact currently cached identity.
+    Trust {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Revoke local trust without changing the declaration or cache.
+    Untrust { name: String },
+    /// Remove an unreferenced declaration and its private cached state.
+    Remove {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

@@ -211,6 +211,58 @@ impl Default for EndpointTrustDocument {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExternalAgentSkillRecord {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) input_modes: Vec<String>,
+    pub(crate) output_modes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExternalAgentStateRecord {
+    pub(crate) connection: String,
+    pub(crate) configured_endpoint: String,
+    pub(crate) identity_digest: String,
+    pub(crate) agent_name: String,
+    pub(crate) description: String,
+    pub(crate) owner: Option<String>,
+    pub(crate) agent_version: String,
+    pub(crate) interface_url: String,
+    pub(crate) protocol_binding: String,
+    pub(crate) protocol_version: String,
+    pub(crate) streaming: bool,
+    pub(crate) input_modes: Vec<String>,
+    pub(crate) output_modes: Vec<String>,
+    pub(crate) security_schemes: Vec<String>,
+    pub(crate) skills: Vec<ExternalAgentSkillRecord>,
+    pub(crate) refreshed_unix_ms: u64,
+    #[serde(default)]
+    pub(crate) trusted_identity_digest: Option<String>,
+    #[serde(default)]
+    pub(crate) trusted_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExternalAgentStateDocument {
+    pub(crate) version: u32,
+    #[serde(default)]
+    pub(crate) agents: BTreeMap<String, ExternalAgentStateRecord>,
+}
+
+impl Default for ExternalAgentStateDocument {
+    fn default() -> Self {
+        Self {
+            version: PRIVATE_RECORD_VERSION,
+            agents: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SavedOutboundDecision {

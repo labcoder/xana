@@ -127,6 +127,12 @@ impl XanaPaths {
             .join("endpoint-trust.json")
     }
 
+    pub(crate) fn external_agent_state_file(&self) -> PathBuf {
+        self.data_dir
+            .join("interoperable")
+            .join("external-agents.json")
+    }
+
     pub(crate) fn outbound_decisions_file(&self) -> PathBuf {
         self.data_dir
             .join("interoperable")
@@ -180,6 +186,10 @@ mod tests {
         assert_eq!(
             paths.endpoint_trust_file(),
             root.join("data/interoperable/endpoint-trust.json")
+        );
+        assert_eq!(
+            paths.external_agent_state_file(),
+            root.join("data/interoperable/external-agents.json")
         );
         assert_eq!(
             paths.outbound_decisions_file(),

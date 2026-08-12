@@ -1276,6 +1276,37 @@ emits bounded progress, and correlates cancellation by request ID. EOF cancels
 all outstanding work and shuts down the broker under a two-second cleanup
 deadline. It never binds a socket or claims public API stability.
 
+### External-agent discovery and trust
+
+An `ExternalAgentDeclaration` is a logical A2A Agent Card URL plus optional
+credential and egress-policy references. It is not a conversational connection
+or execution owner. Generic startup and profile resolution never fetch the
+endpoint. `xana external-agent refresh` is the only discovery effect; it uses
+the pinned, no-proxy, no-redirect public-address HTTP boundary shared with MCP.
+
+```mermaid
+flowchart LR
+    C["config.toml declaration\nCard URL + credential reference"] --> R["Explicit refresh"]
+    R --> H["Pinned HTTPS GET\nno redirect/proxy/private address"]
+    H --> V["Bounded A2A 1.0 Card validation"]
+    V --> S["Sanitized private Card cache\nsemantic identity digest"]
+    S --> U["Offline show + visible diff"]
+    U --> T["Explicit trust of exact digest"]
+    T --> P["Profile readiness"]
+    D["Endpoint / owner / interface / capability / security / skill change"] --> X["review_required"]
+    X --> T
+```
+
+The compatibility subset requires one tenant-free JSONRPC interface at
+protocol `1.0`, `text/plain` input and output, and no required extension,
+push-notification, or authenticated extended-Card behavior. Normalized Card
+state lives in private `external-agents.json`; it contains no credential or raw
+remote instructions. Trust binds the configured Card endpoint and normalized
+owner/interface/capability/media/security/skill identity. A changed digest or
+endpoint blocks readiness until refreshed and reapproved. Empty profile
+selection returns before opening private state, preserving the zero-A2A-startup
+path. Task delegation is not part of this discovery boundary.
+
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
 An existing snapshot cannot be replaced. A profile change allocates a new

@@ -774,9 +774,12 @@ async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &s
         Some(cli::Command::Mcp(args)) => {
             super::mcp_commands::run(args.command, paths, &mut stdout.lock()).await
         }
+        Some(cli::Command::ExternalAgent(args)) => {
+            super::external_agents::run(args.command, paths, &mut stdout.lock()).await
+        }
         _ => {
             anyhow::bail!(
-                "only project, profile, skill, plugin, and MCP commands are available from this control path"
+                "only project, profile, skill, plugin, MCP, and external-agent commands are available from this control path"
             )
         }
     }
