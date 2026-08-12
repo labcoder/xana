@@ -155,6 +155,137 @@ fn linked_install_is_explicitly_mutable_and_never_copied() {
 }
 
 #[test]
+fn lifecycle_reapproves_broadened_update_and_rolls_back_exactly() {
+    let source = tempfile::tempdir().unwrap();
+    write_plugin(source.path(), "quality-tools");
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+    let source_spec = PackageSource::Directory(source.path().to_owned());
+    let original = manager.inspect_source(&source_spec).unwrap();
+    manager.install(&source_spec, &original.digest).unwrap();
+    let scope = PluginScope::Profile {
+        project: None,
+        profile: "default".to_owned(),
+    };
+    let enabled = manager.enable("quality-tools", &scope).unwrap();
+    assert_eq!(enabled.enabled_scopes, ["profile:global:default"]);
+
+    fs::create_dir_all(source.path().join("skills/plan")).unwrap();
+    fs::write(
+        source.path().join("skills/plan/SKILL.md"),
+        "---\nname: plan\ndescription: Plan safely.\n---\nMake a plan.",
+    )
+    .unwrap();
+    let update = manager.check_update("quality-tools", None).unwrap();
+    assert!(update.changed);
+    assert!(update.requires_reapproval);
+    assert_eq!(update.added_skills, ["plan"]);
+    let updated = manager
+        .update("quality-tools", None, &update.candidate_revision)
+        .unwrap();
+    assert!(updated.enabled_scopes.is_empty());
+    assert!(updated.rollback_available);
+
+    let rolled_back = manager.rollback("quality-tools").unwrap();
+    assert_eq!(rolled_back.active_revision, original.digest);
+    assert_eq!(rolled_back.enabled_scopes, ["profile:global:default"]);
+    manager.disable("quality-tools", &scope).unwrap();
+    assert!(manager.remove("quality-tools").unwrap());
+    assert!(manager.list().unwrap().is_empty());
+}
+
+#[test]
+fn compatible_update_inherits_exact_approved_scopes() {
+    let source = tempfile::tempdir().unwrap();
+    write_plugin(source.path(), "quality-tools");
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+    let spec = PackageSource::Directory(source.path().to_owned());
+    let review = manager.inspect_source(&spec).unwrap();
+    manager.install(&spec, &review.digest).unwrap();
+    manager.enable("quality-tools", &PluginScope::User).unwrap();
+    fs::write(
+        source.path().join("skills/review/references/rules.md"),
+        "Changed instructions without a new declared capability.",
+    )
+    .unwrap();
+    let update = manager.check_update("quality-tools", None).unwrap();
+    assert!(!update.requires_reapproval);
+    let installed = manager
+        .update("quality-tools", None, &update.candidate_revision)
+        .unwrap();
+    assert_eq!(installed.enabled_scopes, ["user"]);
+}
+
+#[test]
+fn changed_mcp_values_require_reapproval_without_exposing_them() {
+    let source = tempfile::tempdir().unwrap();
+    write_plugin(source.path(), "quality-tools");
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+    let spec = PackageSource::Directory(source.path().to_owned());
+    let review = manager.inspect_source(&spec).unwrap();
+    manager.install(&spec, &review.digest).unwrap();
+    manager.enable("quality-tools", &PluginScope::User).unwrap();
+    let mcp = fs::read_to_string(source.path().join("mcp.json")).unwrap();
+    fs::write(
+        source.path().join("mcp.json"),
+        mcp.replace("--quiet", "--other"),
+    )
+    .unwrap();
+
+    let update = manager.check_update("quality-tools", None).unwrap();
+    assert!(update.requires_reapproval);
+    let encoded = serde_json::to_string(&update).unwrap();
+    assert!(!encoded.contains("--other"));
+}
+
+#[test]
+fn linked_drift_is_degraded_and_cannot_be_enabled() {
+    let source = tempfile::tempdir().unwrap();
+    write_plugin(source.path(), "linked-tools");
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+    let spec = PackageSource::Linked(source.path().to_owned());
+    let review = manager.inspect_source(&spec).unwrap();
+    manager.install(&spec, &review.digest).unwrap();
+    fs::write(source.path().join("extra.txt"), "drift").unwrap();
+
+    assert!(
+        manager
+            .inspect_installed("linked-tools")
+            .unwrap()
+            .health
+            .starts_with("degraded:")
+    );
+    assert!(matches!(
+        manager.enable("linked-tools", &PluginScope::User),
+        Err(PluginError::Drifted(name)) if name == "linked-tools"
+    ));
+}
+
+#[test]
+fn profile_resolution_and_skill_sources_pin_the_active_revision() {
+    let source = tempfile::tempdir().unwrap();
+    write_plugin(source.path(), "quality-tools");
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+    let spec = PackageSource::Directory(source.path().to_owned());
+    let review = manager.inspect_source(&spec).unwrap();
+    manager.install(&spec, &review.digest).unwrap();
+    manager.enable("quality-tools", &PluginScope::User).unwrap();
+
+    let (revisions, readiness) = manager
+        .resolve_profile_plugins(&["quality-tools".to_owned()], &PluginScope::User)
+        .unwrap();
+    assert!(readiness.is_empty());
+    assert_eq!(revisions["quality-tools"], review.digest);
+    let sources = manager.skill_sources_for_revisions(&revisions).unwrap();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(sources[0].qualifier, "plugin:quality-tools");
+}
+
+#[test]
 fn invalid_plugin_never_appears_installed() {
     let source = tempfile::tempdir().unwrap();
     fs::write(source.path().join("plugin.json"), b"not json").unwrap();

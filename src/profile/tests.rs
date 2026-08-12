@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     config::{InitialConfig, InitialConnection, PermissionMode, ProfileUpdate},
+    plugin::{PackageSource, PluginManager, PluginScope},
     portable_project::{PortableProfile, PortableProjectStore},
     private_state::ensure_interoperable_records,
     project::ProjectStore,
@@ -8,6 +9,23 @@ use crate::{
 };
 use std::{ffi::OsString, fs};
 use tempfile::tempdir;
+
+fn write_plugin(root: &std::path::Path) {
+    fs::create_dir_all(root.join("skills/review")).unwrap();
+    fs::write(
+        root.join("plugin.json"),
+        format!(
+            r#"{{"$schema":"{}","name":"quality"}}"#,
+            crate::plugin::AGENT_PLUGIN_MANIFEST_SCHEMA
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("skills/review/SKILL.md"),
+        "---\nname: review\ndescription: Review safely.\n---\nReview.",
+    )
+    .unwrap();
+}
 
 fn fixture() -> (tempfile::TempDir, XanaPaths) {
     let directory = tempdir().unwrap();
@@ -94,6 +112,40 @@ fn resolved_profile_is_deterministic_redacted_and_frozen_per_conversation() {
             .unwrap()
             .profile_name,
         "other"
+    );
+}
+
+#[test]
+fn global_profile_freezes_exact_locally_enabled_plugin_revision() {
+    let (directory, paths) = fixture();
+    let source = directory.path().join("plugin");
+    write_plugin(&source);
+    let manager = PluginManager::open(&paths);
+    let spec = PackageSource::Directory(source);
+    let review = manager.inspect_source(&spec).unwrap();
+    manager.install(&spec, &review.digest).unwrap();
+    XanaConfig::set_profile_plugin(paths.config_file(), "default", "quality", true).unwrap();
+    manager
+        .enable(
+            "quality",
+            &PluginScope::Profile {
+                project: None,
+                profile: "default".to_owned(),
+            },
+        )
+        .unwrap();
+
+    let resolved = ProfileStore::open(&paths)
+        .resolve_global("default")
+        .unwrap();
+    assert!(resolved.is_ready());
+    assert_eq!(resolved.plugin_revisions["quality"], review.digest);
+    let snapshot = ProfileStore::open(&paths)
+        .freeze("plugin-conversation", &resolved)
+        .unwrap();
+    assert_eq!(
+        snapshot.resolved["plugin_revisions"]["quality"],
+        review.digest
     );
 }
 

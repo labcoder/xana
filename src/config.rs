@@ -1091,13 +1091,32 @@ impl XanaConfig {
         skill: &str,
         enabled: bool,
     ) -> Result<(), ConfigError> {
+        Self::set_profile_reference(path, id, "skills", skill, enabled)
+    }
+
+    pub(crate) fn set_profile_plugin(
+        path: &Path,
+        id: &str,
+        plugin: &str,
+        enabled: bool,
+    ) -> Result<(), ConfigError> {
+        Self::set_profile_reference(path, id, "plugins", plugin, enabled)
+    }
+
+    fn set_profile_reference(
+        path: &Path,
+        id: &str,
+        key: &str,
+        value: &str,
+        enabled: bool,
+    ) -> Result<(), ConfigError> {
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
             .map_err(|error| ConfigError::Edit(error.to_string()))?;
         let profile = profile_table_mut(&mut document, id)?;
-        let mut skills = profile
-            .get("skills")
+        let mut values = profile
+            .get(key)
             .and_then(toml_edit::Item::as_array)
             .map(|array| {
                 array
@@ -1108,18 +1127,18 @@ impl XanaConfig {
             })
             .unwrap_or_default();
         if enabled {
-            if !skills.iter().any(|value| value == skill) {
-                skills.push(skill.to_owned());
+            if !values.iter().any(|item| item == value) {
+                values.push(value.to_owned());
             }
         } else {
-            skills.retain(|value| value != skill);
+            values.retain(|item| item != value);
         }
-        skills.sort();
+        values.sort();
         let mut array = toml_edit::Array::new();
-        for value in skills {
+        for value in values {
             array.push(value);
         }
-        profile["skills"] = toml_edit::value(array);
+        profile[key] = toml_edit::value(array);
         validate_and_write_profile_edit(path, document)
     }
 

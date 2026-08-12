@@ -260,8 +260,8 @@ automatic provider/agent routing.
 ## Implementation status
 
 This proposal is Accepted and prescriptive. Agent Skills discovery/activation
-and inert Agent Plugin inspection, exact acquisition, validation, and disabled
-installation are implemented. Plugin enable/update/rollback/removal, MCP,
-local-server, and A2A slices remain unimplemented. Current behavior remains
+and Agent Plugin inspection, exact acquisition, scoped enablement, explicit
+update/reapproval, rollback, removal, and garbage collection are implemented.
+MCP, local-server, and A2A slices remain unimplemented. Current behavior remains
 described by Architecture and User Documentation. Once every accepted slice
 ships, this proposal must be marked Implemented.

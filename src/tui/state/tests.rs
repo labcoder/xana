@@ -356,6 +356,14 @@ fn project_and_profile_slash_commands_use_the_shared_control_path() {
             arguments: "activate project/review".to_owned(),
         }
     );
+    state.composer.replace("/plugin inspect quality".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::ControlCommand {
+            family: "plugin".to_owned(),
+            arguments: "inspect quality".to_owned(),
+        }
+    );
 }
 
 #[test]

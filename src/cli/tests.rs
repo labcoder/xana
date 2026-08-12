@@ -760,11 +760,11 @@ fn parses_operation_plan_and_resume() {
 #[test]
 fn parses_plugin_review_and_exact_git_install() {
     assert!(matches!(
-        Cli::try_parse_from(["xana", "plugin", "inspect", ".", "--linked"])
+        Cli::try_parse_from(["xana", "plugin", "review", ".", "--linked"])
             .unwrap()
             .command,
         Some(Command::Plugin(PluginArgs {
-            command: PluginCommand::Inspect { linked: true, .. }
+            command: PluginCommand::Review { linked: true, .. }
         }))
     ));
     assert!(matches!(
@@ -788,6 +788,46 @@ fn parses_plugin_review_and_exact_git_install() {
             }
         }))
     ));
+}
+
+#[test]
+fn parses_plugin_lifecycle_and_scopes() {
+    let project = ProjectId::new();
+    for arguments in [
+        vec!["xana", "plugin", "inspect", "quality"],
+        vec![
+            "xana",
+            "plugin",
+            "enable",
+            "quality",
+            "--profile",
+            "default",
+        ],
+        vec![
+            "xana",
+            "plugin",
+            "disable",
+            "quality",
+            "--project",
+            &project.to_string(),
+        ],
+        vec![
+            "xana",
+            "plugin",
+            "update-check",
+            "quality",
+            "--revision",
+            "0123456789012345678901234567890123456789",
+        ],
+        vec!["xana", "plugin", "rollback", "quality", "--yes"],
+        vec!["xana", "plugin", "remove", "quality", "--yes"],
+        vec!["xana", "plugin", "gc", "--yes"],
+    ] {
+        assert!(matches!(
+            Cli::try_parse_from(arguments).unwrap().command,
+            Some(Command::Plugin(_))
+        ));
+    }
 }
 
 #[test]

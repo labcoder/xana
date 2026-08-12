@@ -8,15 +8,18 @@ mod manifest;
 mod source;
 
 use crate::{
+    identity::ProjectId,
     paths::XanaPaths,
     private_state::{
         InstalledPackageRecord, PackageRevisionRecord, PackageSourceKind, PackageSourceRecord,
         PackageStateDocument, PrivateStateError, UpdateDocumentError, ensure_interoperable_records,
         read_document, update_document,
     },
+    skill::SkillSource,
 };
 use serde::Serialize;
 use std::{
+    collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt, fs, io,
     path::{Path, PathBuf},
@@ -40,6 +43,61 @@ pub(crate) enum PackageSource {
 impl PackageSource {
     pub(crate) fn mutable(&self) -> bool {
         matches!(self, Self::Linked(_))
+    }
+
+    fn from_record(record: &PackageSourceRecord, revision: Option<String>) -> Self {
+        match record.kind {
+            PackageSourceKind::Directory => Self::Directory(PathBuf::from(&record.location)),
+            PackageSourceKind::Linked => Self::Linked(PathBuf::from(&record.location)),
+            PackageSourceKind::Git => Self::Git {
+                url: record.location.clone(),
+                revision: revision
+                    .or_else(|| record.revision.clone())
+                    .unwrap_or_default(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PluginScope {
+    User,
+    Project(ProjectId),
+    Profile {
+        project: Option<ProjectId>,
+        profile: String,
+    },
+}
+
+impl PluginScope {
+    pub(crate) fn key(&self) -> Result<String, PluginError> {
+        match self {
+            Self::User => Ok("user".to_owned()),
+            Self::Project(project) => Ok(format!("project:{project}")),
+            Self::Profile { project, profile } => {
+                validate_scope_name(profile)?;
+                Ok(match project {
+                    Some(project) => format!("profile:project:{project}:{profile}"),
+                    None => format!("profile:global:{profile}"),
+                })
+            }
+        }
+    }
+
+    pub(crate) fn candidates(&self) -> Result<Vec<String>, PluginError> {
+        let mut candidates = vec!["user".to_owned()];
+        match self {
+            Self::User => {}
+            Self::Project(project) => candidates.push(format!("project:{project}")),
+            Self::Profile { project, profile } => {
+                if let Some(project) = project {
+                    candidates.push(format!("project:{project}"));
+                }
+                candidates.push(self.key()?);
+                let _ = profile;
+            }
+        }
+        Ok(candidates)
     }
 }
 
@@ -129,6 +187,10 @@ pub(crate) struct PluginReview {
     pub(crate) skills: Vec<String>,
     pub(crate) mcp_servers: Vec<McpServerReview>,
     pub(crate) diagnostics: Vec<String>,
+    /// Digest of the complete bounded MCP declaration, including values that
+    /// must affect reapproval but must never be printed or persisted verbatim.
+    #[serde(skip)]
+    pub(crate) mcp_configuration_digest: Option<String>,
 }
 
 impl PluginReview {
@@ -137,10 +199,12 @@ impl PluginReview {
         struct Capabilities<'a> {
             skills: &'a [String],
             mcp_servers: &'a [McpServerReview],
+            mcp_configuration_digest: &'a Option<String>,
         }
         let bytes = serde_json::to_vec(&Capabilities {
             skills: &self.skills,
             mcp_servers: &self.mcp_servers,
+            mcp_configuration_digest: &self.mcp_configuration_digest,
         })
         .map_err(PluginError::Encode)?;
         Ok(blake3::hash(&bytes).to_hex().to_string())
@@ -159,6 +223,22 @@ pub(crate) struct InstalledPlugin {
     pub(crate) mcp_server_names: Vec<String>,
     pub(crate) enabled_scopes: Vec<String>,
     pub(crate) rollback_available: bool,
+    pub(crate) health: String,
+    pub(crate) pending_update: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PluginUpdateReview {
+    pub(crate) name: String,
+    pub(crate) current_revision: String,
+    pub(crate) candidate_revision: String,
+    pub(crate) changed: bool,
+    pub(crate) added_skills: Vec<String>,
+    pub(crate) removed_skills: Vec<String>,
+    pub(crate) added_mcp_servers: Vec<String>,
+    pub(crate) removed_mcp_servers: Vec<String>,
+    pub(crate) requires_reapproval: bool,
+    pub(crate) mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -237,6 +317,7 @@ impl PluginManager {
                 .map(|server| server.name.clone())
                 .collect(),
             capability_digest,
+            approved_scopes: Vec::new(),
         };
         let package_name = review.manifest.name.clone();
         update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
@@ -267,6 +348,8 @@ impl PluginManager {
                             enabled_scopes: Vec::new(),
                             source: Some(source_record.clone()),
                             revisions: [(digest.clone(), revision.clone())].into_iter().collect(),
+                            pending_revision: None,
+                            previous_revision: None,
                         },
                     );
                 }
@@ -289,15 +372,469 @@ impl PluginManager {
         };
         document
             .plugins
-            .keys()
-            .map(|name| installed_from_document(&self.store, &document, name))
+            .iter()
+            .map(|(name, package)| {
+                let mut installed = installed_from_document(&self.store, &document, name)?;
+                installed.health = match self.validate_revision(package, &package.active_revision) {
+                    Ok(()) if package.enabled_scopes.is_empty() => "disabled".to_owned(),
+                    Ok(()) => "ready".to_owned(),
+                    Err(error) => format!("degraded: {error}"),
+                };
+                Ok(installed)
+            })
             .collect()
     }
 
     pub(crate) fn inspect_installed(&self, name: &str) -> Result<InstalledPlugin, PluginError> {
         let document =
             read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
-        installed_from_document(&self.store, &document, name)
+        let mut installed = installed_from_document(&self.store, &document, name)?;
+        installed.health = self.revision_health(name, &installed.active_revision)?;
+        Ok(installed)
+    }
+
+    pub(crate) fn enable(
+        &self,
+        name: &str,
+        scope: &PluginScope,
+    ) -> Result<InstalledPlugin, PluginError> {
+        let scope = scope.key()?;
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        self.validate_revision(package, &package.active_revision)?;
+        update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+            let package = document
+                .plugins
+                .get_mut(name)
+                .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+            insert_sorted(&mut package.enabled_scopes, &scope);
+            let revision = package
+                .revisions
+                .get_mut(&package.active_revision)
+                .ok_or_else(|| {
+                    PluginError::Invalid(format!("plugin {name:?} has no active revision"))
+                })?;
+            insert_sorted(&mut revision.approved_scopes, &scope);
+            Ok(())
+        })
+        .map_err(map_state_update)?;
+        self.inspect_installed(name)
+    }
+
+    pub(crate) fn disable(
+        &self,
+        name: &str,
+        scope: &PluginScope,
+    ) -> Result<InstalledPlugin, PluginError> {
+        let scope = scope.key()?;
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+            let package = document
+                .plugins
+                .get_mut(name)
+                .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+            package.enabled_scopes.retain(|item| item != &scope);
+            if let Some(revision) = package.revisions.get_mut(&package.active_revision) {
+                revision.approved_scopes.retain(|item| item != &scope);
+            }
+            Ok(())
+        })
+        .map_err(map_state_update)?;
+        self.inspect_installed(name)
+    }
+
+    pub(crate) fn check_update(
+        &self,
+        name: &str,
+        revision: Option<String>,
+    ) -> Result<PluginUpdateReview, PluginError> {
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        let source_record = package.source.as_ref().ok_or_else(|| {
+            PluginError::Invalid(format!("plugin {name:?} has incomplete source metadata"))
+        })?;
+        if revision.is_some() && source_record.kind != PackageSourceKind::Git {
+            return Err(PluginError::Invalid(
+                "--revision is valid only for a Git-installed plugin".to_owned(),
+            ));
+        }
+        let source = PackageSource::from_record(source_record, revision);
+        let candidate = self.inspect_source(&source)?;
+        if candidate.manifest.name != name {
+            return Err(PluginError::Invalid(format!(
+                "update source declares plugin {:?}, expected {name:?}",
+                manifest::safe_text(&candidate.manifest.name)
+            )));
+        }
+        let current = package
+            .revisions
+            .get(&package.active_revision)
+            .ok_or_else(|| {
+                PluginError::Invalid(format!("plugin {name:?} has no active revision"))
+            })?;
+        let candidate_capability = candidate.capability_digest()?;
+        let review = update_review(name, package, current, &candidate, &candidate_capability);
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+            let package = document
+                .plugins
+                .get_mut(name)
+                .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+            if package.active_revision != review.current_revision {
+                return Err(PluginError::Changed(self.state_file.clone()));
+            }
+            package.pending_revision = review.changed.then(|| review.candidate_revision.clone());
+            Ok(())
+        })
+        .map_err(map_state_update)?;
+        Ok(review)
+    }
+
+    pub(crate) fn update(
+        &self,
+        name: &str,
+        revision: Option<String>,
+        expected_digest: &str,
+    ) -> Result<InstalledPlugin, PluginError> {
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        let old_active = package.active_revision.clone();
+        let source_record = package.source.as_ref().ok_or_else(|| {
+            PluginError::Invalid(format!("plugin {name:?} has incomplete source metadata"))
+        })?;
+        let source = PackageSource::from_record(source_record, revision);
+        let acquired = source::acquire(&source, &self.store, !source.mutable())?;
+        let digest = source::tree_digest(&acquired.root)?;
+        let review = manifest::inspect(&acquired.root, source.mutable(), digest.clone())?;
+        if review.manifest.name != name {
+            return Err(PluginError::Invalid(format!(
+                "update source declares plugin {:?}, expected {name:?}",
+                manifest::safe_text(&review.manifest.name)
+            )));
+        }
+        if digest != expected_digest {
+            return Err(PluginError::ReviewChanged {
+                expected: expected_digest.to_owned(),
+                actual: digest,
+            });
+        }
+        let capability_digest = review.capability_digest()?;
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let current_package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        if current_package.active_revision != old_active
+            || current_package.pending_revision.as_deref() != Some(expected_digest)
+        {
+            return Err(PluginError::Invalid(
+                "plugin update review is stale; run update-check again".to_owned(),
+            ));
+        }
+        let current_capability = current_package
+            .revisions
+            .get(&old_active)
+            .map(|item| item.capability_digest.as_str())
+            .ok_or_else(|| {
+                PluginError::Invalid(format!("plugin {name:?} has no active revision"))
+            })?;
+        let inherited_scopes = if current_capability == capability_digest {
+            current_package.enabled_scopes.clone()
+        } else {
+            Vec::new()
+        };
+        let source_identity = acquired.identity;
+        let relative_root = PathBuf::from("versions")
+            .join(name)
+            .join(expected_digest)
+            .join("bundle");
+        let final_root = if source.mutable() {
+            acquired.root
+        } else {
+            let destination = self.store.join(&relative_root);
+            acquired
+                .staging
+                .ok_or_else(|| {
+                    PluginError::Invalid("immutable update has no staging tree".to_owned())
+                })?
+                .commit_bundle(&destination)?;
+            if source::tree_digest(&destination)? != expected_digest {
+                return Err(PluginError::Changed(destination));
+            }
+            destination
+        };
+        let new_revision = PackageRevisionRecord {
+            digest: expected_digest.to_owned(),
+            manifest_version: review.manifest.version,
+            installed_unix_ms: unix_millis()?,
+            mutable: source.mutable(),
+            managed_root: (!source.mutable()).then_some(relative_root),
+            linked_root: source.mutable().then_some(final_root),
+            skill_names: review.skills,
+            mcp_server_names: review
+                .mcp_servers
+                .into_iter()
+                .map(|item| item.name)
+                .collect(),
+            capability_digest,
+            approved_scopes: inherited_scopes.clone(),
+        };
+        let new_source_digest = source_identity.digest()?;
+        let new_source = source_identity.record();
+        update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+            let package = document
+                .plugins
+                .get_mut(name)
+                .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+            if package.active_revision != old_active
+                || package.pending_revision.as_deref() != Some(expected_digest)
+            {
+                return Err(PluginError::Invalid(
+                    "plugin update review changed before commit".to_owned(),
+                ));
+            }
+            if source.mutable() {
+                package.revisions.clear();
+                package.retained_revisions.clear();
+                package.previous_revision = None;
+            } else {
+                package.previous_revision = Some(old_active.clone());
+            }
+            package
+                .revisions
+                .insert(expected_digest.to_owned(), new_revision.clone());
+            insert_sorted(&mut package.retained_revisions, expected_digest);
+            package.active_revision = expected_digest.to_owned();
+            package.source_digest = new_source_digest.clone();
+            package.source = Some(new_source.clone());
+            package.enabled_scopes = inherited_scopes.clone();
+            package.pending_revision = None;
+            Ok(())
+        })
+        .map_err(map_state_update)?;
+        self.inspect_installed(name)
+    }
+
+    pub(crate) fn rollback(&self, name: &str) -> Result<InstalledPlugin, PluginError> {
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        let target = package.previous_revision.clone().ok_or_else(|| {
+            PluginError::Invalid(format!("plugin {name:?} has no rollback revision"))
+        })?;
+        let target_record = package.revisions.get(&target).ok_or_else(|| {
+            PluginError::Invalid(format!("plugin {name:?} rollback revision is missing"))
+        })?;
+        if target_record.mutable {
+            return Err(PluginError::Invalid(
+                "linked development plugins cannot claim an immutable rollback".to_owned(),
+            ));
+        }
+        self.validate_revision(package, &target)?;
+        let current = package.active_revision.clone();
+        let approved = target_record.approved_scopes.clone();
+        update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+            let package = document
+                .plugins
+                .get_mut(name)
+                .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+            if package.active_revision != current
+                || package.previous_revision.as_deref() != Some(target.as_str())
+            {
+                return Err(PluginError::Invalid(
+                    "plugin rollback state changed before commit".to_owned(),
+                ));
+            }
+            package.active_revision = target.clone();
+            package.previous_revision = Some(current.clone());
+            package.enabled_scopes = approved.clone();
+            package.pending_revision = None;
+            Ok(())
+        })
+        .map_err(map_state_update)?;
+        self.inspect_installed(name)
+    }
+
+    pub(crate) fn remove(&self, name: &str) -> Result<bool, PluginError> {
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        let mut managed_roots = Vec::new();
+        let removed =
+            update_document::<PackageStateDocument, _, PluginError>(&self.state_file, |document| {
+                let Some(package) = document.plugins.get(name) else {
+                    return Ok(false);
+                };
+                if !package.enabled_scopes.is_empty() {
+                    return Err(PluginError::Enabled {
+                        name: name.to_owned(),
+                        scopes: package.enabled_scopes.clone(),
+                    });
+                }
+                managed_roots.extend(
+                    package
+                        .revisions
+                        .values()
+                        .filter_map(|revision| revision.managed_root.clone()),
+                );
+                document.plugins.remove(name);
+                Ok(true)
+            })
+            .map_err(map_state_update)?;
+        for root in managed_roots {
+            remove_managed_revision(&self.store, &root)?;
+        }
+        Ok(removed)
+    }
+
+    pub(crate) fn garbage_collect(&self) -> Result<usize, PluginError> {
+        let _lock = PluginLifecycleLock::acquire(&self.store)?;
+        let document = match read_document::<PackageStateDocument>(&self.state_file) {
+            Ok(document) => document,
+            Err(PrivateStateError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok(0);
+            }
+            Err(error) => return Err(PluginError::State(error)),
+        };
+        let referenced = document
+            .plugins
+            .values()
+            .flat_map(|package| package.revisions.values())
+            .filter_map(|revision| revision.managed_root.as_ref())
+            .map(|root| self.store.join(root))
+            .collect::<BTreeSet<_>>();
+        collect_orphan_versions(&self.store, &referenced)
+    }
+
+    pub(crate) fn resolve_profile_plugins(
+        &self,
+        names: &[String],
+        scope: &PluginScope,
+    ) -> Result<(BTreeMap<String, String>, Vec<String>), PluginError> {
+        let document = match read_document::<PackageStateDocument>(&self.state_file) {
+            Ok(document) => document,
+            Err(PrivateStateError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok((
+                    BTreeMap::new(),
+                    names
+                        .iter()
+                        .map(|name| format!("install plugin {name:?}"))
+                        .collect(),
+                ));
+            }
+            Err(error) => return Err(PluginError::State(error)),
+        };
+        let candidates = scope.candidates()?;
+        let mut resolved = BTreeMap::new();
+        let mut readiness = Vec::new();
+        for name in names {
+            let Some(package) = document.plugins.get(name) else {
+                readiness.push(format!("install plugin {name:?}"));
+                continue;
+            };
+            if !package
+                .enabled_scopes
+                .iter()
+                .any(|scope| candidates.contains(scope))
+            {
+                readiness.push(format!("enable plugin {name:?} for {}", scope.key()?));
+                continue;
+            }
+            match self.validate_revision(package, &package.active_revision) {
+                Ok(()) => {
+                    resolved.insert(name.clone(), package.active_revision.clone());
+                }
+                Err(error) => readiness.push(format!("plugin {name:?} is unavailable: {error}")),
+            }
+        }
+        Ok((resolved, readiness))
+    }
+
+    pub(crate) fn skill_sources_for_revisions(
+        &self,
+        revisions: &BTreeMap<String, String>,
+    ) -> Result<Vec<SkillSource>, PluginError> {
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        revisions
+            .iter()
+            .map(|(name, revision)| {
+                let package = document
+                    .plugins
+                    .get(name)
+                    .ok_or_else(|| PluginError::Unknown(name.clone()))?;
+                self.validate_revision(package, revision)?;
+                let record = package.revisions.get(revision).ok_or_else(|| {
+                    PluginError::Invalid(format!("plugin {name:?} revision {revision} is missing"))
+                })?;
+                SkillSource::plugin(
+                    name,
+                    revision_root(&self.store, record)?.join("skills"),
+                    record.mutable,
+                )
+                .map_err(PluginError::Skill)
+            })
+            .collect()
+    }
+
+    fn revision_health(&self, name: &str, revision: &str) -> Result<String, PluginError> {
+        let document =
+            read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
+        let package = document
+            .plugins
+            .get(name)
+            .ok_or_else(|| PluginError::Unknown(name.to_owned()))?;
+        Ok(match self.validate_revision(package, revision) {
+            Ok(()) if package.enabled_scopes.is_empty() => "disabled".to_owned(),
+            Ok(()) => "ready".to_owned(),
+            Err(error) => format!("degraded: {error}"),
+        })
+    }
+
+    fn validate_revision(
+        &self,
+        package: &InstalledPackageRecord,
+        revision: &str,
+    ) -> Result<(), PluginError> {
+        let record = package.revisions.get(revision).ok_or_else(|| {
+            PluginError::Invalid(format!(
+                "plugin {:?} revision {revision} is missing",
+                package.package
+            ))
+        })?;
+        let root = revision_root(&self.store, record)?;
+        let digest = source::tree_digest(&root)?;
+        if digest != revision || digest != record.digest {
+            return Err(PluginError::Drifted(package.package.clone()));
+        }
+        let review = manifest::inspect(&root, record.mutable, digest)?;
+        if review.manifest.name != package.package
+            || review.capability_digest()? != record.capability_digest
+        {
+            return Err(PluginError::Drifted(package.package.clone()));
+        }
+        Ok(())
     }
 }
 
@@ -337,8 +874,172 @@ fn installed_from_document(
         skill_names: revision.skill_names.clone(),
         mcp_server_names: revision.mcp_server_names.clone(),
         enabled_scopes: package.enabled_scopes.clone(),
-        rollback_available: package.retained_revisions.len() > 1,
+        rollback_available: package.previous_revision.is_some(),
+        health: "unchecked".to_owned(),
+        pending_update: package.pending_revision.clone(),
     })
+}
+
+fn update_review(
+    name: &str,
+    package: &InstalledPackageRecord,
+    current: &PackageRevisionRecord,
+    candidate: &PluginReview,
+    candidate_capability: &str,
+) -> PluginUpdateReview {
+    let current_skills = current.skill_names.iter().cloned().collect::<BTreeSet<_>>();
+    let candidate_skills = candidate.skills.iter().cloned().collect::<BTreeSet<_>>();
+    let current_mcp = current
+        .mcp_server_names
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let candidate_mcp = candidate
+        .mcp_servers
+        .iter()
+        .map(|item| item.name.clone())
+        .collect::<BTreeSet<_>>();
+    PluginUpdateReview {
+        name: name.to_owned(),
+        current_revision: package.active_revision.clone(),
+        candidate_revision: candidate.digest.clone(),
+        changed: candidate.digest != package.active_revision,
+        added_skills: candidate_skills
+            .difference(&current_skills)
+            .cloned()
+            .collect(),
+        removed_skills: current_skills
+            .difference(&candidate_skills)
+            .cloned()
+            .collect(),
+        added_mcp_servers: candidate_mcp.difference(&current_mcp).cloned().collect(),
+        removed_mcp_servers: current_mcp.difference(&candidate_mcp).cloned().collect(),
+        requires_reapproval: candidate_capability != current.capability_digest,
+        mutable: candidate.mutable,
+    }
+}
+
+fn revision_root(store: &Path, revision: &PackageRevisionRecord) -> Result<PathBuf, PluginError> {
+    revision
+        .managed_root
+        .as_ref()
+        .map(|path| store.join(path))
+        .or_else(|| revision.linked_root.clone())
+        .ok_or_else(|| PluginError::Invalid("plugin revision has no package root".to_owned()))
+}
+
+fn insert_sorted(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|item| item == value) {
+        values.push(value.to_owned());
+        values.sort();
+    }
+}
+
+fn validate_scope_name(value: &str) -> Result<(), PluginError> {
+    if value.is_empty()
+        || value.len() > 128
+        || value.contains(':')
+        || value.chars().any(char::is_control)
+    {
+        Err(PluginError::Invalid(format!(
+            "plugin scope name {:?} is invalid",
+            manifest::safe_text(value)
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn remove_managed_revision(store: &Path, relative_root: &Path) -> Result<(), PluginError> {
+    let versions = store.join("versions");
+    let bundle = store.join(relative_root);
+    if !bundle.starts_with(&versions)
+        || bundle.file_name().and_then(|name| name.to_str()) != Some("bundle")
+    {
+        return Err(PluginError::UnsafePath(bundle));
+    }
+    let Some(revision_root) = bundle.parent() else {
+        return Err(PluginError::UnsafePath(bundle));
+    };
+    match fs::symlink_metadata(revision_root) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(PluginError::Io {
+            path: revision_root.to_owned(),
+            source,
+        }),
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(revision_root).map_err(|source| PluginError::Io {
+                path: revision_root.to_owned(),
+                source,
+            })
+        }
+        Ok(_) => Err(PluginError::UnsafePath(revision_root.to_owned())),
+    }
+}
+
+fn collect_orphan_versions(
+    store: &Path,
+    referenced: &BTreeSet<PathBuf>,
+) -> Result<usize, PluginError> {
+    let versions = store.join("versions");
+    let plugins = match fs::read_dir(&versions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(source) => {
+            return Err(PluginError::Io {
+                path: versions,
+                source,
+            });
+        }
+    };
+    let mut removed = 0_usize;
+    for plugin in plugins {
+        let plugin = plugin.map_err(|source| PluginError::Io {
+            path: versions.clone(),
+            source,
+        })?;
+        let plugin_path = plugin.path();
+        let metadata = fs::symlink_metadata(&plugin_path).map_err(|source| PluginError::Io {
+            path: plugin_path.clone(),
+            source,
+        })?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        for revision in fs::read_dir(&plugin_path).map_err(|source| PluginError::Io {
+            path: plugin_path.clone(),
+            source,
+        })? {
+            let revision = revision.map_err(|source| PluginError::Io {
+                path: plugin_path.clone(),
+                source,
+            })?;
+            let revision_path = revision.path();
+            let name = revision.file_name();
+            let name = name.to_str().unwrap_or_default();
+            let metadata =
+                fs::symlink_metadata(&revision_path).map_err(|source| PluginError::Io {
+                    path: revision_path.clone(),
+                    source,
+                })?;
+            if name.len() != 64
+                || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+                || !metadata.is_dir()
+                || metadata.file_type().is_symlink()
+            {
+                continue;
+            }
+            if referenced.contains(&revision_path.join("bundle")) {
+                continue;
+            }
+            fs::remove_dir_all(&revision_path).map_err(|source| PluginError::Io {
+                path: revision_path,
+                source,
+            })?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn map_state_update(error: UpdateDocumentError<PluginError>) -> PluginError {
@@ -439,6 +1140,11 @@ pub(crate) enum PluginError {
     ConflictingSource(String),
     UpdateRequired(String),
     Unknown(String),
+    Enabled {
+        name: String,
+        scopes: Vec<String>,
+    },
+    Drifted(String),
     Busy(PathBuf),
 }
 
@@ -507,6 +1213,15 @@ impl fmt::Display for PluginError {
                 "plugin {name:?} changed; use the explicit plugin update workflow"
             ),
             Self::Unknown(name) => write!(formatter, "plugin {name:?} is not installed"),
+            Self::Enabled { name, scopes } => write!(
+                formatter,
+                "plugin {name:?} is still enabled for {}; disable it before removal",
+                scopes.join(", ")
+            ),
+            Self::Drifted(name) => write!(
+                formatter,
+                "plugin {name:?} no longer matches its reviewed package; review and update it before use"
+            ),
             Self::Busy(path) => write!(
                 formatter,
                 "another Xana process is changing plugins ({})",

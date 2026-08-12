@@ -176,7 +176,34 @@ pub(super) async fn run(
         },
         |profile| profile.skills.value.clone(),
     );
-    let skill_catalog = super::skills::catalog(&workspace_root, std::iter::empty())?;
+    let plugin_revisions = match &frozen_profile {
+        Some(profile) => profile.plugin_revisions.clone(),
+        None => {
+            let plugins = child_registry
+                .profiles
+                .get(&child_registry.default_profile)
+                .map(|profile| profile.plugins.as_slice())
+                .unwrap_or_default();
+            let (revisions, readiness) = crate::plugin::PluginManager::open(paths)
+                .resolve_profile_plugins(
+                    plugins,
+                    &crate::plugin::PluginScope::Profile {
+                        project: None,
+                        profile: child_registry.default_profile.clone(),
+                    },
+                )?;
+            if !readiness.is_empty() {
+                anyhow::bail!(
+                    "default profile plugin requirements are not ready: {}",
+                    readiness.join("; ")
+                );
+            }
+            revisions
+        }
+    };
+    let plugin_skill_sources =
+        crate::plugin::PluginManager::open(paths).skill_sources_for_revisions(&plugin_revisions)?;
+    let skill_catalog = super::skills::catalog(&workspace_root, plugin_skill_sources)?;
     let activated_skills = skill_catalog
         .activate_all(profile_skills.iter().map(String::as_str))
         .context(
@@ -702,9 +729,12 @@ fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) ->
         Some(cli::Command::Skill(args)) => {
             super::skills::run_command(args.command, paths, &mut stdout.lock())
         }
+        Some(cli::Command::Plugin(args)) => {
+            super::plugins::run_command(args.command, paths, &mut stdout.lock())
+        }
         _ => {
             anyhow::bail!(
-                "only project, profile, and skill commands are available from this control path"
+                "only project, profile, skill, and plugin commands are available from this control path"
             )
         }
     }

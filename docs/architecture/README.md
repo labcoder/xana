@@ -999,7 +999,7 @@ flowchart LR
     S -. "cannot grant" .-> X["Typed capabilities, permissions, egress"]
 ```
 
-### Agent Plugin acquisition and disabled installation
+### Agent Plugin acquisition and scoped lifecycle
 
 `PluginManager` owns inert Agent Plugins 1.0.0 inspection and private package
 state. A local directory is read directly for preview and copied through a
@@ -1033,9 +1033,44 @@ mutation races; versioned JSON replacement remains atomic. A crash before the
 record commit can leave only unreachable staging/content data, never a partial
 installed identity. Reinstalling an identical source/digest is idempotent;
 source identity conflicts and changed content require explicit lifecycle
-operations. The enable/update/rollback/removal control plane is not implemented
-yet, so installed contributions remain unavailable to prompt or MCP runtime
-discovery.
+operations.
+
+Enablement is a private exact binding at user, project, or profile scope. A
+portable profile stores only the logical plugin name; deterministic resolution
+checks the local binding and freezes the active content digest into
+`ResolvedProfile.plugin_revisions`. Only those exact versions contribute
+qualified Agent Skill sources to prompt assembly. Missing, disabled, drifted,
+or invalid versions produce readiness failures.
+
+Update check and apply are distinct reacquisition steps joined by the reviewed
+digest. An unchanged capability digest may inherit the exact active scopes; a
+changed skill/MCP declaration set begins disabled. The prior immutable revision
+and its own approved scopes remain available for atomic rollback. Linked source
+drift is degraded rather than trusted. Removal refuses enabled or portable
+profile references, and garbage collection removes only unreachable managed
+version trees. All lifecycle mutations serialize through the package lock and
+atomically replace versioned state.
+
+Plugin MCP declarations remain declarative data here. No plugin-origin process
+or network connection can exist until the supervised MCP transport phase, which
+will consume the exact resolved package revision and own shutdown on lifecycle
+changes. This preserves the process-ownership contract without pretending an
+unimplemented runtime needs cleanup today.
+
+```mermaid
+flowchart LR
+    A["Installed exact revision"] --> B["Private scoped approval"]
+    P["Portable profile: logical plugin name"] --> R["Deterministic resolver"]
+    B --> R
+    R --> F["Frozen exact plugin revision"]
+    F --> S["Qualified plugin skill source"]
+    F -. "M3-D only" .-> M["Supervised MCP runtime"]
+    U["Reviewed update digest"] --> C{"Capabilities unchanged?"}
+    C -->|"yes"| B
+    C -->|"no"| D["Disabled; explicit reapproval"]
+    U --> K["Retain prior known-good revision"]
+    K --> L["Atomic rollback"]
+```
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.

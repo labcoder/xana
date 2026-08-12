@@ -599,6 +599,31 @@ impl PortableProjectStore {
         self.inspect_profile(paths, project, name)
     }
 
+    pub(crate) fn set_profile_plugin(
+        &self,
+        paths: &XanaPaths,
+        project: crate::identity::ProjectId,
+        name: &str,
+        plugin: &str,
+        enabled: bool,
+    ) -> Result<PortableProfile, PortableProjectError> {
+        self.edit_profiles(paths, project, |manifest| {
+            let profile = manifest.profiles.get_mut(name).ok_or_else(|| {
+                PortableProjectError::Invalid(format!("unknown portable profile {name:?}"))
+            })?;
+            if enabled {
+                if !profile.plugins.iter().any(|value| value == plugin) {
+                    profile.plugins.push(plugin.to_owned());
+                }
+            } else {
+                profile.plugins.retain(|value| value != plugin);
+            }
+            profile.plugins.sort();
+            Ok(())
+        })?;
+        self.inspect_profile(paths, project, name)
+    }
+
     fn edit_profiles<T>(
         &self,
         paths: &XanaPaths,

@@ -1003,8 +1003,14 @@ pub(crate) enum PluginCommand {
         #[arg(long)]
         json: bool,
     },
-    /// Validate and review a local, linked, or exact-revision Git source.
+    /// Inspect one installed package, its health, scopes, and rollback state.
     Inspect {
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate and review a local, linked, or exact-revision Git source.
+    Review {
         source: String,
         #[arg(long, requires = "revision", conflicts_with = "linked")]
         git: bool,
@@ -1029,6 +1035,65 @@ pub(crate) enum PluginCommand {
         yes: bool,
         #[arg(long)]
         json: bool,
+    },
+    /// Enable an installed package for the user, a project, or one profile.
+    Enable {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Disable an installed package in one exact scope.
+    Disable {
+        name: String,
+        #[arg(long)]
+        project: Option<ProjectId>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Acquire and review a candidate update without applying it.
+    UpdateCheck {
+        name: String,
+        #[arg(long, value_name = "COMMIT")]
+        revision: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Apply the exact digest produced by update-check.
+    Update {
+        name: String,
+        #[arg(long, value_name = "COMMIT")]
+        revision: Option<String>,
+        #[arg(long, value_name = "DIGEST")]
+        digest: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Atomically restore the prior reviewed immutable revision.
+    Rollback {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a disabled, unreferenced package installation.
+    Remove {
+        name: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Delete immutable package trees no longer referenced by lifecycle state.
+    Gc {
+        #[arg(long)]
+        yes: bool,
     },
 }
 

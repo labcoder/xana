@@ -320,7 +320,7 @@ static ENTRIES: &[BundledDoc] = &[
     },
     BundledDoc {
         id: "user.plugins",
-        title: "Agent Plugin review and installation",
+        title: "Agent Plugin review and lifecycle",
         audience: USER_AUDIENCE,
         authority: DocAuthority::Descriptive,
         status: DocStatus::Shipped,
