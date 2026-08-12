@@ -857,6 +857,40 @@ backup, then atomically replaces `config.toml` as the final version marker.
 Corrupt or future private records fail closed and are never overwritten; an
 interrupted retry is idempotent.
 
+## Optional project registry
+
+Projects are optional runtime-owned organization, not workspace containers.
+The private project registry assigns a UUID project identity to a display name,
+one canonical existing workspace directory, an active/archived lifecycle, and
+timestamps. Canonical filesystem identity—not a string prefix or project
+name—enforces at most one registered project per workspace. Creating, renaming,
+archiving, unarchiving, relinking, or forgetting a project never writes into or
+deletes from that workspace.
+
+Conversation membership is a separate relation in the same atomically replaced
+record. Any conversation may remain ungrouped. Assigning within the same
+canonical workspace preserves the conversation identity and history; forgetting
+a project removes only its membership relations. A cross-workspace continuation
+plan allocates a new conversation identity and states that the execution owner
+must start fresh; it never mutates the source or silently copies transcript
+text. Presentation surfaces execute and explain that plan in M3-06.
+
+```mermaid
+flowchart LR
+    W["Canonical workspace"] -->|"at most one"| P["Optional project UUID"]
+    U["Ungrouped conversation"] -->|"same-workspace assignment"| P
+    P --> R["Private membership relation"]
+    X["Other workspace conversation"] -->|"continue: new identity, source preserved"| N["Fresh target conversation"]
+    N --> R
+    P -.->|"organizes; never owns"| W
+```
+
+Registry inspection is read-only and distinguishes an available workspace from
+a missing path or changed canonical identity. Relink is the only operation that
+accepts a replacement workspace, and it rejects a canonical collision. Every
+mutation runs beneath the private-record cross-process lock, so competing
+creations cannot commit two project identities for one workspace.
+
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.
 

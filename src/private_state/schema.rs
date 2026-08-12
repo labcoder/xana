@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
+use crate::identity::ProjectId;
+
 pub(super) const PRIVATE_RECORD_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,7 +15,7 @@ pub(crate) enum ProjectLifecycle {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProjectRecord {
-    pub(crate) id: String,
+    pub(crate) id: ProjectId,
     pub(crate) name: String,
     pub(crate) canonical_workspace: PathBuf,
     pub(crate) lifecycle: ProjectLifecycle,
@@ -26,9 +28,9 @@ pub(crate) struct ProjectRecord {
 pub(crate) struct ProjectRegistryDocument {
     pub(crate) version: u32,
     #[serde(default)]
-    pub(crate) projects: BTreeMap<String, ProjectRecord>,
+    pub(crate) projects: BTreeMap<ProjectId, ProjectRecord>,
     #[serde(default)]
-    pub(crate) conversation_memberships: BTreeMap<String, String>,
+    pub(crate) conversation_memberships: BTreeMap<String, ProjectId>,
 }
 
 impl Default for ProjectRegistryDocument {
@@ -44,7 +46,7 @@ impl Default for ProjectRegistryDocument {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LocalBindingRecord {
-    pub(crate) project_id: String,
+    pub(crate) project_id: ProjectId,
     pub(crate) portable_root: PathBuf,
     #[serde(default)]
     pub(crate) bindings: BTreeMap<String, String>,
@@ -55,7 +57,7 @@ pub(crate) struct LocalBindingRecord {
 pub(crate) struct ProjectBindingsDocument {
     pub(crate) version: u32,
     #[serde(default)]
-    pub(crate) projects: BTreeMap<String, LocalBindingRecord>,
+    pub(crate) projects: BTreeMap<ProjectId, LocalBindingRecord>,
 }
 
 impl Default for ProjectBindingsDocument {

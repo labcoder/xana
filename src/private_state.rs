@@ -7,7 +7,8 @@
 mod schema;
 mod store;
 
+pub(crate) use schema::{ProjectLifecycle, ProjectRecord, ProjectRegistryDocument};
 pub(crate) use store::{
-    PrivateRecordInspection, PrivateRecordStatus, ensure_interoperable_records,
-    inspect_interoperable_records,
+    PrivateRecordInspection, PrivateRecordStatus, PrivateStateError, UpdateDocumentError,
+    ensure_interoperable_records, inspect_interoperable_records, read_document, update_document,
 };

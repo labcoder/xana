@@ -5,7 +5,7 @@
 
 use crate::{
     config::PermissionMode,
-    identity::{ArtifactId, SessionId},
+    identity::{ArtifactId, ProjectId, SessionId},
     shell::ShellKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -191,6 +191,9 @@ pub(crate) enum Command {
     /// List, create, inspect, select, or archive conversations.
     #[command(display_order = 7)]
     Session(SessionArgs),
+    /// Organize conversations with optional local Xana projects.
+    #[command(display_order = 8)]
+    Project(ProjectArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -698,6 +701,73 @@ pub(crate) enum SessionCommand {
     ArchiveManaged {
         connection: String,
         thread_id: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProjectOwnerChoice {
+    Native,
+    #[value(name = "codex")]
+    ManagedCodex,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct ProjectArgs {
+    #[command(subcommand)]
+    pub(crate) command: ProjectCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum ProjectCommand {
+    /// List active projects, optionally including archived projects.
+    List {
+        #[arg(long)]
+        all: bool,
+    },
+    /// Create a private project for one existing workspace directory.
+    Create {
+        name: String,
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    /// Inspect one project and its local workspace health.
+    Inspect { project_id: ProjectId },
+    /// Rename a project without changing its workspace or conversations.
+    Rename { project_id: ProjectId, name: String },
+    /// Hide a project from the active list without deleting owned data.
+    Archive { project_id: ProjectId },
+    /// Restore an archived project to the active list.
+    Unarchive { project_id: ProjectId },
+    /// Explicitly bind a missing or moved project to a replacement workspace.
+    Relink {
+        project_id: ProjectId,
+        workspace: PathBuf,
+    },
+    /// Forget local project organization without deleting workspace or history.
+    Forget {
+        project_id: ProjectId,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Assign an existing same-workspace conversation to a project.
+    Assign {
+        project_id: ProjectId,
+        conversation: String,
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    /// Return a conversation to the Ungrouped view.
+    Ungroup { conversation: String },
+    /// Inspect the optional project membership for one conversation.
+    Membership { conversation: String },
+    /// Review owner-correct same- or cross-workspace continuation placement.
+    Continue {
+        project_id: ProjectId,
+        conversation: String,
+        #[arg(long, value_name = "PATH")]
+        source_workspace: Option<PathBuf>,
+        #[arg(long, value_enum, default_value = "native")]
+        owner: ProjectOwnerChoice,
     },
 }
 

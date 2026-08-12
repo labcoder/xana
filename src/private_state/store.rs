@@ -156,17 +156,24 @@ pub(crate) fn read_document<T: DeserializeOwned>(path: &Path) -> Result<T, Priva
     Ok(document)
 }
 
-pub(crate) fn update_document<T>(
+#[derive(Debug)]
+pub(crate) enum UpdateDocumentError<E> {
+    State(PrivateStateError),
+    Update(E),
+}
+
+pub(crate) fn update_document<T, R, E>(
     path: &Path,
-    update: impl FnOnce(&mut T) -> Result<(), PrivateStateError>,
-) -> Result<(), PrivateStateError>
+    update: impl FnOnce(&mut T) -> Result<R, E>,
+) -> Result<R, UpdateDocumentError<E>>
 where
     T: DeserializeOwned + Serialize,
 {
-    let _lock = RecordLock::acquire(path)?;
-    let mut document = read_document(path)?;
-    update(&mut document)?;
-    atomic_write_json(path, &document)
+    let _lock = RecordLock::acquire(path).map_err(UpdateDocumentError::State)?;
+    let mut document = read_document(path).map_err(UpdateDocumentError::State)?;
+    let output = update(&mut document).map_err(UpdateDocumentError::Update)?;
+    atomic_write_json(path, &document).map_err(UpdateDocumentError::State)?;
+    Ok(output)
 }
 
 fn ensure_one<T: DeserializeOwned + Serialize>(
@@ -371,9 +378,15 @@ mod tests {
         ensure_interoperable_records(&paths).unwrap();
         let held = RecordLock::acquire(&paths.projects_file()).unwrap();
 
-        let result = update_document::<ProjectRegistryDocument>(&paths.projects_file(), |_| Ok(()));
+        let result = update_document::<ProjectRegistryDocument, _, PrivateStateError>(
+            &paths.projects_file(),
+            |_| Ok(()),
+        );
 
-        assert!(matches!(result, Err(PrivateStateError::Busy(_))));
+        assert!(matches!(
+            result,
+            Err(UpdateDocumentError::State(PrivateStateError::Busy(_)))
+        ));
         drop(held);
     }
 }

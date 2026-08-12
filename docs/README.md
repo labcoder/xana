@@ -19,6 +19,8 @@ engineering contracts used to change it.
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
   immutable artifacts, inspection, corruption handling, and backup limits.
+- [Projects](user/projects.md) explains optional local project identity,
+  lifecycle, Ungrouped conversations, membership, and continuation review.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
 - [Terminal presentation](user/presentation.md) explains semantic styling,

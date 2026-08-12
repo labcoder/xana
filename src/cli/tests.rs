@@ -623,6 +623,59 @@ fn parses_explicit_resume_and_session_inspection() {
 }
 
 #[test]
+fn parses_optional_project_lifecycle_and_placement_commands() {
+    let project = ProjectId::new();
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "project", "create", "Xana"])
+            .unwrap()
+            .command,
+        Some(Command::Project(ProjectArgs {
+            command: ProjectCommand::Create {
+                workspace: None,
+                ..
+            }
+        }))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "project",
+            "continue",
+            &project.to_string(),
+            "conversation-1",
+            "--owner",
+            "codex",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Project(ProjectArgs {
+            command: ProjectCommand::Continue {
+                project_id,
+                owner: ProjectOwnerChoice::ManagedCodex,
+                ..
+            }
+        })) if project_id == project
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "project",
+            "forget",
+            &project.to_string(),
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Project(ProjectArgs {
+            command: ProjectCommand::Forget {
+                project_id,
+                yes: true,
+            }
+        })) if project_id == project
+    ));
+}
+
+#[test]
 fn parses_operation_plan_and_resume() {
     let session_id = SessionId::new();
     let operation_id = crate::identity::OperationId::new();

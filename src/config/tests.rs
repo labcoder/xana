@@ -163,7 +163,10 @@ allowed = ["prompt_text", "selected_artifacts"]
     assert_eq!(profile.applies_to, vec![ProfileUse::Primary]);
     assert_eq!(profile.skills, ["repo.review"]);
     assert!(registry.plugins["reviewer"].enabled);
-    assert!(registry.mcp_servers["files"].enabled());
+    assert!(matches!(
+        registry.mcp_servers["files"],
+        McpServerDeclaration::Stdio { enabled: true, .. }
+    ));
     assert!(registry.external_agents["research"].enabled);
     assert_eq!(
         registry.service_routes["illustrate"].operation,

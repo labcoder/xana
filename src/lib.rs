@@ -36,6 +36,7 @@ mod plain_terminal;
 mod presentation;
 mod private_state;
 mod process_capture;
+mod project;
 mod prompt;
 mod provider;
 mod reset;
