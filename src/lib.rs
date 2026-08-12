@@ -24,6 +24,7 @@ mod init;
 mod local_host;
 mod managed;
 mod managed_execution;
+mod mcp;
 mod message;
 mod model_catalog;
 mod native_runtime;
