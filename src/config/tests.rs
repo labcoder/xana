@@ -16,6 +16,33 @@ provider = "local"
 model = "qwen3:1.7b"
 "#;
 
+const CONFIG_V4_SERVICE_ROUTE: &str = r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+
+[providers.local]
+kind = "ollama"
+
+[profiles.default]
+connection = "local"
+model = "qwen"
+service_routes = ["illustrate"]
+
+[service_connections.images]
+adapter = "openai.images"
+credential = { source = "environment", variable = "OPENAI_API_KEY" }
+
+[service_routes.illustrate]
+operation = "image.generate"
+connection = "images"
+model = "image-model"
+default = true
+
+[egress_policies.selected]
+allowed = ["prompt_text"]
+"#;
+
 fn parse_ok(input: &str) -> XanaConfig {
     XanaConfig::parse(input).unwrap_or_else(|error| panic!("valid fixture failed: {error}"))
 }
@@ -155,6 +182,8 @@ credential = { source = "environment", variable = "OPENAI_API_KEY" }
 operation = "image.generate"
 connection = "images"
 model = "image-model"
+description = "Default illustration route"
+default = true
 egress_policy = "selected"
 
 [egress_policies.selected]
@@ -179,6 +208,7 @@ allowed = ["prompt_text", "selected_artifacts"]
         registry.service_routes["illustrate"].operation,
         "image.generate"
     );
+    assert!(registry.service_routes["illustrate"].default);
     assert_eq!(
         registry.egress_policies["selected"].allowed,
         vec![
@@ -187,6 +217,30 @@ allowed = ["prompt_text", "selected_artifacts"]
         ]
     );
     assert!(!input.contains("api_key ="));
+}
+
+#[test]
+fn focused_routes_reject_unsupported_operations_and_ambiguous_defaults() {
+    let unsupported = CONFIG_V4_SERVICE_ROUTE.replace("image.generate", "audio.speak");
+    assert!(matches!(
+        XanaConfig::parse_registry(&unsupported),
+        Err(ConfigError::InvalidInteroperableConfig { .. })
+    ));
+
+    let ambiguous = CONFIG_V4_SERVICE_ROUTE.replace(
+        "[egress_policies.selected]",
+        r#"[service_routes.second]
+operation = "image.generate"
+connection = "images"
+model = "other-image-model"
+default = true
+
+[egress_policies.selected]"#,
+    );
+    assert!(matches!(
+        XanaConfig::parse_registry(&ambiguous),
+        Err(ConfigError::InvalidInteroperableConfig { .. })
+    ));
 }
 
 #[test]

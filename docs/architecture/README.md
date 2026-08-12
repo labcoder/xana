@@ -413,6 +413,33 @@ field.
 configuration, inspect environment variables, resolve platform paths, or
 render terminal output. It also does not read prompt or project files.
 
+## Focused-service route boundary
+
+Focused operations do not extend `ConversationalProvider`. A typed
+`FocusedServiceAdapter` declares exact operation/media/editing/format/limit/
+cancellation/usage capabilities, and a `FocusedServiceRegistry` resolves one
+named route against the frozen profile. The route binds operation, service
+connection, adapter, model, bounded options, description, optional default,
+credential reference, and the intersection of route/profile egress policy.
+
+```mermaid
+flowchart LR
+    P["Frozen profile\nexact service_routes"] --> R["FocusedServiceRegistry"]
+    C["Service connection\nadapter + endpoint + credential ref"] --> R
+    N["Named route\noperation + model + options + default"] --> R
+    D["Typed adapter descriptor"] --> R
+    R -->|"ready exact route"| I["Permission/outbound invocation boundary"]
+    R -->|"missing, unexposed, incompatible, no default"| F["Typed pre-network failure"]
+    I --> A["FocusedServiceAdapter"]
+    A --> O["Artifact references + provenance + usage/cost facts"]
+```
+
+Resolution performs no credential lookup and no network request. One declared
+default is deterministic; otherwise selection is explicit. Adapter failures do
+not trigger fallback. Provider wire types and binary output remain behind the
+adapter, while domain results carry route/connection/adapter/model/options
+provenance and immutable artifact records.
+
 ## Prompt and project-context boundary
 
 The application edge owns a `PromptAssembler` built from embedded,

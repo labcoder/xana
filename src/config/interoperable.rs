@@ -128,6 +128,10 @@ pub(crate) struct ServiceRouteDeclaration {
     pub(crate) connection: String,
     pub(crate) model: String,
     #[serde(default)]
+    pub(crate) description: Option<String>,
+    #[serde(default)]
+    pub(crate) default: bool,
+    #[serde(default)]
     pub(crate) options: BTreeMap<String, String>,
     #[serde(default)]
     pub(crate) egress_policy: Option<String>,
@@ -284,18 +288,35 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
 
     for (name, route) in &document.service_routes {
         validate_declaration_name("service route", name)?;
-        if !valid_stable_id(&route.operation) {
+        if !matches!(
+            route.operation.as_str(),
+            "image.generate" | "vision.analyze"
+        ) {
             return invalid(
                 "service route",
                 name,
-                "operation must be a stable capability id",
+                "operation must be image.generate or vision.analyze",
             );
         }
         if !document.service_connections.contains_key(&route.connection) {
             return invalid("service route", name, "connection does not exist");
         }
-        if route.model.trim().is_empty() || route.model.len() > 512 {
+        if route.model.trim().is_empty()
+            || route.model.len() > 512
+            || route.model.chars().any(char::is_control)
+        {
             return invalid("service route", name, "model must be 1..=512 bytes");
+        }
+        if route.description.as_ref().is_some_and(|description| {
+            description.trim().is_empty()
+                || description.len() > 1024
+                || description.chars().any(char::is_control)
+        }) {
+            return invalid(
+                "service route",
+                name,
+                "description must be 1..=1024 bytes without control characters",
+            );
         }
         if route.options.len() > MAX_OPTIONS
             || route
@@ -315,6 +336,21 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
             name,
             route.egress_policy.as_deref(),
         )?;
+    }
+    for operation in ["image.generate", "vision.analyze"] {
+        if document
+            .service_routes
+            .values()
+            .filter(|route| route.operation == operation && route.default)
+            .count()
+            > 1
+        {
+            return invalid(
+                "service routes",
+                operation,
+                "at most one route may be the default for an operation",
+            );
+        }
     }
 
     for (name, policy) in &document.egress_policies {

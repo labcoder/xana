@@ -554,7 +554,8 @@ readable.
 | `profiles.<id>.mcp_allowlists.<server>.tools`, `resources`, `resource_templates`, `prompts` | Exact per-profile MCP primitive exposure; an empty or missing list grants nothing |
 | `plugins.<id>` | Optional declarative acquisition source; installed versions, exact scoped approvals, and health remain private state |
 | `mcp_servers.<id>` / `external_agents.<id>` | Bounded connection declarations with optional credential and egress-policy references |
-| `service_connections.<id>` / `service_routes.<id>` | Focused non-conversational service adapters and exact operation routes |
+| `service_connections.<id>` | Focused non-conversational adapter id, optional HTTPS base URL, and connection-owned credential reference |
+| `service_routes.<id>` | Exact `image.generate` or `vision.analyze` route selecting a connection, model, bounded options, optional description/default, and egress policy |
 | `egress_policies.<id>.allowed` | Exact outbound data classes that a configured integration may receive |
 | `routes.<id>.profile` | Exact profile selected by a child task route; no fallback |
 
@@ -562,6 +563,13 @@ Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
 `reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and
 unknown TOML fields are errors. Discovered capability metadata is cached and
 merged with explicit fields; unknown capabilities fail closed.
+
+Focused-service routes are independent of the conversational connection and
+model. A profile exposes an exact list through `service_routes`. At most one
+route per operation can declare `default = true`; without that declaration the
+caller must select a route. Missing, unexposed, incompatible, or credentialless
+routes fail before credential resolution or network use, and Xana never changes
+the route/provider/model because another route fails.
 
 ## Secret storage
 
