@@ -55,10 +55,11 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their
   lifecycle status.
-- [Accepted Release Preview](proposals/0018-release-preview-distribution.md)
-  is the prescriptive contract for the bounded four-target native preview,
-  source-controlled installers, Xana-owned readiness handoff, attributable
-  draft assembly, and explicit Product Distribution deferrals.
+- [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
+  records the bounded four-target native preview, source-controlled installers,
+  Xana-owned readiness handoff, attributable draft assembly, and explicit
+  Product Distribution deferrals. Architecture and User Documentation own the
+  shipped contract.
 - [Implemented Phase 5 local frontend and workspace host](proposals/0017-bounded-local-frontends-and-workspace-host.md)
   records the historical bounded embedded-client, TUI, loopback-host,
   presentation, attachment-security, backpressure, and shutdown decision.
@@ -82,8 +83,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   provenance, draft, and publication evidence.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
-- [Xana 0.5.1 release notes](releases/0.5.1.md) describe the corrective
-  Release Preview candidate and its unchanged unsigned-preview trust limits.
+- [Xana 0.5.1 release notes](releases/0.5.1.md) describe the first published
+  Release Preview and its unchanged unsigned-preview trust limits.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
   authority and audience terms.
 - [Architecture decisions](adr/README.md) contains sparse rationale for

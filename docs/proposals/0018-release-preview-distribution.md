@@ -2,15 +2,15 @@
 
 > Audience: Contributors and coding agents  
 > Authority: Prescriptive  
-> Status: Accepted
+> Status: Implemented
 
 ## Context
 
-Xana is currently installable from a checkout or a locked Git Cargo build. It
-has no prebuilt archive, installer, package-manager channel, automatic updater,
-or crates.io publication. That source-only boundary is appropriate for
-contributors but prevents a person without Rust from evaluating the terminal
-application.
+When this proposal was accepted, Xana was installable only from a checkout or
+a locked Git Cargo build. It had no prebuilt archive, installer,
+package-manager channel, automatic updater, or crates.io publication. That
+source-only boundary was appropriate for contributors but prevented a person
+without Rust from evaluating the terminal application.
 
 The first native binary release must be useful and attributable without
 claiming the signing, support, platform breadth, package channels, desktop
@@ -175,12 +175,9 @@ updated in the same change as each shipped slice.
 
 The reproducible native plan, Xana-owned `setup --if-needed` readiness
 contract, four-target manifest grammar, equivalent verified Bash and
-PowerShell installers, and least-privilege draft assembly workflow are
-implemented. Public installation, verification, update, troubleshooting, and
-state-preserving removal documentation is reconciled. The executed
-four-platform release gate remains outstanding.
-
-Until every slice exists, this proposal remains Accepted and Architecture's
-source-only distribution description remains authoritative. Publishing a
-draft or public release is an external owner-controlled effect and is never
-inferred from implementation completion.
+PowerShell installers, least-privilege draft assembly workflow, public
+installation and removal documentation, and four-platform release gate are
+implemented. Xana 0.5.1 is the first published developer preview under this
+contract. Architecture and User Documentation own the shipped behavior;
+publication remains an explicit owner-controlled effect rather than an
+automatic consequence of a passing workflow.

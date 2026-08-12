@@ -259,7 +259,7 @@ jobs:
           name: xana-${{ needs.plan.outputs.version }}-release-bundle
           path: release-bundle
 
-      - name: Create or reconcile incomplete draft, then mark review-ready
+      - name: Create, verify, and finalize unpublished draft
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}

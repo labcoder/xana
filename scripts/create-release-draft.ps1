@@ -31,11 +31,18 @@ if ($tagObject.type -ne "commit" -or $tagObject.sha -ne $env:GITHUB_SHA) {
     throw "release tag does not resolve to the workflow commit"
 }
 
-$existingJson = (& gh api "repos/$($env:GITHUB_REPOSITORY)/releases/tags/$($env:RELEASE_TAG)" 2>$null | Out-String)
+$releaseFields = "assets,isDraft,name,tagName,targetCommitish"
+$existingJson = (& gh release view $env:RELEASE_TAG `
+    --repo $env:GITHUB_REPOSITORY `
+    --json $releaseFields 2>$null | Out-String)
 $exists = $LASTEXITCODE -eq 0
 if ($exists) {
     $release = $existingJson | ConvertFrom-Json
-    if (-not $release.draft) { throw "refusing to modify an already published release" }
+    if ($release.tagName -ne $env:RELEASE_TAG -or
+        $release.targetCommitish -ne $env:GITHUB_SHA) {
+        throw "existing release does not belong to the exact workflow tag and commit"
+    }
+    if (-not $release.isDraft) { throw "refusing to modify an already published release" }
     $unexpected = @($release.assets | ForEach-Object name | Where-Object { $expectedNames -notcontains $_ })
     if ($unexpected.Count -ne 0) {
         throw "existing draft contains unexpected assets: $($unexpected -join ', ')"
@@ -60,18 +67,22 @@ foreach ($asset in $assets) {
     if ($LASTEXITCODE -ne 0) { throw "could not upload $($asset.Name); draft remains incomplete" }
 }
 
-$remoteJson = (& gh api "repos/$($env:GITHUB_REPOSITORY)/releases/tags/$($env:RELEASE_TAG)" | Out-String)
+$remoteJson = (& gh release view $env:RELEASE_TAG `
+    --repo $env:GITHUB_REPOSITORY `
+    --json $releaseFields | Out-String)
 if ($LASTEXITCODE -ne 0) { throw "could not verify the assembled draft" }
 $remote = $remoteJson | ConvertFrom-Json
+$remoteIdentityMatches = $remote.tagName -eq $env:RELEASE_TAG -and
+    $remote.targetCommitish -eq $env:GITHUB_SHA
 $remoteNames = @($remote.assets | ForEach-Object name | Sort-Object)
 $difference = @(Compare-Object ($expectedNames | Sort-Object) $remoteNames)
-if ($difference.Count -ne 0 -or -not $remote.draft) {
+if ($difference.Count -ne 0 -or -not $remote.isDraft -or -not $remoteIdentityMatches) {
     throw "GitHub draft inventory or attribution differs from the local bundle"
 }
 
 & gh release edit $env:RELEASE_TAG `
     --draft `
-    --title "REVIEW READY - Xana $($env:RELEASE_VERSION) Developer Preview" `
+    --title "Xana $($env:RELEASE_VERSION) Developer Preview" `
     --notes-file $notesPath
-if ($LASTEXITCODE -ne 0) { throw "draft is complete but could not be marked review-ready" }
+if ($LASTEXITCODE -ne 0) { throw "draft is complete but could not receive its final public title" }
 Write-Output "complete unpublished draft is ready for the owner checklist; publication remains a separate human action"

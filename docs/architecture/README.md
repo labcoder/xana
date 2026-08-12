@@ -918,22 +918,23 @@ read-only assembly job refuses anything other than the exact fifteen-asset
 bundle. A separate least-privilege job attests that bundle; only an exact
 tag-push job receives `contents: write`. That job creates or reconciles an
 explicitly `INCOMPLETE` draft, verifies the tag commit and remote inventory,
-and only then labels the still-unpublished draft `REVIEW READY`. Manual
-dispatch can build and attest but has no draft job. Every action and release
-tool is commit/version pinned and ordinary CI statically audits the authority
-boundary.
+and only then gives the still-unpublished draft its clean final public title.
+Draft discovery uses the GitHub CLI's draft-aware release view rather than the
+published-release tag endpoint. Manual dispatch can build and attest but has no
+draft job. Every action and release tool is commit/version pinned and ordinary
+CI statically audits the authority boundary.
 
-The repository has a `v0.5.0` candidate tag, but its workflow did not complete
-the draft handoff and it is not a published release. There is still no
-crates.io publication, public prebuilt archive, published installer asset,
-package-manager channel, automatic updater, or completed release draft. The
-corrected candidate advances as 0.5.1 rather than moving the existing tag.
-Publication and tagging remain separate owner-controlled effects, and the
-manifests set `publish = false` to prevent an accidental registry upload. The
-separately
-[accepted Release Preview contract](../proposals/0018-release-preview-distribution.md)
-prescribes a bounded native preview without making any of those future
-artifacts part of the current descriptive architecture before they exist.
+The repository publishes Xana 0.5.1 as its first four-platform developer
+preview with the exact reviewed installers, checksums, manifests, release
+notes, and provenance attestations. The earlier `v0.5.0` candidate remains an
+unpublished immutable tag. There is still no crates.io publication,
+package-manager channel, automatic updater, signing/notarization, or stable
+support promise. Publication and tagging remain separate owner-controlled
+effects, and the manifests set `publish = false` to prevent an accidental
+registry upload. The separately
+[implemented Release Preview contract](../proposals/0018-release-preview-distribution.md)
+records the bounded native preview while keeping deferred Product Distribution
+features out of the current descriptive architecture until they exist.
 
 ## Source organization
 
