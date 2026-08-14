@@ -782,7 +782,11 @@ pub(crate) async fn run_one_shot(
     let mut final_text = None;
     let mut failure = None;
     let mut approval_required = false;
-    while let Some(event) = client.next_event().await {
+    loop {
+        let event = client
+            .next_event()
+            .await
+            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
         match event {
             AgentEvent::PermissionRequested { request } if request.operation_id == operation_id => {
                 approval_required = true;
@@ -870,11 +874,6 @@ pub(crate) async fn run_one_shot(
             _ => {}
         }
     }
-
-    Err(OneShotFailure::new(
-        ExitCategory::Runtime,
-        "Xana's embedded runtime stopped before the one-shot result",
-    ))
 }
 
 fn message_text(message: &Message) -> String {
@@ -922,9 +921,7 @@ async fn render_until_child_control_result<W: Write>(
     renderer: &mut EventRenderer<W>,
 ) -> Result<()> {
     loop {
-        let Some(event) = runtime.next_event().await else {
-            bail!("Xana's foreground runtime stopped during child control");
-        };
+        let event = runtime.next_event().await?;
         let finished = matches!(
             event,
             AgentEvent::ChildListSnapshot { .. }
@@ -963,9 +960,7 @@ async fn render_until_clear_result<W: Write>(
     runtime: &mut EmbeddedClient,
     renderer: &mut EventRenderer<W>,
 ) -> Result<()> {
-    let Some(event) = runtime.next_event().await else {
-        bail!("Xana's foreground runtime stopped before clearing the conversation");
-    };
+    let event = runtime.next_event().await?;
     let finished = matches!(
         event,
         AgentEvent::ConversationCleared | AgentEvent::CommandRejected { .. }
@@ -983,9 +978,7 @@ async fn render_operation<W: Write>(
     operation_id: OperationId,
 ) -> Result<OperationOutcome> {
     loop {
-        let Some(event) = runtime.next_event().await else {
-            bail!("Xana's foreground runtime stopped during operation {operation_id}");
-        };
+        let event = runtime.next_event().await?;
         renderer.render(&event)?;
 
         match event {

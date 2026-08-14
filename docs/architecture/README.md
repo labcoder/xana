@@ -103,9 +103,14 @@ execution owner, child summaries, and artifact-backed image references under
 explicit message-count and encoded-size limits. It then assigns monotonically
 increasing sequence numbers to live observations and forwards them through a
 256-entry bounded queue. An oversized observation becomes a bounded omission
-fact. A full or closed observer queue ends that observation stream without
-blocking or cancelling runtime work. Dropping the embedded owner closes the
-runtime command lane and follows the foreground cancellation path.
+fact. Under queue pressure, only replaceable live streaming deltas may be
+omitted; final assistant messages, terminal operation states, approvals,
+failures, and other authoritative facts receive a bounded five-second delivery
+grace. A frontend that still cannot receive a critical fact is detached with a
+typed stalled-observer error without blocking or cancelling runtime work.
+Runtime shutdown, controller loss, runtime panic, observation stall, and
+forwarder failure remain distinct terminal reasons. Dropping the embedded owner
+closes the runtime command lane and follows the foreground cancellation path.
 
 `local_host` projects a bounded repository-private host vocabulary over a
 loopback-only WebSocket. `xana serve` is explicit and foreground; it never
