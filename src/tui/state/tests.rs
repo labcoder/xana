@@ -34,6 +34,28 @@ fn paste_is_previewed_sanitized_and_never_executed() {
 }
 
 #[test]
+fn pasted_image_path_is_staged_as_a_drop_without_inserting_text() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+
+    assert_eq!(
+        state.update_input(InputAction::Paste(
+            "\"screenshots/example image.PNG\"".to_owned()
+        )),
+        UpdateEffect::AttachDropped("screenshots/example image.PNG".to_owned())
+    );
+    assert!(state.composer.text.is_empty());
+    assert!(state.overlay.is_none());
+
+    assert_eq!(
+        state.update_input(InputAction::Paste(
+            "screenshots/example.png is relevant".to_owned()
+        )),
+        UpdateEffect::None
+    );
+    assert!(matches!(state.overlay, Some(Overlay::PastePreview { .. })));
+}
+
+#[test]
 fn busy_submissions_queue_in_order_and_can_be_edited_or_removed() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = true;

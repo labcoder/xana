@@ -102,6 +102,11 @@ polls the clipboard and never captures clipboard text or file lists through
 that action. Unsupported clipboard backends/formats return a local remedy and
 leave the draft and conversation unchanged.
 
+The TUI also recognizes a dragged PNG, JPEG, or GIF path as an explicit image
+attachment. It accepts quoted, `file://`, and Git-Bash-on-Windows path forms,
+then requires the resolved regular file to remain beneath the current
+workspace. Other pasted paths and prose remain untrusted draft text.
+
 Every attachment is bounded to 4 MiB encoded and 40 million decoded pixels,
 fully decoded before publication, then content-addressed. Absolute paths,
 parent traversal, symlinks, changing/out-of-workspace files, malformed images,

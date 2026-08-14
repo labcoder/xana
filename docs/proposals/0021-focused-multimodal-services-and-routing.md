@@ -6,12 +6,12 @@
 
 ## Context
 
-Xana currently supports artifact-backed image input on compatible
-conversational connections, but it does not expose image generation, a vision
-specialist for text-only models, named service routes, or clipboard-image
-acquisition. These operations have capabilities, costs, payloads, and failure
-modes different from conversational generation and must not inflate the
-conversational provider interface.
+Xana supports artifact-backed image input on compatible conversational
+connections, explicit clipboard and workspace-drag acquisition, named focused
+service routes, and bounded OpenAI/OpenRouter image generation. It does not yet
+expose a vision specialist for text-only models. These operations have
+capabilities, costs, payloads, and failure modes different from conversational
+generation and must not inflate the conversational provider interface.
 
 This proposal accepts only the Milestone 3 focused image-generation and vision
 slice. Audio, speech, transcription, video, OCR, general automatic routing,
@@ -178,9 +178,10 @@ general media editing pipelines, and desktop-only clipboard assumptions.
 This proposal is Accepted and partially implemented. Xana now has exact typed
 operations/descriptors, deterministic frozen-profile route resolution,
 connection-owned credential references, explicit per-operation defaults,
-pre-network readiness errors, no-fallback adapter dispatch, and standardized
-artifact/provenance/usage/cost result vocabulary. Production image adapters,
-application commands, and specialist/clipboard vision remain unimplemented.
-Current behavior remains described by Architecture and User Documentation.
-Once all accepted slices ship, the implementation change must mark this
-proposal Implemented.
+pre-network readiness errors, no-fallback OpenAI/OpenRouter adapter dispatch,
+application commands and tools, standardized artifact/provenance/usage/cost
+result vocabulary, and explicit clipboard/workspace-drag image acquisition.
+The accepted `vision.analyze` specialist remains unimplemented. Current
+behavior remains described by Architecture and User Documentation. Once that
+accepted slice ships, the implementation change must mark this proposal
+Implemented.

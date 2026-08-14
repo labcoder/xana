@@ -20,6 +20,8 @@ impl TuiState {
                 let text = bounded(sanitize_input(&text), MAX_INPUT_BYTES);
                 if text.is_empty() {
                     self.status = "Paste contained no displayable text".to_owned();
+                } else if let Some(path) = dropped_image_path(&text) {
+                    return UpdateEffect::AttachDropped(path);
                 } else {
                     self.overlay = Some(Overlay::PastePreview { text });
                 }
@@ -722,6 +724,29 @@ impl TuiState {
         }
         UpdateEffect::None
     }
+}
+
+fn dropped_image_path(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.contains(['\r', '\n']) {
+        return None;
+    }
+    let candidate = if trimmed.len() >= 2
+        && ((trimmed.starts_with('"') && trimmed.ends_with('"'))
+            || (trimmed.starts_with('\'') && trimmed.ends_with('\'')))
+    {
+        &trimmed[1..trimmed.len() - 1]
+    } else {
+        trimmed
+    };
+    let extension = std::path::Path::new(candidate)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)?;
+    matches!(
+        extension.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif"
+    )
+    .then(|| candidate.to_owned())
 }
 
 fn command_usage(id: CommandId) -> String {

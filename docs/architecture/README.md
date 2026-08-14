@@ -844,7 +844,10 @@ host probes. Native catalog checks are live but non-persisting. Default doctor
 does not construct an agent or mutate Xana state. `doctor --fix` admits only
 typed deterministic repairs: owner-only Unix modes and exact stale descriptor
 removal after proving the owner lock is free. Its preview and confirmation are
-separate from observation.
+separate from observation. Missing versioned private interoperability records
+produce a migration-required finding with `xana config migrate --apply`; the
+read-only inspection never creates them. Invalid, unsupported, or unreadable
+records produce a separate error without echoing their contents.
 
 Manual config editing stages an owner-protected bounded sibling file, invokes
 an exact editor executable without a shell, validates the complete schema,
@@ -873,9 +876,10 @@ connection add/remove edits preserve comments, migrate legacy profile
 `provider` keys to canonical `connection`, write version 4, and validate the
 complete result. Existing version 1-3 documents remain readable.
 
-Four runtime-owned, versioned JSON records live under the data root's
+Six runtime-owned, versioned JSON records live under the data root's
 `interoperable/` directory: the project registry and conversation membership,
-local project bindings, installed-package/lock state, and endpoint trust.
+local project bindings, installed-package/lock state, endpoint trust, external
+agent state, and outbound decisions.
 They are separately bounded, owner-protected where the platform supports it,
 strictly decoded, and atomically replaced under a cross-process record lock.
 They contain references and decisions, never resolved credentials.

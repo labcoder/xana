@@ -775,6 +775,9 @@ impl PluginManager {
         &self,
         revisions: &BTreeMap<String, String>,
     ) -> Result<Vec<SkillSource>, PluginError> {
+        if revisions.is_empty() {
+            return Ok(Vec::new());
+        }
         let document =
             read_document::<PackageStateDocument>(&self.state_file).map_err(PluginError::State)?;
         revisions

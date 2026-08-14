@@ -8,6 +8,7 @@ use crate::{
     paths::XanaPaths,
     plugin::PluginManager,
     presentation::PresentationPreferences,
+    private_state::{PrivateRecordStatus, inspect_interoperable_records},
 };
 use serde::Serialize;
 use std::{
@@ -142,10 +143,51 @@ pub(crate) async fn inspect(paths: &XanaPaths, terminal: TerminalHealth) -> Doct
     inspect_presentation(paths, &mut report);
     inspect_terminal(terminal, &mut report);
     inspect_descriptor(paths, &mut report);
+    inspect_private_records(paths, &mut report);
     inspect_plugins(paths, &mut report);
     inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report).await;
     report
+}
+
+fn inspect_private_records(paths: &XanaPaths, report: &mut DoctorReport) {
+    if XanaConfig::load_from(paths.config_file()).is_err() {
+        return;
+    }
+    let records = inspect_interoperable_records(paths);
+    let missing = records
+        .iter()
+        .filter(|record| record.status == PrivateRecordStatus::Missing)
+        .map(|record| record.name)
+        .collect::<Vec<_>>();
+    if !missing.is_empty() {
+        report.push(Finding::new(
+            "state.migration_required",
+            Severity::Warning,
+            "Xana private interoperability state needs initialization",
+            format!("missing records: {}", missing.join(", ")),
+            Some("xana config migrate --apply".into()),
+        ));
+    }
+    let unhealthy = records
+        .iter()
+        .filter(|record| {
+            !matches!(
+                record.status,
+                PrivateRecordStatus::Healthy | PrivateRecordStatus::Missing
+            )
+        })
+        .map(|record| format!("{}={}", record.name, record.status.as_str()))
+        .collect::<Vec<_>>();
+    if !unhealthy.is_empty() {
+        report.push(Finding::new(
+            "state.interoperability_invalid",
+            Severity::Error,
+            "Xana private interoperability state is unreadable or incompatible",
+            unhealthy.join(", "),
+            Some("xana config migrate".into()),
+        ));
+    }
 }
 
 fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
@@ -194,6 +236,9 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
 }
 
 fn inspect_plugins(paths: &XanaPaths, report: &mut DoctorReport) {
+    if !paths.package_state_file().exists() {
+        return;
+    }
     match PluginManager::open(paths).list() {
         Ok(plugins) if plugins.is_empty() => report.push(Finding::new(
             "plugins.none",
@@ -587,6 +632,55 @@ mod tests {
         assert_eq!(fs::read(paths.config_file()).unwrap(), before);
         assert!(!paths.cache_dir().exists());
         assert!(!paths.runtime_dir().exists());
+    }
+
+    #[tokio::test]
+    async fn missing_interoperable_records_report_the_migration_remedy() {
+        let (_directory, paths) = fixture();
+
+        let report = inspect(
+            &paths,
+            TerminalHealth {
+                input_is_terminal: false,
+                output_is_terminal: false,
+                dumb: false,
+            },
+        )
+        .await;
+
+        let finding = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == "state.migration_required")
+            .expect("missing private records should be diagnosed");
+        assert_eq!(finding.severity, Severity::Warning);
+        assert_eq!(
+            finding.action.as_deref(),
+            Some("xana config migrate --apply")
+        );
+        assert!(finding.evidence.contains("package state"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|finding| finding.code != "plugins.none")
+        );
+        assert!(!paths.package_state_file().exists());
+    }
+
+    #[test]
+    fn invalid_interoperable_record_is_reported_without_echoing_content() {
+        let (_directory, paths) = fixture();
+        fs::create_dir_all(paths.package_state_file().parent().unwrap()).unwrap();
+        fs::write(paths.package_state_file(), b"{not-json seeded-secret").unwrap();
+        let mut report = DoctorReport::new();
+
+        inspect_private_records(&paths, &mut report);
+
+        let encoded = serde_json::to_string(&report).unwrap();
+        assert!(encoded.contains("state.interoperability_invalid"));
+        assert!(encoded.contains("package state=invalid"));
+        assert!(!encoded.contains("seeded-secret"));
     }
 
     #[test]

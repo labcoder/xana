@@ -286,6 +286,26 @@ fn profile_resolution_and_skill_sources_pin_the_active_revision() {
 }
 
 #[test]
+fn empty_profile_skill_resolution_does_not_require_plugin_state() {
+    let (_home, paths) = paths();
+    let manager = PluginManager::open(&paths);
+
+    let (revisions, readiness) = manager
+        .resolve_profile_plugins(&[], &PluginScope::User)
+        .unwrap();
+
+    assert!(revisions.is_empty());
+    assert!(readiness.is_empty());
+    assert!(!paths.package_state_file().exists());
+    assert!(
+        manager
+            .skill_sources_for_revisions(&revisions)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn invalid_plugin_never_appears_installed() {
     let source = tempfile::tempdir().unwrap();
     fs::write(source.path().join("plugin.json"), b"not json").unwrap();
