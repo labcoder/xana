@@ -142,7 +142,9 @@ Existing schema 1-3 files remain readable. `xana config migrate` prints a
 redacted, read-only migration plan; `xana config migrate --apply` takes an
 exact backup, initializes Xana's versioned private interoperability records,
 and commits schema 4 atomically. A retry is safe and byte-stable when no work
-remains.
+remains. Older homes may continue to launch when an unused plugin record is
+absent; `xana doctor` reports the missing records and this exact migration
+remedy instead of misreporting an empty plugin installation.
 
 Optional projects organize conversations without owning workspaces. Start with
 `xana project create NAME`, inspect them with `xana project list`, and use
@@ -251,9 +253,9 @@ Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
 commands work in plain and TUI conversations, and exposed routes add the
 permission-gated `generate_image` tool to native agents.
 Image-capable conversational models accept bounded PNG/JPEG/GIF artifacts from
-`/attach PATH` or the explicit `/attach --clipboard` action. Xana fully decodes
-and content-addresses one copy before provider use; clipboard access is never
-ambient.
+`/attach PATH`, the explicit `/attach --clipboard` action, or a workspace image
+dragged into the TUI. Xana fully decodes and content-addresses one copy before
+provider use; clipboard access is never ambient.
 
 ## Diagnose and recover an installation
 
@@ -542,12 +544,14 @@ allowed native tools use the process's ordinary host access. Codex-managed
 turns use Codex's own tools/sandbox and Xana projects command/file approval
 requests into the terminal.
 
-Use `/attach WORKSPACE_RELATIVE_IMAGE` to stage PNG, JPEG, or GIF input. Xana
-keeps immutable artifact references, enforces file/pixel/count/aggregate
+Use `/attach WORKSPACE_RELATIVE_IMAGE`, `/attach --clipboard`, or drag a PNG,
+JPEG, or GIF from the current workspace into the TUI to stage image input.
+Xana keeps immutable artifact references, enforces file/pixel/count/aggregate
 budgets, preserves attachment order, and fails closed unless the selected
-model advertises image input. OpenAI-compatible and Anthropic bytes are
-resolved only at the provider wire edge; Codex receives checked workspace
-paths.
+model advertises image input. A dropped absolute path is accepted only after
+it resolves beneath the workspace and is reduced to a workspace-relative
+reference. OpenAI-compatible and Anthropic bytes are resolved only at the
+provider wire edge; Codex receives checked workspace paths.
 
 ## Prompt, context, and recovery
 

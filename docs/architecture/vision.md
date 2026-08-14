@@ -8,6 +8,10 @@ workspace and symlink checks, validates PNG/JPEG/GIF content and pixel limits,
 and publishes immutable bytes to Xana's artifact store. The pending queue
 preserves attachment order, accepts at most eight images and 20 MiB per turn,
 is cleared visibly by `/clear`, and is consumed when a turn is submitted.
+The TUI maps a terminal-pasted single image path from drag-and-drop into the
+same ingestion operation. Absolute, `file://`, and Git Bash path forms are
+normalized only to prove and retain a workspace-relative source; outside-
+workspace files remain rejected.
 
 The internal message model carries `ContentBlock::Image` references rather
 than paths or base64. Before native provider I/O, Xana requires the selected

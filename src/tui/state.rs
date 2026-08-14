@@ -199,6 +199,7 @@ pub(super) enum UpdateEffect {
         input: String,
     },
     Attach(String),
+    AttachDropped(String),
     AttachClipboard,
     SelectModel(String),
     SetReasoning(String),

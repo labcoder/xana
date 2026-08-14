@@ -110,6 +110,13 @@ bounded artifact ingestion. It refuses traversal, symlink escape, unsupported
 formats, oversized images, more than eight images, more than 20 MiB per turn,
 or a selected model not declared image-capable.
 
+Dragging a PNG, JPEG, or GIF into the TUI stages the terminal-pasted path
+through that same ingestion path instead of inserting it into the composer.
+Quoted paths, `file://` paths, and Windows paths emitted by Git Bash are
+normalized, but the resolved regular file must remain inside the current
+workspace. Files outside the workspace fail visibly and are not copied or
+sent.
+
 Assistant Markdown, code, diffs, tables, inert links, images, and immutable
 artifacts use a bounded terminal-native renderer. `/artifact ARTIFACT_ID`
 opens an explicit action card; rendering alone never opens a link, file, or OS

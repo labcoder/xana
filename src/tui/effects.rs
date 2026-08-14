@@ -84,6 +84,24 @@ pub(super) async fn dispatch_managed_effect(
                 Err(error) => state.set_status(format!("could not attach {path}: {error}")),
             }
         }
+        UpdateEffect::AttachDropped(path) => {
+            let model = driver.models.iter().find(|model| model.id == state.model);
+            if !model.is_some_and(|model| model.input_modalities.contains("image")) {
+                state.set_status(format!(
+                    "{}/{} is not advertised as image-capable",
+                    state.connection, state.model
+                ));
+            } else {
+                match ImageIngestor::new(artifact_store.clone(), ImageLimits::default())
+                    .ingest_dropped_path(workspace, &path, owner)
+                {
+                    Ok(attachment) => state.stage_image(attachment),
+                    Err(error) => state.set_status(format!(
+                        "could not attach dropped image {path}: {error}; images must be inside the workspace"
+                    )),
+                }
+            }
+        }
         UpdateEffect::AttachClipboard => match clipboard.get_image(artifact_store.clone(), owner) {
             Ok(attachment) => state.stage_image(attachment),
             Err(error) => state.set_status(error),
@@ -440,6 +458,27 @@ pub(super) async fn dispatch_effect(
                 {
                     Ok(attachment) => state.stage_image(attachment),
                     Err(error) => state.set_status(format!("could not attach {path}: {error}")),
+                }
+            }
+        }
+        UpdateEffect::AttachDropped(path) => {
+            let descriptor = header
+                .models
+                .descriptor(&header.provider_name, &header.model)
+                .context("could not resolve selected model capabilities")?;
+            if !descriptor.input_modalities.contains("image") {
+                state.set_status(format!(
+                    "{}/{} is not declared image-capable",
+                    header.provider_name, header.model
+                ));
+            } else {
+                match ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
+                    .ingest_dropped_path(&header.workspace_root, &path, header.owner)
+                {
+                    Ok(attachment) => state.stage_image(attachment),
+                    Err(error) => state.set_status(format!(
+                        "could not attach dropped image {path}: {error}; images must be inside the workspace"
+                    )),
                 }
             }
         }

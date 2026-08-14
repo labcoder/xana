@@ -466,6 +466,47 @@ fn doctor_json_is_versioned_redacted_and_read_only() {
 }
 
 #[test]
+fn legacy_home_without_interoperable_records_starts_and_doctor_reports_migration() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+    std::fs::remove_dir_all(home.join("data/interoperable"))
+        .expect("remove post-M3 private records from legacy fixture");
+
+    let doctor = xana(&home)
+        .args(["doctor", "--output", "json"])
+        .output()
+        .expect("diagnose legacy home");
+    assert_success(&doctor);
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).expect("versioned doctor JSON");
+    let findings = report["findings"].as_array().expect("doctor findings");
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding["code"] == "state.migration_required"
+                && finding["action"] == "xana config migrate --apply")
+    );
+    assert!(!home.join("data/interoperable").exists());
+
+    let mut child = xana(&home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start legacy Xana home");
+    child
+        .stdin
+        .take()
+        .expect("child stdin")
+        .write_all(b"/quit\n")
+        .expect("quit plain frontend");
+    let output = child.wait_with_output().expect("wait for Xana");
+    assert_success(&output);
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("plugin state is unavailable"));
+}
+
+#[test]
 fn reset_dry_run_and_session_scope_preserve_configuration() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");
