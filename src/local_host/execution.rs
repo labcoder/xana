@@ -422,7 +422,7 @@ async fn run_native_execution(
                 }
             }
             observation = observer.next() => {
-                let Some(observation) = observation else { return; };
+                let Ok(observation) = observation else { return; };
                 if let ClientEvent::Runtime(event) = &observation.event {
                     state.observe(event);
                 }

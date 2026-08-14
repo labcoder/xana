@@ -24,8 +24,13 @@ use crate::{
     prompt::{PromptAssembler, PromptSnapshot},
     session::{DurableSession, SessionRecord},
 };
+use futures::FutureExt;
+use std::panic::AssertUnwindSafe;
 use std::{error::Error, fmt, future::Future, sync::Arc};
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{
+    sync::{mpsc, watch},
+    task::JoinHandle,
+};
 
 const COMMAND_CAPACITY: usize = 16;
 
@@ -33,6 +38,14 @@ pub(crate) struct RuntimeHandle {
     commands: mpsc::Sender<RuntimeCommand>,
     events: mpsc::UnboundedReceiver<AgentEvent>,
     initial_history: Vec<Message>,
+    exit: watch::Receiver<Option<RuntimeExit>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeExit {
+    ShutdownRequested,
+    ControllerDropped,
+    Panicked,
 }
 
 struct Runtime {
@@ -136,6 +149,7 @@ impl RuntimeHandle {
         let initial_history = history.clone();
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
+        let (exit_sender, exit_receiver) = watch::channel(None);
         let (broker_event_sender, broker_event_receiver) = mpsc::unbounded_channel();
         let (completion_sender, completion_receiver) = mpsc::unbounded_channel();
         let (conversation_committer, conversation_commits) = ConversationCommitSender::channel();
@@ -179,12 +193,19 @@ impl RuntimeHandle {
             child_supervisor,
             child_supervisor_task,
         };
-        tokio::spawn(runtime.run());
+        tokio::spawn(async move {
+            let exit = AssertUnwindSafe(runtime.run())
+                .catch_unwind()
+                .await
+                .unwrap_or(RuntimeExit::Panicked);
+            let _ = exit_sender.send(Some(exit));
+        });
 
         Self {
             commands: command_sender,
             events: event_receiver,
             initial_history,
+            exit: exit_receiver,
         }
     }
 
@@ -202,26 +223,35 @@ impl RuntimeHandle {
 
     pub(crate) fn into_frontend_parts(
         self,
-    ) -> (Self, mpsc::UnboundedReceiver<AgentEvent>, Vec<Message>) {
+    ) -> (
+        Self,
+        mpsc::UnboundedReceiver<AgentEvent>,
+        Vec<Message>,
+        watch::Receiver<Option<RuntimeExit>>,
+    ) {
         let Self {
             commands,
             events,
             initial_history,
+            exit,
         } = self;
+        let observer_exit = exit.clone();
         (
             Self {
                 commands,
                 events: mpsc::unbounded_channel().1,
                 initial_history: Vec::new(),
+                exit,
             },
             events,
             initial_history,
+            observer_exit,
         )
     }
 }
 
 impl Runtime {
-    async fn run(mut self) {
+    async fn run(mut self) -> RuntimeExit {
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
@@ -229,10 +259,10 @@ impl Runtime {
                         self.permissions.controller_lost();
                         self.interrupt_active();
                         self.shutdown_children().await;
-                        return;
+                        return RuntimeExit::ControllerDropped;
                     };
                     if self.handle_command(command).await {
-                        return;
+                        return RuntimeExit::ShutdownRequested;
                     }
                 }
                 completion = self.completions.recv(), if self.active.is_some() => {

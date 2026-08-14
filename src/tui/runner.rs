@@ -30,7 +30,7 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 trait ExecutionOwner {
     type Event;
 
-    async fn next_event(&mut self) -> Option<Self::Event>;
+    async fn next_event(&mut self) -> Result<Self::Event>;
 
     fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()>;
 
@@ -44,8 +44,6 @@ trait ExecutionOwner {
     ) -> Result<Option<ChatExit>>;
 
     async fn shutdown(self, state: &TuiState) -> Result<()>;
-
-    fn stopped_message() -> &'static str;
 }
 
 async fn run<Owner: ExecutionOwner>(
@@ -146,10 +144,7 @@ async fn drive<Owner: ExecutionOwner>(
             }
             owner_event = owner.next_event() => {
                 dirty = true;
-                let Some(owner_event) = owner_event else {
-                    anyhow::bail!(Owner::stopped_message());
-                };
-                owner.apply_event(state, owner_event)?;
+                owner.apply_event(state, owner_event?)?;
             }
         }
     };
@@ -168,8 +163,8 @@ struct NativeOwner<'a> {
 impl ExecutionOwner for NativeOwner<'_> {
     type Event = AgentEvent;
 
-    async fn next_event(&mut self) -> Option<Self::Event> {
-        self.client.next_event().await
+    async fn next_event(&mut self) -> Result<Self::Event> {
+        self.client.next_event().await.map_err(anyhow::Error::new)
     }
 
     fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
@@ -216,10 +211,6 @@ impl ExecutionOwner for NativeOwner<'_> {
     async fn shutdown(self, _state: &TuiState) -> Result<()> {
         Ok(())
     }
-
-    fn stopped_message() -> &'static str {
-        "Xana's foreground runtime stopped while the TUI was attached"
-    }
 }
 
 struct ManagedOwner {
@@ -235,8 +226,10 @@ struct ManagedOwner {
 impl ExecutionOwner for ManagedOwner {
     type Event = ManagedTuiEvent;
 
-    async fn next_event(&mut self) -> Option<Self::Event> {
-        self.driver.next_event().await
+    async fn next_event(&mut self) -> Result<Self::Event> {
+        self.driver.next_event().await.ok_or_else(|| {
+            anyhow::anyhow!("Codex managed runtime stopped while the TUI was attached")
+        })
     }
 
     fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
@@ -298,10 +291,6 @@ impl ExecutionOwner for ManagedOwner {
             let _ = reply.send(ApprovalDecision::Cancel);
         }
         self.driver.shutdown().await.map_err(anyhow::Error::new)
-    }
-
-    fn stopped_message() -> &'static str {
-        "Codex managed runtime stopped while the TUI was attached"
     }
 }
 

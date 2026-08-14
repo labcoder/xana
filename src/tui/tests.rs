@@ -122,7 +122,8 @@ async fn scripted_turn_crosses_the_real_embedded_client_and_finishes_in_view_sta
         .await
         .unwrap();
 
-    while let Some(event) = client.next_event().await {
+    loop {
+        let event = client.next_event().await.unwrap();
         let finished = matches!(
             event,
             AgentEvent::OperationStateChanged {
@@ -179,7 +180,8 @@ async fn delayed_provider_does_not_block_frontend_updates() {
     assert!(state.busy);
 
     release.notify_one();
-    while let Some(event) = client.next_event().await {
+    loop {
+        let event = client.next_event().await.unwrap();
         let finished = matches!(
             event,
             AgentEvent::OperationStateChanged {

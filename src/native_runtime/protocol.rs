@@ -140,6 +140,34 @@ pub(crate) enum AgentEvent {
     },
 }
 
+impl AgentEvent {
+    /// Live progress that may be omitted when an observer falls behind because
+    /// an authoritative completion, failure, or report follows it.
+    pub(crate) fn is_replaceable_observation(&self) -> bool {
+        match self {
+            Self::AssistantTextDelta { .. }
+            | Self::ChildActivity {
+                activity: ChildActivity::AssistantTextDelta { .. },
+                ..
+            } => true,
+            Self::ChildActivity {
+                activity: ChildActivity::ManagedRuntime { notification },
+                ..
+            } => matches!(
+                notification,
+                crate::managed::codex::ManagedNotification::AssistantDelta { .. }
+                    | crate::managed::codex::ManagedNotification::ReasoningSummaryDelta { .. }
+                    | crate::managed::codex::ManagedNotification::ReasoningDelta { .. }
+                    | crate::managed::codex::ManagedNotification::PlanDelta { .. }
+                    | crate::managed::codex::ManagedNotification::CommandOutputDelta { .. }
+                    | crate::managed::codex::ManagedNotification::DiffUpdated(_)
+                    | crate::managed::codex::ManagedNotification::TokenUsageUpdated { .. }
+            ),
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct AgentEventSender {
     transport: AgentEventTransport,
