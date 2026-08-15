@@ -140,6 +140,11 @@ impl PermissionPolicy {
             .any(|rule| rule.decision == PolicyDecision::Allow)
         {
             PolicyDecision::Allow
+        } else if self.default == PolicyDecision::Ask && is_safe_built_in_read(request) {
+            // Immutable resources compiled into Xana cross no host, process,
+            // workspace, or network authority boundary. Explicit matching
+            // rules may still deny or review them.
+            PolicyDecision::Allow
         } else {
             self.default
         };
@@ -155,6 +160,15 @@ impl PermissionPolicy {
             winning_decision,
         }
     }
+}
+
+fn is_safe_built_in_read(request: &PermissionRequest) -> bool {
+    request.tool_name == "xana_docs"
+        && request.effect_class == EffectClass::Read
+        && matches!(
+            &request.scope,
+            PermissionScope::BuiltInResource { id } if id == "xana-documentation"
+        )
 }
 
 fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
@@ -177,6 +191,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             PermissionScope::Command { canonical_cwd, .. } => canonical_cwd,
             PermissionScope::ExternalPath { .. } => return false,
             PermissionScope::External { .. } => return false,
+            PermissionScope::BuiltInResource { .. } => return false,
             PermissionScope::Unscoped => return false,
         };
         if !request_path.starts_with(workspace) {
@@ -190,6 +205,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             | PermissionScope::WorkspacePath { .. }
             | PermissionScope::ExternalPath { .. }
             | PermissionScope::External { .. }
+            | PermissionScope::BuiltInResource { .. }
             | PermissionScope::Unscoped => return false,
         }
     }

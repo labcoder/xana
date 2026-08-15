@@ -368,6 +368,50 @@ fn hidden_activity_cannot_hide_or_duplicate_a_native_approval() {
 }
 
 #[test]
+fn native_approval_uses_user_facing_authority_and_scope_details() {
+    let request = crate::permission::PermissionRequest {
+        operation_id: OperationId::new(),
+        invocation_id: ToolInvocationId::new(),
+        tool_name: "run_command".to_owned(),
+        effect_class: crate::tool::EffectClass::Execute,
+        final_arguments: serde_json::json!({
+            "command": "cargo test",
+            "cwd": "."
+        }),
+        scope: crate::permission::PermissionScope::Command {
+            shell: "PowerShell (powershell.exe)".to_owned(),
+            canonical_cwd: std::path::PathBuf::from("C:\\workspace"),
+            command: "cargo test".to_owned(),
+        },
+        outbound_review: None,
+    };
+
+    let prompt = ApprovalPrompt::native(request);
+
+    assert_eq!(prompt.owner, "this Xana conversation");
+    assert_eq!(prompt.title, "Run command");
+    assert!(
+        prompt
+            .details
+            .iter()
+            .any(|line| line == "Command: cargo test")
+    );
+    assert!(
+        prompt
+            .details
+            .iter()
+            .any(|line| line == "Working directory: C:\\workspace")
+    );
+    assert!(!prompt.details.iter().any(|line| line.contains("Command {")));
+    assert!(
+        !prompt
+            .details
+            .iter()
+            .any(|line| line.contains("{\"command\""))
+    );
+}
+
+#[test]
 fn fake_codex_transcript_preserves_reasoning_and_managed_ownership() {
     let mut state = TuiState::from_managed(
         "codex".to_owned(),
@@ -447,6 +491,50 @@ fn pointer_actions_preserve_typed_selection_and_activation() {
         UpdateEffect::None
     );
     assert_ne!(state.activity[0].expanded, expanded);
+}
+
+#[test]
+fn activity_detail_overlay_scrolls_selects_and_copies_without_touching_the_runtime() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.activity.clear();
+    state.activity.push_back(ActivityCard::new(
+        "Xana",
+        "reasoning",
+        ActivityKind::ReasoningSummary,
+        ActivityState::Complete,
+        "checked the current configuration",
+        "first detail line\nsecond detail line",
+    ));
+
+    assert_eq!(
+        state.update_input(InputAction::OpenActivityDetail(0)),
+        UpdateEffect::None
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(Overlay::ActivityDetail { scroll: 0, .. })
+    ));
+    assert_eq!(
+        state.update_input(InputAction::Scroll(3)),
+        UpdateEffect::None
+    );
+    assert!(matches!(
+        state.overlay,
+        Some(Overlay::ActivityDetail { scroll: 3, .. })
+    ));
+
+    let start = ScreenPoint { column: 2, row: 3 };
+    let end = ScreenPoint { column: 8, row: 3 };
+    state.update_input(InputAction::BeginActivitySelection(start));
+    state.update_input(InputAction::ExtendActivitySelection(end));
+    state.update_input(InputAction::FinishActivitySelection {
+        end,
+        text: Some("selected detail".to_owned()),
+    });
+    assert_eq!(
+        state.update_input(InputAction::CopyOrInterrupt),
+        UpdateEffect::CopyText("selected detail".to_owned())
+    );
 }
 
 #[test]

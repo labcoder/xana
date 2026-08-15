@@ -14,11 +14,14 @@ pub(crate) struct XanaDocs;
 #[serde(deny_unknown_fields, tag = "op", rename_all = "snake_case")]
 enum Args {
     List {
+        #[serde(skip_serializing_if = "Option::is_none")]
         topic: Option<String>,
     },
     Read {
         id: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
         start: Option<usize>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         max_bytes: Option<usize>,
     },
 }
@@ -53,7 +56,9 @@ impl Tool for XanaDocs {
         let final_arguments = serde_json::to_value(&args).map_err(|error| error.to_string())?;
         Ok(PlannedToolInvocation::new(
             final_arguments,
-            PermissionScope::Unscoped,
+            PermissionScope::BuiltInResource {
+                id: "xana-documentation".to_owned(),
+            },
             args,
         ))
     }
@@ -104,6 +109,25 @@ mod tests {
         assert_eq!(
             definition.parameters["properties"]["max_bytes"]["maximum"],
             32768
+        );
+    }
+
+    #[test]
+    fn plan_uses_an_immutable_built_in_scope_and_omits_absent_range_fields() {
+        let planned = XanaDocs
+            .plan(
+                &json!({"op":"read", "id":"user/configuration"}),
+                Path::new("."),
+            )
+            .expect("documentation plan");
+
+        assert!(matches!(
+            planned.scope,
+            PermissionScope::BuiltInResource { ref id } if id == "xana-documentation"
+        ));
+        assert_eq!(
+            planned.final_arguments,
+            json!({"op":"read", "id":"user/configuration"})
         );
     }
 }

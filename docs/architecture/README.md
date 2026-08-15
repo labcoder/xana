@@ -45,7 +45,7 @@ flowchart TB
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
     SESSION --> CONTEXT["versioned project context"]
     SESSION --> OPERATION["durable operation log<br/>intent + result"]
-    CONTEXT --> PROMPT["per-turn xana-prompt-v1 snapshot"]
+    CONTEXT --> PROMPT["per-turn xana-prompt-v2 snapshot"]
     PROMPT --> AGENT
     PLAIN -->|"shared application behavior"| NATIVE
     PLAIN -->|"shared application behavior"| MANAGED_EXEC
@@ -449,12 +449,19 @@ provenance and immutable artifact records.
 
 The application edge owns a `PromptAssembler` built from embedded,
 non-replaceable identity and guideline files; a concise tool catalog derived
-from the immutable registry; owned operating-system, canonical session
-workspace, configured-shell, and CLI-surface values; and fixed budgets. When a
+from the immutable registry; active connection/model; owned operating-system,
+canonical session workspace, configured-shell, and CLI-surface values; and
+fixed budgets. When a
 root turn is accepted, the runtime refreshes durable project context and
-assembles one `xana-prompt-v1` snapshot. Native composition supplies a concise
+assembles one `xana-prompt-v2` snapshot. Native composition supplies a concise
 product-documentation layer that names the readable logical ids exposed by the
 bounded `xana_docs` tool; documentation bodies are fetched only when needed.
+The runtime layer is authoritative for current connection, model, workspace,
+and shell facts, and the guidelines prohibit invoking a tool merely to
+rediscover those supplied facts. `xana_docs` reads only immutable embedded
+product documentation, so an unmatched `ask` default authorizes its typed
+built-in-resource scope without a controller prompt; matching user rules and a
+default deny remain authoritative.
 
 Layers have transient ids, purpose, origin, trust, provenance, estimated cost,
 and deterministic order. Dynamic layer text and attributes are XML-escaped,

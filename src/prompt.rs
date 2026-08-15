@@ -20,7 +20,7 @@ use render::{
 };
 use std::{collections::HashSet, error::Error, fmt, path::PathBuf};
 
-pub(crate) const PROMPT_ASSEMBLY_VERSION: &str = "xana-prompt-v1";
+pub(crate) const PROMPT_ASSEMBLY_VERSION: &str = "xana-prompt-v2";
 // Bump this whenever the canonical identity changes. Managed thread handles
 // use it to avoid claiming that Codex can retrofit identity onto old rollouts.
 pub(crate) const XANA_IDENTITY_VERSION: &str = "xana-identity-v1";
@@ -51,6 +51,8 @@ pub(crate) enum PromptSurface {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromptEnvironment {
+    pub(crate) connection: String,
+    pub(crate) model: String,
     pub(crate) operating_system: String,
     pub(crate) working_directory: PathBuf,
     pub(crate) configured_shell: String,
@@ -290,7 +292,9 @@ pub(crate) fn assemble_snapshot(inputs: PromptInputs<'_>) -> Result<PromptSnapsh
         },
         TrustClass::Runtime,
         &format!(
-            "Operating system: {}\nWorking directory: {}\nConfigured shell: {}",
+            "Active connection: {}\nActive model: {}\nOperating system: {}\nWorking directory: {}\nConfigured shell: {}",
+            inputs.environment.connection,
+            inputs.environment.model,
             inputs.environment.operating_system,
             inputs.environment.working_directory.display(),
             inputs.environment.configured_shell
@@ -407,6 +411,8 @@ fn layer(
 
 fn validate_environment(environment: &PromptEnvironment) -> Result<(), PromptError> {
     for (field, value) in [
+        ("connection", environment.connection.as_str()),
+        ("model", environment.model.as_str()),
         ("operating_system", environment.operating_system.as_str()),
         ("configured_shell", environment.configured_shell.as_str()),
     ] {

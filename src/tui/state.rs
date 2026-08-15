@@ -160,6 +160,13 @@ pub(super) enum InputAction {
         text: Option<String>,
     },
     ClearConversationSelection,
+    BeginActivitySelection(ScreenPoint),
+    ExtendActivitySelection(ScreenPoint),
+    FinishActivitySelection {
+        end: ScreenPoint,
+        text: Option<String>,
+    },
+    ClearActivitySelection,
     PlaceCursor {
         line: usize,
         column: usize,
@@ -170,6 +177,7 @@ pub(super) enum InputAction {
     ChooseOverlay(usize),
     ViewSession(ConversationRef),
     ToggleActivity(usize),
+    OpenActivityDetail(usize),
     ToggleSessionsView,
     ToggleHeader,
     Quit,
@@ -308,6 +316,11 @@ pub(super) enum Overlay {
         artifact: Box<ArtifactView>,
         selected: usize,
         preview: Option<String>,
+    },
+    ActivityDetail {
+        card: Box<ActivityCard>,
+        scroll: u16,
+        selection: Option<ConversationSelection>,
     },
 }
 

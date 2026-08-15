@@ -1,4 +1,7 @@
-use super::super::state::MessageKind;
+use super::super::{
+    activity::{ActivityCard, ActivityKind, ActivityState},
+    state::MessageKind,
+};
 use super::*;
 use crate::presentation::{ComposerPreset, ResolvedPresentation};
 use crate::{
@@ -443,6 +446,48 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
         ),
         Some(super::super::state::InputAction::ChooseOverlay(0))
     );
+}
+
+#[test]
+fn expanded_activity_detail_opens_a_scrollable_modal() {
+    let area = Rect::new(0, 0, 130, 24);
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.activity_visibility = ActivityVisibility::Open;
+    state.activity.clear();
+    let mut card = ActivityCard::new(
+        "Xana",
+        "reasoning",
+        ActivityKind::ReasoningSummary,
+        ActivityState::Complete,
+        "summary",
+        "detailed reasoning event",
+    );
+    card.expanded = true;
+    state.activity.push_back(card);
+    let shell = shell_layout(area, &state);
+    let columns = wide_columns(shell.body, &state);
+
+    assert_eq!(
+        pointer_action(
+            columns[2].x.saturating_add(1),
+            columns[2].y.saturating_add(2),
+            false,
+            &state,
+            area,
+        ),
+        Some(super::super::state::InputAction::OpenActivityDetail(0))
+    );
+    state.update_input(super::super::state::InputAction::OpenActivityDetail(0));
+
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).unwrap();
+    terminal
+        .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+        .unwrap();
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(rendered.contains("Activity details"));
+    assert!(rendered.contains("detailed reasoning event"));
+    assert!(rendered.contains("Ctrl+C copy"));
 }
 
 #[test]

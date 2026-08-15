@@ -139,6 +139,19 @@ impl TuiState {
                 }
                 UpdateEffect::None
             }
+            InputAction::OpenActivityDetail(index) => {
+                self.conversation_selection = None;
+                if let Some(card) = self.activity.get(index)
+                    && !card.detail.is_empty()
+                {
+                    self.overlay = Some(Overlay::ActivityDetail {
+                        card: Box::new(card.clone()),
+                        scroll: 0,
+                        selection: None,
+                    });
+                }
+                UpdateEffect::None
+            }
             InputAction::ToggleSessionsView => {
                 self.conversation_selection = None;
                 self.rail_expanded = !self.rail_expanded;
@@ -168,7 +181,11 @@ impl TuiState {
             InputAction::PaletteUp
             | InputAction::PaletteDown
             | InputAction::Confirm
-            | InputAction::ChooseOverlay(_) => UpdateEffect::None,
+            | InputAction::ChooseOverlay(_)
+            | InputAction::BeginActivitySelection(_)
+            | InputAction::ExtendActivitySelection(_)
+            | InputAction::FinishActivitySelection { .. }
+            | InputAction::ClearActivitySelection => UpdateEffect::None,
         }
     }
 
@@ -221,20 +238,105 @@ impl TuiState {
                 UpdateEffect::None
             }
             InputAction::PaletteUp => {
-                self.move_overlay_selection(false);
-                UpdateEffect::None
-            }
-            InputAction::PaletteDown => {
-                self.move_overlay_selection(true);
-                UpdateEffect::None
-            }
-            InputAction::Scroll(delta) => {
-                for _ in 0..delta.unsigned_abs() {
-                    self.move_overlay_selection(delta.is_positive());
+                if let Some(Overlay::ActivityDetail {
+                    scroll, selection, ..
+                }) = &mut self.overlay
+                {
+                    *selection = None;
+                    *scroll = scroll.saturating_sub(1);
+                } else {
+                    self.move_overlay_selection(false);
                 }
                 UpdateEffect::None
             }
+            InputAction::PaletteDown => {
+                if let Some(Overlay::ActivityDetail {
+                    scroll, selection, ..
+                }) = &mut self.overlay
+                {
+                    *selection = None;
+                    *scroll = scroll.saturating_add(1);
+                } else {
+                    self.move_overlay_selection(true);
+                }
+                UpdateEffect::None
+            }
+            InputAction::Scroll(delta) => {
+                if let Some(Overlay::ActivityDetail {
+                    scroll, selection, ..
+                }) = &mut self.overlay
+                {
+                    *selection = None;
+                    *scroll = if delta.is_negative() {
+                        scroll.saturating_sub(delta.unsigned_abs())
+                    } else {
+                        scroll.saturating_add(delta as u16)
+                    };
+                } else {
+                    for _ in 0..delta.unsigned_abs() {
+                        self.move_overlay_selection(delta.is_positive());
+                    }
+                }
+                UpdateEffect::None
+            }
+            InputAction::Confirm | InputAction::Submit
+                if matches!(self.overlay, Some(Overlay::ActivityDetail { .. })) =>
+            {
+                UpdateEffect::None
+            }
             InputAction::Confirm | InputAction::Submit => self.confirm_overlay(),
+            InputAction::CopyOrInterrupt => match &self.overlay {
+                Some(Overlay::ActivityDetail { selection, .. }) => selection
+                    .as_ref()
+                    .and_then(|selection| selection.text.clone())
+                    .map_or(UpdateEffect::None, UpdateEffect::CopyText),
+                _ => UpdateEffect::None,
+            },
+            InputAction::BeginActivitySelection(start) => {
+                if let Some(Overlay::ActivityDetail { selection, .. }) = &mut self.overlay {
+                    *selection = Some(ConversationSelection {
+                        start,
+                        end: start,
+                        dragged: false,
+                        text: None,
+                    });
+                }
+                UpdateEffect::None
+            }
+            InputAction::ExtendActivitySelection(end) => {
+                if let Some(Overlay::ActivityDetail { selection, .. }) = &mut self.overlay
+                    && let Some(selection) = selection
+                {
+                    selection.end = end;
+                    selection.dragged |= end != selection.start;
+                    selection.text = None;
+                }
+                UpdateEffect::None
+            }
+            InputAction::FinishActivitySelection { end, text } => {
+                if let Some(Overlay::ActivityDetail { selection, .. }) = &mut self.overlay {
+                    if let Some(active) = selection.as_mut() {
+                        active.end = end;
+                        active.dragged |= end != active.start;
+                        active.text = text
+                            .filter(|text| !text.is_empty())
+                            .map(|text| bounded(text, MAX_ACTIVITY_BYTES));
+                    }
+                    if selection
+                        .as_ref()
+                        .is_some_and(|selection| selection.text.is_none())
+                    {
+                        *selection = None;
+                    }
+                }
+                UpdateEffect::None
+            }
+            InputAction::ClearActivitySelection => {
+                if let Some(Overlay::ActivityDetail { selection, .. }) = &mut self.overlay {
+                    *selection = None;
+                }
+                UpdateEffect::None
+            }
             InputAction::ChooseOverlay(index) => {
                 self.conversation_selection = None;
                 if self.select_overlay(index) {
@@ -417,7 +519,7 @@ impl TuiState {
                     action,
                 })
             }
-            Overlay::Help | Overlay::Queue => UpdateEffect::None,
+            Overlay::ActivityDetail { .. } | Overlay::Help | Overlay::Queue => UpdateEffect::None,
         }
     }
 

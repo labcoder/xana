@@ -97,19 +97,13 @@ pub(super) struct ApprovalPrompt {
 
 impl ApprovalPrompt {
     pub(super) fn native(request: PermissionRequest) -> Self {
-        let scope = format!("{:?}", request.scope);
         let external_scope = matches!(
             request.scope,
             crate::permission::PermissionScope::External { .. }
         );
         let exact_external = external_scope && request.outbound_review.is_some();
         let details = request.outbound_review.as_ref().map_or_else(
-            || {
-                vec![
-                    bounded(scope, MAX_SUMMARY_BYTES),
-                    bounded(request.final_arguments.to_string(), MAX_DETAIL_BYTES),
-                ]
-            },
+            || permission_details(&request),
             |review| {
                 review
                     .render()
@@ -119,8 +113,8 @@ impl ApprovalPrompt {
             },
         );
         Self {
-            owner: "Xana native root".to_owned(),
-            title: format!("{} ({:?})", request.tool_name, request.effect_class),
+            owner: "this Xana conversation".to_owned(),
+            title: humanize_identifier(&request.tool_name),
             details,
             target: ApprovalTarget::Native(request),
             allow_once: true,
@@ -133,22 +127,16 @@ impl ApprovalPrompt {
 
     pub(super) fn child(attribution: ChildAttribution, request: PermissionRequest) -> Self {
         let owner = format!(
-            "Xana child {} [{}]",
+            "Xana child {} via {}",
             attribution.agent_id, attribution.route
         );
-        let scope = format!("{:?}", request.scope);
         let external_scope = matches!(
             request.scope,
             crate::permission::PermissionScope::External { .. }
         );
         let exact_external = external_scope && request.outbound_review.is_some();
         let details = request.outbound_review.as_ref().map_or_else(
-            || {
-                vec![
-                    bounded(scope, MAX_SUMMARY_BYTES),
-                    bounded(request.final_arguments.to_string(), MAX_DETAIL_BYTES),
-                ]
-            },
+            || permission_details(&request),
             |review| {
                 review
                     .render()
@@ -159,7 +147,7 @@ impl ApprovalPrompt {
         );
         Self {
             owner,
-            title: format!("{} ({:?})", request.tool_name, request.effect_class),
+            title: humanize_identifier(&request.tool_name),
             details,
             target: ApprovalTarget::Child {
                 attribution,
@@ -199,6 +187,88 @@ impl ApprovalPrompt {
                 || request.available_decisions.contains("cancel"),
             target: ApprovalTarget::Managed(request),
         }
+    }
+}
+
+fn permission_details(request: &PermissionRequest) -> Vec<String> {
+    use crate::permission::PermissionScope;
+
+    let mut details = vec![format!("Effect: {}", effect_label(request.effect_class))];
+    match &request.scope {
+        PermissionScope::WorkspacePath { canonical_path } => {
+            details.push(format!("Workspace path: {}", canonical_path.display()));
+        }
+        PermissionScope::ExternalPath { canonical_path } => {
+            details.push(format!("External path: {}", canonical_path.display()));
+        }
+        PermissionScope::Command {
+            shell,
+            canonical_cwd,
+            command,
+        } => {
+            details.push(format!("Command: {command}"));
+            details.push(format!("Working directory: {}", canonical_cwd.display()));
+            details.push(format!("Shell: {shell}"));
+        }
+        PermissionScope::External {
+            recipient_identity_digest,
+            operation,
+        } => {
+            details.push(format!("External operation: {operation}"));
+            details.push(format!(
+                "Recipient: {}",
+                &recipient_identity_digest[..recipient_identity_digest.len().min(12)]
+            ));
+        }
+        PermissionScope::BuiltInResource { id } => {
+            details.push(format!("Built-in resource: {id}"));
+        }
+        PermissionScope::Unscoped => {
+            details.push("Scope: no narrower resource scope was declared".to_owned());
+            details.extend(argument_details(&request.final_arguments));
+        }
+    }
+    details
+        .into_iter()
+        .map(|line| bounded(line, MAX_DETAIL_BYTES))
+        .collect()
+}
+
+fn argument_details(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::Object(values) => values
+            .iter()
+            .filter(|(_, value)| !value.is_null())
+            .map(|(key, value)| {
+                format!(
+                    "{}: {}",
+                    humanize_identifier(key),
+                    value
+                        .as_str()
+                        .map_or_else(|| value.to_string(), str::to_owned)
+                )
+            })
+            .collect(),
+        serde_json::Value::Null => Vec::new(),
+        value => vec![format!("Arguments: {value}")],
+    }
+}
+
+fn humanize_identifier(value: &str) -> String {
+    let mut words = value.replace(['_', '-'], " ");
+    if let Some(first) = words.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    words
+}
+
+const fn effect_label(effect: crate::tool::EffectClass) -> &'static str {
+    match effect {
+        crate::tool::EffectClass::Read => "read",
+        crate::tool::EffectClass::Write => "write",
+        crate::tool::EffectClass::Execute => "execute",
+        crate::tool::EffectClass::Network => "network",
+        crate::tool::EffectClass::External => "external service",
     }
 }
 

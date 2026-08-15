@@ -198,14 +198,21 @@ Native provider reasoning is incrementally accumulated into one bounded,
 collapsed card per step. Committed assistant tool requests and tool results are
 also projected into the conversation and activity panes immediately; restart
 is not required to reveal durable work.
+Click an activity card's summary row to expand or collapse its inline detail.
+Click the expanded detail to open a bounded Activity Details modal. The modal
+supports Up/Down and mouse-wheel scrolling, ordinary drag selection, Ctrl+C
+copy, and Esc to close, so long reasoning/tool text remains readable without
+enlarging the narrow activity pane. Selection and scrolling are frontend-only
+state and never enter model context.
 While an attached turn is active, the conversation tail shows a local animated
 `Xana is working...` marker in addition to the status and activity panes. It is
 presentation state only: it is never persisted or added to model context. The
 animation advances at a low fixed rate, becomes static when reduced motion is
 selected, and disappears on completion, interruption, or failure.
 
-Approval cards show the requesting owner, tool or Codex callback, final
-arguments, and scope. Enter chooses the highlighted allow-once, exact-session,
+Approval cards show the requesting conversation or child, a user-facing action,
+and one normalized exact scope summary. Enter chooses the highlighted
+allow-once, exact-session,
 or deny action; Esc leaves the correlated request pending. A decision is sent
 exactly once through the existing permission/runtime callback. Approval cards
 appear even when activity is hidden. One-shot mode continues to fail closed by
@@ -214,8 +221,9 @@ design.
 The conversation is anchored to its newest visual rows. Mouse-wheel scrolling
 moves by visual rows, including within one long wrapped message, instead of
 skipping whole messages. On wide layouts, clicking a session inspects it,
-clicking the sessions title hides that panel, and clicking an activity card
-expands or collapses its detail. Click or drag in the composer to place or
+clicking the sessions title hides that panel, clicking an activity summary
+expands or collapses its detail, and clicking expanded activity content opens
+the scrollable detail modal. Click or drag in the composer to place or
 extend its selection, and click a selectable overlay row to activate the same
 typed action as Enter.
 An ordinary drag inside the conversation highlights its visible rendered cells

@@ -4,7 +4,7 @@
 
 For native connections, Xana builds one provider-neutral system-prompt snapshot
 when a root turn is accepted. The assembly contract is versioned as
-`xana-prompt-v1`, and the
+`xana-prompt-v2`, and the
 resulting bytes remain frozen across that turn's provider calls and tool
 rounds. The next root turn refreshes project context and may receive a new
 snapshot. Merely opening or resuming a session never reads project files.
@@ -24,15 +24,17 @@ Xana assembles available layers in this order:
    capability or logical references;
 4. a concise catalog generated from the tools actually registered for the
    agent;
-5. the owned operating system, canonical working directory, and configured
-   shell;
+5. the active connection/model and the owned operating system, canonical
+   working directory, and configured shell;
 6. the active CLI surface; and
 7. a bounded preview of root `AGENTS.md`, when present.
 
 Native foreground composition advertises `xana_docs` and the curated logical
 ids in layer 3. The runtime catalog itself is bounded and explicit; it never
 walks the filesystem or claims to describe the user's project. Document bodies
-are read only when the model calls the tool.
+are read only when the model calls the tool. Active connection, model,
+workspace, and shell facts come from the owned runtime layer, so the model is
+instructed to answer those questions directly instead of invoking a tool.
 
 Exact machine-readable tool schemas remain a separate provider request field.
 The human-readable catalog and schemas both come from the same immutable tool

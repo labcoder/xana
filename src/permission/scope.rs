@@ -83,6 +83,10 @@ pub(crate) fn scope_contains(grant: &PermissionScope, request: &PermissionScope)
                 operation: request_operation,
             },
         ) => grant_recipient == request_recipient && grant_operation == request_operation,
+        (
+            PermissionScope::BuiltInResource { id: grant },
+            PermissionScope::BuiltInResource { id: request },
+        ) => grant == request,
         (PermissionScope::Unscoped, PermissionScope::Unscoped) => true,
         _ => false,
     }

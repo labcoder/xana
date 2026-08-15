@@ -68,6 +68,37 @@ fn configured_default_applies_when_no_rule_matches() {
 }
 
 #[test]
+fn embedded_product_documentation_does_not_prompt_under_the_ask_default() {
+    let workspace = tempdir().expect("workspace");
+    let mut docs = request(PermissionScope::BuiltInResource {
+        id: "xana-documentation".to_owned(),
+    });
+    docs.tool_name = "xana_docs".to_owned();
+
+    assert_eq!(
+        policy(PolicyDecision::Ask, Vec::new(), workspace.path())
+            .explain(&docs)
+            .winning_decision,
+        PolicyDecision::Allow
+    );
+}
+
+#[test]
+fn a_built_in_scope_cannot_exempt_an_unrelated_tool_from_review() {
+    let workspace = tempdir().expect("workspace");
+    let request = request(PermissionScope::BuiltInResource {
+        id: "xana-documentation".to_owned(),
+    });
+
+    assert_eq!(
+        policy(PolicyDecision::Ask, Vec::new(), workspace.path())
+            .explain(&request)
+            .winning_decision,
+        PolicyDecision::Ask
+    );
+}
+
+#[test]
 fn external_file_reads_always_require_a_controller_unless_denied() {
     let workspace = tempdir().expect("workspace");
     let external = request(PermissionScope::ExternalPath {

@@ -1366,12 +1366,10 @@ fn render_permission_request(
     if let Some(review) = &request.outbound_review {
         writeln!(output, "{}", review.render())?;
     } else {
-        writeln!(
-            output,
-            "scope: {}\narguments: {}",
-            display_scope(&request.scope),
-            request.final_arguments
-        )?;
+        writeln!(output, "scope: {}", display_scope(&request.scope))?;
+        if matches!(request.scope, PermissionScope::Unscoped) {
+            writeln!(output, "arguments: {}", request.final_arguments)?;
+        }
     }
     writeln!(
         output,
@@ -1402,6 +1400,9 @@ fn display_scope(scope: &PermissionScope) -> String {
             "external operation {operation:?} for recipient {}",
             &recipient_identity_digest[..recipient_identity_digest.len().min(12)]
         ),
+        PermissionScope::BuiltInResource { id } => {
+            format!("immutable built-in resource {id}")
+        }
         PermissionScope::Unscoped => "unscoped".to_owned(),
     }
 }
