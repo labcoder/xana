@@ -2,113 +2,47 @@ use super::*;
 use serde_json::json;
 use tempfile::TempDir;
 
-#[cfg(unix)]
-fn echo_server_config(temp: &TempDir) -> McpProcessConfig {
-    let script = r#"
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9][0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"server/discover"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1"}}}}\n' "$id"
-      ;;
-    *'"method":"fixture/slow"'*) ;;
-    *'"method":"fixture/env"'*)
-      if [ "${XANA_MCP_EXPLICIT-}" = "allowed" ] && [ -z "${HOME-}" ]; then ok=true; else ok=false; fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","ok":%s}}\n' "$id" "$ok"
-      ;;
-    *'"id"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","ok":true}}\n' "$id"
-      ;;
-  esac
-done
-"#;
-    let mut config = McpProcessConfig::new("sh", temp.path());
-    config.arguments = vec![McpArgument::visible("-c"), McpArgument::visible(script)];
+fn fixture_server_config(temp: &TempDir, mode: &str) -> McpProcessConfig {
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("mcp_stdio_server.rs");
+    let program = temp
+        .path()
+        .join(format!("mcp-stdio-fixture{}", std::env::consts::EXE_SUFFIX));
+    let output = std::process::Command::new(
+        std::env::var_os("RUSTC").unwrap_or_else(|| OsString::from("rustc")),
+    )
+    .args(["--edition=2024", "--crate-name", "xana_mcp_stdio_fixture"])
+    .arg(&source)
+    .arg("-o")
+    .arg(&program)
+    .output()
+    .expect("fixture compiler starts");
+    assert!(
+        output.status.success(),
+        "fixture compilation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let mut config = McpProcessConfig::new(program, temp.path());
+    config.arguments = vec![McpArgument::visible(mode)];
     config.request_timeout = Duration::from_secs(5);
-    config.shutdown_grace = Duration::from_millis(200);
     config
 }
 
-#[cfg(windows)]
 fn echo_server_config(temp: &TempDir) -> McpProcessConfig {
-    let script = r#"
-while (($line = [Console]::In.ReadLine()) -ne $null) {
-  $message = $line | ConvertFrom-Json
-  if ($null -eq $message.id) { continue }
-  if ($message.method -eq 'server/discover') {
-    $result = @{ jsonrpc='2.0'; id=$message.id; result=@{ supportedVersions=@('2026-07-28'); capabilities=@{ tools=@{ listChanged=$true } }; _meta=@{ 'io.modelcontextprotocol/serverInfo'=@{ name='fixture'; version='1' } } } }
-  } elseif ($message.method -eq 'fixture/slow') {
-    continue
-  } elseif ($message.method -eq 'fixture/env') {
-    $ok = ($env:XANA_MCP_EXPLICIT -eq 'allowed') -and ($null -eq $env:USERPROFILE)
-    $result = @{ jsonrpc='2.0'; id=$message.id; result=@{ resultType='complete'; ok=$ok } }
-  } else {
-    $result = @{ jsonrpc='2.0'; id=$message.id; result=@{ resultType='complete'; ok=$true } }
-  }
-  [Console]::Out.WriteLine(($result | ConvertTo-Json -Compress -Depth 8))
-  [Console]::Out.Flush()
-}
-"#;
-    let mut config = McpProcessConfig::new("powershell.exe", temp.path());
-    config.arguments = vec![
-        McpArgument::visible("-NoLogo"),
-        McpArgument::visible("-NoProfile"),
-        McpArgument::visible("-NonInteractive"),
-        McpArgument::visible("-Command"),
-        McpArgument::visible(script),
-    ];
-    // Hosted Windows runners can cold-start several PowerShell fixtures in
-    // parallel. Keep this test-only process budget above that startup cost.
-    config.request_timeout = Duration::from_secs(15);
-    config.shutdown_grace = Duration::from_millis(200);
-    config
+    fixture_server_config(temp, "serve")
 }
 
-#[cfg(unix)]
 fn sleeping_server_config(temp: &TempDir) -> McpProcessConfig {
-    let mut config = McpProcessConfig::new("sh", temp.path());
-    config.arguments = vec![McpArgument::visible("-c"), McpArgument::visible("sleep 30")];
+    let mut config = fixture_server_config(temp, "sleep");
     config.shutdown_grace = Duration::from_millis(50);
     config
 }
 
-#[cfg(windows)]
-fn sleeping_server_config(temp: &TempDir) -> McpProcessConfig {
-    let mut config = McpProcessConfig::new("powershell.exe", temp.path());
-    config.arguments = vec![
-        McpArgument::visible("-NoProfile"),
-        McpArgument::visible("-NonInteractive"),
-        McpArgument::visible("-Command"),
-        McpArgument::visible("Start-Sleep -Seconds 30"),
-    ];
-    config.shutdown_grace = Duration::from_millis(50);
-    config
-}
-
-#[cfg(unix)]
 fn stderr_server_config(temp: &TempDir) -> McpProcessConfig {
-    let mut config = echo_server_config(temp);
-    config.arguments = vec![
-        McpArgument::visible("-c"),
-        McpArgument::visible(
-            "head -c 100000 /dev/zero | tr '\\0' x >&2; while IFS= read -r line; do :; done",
-        ),
-    ];
-    config
-}
-
-#[cfg(windows)]
-fn stderr_server_config(temp: &TempDir) -> McpProcessConfig {
-    let mut config = echo_server_config(temp);
-    config.arguments = vec![
-        McpArgument::visible("-NoProfile"),
-        McpArgument::visible("-NonInteractive"),
-        McpArgument::visible("-Command"),
-        McpArgument::visible(
-            "$s='x'*100000; [Console]::Error.Write($s); while ([Console]::In.ReadLine() -ne $null) {}",
-        ),
-    ];
-    config
+    fixture_server_config(temp, "stderr")
 }
 
 #[test]
@@ -222,6 +156,38 @@ async fn cancellation_and_outstanding_limits_are_bounded() {
 }
 
 #[tokio::test]
+async fn request_timeouts_report_process_context_and_degrade_health() {
+    let temp = TempDir::new().expect("temporary directory");
+    let mut config = echo_server_config(&temp);
+    config.request_timeout = Duration::from_millis(50);
+    let client = McpStdioClient::spawn(config).await.expect("server starts");
+    client
+        .discover(&CancellationToken::new())
+        .await
+        .expect("server discovers");
+
+    let error = client
+        .request_raw("fixture/slow", json!({}), &CancellationToken::new())
+        .await
+        .expect_err("slow request times out");
+
+    let McpStdioError::RequestTimeout(context) = error else {
+        panic!("unexpected timeout error: {error:?}");
+    };
+    assert_eq!(context.phase, McpProcessPhase::Ready);
+    assert!(context.process_id.is_some());
+    assert_eq!(context.outstanding_requests, 1);
+    assert_eq!(context.stderr_bytes, 0);
+    assert!(!context.stderr_truncated);
+    let health = client.health();
+    assert_eq!(health.phase, McpProcessPhase::Degraded);
+    assert_eq!(health.last_failure, Some(McpFailureKind::Timeout));
+    let report = client.shutdown().await.expect("shutdown completes");
+    assert!(!report.forced);
+    assert!(report.success);
+}
+
+#[tokio::test]
 async fn stderr_is_drained_boundedly_without_becoming_protocol() {
     let temp = TempDir::new().expect("temporary directory");
     let client = McpStdioClient::spawn(stderr_server_config(&temp))
@@ -258,25 +224,7 @@ async fn ignored_stdin_forces_bounded_process_cleanup() {
 #[tokio::test]
 async fn malformed_stdout_fails_without_deadlock() {
     let temp = TempDir::new().expect("temporary directory");
-    #[cfg(unix)]
-    let mut config = {
-        let mut config = McpProcessConfig::new("sh", temp.path());
-        config.arguments = vec![
-            McpArgument::visible("-c"),
-            McpArgument::visible("printf 'not-json\\n'; sleep 1"),
-        ];
-        config
-    };
-    #[cfg(windows)]
-    let mut config = {
-        let mut config = McpProcessConfig::new("powershell.exe", temp.path());
-        config.arguments = vec![
-            McpArgument::visible("-NoProfile"),
-            McpArgument::visible("-Command"),
-            McpArgument::visible("[Console]::Out.WriteLine('not-json'); Start-Sleep 1"),
-        ];
-        config
-    };
+    let mut config = fixture_server_config(&temp, "malformed");
     config.request_timeout = Duration::from_millis(200);
     config.shutdown_grace = Duration::from_millis(50);
     let client = McpStdioClient::spawn(config).await.expect("server starts");
@@ -370,6 +318,45 @@ async fn stalled_writes_hit_the_fixed_deadline() {
     tokio::time::advance(WRITE_TIMEOUT + Duration::from_millis(1)).await;
     assert_eq!(
         write.await.expect("write task joins"),
-        Err(McpStdioError::Timeout)
+        Err(McpStdioError::WriteTimeout)
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "MCP stdio lifecycle stress regression"]
+async fn stdio_lifecycle_is_stable_under_repetition() {
+    let temp = TempDir::new().expect("temporary directory");
+    let config = echo_server_config(&temp);
+
+    for _ in 0..10 {
+        let tasks = (0..10)
+            .map(|_| {
+                let config = config.clone();
+                tokio::spawn(async move {
+                    let client = McpStdioClient::spawn(config)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let cancellation = CancellationToken::new();
+                    client
+                        .discover(&cancellation)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    client
+                        .request_raw("fixture/echo", json!({}), &cancellation)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    let report = client.shutdown().await.map_err(|error| error.to_string())?;
+                    if report.forced || !report.success {
+                        return Err(format!("unexpected stop report: {report:?}"));
+                    }
+                    Ok::<(), String>(())
+                })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await
+                .expect("fixture task joins")
+                .expect("fixture passes");
+        }
+    }
 }

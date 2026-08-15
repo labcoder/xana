@@ -228,6 +228,15 @@ pub(crate) struct McpProcessHealth {
     pub(crate) last_failure: Option<McpFailureKind>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct McpTimeoutContext {
+    pub(crate) phase: McpProcessPhase,
+    pub(crate) process_id: Option<u32>,
+    pub(crate) outstanding_requests: usize,
+    pub(crate) stderr_bytes: usize,
+    pub(crate) stderr_truncated: bool,
+}
+
 impl McpProcessHealth {
     fn starting(process_id: Option<u32>) -> Self {
         Self {
@@ -595,18 +604,6 @@ async fn run_actor(
                 if failure.is_some() {
                     break;
                 }
-                let expired = pending
-                    .iter()
-                    .filter(|(_, request)| request.deadline <= now)
-                    .map(|(id, _)| *id)
-                    .collect::<Vec<_>>();
-                for id in expired {
-                    if let Some(request) = pending.remove(&id) {
-                        let _ = request.result.send(Err(McpStdioError::Timeout));
-                        retire(id, &mut retired);
-                    }
-                }
-                update_health(&health, |current| current.outstanding_requests = pending.len());
                 match child.try_wait() {
                     Ok(Some(_)) => {
                         failure = Some(McpFailureKind::Process);
@@ -618,6 +615,30 @@ async fn run_actor(
                         break;
                     }
                 }
+                let expired = pending
+                    .iter()
+                    .filter(|(_, request)| request.deadline <= now)
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                let timeout = timeout_context(&health, pending.len());
+                for id in expired {
+                    if let Some(request) = pending.remove(&id) {
+                        let _ = request
+                            .result
+                            .send(Err(McpStdioError::RequestTimeout(timeout.clone())));
+                        retire(id, &mut retired);
+                    }
+                }
+                if pending.len() < timeout.outstanding_requests {
+                    update_health(&health, |current| {
+                        current.phase = McpProcessPhase::Degraded;
+                        current.last_failure = Some(McpFailureKind::Timeout);
+                    });
+                    let _ = activity.send(McpProcessActivity::Failed {
+                        kind: McpFailureKind::Timeout,
+                    });
+                }
+                update_health(&health, |current| current.outstanding_requests = pending.len());
             }
             else => {
                 failure = Some(McpFailureKind::Process);
@@ -732,7 +753,7 @@ async fn write_frame<W: AsyncWrite + Unpin>(
     };
     tokio::time::timeout(WRITE_TIMEOUT, write)
         .await
-        .map_err(|_| McpStdioError::Timeout)?
+        .map_err(|_| McpStdioError::WriteTimeout)?
         .map_err(|error| McpStdioError::Output(error.kind()))
 }
 
@@ -963,6 +984,20 @@ fn update_health(
     sender.send_replace(next);
 }
 
+fn timeout_context(
+    health: &watch::Sender<McpProcessHealth>,
+    outstanding_requests: usize,
+) -> McpTimeoutContext {
+    let current = health.borrow();
+    McpTimeoutContext {
+        phase: current.phase,
+        process_id: current.process_id,
+        outstanding_requests,
+        stderr_bytes: current.stderr_bytes,
+        stderr_truncated: current.stderr_truncated,
+    }
+}
+
 fn os_len(value: &OsStr) -> usize {
     value.to_string_lossy().len()
 }
@@ -975,7 +1010,8 @@ pub(crate) enum McpStdioError {
     QueueFull,
     OutstandingLimit,
     FrameTooLarge,
-    Timeout,
+    RequestTimeout(McpTimeoutContext),
+    WriteTimeout,
     Cancelled,
     Closed,
     Input(io::ErrorKind),
@@ -1004,7 +1040,16 @@ impl fmt::Display for McpStdioError {
                 formatter.write_str("MCP process outstanding request limit reached")
             }
             Self::FrameTooLarge => formatter.write_str("MCP process frame exceeds its limit"),
-            Self::Timeout => formatter.write_str("MCP process request timed out"),
+            Self::RequestTimeout(context) => write!(
+                formatter,
+                "MCP process request timed out (phase={:?}, pid={:?}, outstanding={}, stderr_bytes={}, stderr_truncated={})",
+                context.phase,
+                context.process_id,
+                context.outstanding_requests,
+                context.stderr_bytes,
+                context.stderr_truncated
+            ),
+            Self::WriteTimeout => formatter.write_str("MCP process write timed out"),
             Self::Cancelled => formatter.write_str("MCP process request was cancelled"),
             Self::Closed => formatter.write_str("MCP process transport is closed"),
             Self::Input(kind) => write!(formatter, "MCP process input failed ({kind:?})"),
