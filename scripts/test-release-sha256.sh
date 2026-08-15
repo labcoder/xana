@@ -45,9 +45,15 @@ if bash "${repo_root}/scripts/verify-sha256.sh" "${fixture}" invalid \
   exit 1
 fi
 
-expected_call='bash ./scripts/verify-sha256.sh "$installer" "$CARGO_DIST_INSTALLER_SHA256"'
-if [[ $(grep -Fc "${expected_call}" "${repo_root}/.github/workflows/release.yml") -ne 2 ]]; then
-  printf 'release workflow does not use the portable verifier for both cargo-dist installs\n' >&2
+installer_call='bash ./scripts/install-cargo-dist.sh'
+if [[ $(grep -Fc "${installer_call}" "${repo_root}/.github/workflows/release.yml") -ne 2 ]]; then
+  printf 'release workflow does not use the shared cargo-dist installer in both jobs\n' >&2
+  exit 1
+fi
+
+verifier_call='bash ./scripts/verify-sha256.sh "$installer" "$installer_sha256"'
+if [[ $(grep -Fc "${verifier_call}" "${repo_root}/scripts/install-cargo-dist.sh") -ne 1 ]]; then
+  printf 'shared cargo-dist installer does not use the portable verifier exactly once\n' >&2
   exit 1
 fi
 
