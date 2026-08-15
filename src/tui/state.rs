@@ -18,7 +18,7 @@ use crate::{
     native_runtime::{AgentEvent, OperationState},
     permission::ControllerDecision,
     presentation::{ActivityPaneChoice, ComposerPreset},
-    vision::{ImageAttachment, image_path_in_text},
+    vision::{ImageAttachment, MAX_IMAGE_BYTES_PER_TURN, MAX_IMAGES_PER_TURN, image_paths_in_text},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use std::collections::VecDeque;
@@ -29,8 +29,6 @@ const MAX_ACTIVITY: usize = 256;
 const MAX_ACTIVITY_BYTES: usize = 16 * 1024;
 const MAX_FOLLOWUPS: usize = 32;
 const MAX_FOLLOWUP_BYTES: usize = 2 * 1024 * 1024;
-const MAX_IMAGES: usize = 8;
-const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum LayoutClass {
@@ -203,7 +201,7 @@ pub(super) enum UpdateEffect {
     AttachAndSubmit {
         operation_id: OperationId,
         input: String,
-        path: String,
+        paths: Vec<String>,
         approved_external: bool,
     },
     AttachClipboard,
@@ -266,7 +264,8 @@ pub(super) enum Overlay {
     ExternalImageApproval {
         operation_id: OperationId,
         input: String,
-        path: String,
+        paths: Vec<String>,
+        external_paths: Vec<String>,
         selected: usize,
     },
     Help,
@@ -304,6 +303,7 @@ pub(super) struct TuiState {
     pub(super) messages: VecDeque<VisibleMessage>,
     pub(super) activity: VecDeque<ActivityCard>,
     pub(super) busy: bool,
+    pub(super) work_indicator_frame: u8,
     pub(super) active_operation: Option<OperationId>,
     pub(super) followups: VecDeque<QueuedTurn>,
     pub(super) overlay: Option<Overlay>,
@@ -342,6 +342,7 @@ impl TuiState {
                 "",
             )]),
             busy: true,
+            work_indicator_frame: 0,
             active_operation: None,
             followups: VecDeque::new(),
             overlay: None,
@@ -385,6 +386,7 @@ impl TuiState {
             messages,
             activity: VecDeque::new(),
             busy: snapshot.active_operation.is_some(),
+            work_indicator_frame: 0,
             active_operation: snapshot.active_operation,
             followups: VecDeque::new(),
             overlay: None,
@@ -427,6 +429,7 @@ impl TuiState {
             messages: VecDeque::new(),
             activity: VecDeque::new(),
             busy: false,
+            work_indicator_frame: 0,
             active_operation: None,
             followups: VecDeque::new(),
             overlay: None,
@@ -493,6 +496,7 @@ impl TuiState {
     pub(super) fn mark_submitted(&mut self, operation_id: OperationId, input: String) {
         self.push_message(MessageKind::User, input);
         self.busy = true;
+        self.work_indicator_frame = 0;
         self.active_operation = Some(operation_id);
         self.status = "Working…".to_owned();
         if self.activity_visibility == ActivityVisibility::Auto {
@@ -514,6 +518,7 @@ impl TuiState {
         }
         self.status = reason;
         self.busy = false;
+        self.work_indicator_frame = 0;
         self.active_operation = None;
     }
 
@@ -529,12 +534,20 @@ impl TuiState {
         })
     }
 
+    pub(super) fn advance_work_indicator(&mut self) -> bool {
+        if !self.busy || self.active_operation.is_none() {
+            return false;
+        }
+        self.work_indicator_frame = (self.work_indicator_frame + 1) % 4;
+        true
+    }
+
     pub(super) fn stage_image(&mut self, attachment: ImageAttachment) {
         let _ = self.try_stage_image(attachment);
     }
 
     fn try_stage_image(&mut self, attachment: ImageAttachment) -> bool {
-        if self.pending_images.len() >= MAX_IMAGES {
+        if self.pending_images.len() >= MAX_IMAGES_PER_TURN {
             self.status = "At most 8 images may be staged for one turn".to_owned();
             return false;
         }
@@ -544,7 +557,7 @@ impl TuiState {
             .map(|attachment| attachment.image.byte_len)
             .sum::<u64>()
             .saturating_add(attachment.image.byte_len);
-        if total > MAX_IMAGE_BYTES {
+        if total > MAX_IMAGE_BYTES_PER_TURN {
             self.status = "Image attachments exceed the 20 MiB per-turn budget".to_owned();
             return false;
         }
@@ -560,33 +573,70 @@ impl TuiState {
     pub(super) fn attach_and_submit(
         &mut self,
         input: String,
-        attachment: ImageAttachment,
+        attachments: Vec<ImageAttachment>,
     ) -> UpdateEffect {
-        if self.try_stage_image(attachment) {
-            self.submit_text(input)
-        } else {
-            self.composer.replace(input);
-            UpdateEffect::None
+        let mut unique = Vec::new();
+        for attachment in attachments {
+            let content_hash = &attachment.image.artifact.reference.content_hash;
+            if self
+                .pending_images
+                .iter()
+                .chain(unique.iter())
+                .any(|existing: &ImageAttachment| {
+                    &existing.image.artifact.reference.content_hash == content_hash
+                })
+            {
+                continue;
+            }
+            unique.push(attachment);
         }
+        if self.pending_images.len().saturating_add(unique.len()) > MAX_IMAGES_PER_TURN {
+            self.status = "At most 8 images may be staged for one turn".to_owned();
+            self.composer.replace(input);
+            return UpdateEffect::None;
+        }
+        let total = self
+            .pending_images
+            .iter()
+            .chain(unique.iter())
+            .map(|attachment| attachment.image.byte_len)
+            .sum::<u64>();
+        if total > MAX_IMAGE_BYTES_PER_TURN {
+            self.status = "Image attachments exceed the 20 MiB per-turn budget".to_owned();
+            self.composer.replace(input);
+            return UpdateEffect::None;
+        }
+        self.pending_images.extend(unique);
+        self.submit_text(input)
     }
 
     pub(super) fn submit_without_auto_attachment(&mut self, input: String) -> UpdateEffect {
         self.submit_text(input)
     }
 
+    pub(super) fn restore_auto_attachment_draft(&mut self, input: String, reason: String) {
+        self.composer.replace(input);
+        self.status = reason;
+    }
+
     pub(super) fn request_external_image_approval(
         &mut self,
         operation_id: OperationId,
         input: String,
-        path: String,
+        paths: Vec<String>,
+        external_paths: Vec<String>,
     ) {
         self.overlay = Some(Overlay::ExternalImageApproval {
             operation_id,
             input,
-            path: path.clone(),
+            paths,
+            external_paths: external_paths.clone(),
             selected: 0,
         });
-        self.status = format!("Approve reading external image {path}?");
+        self.status = format!(
+            "Approve reading {} external image(s)?",
+            external_paths.len()
+        );
     }
 
     pub(super) fn pending_image_count(&self) -> usize {
@@ -755,9 +805,16 @@ impl TuiState {
     }
 
     fn conversation_row_estimate(&self) -> usize {
-        self.messages.iter().fold(0usize, |total, message| {
-            total.saturating_add(message_row_estimate(message))
-        })
+        self.messages
+            .iter()
+            .fold(0usize, |total, message| {
+                total.saturating_add(message_row_estimate(message))
+            })
+            .saturating_add(if self.busy && self.active_operation.is_some() {
+                2
+            } else {
+                0
+            })
     }
 
     pub(super) fn set_rail_expanded(&mut self, expanded: bool) {

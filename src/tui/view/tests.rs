@@ -32,6 +32,48 @@ fn wide_medium_and_narrow_buffers_keep_the_conversation_usable() {
 }
 
 #[test]
+fn active_turn_has_a_transient_conversation_work_indicator() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.header_expanded = false;
+    state.messages.clear();
+    state
+        .messages
+        .push_back(super::super::state::VisibleMessage {
+            kind: MessageKind::User,
+            text: "compare these images".to_owned(),
+            document: super::super::rich_text::RichDocument::plain("compare these images"),
+        });
+    state.busy = true;
+    state.active_operation = Some(crate::identity::OperationId::new());
+
+    terminal
+        .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+        .unwrap();
+
+    assert!(buffer_text(terminal.backend().buffer()).contains("Xana is working"));
+}
+
+#[test]
+fn reduced_motion_keeps_the_work_indicator_static() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.header_expanded = false;
+    state.messages.clear();
+    state.busy = true;
+    state.active_operation = Some(crate::identity::OperationId::new());
+    state.work_indicator_frame = 3;
+
+    terminal
+        .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+        .unwrap();
+
+    assert!(buffer_text(terminal.backend().buffer()).contains("Xana is working..."));
+}
+
+#[test]
 fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
     let backend = TestBackend::new(80, 24);
     let mut terminal = Terminal::new(backend).unwrap();
@@ -74,6 +116,32 @@ fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
     let rendered = buffer_text(terminal.backend().buffer());
     assert!(rendered.contains("Sessions"));
     assert!(rendered.contains("12 records"));
+}
+
+#[test]
+fn external_image_review_lists_the_complete_batch() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    let paths = vec![
+        "C:\\outside\\first.png".to_owned(),
+        "C:\\outside\\second.png".to_owned(),
+    ];
+    state.request_external_image_approval(
+        crate::identity::OperationId::new(),
+        "compare".to_owned(),
+        paths.clone(),
+        paths,
+    );
+
+    terminal
+        .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+        .unwrap();
+    let rendered = buffer_text(terminal.backend().buffer());
+
+    assert!(rendered.contains("C:\\outside\\first.png"));
+    assert!(rendered.contains("C:\\outside\\second.png"));
+    assert!(rendered.contains("Allow images once"));
 }
 
 #[test]

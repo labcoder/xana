@@ -56,20 +56,27 @@ fn assert_wire_messages_match(expected: &WireMessage, actual: &WireMessage) {
 }
 
 #[test]
-fn image_content_is_resolved_only_at_the_wire_edge() {
+fn multiple_images_are_resolved_in_order_only_at_the_wire_edge() {
     let directory = tempfile::tempdir().unwrap();
     let store = ArtifactStore::new(directory.path().join("artifacts"));
-    let (artifact, _) = store
-        .put(b"image", "image/png", PrincipalId::new())
-        .unwrap();
+    let owner = PrincipalId::new();
+    let (first_artifact, _) = store.put(b"first", "image/png", owner).unwrap();
+    let (second_artifact, _) = store.put(b"second", "image/jpeg", owner).unwrap();
     let message = Message {
         role: Role::User,
         content: vec![
             ContentBlock::Text("before".into()),
             ContentBlock::Image(ImageRef {
-                artifact,
+                artifact: first_artifact,
                 media_type: "image/png".into(),
                 byte_len: 5,
+                width: Some(1),
+                height: Some(1),
+            }),
+            ContentBlock::Image(ImageRef {
+                artifact: second_artifact,
+                media_type: "image/jpeg".into(),
+                byte_len: 6,
                 width: Some(1),
                 height: Some(1),
             }),
@@ -85,9 +92,14 @@ fn image_content_is_resolved_only_at_the_wire_edge() {
     assert!(matches!(
         &parts[1],
         WireContentPart::ImageUrl { image_url }
-            if image_url.url == "data:image/png;base64,aW1hZ2U="
+            if image_url.url == "data:image/png;base64,Zmlyc3Q="
     ));
-    assert!(matches!(&parts[2], WireContentPart::Text { text } if text == "after"));
+    assert!(matches!(
+        &parts[2],
+        WireContentPart::ImageUrl { image_url }
+            if image_url.url == "data:image/jpeg;base64,c2Vjb25k"
+    ));
+    assert!(matches!(&parts[3], WireContentPart::Text { text } if text == "after"));
     assert!(
         !serde_json::to_string(&wire)
             .unwrap()

@@ -7,7 +7,7 @@ use crate::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     error::Error,
     fmt, fs,
     io::{Cursor, Read},
@@ -15,6 +15,8 @@ use std::{
 };
 
 const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+pub(crate) const MAX_IMAGES_PER_TURN: usize = 8;
+pub(crate) const MAX_IMAGE_BYTES_PER_TURN: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ImageRef {
@@ -75,8 +77,15 @@ pub(crate) struct PendingImages {
 }
 
 impl PendingImages {
-    pub(crate) fn push(&mut self, attachment: ImageAttachment) {
+    pub(crate) fn push(&mut self, attachment: ImageAttachment) -> bool {
+        if self.queue.iter().any(|existing| {
+            existing.image.artifact.reference.content_hash
+                == attachment.image.artifact.reference.content_hash
+        }) {
+            return false;
+        }
         self.queue.push_back(attachment);
+        true
     }
     pub(crate) fn clear(&mut self) -> usize {
         let count = self.queue.len();
@@ -292,10 +301,11 @@ pub(crate) fn classify_dropped_image_path(
     }
 }
 
-/// Finds one image-looking path in ordinary user text. This is lexical intent
-/// detection only; callers still resolve the path and enforce authority before
-/// reading bytes.
-pub(crate) fn image_path_in_text(text: &str) -> Option<String> {
+/// Finds image-looking paths in ordinary user text, preserving input order.
+/// This is lexical intent detection only; callers still resolve every path and
+/// enforce authority before reading bytes. One extra candidate is retained so
+/// callers can report the per-turn count limit instead of silently truncating.
+pub(crate) fn image_paths_in_text(text: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     let mut start = None;
     let mut quote = None;
@@ -323,18 +333,25 @@ pub(crate) fn image_path_in_text(text: &str) -> Option<String> {
     if let Some(start) = start {
         candidates.push(&text[start..]);
     }
-    candidates.into_iter().find_map(|candidate| {
-        let candidate = candidate
-            .trim_matches(|character: char| matches!(character, ',' | ';' | ':' | ')' | ']' | '}'));
-        let extension = Path::new(candidate)
-            .extension()
-            .and_then(std::ffi::OsStr::to_str)?;
-        matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "png" | "jpg" | "jpeg" | "gif"
-        )
-        .then(|| candidate.to_owned())
-    })
+    let mut seen = HashSet::new();
+    candidates
+        .into_iter()
+        .filter_map(|candidate| {
+            let candidate = candidate.trim_matches(|character: char| {
+                matches!(character, ',' | ';' | ':' | ')' | ']' | '}')
+            });
+            let extension = Path::new(candidate)
+                .extension()
+                .and_then(std::ffi::OsStr::to_str)?;
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif"
+            )
+            .then(|| candidate.to_owned())
+        })
+        .filter(|candidate| seen.insert(candidate.clone()))
+        .take(MAX_IMAGES_PER_TURN + 1)
+        .collect()
 }
 
 fn normalize_dropped_path(source: &str) -> Result<PathBuf, ImageError> {
@@ -606,7 +623,7 @@ mod tests {
     fn pending_queue_is_consumed_once_and_clear_is_visible() {
         let mut queue = PendingImages::default();
         assert_eq!(queue.len(), 0);
-        queue.push(ImageAttachment {
+        assert!(queue.push(ImageAttachment {
             source_path: "photo.png".into(),
             image: ImageRef {
                 artifact: ArtifactRecord {
@@ -623,11 +640,35 @@ mod tests {
                 width: None,
                 height: None,
             },
-        });
+        }));
         let drained = queue.take_for_turn();
         assert_eq!(drained.len(), 1);
         assert_eq!(queue.len(), 0);
-        queue.push(drained.into_iter().next().unwrap());
+        assert!(queue.push(drained.into_iter().next().unwrap()));
+        let duplicate = queue.queue.front().unwrap().clone();
+        assert!(!queue.push(duplicate));
         assert_eq!(queue.clear(), 1);
+    }
+
+    #[test]
+    fn ordinary_text_detects_all_image_paths_in_input_order() {
+        assert_eq!(
+            image_paths_in_text(
+                r#"C:\Users\xana\Downloads\first.png C:\Users\xana\Downloads\second.jpg compare these"#,
+            ),
+            vec![
+                r#"C:\Users\xana\Downloads\first.png"#.to_owned(),
+                r#"C:\Users\xana\Downloads\second.jpg"#.to_owned(),
+            ]
+        );
+        assert_eq!(
+            image_paths_in_text(
+                r#"'C:\Users\xana\Downloads\first image.png' "C:\Users\xana\Downloads\second image.gif" 'C:\Users\xana\Downloads\first image.png'"#,
+            ),
+            vec![
+                r#"C:\Users\xana\Downloads\first image.png"#.to_owned(),
+                r#"C:\Users\xana\Downloads\second image.gif"#.to_owned(),
+            ]
+        );
     }
 }

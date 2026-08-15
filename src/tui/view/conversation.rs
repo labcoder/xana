@@ -11,7 +11,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Alignment, Rect},
     style::{Modifier, Style},
-    text::{Line, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Widget, Wrap},
 };
 
@@ -55,11 +55,37 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> 
     for batch in batches.into_iter().rev() {
         lines.extend(batch);
     }
-    if lines.is_empty() {
+    let working = state.busy && state.active_operation.is_some();
+    if lines.is_empty() && !working {
         lines.push(Line::styled(
             "Start a conversation below.",
             semantic_style(profile, SemanticToken::Muted),
         ));
+    }
+    if working {
+        if !lines.is_empty() {
+            lines.push(Line::raw(""));
+        }
+        let dots = if profile.reduced_motion {
+            "..."
+        } else {
+            match state.work_indicator_frame {
+                0 => ".",
+                1 => "..",
+                2 => "...",
+                _ => "..",
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                "Xana ",
+                semantic_style(profile, SemanticToken::Assistant).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("is working{dots}"),
+                semantic_style(profile, SemanticToken::Muted),
+            ),
+        ]));
     }
     let total_rows = wrapped_height(&lines, width);
     let title = if start > 0 {
