@@ -5,7 +5,8 @@
 Use `xana connect` to inspect Xana's integration hub. The command is read-only;
 choose `xana connect provider` or `xana connect profile` to enter an atomic
 guided setup section, or follow the exact typed plugin, MCP, external-agent, and
-image commands it prints. This keeps connection setup separate from the
+focused-service commands it prints. `xana connect image` and `xana connect
+vision` own guided, reviewed edits for those route types. This keeps connection setup separate from the
 read-only `xana doctor` diagnostic contract.
 
 Xana loads one strict, versioned `config.toml`, with a 1 MiB file limit.
@@ -198,15 +199,19 @@ Run the complete read-only installation report with:
 ```bash
 xana doctor
 xana doctor --output json
+xana doctor --probe-connections
 ```
 
 Findings use stable codes and `ok`, `info`, `warning`, or `error` severity.
 Each includes a bounded evidence source and exact next command. The report
-checks the current schema, credential reference/backend availability, live
-native catalogs, Codex executable/version/app-server/account/home/catalog and
-rate limits, Xana-owned path protection, presentation preferences, terminal
-mode, selected model, and the current workspace's runtime descriptor. Catalog
-probes do not update caches. Untrusted parse failures and provider response
+checks the current schema, credential reference/backend availability, local
+connection/model selection, profiles and configured integrations, Xana-owned
+path protection, presentation preferences, terminal mode, and the current
+workspace's runtime descriptor. The default command starts no provider,
+managed runtime, MCP process, or external-agent request. Explicit
+`--probe-connections` additionally checks live native catalogs and bounded
+Codex executable/version/app-server/account/home/catalog and rate-limit state;
+those catalog probes do not update caches. Untrusted parse failures and provider response
 bodies are omitted rather than echoed, so seeded secrets do not become
 diagnostic output.
 

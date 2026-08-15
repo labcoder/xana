@@ -136,7 +136,11 @@ pub(crate) struct TerminalHealth {
     pub(crate) dumb: bool,
 }
 
-pub(crate) async fn inspect(paths: &XanaPaths, terminal: TerminalHealth) -> DoctorReport {
+pub(crate) async fn inspect(
+    paths: &XanaPaths,
+    terminal: TerminalHealth,
+    probe_connections: bool,
+) -> DoctorReport {
     let mut report = DoctorReport::new();
     inspect_configuration(paths, &mut report);
     inspect_owned_paths(paths, &mut report);
@@ -146,7 +150,7 @@ pub(crate) async fn inspect(paths: &XanaPaths, terminal: TerminalHealth) -> Doct
     inspect_private_records(paths, &mut report);
     inspect_plugins(paths, &mut report);
     inspect_interoperability(paths, &mut report);
-    connections::inspect(paths, &mut report).await;
+    connections::inspect(paths, &mut report, probe_connections).await;
     report
 }
 
@@ -207,6 +211,84 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
             registry.service_routes.len()
         ),
         Some("xana connect".into()),
+    ));
+    for (name, profile) in &registry.profiles {
+        report.push(Finding::new(
+            format!("profile.{name}"),
+            if profile.archived {
+                Severity::Info
+            } else {
+                Severity::Ok
+            },
+            format!(
+                "profile {name:?} is {} and structurally valid",
+                if profile.archived {
+                    "archived"
+                } else {
+                    "active"
+                }
+            ),
+            format!(
+                "connection={} model={} skills={} plugins={} mcp={} agents={} services={}",
+                profile.connection,
+                profile.model,
+                profile.skills.len(),
+                profile.plugins.len(),
+                profile.mcp_servers.len(),
+                profile.external_agents.len(),
+                profile.service_routes.len()
+            ),
+            Some(format!("xana profile resolve {name}")),
+        ));
+    }
+    for (name, server) in &registry.mcp_servers {
+        let (transport, enabled) = match server {
+            crate::config::McpServerDeclaration::Stdio { enabled, .. } => ("stdio", *enabled),
+            crate::config::McpServerDeclaration::StreamableHttp { enabled, .. } => {
+                ("streamable_http", *enabled)
+            }
+        };
+        report.push(Finding::new(
+            format!("mcp.{name}"),
+            if enabled {
+                Severity::Ok
+            } else {
+                Severity::Info
+            },
+            format!(
+                "MCP server {name:?} is configured and {}",
+                if enabled { "enabled" } else { "disabled" }
+            ),
+            format!("transport={transport}; no process or network probe was started"),
+            Some(if enabled {
+                format!("xana mcp refresh {name}")
+            } else {
+                "xana connect mcp".into()
+            }),
+        ));
+    }
+    for (name, agent) in &registry.external_agents {
+        report.push(Finding::new(
+            format!("external_agent.{name}"),
+            if agent.enabled {
+                Severity::Ok
+            } else {
+                Severity::Info
+            },
+            format!(
+                "external agent {name:?} is configured and {}",
+                if agent.enabled { "enabled" } else { "disabled" }
+            ),
+            "endpoint and credential values are omitted; no network probe was started",
+            Some(format!("xana external-agent show {name}")),
+        ));
+    }
+    report.push(Finding::new(
+        "media.clipboard",
+        Severity::Info,
+        "clipboard image support is available only through an explicit foreground action",
+        format!("platform={}", std::env::consts::OS),
+        Some("use `/attach --clipboard` in an interactive Xana terminal".into()),
     ));
     let Ok(descriptors) = crate::focused_service::descriptor_registry() else {
         return;
@@ -630,12 +712,14 @@ mod tests {
                 output_is_terminal: false,
                 dumb: false,
             },
+            false,
         )
         .await;
         let json = serde_json::to_string(&report).unwrap();
 
         assert!(json.contains("\"version\":1"));
-        assert!(json.contains("connection.local.catalog"));
+        assert!(json.contains("connection.local.probe"));
+        assert!(json.contains("xana doctor --probe-connections"));
         assert!(!json.contains("api_key"));
         assert_eq!(fs::read(paths.config_file()).unwrap(), before);
         assert!(!paths.cache_dir().exists());
@@ -653,6 +737,7 @@ mod tests {
                 output_is_terminal: false,
                 dumb: false,
             },
+            false,
         )
         .await;
 

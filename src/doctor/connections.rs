@@ -1,4 +1,4 @@
-//! Live provider and managed-runtime health probes.
+//! Local connection diagnostics plus explicitly requested live probes.
 
 use super::{DoctorReport, Finding, Severity};
 use crate::{
@@ -12,7 +12,7 @@ use std::time::Duration;
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(20);
 
-pub(super) async fn inspect(paths: &XanaPaths, report: &mut DoctorReport) {
+pub(super) async fn inspect(paths: &XanaPaths, report: &mut DoctorReport, probe_connections: bool) {
     let registry = match XanaConfig::load_registry_from(paths.config_file()) {
         Ok(registry) => registry,
         Err(_) => return,
@@ -45,7 +45,19 @@ pub(super) async fn inspect(paths: &XanaPaths, report: &mut DoctorReport) {
 
     for connection in registry.connections.values() {
         inspect_credential(&manager, connection, report);
-        if connection.kind == ProviderKind::Codex {
+        if !probe_connections {
+            report.push(Finding::new(
+                format!("connection.{}.probe", connection.id),
+                Severity::Info,
+                "live connection probe was not requested",
+                format!(
+                    "connection={} kind={}",
+                    connection.id,
+                    connection.kind.as_str()
+                ),
+                Some("xana doctor --probe-connections".into()),
+            ));
+        } else if connection.kind == ProviderKind::Codex {
             inspect_codex(connection, report).await;
         } else if !credential_is_missing(&manager, connection) {
             inspect_native(&manager, connection, report).await;

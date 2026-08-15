@@ -7,6 +7,25 @@ dedicated Image API, plus `openai.vision` and `openrouter.vision` for one
 OpenAI-compatible multimodal analysis turn. ChatGPT/Codex subscriptions are
 not used for these focused-service paths.
 
+Use the reviewed setup flow instead of hand-editing this shape:
+
+```console
+xana connect image
+xana connect vision
+xana connect vision --service-provider openai --service-connection openai-vision \
+  --route describe --model gpt-5.4-mini --credential-env OPENAI_API_KEY \
+  --profile default --make-default --yes
+```
+
+Interactive setup prompts for the exact provider, route, service connection,
+model, credential environment variable, and profile, then shows the outbound
+classes before confirmation. The noninteractive form requires those choices
+and `--yes`. It writes only the named connection/route/profile references,
+validates the complete configuration, installs it atomically, and retains the
+prior file as `config.toml.bak`. Remove a route with `xana connect vision
+--route describe --remove --yes` (or the corresponding image command); an
+unused service connection is removed with it.
+
 ```toml
 [service_connections.openai-images]
 adapter = "openai.images"

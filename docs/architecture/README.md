@@ -857,9 +857,13 @@ versioned pending receipt and distinct process status. Shell installers consume
 that outcome but never parse, migrate, or repair configuration themselves.
 
 The diagnostic boundary emits a versioned redacted set of stable findings
-across the production config/credential/model/Codex/path/presentation/terminal/
-host probes. Native catalog checks are live but non-persisting. Default doctor
-does not construct an agent or mutate Xana state. `doctor --fix` admits only
+across the production config/credential/model/path/presentation/terminal/host
+state and configured interoperability declarations. Default doctor performs
+only bounded local inspection: it starts no provider, Codex app-server, MCP
+process, or external-agent request. `doctor --probe-connections` separately
+admits bounded live native-catalog and Codex executable/account/catalog probes;
+native catalog checks remain non-persisting. Neither form constructs an agent
+or mutates Xana state. `doctor --fix` admits only
 typed deterministic repairs: owner-only Unix modes and exact stale descriptor
 removal after proving the owner lock is free. Its preview and confirmation are
 separate from observation. Missing versioned private interoperability records
@@ -893,6 +897,13 @@ selection into TOML. Structured
 connection add/remove edits preserve comments, migrate legacy profile
 `provider` keys to canonical `connection`, write version 4, and validate the
 complete result. Existing version 1-3 documents remain readable.
+
+The provider-neutral connect hub is a navigation surface, not a discovery
+engine. Focused image/vision setup and MCP add/remove operations are explicit
+configuration transactions: they stage exact typed declarations and
+profile-level exposure, preview or require `--yes`, validate the entire schema,
+retain the exact prior config as `config.toml.bak`, and atomically replace the
+live file. No provider, MCP process, or endpoint is started by configuration.
 
 Six runtime-owned, versioned JSON records live under the data root's
 `interoperable/` directory: the project registry and conversation membership,

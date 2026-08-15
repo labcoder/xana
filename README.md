@@ -279,14 +279,21 @@ analyze IMAGE... --question QUESTION --route ROUTE --yes`.
 `xana connect` is the provider-neutral integration inventory. It performs no
 discovery or mutation by itself; `xana connect provider` and `xana connect
 profile` enter the existing atomic guided setup sections, while the hub points
-to exact plugin, MCP, external-agent, and image-route commands.
+to exact plugin, MCP, external-agent, and focused-service commands. `xana
+connect image` and `xana connect vision` guide one reviewed API-key route edit;
+the noninteractive form requires exact provider, model, credential reference,
+route, and `--yes`. `xana mcp add-stdio` and `xana mcp add-http` add one enabled,
+profile-allowlisted declaration without starting it; `xana mcp remove` removes
+only that declaration and its profile references. Every edit validates the
+complete config, installs atomically, and retains `config.toml.bak`.
 
 `xana doctor` performs bounded read-only checks of configuration, credential
-references, live native catalogs, Codex executable/app-server/account/catalog/
-rate-limit state, Xana-owned paths, presentation preferences, terminal mode,
-and the current workspace's host descriptor. It also inventories profiles,
-plugins, MCP servers, external agents, and focused routes without starting a
-process or network discovery. Each stable finding includes its
+references, selected connections/models, Xana-owned paths, presentation
+preferences, terminal mode, and the current workspace's host descriptor. It
+also inventories profiles, plugins, MCP servers, external agents, and focused
+routes without starting a process or network discovery. Add
+`--probe-connections` to run bounded live native-catalog and Codex
+executable/app-server/account/catalog/rate-limit probes. Each stable finding includes its
 evidence source and an exact next command. `--output json` emits the versioned
 redacted report. `xana doctor --fix` separately previews and confirms only
 deterministic owner-permission repairs on Unix and unlocked stale-descriptor

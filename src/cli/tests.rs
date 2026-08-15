@@ -884,6 +884,48 @@ fn parses_mcp_discovery_read_and_prompt_commands() {
 }
 
 #[test]
+fn parses_exact_mcp_configuration_commands() {
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "mcp",
+            "add-stdio",
+            "docs",
+            "--command",
+            "docs-server",
+            "--arg",
+            "--stdio",
+            "--allow-tool",
+            "read",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::AddStdio { server, tools, yes: true, .. }
+        })) if server == "docs" && tools == ["read"]
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "mcp",
+            "add-http",
+            "remote",
+            "--url",
+            "https://mcp.example.test/rpc",
+            "--credential-env",
+            "MCP_TOKEN",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::AddHttp { server, yes: true, .. }
+        })) if server == "remote"
+    ));
+}
+
+#[test]
 fn parses_external_agent_discovery_and_trust_lifecycle() {
     assert_eq!(
         Cli::try_parse_from([
@@ -1003,6 +1045,45 @@ fn parses_focused_vision_commands() {
                 yes: true,
                 json: false,
             },
+        }))
+    );
+}
+
+#[test]
+fn parses_exact_noninteractive_vision_connection_setup() {
+    let cli = Cli::try_parse_from([
+        "xana",
+        "connect",
+        "vision",
+        "--route",
+        "describe",
+        "--service-connection",
+        "openai-vision",
+        "--service-provider",
+        "openai",
+        "--model",
+        "gpt-vision",
+        "--credential-env",
+        "OPENAI_API_KEY",
+        "--make-default",
+        "--yes",
+    ])
+    .unwrap();
+
+    assert_eq!(
+        cli.command,
+        Some(Command::Connect(ConnectArgs {
+            integration: Some(ConnectIntegration::Vision),
+            route: Some("describe".into()),
+            service_connection: Some("openai-vision".into()),
+            service_provider: Some(FocusedServiceProviderChoice::OpenAi),
+            model: Some("gpt-vision".into()),
+            credential_env: Some("OPENAI_API_KEY".into()),
+            base_url: None,
+            profile: None,
+            make_default: true,
+            remove: false,
+            yes: true,
         }))
     );
 }

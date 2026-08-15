@@ -244,6 +244,176 @@ default = true
 }
 
 #[test]
+fn focused_route_edit_is_atomic_comment_preserving_and_profile_complete() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, format!("{MINIMAL}\n# keep this owner note\n")).unwrap();
+
+    XanaConfig::add_service_route(
+        &path,
+        NewServiceRoute {
+            route: "describe".into(),
+            connection: "openai-vision".into(),
+            adapter: "openai.vision".into(),
+            base_url: None,
+            credential: CredentialReference::Environment {
+                variable: "OPENAI_API_KEY".into(),
+            },
+            operation: "vision.analyze".into(),
+            model: "gpt-vision-fixture".into(),
+            description: Some("Analyze selected images".into()),
+            profile: "default".into(),
+            make_default: true,
+        },
+    )
+    .unwrap();
+
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert_eq!(
+        registry.service_routes["describe"].connection,
+        "openai-vision"
+    );
+    assert!(registry.service_routes["describe"].default);
+    assert_eq!(registry.profiles["default"].service_routes, ["describe"]);
+    let policy = registry.profiles["default"]
+        .egress_policy
+        .as_deref()
+        .unwrap();
+    assert_eq!(
+        registry.egress_policies[policy].allowed,
+        [
+            OutboundDataClass::PromptText,
+            OutboundDataClass::SelectedArtifacts,
+        ]
+    );
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("# keep this owner note")
+    );
+    assert_eq!(
+        fs::read_to_string(path.with_extension("toml.bak")).unwrap(),
+        format!("{MINIMAL}\n# keep this owner note\n")
+    );
+
+    XanaConfig::remove_service_route(&path, "describe").unwrap();
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert!(!registry.service_routes.contains_key("describe"));
+    assert!(!registry.service_connections.contains_key("openai-vision"));
+    assert!(registry.profiles["default"].service_routes.is_empty());
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("# keep this owner note")
+    );
+}
+
+#[test]
+fn mcp_edit_adds_and_removes_profile_allowlist_without_hand_editing_toml() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, MINIMAL).unwrap();
+
+    XanaConfig::add_mcp_server(
+        &path,
+        NewMcpServer {
+            id: "docs".into(),
+            declaration: McpServerDeclaration::Stdio {
+                command: "docs-server".into(),
+                args: vec!["--stdio".into()],
+                environment: BTreeMap::new(),
+                cwd: None,
+                enabled: true,
+                egress_policy: None,
+            },
+            profile: "default".into(),
+            selection: McpPrimitiveSelection {
+                tools: vec!["read".into()],
+                resources: vec!["file:///guide".into()],
+                resource_templates: Vec::new(),
+                prompts: vec!["review".into()],
+            },
+        },
+    )
+    .unwrap();
+
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert!(
+        registry.profiles["default"]
+            .mcp_servers
+            .contains(&"docs".into())
+    );
+    assert_eq!(
+        registry.profiles["default"].mcp_allowlists["docs"].tools,
+        ["read"]
+    );
+    let mcp_policy = registry.mcp_servers["docs"]
+        .egress_policy()
+        .expect("configured MCP server has an explicit policy");
+    assert_eq!(
+        registry.egress_policies[mcp_policy].allowed,
+        [
+            OutboundDataClass::PromptText,
+            OutboundDataClass::WorkspaceMetadata,
+        ]
+    );
+
+    XanaConfig::remove_mcp_server(&path, "docs").unwrap();
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert!(!registry.mcp_servers.contains_key("docs"));
+    assert!(registry.profiles["default"].mcp_servers.is_empty());
+    assert!(
+        !registry.profiles["default"]
+            .mcp_allowlists
+            .contains_key("docs")
+    );
+}
+
+#[test]
+fn focused_setup_does_not_broaden_a_policy_shared_by_other_profiles() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    let configured = MINIMAL.replace(
+        "[profiles.default]\nprovider = \"local\"\nmodel = \"qwen3:1.7b\"",
+        "[profiles.default]\nprovider = \"local\"\nmodel = \"qwen3:1.7b\"\negress_policy = \"shared\"\n\n[profiles.reviewer]\nprovider = \"local\"\nmodel = \"qwen3:1.7b\"\negress_policy = \"shared\"\n\n[egress_policies.shared]\nallowed = [\"prompt_text\"]",
+    );
+    fs::write(&path, configured).unwrap();
+
+    XanaConfig::add_service_route(
+        &path,
+        NewServiceRoute {
+            route: "describe".into(),
+            connection: "openai-vision".into(),
+            adapter: "openai.vision".into(),
+            base_url: None,
+            credential: CredentialReference::Environment {
+                variable: "OPENAI_API_KEY".into(),
+            },
+            operation: "vision.analyze".into(),
+            model: "vision-model".into(),
+            description: None,
+            profile: "default".into(),
+            make_default: true,
+        },
+    )
+    .unwrap();
+
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    assert_eq!(
+        registry.egress_policies["shared"].allowed,
+        [OutboundDataClass::PromptText]
+    );
+    assert_eq!(
+        registry.profiles["reviewer"].egress_policy.as_deref(),
+        Some("shared")
+    );
+    assert_ne!(
+        registry.profiles["default"].egress_policy.as_deref(),
+        Some("shared")
+    );
+}
+
+#[test]
 fn mcp_primitive_allowlists_require_selected_servers_and_unique_bounded_values() {
     let unselected = MINIMAL.replace(
         "model = \"qwen3:1.7b\"",
