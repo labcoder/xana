@@ -15,8 +15,8 @@ use crate::{
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     presentation::{ResolvedPresentation, SemanticToken},
     vision::{
-        DroppedImagePath, ImageIngestor, ImageLimits, PendingImages, classify_dropped_image_path,
-        image_path_in_text,
+        DroppedImagePath, ImageIngestor, ImageLimits, MAX_IMAGE_BYTES_PER_TURN,
+        MAX_IMAGES_PER_TURN, PendingImages, classify_dropped_image_path, image_paths_in_text,
     },
     workspace_host::{ConversationRef, WorkspaceHost},
 };
@@ -704,57 +704,90 @@ pub(crate) async fn run_chat(
                     let descriptor = header
                         .models
                         .descriptor(&header.provider_name, &header.model)?;
-                    if pending_images.len() == 0
-                        && descriptor.input_modalities.contains("image")
-                        && let Some(path) = image_path_in_text(input)
-                    {
+                    if descriptor.input_modalities.contains("image") {
+                        let paths = image_paths_in_text(input);
+                        if paths.len() > MAX_IMAGES_PER_TURN {
+                            println!("xana> at most 8 images may be sent in one turn");
+                            continue;
+                        }
                         let ingestor = ImageIngestor::new(
                             header.artifact_store.clone(),
                             ImageLimits::default(),
                         );
-                        let attachment = match classify_dropped_image_path(
-                            &header.workspace_root,
-                            &path,
-                        ) {
-                            Ok(DroppedImagePath::Workspace { .. }) => {
-                                Some(ingestor.ingest_dropped_path(
-                                    &header.workspace_root,
-                                    &path,
-                                    header.owner,
-                                ))
-                            }
-                            Ok(DroppedImagePath::External { canonical }) => {
-                                let answer = editor.readline(&format!(
-                                    "xana> read external image {path:?} once? [y/N] "
-                                ));
-                                if !matches!(
-                                    answer.as_deref().map(str::trim),
-                                    Ok("y" | "Y" | "yes" | "YES" | "Yes")
-                                ) {
-                                    println!(
-                                        "xana> external image was not read; message was not sent"
-                                    );
-                                    continue;
+                        let mut resolved = Vec::with_capacity(paths.len());
+                        let mut external_paths = Vec::new();
+                        let mut invalid = None;
+                        for path in paths {
+                            match classify_dropped_image_path(&header.workspace_root, &path) {
+                                Ok(DroppedImagePath::Workspace { relative }) => {
+                                    resolved.push(relative);
                                 }
-                                Some(ingestor.ingest_approved_dropped_path(
-                                    &header.workspace_root,
-                                    &canonical.to_string_lossy(),
-                                    header.owner,
-                                ))
-                            }
-                            Err(_) => None,
-                        };
-                        if let Some(attachment) = attachment {
-                            match attachment {
-                                Ok(attachment) => pending_images.push(attachment),
+                                Ok(DroppedImagePath::External { canonical }) => {
+                                    let canonical = canonical.to_string_lossy().into_owned();
+                                    external_paths.push(canonical.clone());
+                                    resolved.push(canonical);
+                                }
                                 Err(error) => {
-                                    println!("xana> could not attach image {path}: {error}");
-                                    continue;
+                                    invalid =
+                                        Some(format!("could not attach image {path}: {error}"));
+                                    break;
                                 }
                             }
                         }
+                        if let Some(reason) = invalid {
+                            println!("xana> {reason}; message was not sent");
+                            continue;
+                        }
+                        if !external_paths.is_empty() {
+                            println!("xana> external images requested:");
+                            for path in &external_paths {
+                                println!("  {path}");
+                            }
+                            let answer =
+                                editor.readline("xana> read these external images once? [y/N] ");
+                            if !matches!(
+                                answer.as_deref().map(str::trim),
+                                Ok("y" | "Y" | "yes" | "YES" | "Yes")
+                            ) {
+                                println!(
+                                    "xana> external images were not read; message was not sent"
+                                );
+                                continue;
+                            }
+                        }
+                        let attachments = resolved
+                            .iter()
+                            .map(|path| {
+                                if external_paths.is_empty() {
+                                    ingestor.ingest_dropped_path(
+                                        &header.workspace_root,
+                                        path,
+                                        header.owner,
+                                    )
+                                } else {
+                                    ingestor.ingest_approved_dropped_path(
+                                        &header.workspace_root,
+                                        path,
+                                        header.owner,
+                                    )
+                                }
+                            })
+                            .collect::<Result<Vec<_>, _>>();
+                        match attachments {
+                            Ok(attachments) => {
+                                for attachment in attachments {
+                                    pending_images.push(attachment);
+                                }
+                            }
+                            Err(error) => {
+                                println!(
+                                    "xana> could not attach images: {error}; message was not sent"
+                                );
+                                continue;
+                            }
+                        }
                     }
-                    if pending_images.len() > 8 {
+                    if pending_images.len() > MAX_IMAGES_PER_TURN {
                         println!("xana> at most 8 images may be sent in one turn");
                         continue;
                     }
@@ -770,7 +803,7 @@ pub(crate) async fn run_chat(
                         .iter()
                         .map(|attachment| attachment.image.byte_len)
                         .sum::<u64>();
-                    if total_image_bytes > 20 * 1024 * 1024 {
+                    if total_image_bytes > MAX_IMAGE_BYTES_PER_TURN {
                         for attachment in attachments {
                             pending_images.push(attachment);
                         }

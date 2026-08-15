@@ -616,15 +616,18 @@ registry:
 - `list_files` returns a bounded, sorted, non-recursive directory listing.
 - `edit_file` replaces exactly one match in an existing bounded UTF-8 file.
 - `run_command` executes one command string through a configured shell in an
-  existing workspace directory after runtime authorization. It returns status
-  plus independently bounded stdout and stderr.
+  existing directory inside the launch workspace after runtime authorization.
+  Relative paths are preferred; an absolute cwd is accepted only when its
+  canonical target remains inside that workspace. It returns status plus
+  independently bounded stdout and stderr.
 - `read_document` performs one bounded workspace read and extracts bounded
   UTF-8 text or CSV-as-Markdown without executing or fetching content.
 - `xana_docs` lists and reads Xana's curated, version-matched documentation by
   logical id.
 
-All tool paths are relative to Xana's launch workspace and must remain beneath
-that workspace after lexical and canonical resolution. Execution revalidates
+File and listing tool paths are relative to Xana's launch workspace. A command
+cwd may also use an absolute spelling whose canonical target remains inside
+that workspace. Execution revalidates
 the planned canonical path and filesystem identity; file tools also verify the
 opened handle before reading or writing. This rejects ordinary replacement or
 symlink-retargeting races between permission planning and execution. Reads and
@@ -694,7 +697,11 @@ runner, which owns input ordering, follow-up dispatch, shutdown, and a dirty
 frame clock capped at roughly 60 draws per second. Input and execution events
 mark view state dirty; a biased frame tick renders the newest state and skips
 missed ticks, so streaming text and pointer motion cannot force one synchronous
-full redraw per event. Registry rows separate command names, modes/parameters,
+full redraw per event. An active operation adds one ephemeral conversation-tail
+work marker. A separate skipped-tick 250 ms timer advances its dots only when
+full motion is enabled; reduced-motion mode keeps the marker static. This
+presentation state is neither persisted nor projected into model context.
+Registry rows separate command names, modes/parameters,
 descriptions, and optional exact palette arguments. A Ratatui stateful table
 keeps its heading fixed and selected row visible; normalized search accepts an
 optional leading slash and indexes modes as well as names. One shared layout

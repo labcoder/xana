@@ -23,9 +23,13 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use std::{path::Path, sync::Arc, time::Duration};
-use tokio::{sync::oneshot, time::MissedTickBehavior};
+use tokio::{
+    sync::oneshot,
+    time::{Instant, MissedTickBehavior},
+};
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+const WORK_INDICATOR_INTERVAL: Duration = Duration::from_millis(250);
 
 trait ExecutionOwner {
     type Event;
@@ -81,6 +85,11 @@ async fn drive<Owner: ExecutionOwner>(
     let mut terminal_area = prepared.terminal.terminal_mut().size()?;
     let mut frames = tokio::time::interval(FRAME_INTERVAL);
     frames.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut work_indicator = tokio::time::interval_at(
+        Instant::now() + WORK_INDICATOR_INTERVAL,
+        WORK_INDICATOR_INTERVAL,
+    );
+    work_indicator.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dirty = true;
 
     let exit = loop {
@@ -145,6 +154,9 @@ async fn drive<Owner: ExecutionOwner>(
             owner_event = owner.next_event() => {
                 dirty = true;
                 owner.apply_event(state, owner_event?)?;
+            }
+            _ = work_indicator.tick(), if !prepared.profile.reduced_motion && state.busy && state.active_operation.is_some() => {
+                dirty |= state.advance_work_indicator();
             }
         }
     };

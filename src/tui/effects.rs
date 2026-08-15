@@ -11,12 +11,98 @@ use crate::{
     native_runtime::RuntimeCommand,
     plain_terminal::{ChatExit, ChatHeader},
     presentation::PresentationPreferences,
-    vision::{DroppedImagePath, ImageIngestor, ImageLimits, classify_dropped_image_path},
+    vision::{
+        DroppedImagePath, ImageAttachment, ImageIngestor, ImageLimits, MAX_IMAGE_BYTES_PER_TURN,
+        MAX_IMAGES_PER_TURN, classify_dropped_image_path,
+    },
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};
-use std::io;
+use std::{collections::HashSet, io};
 use tokio::sync::oneshot;
+
+struct ClassifiedImagePaths {
+    paths: Vec<String>,
+    external_paths: Vec<String>,
+}
+
+fn classify_image_paths(
+    workspace: &std::path::Path,
+    paths: Vec<String>,
+) -> Result<ClassifiedImagePaths, String> {
+    let canonical_workspace = workspace
+        .canonicalize()
+        .map_err(|error| format!("could not resolve launch workspace: {error}"))?;
+    let mut resolved = Vec::with_capacity(paths.len());
+    let mut external_paths = Vec::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        match classify_dropped_image_path(workspace, &path) {
+            Ok(DroppedImagePath::Workspace { relative }) => {
+                if seen.insert(canonical_workspace.join(&relative)) {
+                    resolved.push(relative);
+                }
+            }
+            Ok(DroppedImagePath::External { canonical }) => {
+                if !seen.insert(canonical.clone()) {
+                    continue;
+                }
+                let canonical = canonical.to_string_lossy().into_owned();
+                external_paths.push(canonical.clone());
+                resolved.push(canonical);
+            }
+            Err(error) => return Err(format!("could not attach image {path}: {error}")),
+        }
+    }
+    Ok(ClassifiedImagePaths {
+        paths: resolved,
+        external_paths,
+    })
+}
+
+fn ingest_image_paths(
+    ingestor: &ImageIngestor,
+    workspace: &std::path::Path,
+    paths: &[String],
+    owner: crate::identity::PrincipalId,
+    approved_external: bool,
+) -> Result<Vec<ImageAttachment>, String> {
+    if paths.len() > MAX_IMAGES_PER_TURN {
+        return Err(format!(
+            "at most {MAX_IMAGES_PER_TURN} images may be attached to one turn"
+        ));
+    }
+    let mut total_bytes = 0_u64;
+    for path in paths {
+        let path = std::path::Path::new(path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workspace.join(path)
+        };
+        let byte_len = std::fs::metadata(&path)
+            .map_err(|error| format!("could not inspect image {}: {error}", path.display()))?
+            .len();
+        total_bytes = total_bytes.saturating_add(byte_len);
+        if total_bytes > MAX_IMAGE_BYTES_PER_TURN {
+            return Err(format!(
+                "image attachments exceed the {} MiB per-turn budget",
+                MAX_IMAGE_BYTES_PER_TURN / (1024 * 1024)
+            ));
+        }
+    }
+    paths
+        .iter()
+        .map(|path| {
+            let attachment = if approved_external {
+                ingestor.ingest_approved_dropped_path(workspace, path, owner)
+            } else {
+                ingestor.ingest_dropped_path(workspace, path, owner)
+            };
+            attachment.map_err(|error| format!("could not attach image {path}: {error}"))
+        })
+        .collect()
+}
 
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn dispatch_managed_effect(
@@ -105,7 +191,7 @@ pub(super) async fn dispatch_managed_effect(
         UpdateEffect::AttachAndSubmit {
             operation_id,
             input,
-            path,
+            paths,
             approved_external,
         } => {
             let model = driver.models.iter().find(|model| model.id == state.model);
@@ -126,45 +212,32 @@ pub(super) async fn dispatch_managed_effect(
                 ))
                 .await;
             }
-            let location = match classify_dropped_image_path(workspace, &path) {
-                Ok(location) => location,
-                Err(_) => {
-                    let next = state.submit_without_auto_attachment(input);
-                    return Box::pin(dispatch_managed_effect(
-                        next,
-                        state,
-                        driver,
-                        workspace_host,
-                        workspace,
-                        artifact_store,
-                        owner,
-                        preferences_path,
-                        session_preferences,
-                        pending_approval,
-                        clipboard,
-                    ))
-                    .await;
+            let classified = match classify_image_paths(workspace, paths) {
+                Ok(classified) => classified,
+                Err(reason) => {
+                    state.restore_auto_attachment_draft(input, reason);
+                    return Ok(None);
                 }
             };
-            if let DroppedImagePath::External { canonical } = location
-                && !approved_external
-            {
+            if !classified.external_paths.is_empty() && !approved_external {
                 state.request_external_image_approval(
                     operation_id,
                     input,
-                    canonical.to_string_lossy().into_owned(),
+                    classified.paths,
+                    classified.external_paths,
                 );
                 return Ok(None);
             }
             let ingestor = ImageIngestor::new(artifact_store.clone(), ImageLimits::default());
-            let attachment = if approved_external {
-                ingestor.ingest_approved_dropped_path(workspace, &path, owner)
-            } else {
-                ingestor.ingest_dropped_path(workspace, &path, owner)
-            };
-            match attachment {
-                Ok(attachment) => {
-                    let next = state.attach_and_submit(input, attachment);
+            match ingest_image_paths(
+                &ingestor,
+                workspace,
+                &classified.paths,
+                owner,
+                approved_external,
+            ) {
+                Ok(attachments) => {
+                    let next = state.attach_and_submit(input, attachments);
                     return Box::pin(dispatch_managed_effect(
                         next,
                         state,
@@ -180,11 +253,7 @@ pub(super) async fn dispatch_managed_effect(
                     ))
                     .await;
                 }
-                Err(error) => state.restore_submission(
-                    input,
-                    Vec::new(),
-                    format!("could not attach image {path}: {error}"),
-                ),
+                Err(reason) => state.restore_auto_attachment_draft(input, reason),
             }
         }
         UpdateEffect::AttachClipboard => match clipboard.get_image(artifact_store.clone(), owner) {
@@ -571,7 +640,7 @@ pub(super) async fn dispatch_effect(
         UpdateEffect::AttachAndSubmit {
             operation_id,
             input,
-            path,
+            paths,
             approved_external,
         } => {
             let descriptor = header
@@ -594,45 +663,33 @@ pub(super) async fn dispatch_effect(
                 ))
                 .await;
             }
-            let location = match classify_dropped_image_path(&header.workspace_root, &path) {
-                Ok(location) => location,
-                Err(_) => {
-                    let next = state.submit_without_auto_attachment(input);
-                    return Box::pin(dispatch_effect(
-                        next,
-                        state,
-                        client,
-                        header,
-                        workspace_host,
-                        conversation,
-                        active_root,
-                        preferences_path,
-                        session_preferences,
-                        clipboard,
-                    ))
-                    .await;
+            let classified = match classify_image_paths(&header.workspace_root, paths) {
+                Ok(classified) => classified,
+                Err(reason) => {
+                    state.restore_auto_attachment_draft(input, reason);
+                    return Ok(None);
                 }
             };
-            if let DroppedImagePath::External { canonical } = location
-                && !approved_external
-            {
+            if !classified.external_paths.is_empty() && !approved_external {
                 state.request_external_image_approval(
                     operation_id,
                     input,
-                    canonical.to_string_lossy().into_owned(),
+                    classified.paths,
+                    classified.external_paths,
                 );
                 return Ok(None);
             }
             let ingestor =
                 ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default());
-            let attachment = if approved_external {
-                ingestor.ingest_approved_dropped_path(&header.workspace_root, &path, header.owner)
-            } else {
-                ingestor.ingest_dropped_path(&header.workspace_root, &path, header.owner)
-            };
-            match attachment {
-                Ok(attachment) => {
-                    let next = state.attach_and_submit(input, attachment);
+            match ingest_image_paths(
+                &ingestor,
+                &header.workspace_root,
+                &classified.paths,
+                header.owner,
+                approved_external,
+            ) {
+                Ok(attachments) => {
+                    let next = state.attach_and_submit(input, attachments);
                     return Box::pin(dispatch_effect(
                         next,
                         state,
@@ -647,11 +704,7 @@ pub(super) async fn dispatch_effect(
                     ))
                     .await;
                 }
-                Err(error) => state.restore_submission(
-                    input,
-                    Vec::new(),
-                    format!("could not attach image {path}: {error}"),
-                ),
+                Err(reason) => state.restore_auto_attachment_draft(input, reason),
             }
         }
         UpdateEffect::AttachClipboard => {
@@ -848,4 +901,34 @@ fn format_model_choice(connection: &str, model: &crate::model_catalog::ModelDesc
         capabilities.push(format!("{}k ctx", context.div_ceil(1_000)));
     }
     format!("{connection}/{}  [{}]", model.id, capabilities.join(" · "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn image_path_classification_preserves_mixed_input_order_and_external_review() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("inside.png"), b"inside").unwrap();
+        let external = outside.path().join("outside.png");
+        std::fs::write(&external, b"outside").unwrap();
+
+        let classified = classify_image_paths(
+            workspace.path(),
+            vec![
+                "inside.png".to_owned(),
+                external.to_string_lossy().into_owned(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(classified.paths[0], "inside.png");
+        assert_eq!(
+            classified.paths[1],
+            external.canonicalize().unwrap().to_string_lossy()
+        );
+        assert_eq!(classified.external_paths, vec![classified.paths[1].clone()]);
+    }
 }

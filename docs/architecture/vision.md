@@ -6,16 +6,18 @@
 `/attach WORKSPACE_RELATIVE_PATH` performs a bounded regular-file read after
 workspace and symlink checks, validates PNG/JPEG/GIF content and pixel limits,
 and publishes immutable bytes to Xana's artifact store. Ordinary message text
-is also scanned lexically for one image-looking path; resolution and authority
-still happen after that untrusted-text detection. The pending queue
+is also scanned lexically for image-looking paths in input order; resolution
+and authority still happen after that untrusted-text detection. The pending queue
 preserves attachment order, accepts at most eight images and 20 MiB per turn,
 is cleared visibly by `/clear`, and is consumed when a turn is submitted.
 The TUI maps a terminal-pasted single image path from drag-and-drop into the
 same ingestion operation. Absolute, `file://`, and Git Bash path forms are
 normalized before resolution. Workspace images follow ordinary workspace
 policy. An image outside the launch workspace is never read ambiently: the
-interactive frontend asks for one exact allow-once decision, then imports a
-bounded immutable artifact copy. Denial restores the draft.
+interactive frontend lists all requested external images in one exact
+allow-once decision, then imports bounded immutable artifact copies. Every
+path is classified before the turn is submitted; denial or validation failure
+restores the complete draft rather than sending a partial image set.
 
 The internal message model carries `ContentBlock::Image` references rather
 than paths or base64. Before native provider I/O, Xana requires the selected

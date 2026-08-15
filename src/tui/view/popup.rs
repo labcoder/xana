@@ -43,18 +43,31 @@ pub(super) fn render(
                 Line::raw(text.clone()),
             ],
         ),
-        Overlay::ExternalImageApproval { path, selected, .. } => (
-            " Read external image? ",
-            vec![
+        Overlay::ExternalImageApproval {
+            external_paths,
+            selected,
+            ..
+        } => {
+            let mut lines = vec![
                 Line::styled(
-                    "This image is outside the launch workspace. Xana imports an immutable bounded copy only if you approve.",
+                    "These images are outside the launch workspace. Xana imports immutable bounded copies only if you approve.",
                     semantic_style(profile, SemanticToken::Warning),
                 ),
                 Line::raw(""),
-                Line::raw(path.clone()),
+            ];
+            lines.extend(external_paths.iter().map(|path| Line::raw(path.clone())));
+            lines.extend([
                 Line::raw(""),
                 Line::styled(
-                    format!("{} Allow once", if *selected == 0 { ">" } else { " " }),
+                    format!(
+                        "{} Allow {} once",
+                        if *selected == 0 { ">" } else { " " },
+                        if external_paths.len() == 1 {
+                            "image"
+                        } else {
+                            "images"
+                        }
+                    ),
                     if *selected == 0 {
                         semantic_style(profile, SemanticToken::Focus)
                     } else {
@@ -72,8 +85,9 @@ pub(super) fn render(
                         Style::default()
                     },
                 ),
-            ],
-        ),
+            ]);
+            (" Read external images? ", lines)
+        }
         Overlay::Help => (
             " Keyboard help ",
             vec![

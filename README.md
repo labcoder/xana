@@ -254,9 +254,10 @@ commands work in plain and TUI conversations, and exposed routes add the
 permission-gated `generate_image` tool to native agents.
 Image-capable conversational models accept bounded PNG/JPEG/GIF artifacts from
 `/attach PATH`, the explicit `/attach --clipboard` action, a local image
-dragged into the TUI, or one image-looking local path in ordinary message text.
-An external path requires an exact allow-once prompt before Xana reads it. Xana
-fully decodes and content-addresses one copy before
+dragged into the TUI, or image-looking local paths in ordinary message text.
+Multiple paths in one message are preserved in order. External paths are
+listed together in an exact allow-once prompt before Xana reads them. Xana
+fully decodes and content-addresses each approved copy before
 provider use; clipboard access is never ambient.
 
 ## Diagnose and recover an installation
@@ -469,6 +470,9 @@ scrolling; queued drag motion samples the newest pointer position instead of
 replaying stale coordinates. Ctrl+Q exits. Bracketed and detected key-stream
 pastes are coalesced into one bounded confirmation, so pasted newlines do not
 submit separate messages.
+An active turn also places a low-rate animated `Xana is working...` marker at
+the conversation tail. This local indicator is static under reduced-motion
+preferences and never enters the transcript or model context.
 Managed Codex uses the same full-screen shell while Codex retains
 ownership of its inner loop and history; Xana displays app-server activity and
 routes exact approval decisions without a second model call. An implicit initialization
@@ -556,14 +560,15 @@ turns use Codex's own tools/sandbox and Xana projects command/file approval
 requests into the terminal.
 
 Use `/attach WORKSPACE_RELATIVE_IMAGE`, `/attach --clipboard`, drag a PNG,
-JPEG, or GIF into the TUI, or include one image-looking local path in an
-ordinary message to stage image input.
+JPEG, or GIF into the TUI, or include one or more image-looking local paths in
+an ordinary message to stage image input.
 Xana keeps immutable artifact references, enforces file/pixel/count/aggregate
 budgets, preserves attachment order, and fails closed unless the selected
 model advertises image input. A path inside the launch workspace follows
 ordinary workspace policy. An existing image outside it requires an exact
 interactive allow-once decision before Xana imports a bounded immutable copy;
-denial never sends the message. OpenAI-compatible and Anthropic bytes are
+all external paths in one turn are reviewed together, and denial or validation
+failure never sends a partial message. OpenAI-compatible and Anthropic bytes are
 resolved only at the provider wire edge; Codex receives the verified Xana
 artifact path rather than the original external source.
 

@@ -112,9 +112,11 @@ or a selected model not declared image-capable.
 
 Dragging a PNG, JPEG, or GIF into the TUI stages the terminal-pasted path
 through that same ingestion path instead of inserting it into the composer.
-An ordinary message that contains one image-looking local path is recognized
-the same way, so `/attach` is a discoverable explicit action rather than a
-requirement.
+An ordinary message that contains one or more image-looking local paths is
+recognized the same way, so `/attach` is a discoverable explicit action rather
+than a requirement. Xana preserves path order, reviews all external paths in
+one allow-once prompt, and does not send a partially attached turn if any path
+is denied or invalid.
 Quoted paths, `file://` paths, and Windows paths emitted by Git Bash are
 normalized. A workspace file follows ordinary workspace authority. For an
 existing file outside the workspace, Xana shows an exact allow-once prompt and
@@ -187,6 +189,11 @@ Native provider reasoning is incrementally accumulated into one bounded,
 collapsed card per step. Committed assistant tool requests and tool results are
 also projected into the conversation and activity panes immediately; restart
 is not required to reveal durable work.
+While an attached turn is active, the conversation tail shows a local animated
+`Xana is working...` marker in addition to the status and activity panes. It is
+presentation state only: it is never persisted or added to model context. The
+animation advances at a low fixed rate, becomes static when reduced motion is
+selected, and disappears on completion, interruption, or failure.
 
 Approval cards show the requesting owner, tool or Codex callback, final
 arguments, and scope. Enter chooses the highlighted allow-once, exact-session,

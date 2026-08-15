@@ -56,20 +56,40 @@ fn pasted_image_path_is_staged_as_a_drop_without_inserting_text() {
 }
 
 #[test]
-fn a_message_containing_an_image_path_requests_automatic_attachment() {
+fn a_message_containing_two_image_paths_requests_both_automatic_attachments() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;
-    state
-        .composer
-        .replace(r#"C:\Users\xana\Downloads\photo.png what is this?"#.to_owned());
+    state.composer.replace(
+        r#"C:\Users\xana\Downloads\first.png C:\Users\xana\Downloads\second.jpg compare these"#
+            .to_owned(),
+    );
 
     let effect = state.update_input(InputAction::Submit);
 
     assert!(matches!(
         effect,
-        UpdateEffect::AttachAndSubmit { input, path, approved_external: false, .. }
-            if input.ends_with("what is this?") && path.ends_with("photo.png")
+        UpdateEffect::AttachAndSubmit { input, paths, approved_external: false, .. }
+            if input.ends_with("compare these")
+                && paths == vec![
+                    r#"C:\Users\xana\Downloads\first.png"#.to_owned(),
+                    r#"C:\Users\xana\Downloads\second.jpg"#.to_owned(),
+                ]
     ));
+}
+
+#[test]
+fn too_many_implicit_image_paths_restore_the_complete_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    let input = (0..=MAX_IMAGES_PER_TURN)
+        .map(|index| format!("image-{index}.png"))
+        .collect::<Vec<_>>()
+        .join(" ");
+    state.composer.replace(input.clone());
+
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert_eq!(state.composer.text, input);
+    assert!(state.status.contains("At most 8"));
 }
 
 #[test]
@@ -78,7 +98,8 @@ fn external_image_approval_can_continue_or_restore_the_draft() {
     state.request_external_image_approval(
         OperationId::new(),
         "please inspect it".to_owned(),
-        "C:\\outside\\photo.png".to_owned(),
+        vec!["C:\\outside\\photo.png".to_owned()],
+        vec!["C:\\outside\\photo.png".to_owned()],
     );
 
     let effect = state.update_input(InputAction::Confirm);
@@ -86,10 +107,44 @@ fn external_image_approval_can_continue_or_restore_the_draft() {
     assert!(matches!(
         effect,
         UpdateEffect::AttachAndSubmit {
+            paths,
             approved_external: true,
             ..
-        }
+        } if paths == vec!["C:\\outside\\photo.png".to_owned()]
     ));
+}
+
+#[test]
+fn work_indicator_advances_only_for_an_active_turn() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    assert!(!state.advance_work_indicator());
+
+    state.busy = true;
+    state.active_operation = Some(OperationId::new());
+    assert!(state.advance_work_indicator());
+    assert_eq!(state.work_indicator_frame, 1);
+
+    state.busy = false;
+    assert!(!state.advance_work_indicator());
+    assert_eq!(state.work_indicator_frame, 1);
+}
+
+#[test]
+fn failed_followup_attachment_restores_its_draft_without_detaching_the_active_turn() {
+    let operation_id = OperationId::new();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = true;
+    state.active_operation = Some(operation_id);
+
+    state.restore_auto_attachment_draft(
+        "follow-up with image".to_owned(),
+        "image is unavailable".to_owned(),
+    );
+
+    assert_eq!(state.composer.text, "follow-up with image");
+    assert_eq!(state.active_operation, Some(operation_id));
+    assert!(state.busy);
 }
 
 #[test]
@@ -98,7 +153,8 @@ fn cancelling_external_image_approval_restores_the_draft() {
     state.request_external_image_approval(
         OperationId::new(),
         "please inspect it".to_owned(),
-        "C:\\outside\\photo.png".to_owned(),
+        vec!["C:\\outside\\photo.png".to_owned()],
+        vec!["C:\\outside\\photo.png".to_owned()],
     );
 
     assert_eq!(state.update_input(InputAction::Cancel), UpdateEffect::None);

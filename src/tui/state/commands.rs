@@ -347,14 +347,15 @@ impl TuiState {
             Overlay::ExternalImageApproval {
                 operation_id,
                 input,
-                path,
+                paths,
                 selected,
+                ..
             } => {
                 if selected == 0 {
                     UpdateEffect::AttachAndSubmit {
                         operation_id,
                         input,
-                        path,
+                        paths,
                         approved_external: true,
                     }
                 } else {
@@ -395,11 +396,17 @@ impl TuiState {
             };
         }
         let input = self.composer.take().trim().to_owned();
-        if let Some(path) = image_path_in_text(&input) {
+        let paths = image_paths_in_text(&input);
+        if paths.len() > MAX_IMAGES_PER_TURN {
+            self.composer.replace(input);
+            self.status = "At most 8 images may be attached to one turn".to_owned();
+            return UpdateEffect::None;
+        }
+        if !paths.is_empty() {
             return UpdateEffect::AttachAndSubmit {
                 operation_id: OperationId::new(),
                 input,
-                path,
+                paths,
                 approved_external: false,
             };
         }
