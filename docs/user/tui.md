@@ -81,6 +81,7 @@ Palette actions and slash input use that one registry:
 - `/clear`, `/composer submit|newline`
 - `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
+- `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/usage`
 - `/doctor`
@@ -93,6 +94,14 @@ or models. A managed Codex model or reasoning change applies to subsequent
 turns and preserves the Codex thread. Native reasoning control is unavailable.
 Activity visibility changes only what the frontend renders and never changes
 model reasoning effort.
+
+`/mcp list` runs inside the attached TUI and presents its bounded output in a
+scrollable result modal. Bare `/profile create` opens a three-field form with
+the current connection and model prefilled, then creates the profile through
+the same typed command/configuration transaction as the CLI. Errors remain in
+the modal rather than tearing down and flashing the terminal. Other management
+subcommands continue through the explicit foreground-owner transition until
+their terminal-independent presentation contracts are complete.
 
 `/setup` restores the chat terminal before opening the same keyboard-driven,
 full-screen selectors as `xana setup`. A focused section is available from
@@ -177,7 +186,9 @@ edge requests another bounded page while preserving the current anchor.
 
 ## Layout and accessibility
 
-The header starts expanded with Xana's wordmark, version, connection, model,
+On supported terminals, initialization first plays the skippable canonical
+Xana portrait transition described in [Terminal presentation](presentation.md).
+The header then starts expanded with Xana's wordmark, version, connection, model,
 session, and status. Typing or pasting a draft collapses it to the compact
 status bar. Click the header or use `/header view show` to expand it again.
 

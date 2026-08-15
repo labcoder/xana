@@ -26,6 +26,7 @@ enum ActivityHit {
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
     let area = frame.area();
+    frame.render_widget(Block::default().style(surface_style(profile, false)), area);
     match LayoutClass::for_width(area.width) {
         LayoutClass::Wide => render_wide(frame, area, state, profile),
         LayoutClass::Medium => render_medium(frame, area, state, profile),
@@ -377,8 +378,10 @@ fn overlay_choice_at(
                 4
             }
         }
+        super::state::Overlay::ProfileCreate { .. } => 1,
         super::state::Overlay::PastePreview { .. }
         | super::state::Overlay::ActivityDetail { .. }
+        | super::state::Overlay::CommandResult { .. }
         | super::state::Overlay::Help
         | super::state::Overlay::Queue => return None,
     };
@@ -742,10 +745,16 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn semantic_style(profile: ResolvedPresentation, token: SemanticToken) -> Style {
+pub(super) fn semantic_style(profile: ResolvedPresentation, token: SemanticToken) -> Style {
     profile
         .color(token)
         .map_or_else(Style::default, |color| Style::default().fg(to_color(color)))
+}
+
+pub(super) fn surface_style(profile: ResolvedPresentation, raised: bool) -> Style {
+    profile
+        .surface_color(raised)
+        .map_or_else(Style::default, |color| Style::default().bg(to_color(color)))
 }
 
 fn to_color(color: PresentationColor) -> Color {
@@ -758,6 +767,8 @@ fn to_color(color: PresentationColor) -> Color {
         PresentationColor::Magenta => Color::Magenta,
         PresentationColor::Cyan => Color::Cyan,
         PresentationColor::DarkGray => Color::DarkGray,
+        PresentationColor::Black => Color::Black,
+        PresentationColor::White => Color::White,
     }
 }
 

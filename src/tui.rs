@@ -9,6 +9,7 @@ mod command;
 mod composer;
 mod effects;
 mod input;
+mod intro;
 mod lifecycle;
 mod rich_text;
 mod runner;
@@ -25,6 +26,7 @@ use lifecycle::TerminalSession;
 use state::{InputAction, MoveDirection, TuiState};
 use std::{io, path::PathBuf};
 
+pub(crate) use intro::play as play_intro;
 pub(crate) use runner::{run_managed, run_native};
 
 pub(crate) fn restore_terminal_best_effort() {
@@ -36,6 +38,7 @@ pub(crate) struct PreparedTui {
     profile: ResolvedPresentation,
     preferences: PresentationPreferences,
     preferences_path: PathBuf,
+    paths: Box<crate::paths::XanaPaths>,
     clipboard: clipboard::Clipboard,
 }
 
@@ -49,8 +52,10 @@ pub(crate) fn prepare(
     profile: ResolvedPresentation,
     preferences: PresentationPreferences,
     preferences_path: PathBuf,
+    paths: crate::paths::XanaPaths,
 ) -> io::Result<PreparedTui> {
     let mut terminal = TerminalSession::enter()?;
+    intro::play(terminal.terminal_mut(), profile)?;
     let state = TuiState::starting(preferences.composer);
     terminal
         .terminal_mut()
@@ -60,6 +65,7 @@ pub(crate) fn prepare(
         profile,
         preferences,
         preferences_path,
+        paths: Box::new(paths),
         clipboard: clipboard::Clipboard::default(),
     })
 }

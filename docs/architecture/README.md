@@ -89,6 +89,12 @@ per surface. Redirected, dumb, monochrome, and `NO_COLOR` profiles resolve to
 plain text with no control sequences. Preference failure falls back safely and
 cannot change runtime policy. None of those frontend concerns enters the
 headless agent loop.
+Dark and light profiles additionally resolve base and raised surface colors;
+all Ratatui presentation applies those styles below domain state. The TUI-owned
+`intro` adapter applies one TachyonFX effect to the canonical presentation
+portrait after terminal entry and before ordinary first paint. It is bounded to
+1.5 seconds, consumes no runtime/provider state, is skippable, and is omitted by
+resolved reduced-motion, ASCII, width, height, and noninteractive fallbacks.
 
 All of these boundaries currently live in the one `xana` application package.
 Their Rust visibility is private or `pub(crate)` except for the executable
@@ -750,6 +756,12 @@ the selection. Copying uses a lazy, long-lived text-only `arboard` adapter. The
 adapter disables image features, initializes only after an explicit copy, and
 keeps Linux clipboard ownership alive for the TUI session. Clipboard failure is
 reported as presentation status and does not affect runtime authority. The
+same overlay boundary renders bounded management output without reconstructing
+the terminal. Current inline adapters cover side-effect-free `mcp list` and the
+typed global `profile create` form; the latter pre-fills the active
+connection/model and delegates the actual mutation to the existing profile
+command transaction. Other control families retain the foreground restart
+boundary rather than receiving ad hoc TUI implementations. The
 typed `/sessions new` action is idle-only: it shuts down the current frontend
 owner and re-enters the application composition boundary with `NewNative` or
 `NewManaged`, preserving the prior session and current resolved configuration
@@ -822,7 +834,12 @@ typed native or managed connection without filesystem effects,
 establishes the endpoint/executable and credential/account, and performs a
 non-persistent live catalog fetch before accepting model and managed reasoning
 choices. Interactive terminals use a keyboard-driven full-screen selector with
-search and paging; the append-only `setup --plain` surface pages large catalogs
+search, paging, fixed guidance, real theme swatches, and one alternate-screen
+lifecycle. Cursor movement redraws through Ratatui's diff buffer; it does not
+clear the screen per key. Text/secret fields, advanced appearance and policy
+choices, and review remain in that shell. Escape returns from a nested step to
+setup home, while top-level cancellation restores the terminal and succeeds
+without a write. The append-only `setup --plain` surface pages large catalogs
 and accepts exact ids or filters without dumping every model. Both surfaces show
 only catalog-backed modality, tool, reasoning, limit, and pricing facts. The
 validated version 3 document and any hidden OS-store secret stay
@@ -850,6 +867,9 @@ when included in Full Custom, its write participates in config/credential
 rollback. Receipts classify managed model/reasoning as subsequent-turn state
 and resolved owner/policy/profile changes as new-conversation state. No setup
 operation mutates an already running agent or managed thread implicitly.
+When valid state already contains named connections, Quick/focused setup can
+revalidate and select any existing connection/model or add/update another;
+structural merging continues to preserve all unrelated valid connections.
 The completion receipt derives config, backup, data, and cache locations from
 `XanaPaths`, identifies API keys as OS-store state, and prints only commands
 Xana actually implements.

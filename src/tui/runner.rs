@@ -140,6 +140,29 @@ async fn drive<Owner: ExecutionOwner>(
                 let terminal_event = terminal_event.context("terminal input failed")?;
                 if let Some(action) = terminal_input_action(terminal_event, state, terminal_area.into()) {
                     let effect = state.update_input(action);
+                    if let UpdateEffect::ControlCommand { family, arguments } = &effect
+                        && inline_control_command(family, arguments)
+                    {
+                        let title = format!("/{family} {arguments}");
+                        match crate::app::run_tui_control_command(
+                            &prepared.paths,
+                            family,
+                            arguments,
+                        )
+                        .await
+                        {
+                            Ok(output) => state.show_command_result(
+                                title,
+                                if output.trim().is_empty() {
+                                    "Command completed successfully.".to_owned()
+                                } else {
+                                    output
+                                },
+                            ),
+                            Err(error) => state.show_command_error(title, format!("{error:#}")),
+                        }
+                        continue;
+                    }
                     if let Some(exit) = owner
                         .dispatch(
                             effect,
@@ -165,6 +188,11 @@ async fn drive<Owner: ExecutionOwner>(
     };
 
     Ok(exit)
+}
+
+fn inline_control_command(family: &str, arguments: &str) -> bool {
+    let action = arguments.split_whitespace().next().unwrap_or("list");
+    matches!((family, action), ("mcp", "list") | ("profile", "create"))
 }
 
 struct NativeOwner<'a> {
@@ -701,4 +729,21 @@ pub(crate) async fn run_managed(
         session_preferences,
     )
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inline_control_command;
+
+    #[test]
+    fn only_bounded_noninteractive_commands_stay_inside_the_tui() {
+        assert!(inline_control_command("mcp", "list"));
+        assert!(inline_control_command(
+            "profile",
+            "create review --connection ollama --model qwen3:8b"
+        ));
+        assert!(!inline_control_command("mcp", "read server resource"));
+        assert!(!inline_control_command("profile", "delete review --yes"));
+        assert!(!inline_control_command("image", "generate a portrait"));
+    }
 }

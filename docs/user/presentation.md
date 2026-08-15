@@ -28,6 +28,13 @@ Xana uses these conservative inputs at process startup:
 - A truthy `XANA_REDUCED_MOTION` selects reduced motion. The TUI consumes this
   resolved value; the append-only surface has no animation.
 
+On a wide interactive Unicode terminal, setup and the full-screen client begin
+with Xana's canonical portrait. A presentation-only TachyonFX sequence evolves
+the portrait into view, holds briefly, and dissolves it into a bounded wave in
+about 1.5 seconds. Any key skips it. Reduced motion, narrow or short terminals,
+ASCII, redirected output, and dumb terminals bypass it completely. The effect
+does not start a provider, alter history, or enter model context.
+
 These checks are local and immediate. Xana does not issue terminal capability
 queries that could delay or hang startup.
 
@@ -44,6 +51,13 @@ xana setup --non-interactive --section appearance \
   --theme monochrome --glyphs ascii --motion reduced \
   --density compact --composer newline --activity hide --yes
 ```
+
+The full-screen appearance flow previews actual semantic palette swatches.
+Dark and light themes own distinct base and raised surfaces as well as text
+colors; monochrome removes both color and background styling. The remaining
+glyph, motion, density, composer, and activity choices stay inside the same
+keyboard-driven setup shell. Enter confirms a choice, Escape returns to setup
+home without writing, and Ctrl+C cancels the transaction cleanly.
 
 It can also be created by hand:
 

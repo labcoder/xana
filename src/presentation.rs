@@ -56,6 +56,14 @@ pub(crate) fn tui_wordmark(unicode: bool) -> &'static [&'static str] {
     if unicode { WORDMARK } else { ASCII_WORDMARK }
 }
 
+pub(crate) const fn portrait() -> &'static [&'static str] {
+    PORTRAIT
+}
+
+pub(crate) const fn portrait_width() -> u16 {
+    PORTRAIT_WIDTH as u16
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ThemeChoice {
@@ -355,6 +363,8 @@ pub(crate) enum PresentationColor {
     Magenta,
     Cyan,
     DarkGray,
+    Black,
+    White,
 }
 
 impl SemanticToken {
@@ -403,6 +413,33 @@ impl ResolvedPresentation {
         }
     }
 
+    pub(crate) fn surface_color(self, raised: bool) -> Option<PresentationColor> {
+        if self.theme == ResolvedTheme::Monochrome || self.color_depth == ColorDepth::None {
+            return None;
+        }
+        Some(match (self.theme, self.color_depth, raised) {
+            (ResolvedTheme::Dark, ColorDepth::TrueColor, false) => {
+                PresentationColor::Rgb(8, 13, 20)
+            }
+            (ResolvedTheme::Dark, ColorDepth::TrueColor, true) => {
+                PresentationColor::Rgb(14, 22, 32)
+            }
+            (ResolvedTheme::Light, ColorDepth::TrueColor, false) => {
+                PresentationColor::Rgb(244, 247, 250)
+            }
+            (ResolvedTheme::Light, ColorDepth::TrueColor, true) => {
+                PresentationColor::Rgb(255, 255, 255)
+            }
+            (ResolvedTheme::Dark, ColorDepth::Ansi256, false) => PresentationColor::Indexed(233),
+            (ResolvedTheme::Dark, ColorDepth::Ansi256, true) => PresentationColor::Indexed(234),
+            (ResolvedTheme::Light, ColorDepth::Ansi256, false) => PresentationColor::Indexed(255),
+            (ResolvedTheme::Light, ColorDepth::Ansi256, true) => PresentationColor::Indexed(231),
+            (ResolvedTheme::Dark, ColorDepth::Ansi16, _) => PresentationColor::Black,
+            (ResolvedTheme::Light, ColorDepth::Ansi16, _) => PresentationColor::White,
+            (ResolvedTheme::Monochrome, _, _) | (_, ColorDepth::None, _) => return None,
+        })
+    }
+
     pub(crate) fn paint(self, token: SemanticToken, text: &str) -> String {
         let Some(code) = ansi_code(self.color(token)) else {
             return text.to_owned();
@@ -426,6 +463,8 @@ fn ansi_code(color: Option<PresentationColor>) -> Option<String> {
         PresentationColor::Magenta => "35".to_owned(),
         PresentationColor::Cyan => "36".to_owned(),
         PresentationColor::DarkGray => "90".to_owned(),
+        PresentationColor::Black => "30".to_owned(),
+        PresentationColor::White => "37".to_owned(),
     })
 }
 
@@ -654,6 +693,29 @@ mod tests {
                 assert!(!profile.paint(token, "state").contains('\x1b'));
             }
         }
+    }
+
+    #[test]
+    fn dark_and_light_themes_own_distinct_surface_palettes() {
+        let dark = resolve(
+            facts(ColorDepth::TrueColor, 100),
+            &PresentationPreferences {
+                theme: ThemeChoice::Dark,
+                ..PresentationPreferences::default()
+            },
+        );
+        let light = resolve(
+            facts(ColorDepth::TrueColor, 100),
+            &PresentationPreferences {
+                theme: ThemeChoice::Light,
+                ..PresentationPreferences::default()
+            },
+        );
+
+        assert_ne!(dark.surface_color(false), light.surface_color(false));
+        assert_ne!(dark.surface_color(true), light.surface_color(true));
+        assert_ne!(dark.surface_color(false), dark.surface_color(true));
+        assert_eq!(ResolvedPresentation::plain().surface_color(false), None);
     }
 
     #[test]

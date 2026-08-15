@@ -3,7 +3,7 @@
 mod appearance;
 
 use super::{
-    SetupOutcome, atomic_write, confirm, prompt_default,
+    SetupBack, SetupOutcome, atomic_write, prompt_default,
     ui::{SelectOption, SetupUi},
 };
 use crate::{
@@ -47,11 +47,13 @@ pub(super) fn customize_quick(
         });
     }
 
-    writeln!(output)?;
-    writeln!(output, "Full Custom Setup")?;
+    if !ui.rich {
+        writeln!(output)?;
+        writeln!(output, "Full Custom Setup")?;
+    }
     let mut document = rendered.parse::<DocumentMut>()?;
     edit_permissions_shell(&mut document, args, input, output, true, true, ui)?;
-    edit_profiles_routes(&mut document, args, input, output, true)?;
+    edit_profiles_routes(&mut document, args, input, output, true, ui)?;
     let preferences = appearance::edit(args, paths, input, output, true, ui)?;
     let config = validate_document(document)?;
     Ok(Customization {
@@ -78,19 +80,32 @@ pub(super) fn run_section(
             bail!("noninteractive appearance setup requires at least one appearance option");
         }
         let preferences = appearance::edit(args, paths, input, output, !args.non_interactive, ui)?;
+        let review_ui = super::ui::preview_preferences(ui, &preferences);
         let rendered = preferences.render()?;
         PresentationPreferences::parse(&rendered)?;
-        writeln!(output, "Review")?;
-        writeln!(output, "  Section: appearance")?;
-        writeln!(
-            output,
-            "  Applies: immediately; runtime policy is unchanged"
-        )?;
+        let review = vec![
+            "Section      appearance".to_owned(),
+            format!("Theme        {:?}", preferences.theme),
+            format!("Glyphs       {:?}", preferences.glyphs),
+            format!("Motion       {:?}", preferences.motion),
+            format!("Density      {:?}", preferences.density),
+            format!("Composer     {:?}", preferences.composer),
+            format!("Activity     {:?}", preferences.activity),
+            "Applies      immediately; runtime policy is unchanged".to_owned(),
+        ];
+        if !ui.rich {
+            writeln!(output, "Review")?;
+            for line in &review {
+                writeln!(output, "  {line}")?;
+            }
+        }
         if args.dry_run {
             writeln!(output, "Validated preview only; no durable state changed.")?;
             return Ok(SetupOutcome::Unchanged);
         }
-        if !args.yes && !confirm(input, output, "Apply appearance changes? [y/N]: ")? {
+        if !args.yes
+            && !super::ui::confirm_review(input, output, review_ui, "Review appearance", &review)?
+        {
             writeln!(output, "No changes made.")?;
             return Ok(SetupOutcome::Unchanged);
         }
@@ -153,24 +168,39 @@ pub(super) fn run_section(
             "new conversation (shell or authority snapshot changed)"
         }
         SetupSectionChoice::ProfilesRoutes => {
-            edit_profiles_routes(&mut document, args, input, output, !args.non_interactive)?;
+            edit_profiles_routes(
+                &mut document,
+                args,
+                input,
+                output,
+                !args.non_interactive,
+                ui,
+            )?;
             "new conversation (profile/route snapshot changed)"
         }
         SetupSectionChoice::Connection | SetupSectionChoice::Appearance => unreachable!(),
     };
     let rendered = validate_document(document)?;
-    writeln!(output, "Review")?;
-    writeln!(output, "  Section: {}", section_name(section))?;
-    writeln!(output, "  Applies: {effect}")?;
-    writeln!(output, "  Existing conversation: unchanged")?;
+    let mut review = vec![
+        format!("Section      {}", section_name(section)),
+        format!("Applies      {effect}"),
+        "Conversation current one remains unchanged".to_owned(),
+    ];
     if args.start_new {
-        writeln!(output, "  Next action: start a new conversation now")?;
+        review.push("Next action  start a new conversation now".to_owned());
+    }
+    if !ui.rich {
+        writeln!(output, "Review")?;
+        for line in &review {
+            writeln!(output, "  {line}")?;
+        }
     }
     if args.dry_run {
         writeln!(output, "Validated preview only; no durable state changed.")?;
         return Ok(SetupOutcome::Unchanged);
     }
-    if !args.yes && !confirm(input, output, "Apply this section? [y/N]: ")? {
+    if !args.yes && !super::ui::confirm_review(input, output, ui, "Review setup section", &review)?
+    {
         writeln!(output, "No changes made.")?;
         return Ok(SetupOutcome::Unchanged);
     }
@@ -284,7 +314,7 @@ fn edit_permissions_shell(
                 default,
             )?
             .map(|index| options[index].label.clone())
-            .context("permission selection was cancelled")?
+            .ok_or(SetupBack)?
         }
         None => {
             writeln!(output)?;
@@ -328,7 +358,7 @@ fn edit_permissions_shell(
                 .unwrap_or(0);
             super::ui::select(output, ui, "Choose the command shell", &options, default)?
                 .map(|index| options[index].label.clone())
-                .context("shell selection was cancelled")?
+                .ok_or(SetupBack)?
         }
         None => {
             writeln!(output)?;
@@ -353,11 +383,14 @@ fn edit_permissions_shell(
             rules.push(parse_permission_rule(specification)?);
         }
     } else if full && !args.non_interactive {
-        let specification = prompt_default(
+        let specification = super::ui::prompt_value(
             input,
             output,
+            ui,
             "Permission rule ID:DECISION:EFFECT[:WORKSPACE] (blank for none)",
             "",
+            false,
+            false,
         )?;
         if !specification.is_empty() {
             permission_rules_mut(document)?.push(parse_permission_rule(&specification)?);
@@ -407,11 +440,12 @@ fn edit_profiles_routes(
     input: &mut impl BufRead,
     output: &mut impl Write,
     full: bool,
+    ui: SetupUi,
 ) -> Result<()> {
     let profile_name = match &args.profile {
         Some(profile) => profile.clone(),
         None if full && !args.non_interactive => {
-            prompt_default(input, output, "Profile name", "default")?
+            super::ui::prompt_value(input, output, ui, "Profile name", "default", true, false)?
         }
         None => "default".to_owned(),
     };
@@ -452,11 +486,14 @@ fn edit_profiles_routes(
                     .join(",")
             })
             .unwrap_or_default();
-        let selected = prompt_default(
+        let selected = super::ui::prompt_value(
             input,
             output,
+            ui,
             "Capabilities (comma separated; empty means defaults)",
             &current,
+            false,
+            false,
         )?;
         if !selected.is_empty() {
             let mut values = Array::new();
@@ -495,6 +532,7 @@ fn edit_profiles_routes(
             output,
             "Max fan-out",
             current_max_fan_out,
+            ui,
         )?,
     );
     set_usize(
@@ -508,6 +546,7 @@ fn edit_profiles_routes(
             output,
             "Max descendants",
             current_max_descendants,
+            ui,
         )?,
     );
     set_usize(
@@ -521,6 +560,7 @@ fn edit_profiles_routes(
             output,
             "Max child concurrency",
             current_max_concurrency,
+            ui,
         )?,
     );
     set_u64(
@@ -534,6 +574,7 @@ fn edit_profiles_routes(
             output,
             "Child deadline seconds",
             current_deadline_seconds,
+            ui,
         )?,
     );
     set_usize(
@@ -547,6 +588,7 @@ fn edit_profiles_routes(
             output,
             "Child context tokens",
             current_max_context_tokens,
+            ui,
         )?,
     );
     set_usize(
@@ -560,6 +602,7 @@ fn edit_profiles_routes(
             output,
             "Child report bytes",
             current_max_report_bytes,
+            ui,
         )?,
     );
     set_usize(
@@ -573,13 +616,14 @@ fn edit_profiles_routes(
             output,
             "Child artifact bytes",
             current_max_artifact_bytes,
+            ui,
         )?,
     );
 
     let route_name = match &args.route {
         Some(route) => route.clone(),
         None if full && !args.non_interactive => {
-            prompt_default(input, output, "Task route name", "default")?
+            super::ui::prompt_value(input, output, ui, "Task route name", "default", true, false)?
         }
         None => "default".to_owned(),
     };
@@ -640,11 +684,12 @@ fn full_usize(
     output: &mut impl Write,
     label: &str,
     default: usize,
+    ui: SetupUi,
 ) -> Result<Option<usize>> {
     if selected.is_some() || !full || args.non_interactive {
         return Ok(selected);
     }
-    prompt_default(input, output, label, &default.to_string())?
+    super::ui::prompt_value(input, output, ui, label, &default.to_string(), true, false)?
         .parse()
         .map(Some)
         .with_context(|| format!("{label} must be a nonnegative whole number"))
@@ -659,11 +704,12 @@ fn full_u64(
     output: &mut impl Write,
     label: &str,
     default: u64,
+    ui: SetupUi,
 ) -> Result<Option<u64>> {
     if selected.is_some() || !full || args.non_interactive {
         return Ok(selected);
     }
-    prompt_default(input, output, label, &default.to_string())?
+    super::ui::prompt_value(input, output, ui, label, &default.to_string(), true, false)?
         .parse()
         .map(Some)
         .with_context(|| format!("{label} must be a nonnegative whole number"))
@@ -870,6 +916,7 @@ mod tests {
             &mut std::io::Cursor::new(Vec::<u8>::new()),
             &mut Vec::new(),
             false,
+            plain_ui(),
         )
         .unwrap();
         assert!(validate_document(document).is_err());

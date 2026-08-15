@@ -1,7 +1,7 @@
 //! Presentation-preference editing for advanced setup.
 
 use super::super::{
-    prompt_default,
+    SetupBack, prompt_default,
     ui::{SelectOption, SetupUi},
 };
 use crate::{
@@ -13,7 +13,7 @@ use crate::{
     presentation::{
         ActivityPaneChoice, ComposerPreset, DensityChoice as PresentationDensity,
         GlyphChoice as PresentationGlyphs, MotionChoice as PresentationMotion,
-        PresentationPreferences, ThemeChoice as PresentationTheme,
+        PresentationPreferences, ResolvedTheme, SemanticToken, ThemeChoice as PresentationTheme,
     },
 };
 use anyhow::{Context, Result, bail};
@@ -25,7 +25,7 @@ pub(super) fn edit(
     input: &mut impl BufRead,
     output: &mut impl Write,
     full: bool,
-    ui: SetupUi,
+    mut ui: SetupUi,
 ) -> Result<PresentationPreferences> {
     let mut preferences = PresentationPreferences::load(&paths.presentation_file()).preferences;
     if args.non_interactive && !full && flags_empty(args) {
@@ -35,9 +35,24 @@ pub(super) fn edit(
         Some(value) => map_theme(value),
         None if full && !args.non_interactive && ui.rich => {
             let options = [
-                SelectOption::new("auto", "terminal background · rose, aqua, amber, slate"),
-                SelectOption::new("dark", "deep water · coral rose, seafoam, amber, pearl"),
-                SelectOption::new("light", "mist · mulberry, teal, ochre, charcoal"),
+                theme_option(
+                    ui,
+                    "auto",
+                    "terminal background · rose, aqua, amber, slate",
+                    ui.profile.theme,
+                ),
+                theme_option(
+                    ui,
+                    "dark",
+                    "deep water · coral rose, seafoam, amber, pearl",
+                    ResolvedTheme::Dark,
+                ),
+                theme_option(
+                    ui,
+                    "light",
+                    "mist · mulberry, teal, ochre, charcoal",
+                    ResolvedTheme::Light,
+                ),
                 SelectOption::new("monochrome", "no color controls; maximum compatibility"),
             ];
             let current = theme_name(preferences.theme);
@@ -52,7 +67,7 @@ pub(super) fn edit(
                 &options,
                 default,
             )?
-            .context("theme selection was cancelled")?;
+            .ok_or(SetupBack)?;
             parse_theme(&options[selected].label).expect("selector contains valid theme values")
         }
         None if full && !args.non_interactive => {
@@ -81,8 +96,42 @@ pub(super) fn edit(
         }
         None => preferences.theme,
     };
+    match preferences.theme {
+        PresentationTheme::Dark => {
+            ui.profile.theme = ResolvedTheme::Dark;
+            ensure_preview_color(&mut ui);
+        }
+        PresentationTheme::Light => {
+            ui.profile.theme = ResolvedTheme::Light;
+            ensure_preview_color(&mut ui);
+        }
+        PresentationTheme::Monochrome => {
+            ui.profile.theme = ResolvedTheme::Monochrome;
+            ui.profile.color_depth = crate::presentation::ColorDepth::None;
+        }
+        PresentationTheme::Auto => {}
+    }
     if let Some(value) = args.glyphs {
         preferences.glyphs = map_glyphs(value);
+    } else if full && !args.non_interactive && ui.rich {
+        let options = [
+            SelectOption::new("auto", "use terminal and operating-system capabilities"),
+            SelectOption::new(
+                "unicode",
+                "use symbols, box drawing, and the Unicode portrait",
+            ),
+            SelectOption::new("ascii", "maximum compatibility with simple terminals"),
+        ];
+        let default = options
+            .iter()
+            .position(|option| option.label == glyph_name(preferences.glyphs))
+            .unwrap_or(0);
+        preferences.glyphs = parse_glyphs(
+            &options[super::super::ui::select(output, ui, "Choose glyphs", &options, default)?
+                .ok_or(SetupBack)?]
+            .label,
+        )
+        .expect("valid glyph option");
     } else if full && !args.non_interactive {
         preferences.glyphs = parse_glyphs(&prompt_default(
             input,
@@ -94,6 +143,22 @@ pub(super) fn edit(
     }
     if let Some(value) = args.motion {
         preferences.motion = map_motion(value);
+    } else if full && !args.non_interactive && ui.rich {
+        let options = [
+            SelectOption::new("auto", "honor terminal and XANA_REDUCED_MOTION facts"),
+            SelectOption::new("full", "enable bounded transitions and activity animation"),
+            SelectOption::new("reduced", "disable nonessential animation"),
+        ];
+        let default = options
+            .iter()
+            .position(|option| option.label == motion_name(preferences.motion))
+            .unwrap_or(0);
+        preferences.motion = parse_motion(
+            &options[super::super::ui::select(output, ui, "Choose motion", &options, default)?
+                .ok_or(SetupBack)?]
+            .label,
+        )
+        .expect("valid motion option");
     } else if full && !args.non_interactive {
         preferences.motion = parse_motion(&prompt_default(
             input,
@@ -105,6 +170,22 @@ pub(super) fn edit(
     }
     if let Some(value) = args.density {
         preferences.density = map_density(value);
+    } else if full && !args.non_interactive && ui.rich {
+        let options = [
+            SelectOption::new("auto", "adapt to the available terminal width"),
+            SelectOption::new("comfortable", "more space between content and controls"),
+            SelectOption::new("compact", "prioritize information density"),
+        ];
+        let default = options
+            .iter()
+            .position(|option| option.label == density_name(preferences.density))
+            .unwrap_or(0);
+        preferences.density = parse_density(
+            &options[super::super::ui::select(output, ui, "Choose density", &options, default)?
+                .ok_or(SetupBack)?]
+            .label,
+        )
+        .expect("valid density option");
     } else if full && !args.non_interactive {
         preferences.density = parse_density(&prompt_default(
             input,
@@ -119,6 +200,30 @@ pub(super) fn edit(
             ComposerChoice::Submit => ComposerPreset::Submit,
             ComposerChoice::Newline => ComposerPreset::Newline,
         };
+    } else if full && !args.non_interactive && ui.rich {
+        let options = [
+            SelectOption::new(
+                "submit",
+                "Enter sends; Shift+Enter or Ctrl+J inserts a newline",
+            ),
+            SelectOption::new("newline", "Enter inserts a newline; use /send to submit"),
+        ];
+        let default = options
+            .iter()
+            .position(|option| option.label == composer_name(preferences.composer))
+            .unwrap_or(0);
+        preferences.composer = parse_composer(
+            &options[super::super::ui::select(
+                output,
+                ui,
+                "Choose Enter-key behavior",
+                &options,
+                default,
+            )?
+            .ok_or(SetupBack)?]
+            .label,
+        )
+        .expect("valid composer option");
     } else if full && !args.non_interactive {
         preferences.composer = parse_composer(&prompt_default(
             input,
@@ -134,6 +239,28 @@ pub(super) fn edit(
             ActivityChoice::Open => ActivityPaneChoice::Open,
             ActivityChoice::Hidden => ActivityPaneChoice::Hidden,
         };
+    } else if full && !args.non_interactive && ui.rich {
+        let options = [
+            SelectOption::new("auto", "show activity when the current layout has room"),
+            SelectOption::new("open", "start with the activity pane visible"),
+            SelectOption::new("hidden", "start with the activity pane hidden"),
+        ];
+        let default = options
+            .iter()
+            .position(|option| option.label == activity_name(preferences.activity))
+            .unwrap_or(0);
+        preferences.activity = parse_activity(
+            &options[super::super::ui::select(
+                output,
+                ui,
+                "Choose activity visibility",
+                &options,
+                default,
+            )?
+            .ok_or(SetupBack)?]
+            .label,
+        )
+        .expect("valid activity option");
     } else if full && !args.non_interactive {
         preferences.activity = parse_activity(&prompt_default(
             input,
@@ -144,6 +271,35 @@ pub(super) fn edit(
         .context("activity must be auto, open, or hidden")?;
     }
     Ok(preferences)
+}
+
+fn theme_option(ui: SetupUi, label: &str, detail: &str, theme: ResolvedTheme) -> SelectOption {
+    let mut preview = crate::presentation::ResolvedPresentation {
+        theme,
+        ..ui.profile
+    };
+    if theme != ResolvedTheme::Monochrome
+        && preview.color_depth == crate::presentation::ColorDepth::None
+    {
+        preview.color_depth = crate::presentation::ColorDepth::Ansi256;
+    }
+    SelectOption::new(label, detail).with_swatches(
+        [
+            SemanticToken::Accent,
+            SemanticToken::User,
+            SemanticToken::Success,
+            SemanticToken::Warning,
+            SemanticToken::Muted,
+        ]
+        .into_iter()
+        .filter_map(|token| preview.color(token)),
+    )
+}
+
+fn ensure_preview_color(ui: &mut SetupUi) {
+    if ui.profile.color_depth == crate::presentation::ColorDepth::None {
+        ui.profile.color_depth = crate::presentation::ColorDepth::Ansi256;
+    }
 }
 
 pub(super) fn flags_empty(args: &SetupArgs) -> bool {

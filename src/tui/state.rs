@@ -322,6 +322,16 @@ pub(super) enum Overlay {
         scroll: u16,
         selection: Option<ConversationSelection>,
     },
+    CommandResult {
+        title: String,
+        content: String,
+        scroll: u16,
+    },
+    ProfileCreate {
+        fields: [String; 3],
+        selected: usize,
+        error: Option<String>,
+    },
 }
 
 pub(super) struct TuiState {
@@ -358,6 +368,24 @@ pub(super) struct TuiState {
 }
 
 impl TuiState {
+    pub(super) fn show_command_result(&mut self, title: String, content: String) {
+        self.status = format!("{title} completed");
+        self.overlay = Some(Overlay::CommandResult {
+            title,
+            content,
+            scroll: 0,
+        });
+    }
+
+    pub(super) fn show_command_error(&mut self, title: String, error: String) {
+        self.status = format!("{title} failed");
+        self.overlay = Some(Overlay::CommandResult {
+            title,
+            content: format!("Error: {error}"),
+            scroll: 0,
+        });
+    }
+
     pub(super) fn starting(composer_preset: ComposerPreset) -> Self {
         Self {
             connection: "loading".to_owned(),

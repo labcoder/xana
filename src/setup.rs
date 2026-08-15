@@ -21,7 +21,7 @@ use crate::{
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig},
     model_catalog::{ModelDescriptor, ModelManager},
     paths::XanaPaths,
-    presentation::{ResolvedPresentation, SemanticToken},
+    presentation::{PresentationPreferences, ResolvedPresentation, SemanticToken},
     shell::ShellConfig,
 };
 use anyhow::{Context, Result, bail};
@@ -31,10 +31,7 @@ use std::{
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
 };
-use ui::{
-    SelectOption, SetupUi, choose_setup_path, write_completion_receipt, write_setup_heading,
-    write_setup_logo,
-};
+use ui::{SelectOption, SetupUi, choose_setup_path, write_completion_receipt, write_setup_heading};
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -50,6 +47,17 @@ impl fmt::Display for SetupCancelled {
 }
 
 impl Error for SetupCancelled {}
+
+#[derive(Debug)]
+struct SetupBack;
+
+impl fmt::Display for SetupBack {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("return to setup home")
+    }
+}
+
+impl Error for SetupBack {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupOutcome {
@@ -173,6 +181,88 @@ pub(crate) async fn run(
     output: &mut impl Write,
     profile: ResolvedPresentation,
 ) -> Result<SetupOutcome> {
+    let rich = input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive;
+    if !rich {
+        let result = run_once(
+            args,
+            paths,
+            input_is_terminal,
+            output_is_terminal,
+            input,
+            output,
+            profile,
+        )
+        .await;
+        return match result {
+            Err(error) if error.downcast_ref::<SetupCancelled>().is_some() => {
+                writeln!(output, "Setup cancelled; no changes made.")?;
+                Ok(SetupOutcome::Unchanged)
+            }
+            Ok(outcome) => {
+                if matches!(outcome, SetupOutcome::Committed { .. }) {
+                    write_completion_receipt(output, paths, profile)?;
+                }
+                Ok(outcome)
+            }
+            Err(error) => Err(error),
+        };
+    }
+
+    ui::enter_rich(output)?;
+    if let Err(error) = ui::play_intro(output, profile) {
+        let _ = ui::leave_rich(output);
+        return Err(error).context("could not render Xana setup introduction");
+    }
+    let mut selected_args = args.clone();
+    let result = loop {
+        match run_once(
+            &selected_args,
+            paths,
+            input_is_terminal,
+            output_is_terminal,
+            input,
+            output,
+            profile,
+        )
+        .await
+        {
+            Err(error) if error.downcast_ref::<SetupBack>().is_some() => {
+                selected_args = SetupArgs::default();
+            }
+            value => break value,
+        }
+    };
+    let cleanup = ui::leave_rich(output);
+    if let Err(error) = cleanup {
+        return Err(error).context("could not restore the terminal after setup");
+    }
+    match result {
+        Err(error) if error.downcast_ref::<SetupCancelled>().is_some() => {
+            writeln!(output, "Setup cancelled; no changes made.")?;
+            Ok(SetupOutcome::Unchanged)
+        }
+        Ok(outcome) => {
+            if matches!(outcome, SetupOutcome::Committed { .. }) {
+                let refreshed = crate::app::resolved_presentation(paths, true, true);
+                write_completion_receipt(output, paths, refreshed)?;
+            } else {
+                writeln!(output, "Setup finished without changes.")?;
+            }
+            Ok(outcome)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn run_once(
+    args: &SetupArgs,
+    paths: &XanaPaths,
+    input_is_terminal: bool,
+    output_is_terminal: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    profile: ResolvedPresentation,
+) -> Result<SetupOutcome> {
     if args.if_needed {
         bail!("--if-needed must be dispatched through Xana's readiness owner");
     }
@@ -192,8 +282,7 @@ pub(crate) async fn run(
         rich: input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive,
     };
     let Some(args) = choose_setup_path(args, input, output, setup_ui)? else {
-        writeln!(output, "Setup cancelled; no changes made.")?;
-        return Ok(SetupOutcome::Unchanged);
+        return Err(SetupCancelled.into());
     };
     let args = &args;
     if args
@@ -204,33 +293,40 @@ pub(crate) async fn run(
         if matches!(outcome, SetupOutcome::Committed { .. }) {
             crate::private_state::ensure_interoperable_records(paths)
                 .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
-            write_completion_receipt(output, paths, profile)?;
         }
         return Ok(outcome);
     }
 
-    if setup_ui.rich {
-        write_setup_logo(output, profile)?;
+    if let Some(connection) = choose_existing_connection(args, paths, output, setup_ui)? {
+        return configure_existing_connection(args, paths, &connection, input, output, setup_ui)
+            .await;
     }
-    write_setup_heading(output, profile, "Xana Quick Setup")?;
-    writeln!(
-        output,
-        "{}",
-        profile.paint(
-            SemanticToken::Muted,
-            "No provider is selected or recommended by Xana. Press Ctrl+C to cancel safely."
-        )
-    )?;
+
+    if !setup_ui.rich {
+        write_setup_heading(output, profile, "Xana Quick Setup")?;
+        writeln!(
+            output,
+            "{}",
+            profile.paint(
+                SemanticToken::Muted,
+                "No provider is selected or recommended by Xana. Press Ctrl+C to cancel safely."
+            )
+        )?;
+    }
 
     let kind = choose_kind(args, input, output, setup_ui)?;
-    let connection = choose_connection(args, kind, input, output)?;
-    let base_url = choose_base_url(args, kind, input, output)?;
-    let (codex_program, codex_home) = choose_codex(args, kind, input, output)?;
+    let connection = choose_connection(args, kind, input, output, setup_ui)?;
+    let base_url = choose_base_url(args, kind, input, output, setup_ui)?;
+    let (codex_program, codex_home) = choose_codex(args, kind, input, output, setup_ui)?;
     let (credential, staged_secret) =
         choose_credential(args, kind, &connection, input, output, setup_ui)?;
 
-    writeln!(output)?;
-    writeln!(output, "Establishing connection before model selection...")?;
+    ui::show_status(
+        output,
+        setup_ui,
+        "Establishing connection",
+        "Validating the selected runtime and discovering its live model catalog",
+    )?;
     let provisional = SetupDraft {
         kind,
         connection: connection.clone(),
@@ -247,17 +343,19 @@ pub(crate) async fn run(
     if models.is_empty() {
         bail!("the established connection advertised no selectable models");
     }
-    writeln!(
-        output,
-        "{}",
-        profile.paint(
-            SemanticToken::Success,
-            &format!(
-                "[OK] Connection established; {} model(s) available.",
-                models.len()
+    if !setup_ui.rich {
+        writeln!(
+            output,
+            "{}",
+            profile.paint(
+                SemanticToken::Success,
+                &format!(
+                    "[OK] Connection established; {} model(s) available.",
+                    models.len()
+                )
             )
-        )
-    )?;
+        )?;
+    }
 
     let model = choose_model(args, &models, input, output, setup_ui)?;
     let descriptor = models
@@ -276,43 +374,59 @@ pub(crate) async fn run(
     let rendered = XanaConfig::render_initial(draft.initial_config())
         .context("could not render the validated setup configuration")?;
     let customization = custom::customize_quick(rendered, args, paths, input, output, setup_ui)?;
+    let review_ui = customization
+        .preferences
+        .as_deref()
+        .map(PresentationPreferences::parse)
+        .transpose()?
+        .as_ref()
+        .map_or(setup_ui, |preferences| {
+            ui::preview_preferences(setup_ui, preferences)
+        });
     let rendered = customization.config;
 
-    writeln!(output)?;
-    writeln!(output, "{}", profile.paint(SemanticToken::Accent, "Review"))?;
-    writeln!(output, "  Connection:  {}", draft.connection)?;
-    writeln!(output, "  Kind:        {}", draft.kind.as_str())?;
+    let mut review = vec![
+        format!("Connection   {}", draft.connection),
+        format!("Kind         {}", draft.kind.as_str()),
+    ];
     if let Some(base_url) = &draft.base_url {
-        writeln!(output, "  Endpoint:    {base_url}")?;
+        review.push(format!("Endpoint     {base_url}"));
     }
     if draft.kind == ProviderKind::Codex {
-        writeln!(
-            output,
-            "  Executable:  {}",
+        review.push(format!(
+            "Executable   {}",
             draft.codex_program.as_deref().unwrap_or("codex")
-        )?;
+        ));
         if let Some(home) = &draft.codex_home {
-            writeln!(output, "  Codex home:  {}", home.display())?;
+            review.push(format!("Codex home   {}", home.display()));
         }
-        writeln!(output, "  Account:     owned by Codex")?;
+        review.push("Account      owned by Codex".to_owned());
     } else {
-        writeln!(output, "  Credential:  {}", draft.credential.review())?;
+        review.push(format!("Credential   {}", draft.credential.review()));
     }
-    writeln!(output, "  Model:       {}", draft.model)?;
+    review.push(format!("Model        {}", draft.model));
     if let Some(effort) = &draft.reasoning_effort {
-        writeln!(output, "  Reasoning:   {effort}")?;
+        review.push(format!("Reasoning    {effort}"));
     }
-    writeln!(output, "  Permissions: {}", draft.permission_mode.as_str())?;
-    writeln!(output, "  Config:      {}", paths.config_file().display())?;
+    review.push(format!("Permissions  {}", draft.permission_mode.as_str()));
+    review.push(format!("Config       {}", paths.config_file().display()));
     for effect in &customization.effects {
-        writeln!(output, "  Applies:     {effect}")?;
+        review.push(format!("Applies      {effect}"));
+    }
+
+    if !setup_ui.rich {
+        writeln!(output)?;
+        writeln!(output, "{}", profile.paint(SemanticToken::Accent, "Review"))?;
+        for line in &review {
+            writeln!(output, "  {line}")?;
+        }
     }
 
     if args.dry_run {
         writeln!(output, "Validated preview only; no durable state changed.")?;
         return Ok(SetupOutcome::Unchanged);
     }
-    if !args.yes && !confirm(input, output, "Install this configuration? [y/N]: ")? {
+    if !args.yes && !ui::confirm_review(input, output, review_ui, "Review and install", &review)? {
         writeln!(output, "No changes made.")?;
         return Ok(SetupOutcome::Unchanged);
     }
@@ -343,7 +457,133 @@ pub(crate) async fn run(
     .context("configuration installed, but the discovered model catalog could not be cached")?;
     crate::private_state::ensure_interoperable_records(paths)
         .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
-    write_completion_receipt(output, paths, profile)?;
+    Ok(SetupOutcome::Committed {
+        requires_new_conversation: true,
+    })
+}
+
+fn choose_existing_connection(
+    args: &SetupArgs,
+    paths: &XanaPaths,
+    output: &mut impl Write,
+    ui: SetupUi,
+) -> Result<Option<String>> {
+    if !ui.rich || args.full || args.kind.is_some() || !paths.config_file().is_file() {
+        return Ok(None);
+    }
+    let Ok(registry) = XanaConfig::load_registry_from(paths.config_file()) else {
+        return Ok(None);
+    };
+    if registry.connections.is_empty() {
+        return Ok(None);
+    }
+    let mut ids = registry.connections.keys().cloned().collect::<Vec<_>>();
+    ids.sort();
+    let mut options = ids
+        .iter()
+        .filter_map(|id| {
+            registry
+                .connections
+                .get(id)
+                .map(|connection| (id, connection))
+        })
+        .map(|(id, connection)| {
+            SelectOption::new(
+                format!("Use {id}"),
+                format!(
+                    "{} · {} configured model(s)",
+                    connection.kind.as_str(),
+                    connection.models.len()
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    options.push(SelectOption::new(
+        "Add or update a connection",
+        "establish a provider or managed runtime before selecting its model",
+    ));
+    let selected =
+        ui::select(output, ui, "Connections and models", &options, 0)?.ok_or(SetupBack)?;
+    Ok((selected < ids.len()).then(|| ids[selected].clone()))
+}
+
+async fn configure_existing_connection(
+    args: &SetupArgs,
+    paths: &XanaPaths,
+    connection_id: &str,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    ui: SetupUi,
+) -> Result<SetupOutcome> {
+    let registry = XanaConfig::load_registry_from(paths.config_file())
+        .context("could not load configured connections")?;
+    let connection = registry
+        .connections
+        .get(connection_id)
+        .cloned()
+        .context("selected connection disappeared during setup")?;
+    let selection_path = paths.data_dir().join("selection.toml");
+    let manager = ModelManager::new(registry, paths.cache_dir().to_owned(), selection_path);
+    ui::show_status(
+        output,
+        ui,
+        "Establishing connection",
+        &format!("Checking {connection_id} before model selection"),
+    )?;
+    let models = if connection.kind == ProviderKind::Codex {
+        let mut server = CodexAppServer::spawn(&CodexLaunchConfig {
+            program: connection
+                .codex_program
+                .clone()
+                .unwrap_or_else(|| "codex".to_owned()),
+            home: connection.codex_home.clone(),
+        })
+        .await
+        .context("configured Codex executable or app-server is unavailable")?;
+        if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
+            bail!("Codex is logged out; run `codex login`, then retry setup");
+        }
+        server
+            .models()
+            .await
+            .context("Codex model discovery failed")?
+    } else {
+        manager
+            .probe_native(connection_id, None)
+            .await
+            .context("could not establish the configured provider")?
+    };
+    if models.is_empty() {
+        bail!("the established connection advertised no selectable models");
+    }
+    let model = choose_model(args, &models, input, output, ui)?;
+    let descriptor = models
+        .iter()
+        .find(|candidate| candidate.id == model)
+        .context("selected model disappeared from the live catalog")?;
+    let reasoning = choose_reasoning(args, connection.kind, descriptor, input, output, ui)?;
+    let review = vec![
+        format!("Connection   {connection_id}"),
+        format!("Kind         {}", connection.kind.as_str()),
+        format!("Model        {model}"),
+        format!(
+            "Reasoning    {}",
+            reasoning.as_deref().unwrap_or("provider default")
+        ),
+        "Applies      new conversation".to_owned(),
+    ];
+    if args.dry_run {
+        return Ok(SetupOutcome::Unchanged);
+    }
+    if !args.yes && !ui::confirm_review(input, output, ui, "Use configured connection", &review)? {
+        return Ok(SetupOutcome::Unchanged);
+    }
+    manager
+        .write_discovered_cache(connection_id, &models)
+        .context("could not cache the established model catalog")?;
+    manager
+        .select_with_options(connection_id, &model, reasoning, None)
+        .context("could not persist the selected connection and model")?;
     Ok(SetupOutcome::Committed {
         requires_new_conversation: true,
     })
@@ -381,7 +621,7 @@ fn choose_kind(
             Some(4) => Ok(ProviderKind::Anthropic),
             Some(5) => Ok(ProviderKind::Codex),
             Some(_) => unreachable!("selector returned an unknown connection kind"),
-            None => Err(SetupCancelled.into()),
+            None => Err(SetupBack.into()),
         };
     }
     writeln!(output)?;
@@ -431,6 +671,7 @@ fn choose_connection(
     kind: ProviderKind,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<String> {
     if let Some(value) = &args.connection {
         return Ok(value.clone());
@@ -438,7 +679,15 @@ fn choose_connection(
     if args.non_interactive {
         bail!("noninteractive setup requires --connection");
     }
-    prompt_default(input, output, "Connection name", kind.as_str())
+    ui::prompt_value(
+        input,
+        output,
+        ui,
+        "Connection name",
+        kind.as_str(),
+        true,
+        false,
+    )
 }
 
 fn choose_base_url(
@@ -446,6 +695,7 @@ fn choose_base_url(
     kind: ProviderKind,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<Option<String>> {
     if kind == ProviderKind::Codex {
         if args.base_url.is_some() {
@@ -468,13 +718,21 @@ fn choose_base_url(
         return Ok(Some(if args.non_interactive {
             default.to_owned()
         } else {
-            prompt_default(input, output, "Endpoint", default)?
+            ui::prompt_value(input, output, ui, "Endpoint", default, true, false)?
         }));
     }
     if args.non_interactive {
         bail!("openai-compatible setup requires --base-url");
     }
-    Ok(Some(prompt_required(input, output, "Endpoint URL: ")?))
+    Ok(Some(ui::prompt_value(
+        input,
+        output,
+        ui,
+        "Endpoint URL",
+        "",
+        true,
+        false,
+    )?))
 }
 
 fn choose_codex(
@@ -482,6 +740,7 @@ fn choose_codex(
     kind: ProviderKind,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<(Option<String>, Option<PathBuf>)> {
     if kind != ProviderKind::Codex {
         if args.codex_program.is_some() || args.codex_home.is_some() {
@@ -492,7 +751,7 @@ fn choose_codex(
     let program = match &args.codex_program {
         Some(program) => program.clone(),
         None if args.non_interactive => "codex".to_owned(),
-        None => prompt_default(input, output, "Codex executable", "codex")?,
+        None => ui::prompt_value(input, output, ui, "Codex executable", "codex", true, false)?,
     };
     Ok((Some(program), args.codex_home.clone()))
 }
@@ -549,17 +808,20 @@ fn choose_credential(
         match ui::select(output, ui, "Choose a credential source", &options, 0)? {
             Some(0) => {
                 return Ok((
-                    SetupCredential::Environment(prompt_required(
+                    SetupCredential::Environment(ui::prompt_value(
                         input,
                         output,
-                        "Environment variable: ",
+                        ui,
+                        "Environment variable",
+                        "",
+                        true,
+                        false,
                     )?),
                     None,
                 ));
             }
             Some(1) => {
-                let value = rpassword::prompt_password("API key (hidden): ")
-                    .context("could not read hidden API key")?;
+                let value = ui::prompt_value(input, output, ui, "API key", "", true, true)?;
                 return Ok((
                     SetupCredential::Stored {
                         id: connection.to_owned(),
@@ -571,7 +833,7 @@ fn choose_credential(
                 return Ok((SetupCredential::None, None));
             }
             Some(_) => unreachable!("selector returned an unknown credential source"),
-            None => return Err(SetupCancelled.into()),
+            None => return Err(SetupBack.into()),
         }
     }
     writeln!(output, "Credential source:")?;
@@ -678,7 +940,7 @@ fn choose_model(
             .collect::<Vec<_>>();
         return ui::select(output, ui, "Choose a model", &options, 0)?
             .map(|index| models[index].id.clone())
-            .ok_or_else(|| SetupCancelled.into());
+            .ok_or_else(|| SetupBack.into());
     }
 
     let mut query = String::new();
@@ -819,8 +1081,11 @@ fn choose_reasoning(
                 .as_ref()
                 .and_then(|default| options.iter().position(|option| option.label == *default))
                 .unwrap_or(0);
-            ui::select(output, ui, "Choose reasoning effort", &options, default)?
-                .map(|index| model.reasoning_efforts[index].id.clone())
+            Some(
+                ui::select(output, ui, "Choose reasoning effort", &options, default)?
+                    .map(|index| model.reasoning_efforts[index].id.clone())
+                    .ok_or(SetupBack)?,
+            )
         }
         None => {
             writeln!(output, "Reasoning efforts advertised by {}:", model.id)?;
@@ -883,7 +1148,7 @@ fn choose_permission(
             Some(1) => Ok(PermissionMode::Deny),
             Some(2) => Ok(PermissionMode::Allow),
             Some(_) => unreachable!("selector returned an unknown permission mode"),
-            None => Err(SetupCancelled.into()),
+            None => Err(SetupBack.into()),
         };
     }
     writeln!(output)?;
