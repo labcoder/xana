@@ -6,6 +6,7 @@ use crate::{
     prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
     provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
     shell::{Shell, ShellConfig},
+    telemetry::{RuntimeTelemetry, RuntimeTelemetryEvent, RuntimeTelemetryKind},
     tool::ToolDefinition,
 };
 use futures::future::BoxFuture;
@@ -122,6 +123,47 @@ fn operation_services() -> (
     .expect("allow policy");
     let (permissions, _broker) = PermissionBroker::spawn(policy, false, events.clone());
     (operation_id, permissions, events, receiver)
+}
+
+#[derive(Default)]
+struct CapturingTelemetry(Mutex<Vec<RuntimeTelemetryEvent>>);
+
+impl RuntimeTelemetry for CapturingTelemetry {
+    fn record(&self, event: RuntimeTelemetryEvent) {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(event);
+    }
+}
+
+#[tokio::test]
+async fn provider_failures_use_the_injected_runtime_telemetry_seam() {
+    let workspace = tempdir().expect("temporary workspace");
+    let (provider, _) = ScriptedChatTransport::new(Vec::new());
+    let telemetry = Arc::new(CapturingTelemetry::default());
+    let agent = make_agent(provider, workspace.path(), 1).with_runtime_telemetry(telemetry.clone());
+    let (operation_id, permissions, events, _receiver) = operation_services();
+    let mut history = vec![Message::text(Role::User, "fail")];
+
+    let error = agent
+        .run_turn(operation_id, &mut history, permissions, events)
+        .await
+        .expect_err("script exhaustion should fail");
+
+    assert!(error.to_string().contains("script exhausted"));
+    assert_eq!(
+        telemetry
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_slice(),
+        &[RuntimeTelemetryEvent {
+            operation_id,
+            kind: RuntimeTelemetryKind::ProviderFailed,
+            subject: "Other".to_owned(),
+        }]
+    );
 }
 
 #[test]

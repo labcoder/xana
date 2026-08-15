@@ -31,6 +31,8 @@ pub(crate) async fn run(
     let owner = PrincipalId::new();
     let service = VisionTurnService::new(
         registry,
+        crate::outbound::OutboundGuard::open(paths)
+            .context("could not open the outbound policy gate for vision")?,
         routes,
         egress,
         permission,

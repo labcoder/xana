@@ -39,12 +39,15 @@ allowed = ["prompt_text", "selected_artifacts"]
 fn service(config: &str) -> VisionTurnService {
     let registry = XanaConfig::parse_registry(config).unwrap();
     let profile = &registry.profiles["default"];
+    let directory = tempfile::tempdir().unwrap().keep();
+    let paths = crate::paths::XanaPaths::resolve(Some(directory.clone().into_os_string())).unwrap();
     VisionTurnService::new(
         registry.clone(),
+        crate::outbound::OutboundGuard::open(&paths).unwrap(),
         profile.service_routes.clone(),
         registry.egress_policies["vision"].allowed.clone(),
         PermissionMode::Ask,
-        ArtifactStore::new(tempfile::tempdir().unwrap().keep().join("artifacts")),
+        ArtifactStore::new(directory.join("artifacts")),
         PrincipalId::new(),
     )
 }
@@ -52,12 +55,15 @@ fn service(config: &str) -> VisionTurnService {
 #[test]
 fn capable_model_uses_native_source_without_resolving_a_specialist() {
     let registry = XanaConfig::parse_registry(CONFIG).unwrap();
+    let directory = tempfile::tempdir().unwrap().keep();
+    let paths = crate::paths::XanaPaths::resolve(Some(directory.clone().into_os_string())).unwrap();
     let service = VisionTurnService::new(
         registry,
+        crate::outbound::OutboundGuard::open(&paths).unwrap(),
         Vec::new(),
         Vec::new(),
         PermissionMode::Ask,
-        ArtifactStore::new(tempfile::tempdir().unwrap().keep().join("artifacts")),
+        ArtifactStore::new(directory.join("artifacts")),
         PrincipalId::new(),
     );
 
@@ -93,12 +99,15 @@ fn explicit_specialist_overrides_a_capable_conversational_model() {
 #[test]
 fn text_only_model_without_an_exposed_route_fails_before_dispatch() {
     let registry = XanaConfig::parse_registry(CONFIG).unwrap();
+    let directory = tempfile::tempdir().unwrap().keep();
+    let paths = crate::paths::XanaPaths::resolve(Some(directory.clone().into_os_string())).unwrap();
     let service = VisionTurnService::new(
         registry,
+        crate::outbound::OutboundGuard::open(&paths).unwrap(),
         Vec::new(),
         Vec::new(),
         PermissionMode::Ask,
-        ArtifactStore::new(tempfile::tempdir().unwrap().keep().join("artifacts")),
+        ArtifactStore::new(directory.join("artifacts")),
         PrincipalId::new(),
     );
 

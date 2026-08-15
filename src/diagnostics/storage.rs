@@ -139,7 +139,7 @@ fn cleanup_recognized(
             .and_then(|modified| now.duration_since(modified).ok())
             .is_some_and(|age| age > retention)
         {
-            let _ = fs::remove_file(&file.path);
+            let _ = remove_if_unlocked(&file.path);
         }
     }
     files = collect_regular_files(directory, extension)?;
@@ -151,12 +151,43 @@ fn cleanup_recognized(
         if count <= usize::from(settings.max_files) && total <= settings.max_total_bytes {
             break;
         }
-        if fs::remove_file(&file.path).is_ok() {
+        if remove_if_unlocked(&file.path).unwrap_or(false) {
             total = total.saturating_sub(file.bytes);
             count = count.saturating_sub(1);
         }
     }
     Ok(())
+}
+
+fn remove_if_unlocked(path: &Path) -> io::Result<bool> {
+    let file = OpenOptions::new().read(true).write(true).open(path)?;
+    match file.try_lock_exclusive() {
+        Ok(()) => {
+            let _ = FileExt::unlock(&file);
+            drop(file);
+            match fs::remove_file(path) {
+                Ok(()) => Ok(true),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+        Err(error) if lock_is_held(&error) => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn lock_is_held(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(33)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 fn retain_recognized(files: &mut Vec<RegularFile>, prefix: &str) {

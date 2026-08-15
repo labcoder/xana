@@ -18,6 +18,32 @@ const MAX_IMAGE_PIXELS: u64 = 40_000_000;
 pub(crate) const MAX_IMAGES_PER_TURN: usize = 8;
 pub(crate) const MAX_IMAGE_BYTES_PER_TURN: u64 = 20 * 1024 * 1024;
 
+pub(crate) struct ClipboardImageData {
+    pub(crate) width: usize,
+    pub(crate) height: usize,
+    pub(crate) rgba: Vec<u8>,
+}
+
+pub(crate) trait ClipboardImageSource {
+    fn image(&mut self) -> Result<ClipboardImageData, String>;
+}
+
+impl ClipboardImageSource for arboard::Clipboard {
+    fn image(&mut self) -> Result<ClipboardImageData, String> {
+        let image = self.get_image().map_err(|error| {
+            format!(
+                "clipboard does not contain a supported image: {error}; {}",
+                clipboard_image_remediation()
+            )
+        })?;
+        Ok(ClipboardImageData {
+            width: image.width,
+            height: image.height,
+            rgba: image.bytes.into_owned(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ImageRef {
     pub(crate) artifact: ArtifactRecord,
@@ -31,11 +57,21 @@ pub(crate) fn ingest_clipboard_image(
     store: ArtifactStore,
     owner: PrincipalId,
 ) -> Result<ImageAttachment, String> {
-    let mut clipboard =
-        arboard::Clipboard::new().map_err(|error| format!("clipboard is unavailable: {error}"))?;
-    let image = clipboard
-        .get_image()
-        .map_err(|error| format!("clipboard does not contain a supported image: {error}"))?;
+    let mut clipboard = arboard::Clipboard::new().map_err(|error| {
+        format!(
+            "clipboard is unavailable: {error}; {}",
+            clipboard_image_remediation()
+        )
+    })?;
+    ingest_clipboard_image_from(&mut clipboard, store, owner)
+}
+
+pub(crate) fn ingest_clipboard_image_from(
+    source: &mut dyn ClipboardImageSource,
+    store: ArtifactStore,
+    owner: PrincipalId,
+) -> Result<ImageAttachment, String> {
+    let image = source.image()?;
     let width = u32::try_from(image.width)
         .map_err(|_| "clipboard image width exceeds Xana's limit".to_owned())?;
     let height = u32::try_from(image.height)
@@ -45,18 +81,37 @@ pub(crate) fn ingest_clipboard_image(
         .checked_mul(image.height)
         .and_then(|pixels| pixels.checked_mul(4))
         .ok_or_else(|| "clipboard image dimensions overflow".to_owned())?;
-    if image.bytes.len() != expected || expected > 64 * 1024 * 1024 {
+    if image.rgba.len() != expected || expected > 64 * 1024 * 1024 {
         return Err(
             "clipboard RGBA image is malformed or exceeds the 64 MiB decode bound".to_owned(),
         );
     }
     let mut png = Vec::new();
     PngEncoder::new(&mut png)
-        .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+        .write_image(&image.rgba, width, height, ExtendedColorType::Rgba8)
         .map_err(|error| format!("could not encode clipboard image safely: {error}"))?;
     ImageIngestor::new(store, ImageLimits::default())
         .ingest_bytes("clipboard", &png, owner)
         .map_err(|error| format!("could not ingest clipboard image: {error}"))
+}
+
+fn clipboard_image_remediation() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "copy an image in an interactive Windows desktop session, then retry `/attach --clipboard`"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "allow terminal clipboard access, copy an image, then retry `/attach --clipboard`"
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        "use a graphical Wayland/X11 session with a supported clipboard, copy an image, then retry `/attach --clipboard`"
+    }
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        "copy a supported image in an interactive desktop session, then retry `/attach --clipboard`"
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,6 +573,59 @@ mod tests {
             )
             .unwrap();
         bytes
+    }
+
+    struct FakeClipboard(Result<ClipboardImageData, String>);
+
+    impl ClipboardImageSource for FakeClipboard {
+        fn image(&mut self) -> Result<ClipboardImageData, String> {
+            self.0
+                .as_ref()
+                .map(|image| ClipboardImageData {
+                    width: image.width,
+                    height: image.height,
+                    rgba: image.rgba.clone(),
+                })
+                .map_err(Clone::clone)
+        }
+    }
+
+    #[test]
+    fn clipboard_adapter_publishes_bounded_rgba_as_an_immutable_png() {
+        let directory = tempdir().unwrap();
+        let store = ArtifactStore::new(directory.path().join("artifacts"));
+        let owner = PrincipalId::new();
+        let mut clipboard = FakeClipboard(Ok(ClipboardImageData {
+            width: 2,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 0, 255, 0, 255],
+        }));
+
+        let attachment = ingest_clipboard_image_from(&mut clipboard, store.clone(), owner).unwrap();
+
+        assert_eq!(attachment.source_path, "clipboard");
+        assert_eq!(attachment.image.width, Some(2));
+        assert_eq!(attachment.image.height, Some(1));
+        let bytes = store
+            .read_bounded(&attachment.image.artifact, MAX_ARTIFACT_BYTES)
+            .unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn malformed_clipboard_pixels_fail_before_artifact_publication() {
+        let directory = tempdir().unwrap();
+        let store = ArtifactStore::new(directory.path().join("artifacts"));
+        let mut clipboard = FakeClipboard(Ok(ClipboardImageData {
+            width: 2,
+            height: 2,
+            rgba: vec![0; 3],
+        }));
+
+        let error =
+            ingest_clipboard_image_from(&mut clipboard, store, PrincipalId::new()).unwrap_err();
+
+        assert!(error.contains("malformed"));
     }
 
     #[test]

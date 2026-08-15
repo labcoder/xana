@@ -502,6 +502,8 @@ impl Runtime {
             match session.append_message(user_message.clone()) {
                 Ok(entry_id) => Some(entry_id),
                 Err(error) => {
+                    self.agent
+                        .record_storage_failure(operation_id, "conversation-user-entry");
                     self.emit(AgentEvent::CommandRejected {
                         reason: format!("could not commit user conversation entry: {error:#}"),
                     });
@@ -519,6 +521,8 @@ impl Runtime {
                 thread_id: session.thread_id(),
                 input_entry_id,
             }) {
+                self.agent
+                    .record_storage_failure(operation_id, "operation-accepted");
                 self.emit(AgentEvent::CommandRejected {
                     reason: format!("could not commit operation acceptance: {error:#}"),
                 });
@@ -607,6 +611,10 @@ impl Runtime {
             };
             for message in completion.history.iter().skip(persist_from) {
                 if let Err(error) = session.append_message(message.clone()) {
+                    self.agent.record_storage_failure(
+                        completion.operation_id,
+                        "conversation-result-entry",
+                    );
                     self.emit(AgentEvent::OperationFailed {
                         operation_id: completion.operation_id,
                         reason: format!("could not commit conversation entry: {error:#}"),

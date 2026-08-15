@@ -54,6 +54,7 @@ mod setup;
 mod shell;
 mod skill;
 mod sse;
+mod telemetry;
 mod tool;
 mod tui;
 mod vision;

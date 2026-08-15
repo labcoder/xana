@@ -197,7 +197,8 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             self.workspace_root.clone(),
             prompt,
             resolved.max_tool_rounds,
-        );
+        )
+        .with_runtime_telemetry(crate::diagnostics::runtime_telemetry());
         Ok(PreparedChild::new(
             resolved,
             policy,

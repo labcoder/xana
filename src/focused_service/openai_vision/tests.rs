@@ -178,3 +178,57 @@ async fn cancellation_before_dispatch_performs_no_network_request() {
 
     assert!(matches!(result, Err(FocusedServiceError::Cancelled)));
 }
+
+#[tokio::test]
+async fn focused_vision_refuses_redirects_to_an_unreviewed_destination() {
+    let redirected = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirected_address = redirected.local_addr().unwrap();
+    let (observed_send, observed_receive) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let observed =
+            tokio::time::timeout(std::time::Duration::from_millis(500), redirected.accept())
+                .await
+                .is_ok();
+        let _ = observed_send.send(observed);
+    });
+
+    let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_address = origin.local_addr().unwrap();
+    tokio::spawn(async move {
+        let (mut stream, _) = origin.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let response = format!(
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{redirected_address}/v1/chat/completions\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(response.as_bytes()).await.unwrap();
+    });
+
+    let directory = tempfile::tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().join("artifacts"));
+    let owner = PrincipalId::new();
+    let (artifact, _) = store.put(b"image", "image/png", owner).unwrap();
+    let adapter = OpenAiVisionAdapter::new(
+        VisionProvider::OpenAi,
+        SecretString::new("test-secret".into()).unwrap(),
+    );
+
+    let result = adapter
+        .execute(
+            FocusedServiceRequest {
+                operation_id: OperationId::new(),
+                route: route(format!("http://{origin_address}/v1")),
+                prompt: "What is shown?".into(),
+                input_artifacts: vec![artifact],
+            },
+            FocusedServiceContext {
+                artifacts: store,
+                owner,
+                cancellation: CancellationToken::new(),
+            },
+        )
+        .await;
+
+    assert!(result.is_err());
+    assert!(!observed_receive.await.unwrap());
+}

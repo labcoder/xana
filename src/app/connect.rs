@@ -4,6 +4,8 @@ use crate::{
     cli::{ConnectArgs, ConnectIntegration, FocusedServiceProviderChoice},
     config::{CredentialReference, NewServiceRoute, XanaConfig},
     paths::XanaPaths,
+    plugin::PluginManager,
+    private_state::{ExternalAgentStateDocument, read_document},
 };
 use anyhow::{Context, Result, bail};
 use std::io::{BufRead, Write};
@@ -51,6 +53,7 @@ impl FocusedServiceKind {
 pub(super) fn write_hub(
     args: &ConnectArgs,
     integration: Option<ConnectIntegration>,
+    paths: &XanaPaths,
     output: &mut impl Write,
 ) -> Result<()> {
     if has_focused_options(args) {
@@ -78,20 +81,107 @@ pub(super) fn write_hub(
     )?;
     writeln!(output, "  image route     xana connect image")?;
     writeln!(output, "  vision route    xana connect vision")?;
+    let registry = XanaConfig::load_registry_from(paths.config_file()).ok();
+    let plugins = if paths.package_state_file().exists() {
+        PluginManager::open(paths).list().unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let healthy_plugins = plugins
+        .iter()
+        .filter(|plugin| !plugin.health.starts_with("degraded:"))
+        .count();
+    let external_state = paths
+        .external_agent_state_file()
+        .exists()
+        .then(|| read_document::<ExternalAgentStateDocument>(&paths.external_agent_state_file()))
+        .transpose()
+        .ok()
+        .flatten();
+    let trusted_agents = external_state.as_ref().map_or(0, |state| {
+        state
+            .agents
+            .values()
+            .filter(|agent| agent.trusted_identity_digest.is_some())
+            .count()
+    });
+    writeln!(output)?;
+    writeln!(output, "Current readiness (redacted, no discovery started)")?;
+    writeln!(
+        output,
+        "  plugins         declared={} installed={} healthy={}",
+        registry.as_ref().map_or(0, |value| value.plugins.len()),
+        plugins.len(),
+        healthy_plugins
+    )?;
+    writeln!(
+        output,
+        "  MCP clients     configured={} exposed_by_profiles={}",
+        registry.as_ref().map_or(0, |value| value.mcp_servers.len()),
+        registry.as_ref().map_or(0, |value| {
+            value
+                .profiles
+                .values()
+                .filter(|profile| !profile.mcp_servers.is_empty())
+                .count()
+        })
+    )?;
+    writeln!(
+        output,
+        "  external agents configured={} refreshed={} trusted={}",
+        registry
+            .as_ref()
+            .map_or(0, |value| value.external_agents.len()),
+        external_state
+            .as_ref()
+            .map_or(0, |state| state.agents.len()),
+        trusted_agents
+    )?;
     if let Some(integration) = integration {
-        let detail = match integration {
+        writeln!(output)?;
+        writeln!(output, "Next steps")?;
+        match integration {
             ConnectIntegration::Plugin => {
-                "Start with `xana plugin review SOURCE`; install and enable remain separate reviewed steps."
+                writeln!(output, "  1. xana plugin review <SOURCE>")?;
+                writeln!(output, "  2. xana plugin install <SOURCE> --yes")?;
+                writeln!(output, "  3. xana plugin enable <NAME> --profile <PROFILE>")?;
+                writeln!(output, "  4. xana plugin list")?;
+                writeln!(
+                    output,
+                    "  Review, installation, and profile enablement remain separate authority-changing steps."
+                )?;
             }
             ConnectIntegration::Mcp => {
-                "Use `xana mcp add-stdio` or `xana mcp add-http` to review and enable an exact declaration for one profile."
+                writeln!(
+                    output,
+                    "  1. xana mcp add-stdio <SERVER> --command <PROGRAM> --profile <PROFILE> --allow-tool <NAME>"
+                )?;
+                writeln!(
+                    output,
+                    "     or xana mcp add-http <SERVER> --url <HTTPS_URL> --profile <PROFILE> --allow-tool <NAME>"
+                )?;
+                writeln!(output, "  2. xana mcp refresh <SERVER>")?;
+                writeln!(output, "  3. xana mcp tools <SERVER>")?;
+                writeln!(
+                    output,
+                    "  Transport, profile exposure, egress, and primitive allowlists are all required."
+                )?;
             }
             ConnectIntegration::ExternalAgent => {
-                "Use `xana external-agent add`, then refresh and trust the exact cached identity separately."
+                writeln!(
+                    output,
+                    "  1. xana external-agent add <NAME> --endpoint <HTTPS_URL>"
+                )?;
+                writeln!(output, "  2. xana external-agent refresh <NAME>")?;
+                writeln!(output, "  3. xana external-agent show <NAME>")?;
+                writeln!(output, "  4. xana external-agent trust <NAME>")?;
+                writeln!(
+                    output,
+                    "  Endpoint declaration, fetched identity, and trust are reviewed separately."
+                )?;
             }
-            _ => "Use the exact command shown above.",
-        };
-        writeln!(output, "  {detail}")?;
+            _ => writeln!(output, "  Use the exact command shown above.")?,
+        }
     }
     Ok(())
 }

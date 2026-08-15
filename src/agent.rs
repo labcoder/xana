@@ -15,6 +15,9 @@ use crate::{
     permission::PermissionBrokerHandle,
     prompt::PromptSnapshot,
     provider::{ConversationalProvider, DeltaSink, ProviderUsage},
+    telemetry::{
+        NoopRuntimeTelemetry, RuntimeTelemetry, RuntimeTelemetryEvent, RuntimeTelemetryKind,
+    },
     tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
@@ -90,6 +93,7 @@ pub(crate) struct Agent {
     prompt: PromptSnapshot,
     max_tool_rounds: usize,
     boundary_observer: Arc<dyn BoundaryObserver>,
+    telemetry: Arc<dyn RuntimeTelemetry>,
 }
 
 pub(crate) struct AgentTurnResult {
@@ -200,6 +204,7 @@ impl Agent {
             prompt,
             max_tool_rounds,
             boundary_observer: Arc::new(NoopBoundaryObserver),
+            telemetry: Arc::new(NoopRuntimeTelemetry),
         }
     }
 
@@ -286,16 +291,11 @@ impl Agent {
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
                 .await
                 .map_err(|error| {
-                    crate::diagnostics::emit(
-                        crate::diagnostics::DiagnosticFact::new(
-                            crate::config::DiagnosticLevel::Warn,
-                            crate::config::DiagnosticTarget::Provider,
-                            crate::diagnostics::EventKind::ProviderFailed,
-                            crate::diagnostics::EventOutcome::Failed,
-                        )
-                        .subject(format!("{:?}", error.kind()))
-                        .correlation(operation_id.to_string()),
-                    );
+                    self.telemetry.record(RuntimeTelemetryEvent {
+                        operation_id,
+                        kind: RuntimeTelemetryKind::ProviderFailed,
+                        subject: format!("{:?}", error.kind()),
+                    });
                     anyhow::anyhow!("provider {:?}: {error}", error.kind())
                 })?;
             let calls = requested_tools(&assistant);
@@ -391,6 +391,20 @@ impl Agent {
     pub(crate) fn with_boundary_observer(mut self, observer: Arc<dyn BoundaryObserver>) -> Self {
         self.boundary_observer = observer;
         self
+    }
+
+    pub(crate) fn with_runtime_telemetry(mut self, telemetry: Arc<dyn RuntimeTelemetry>) -> Self {
+        self.tools.set_runtime_telemetry(telemetry.clone());
+        self.telemetry = telemetry;
+        self
+    }
+
+    pub(crate) fn record_storage_failure(&self, operation_id: OperationId, subject: &str) {
+        self.telemetry.record(RuntimeTelemetryEvent {
+            operation_id,
+            kind: RuntimeTelemetryKind::StorageFailed,
+            subject: subject.to_owned(),
+        });
     }
 
     pub(crate) fn observe_boundary(&self, site: CrashSite) -> Result<()> {

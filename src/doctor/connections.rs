@@ -43,6 +43,41 @@ pub(super) async fn inspect(paths: &XanaPaths, report: &mut DoctorReport, probe_
         )),
     }
 
+    for (profile_name, profile) in &registry.profiles {
+        match manager.descriptor(&profile.connection, &profile.model) {
+            Ok(descriptor) => {
+                let incomplete = descriptor.tools.is_none() || descriptor.reasoning.is_none();
+                report.push(Finding::new(
+                    format!("model.{profile_name}.capabilities"),
+                    if incomplete {
+                        Severity::Info
+                    } else {
+                        Severity::Ok
+                    },
+                    format!("profile {profile_name:?} model capabilities resolve locally"),
+                    format!(
+                        "connection={} model={} input={} output={} tools={} reasoning={} source={:?}",
+                        profile.connection,
+                        profile.model,
+                        joined(&descriptor.input_modalities),
+                        joined(&descriptor.output_modalities),
+                        optional_bool(descriptor.tools),
+                        optional_bool(descriptor.reasoning),
+                        descriptor.source
+                    ),
+                    incomplete.then(|| format!("xana model refresh {}", profile.connection)),
+                ));
+            }
+            Err(_) => report.push(Finding::new(
+                format!("model.{profile_name}.capabilities"),
+                Severity::Warning,
+                format!("profile {profile_name:?} model capabilities are unavailable"),
+                format!("connection={} model={}", profile.connection, profile.model),
+                Some(format!("xana model refresh {}", profile.connection)),
+            )),
+        }
+    }
+
     for connection in registry.connections.values() {
         inspect_credential(&manager, connection, report);
         if !probe_connections {
@@ -62,6 +97,22 @@ pub(super) async fn inspect(paths: &XanaPaths, report: &mut DoctorReport, probe_
         } else if !credential_is_missing(&manager, connection) {
             inspect_native(&manager, connection, report).await;
         }
+    }
+}
+
+fn joined(values: &std::collections::BTreeSet<String>) -> String {
+    if values.is_empty() {
+        "unknown".into()
+    } else {
+        values.iter().cloned().collect::<Vec<_>>().join(",")
+    }
+}
+
+fn optional_bool(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
     }
 }
 

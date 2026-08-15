@@ -93,3 +93,22 @@ fn cancelled_guided_setup_preserves_config_and_creates_no_backup() {
     assert_eq!(std::fs::read(paths.config_file()).unwrap(), before);
     assert!(!paths.config_file().with_extension("toml.bak").exists());
 }
+
+#[test]
+fn integration_hub_reports_readiness_and_ordered_mcp_prerequisites() {
+    let (_directory, paths) = fixture();
+    let mut args = empty_args();
+    args.integration = Some(ConnectIntegration::Mcp);
+    let mut output = Vec::new();
+
+    write_hub(&args, args.integration, &paths, &mut output).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("Current readiness"));
+    assert!(rendered.contains("MCP clients     configured=0 exposed_by_profiles=0"));
+    assert!(rendered.contains("1. xana mcp add-stdio"));
+    assert!(rendered.contains("2. xana mcp refresh <SERVER>"));
+    assert!(rendered.contains("Transport, profile exposure, egress, and primitive allowlists"));
+    assert!(!paths.package_state_file().exists());
+    assert!(!paths.external_agent_state_file().exists());
+}

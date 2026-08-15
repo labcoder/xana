@@ -22,9 +22,11 @@ use crate::{
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};
-use std::{path::Path, sync::Arc, time::Duration};
+use futures::FutureExt;
+use std::{panic::AssertUnwindSafe, path::Path, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
+    task::JoinHandle,
     time::{Instant, MissedTickBehavior},
 };
 use tokio_util::sync::CancellationToken;
@@ -174,6 +176,7 @@ struct NativeOwner<'a> {
     vision_events: mpsc::Receiver<NativeVisionEvent>,
     vision_sender: mpsc::Sender<NativeVisionEvent>,
     vision_cancellation: Option<(crate::identity::OperationId, CancellationToken)>,
+    vision_task: Option<JoinHandle<()>>,
 }
 
 enum NativeOwnerEvent {
@@ -215,6 +218,7 @@ impl ExecutionOwner for NativeOwner<'_> {
                     operation_id,
                     prepared,
                 } => {
+                    self.finish_vision_task().await;
                     self.vision_cancellation = None;
                     state.finish_vision_preparation(&prepared.receipt);
                     let result = self
@@ -242,6 +246,7 @@ impl ExecutionOwner for NativeOwner<'_> {
                     route,
                     reason,
                 } => {
+                    self.finish_vision_task().await;
                     self.vision_cancellation = None;
                     self.active_root = None;
                     state.fail_vision_preparation(format!(
@@ -396,6 +401,14 @@ impl ExecutionOwner for NativeOwner<'_> {
         if let Some((_, cancellation)) = self.vision_cancellation.take() {
             cancellation.cancel();
         }
+        if let Some(mut task) = self.vision_task.take()
+            && tokio::time::timeout(Duration::from_millis(750), &mut task)
+                .await
+                .is_err()
+        {
+            task.abort();
+            let _ = task.await;
+        }
         Ok(())
     }
 }
@@ -437,32 +450,53 @@ impl NativeOwner<'_> {
             .collect();
         let route = plan.route.name.clone();
         let events = self.vision_sender.clone();
-        tokio::spawn(async move {
-            let event = match service
-                .execute(
-                    operation_id,
-                    input.clone(),
-                    source_images,
-                    plan,
-                    cancellation,
-                )
-                .await
-            {
-                Ok(prepared) => NativeVisionEvent::Prepared {
+        let task = tokio::spawn(async move {
+            let execution = AssertUnwindSafe(service.execute(
+                operation_id,
+                input.clone(),
+                source_images,
+                plan,
+                cancellation,
+            ))
+            .catch_unwind()
+            .await;
+            let event = match execution {
+                Ok(Ok(prepared)) => NativeVisionEvent::Prepared {
                     operation_id,
                     prepared,
                 },
-                Err(error) => NativeVisionEvent::Failed {
+                Ok(Err(error)) => NativeVisionEvent::Failed {
                     operation_id,
                     input,
                     images,
                     route,
                     reason: format!("{error:#}"),
                 },
+                Err(_) => {
+                    crate::diagnostics::record_task_panic("vision-specialist");
+                    NativeVisionEvent::Failed {
+                        operation_id,
+                        input,
+                        images,
+                        route,
+                        reason: "vision specialist task panicked; a crash report was recorded"
+                            .to_owned(),
+                    }
+                }
             };
             let _ = events.send(event).await;
         });
+        self.vision_task = Some(task);
         Ok(None)
+    }
+
+    async fn finish_vision_task(&mut self) {
+        if let Some(task) = self.vision_task.take()
+            && let Err(error) = task.await
+        {
+            crate::diagnostics::record_task_panic("vision-specialist");
+            debug_assert!(error.is_cancelled() || error.is_panic());
+        }
     }
 }
 
@@ -600,6 +634,7 @@ pub(crate) async fn run_native(
             vision_events,
             vision_sender,
             vision_cancellation: None,
+            vision_task: None,
         },
         session_preferences,
     )
