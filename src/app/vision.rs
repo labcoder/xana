@@ -5,15 +5,22 @@ use crate::{
     config::{ConnectionRegistry, OutboundDataClass, PermissionMode},
     credential::CredentialResolver,
     focused_service::{
-        FocusedServiceContext, FocusedServiceRegistry, FocusedServiceRequest, FocusedServiceUsage,
-        ResolvedServiceRoute, ServiceOperation, descriptor_registry,
+        FocusedServiceContext, FocusedServiceError, FocusedServiceRegistry, FocusedServiceRequest,
+        FocusedServiceResult, FocusedServiceUsage, ResolvedServiceRoute, ServiceOperation,
+        descriptor_registry,
         openai_vision::{OpenAiVisionAdapter, VisionProvider},
     },
     identity::{OperationId, PrincipalId},
+    outbound::{
+        OutboundApprovalController, OutboundApprovalDecision, OutboundAuditEvent, OutboundGuard,
+        OutboundItem, OutboundPolicyLayers, OutboundRequest, OutboundTransport,
+        OutboundTransportFailure, RecipientIdentity, RecipientKind,
+    },
     vision::ImageRef,
 };
 use anyhow::{Context, Result};
-use std::sync::Arc;
+use futures::future::BoxFuture;
+use std::{collections::BTreeSet, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,6 +66,7 @@ pub(crate) struct PreparedVisionTurn {
 #[derive(Clone)]
 pub(crate) struct VisionTurnService {
     registry: ConnectionRegistry,
+    outbound: OutboundGuard,
     exposed_routes: Vec<String>,
     profile_egress: Vec<OutboundDataClass>,
     permission_mode: PermissionMode,
@@ -69,6 +77,7 @@ pub(crate) struct VisionTurnService {
 impl VisionTurnService {
     pub(crate) fn new(
         registry: ConnectionRegistry,
+        outbound: OutboundGuard,
         exposed_routes: Vec<String>,
         profile_egress: Vec<OutboundDataClass>,
         permission_mode: PermissionMode,
@@ -77,6 +86,7 @@ impl VisionTurnService {
     ) -> Self {
         Self {
             registry,
+            outbound,
             exposed_routes,
             profile_egress,
             permission_mode,
@@ -165,25 +175,115 @@ impl VisionTurnService {
         };
         let mut execution = FocusedServiceRegistry::default();
         execution.register(Arc::new(OpenAiVisionAdapter::new(provider, secret)))?;
+        let destination = format!(
+            "{}/chat/completions",
+            plan.route
+                .base_url
+                .as_deref()
+                .unwrap_or_else(|| provider.default_base_url())
+                .trim_end_matches('/')
+        );
+        let identity_material = format!(
+            "{}\n{}\n{}\n{}",
+            plan.route.adapter, plan.route.connection, destination, plan.route.model
+        );
+        let recipient = RecipientIdentity::new(
+            RecipientKind::FocusedService,
+            plan.route.connection.clone(),
+            destination,
+            identity_material.as_bytes(),
+        )?;
+        let mut outbound_items = vec![OutboundItem::new(
+            OutboundDataClass::PromptText,
+            "vision question",
+            None,
+            "current user turn",
+            question.as_bytes().to_vec(),
+        )?];
+        for image in &images {
+            let bytes = self
+                .artifacts
+                .read_bounded(&image.artifact, plan.route.descriptor.max_artifact_bytes)
+                .context("could not verify a selected vision artifact before egress review")?;
+            outbound_items.push(OutboundItem::new(
+                OutboundDataClass::SelectedArtifacts,
+                format!("image artifact {}", image.artifact.reference.id),
+                Some(image.artifact.reference.id.to_string()),
+                format!(
+                    "immutable Xana artifact {}",
+                    image.artifact.reference.content_hash.as_str()
+                ),
+                bytes,
+            )?);
+        }
+        let outbound_request = OutboundRequest::new(
+            operation_id,
+            recipient.clone(),
+            "analyze selected images for the current conversation",
+            outbound_items,
+        )?;
+        let route_classes = plan
+            .route
+            .allowed_outbound
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let profile_classes = self.profile_egress.iter().copied().collect::<BTreeSet<_>>();
+        let policy = OutboundPolicyLayers {
+            connection_allowed: route_classes.clone(),
+            user_ceiling: route_classes,
+            profile_allowed: profile_classes,
+            conversation_allowed: Some(
+                [
+                    OutboundDataClass::PromptText,
+                    OutboundDataClass::SelectedArtifacts,
+                ]
+                .into_iter()
+                .collect(),
+            ),
+        };
         let source_artifact_ids = images
             .iter()
             .map(|image| image.artifact.reference.id.to_string())
             .collect::<Vec<_>>();
-        let result = execution
-            .execute(
-                FocusedServiceRequest {
-                    operation_id,
-                    route: plan.route,
-                    prompt: question.clone(),
-                    input_artifacts: images.iter().map(|image| image.artifact.clone()).collect(),
-                },
-                FocusedServiceContext {
-                    artifacts: self.artifacts.clone(),
-                    owner: self.owner,
-                    cancellation,
-                },
+        let mut transport = VisionTransport {
+            execution,
+            request: Some(FocusedServiceRequest {
+                operation_id,
+                route: plan.route,
+                prompt: question.clone(),
+                input_artifacts: images.iter().map(|image| image.artifact.clone()).collect(),
+            }),
+            context: Some(FocusedServiceContext {
+                artifacts: self.artifacts.clone(),
+                owner: self.owner,
+                cancellation,
+            }),
+            expected_recipient: recipient,
+            expected_item_count: images.len() + 1,
+            failure: None,
+        };
+        let mut approval = PreapprovedOutbound;
+        let mut audit = Vec::<OutboundAuditEvent>::new();
+        let result = match self
+            .outbound
+            .dispatch(
+                outbound_request,
+                &policy,
+                Some(&mut approval),
+                &mut transport,
+                &mut audit,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if let Some(failure) = transport.failure.take() {
+                    return Err(anyhow::Error::new(failure));
+                }
+                return Err(anyhow::Error::new(error));
+            }
+        };
         let derived = result
             .derived_text
             .context("vision specialist returned no derived description")?;
@@ -221,6 +321,77 @@ impl VisionTurnService {
             derived_text: derived,
             receipt,
         })
+    }
+}
+
+/// The terminal frontends resolve Xana's visible permission prompt before
+/// invoking `execute`. The outbound guard still owns saved denials, effective
+/// data ceilings, exact recipient identity, auditing, and the only transport
+/// dispatch boundary.
+struct PreapprovedOutbound;
+
+impl OutboundApprovalController for PreapprovedOutbound {
+    fn decide<'a>(
+        &'a mut self,
+        _request: &'a crate::outbound::OutboundApprovalRequest,
+    ) -> BoxFuture<'a, OutboundApprovalDecision> {
+        Box::pin(async { OutboundApprovalDecision::AllowOnce })
+    }
+}
+
+struct VisionTransport {
+    execution: FocusedServiceRegistry,
+    request: Option<FocusedServiceRequest>,
+    context: Option<FocusedServiceContext>,
+    expected_recipient: RecipientIdentity,
+    expected_item_count: usize,
+    failure: Option<FocusedServiceError>,
+}
+
+impl OutboundTransport for VisionTransport {
+    type Receipt = FocusedServiceResult;
+
+    fn send<'a>(
+        &'a mut self,
+        recipient: &'a RecipientIdentity,
+        items: &'a [OutboundItem],
+    ) -> BoxFuture<'a, Result<Self::Receipt, OutboundTransportFailure>> {
+        Box::pin(async move {
+            if recipient != &self.expected_recipient || items.len() != self.expected_item_count {
+                return Err(OutboundTransportFailure::Protocol);
+            }
+            let request = self
+                .request
+                .take()
+                .ok_or(OutboundTransportFailure::Protocol)?;
+            let context = self
+                .context
+                .take()
+                .ok_or(OutboundTransportFailure::Protocol)?;
+            match self.execution.execute(request, context).await {
+                Ok(result) => Ok(result),
+                Err(error) => {
+                    let failure = map_transport_failure(&error);
+                    self.failure = Some(error);
+                    Err(failure)
+                }
+            }
+        })
+    }
+}
+
+fn map_transport_failure(error: &FocusedServiceError) -> OutboundTransportFailure {
+    match error {
+        FocusedServiceError::Cancelled => OutboundTransportFailure::Cancelled,
+        FocusedServiceError::Timeout => OutboundTransportFailure::TimedOut,
+        FocusedServiceError::Authentication
+        | FocusedServiceError::RateLimited
+        | FocusedServiceError::Quota
+        | FocusedServiceError::ContentPolicy => OutboundTransportFailure::Rejected,
+        FocusedServiceError::Transport | FocusedServiceError::AdapterUnavailable(_) => {
+            OutboundTransportFailure::Unavailable
+        }
+        _ => OutboundTransportFailure::Protocol,
     }
 }
 

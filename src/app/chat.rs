@@ -617,6 +617,8 @@ async fn run_once(
     .context("could not activate profile image-generation tool")?;
     let vision = super::vision::VisionTurnService::new(
         child_registry.clone(),
+        crate::outbound::OutboundGuard::open(paths)
+            .context("could not open the outbound policy gate for vision")?,
         profile_service_routes.clone(),
         profile_egress.clone(),
         permission_mode,
@@ -696,7 +698,8 @@ async fn run_once(
         workspace_root.clone(),
         prompt,
         max_tool_rounds,
-    );
+    )
+    .with_runtime_telemetry(crate::diagnostics::runtime_telemetry());
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
     let runtime = match child_supervisor {

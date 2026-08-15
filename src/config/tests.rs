@@ -1161,3 +1161,38 @@ fn invalid_initial_round_limit_uses_the_existing_validation_error() {
         } if profile == "default"
     ));
 }
+
+#[test]
+fn config_edits_fail_closed_while_another_writer_holds_the_lock() {
+    let directory = tempdir().expect("temporary config directory");
+    let path = directory.path().join("config.toml");
+    fs::write(&path, MINIMAL).expect("write config");
+    let before = fs::read(&path).expect("read config before edit");
+    let lock = ConfigEditLock::acquire(&path).expect("hold edit lock");
+
+    let error = XanaConfig::add_profile(
+        &path,
+        NewProfile {
+            id: "worker".to_owned(),
+            connection: "local".to_owned(),
+            model: "qwen-worker".to_owned(),
+        },
+    )
+    .expect_err("competing edit must fail");
+
+    assert!(
+        error.to_string().contains("another Xana process"),
+        "unexpected contention error: {error}"
+    );
+    assert_eq!(fs::read(&path).expect("read unchanged config"), before);
+    drop(lock);
+    XanaConfig::add_profile(
+        &path,
+        NewProfile {
+            id: "worker".to_owned(),
+            connection: "local".to_owned(),
+            model: "qwen-worker".to_owned(),
+        },
+    )
+    .expect("edit succeeds after lock release");
+}

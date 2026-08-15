@@ -3,7 +3,7 @@
 use crate::{
     artifact::ArtifactStore,
     identity::PrincipalId,
-    vision::{ImageAttachment, ingest_clipboard_image},
+    vision::{ImageAttachment, ingest_clipboard_image_from},
 };
 
 #[derive(Default)]
@@ -33,6 +33,7 @@ impl Clipboard {
         store: ArtifactStore,
         owner: PrincipalId,
     ) -> Result<ImageAttachment, String> {
-        ingest_clipboard_image(store, owner)
+        let backend = self.backend()?;
+        ingest_clipboard_image_from(backend, store, owner)
     }
 }

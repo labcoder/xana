@@ -23,6 +23,45 @@ use std::{
 };
 use uuid::Uuid;
 
+pub(crate) fn runtime_telemetry() -> Arc<dyn crate::telemetry::RuntimeTelemetry> {
+    Arc::new(DiagnosticTelemetry)
+}
+
+struct DiagnosticTelemetry;
+
+impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
+    fn record(&self, event: crate::telemetry::RuntimeTelemetryEvent) {
+        use crate::telemetry::RuntimeTelemetryKind;
+        let (target, kind, outcome) = match event.kind {
+            RuntimeTelemetryKind::ProviderFailed => (
+                DiagnosticTarget::Provider,
+                EventKind::ProviderFailed,
+                EventOutcome::Failed,
+            ),
+            RuntimeTelemetryKind::ToolDenied => (
+                DiagnosticTarget::Tool,
+                EventKind::ToolDenied,
+                EventOutcome::Denied,
+            ),
+            RuntimeTelemetryKind::ToolFailed => (
+                DiagnosticTarget::Tool,
+                EventKind::ToolFailed,
+                EventOutcome::Failed,
+            ),
+            RuntimeTelemetryKind::StorageFailed => (
+                DiagnosticTarget::Runtime,
+                EventKind::StorageFailed,
+                EventOutcome::Failed,
+            ),
+        };
+        emit(
+            DiagnosticFact::new(DiagnosticLevel::Warn, target, kind, outcome)
+                .subject(event.subject)
+                .correlation(event.operation_id.to_string()),
+        );
+    }
+}
+
 const RECORD_VERSION: u32 = 1;
 const CRASH_VERSION: u32 = 1;
 const SUPPORT_BUNDLE_VERSION: u32 = 1;
@@ -209,6 +248,8 @@ impl DiagnosticRuntime {
         let pid = std::process::id();
         let log_path = unique_file_path(&log_dir, &format!("xana-{timestamp}-{pid}"), "jsonl")?;
         let file = create_private_file(&log_path)?;
+        file.try_lock_exclusive()
+            .context("could not lock active Xana diagnostic log")?;
         let marker_path = unique_file_path(&crash_dir, &format!("run-{timestamp}-{pid}"), "json")?;
         let mut marker_file = create_private_file(&marker_path)?;
         marker_file
@@ -593,7 +634,9 @@ impl FileSink {
             .unwrap_or("xana");
         let path = unique_file_path(&parent, &format!("{stem}-{}", self.segment), "jsonl")
             .map_err(io::Error::other)?;
-        self.file = create_private_file(&path).map_err(io::Error::other)?;
+        let file = create_private_file(&path).map_err(io::Error::other)?;
+        file.try_lock_exclusive()?;
+        self.file = file;
         self.path = path;
         self.bytes = 0;
         cleanup_logs(&parent, &self.settings).map_err(io::Error::other)?;
@@ -675,6 +718,7 @@ fn write_crash_report(
     );
     if let Ok(path) = path
         && let Ok(mut file) = create_private_file(&path)
+        && file.try_lock_exclusive().is_ok()
         && serde_json::to_writer_pretty(&mut file, &report).is_ok()
     {
         let _ = file.flush();

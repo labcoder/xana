@@ -21,6 +21,9 @@ use crate::permission::{
     Authorization, PermissionBrokerHandle, PermissionRequest, PermissionScope,
 };
 use crate::shell::Shell;
+use crate::telemetry::{
+    NoopRuntimeTelemetry, RuntimeTelemetry, RuntimeTelemetryEvent, RuntimeTelemetryKind,
+};
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -183,9 +186,18 @@ struct RegisteredTool {
     implementation: Box<dyn Tool>,
 }
 
-#[derive(Default)]
 pub(crate) struct ToolRegistry {
     tools: Vec<RegisteredTool>,
+    telemetry: std::sync::Arc<dyn RuntimeTelemetry>,
+}
+
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self {
+            tools: Vec::new(),
+            telemetry: std::sync::Arc::new(NoopRuntimeTelemetry),
+        }
+    }
 }
 
 impl ToolRegistry {
@@ -231,15 +243,10 @@ impl ToolRegistry {
         let planned = match self.plan(call, context.workspace_root) {
             Ok(planned) => planned,
             Err(result) => {
-                crate::diagnostics::emit(
-                    crate::diagnostics::DiagnosticFact::new(
-                        crate::config::DiagnosticLevel::Warn,
-                        crate::config::DiagnosticTarget::Tool,
-                        crate::diagnostics::EventKind::ToolFailed,
-                        crate::diagnostics::EventOutcome::Failed,
-                    )
-                    .subject(&call.name)
-                    .correlation(context.operation_id.to_string()),
+                self.record_tool_event(
+                    context.operation_id,
+                    RuntimeTelemetryKind::ToolFailed,
+                    &call.name,
                 );
                 return result;
             }
@@ -248,29 +255,19 @@ impl ToolRegistry {
         let authorization = match context.permissions.authorize(request).await {
             Ok(authorization) => authorization,
             Err(error) => {
-                crate::diagnostics::emit(
-                    crate::diagnostics::DiagnosticFact::new(
-                        crate::config::DiagnosticLevel::Warn,
-                        crate::config::DiagnosticTarget::Tool,
-                        crate::diagnostics::EventKind::ToolFailed,
-                        crate::diagnostics::EventOutcome::Failed,
-                    )
-                    .subject(&call.name)
-                    .correlation(context.operation_id.to_string()),
+                self.record_tool_event(
+                    context.operation_id,
+                    RuntimeTelemetryKind::ToolFailed,
+                    &call.name,
                 );
                 return ToolResult::error(call.id.clone(), error.to_string());
             }
         };
         if matches!(authorization, Authorization::Denied(_)) {
-            crate::diagnostics::emit(
-                crate::diagnostics::DiagnosticFact::new(
-                    crate::config::DiagnosticLevel::Warn,
-                    crate::config::DiagnosticTarget::Tool,
-                    crate::diagnostics::EventKind::ToolDenied,
-                    crate::diagnostics::EventOutcome::Denied,
-                )
-                .subject(&call.name)
-                .correlation(context.operation_id.to_string()),
+            self.record_tool_event(
+                context.operation_id,
+                RuntimeTelemetryKind::ToolDenied,
+                &call.name,
             );
             return ToolResult::error(
                 call.id.clone(),
@@ -287,19 +284,34 @@ impl ToolRegistry {
         {
             Ok(output) => ToolResult::success(call.id.clone(), output),
             Err(error) => {
-                crate::diagnostics::emit(
-                    crate::diagnostics::DiagnosticFact::new(
-                        crate::config::DiagnosticLevel::Warn,
-                        crate::config::DiagnosticTarget::Tool,
-                        crate::diagnostics::EventKind::ToolFailed,
-                        crate::diagnostics::EventOutcome::Failed,
-                    )
-                    .subject(&call.name)
-                    .correlation(context.operation_id.to_string()),
+                self.record_tool_event(
+                    context.operation_id,
+                    RuntimeTelemetryKind::ToolFailed,
+                    &call.name,
                 );
                 ToolResult::error(call.id.clone(), error)
             }
         }
+    }
+
+    pub(crate) fn set_runtime_telemetry(
+        &mut self,
+        telemetry: std::sync::Arc<dyn RuntimeTelemetry>,
+    ) {
+        self.telemetry = telemetry;
+    }
+
+    fn record_tool_event(
+        &self,
+        operation_id: OperationId,
+        kind: RuntimeTelemetryKind,
+        subject: &str,
+    ) {
+        self.telemetry.record(RuntimeTelemetryEvent {
+            operation_id,
+            kind,
+            subject: subject.to_owned(),
+        });
     }
 
     pub(crate) fn plan<'a>(

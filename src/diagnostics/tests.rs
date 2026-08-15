@@ -161,6 +161,34 @@ fn cleanup_deletes_only_recognized_bounded_files() {
 }
 
 #[test]
+fn cleanup_never_deletes_another_live_process_log() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let (_directory, paths) = fixture();
+    let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
+    let active = list(&paths)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.kind == "log")
+        .unwrap()
+        .name;
+    std::thread::sleep(Duration::from_millis(5));
+    let disposable = paths.logs_dir().join("xana-disposable.jsonl");
+    fs::write(&disposable, b"{}\n").unwrap();
+    let settings = DiagnosticsConfig {
+        max_files: 1,
+        max_file_bytes: 64 * 1024,
+        max_total_bytes: 64 * 1024,
+        ..DiagnosticsConfig::default()
+    };
+
+    cleanup_logs(&paths.logs_dir(), &settings).unwrap();
+
+    assert!(paths.logs_dir().join(active).exists());
+    assert!(!disposable.exists());
+    drop(runtime);
+}
+
+#[test]
 fn unlocked_prior_marker_is_reported_without_deleting_it() {
     let _guard = TEST_LOCK.lock().unwrap();
     let (_directory, paths) = fixture();

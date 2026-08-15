@@ -159,11 +159,20 @@ pub(crate) struct OpenAiCompatClient {
 
 impl OpenAiCompatClient {
     pub(crate) fn new(base_url: String, model: String) -> Self {
+        Self::new_with_redirect_policy(base_url, model, reqwest::redirect::Policy::limited(10))
+    }
+
+    fn new_with_redirect_policy(
+        base_url: String,
+        model: String,
+        redirect_policy: reqwest::redirect::Policy,
+    ) -> Self {
         let endpoint = chat_endpoint(&base_url);
 
         Self {
             client: Client::builder()
                 .connect_timeout(Duration::from_secs(5))
+                .redirect(redirect_policy)
                 .build()
                 .expect("static HTTP client configuration is valid"),
             endpoint,
@@ -183,6 +192,30 @@ impl OpenAiCompatClient {
         title: Option<String>,
     ) -> Self {
         let mut client = Self::new(base_url, model);
+        client.bearer_token = Some(bearer_token);
+        if let Some(referer) = referer {
+            client
+                .attribution
+                .push(("HTTP-Referer".to_owned(), referer));
+        }
+        if let Some(title) = title {
+            client.attribution.push(("X-Title".to_owned(), title));
+        }
+        client
+    }
+
+    /// Constructs a credential-bearing client whose request destination cannot
+    /// be changed by an HTTP redirect. Focused services use this after Xana has
+    /// authorized one exact recipient through the outbound guard.
+    pub(crate) fn with_bearer_and_attribution_no_redirects(
+        base_url: String,
+        model: String,
+        bearer_token: SecretString,
+        referer: Option<String>,
+        title: Option<String>,
+    ) -> Self {
+        let mut client =
+            Self::new_with_redirect_policy(base_url, model, reqwest::redirect::Policy::none());
         client.bearer_token = Some(bearer_token);
         if let Some(referer) = referer {
             client

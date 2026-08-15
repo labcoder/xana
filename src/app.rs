@@ -206,7 +206,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             }
             integration => {
                 let mut output = io::stdout().lock();
-                connect::write_hub(&args, integration, &mut output)
+                connect::write_hub(&args, integration, &paths, &mut output)
             }
         },
         Some(Command::Operation(args)) => {

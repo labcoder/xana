@@ -7,8 +7,13 @@ use crate::{
     local_host::{DescriptorHealth, inspect_descriptor_health, remove_stale_descriptor},
     paths::XanaPaths,
     plugin::PluginManager,
+    portable_project::PortableProjectStore,
     presentation::PresentationPreferences,
-    private_state::{PrivateRecordStatus, inspect_interoperable_records},
+    private_state::{
+        PrivateRecordStatus, ProjectBindingsDocument, ProjectLifecycle, ProjectRegistryDocument,
+        inspect_interoperable_records, read_document,
+    },
+    skill::{SkillCatalog, standard_sources},
 };
 use serde::Serialize;
 use std::{
@@ -150,9 +155,175 @@ pub(crate) async fn inspect(
     inspect_descriptor(paths, &mut report);
     inspect_private_records(paths, &mut report);
     inspect_plugins(paths, &mut report);
+    inspect_projects(paths, &mut report);
+    inspect_skills(&mut report);
     inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report, probe_connections).await;
     report
+}
+
+fn inspect_projects(paths: &XanaPaths, report: &mut DoctorReport) {
+    if !paths.projects_file().exists() {
+        report.push(Finding::new(
+            "project.registry",
+            Severity::Info,
+            "no private project registry exists yet",
+            paths.projects_file().display().to_string(),
+            Some("xana project create <name>".into()),
+        ));
+    } else {
+        match read_document::<ProjectRegistryDocument>(&paths.projects_file()) {
+            Ok(document) => {
+                let active = document
+                    .projects
+                    .values()
+                    .filter(|project| project.lifecycle == ProjectLifecycle::Active)
+                    .count();
+                let archived = document.projects.len().saturating_sub(active);
+                let workspace = std::env::current_dir()
+                    .ok()
+                    .and_then(|path| path.canonicalize().ok());
+                let current = workspace.as_ref().and_then(|workspace| {
+                    document
+                        .projects
+                        .values()
+                        .find(|project| &project.canonical_workspace == workspace)
+                });
+                report.push(Finding::new(
+                    "project.registry",
+                    Severity::Ok,
+                    "private project registry is readable",
+                    format!(
+                        "active={active} archived={archived} memberships={} current_workspace_project={}",
+                        document.conversation_memberships.len(),
+                        current.map_or("none", |_| "registered")
+                    ),
+                    current
+                        .map(|project| format!("xana project inspect {}", project.id))
+                        .or_else(|| Some("xana project list".into())),
+                ));
+            }
+            Err(_) => report.push(Finding::new(
+                "project.registry",
+                Severity::Error,
+                "private project registry is unreadable or incompatible",
+                paths.projects_file().display().to_string(),
+                Some("xana config migrate".into()),
+            )),
+        }
+    }
+
+    let workspace = match std::env::current_dir().and_then(|path| path.canonicalize()) {
+        Ok(workspace) => workspace,
+        Err(_) => return,
+    };
+    match PortableProjectStore::detect(&workspace) {
+        Ok(None) => report.push(Finding::new(
+            "project.portable",
+            Severity::Info,
+            "the current workspace has no portable Xana project manifest",
+            workspace
+                .join(crate::portable_project::PORTABLE_PROJECT_RELATIVE)
+                .display()
+                .to_string(),
+            Some("xana project share <project-id>".into()),
+        )),
+        Ok(Some(_)) => match PortableProjectStore::inspect(&workspace) {
+            Ok(inspection) => {
+                let binding = if paths.project_bindings_file().exists() {
+                    read_document::<ProjectBindingsDocument>(&paths.project_bindings_file())
+                        .ok()
+                        .is_some_and(|bindings| {
+                            bindings.projects.values().any(|binding| {
+                                binding.portable_root == workspace
+                                    && binding.manifest_digest == inspection.digest
+                            })
+                        })
+                } else {
+                    false
+                };
+                report.push(Finding::new(
+                    "project.portable",
+                    if binding {
+                        Severity::Ok
+                    } else {
+                        Severity::Warning
+                    },
+                    if binding {
+                        "portable project manifest has a current local binding"
+                    } else {
+                        "portable project manifest is valid but not currently bound"
+                    },
+                    format!(
+                        "portable_id={} profiles={} binding={}",
+                        inspection.manifest.portable_id,
+                        inspection.manifest.profiles.len(),
+                        binding
+                    ),
+                    (!binding).then(|| "xana project register".into()),
+                ));
+            }
+            Err(_) => report.push(Finding::new(
+                "project.portable",
+                Severity::Error,
+                "portable project manifest is invalid or unsafe",
+                workspace
+                    .join(crate::portable_project::PORTABLE_PROJECT_RELATIVE)
+                    .display()
+                    .to_string(),
+                Some("xana project inspect-portable".into()),
+            )),
+        },
+        Err(_) => report.push(Finding::new(
+            "project.portable",
+            Severity::Error,
+            "portable project manifest path is invalid or unsafe",
+            workspace
+                .join(crate::portable_project::PORTABLE_PROJECT_RELATIVE)
+                .display()
+                .to_string(),
+            Some("inspect the workspace .agents/xana entry manually".into()),
+        )),
+    }
+}
+
+fn inspect_skills(report: &mut DoctorReport) {
+    let Ok(workspace) = std::env::current_dir().and_then(|path| path.canonicalize()) else {
+        return;
+    };
+    let user = directories::UserDirs::new();
+    let sources = standard_sources(
+        user.as_ref().map(directories::UserDirs::home_dir),
+        &workspace,
+        [],
+    );
+    match SkillCatalog::discover(sources) {
+        Ok(catalog) => {
+            let count = catalog.entries().count();
+            let invalid = catalog.diagnostics().len();
+            report.push(Finding::new(
+                "skills.catalog",
+                if invalid == 0 {
+                    Severity::Ok
+                } else {
+                    Severity::Warning
+                },
+                "standard Agent Skills sources were indexed without activation",
+                format!(
+                    "available={count} invalid={invalid} standard_revision={}",
+                    crate::skill::AGENT_SKILLS_REVISION
+                ),
+                (invalid > 0).then(|| "xana skill list".into()),
+            ));
+        }
+        Err(_) => report.push(Finding::new(
+            "skills.catalog",
+            Severity::Warning,
+            "standard Agent Skills sources could not be indexed safely",
+            workspace.display().to_string(),
+            Some("xana skill list".into()),
+        )),
+    }
 }
 
 fn inspect_diagnostics(paths: &XanaPaths, report: &mut DoctorReport) {
@@ -322,6 +493,19 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
             }),
         ));
     }
+    report.push(Finding::new(
+        "mcp.local_server",
+        Severity::Info,
+        "Xana's local MCP server is invocation-only and was not started by Doctor",
+        format!(
+            "profiles={} configured_client_servers={}; serving requires an exact workspace, profile, and primitive allowlist",
+            registry.profiles.len(),
+            registry.mcp_servers.len()
+        ),
+        Some(
+            "xana mcp serve --workspace <PATH> --profile <PROFILE> --allow <PRIMITIVE>".into(),
+        ),
+    ));
     for (name, agent) in &registry.external_agents {
         report.push(Finding::new(
             format!("external_agent.{name}"),
@@ -774,6 +958,11 @@ mod tests {
 
         assert!(json.contains("\"version\":1"));
         assert!(json.contains("connection.local.probe"));
+        assert!(json.contains("model.default.capabilities"));
+        assert!(json.contains("project.registry"));
+        assert!(json.contains("project.portable"));
+        assert!(json.contains("skills.catalog"));
+        assert!(json.contains("mcp.local_server"));
         assert!(json.contains("xana doctor --probe-connections"));
         assert!(!json.contains("api_key"));
         assert_eq!(fs::read(paths.config_file()).unwrap(), before);

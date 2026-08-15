@@ -9,12 +9,15 @@ use crate::{
     permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
     shell::{Shell, ShellConfig, ShellError},
 };
+use fs2::FileExt;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     error::Error,
-    fmt, fs, io,
+    fmt, fs,
+    fs::{File, OpenOptions},
+    io,
     io::Write as _,
     path::{Path, PathBuf},
 };
@@ -1078,6 +1081,7 @@ impl XanaConfig {
                 profile: format!("provider {} model", input.id),
             });
         }
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1127,6 +1131,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.connections.contains_key(id) {
             return Err(ConfigError::UnknownProvider {
@@ -1167,6 +1172,7 @@ impl XanaConfig {
         input: NewExternalAgent,
     ) -> Result<(), ConfigError> {
         validate_name("external agent", &input.id)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1212,6 +1218,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_external_agent(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.external_agents.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown external agent {id:?}")));
@@ -1249,6 +1256,7 @@ impl XanaConfig {
         validate_name("service route", &input.route)?;
         validate_name("service connection", &input.connection)?;
         validate_name("profile", &input.profile)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1342,6 +1350,7 @@ impl XanaConfig {
     pub(crate) fn add_mcp_server(path: &Path, input: NewMcpServer) -> Result<(), ConfigError> {
         validate_name("MCP server", &input.id)?;
         validate_name("profile", &input.profile)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1454,6 +1463,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_mcp_server(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.mcp_servers.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown MCP server {id:?}")));
@@ -1489,6 +1499,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_service_route(path: &Path, route: &str) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         let declaration = registry
             .service_routes
@@ -1539,6 +1550,7 @@ impl XanaConfig {
 
     pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
         validate_name("profile", &input.id)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1563,6 +1575,7 @@ impl XanaConfig {
         id: &str,
         update: ProfileUpdate,
     ) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1616,6 +1629,7 @@ impl XanaConfig {
         value: &str,
         enabled: bool,
     ) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1654,6 +1668,7 @@ impl XanaConfig {
         id: &str,
     ) -> Result<(), ConfigError> {
         validate_name("profile", id)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1677,6 +1692,7 @@ impl XanaConfig {
 
     pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
         validate_name("profile", new)?;
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1718,6 +1734,7 @@ impl XanaConfig {
         id: &str,
         archived: bool,
     ) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1742,6 +1759,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn delete_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let _lock = ConfigEditLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if registry.default_profile == id {
             return Err(ConfigError::Edit(
@@ -1769,6 +1787,75 @@ impl XanaConfig {
         }
         validate_and_write_profile_edit(path, document)
     }
+}
+
+struct ConfigEditLock {
+    _file: File,
+}
+
+impl ConfigEditLock {
+    fn acquire(config_path: &Path) -> Result<Self, ConfigError> {
+        let file_name = config_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| ConfigError::Edit("configuration path has no safe file name".into()))?;
+        let lock_path = config_path.with_file_name(format!("{file_name}.lock"));
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|source| ConfigError::Io {
+                path: lock_path.clone(),
+                source,
+            })?;
+        restrict_lock_permissions(&file, &lock_path)?;
+        file.try_lock_exclusive().map_err(|source| {
+            if is_lock_contention(&source) {
+                ConfigError::Edit(
+                    "configuration is being changed by another Xana process; retry shortly".into(),
+                )
+            } else {
+                ConfigError::Io {
+                    path: lock_path,
+                    source,
+                }
+            }
+        })?;
+        Ok(Self { _file: file })
+    }
+}
+
+fn is_lock_contention(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        // ERROR_LOCK_VIOLATION is reported as ErrorKind::Other by std on
+        // current Windows toolchains.
+        error.raw_os_error() == Some(33)
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+#[cfg(unix)]
+fn restrict_lock_permissions(file: &File, path: &Path) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+    file.set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|source| ConfigError::Io {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+#[cfg(not(unix))]
+fn restrict_lock_permissions(_file: &File, _path: &Path) -> Result<(), ConfigError> {
+    Ok(())
 }
 
 fn profiles_table_mut(

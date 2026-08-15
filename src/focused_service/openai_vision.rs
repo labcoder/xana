@@ -39,7 +39,7 @@ impl VisionProvider {
         }
     }
 
-    fn default_base_url(self) -> &'static str {
+    pub(crate) fn default_base_url(self) -> &'static str {
         match self {
             Self::OpenAi => OPENAI_BASE_URL,
             Self::OpenRouter => OPENROUTER_BASE_URL,
@@ -92,7 +92,7 @@ impl FocusedServiceAdapter for OpenAiVisionAdapter {
                 .unwrap_or_else(|| self.provider.default_base_url().to_owned());
             let secret = SecretString::new(self.secret.expose().to_owned())
                 .map_err(|_| FocusedServiceError::Authentication)?;
-            let client = OpenAiCompatClient::with_bearer_and_attribution(
+            let client = OpenAiCompatClient::with_bearer_and_attribution_no_redirects(
                 base_url,
                 request.route.model.clone(),
                 secret,

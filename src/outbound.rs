@@ -28,7 +28,10 @@ use std::{
 
 const MAX_ITEMS: usize = 64;
 const MAX_ITEM_BYTES: usize = 4 * 1024 * 1024;
-const MAX_TOTAL_BYTES: usize = 16 * 1024 * 1024;
+// One vision turn may contain several immutable images whose aggregate input
+// is bounded separately at 20 MiB. The common egress gate must be able to
+// review that complete, already-bounded request rather than forcing a bypass.
+const MAX_TOTAL_BYTES: usize = crate::vision::MAX_IMAGE_BYTES_PER_TURN as usize;
 const MAX_SAVED_DECISIONS: usize = 1024;
 const MAX_IDENTITY_MATERIAL_BYTES: usize = 16 * 1024;
 const MAX_CONNECTION_BYTES: usize = 128;
