@@ -11,7 +11,11 @@ use crate::{
 use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{error::Error, fmt, io, path::PathBuf};
+use std::{
+    error::Error,
+    fmt, io,
+    path::{Path, PathBuf},
+};
 use tokio::process::Command;
 
 const MAX_STREAM_BYTES: usize = 32 * 1024;
@@ -81,11 +85,30 @@ impl RunCommand {
             return Err(RunCommandError::BlankCommand);
         }
 
-        let resolved_cwd = workspace_path::resolve_existing(args.cwd.clone(), workspace_root)
-            .map_err(|source| RunCommandError::InvalidCwd {
-                requested: args.cwd.clone(),
-                source,
-            })?;
+        let resolved_cwd = if Path::new(&args.cwd).is_absolute() {
+            let (resolved, location) =
+                workspace_path::resolve_existing_for_read(args.cwd.clone(), workspace_root)
+                    .map_err(|source| RunCommandError::InvalidCwd {
+                        requested: args.cwd.clone(),
+                        source,
+                    })?;
+            if location == workspace_path::ResolvedPathLocation::External {
+                return Err(RunCommandError::InvalidCwd {
+                    requested: args.cwd.clone(),
+                    source: workspace_path::WorkspacePathError::OutsideWorkspace {
+                        requested_path: args.cwd.clone(),
+                    },
+                });
+            }
+            resolved
+        } else {
+            workspace_path::resolve_existing(args.cwd.clone(), workspace_root).map_err(
+                |source| RunCommandError::InvalidCwd {
+                    requested: args.cwd.clone(),
+                    source,
+                },
+            )?
+        };
         if !resolved_cwd.canonical_path.is_dir() {
             return Err(RunCommandError::CwdNotDirectory {
                 requested: resolved_cwd.requested_path,
@@ -152,7 +175,7 @@ impl Tool for RunCommand {
                     },
                     "cwd": {
                         "type": "string",
-                        "description": "Existing directory relative to the launch workspace.",
+                        "description": "Existing directory inside the launch workspace. Use '.' for the workspace root; workspace-relative paths are preferred, and absolute paths are accepted only when they resolve inside the workspace. To operate on an approved external file, keep cwd='.' and reference the absolute file in command.",
                         "default": "."
                     }
                 },
@@ -205,7 +228,10 @@ impl fmt::Display for RunCommandError {
             Self::InvalidArguments(_) => write!(f, "invalid run_command arguments"),
             Self::BlankCommand => write!(f, "run_command requires a non-blank command"),
             Self::InvalidCwd { requested, .. } => {
-                write!(f, "run_command cwd {requested:?} is invalid or unavailable")
+                write!(
+                    f,
+                    "run_command cwd {requested:?} is invalid or unavailable; use '.' or a directory inside the launch workspace"
+                )
             }
             Self::CwdNotDirectory {
                 requested,
