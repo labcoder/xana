@@ -5,9 +5,24 @@ use tempfile::tempdir;
 
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
-fn fixture() -> (tempfile::TempDir, XanaPaths) {
+fn test_guard() -> std::sync::MutexGuard<'static, ()> {
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn canonical_tempdir() -> (tempfile::TempDir, PathBuf) {
     let directory = tempdir().unwrap();
-    let paths = XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+    #[cfg(unix)]
+    let canonical = directory.path().canonicalize().unwrap();
+    #[cfg(not(unix))]
+    let canonical = directory.path().to_path_buf();
+    (directory, canonical)
+}
+
+fn fixture() -> (tempfile::TempDir, XanaPaths) {
+    let (directory, canonical) = canonical_tempdir();
+    let paths = XanaPaths::resolve(Some(canonical.join("home").into_os_string())).unwrap();
     fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
     fs::write(
         paths.config_file(),
@@ -30,7 +45,7 @@ fn fixture() -> (tempfile::TempDir, XanaPaths) {
 
 #[test]
 fn records_are_metadata_only_and_secret_shaped_subjects_are_hashed() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     emit(
@@ -57,7 +72,7 @@ fn records_are_metadata_only_and_secret_shaped_subjects_are_hashed() {
 
 #[test]
 fn saturation_never_blocks_and_reports_loss_on_a_later_record() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     for _ in 0..20_000 {
@@ -74,7 +89,7 @@ fn saturation_never_blocks_and_reports_loss_on_a_later_record() {
 
 #[test]
 fn standalone_inspection_reports_prior_writer_health_failures() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     runtime.active.dropped_total.store(3, Ordering::Relaxed);
@@ -95,7 +110,7 @@ fn standalone_inspection_reports_prior_writer_health_failures() {
 
 #[test]
 fn stale_locked_markers_and_crash_reports_are_distinct() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     assert!(runtime.marker_path.exists());
@@ -109,7 +124,7 @@ fn stale_locked_markers_and_crash_reports_are_distinct() {
 
 #[test]
 fn caught_process_panic_writes_a_sanitized_report_and_clean_drop_removes_marker() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     let marker = runtime.marker_path.clone();
@@ -129,7 +144,7 @@ fn caught_process_panic_writes_a_sanitized_report_and_clean_drop_removes_marker(
 
 #[test]
 fn support_bundle_reparses_known_records_and_rejects_overwrite() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     emit(DiagnosticFact::new(
@@ -154,9 +169,9 @@ fn support_bundle_reparses_known_records_and_rejects_overwrite() {
 
 #[test]
 fn cleanup_deletes_only_recognized_bounded_files() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    let directory = tempdir().unwrap();
-    let logs = directory.path().join("logs");
+    let _guard = test_guard();
+    let (_directory, canonical) = canonical_tempdir();
+    let logs = canonical.join("logs");
     ensure_private_directory(&logs).unwrap();
     fs::write(logs.join("notes.jsonl"), b"owner data").unwrap();
     fs::write(logs.join("xana-1.jsonl"), b"{}\n").unwrap();
@@ -183,8 +198,8 @@ fn cleanup_deletes_only_recognized_bounded_files() {
 
 #[test]
 fn inspection_reports_retention_and_disk_bound_violations() {
-    let directory = tempdir().unwrap();
-    let logs = directory.path().join("logs");
+    let (_directory, canonical) = canonical_tempdir();
+    let logs = canonical.join("logs");
     ensure_private_directory(&logs).unwrap();
     fs::write(logs.join("xana-oversized.jsonl"), vec![b'x'; 65_537]).unwrap();
     let settings = DiagnosticsConfig {
@@ -202,7 +217,7 @@ fn inspection_reports_retention_and_disk_bound_violations() {
 
 #[test]
 fn cleanup_never_deletes_another_live_process_log() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     let active = list(&paths)
@@ -230,7 +245,7 @@ fn cleanup_never_deletes_another_live_process_log() {
 
 #[test]
 fn unlocked_prior_marker_is_reported_without_deleting_it() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = test_guard();
     let (_directory, paths) = fixture();
     ensure_private_directory(&paths.crashes_dir()).unwrap();
     let stale = paths.crashes_dir().join("run-1-1.json");
@@ -245,9 +260,9 @@ fn unlocked_prior_marker_is_reported_without_deleting_it() {
 
 #[test]
 fn oversized_log_lines_are_discarded_without_unbounded_allocation() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    let directory = tempdir().unwrap();
-    let log = directory.path().join("xana-fixture.jsonl");
+    let _guard = test_guard();
+    let (_directory, canonical) = canonical_tempdir();
+    let log = canonical.join("xana-fixture.jsonl");
     let valid = br#"{"version":1,"timestamp_ms":1,"sequence":1,"pid":1,"level":"info","target":"runtime","kind":"application_started","outcome":"started","dropped_before":0}"#;
     let mut file = File::create(&log).unwrap();
     file.write_all(&vec![b'x'; MAX_LINE_BYTES * 8]).unwrap();
@@ -264,27 +279,42 @@ fn oversized_log_lines_are_discarded_without_unbounded_allocation() {
 
 #[test]
 fn oversized_diagnostic_directories_fail_closed_instead_of_scanning_forever() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    let directory = tempdir().unwrap();
+    let _guard = test_guard();
+    let (_directory, canonical) = canonical_tempdir();
     for index in 0..=MAX_DIRECTORY_ENTRIES {
-        fs::write(directory.path().join(format!("owner-{index}.txt")), b"x").unwrap();
+        fs::write(canonical.join(format!("owner-{index}.txt")), b"x").unwrap();
     }
 
-    let error = cleanup_logs(directory.path(), &DiagnosticsConfig::default()).unwrap_err();
+    let error = cleanup_logs(&canonical, &DiagnosticsConfig::default()).unwrap_err();
 
     assert!(error.to_string().contains("inspection bound"));
 }
 
 #[test]
 fn unrelated_entries_cannot_hide_an_incomplete_retention_scan() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    let directory = tempdir().unwrap();
+    let _guard = test_guard();
+    let (_directory, canonical) = canonical_tempdir();
     for index in 0..MAX_DIRECTORY_ENTRIES {
-        fs::write(directory.path().join(format!("owner-{index}.txt")), b"x").unwrap();
+        fs::write(canonical.join(format!("owner-{index}.txt")), b"x").unwrap();
     }
-    fs::write(directory.path().join("xana-hidden.jsonl"), b"{}\n").unwrap();
+    fs::write(canonical.join("xana-hidden.jsonl"), b"{}\n").unwrap();
 
-    let inventory = inspect_log_inventory(directory.path(), &DiagnosticsConfig::default()).unwrap();
+    let inventory = inspect_log_inventory(&canonical, &DiagnosticsConfig::default()).unwrap();
 
     assert!(!inventory.compliant);
+}
+
+#[cfg(unix)]
+#[test]
+fn canonical_temporary_root_is_accepted_while_symlinked_root_is_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let (_directory, canonical) = canonical_tempdir();
+    let link_parent = tempdir().unwrap();
+    let linked_root = link_parent.path().join("diagnostic-root");
+    symlink(&canonical, &linked_root).unwrap();
+
+    let error = ensure_private_directory(&linked_root.join("logs")).unwrap_err();
+    assert!(error.to_string().contains("symlink component"));
+    ensure_private_directory(&canonical.join("logs")).unwrap();
 }
