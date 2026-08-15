@@ -177,8 +177,8 @@ struct NativeOwner<'a> {
 }
 
 enum NativeOwnerEvent {
-    Runtime(AgentEvent),
-    Vision(NativeVisionEvent),
+    Runtime(Box<AgentEvent>),
+    Vision(Box<NativeVisionEvent>),
 }
 
 enum NativeVisionEvent {
@@ -200,8 +200,9 @@ impl ExecutionOwner for NativeOwner<'_> {
 
     async fn next_event(&mut self) -> Result<Self::Event> {
         tokio::select! {
-            event = self.client.next_event() => event.map(NativeOwnerEvent::Runtime).map_err(anyhow::Error::new),
+            event = self.client.next_event() => event.map(Box::new).map(NativeOwnerEvent::Runtime).map_err(anyhow::Error::new),
             event = self.vision_events.recv() => event
+                .map(Box::new)
                 .map(NativeOwnerEvent::Vision)
                 .ok_or_else(|| anyhow::anyhow!("vision preparation channel stopped")),
         }
@@ -209,51 +210,53 @@ impl ExecutionOwner for NativeOwner<'_> {
 
     async fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
         let event = match event {
-            NativeOwnerEvent::Vision(NativeVisionEvent::Prepared {
-                operation_id,
-                prepared,
-            }) => {
-                self.vision_cancellation = None;
-                state.finish_vision_preparation(&prepared.receipt);
-                let result = self
-                    .client
-                    .send(crate::native_runtime::RuntimeCommand::SubmitTurn {
-                        operation_id,
-                        input: prepared.model_input,
-                    })
-                    .await
-                    .context("native TUI runtime stopped after vision preparation")?;
-                if !result.accepted {
-                    self.active_root = None;
-                    state.fail_vision_preparation(
-                        result
-                            .reason
-                            .unwrap_or_else(|| "prepared vision turn was rejected".to_owned()),
-                    );
+            NativeOwnerEvent::Vision(event) => match *event {
+                NativeVisionEvent::Prepared {
+                    operation_id,
+                    prepared,
+                } => {
+                    self.vision_cancellation = None;
+                    state.finish_vision_preparation(&prepared.receipt);
+                    let result = self
+                        .client
+                        .send(crate::native_runtime::RuntimeCommand::SubmitTurn {
+                            operation_id,
+                            input: prepared.model_input,
+                        })
+                        .await
+                        .context("native TUI runtime stopped after vision preparation")?;
+                    if !result.accepted {
+                        self.active_root = None;
+                        state.fail_vision_preparation(
+                            result
+                                .reason
+                                .unwrap_or_else(|| "prepared vision turn was rejected".to_owned()),
+                        );
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-            NativeOwnerEvent::Vision(NativeVisionEvent::Failed {
-                operation_id,
-                input,
-                images,
-                route,
-                reason,
-            }) => {
-                self.vision_cancellation = None;
-                self.active_root = None;
-                state.fail_vision_preparation(format!(
-                    "Vision specialist failed before turn {operation_id}: {reason}"
-                ));
-                state.restore_submission(
+                NativeVisionEvent::Failed {
+                    operation_id,
                     input,
                     images,
-                    Some(route),
-                    "Vision specialist failed; draft and images restored".to_owned(),
-                );
-                return Ok(());
-            }
-            NativeOwnerEvent::Runtime(event) => event,
+                    route,
+                    reason,
+                } => {
+                    self.vision_cancellation = None;
+                    self.active_root = None;
+                    state.fail_vision_preparation(format!(
+                        "Vision specialist failed before turn {operation_id}: {reason}"
+                    ));
+                    state.restore_submission(
+                        input,
+                        images,
+                        Some(route),
+                        "Vision specialist failed; draft and images restored".to_owned(),
+                    );
+                    return Ok(());
+                }
+            },
+            NativeOwnerEvent::Runtime(event) => *event,
         };
         let terminal = matches!(
             event,
@@ -316,7 +319,7 @@ impl ExecutionOwner for NativeOwner<'_> {
                         )
                         .await;
                     }
-                    Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => plan,
+                    Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => *plan,
                     Err(error) => {
                         state.restore_submission(
                             input,
@@ -356,7 +359,7 @@ impl ExecutionOwner for NativeOwner<'_> {
                 images,
                 plan,
             } => {
-                self.start_vision(operation_id, input, images, plan, state)
+                self.start_vision(operation_id, input, images, *plan, state)
                     .await
             }
             UpdateEffect::Interrupt { operation_id }

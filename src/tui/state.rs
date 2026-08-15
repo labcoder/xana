@@ -195,7 +195,7 @@ pub(super) enum UpdateEffect {
         operation_id: OperationId,
         input: String,
         images: Vec<ImageAttachment>,
-        plan: crate::app::vision::VisionPlan,
+        plan: Box<crate::app::vision::VisionPlan>,
     },
     Interrupt {
         operation_id: OperationId,
@@ -281,7 +281,7 @@ pub(super) enum Overlay {
         operation_id: OperationId,
         input: String,
         images: Vec<ImageAttachment>,
-        plan: crate::app::vision::VisionPlan,
+        plan: Box<crate::app::vision::VisionPlan>,
         selected: usize,
     },
     Help,
@@ -695,7 +695,7 @@ impl TuiState {
             operation_id,
             input,
             images,
-            plan,
+            plan: Box::new(plan),
             selected: 0,
         });
     }
@@ -714,7 +714,7 @@ impl TuiState {
         &mut self,
         receipt: &crate::app::vision::VisionReceipt,
     ) {
-        self.push_activity(&format!(
+        self.push_activity(format!(
             "vision derivative ready via {}/{} from {} source artifact(s); usage {}; cost {}",
             receipt.connection,
             receipt.model,

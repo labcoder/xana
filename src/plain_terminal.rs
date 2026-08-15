@@ -934,7 +934,7 @@ pub(crate) async fn run_chat(
                             operation_id,
                             turn_input,
                             turn_images,
-                            plan,
+                            *plan,
                             cancellation.clone(),
                         );
                         tokio::pin!(execution);

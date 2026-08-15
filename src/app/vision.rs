@@ -25,7 +25,7 @@ pub(crate) struct VisionPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VisionTurnRoute {
     Native,
-    Specialist(VisionPlan),
+    Specialist(Box<VisionPlan>),
 }
 
 impl VisionPlan {
@@ -119,7 +119,9 @@ impl VisionTurnService {
         if conversational_model_accepts_images && selected_route.is_none() {
             return Ok(VisionTurnRoute::Native);
         }
-        self.plan(selected_route).map(VisionTurnRoute::Specialist)
+        self.plan(selected_route)
+            .map(Box::new)
+            .map(VisionTurnRoute::Specialist)
     }
 
     pub(crate) fn statuses(&self) -> Result<Vec<crate::focused_service::ServiceRouteStatus>> {
