@@ -11,7 +11,7 @@ use crate::{
     native_runtime::RuntimeCommand,
     plain_terminal::{ChatExit, ChatHeader},
     presentation::PresentationPreferences,
-    vision::{ImageIngestor, ImageLimits},
+    vision::{DroppedImagePath, ImageIngestor, ImageLimits, classify_dropped_image_path},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};
@@ -102,14 +102,100 @@ pub(super) async fn dispatch_managed_effect(
                 }
             }
         }
+        UpdateEffect::AttachAndSubmit {
+            operation_id,
+            input,
+            path,
+            approved_external,
+        } => {
+            let model = driver.models.iter().find(|model| model.id == state.model);
+            if !model.is_some_and(|model| model.input_modalities.contains("image")) {
+                let next = state.submit_without_auto_attachment(input);
+                return Box::pin(dispatch_managed_effect(
+                    next,
+                    state,
+                    driver,
+                    workspace_host,
+                    workspace,
+                    artifact_store,
+                    owner,
+                    preferences_path,
+                    session_preferences,
+                    pending_approval,
+                    clipboard,
+                ))
+                .await;
+            }
+            let location = match classify_dropped_image_path(workspace, &path) {
+                Ok(location) => location,
+                Err(_) => {
+                    let next = state.submit_without_auto_attachment(input);
+                    return Box::pin(dispatch_managed_effect(
+                        next,
+                        state,
+                        driver,
+                        workspace_host,
+                        workspace,
+                        artifact_store,
+                        owner,
+                        preferences_path,
+                        session_preferences,
+                        pending_approval,
+                        clipboard,
+                    ))
+                    .await;
+                }
+            };
+            if let DroppedImagePath::External { canonical } = location
+                && !approved_external
+            {
+                state.request_external_image_approval(
+                    operation_id,
+                    input,
+                    canonical.to_string_lossy().into_owned(),
+                );
+                return Ok(None);
+            }
+            let ingestor = ImageIngestor::new(artifact_store.clone(), ImageLimits::default());
+            let attachment = if approved_external {
+                ingestor.ingest_approved_dropped_path(workspace, &path, owner)
+            } else {
+                ingestor.ingest_dropped_path(workspace, &path, owner)
+            };
+            match attachment {
+                Ok(attachment) => {
+                    let next = state.attach_and_submit(input, attachment);
+                    return Box::pin(dispatch_managed_effect(
+                        next,
+                        state,
+                        driver,
+                        workspace_host,
+                        workspace,
+                        artifact_store,
+                        owner,
+                        preferences_path,
+                        session_preferences,
+                        pending_approval,
+                        clipboard,
+                    ))
+                    .await;
+                }
+                Err(error) => state.restore_submission(
+                    input,
+                    Vec::new(),
+                    format!("could not attach image {path}: {error}"),
+                ),
+            }
+        }
         UpdateEffect::AttachClipboard => match clipboard.get_image(artifact_store.clone(), owner) {
             Ok(attachment) => state.stage_image(attachment),
             Err(error) => state.set_status(error),
         },
         UpdateEffect::SelectModel(selection) => {
+            let selection = selection.split_whitespace().next().unwrap_or(&selection);
             let requested = selection
                 .split_once('/')
-                .map_or(selection.as_str(), |(_, model)| model);
+                .map_or(selection, |(_, model)| model);
             if !driver.models.iter().any(|model| model.id == requested) {
                 state.set_status(format!("Codex does not advertise model {requested:?}"));
             } else {
@@ -138,7 +224,7 @@ pub(super) async fn dispatch_managed_effect(
             driver
                 .models
                 .iter()
-                .map(|model| format!("{}/{}", state.connection, model.id))
+                .map(|model| format_model_choice(&state.connection, model))
                 .collect(),
         ),
         UpdateEffect::OpenReasoningPicker => {
@@ -482,6 +568,92 @@ pub(super) async fn dispatch_effect(
                 }
             }
         }
+        UpdateEffect::AttachAndSubmit {
+            operation_id,
+            input,
+            path,
+            approved_external,
+        } => {
+            let descriptor = header
+                .models
+                .descriptor(&header.provider_name, &header.model)
+                .context("could not resolve selected model capabilities")?;
+            if !descriptor.input_modalities.contains("image") {
+                let next = state.submit_without_auto_attachment(input);
+                return Box::pin(dispatch_effect(
+                    next,
+                    state,
+                    client,
+                    header,
+                    workspace_host,
+                    conversation,
+                    active_root,
+                    preferences_path,
+                    session_preferences,
+                    clipboard,
+                ))
+                .await;
+            }
+            let location = match classify_dropped_image_path(&header.workspace_root, &path) {
+                Ok(location) => location,
+                Err(_) => {
+                    let next = state.submit_without_auto_attachment(input);
+                    return Box::pin(dispatch_effect(
+                        next,
+                        state,
+                        client,
+                        header,
+                        workspace_host,
+                        conversation,
+                        active_root,
+                        preferences_path,
+                        session_preferences,
+                        clipboard,
+                    ))
+                    .await;
+                }
+            };
+            if let DroppedImagePath::External { canonical } = location
+                && !approved_external
+            {
+                state.request_external_image_approval(
+                    operation_id,
+                    input,
+                    canonical.to_string_lossy().into_owned(),
+                );
+                return Ok(None);
+            }
+            let ingestor =
+                ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default());
+            let attachment = if approved_external {
+                ingestor.ingest_approved_dropped_path(&header.workspace_root, &path, header.owner)
+            } else {
+                ingestor.ingest_dropped_path(&header.workspace_root, &path, header.owner)
+            };
+            match attachment {
+                Ok(attachment) => {
+                    let next = state.attach_and_submit(input, attachment);
+                    return Box::pin(dispatch_effect(
+                        next,
+                        state,
+                        client,
+                        header,
+                        workspace_host,
+                        conversation,
+                        active_root,
+                        preferences_path,
+                        session_preferences,
+                        clipboard,
+                    ))
+                    .await;
+                }
+                Err(error) => state.restore_submission(
+                    input,
+                    Vec::new(),
+                    format!("could not attach image {path}: {error}"),
+                ),
+            }
+        }
         UpdateEffect::AttachClipboard => {
             let descriptor = header
                 .models
@@ -500,6 +672,7 @@ pub(super) async fn dispatch_effect(
             }
         }
         UpdateEffect::SelectModel(selection) => {
+            let selection = selection.split_whitespace().next().unwrap_or(&selection);
             let Some((connection, model)) = selection.split_once('/') else {
                 state.set_status("Model selection must be CONNECTION/MODEL");
                 return Ok(None);
@@ -554,7 +727,7 @@ pub(super) async fn dispatch_effect(
                     summary
                         .models
                         .into_iter()
-                        .map(move |model| format!("{}/{}", summary.id, model.id))
+                        .map(move |model| format_model_choice(&summary.id, &model))
                 })
                 .collect();
             state.open_model_picker(choices);
@@ -661,4 +834,18 @@ pub(super) async fn dispatch_effect(
         }
     }
     Ok(None)
+}
+
+fn format_model_choice(connection: &str, model: &crate::model_catalog::ModelDescriptor) -> String {
+    let mut capabilities = model.input_modalities.iter().cloned().collect::<Vec<_>>();
+    if model.tools == Some(true) {
+        capabilities.push("tools".to_owned());
+    }
+    if model.reasoning == Some(true) {
+        capabilities.push("reasoning".to_owned());
+    }
+    if let Some(context) = model.context_tokens {
+        capabilities.push(format!("{}k ctx", context.div_ceil(1_000)));
+    }
+    format!("{connection}/{}  [{}]", model.id, capabilities.join(" · "))
 }

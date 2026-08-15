@@ -63,6 +63,12 @@ pub(crate) struct ImageAttachment {
     pub(crate) image: ImageRef,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DroppedImagePath {
+    Workspace { relative: String },
+    External { canonical: PathBuf },
+}
+
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PendingImages {
     queue: VecDeque<ImageAttachment>,
@@ -199,23 +205,39 @@ impl ImageIngestor {
         source_path: &str,
         owner: PrincipalId,
     ) -> Result<ImageAttachment, ImageError> {
-        let source = normalize_dropped_path(source_path)?;
-        let root = workspace_root.canonicalize().map_err(ImageError::Io)?;
-        let path = if source.is_absolute() {
-            source
-        } else {
-            root.join(source)
-        };
-        let metadata = fs::symlink_metadata(&path)?;
-        if !metadata.file_type().is_file() {
-            return Err(ImageError::NotRegular);
+        match classify_dropped_image_path(workspace_root, source_path)? {
+            DroppedImagePath::Workspace { relative } => {
+                self.ingest_path(workspace_root, &relative, owner)
+            }
+            DroppedImagePath::External { .. } => Err(ImageError::OutsideWorkspace),
         }
-        let canonical = path.canonicalize().map_err(ImageError::Io)?;
-        let relative = canonical
-            .strip_prefix(&root)
-            .map_err(|_| ImageError::OutsideWorkspace)?;
-        let relative = relative.to_string_lossy().into_owned();
-        self.ingest_path(workspace_root, &relative, owner)
+    }
+
+    pub(crate) fn ingest_approved_dropped_path(
+        &self,
+        workspace_root: &Path,
+        source_path: &str,
+        owner: PrincipalId,
+    ) -> Result<ImageAttachment, ImageError> {
+        match classify_dropped_image_path(workspace_root, source_path)? {
+            DroppedImagePath::Workspace { relative } => {
+                self.ingest_path(workspace_root, &relative, owner)
+            }
+            DroppedImagePath::External { canonical } => {
+                let mut file = fs::File::open(&canonical)?;
+                let mut bytes = Vec::new();
+                file.by_ref()
+                    .take((self.limits.max_bytes as u64).saturating_add(1))
+                    .read_to_end(&mut bytes)?;
+                if bytes.len() > self.limits.max_bytes {
+                    return Err(ImageError::TooLarge {
+                        actual: bytes.len(),
+                        limit: self.limits.max_bytes,
+                    });
+                }
+                self.ingest_bytes(source_path, &bytes, owner)
+            }
+        }
     }
 
     pub(crate) fn ingest_bytes(
@@ -243,6 +265,76 @@ impl ImageIngestor {
             },
         })
     }
+}
+
+pub(crate) fn classify_dropped_image_path(
+    workspace_root: &Path,
+    source_path: &str,
+) -> Result<DroppedImagePath, ImageError> {
+    let source = normalize_dropped_path(source_path)?;
+    let root = workspace_root.canonicalize().map_err(ImageError::Io)?;
+    let path = if source.is_absolute() {
+        source
+    } else {
+        root.join(source)
+    };
+    let metadata = fs::symlink_metadata(&path)?;
+    if !metadata.file_type().is_file() {
+        return Err(ImageError::NotRegular);
+    }
+    let canonical = path.canonicalize().map_err(ImageError::Io)?;
+    if let Ok(relative) = canonical.strip_prefix(&root) {
+        Ok(DroppedImagePath::Workspace {
+            relative: relative.to_string_lossy().into_owned(),
+        })
+    } else {
+        Ok(DroppedImagePath::External { canonical })
+    }
+}
+
+/// Finds one image-looking path in ordinary user text. This is lexical intent
+/// detection only; callers still resolve the path and enforce authority before
+/// reading bytes.
+pub(crate) fn image_path_in_text(text: &str) -> Option<String> {
+    let mut candidates = Vec::new();
+    let mut start = None;
+    let mut quote = None;
+    for (index, character) in text.char_indices() {
+        match (quote, character) {
+            (None, '"' | '\'') => {
+                quote = Some(character);
+                start = Some(index + character.len_utf8());
+            }
+            (Some(expected), actual) if actual == expected => {
+                if let Some(start) = start.take() {
+                    candidates.push(&text[start..index]);
+                }
+                quote = None;
+            }
+            (None, character) if character.is_whitespace() => {
+                if let Some(start) = start.take() {
+                    candidates.push(&text[start..index]);
+                }
+            }
+            (None, _) if start.is_none() => start = Some(index),
+            _ => {}
+        }
+    }
+    if let Some(start) = start {
+        candidates.push(&text[start..]);
+    }
+    candidates.into_iter().find_map(|candidate| {
+        let candidate = candidate
+            .trim_matches(|character: char| matches!(character, ',' | ';' | ':' | ')' | ']' | '}'));
+        let extension = Path::new(candidate)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)?;
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "gif"
+        )
+        .then(|| candidate.to_owned())
+    })
 }
 
 fn normalize_dropped_path(source: &str) -> Result<PathBuf, ImageError> {
@@ -487,6 +579,27 @@ mod tests {
             ),
             Err(ImageError::OutsideWorkspace)
         ));
+    }
+
+    #[test]
+    fn explicitly_approved_external_image_is_imported_as_an_artifact_copy() {
+        let workspace = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let image_path = outside.path().join("outside.png");
+        std::fs::write(&image_path, png(2, 2)).unwrap();
+        let store = ArtifactStore::new(workspace.path().join("artifacts"));
+
+        let attachment = ImageIngestor::new(store, ImageLimits::default())
+            .ingest_approved_dropped_path(
+                workspace.path(),
+                &image_path.display().to_string(),
+                PrincipalId::new(),
+            )
+            .expect("approved external image");
+
+        assert_eq!(attachment.image.media_type, "image/png");
+        assert_eq!(attachment.image.width, Some(2));
+        assert_eq!(attachment.source_path, image_path.display().to_string());
     }
 
     #[test]

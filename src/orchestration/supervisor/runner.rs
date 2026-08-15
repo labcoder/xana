@@ -192,6 +192,9 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         AgentEvent::AssistantTextDelta { step_id, text, .. } => {
             Some(ChildActivity::AssistantTextDelta { step_id, text })
         }
+        AgentEvent::ProviderReasoningDelta { step_id, text, .. } => {
+            Some(ChildActivity::ProviderReasoningDelta { step_id, text })
+        }
         AgentEvent::PermissionRequested { request } => {
             Some(ChildActivity::PermissionRequested { request })
         }

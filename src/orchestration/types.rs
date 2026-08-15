@@ -87,6 +87,10 @@ pub(crate) enum ChildActivity {
         step_id: StepId,
         text: String,
     },
+    ProviderReasoningDelta {
+        step_id: StepId,
+        text: String,
+    },
     PermissionRequested {
         request: PermissionRequest,
     },

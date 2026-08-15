@@ -140,8 +140,13 @@ approval request. Rules may still narrow authority further.
 
 ## Scope and audit facts
 
-File tools bind permission to the canonical target path beneath the canonical
-launch workspace. `run_command` binds permission to the selected shell,
+File tools normally bind permission to the canonical target path beneath the
+canonical launch workspace. `read_file` may additionally plan one exact
+existing absolute file outside that workspace. That external-path scope is
+always forced through an interactive ask (unless policy denies it), and a
+session grant covers only that same canonical file; it never becomes a parent
+directory grant. Write and listing tools remain workspace-confined.
+`run_command` binds permission to the selected shell,
 canonical working directory, and exact command string. Invalid arguments and
 workspace escapes fail before policy evaluation. The immutable planned
 arguments that receive permission are the arguments the concrete tool
@@ -158,6 +163,7 @@ to model conversation. See [Sessions](sessions.md) for durability limits.
 An allow decision authorizes Xana to use the current Xana process's ordinary
 host permissions. The broker does not create a sandbox, container, VM,
 restricted token, filesystem jail, command classifier, or process timeout.
-Canonical path checks prevent Xana's built-in file tools from accepting a
-target outside the launch workspace, but they do not contain an allowed shell
-command. Review command text and scope as host execution.
+Canonical path checks keep built-in writes and listings within the launch
+workspace. An explicitly approved external `read_file` uses the process's host
+access for that exact canonical file. These checks do not contain an allowed
+shell command. Review external paths, command text, and scope as host access.

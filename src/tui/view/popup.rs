@@ -43,6 +43,37 @@ pub(super) fn render(
                 Line::raw(text.clone()),
             ],
         ),
+        Overlay::ExternalImageApproval { path, selected, .. } => (
+            " Read external image? ",
+            vec![
+                Line::styled(
+                    "This image is outside the launch workspace. Xana imports an immutable bounded copy only if you approve.",
+                    semantic_style(profile, SemanticToken::Warning),
+                ),
+                Line::raw(""),
+                Line::raw(path.clone()),
+                Line::raw(""),
+                Line::styled(
+                    format!("{} Allow once", if *selected == 0 { ">" } else { " " }),
+                    if *selected == 0 {
+                        semantic_style(profile, SemanticToken::Focus)
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Line::styled(
+                    format!(
+                        "{} Deny and restore draft",
+                        if *selected == 1 { ">" } else { " " }
+                    ),
+                    if *selected == 1 {
+                        semantic_style(profile, SemanticToken::Focus)
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ],
+        ),
         Overlay::Help => (
             " Keyboard help ",
             vec![

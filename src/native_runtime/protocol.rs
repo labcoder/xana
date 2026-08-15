@@ -85,6 +85,11 @@ pub(crate) enum AgentEvent {
         step_id: StepId,
         text: String,
     },
+    ProviderReasoningDelta {
+        operation_id: OperationId,
+        step_id: StepId,
+        text: String,
+    },
     PermissionRequested {
         request: PermissionRequest,
     },
@@ -146,8 +151,13 @@ impl AgentEvent {
     pub(crate) fn is_replaceable_observation(&self) -> bool {
         match self {
             Self::AssistantTextDelta { .. }
+            | Self::ProviderReasoningDelta { .. }
             | Self::ChildActivity {
                 activity: ChildActivity::AssistantTextDelta { .. },
+                ..
+            } => true,
+            Self::ChildActivity {
+                activity: ChildActivity::ProviderReasoningDelta { .. },
                 ..
             } => true,
             Self::ChildActivity {

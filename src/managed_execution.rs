@@ -28,7 +28,7 @@ use anyhow::{Context, Result};
 use futures::future::BoxFuture;
 use rustyline::{DefaultEditor, error::ReadlineError};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(crate) struct ManagedChatConfig {
@@ -361,7 +361,15 @@ pub(crate) async fn run_codex_chat(
         }
         let local_images = match attachments
             .iter()
-            .map(|attachment| checked_original_path(&config.workspace, &attachment.source_path))
+            .map(|attachment| {
+                config
+                    .artifact_store
+                    .verified_path(
+                        &attachment.image.artifact,
+                        crate::artifact::MAX_ARTIFACT_BYTES,
+                    )
+                    .map_err(anyhow::Error::from)
+            })
             .collect::<Result<Vec<_>>>()
         {
             Ok(paths) => paths,
@@ -790,20 +798,6 @@ fn print_reasoning_status(
             }
         }
     }
-}
-
-fn checked_original_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
-    let root = workspace
-        .canonicalize()
-        .context("could not canonicalize managed workspace")?;
-    let path = root
-        .join(relative)
-        .canonicalize()
-        .with_context(|| format!("could not resolve attached image {relative:?}"))?;
-    if !path.starts_with(&root) {
-        anyhow::bail!("attached image resolves outside the managed workspace")
-    }
-    Ok(path)
 }
 
 #[cfg(test)]

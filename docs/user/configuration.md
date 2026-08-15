@@ -31,13 +31,20 @@ fetches the live catalog before model and reasoning selection. The platform
 shell and bounded native defaults are used; full profile, route, and shell
 editing remains an advanced configuration task.
 
-`xana setup` is safe to rerun. It stages ordinary configuration in memory,
+`xana setup` is safe to rerun. Quick, full, and focused connection setup merge
+the newly established connection into a valid existing document, retaining
+other connections and unrelated profile, route, shell, and permission fields.
+An invalid existing document can still be replaced through setup. Xana stages
+ordinary configuration in memory,
 shows a bounded redacted review, and replaces `config.toml` atomically only
 after confirmation. An exact prior config is retained as `config.toml.bak`.
 The confirmed connection and model become the next conversation's effective
 choice: any separate `data/selection.toml` override is cleared within the same
 rollback-safe transaction so it cannot keep a removed or previously selected
 connection active.
+The live catalog used for selection is written to the ordinary non-secret
+cache only after the configuration commit, so the next conversation sees the
+same capabilities setup displayed.
 After a commit, setup prints a completion receipt with the config, backup,
 data, and cache locations; it identifies the OS credential store rather than
 inventing a secret file, and lists installed-binary plus source-checkout next
@@ -287,9 +294,16 @@ xana model use codex/ADVERTISED_MODEL_ID --effort high --summary auto
 ```
 
 Catalog refresh is explicit and caches only bounded non-secret metadata.
+Ollama refresh combines `/api/tags` with bounded `/api/show` probes so image,
+tool, reasoning, and context capabilities come from the installed model rather
+than an optimistic name guess.
 Native startup never refreshes a catalog. Starting managed Codex chat performs
 a bounded live `model/list` compatibility check before the first prompt.
-`/model` lists models during chat;
+`xana model` distinguishes the effective selection (a saved
+`data/selection.toml` override when present, otherwise the default) from the
+configured default profile and prints known
+input, tool, reasoning, and context capabilities. `/model` lists models during chat
+with the same compact capability labels;
 `/model CONNECTION/MODEL` persists a selection and starts a new conversation
 when runtime ownership changes.
 
@@ -528,7 +542,7 @@ Version 1, 2, and 3 documents remain readable. Their legacy
 `profiles.<id>.provider` input maps to `connection`; specifying both is an
 error. Explicit migration or the first structured connection edit writes version 4 and the canonical
 key while preserving TOML comments. Model selection is stored separately in
-`data/selection.toml`, so choosing a model does not rewrite this file. The
+`data/selection.toml`, so choosing a model does not rewrite `config.toml`. The
 selection document is version 2 and may include non-secret `reasoning_effort`
 and `reasoning_summary` fields for Codex. Legacy version 1 selections remain
 readable.
@@ -637,8 +651,9 @@ rules govern Xana's runtime authorization; see [Permissions](permissions.md).
 
 ## Deliberate limits
 
-Quick Setup intentionally creates one functional default connection/profile.
-It does not edit the full profile, route, orchestration, or shell schema. Xana
+Quick Setup intentionally creates or updates one functional default
+connection/profile while retaining other valid configured connections. It does
+not edit the full profile, route, orchestration, or shell schema. Xana
 has no hosted OAuth service, direct ChatGPT backend transport, Claude
 subscription login, automatic catalog refresh at ordinary startup, automatic
 model routing, plaintext secret fallback, or nondeterministic repair. Use

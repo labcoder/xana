@@ -66,6 +66,27 @@ fn configured_default_applies_when_no_rule_matches() {
     ));
 }
 
+#[test]
+fn external_file_reads_always_require_a_controller_unless_denied() {
+    let workspace = tempdir().expect("workspace");
+    let external = request(PermissionScope::ExternalPath {
+        canonical_path: workspace.path().join("outside.txt"),
+    });
+
+    assert_eq!(
+        policy(PolicyDecision::Allow, Vec::new(), workspace.path())
+            .explain(&external)
+            .winning_decision,
+        PolicyDecision::Ask
+    );
+    assert_eq!(
+        policy(PolicyDecision::Deny, Vec::new(), workspace.path())
+            .explain(&external)
+            .winning_decision,
+        PolicyDecision::Deny
+    );
+}
+
 #[tokio::test]
 async fn full_child_observation_queue_cannot_hide_a_permission_control_request() {
     let workspace = tempdir().expect("workspace");

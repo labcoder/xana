@@ -112,10 +112,16 @@ or a selected model not declared image-capable.
 
 Dragging a PNG, JPEG, or GIF into the TUI stages the terminal-pasted path
 through that same ingestion path instead of inserting it into the composer.
+An ordinary message that contains one image-looking local path is recognized
+the same way, so `/attach` is a discoverable explicit action rather than a
+requirement.
 Quoted paths, `file://` paths, and Windows paths emitted by Git Bash are
-normalized, but the resolved regular file must remain inside the current
-workspace. Files outside the workspace fail visibly and are not copied or
-sent.
+normalized. A workspace file follows ordinary workspace authority. For an
+existing file outside the workspace, Xana shows an exact allow-once prompt and
+only then imports a bounded immutable artifact copy; denial or Esc restores the
+draft. A non-image-capable model receives ordinary message text unchanged, so
+it can explain the capability limit or request a separately permissioned tool
+instead of Xana falsely claiming vision.
 
 Assistant Markdown, code, diffs, tables, inert links, images, and immutable
 artifacts use a bounded terminal-native renderer. `/artifact ARTIFACT_ID`
@@ -177,6 +183,10 @@ managed turns, and Codex-owned collaboration are not merged. Reasoning
 summaries and raw reasoning are labeled separately from assistant messages and
 appear only when the execution owner emits them. No display action asks a
 model to summarize, changes reasoning effort, or adds tokens.
+Native provider reasoning is incrementally accumulated into one bounded,
+collapsed card per step. Committed assistant tool requests and tool results are
+also projected into the conversation and activity panes immediately; restart
+is not required to reveal durable work.
 
 Approval cards show the requesting owner, tool or Codex callback, final
 arguments, and scope. Enter chooses the highlighted allow-once, exact-session,

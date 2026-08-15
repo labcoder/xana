@@ -5,7 +5,8 @@
 
 Xana's native agent depends on one `ConversationalProvider` contract. It
 streams one provider-neutral assistant message from ordered internal messages,
-the frozen tool definitions, a step identity, and a delta sink. Authentication,
+the frozen tool definitions, a step identity, and separate assistant-text and
+provider-reasoning deltas. Authentication,
 catalog discovery, model selection, and managed agent runtimes are separate
 composition concerns.
 
@@ -16,7 +17,10 @@ the same private Chat Completions wire adapter. Connection policy supplies the
 base URL, optional bearer key, and OpenRouter's `X-Title` attribution. The
 shared SSE decoder bounds frames, accepts platform-independent chunking,
 requires the `[DONE]` marker for this family, and assembles tool arguments
-before exposing an internal tool call. Complete-response accumulation is
+before exposing an internal tool call. A missing or malformed terminal stream
+condition remains visible in the safe typed error instead of collapsing to an
+opaque provider failure. Connection, response-start, and stream-idle waits are
+bounded. Complete-response accumulation is
 bounded independently for text, tool bytes, and tool-call count. Unsupported
 internal message shapes fail before HTTP.
 
@@ -55,6 +59,12 @@ exception: it negotiates a bounded live catalog with the running app-server
 before accepting a turn. See
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md) for
 selection and managed Codex behavior.
+
+Ollama discovery first lists installed models through `/api/tags`, then probes
+each bounded model through `/api/show` with bounded concurrency. Xana maps
+Ollama's advertised `vision`, `tools`, and `thinking` capabilities plus context
+length into the provider-neutral descriptor. This is why a locally installed
+vision model can accept images without a manual capability override.
 
 The native OpenAI-compatible adapter currently uses Chat Completions and has
 no first-class reasoning-effort or reasoning-summary wire mapping. Those model

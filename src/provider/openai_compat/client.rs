@@ -11,13 +11,18 @@ use crate::{
     credential::SecretString,
     identity::StepId,
     message::Message,
-    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
+    provider::{
+        ConversationalProvider, DeltaSink, ProviderError, ProviderErrorKind, ProviderUsage,
+    },
     tool::ToolDefinition,
     vision::MediaResolver,
 };
 use futures::{StreamExt, future::BoxFuture};
 use reqwest::Client;
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, time::Duration};
+
+const RESPONSE_START_TIMEOUT: Duration = Duration::from_secs(120);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OpenAiCompatErrorKind {
@@ -25,6 +30,7 @@ pub(crate) enum OpenAiCompatErrorKind {
     Transport,
     HttpStatus,
     Stream,
+    Timeout,
 }
 
 #[derive(Debug)]
@@ -32,6 +38,7 @@ enum OpenAiCompatErrorSource {
     Conversion(MessageConversionError),
     Http(reqwest::Error),
     Stream(StreamError),
+    Timeout(&'static str),
 }
 
 #[derive(Debug)]
@@ -65,27 +72,66 @@ impl OpenAiCompatError {
             source: OpenAiCompatErrorSource::Stream(source),
         }
     }
+
+    fn timeout(endpoint: &str, phase: &'static str) -> Self {
+        Self {
+            kind: OpenAiCompatErrorKind::Timeout,
+            endpoint: endpoint.to_owned(),
+            source: OpenAiCompatErrorSource::Timeout(phase),
+        }
+    }
+
+    fn detail(&self) -> String {
+        match &self.source {
+            OpenAiCompatErrorSource::Conversion(source) => source.to_string(),
+            OpenAiCompatErrorSource::Http(source) => source.to_string(),
+            OpenAiCompatErrorSource::Stream(source) => source.to_string(),
+            OpenAiCompatErrorSource::Timeout(phase) => format!("timed out during {phase}"),
+        }
+    }
 }
 
 impl fmt::Display for OpenAiCompatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.kind {
             OpenAiCompatErrorKind::RequestConversion => {
-                write!(f, "could not encode chat request for {}", self.endpoint)
+                write!(
+                    f,
+                    "could not encode chat request for {}: {}",
+                    self.endpoint,
+                    self.detail()
+                )
             }
             OpenAiCompatErrorKind::Transport => {
-                write!(f, "could not reach chat service at {}", self.endpoint)
+                write!(
+                    f,
+                    "could not reach chat service at {}: {}",
+                    self.endpoint,
+                    self.detail()
+                )
             }
             OpenAiCompatErrorKind::HttpStatus => {
-                write!(f, "chat service rejected request at {}", self.endpoint)
+                write!(
+                    f,
+                    "chat service rejected request at {}: {}",
+                    self.endpoint,
+                    self.detail()
+                )
             }
             OpenAiCompatErrorKind::Stream => {
                 write!(
                     f,
-                    "chat service returned an invalid stream from {}",
-                    self.endpoint
+                    "chat service returned an invalid stream from {}: {}",
+                    self.endpoint,
+                    self.detail()
                 )
             }
+            OpenAiCompatErrorKind::Timeout => write!(
+                f,
+                "chat service timed out at {}: {}",
+                self.endpoint,
+                self.detail()
+            ),
         }
     }
 }
@@ -96,6 +142,7 @@ impl Error for OpenAiCompatError {
             OpenAiCompatErrorSource::Conversion(source) => Some(source),
             OpenAiCompatErrorSource::Http(source) => Some(source),
             OpenAiCompatErrorSource::Stream(source) => Some(source),
+            OpenAiCompatErrorSource::Timeout(_) => None,
         }
     }
 }
@@ -115,7 +162,10 @@ impl OpenAiCompatClient {
         let endpoint = chat_endpoint(&base_url);
 
         Self {
-            client: Client::new(),
+            client: Client::builder()
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .expect("static HTTP client configuration is valid"),
             endpoint,
             model,
             bearer_token: None,
@@ -204,10 +254,9 @@ impl OpenAiCompatClient {
         for (name, value) in &self.attribution {
             builder = builder.header(name, value);
         }
-        let response = builder
-            .json(&request)
-            .send()
+        let response = tokio::time::timeout(RESPONSE_START_TIMEOUT, builder.json(&request).send())
             .await
+            .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "response start"))?
             .map_err(|source| {
                 OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
             })?
@@ -221,7 +270,10 @@ impl OpenAiCompatClient {
         let mut accumulator = StreamAccumulator::default();
         let mut done = false;
 
-        while let Some(chunk) = bytes.next().await {
+        while let Some(chunk) = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next())
+            .await
+            .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "stream idle"))?
+        {
             let chunk = chunk.map_err(|source| {
                 OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
             })?;
@@ -259,8 +311,14 @@ impl OpenAiCompatClient {
                                 StreamError::MissingChoice,
                             ));
                         };
+                        let mut delta = choice.delta;
+                        if let Some(reasoning) =
+                            delta.reasoning.take().filter(|text| !text.is_empty())
+                        {
+                            deltas.reasoning_delta(step_id, &reasoning);
+                        }
                         for fragment in accumulator
-                            .apply(choice.delta)
+                            .apply(delta)
                             .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
                         {
                             deltas.text_delta(step_id, &fragment);
@@ -314,7 +372,16 @@ impl ConversationalProvider for OpenAiCompatClient {
         Box::pin(async move {
             self.stream_message_inner(messages, tools, None, step_id, deltas)
                 .await
-                .map_err(|error| ProviderError::new(error.to_string()))
+                .map_err(|error| {
+                    let kind = match error.kind {
+                        OpenAiCompatErrorKind::RequestConversion => ProviderErrorKind::Request,
+                        OpenAiCompatErrorKind::Transport => ProviderErrorKind::Transport,
+                        OpenAiCompatErrorKind::HttpStatus => ProviderErrorKind::Rejected,
+                        OpenAiCompatErrorKind::Stream => ProviderErrorKind::InvalidStream,
+                        OpenAiCompatErrorKind::Timeout => ProviderErrorKind::Timeout,
+                    };
+                    ProviderError::classified(kind, error.to_string())
+                })
         })
     }
 }

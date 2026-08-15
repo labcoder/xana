@@ -75,6 +75,12 @@ pub(super) struct ResolvedPath {
     pub(super) identity: FileIdentity,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ResolvedPathLocation {
+    Workspace,
+    External,
+}
+
 /// Retains the OS handle so its filesystem identity cannot be recycled before execution.
 #[cfg(any(unix, windows))]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -123,6 +129,43 @@ pub(super) fn resolve_existing(
         canonical_path,
         identity,
     })
+}
+
+pub(super) fn resolve_existing_for_read(
+    requested_path: String,
+    workspace_root: &Path,
+) -> Result<(ResolvedPath, ResolvedPathLocation), WorkspacePathError> {
+    let path = Path::new(&requested_path);
+    if !path.is_absolute() {
+        return resolve_existing(requested_path, workspace_root)
+            .map(|resolved| (resolved, ResolvedPathLocation::Workspace));
+    }
+    if requested_path.trim().is_empty() {
+        return Err(WorkspacePathError::InvalidPath { requested_path });
+    }
+    let canonical_root = workspace_root
+        .canonicalize()
+        .map_err(|source| WorkspacePathError::WorkspaceUnavailable { source })?;
+    let canonical_path = path
+        .canonicalize()
+        .map_err(|source| WorkspacePathError::Unavailable {
+            requested_path: requested_path.clone(),
+            source,
+        })?;
+    let location = if canonical_path.starts_with(canonical_root) {
+        ResolvedPathLocation::Workspace
+    } else {
+        ResolvedPathLocation::External
+    };
+    let identity = file_identity(&canonical_path, &requested_path)?;
+    Ok((
+        ResolvedPath {
+            requested_path,
+            canonical_path,
+            identity,
+        },
+        location,
+    ))
 }
 
 pub(super) fn revalidate_path(

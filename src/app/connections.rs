@@ -384,6 +384,17 @@ pub(super) async fn run_model_command<W: Write>(
 fn list_models<W: Write>(paths: &XanaPaths, only: Option<&str>, output: &mut W) -> Result<()> {
     let manager = model_manager(paths)?;
     let selected = manager.selected()?;
+    let configured = manager.configured_default()?;
+    writeln!(
+        output,
+        "effective selection: {}/{} (saved override when present; otherwise the configured default)",
+        selected.connection, selected.model
+    )?;
+    writeln!(
+        output,
+        "configured default: {}/{} (default profile in config.toml)",
+        configured.connection, configured.model
+    )?;
     for summary in manager.summaries() {
         if only.is_some_and(|only| only != summary.id) {
             continue;
@@ -416,7 +427,11 @@ fn list_models<W: Write>(paths: &XanaPaths, only: Option<&str>, output: &mut W) 
                 .collect::<Vec<_>>()
                 .join(",");
             let reasoning = if efforts.is_empty() {
-                "-".to_owned()
+                match model.reasoning {
+                    Some(true) => "yes (provider-controlled)".to_owned(),
+                    Some(false) => "no".to_owned(),
+                    None => "unknown".to_owned(),
+                }
             } else {
                 format!(
                     "{} (default {})",
@@ -427,10 +442,22 @@ fn list_models<W: Write>(paths: &XanaPaths, only: Option<&str>, output: &mut W) 
                         .unwrap_or("unspecified")
                 )
             };
+            let context = model
+                .context_tokens
+                .map_or_else(|| "unknown".to_owned(), |tokens| tokens.to_string());
             writeln!(
                 output,
-                "  {marker} {}\t{}\t{}\t{}",
-                model.id, modalities, reasoning, model.display_name
+                "  {marker} {}\tinput={}\ttools={}\treasoning={}\tcontext={}\t{}",
+                model.id,
+                modalities,
+                match model.tools {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "unknown",
+                },
+                reasoning,
+                context,
+                model.display_name
             )?;
         }
     }

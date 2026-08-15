@@ -304,6 +304,24 @@ impl ModelManager {
         }
     }
 
+    pub(crate) fn configured_default(&self) -> Result<ModelSelection, ModelError> {
+        let profile = self
+            .registry
+            .profiles
+            .get(&self.registry.default_profile)
+            .expect("configuration validation requires the default profile");
+        self.normalize_and_validate_selection(ModelSelection {
+            connection: profile.connection.clone(),
+            model: profile.model.clone(),
+            reasoning_effort: profile.reasoning_effort.clone(),
+            reasoning_summary: profile
+                .reasoning_summary
+                .as_deref()
+                .map(str::parse)
+                .transpose()?,
+        })
+    }
+
     pub(crate) fn select(
         &self,
         connection: &str,
@@ -500,10 +518,58 @@ impl ModelManager {
         let bytes = bounded_response_bytes(response).await?;
         let value = serde_json::from_slice::<Value>(&bytes)
             .map_err(|error| ModelError::Decode(error.to_string()))?;
-        parse_catalog(connection.kind, &value)
+        let models = parse_catalog(connection.kind, &value)?;
+        if connection.kind == ProviderKind::Ollama {
+            self.enrich_ollama_models(connection, models).await
+        } else {
+            Ok(models)
+        }
+    }
+
+    async fn enrich_ollama_models(
+        &self,
+        connection: &ConnectionConfig,
+        models: Vec<ModelDescriptor>,
+    ) -> Result<Vec<ModelDescriptor>, ModelError> {
+        let endpoint = ollama_show_endpoint(connection)?;
+        let client = &self.client;
+        let mut enriched = futures::stream::iter(models.into_iter().map(|mut model| {
+            let endpoint = endpoint.clone();
+            async move {
+                let response = client
+                    .post(endpoint)
+                    .json(&serde_json::json!({ "model": model.id }))
+                    .send()
+                    .await
+                    .map_err(|error| ModelError::Transport(error.to_string()))?;
+                if !response.status().is_success() {
+                    return Err(ModelError::Rejected(response.status().to_string()));
+                }
+                let bytes = bounded_response_bytes(response).await?;
+                let value = serde_json::from_slice::<Value>(&bytes)
+                    .map_err(|error| ModelError::Decode(error.to_string()))?;
+                apply_ollama_show(&mut model, &value)?;
+                Ok(model)
+            }
+        }))
+        .buffer_unordered(4)
+        .collect::<Vec<Result<ModelDescriptor, ModelError>>>()
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+        enriched.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(enriched)
     }
 
     pub(crate) fn write_managed_cache(
+        &self,
+        id: &str,
+        models: &[ModelDescriptor],
+    ) -> Result<(), ModelError> {
+        self.write_discovered_cache(id, models)
+    }
+
+    pub(crate) fn write_discovered_cache(
         &self,
         id: &str,
         models: &[ModelDescriptor],
@@ -740,6 +806,48 @@ fn catalog_endpoint(connection: &ConnectionConfig) -> Result<Url, ModelError> {
         }
     };
     Url::parse(&endpoint).map_err(|error| ModelError::InvalidEndpoint(error.to_string()))
+}
+
+fn ollama_show_endpoint(connection: &ConnectionConfig) -> Result<Url, ModelError> {
+    let base = connection
+        .base_url
+        .as_deref()
+        .ok_or_else(|| ModelError::InvalidEndpoint("connection has no base URL".into()))?;
+    Url::parse(&format!(
+        "{}/api/show",
+        base.trim_end_matches("/v1").trim_end_matches('/')
+    ))
+    .map_err(|error| ModelError::InvalidEndpoint(error.to_string()))
+}
+
+fn apply_ollama_show(descriptor: &mut ModelDescriptor, value: &Value) -> Result<(), ModelError> {
+    let capabilities = value
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ModelError::Decode("Ollama model details omit capabilities".into()))?
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+
+    descriptor.input_modalities = ["text".to_owned()].into_iter().collect();
+    if capabilities.contains("vision") {
+        descriptor.input_modalities.insert("image".to_owned());
+    }
+    descriptor.tools = Some(capabilities.contains("tools"));
+    descriptor.reasoning = Some(capabilities.contains("thinking"));
+    descriptor.context_tokens = value
+        .get("model_info")
+        .and_then(Value::as_object)
+        .and_then(|info| {
+            info.iter()
+                .find(|(key, _)| {
+                    key.as_str() == "context_length" || key.ends_with(".context_length")
+                })
+                .and_then(|(_, value)| value.as_u64())
+        })
+        .and_then(|value| usize::try_from(value).ok())
+        .or(descriptor.context_tokens);
+    Ok(())
 }
 
 fn apply_catalog_auth(
@@ -1087,23 +1195,35 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 2048];
-            let read = stream.read(&mut request).await.unwrap();
-            assert!(
-                String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1")
-            );
-            let body = r#"{"models":[{"name":"live-model"}]}"#;
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
+            for (expected, body) in [
+                (
+                    "GET /api/tags HTTP/1.1",
+                    r#"{"models":[{"name":"live-model"}]}"#,
+                ),
+                (
+                    "POST /api/show HTTP/1.1",
+                    r#"{"capabilities":["completion","vision","tools","thinking"],"model_info":{"qwen.context_length":32768}}"#,
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..read]);
+                assert!(request.starts_with(expected), "request was {request:?}");
+                if expected.starts_with("POST") {
+                    assert!(request.contains(r#""model":"live-model""#));
+                }
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
                     )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
+            }
         });
         let directory = tempdir().unwrap();
         let cache = directory.path().join("cache");
@@ -1119,6 +1239,15 @@ mod tests {
         let models = manager.probe_native("local", None).await.unwrap();
 
         assert_eq!(models[0].id, "live-model");
+        assert_eq!(
+            models[0].input_modalities,
+            ["image".to_owned(), "text".to_owned()]
+                .into_iter()
+                .collect()
+        );
+        assert_eq!(models[0].tools, Some(true));
+        assert_eq!(models[0].reasoning, Some(true));
+        assert_eq!(models[0].context_tokens, Some(32_768));
         assert!(!cache.join("models/local.json").exists());
         server.await.unwrap();
     }

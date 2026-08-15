@@ -14,7 +14,10 @@ use crate::{
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     presentation::{ResolvedPresentation, SemanticToken},
-    vision::{ImageIngestor, ImageLimits, PendingImages},
+    vision::{
+        DroppedImagePath, ImageIngestor, ImageLimits, PendingImages, classify_dropped_image_path,
+        image_path_in_text,
+    },
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result, bail};
@@ -198,6 +201,15 @@ impl<W: Write> EventRenderer<W> {
                 write!(self.output, "{text}")?;
                 self.output.flush()?;
             }
+            AgentEvent::ProviderReasoningDelta { text, .. } => {
+                self.finish_stream()?;
+                writeln!(
+                    self.output,
+                    "{} {text}",
+                    self.presentation
+                        .paint(SemanticToken::Reasoning, "thinking>")
+                )?;
+            }
             AgentEvent::PermissionRequested { request } => {
                 self.finish_stream()?;
                 writeln!(
@@ -263,6 +275,14 @@ impl<W: Write> EventRenderer<W> {
                     writeln!(
                         self.output,
                         "xana> child {} [{}]: {text}",
+                        attribution.agent_id, attribution.route
+                    )?;
+                }
+                ChildActivity::ProviderReasoningDelta { text, .. } => {
+                    self.finish_stream()?;
+                    writeln!(
+                        self.output,
+                        "xana> child {} [{}] thinking: {text}",
                         attribution.agent_id, attribution.route
                     )?;
                 }
@@ -681,21 +701,69 @@ pub(crate) async fn run_chat(
                         .context("could not add input to editor history")?;
 
                     let operation_id = OperationId::new();
+                    let descriptor = header
+                        .models
+                        .descriptor(&header.provider_name, &header.model)?;
+                    if pending_images.len() == 0
+                        && descriptor.input_modalities.contains("image")
+                        && let Some(path) = image_path_in_text(input)
+                    {
+                        let ingestor = ImageIngestor::new(
+                            header.artifact_store.clone(),
+                            ImageLimits::default(),
+                        );
+                        let attachment = match classify_dropped_image_path(
+                            &header.workspace_root,
+                            &path,
+                        ) {
+                            Ok(DroppedImagePath::Workspace { .. }) => {
+                                Some(ingestor.ingest_dropped_path(
+                                    &header.workspace_root,
+                                    &path,
+                                    header.owner,
+                                ))
+                            }
+                            Ok(DroppedImagePath::External { canonical }) => {
+                                let answer = editor.readline(&format!(
+                                    "xana> read external image {path:?} once? [y/N] "
+                                ));
+                                if !matches!(
+                                    answer.as_deref().map(str::trim),
+                                    Ok("y" | "Y" | "yes" | "YES" | "Yes")
+                                ) {
+                                    println!(
+                                        "xana> external image was not read; message was not sent"
+                                    );
+                                    continue;
+                                }
+                                Some(ingestor.ingest_approved_dropped_path(
+                                    &header.workspace_root,
+                                    &canonical.to_string_lossy(),
+                                    header.owner,
+                                ))
+                            }
+                            Err(_) => None,
+                        };
+                        if let Some(attachment) = attachment {
+                            match attachment {
+                                Ok(attachment) => pending_images.push(attachment),
+                                Err(error) => {
+                                    println!("xana> could not attach image {path}: {error}");
+                                    continue;
+                                }
+                            }
+                        }
+                    }
                     if pending_images.len() > 8 {
                         println!("xana> at most 8 images may be sent in one turn");
                         continue;
                     }
-                    if pending_images.len() > 0 {
-                        let descriptor = header
-                            .models
-                            .descriptor(&header.provider_name, &header.model)?;
-                        if !descriptor.input_modalities.contains("image") {
-                            println!(
-                                "xana> {}/{} is not declared image-capable; refresh its catalog or add an explicit model override",
-                                header.provider_name, header.model
-                            );
-                            continue;
-                        }
+                    if pending_images.len() > 0 && !descriptor.input_modalities.contains("image") {
+                        println!(
+                            "xana> {}/{} is not declared image-capable; refresh its catalog or add an explicit model override",
+                            header.provider_name, header.model
+                        );
+                        continue;
                     }
                     let attachments = pending_images.take_for_turn();
                     let total_image_bytes = attachments
@@ -1063,6 +1131,9 @@ fn display_scope(scope: &PermissionScope) -> String {
     match scope {
         PermissionScope::WorkspacePath { canonical_path } => {
             format!("workspace path {}", canonical_path.display())
+        }
+        PermissionScope::ExternalPath { canonical_path } => {
+            format!("external path {}", canonical_path.display())
         }
         PermissionScope::Command {
             shell,

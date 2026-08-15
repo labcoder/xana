@@ -297,6 +297,7 @@ fn overlay_choice_at(
         super::state::Overlay::ModelPicker { .. }
         | super::state::Overlay::ReasoningPicker { .. } => 0,
         super::state::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
+        super::state::Overlay::ExternalImageApproval { .. } => 4,
         super::state::Overlay::Artifact { preview, .. } => {
             if preview.is_some() {
                 6

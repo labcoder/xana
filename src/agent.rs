@@ -203,7 +203,8 @@ impl Agent {
             let assistant = self
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
-                .await?;
+                .await
+                .map_err(|error| anyhow::anyhow!("provider {:?}: {error}", error.kind()))?;
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
@@ -350,6 +351,14 @@ fn complete_sum(
 impl DeltaSink for EventDeltaSink {
     fn text_delta(&self, step_id: StepId, text: &str) {
         let _ = self.events.send(AgentEvent::AssistantTextDelta {
+            operation_id: self.operation_id,
+            step_id,
+            text: text.to_owned(),
+        });
+    }
+
+    fn reasoning_delta(&self, step_id: StepId, text: &str) {
+        let _ = self.events.send(AgentEvent::ProviderReasoningDelta {
             operation_id: self.operation_id,
             step_id,
             text: text.to_owned(),

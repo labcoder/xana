@@ -517,6 +517,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::OperationStateChanged { .. } => "operation state",
         AgentEvent::AssistantTextDelta { .. } => "assistant delta",
+        AgentEvent::ProviderReasoningDelta { .. } => "provider reasoning delta",
         AgentEvent::PermissionRequested { .. } => "permission request",
         AgentEvent::PermissionAudited { .. } => "permission audit",
         AgentEvent::InvocationIntentCommitted { .. } => "invocation intent",

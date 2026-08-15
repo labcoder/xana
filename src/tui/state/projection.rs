@@ -54,6 +54,29 @@ impl TuiState {
             AgentEvent::AssistantTextDelta {
                 operation_id, text, ..
             } => self.push_assistant_delta(*operation_id, text),
+            AgentEvent::ProviderReasoningDelta {
+                operation_id,
+                step_id,
+                text,
+            } => {
+                let identity = format!("{operation_id}:{step_id}");
+                if let Some(card) = self.activity.iter_mut().rev().find(|card| {
+                    card.owner == "Xana native"
+                        && card.identity == identity
+                        && card.kind == ActivityKind::ReasoningRaw
+                }) {
+                    append_bounded(&mut card.detail, text, MAX_ACTIVITY_BYTES);
+                } else {
+                    self.push_card(ActivityCard::new(
+                        "Xana native",
+                        identity,
+                        ActivityKind::ReasoningRaw,
+                        ActivityState::Running,
+                        "model reasoning",
+                        text.clone(),
+                    ));
+                }
+            }
             AgentEvent::AssistantMessage {
                 operation_id,
                 message,
@@ -90,14 +113,23 @@ impl TuiState {
                 format!("tool planned: {}", intent.permission.request.tool_name),
                 intent.permission.request.final_arguments.to_string(),
             )),
-            AgentEvent::ToolFinished { invocation_id, .. } => self.push_card(ActivityCard::new(
-                "Xana root",
-                invocation_id.to_string(),
-                ActivityKind::Tool,
-                ActivityState::Complete,
-                "tool finished",
-                "",
-            )),
+            AgentEvent::ToolFinished {
+                invocation_id,
+                result,
+                ..
+            } => {
+                let projected = message_projection(result);
+                let detail = projected.text.clone();
+                self.push_message(MessageKind::Tool, projected.text);
+                self.push_card(ActivityCard::new(
+                    "Xana root",
+                    invocation_id.to_string(),
+                    ActivityKind::Tool,
+                    ActivityState::Complete,
+                    "tool finished",
+                    detail,
+                ));
+            }
             AgentEvent::ChildLifecycleChanged {
                 attribution,
                 lifecycle,
@@ -148,6 +180,17 @@ impl TuiState {
                         "child warning",
                         message.clone(),
                     ))
+                }
+                crate::orchestration::ChildActivity::ProviderReasoningDelta { step_id, text } => {
+                    let identity = format!("{}:{step_id}", attribution.agent_id);
+                    self.push_card(ActivityCard::new(
+                        format!("Xana child {}", attribution.agent_id),
+                        identity,
+                        ActivityKind::ReasoningRaw,
+                        ActivityState::Running,
+                        "child model reasoning",
+                        text.clone(),
+                    ));
                 }
                 crate::orchestration::ChildActivity::AssistantTextDelta { .. }
                 | crate::orchestration::ChildActivity::PermissionAudited { .. }
