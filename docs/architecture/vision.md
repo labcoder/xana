@@ -5,13 +5,17 @@
 
 `/attach WORKSPACE_RELATIVE_PATH` performs a bounded regular-file read after
 workspace and symlink checks, validates PNG/JPEG/GIF content and pixel limits,
-and publishes immutable bytes to Xana's artifact store. The pending queue
+and publishes immutable bytes to Xana's artifact store. Ordinary message text
+is also scanned lexically for one image-looking path; resolution and authority
+still happen after that untrusted-text detection. The pending queue
 preserves attachment order, accepts at most eight images and 20 MiB per turn,
 is cleared visibly by `/clear`, and is consumed when a turn is submitted.
 The TUI maps a terminal-pasted single image path from drag-and-drop into the
 same ingestion operation. Absolute, `file://`, and Git Bash path forms are
-normalized only to prove and retain a workspace-relative source; outside-
-workspace files remain rejected.
+normalized before resolution. Workspace images follow ordinary workspace
+policy. An image outside the launch workspace is never read ambiently: the
+interactive frontend asks for one exact allow-once decision, then imports a
+bounded immutable artifact copy. Denial restores the draft.
 
 The internal message model carries `ContentBlock::Image` references rather
 than paths or base64. Before native provider I/O, Xana requires the selected
@@ -22,9 +26,9 @@ edge:
 - OpenAI-compatible, OpenAI, and OpenRouter use ordered `image_url` data-URL
   content parts;
 - Anthropic uses ordered base64 image source blocks; and
-- managed Codex receives canonical local image paths already proven to remain
-  below the selected workspace. Codex retains responsibility for its provider
-  encoding.
+- managed Codex receives a verified Xana artifact path. Codex retains
+  responsibility for its provider encoding and never receives the original
+  external source path.
 
 Encoded bytes and source paths are not written into Xana's native conversation
 records. Image capabilities fail closed when catalog evidence or an explicit

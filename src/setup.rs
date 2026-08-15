@@ -320,6 +320,15 @@ pub(crate) async fn run(
             .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
         Some(&selection_path),
     )?;
+    let installed_registry = XanaConfig::parse_registry(&rendered)
+        .context("configuration installed, but its model catalog could not be reopened")?;
+    ModelManager::new(
+        installed_registry,
+        paths.cache_dir().to_owned(),
+        selection_path,
+    )
+    .write_discovered_cache(&draft.connection, &models)
+    .context("configuration installed, but the discovered model catalog could not be cached")?;
     crate::private_state::ensure_interoperable_records(paths)
         .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
     write_completion_receipt(output, paths, profile)?;
@@ -915,23 +924,31 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut request = [0_u8; 2048];
-            let read = stream.read(&mut request).await.unwrap();
-            assert!(
-                String::from_utf8_lossy(&request[..read]).starts_with("GET /api/tags HTTP/1.1")
-            );
-            let body = r#"{"models":[{"name":"qwen3:1.7b"}]}"#;
-            stream
-                .write_all(
-                    format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
+            for (expected, body) in [
+                (
+                    "GET /api/tags HTTP/1.1",
+                    r#"{"models":[{"name":"qwen3:1.7b"}]}"#,
+                ),
+                (
+                    "POST /api/show HTTP/1.1",
+                    r#"{"capabilities":["completion","tools"]}"#,
+                ),
+            ] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).await.unwrap();
+                assert!(String::from_utf8_lossy(&request[..read]).starts_with(expected));
+                stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
                     )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
+                    .await
+                    .unwrap();
+            }
         });
         let directory = tempdir().unwrap();
         let root = directory.path().join("xana-home");
@@ -994,6 +1011,10 @@ mod tests {
                 reasoning_effort: None,
                 reasoning_summary: None,
             }
+        );
+        assert_eq!(
+            manager.descriptor("ollama", "qwen3:1.7b").unwrap().tools,
+            Some(true)
         );
         server.await.unwrap();
     }

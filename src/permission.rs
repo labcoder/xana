@@ -29,6 +29,9 @@ pub(crate) enum PermissionScope {
     WorkspacePath {
         canonical_path: PathBuf,
     },
+    ExternalPath {
+        canonical_path: PathBuf,
+    },
     Command {
         shell: String,
         canonical_cwd: PathBuf,

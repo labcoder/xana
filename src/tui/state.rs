@@ -18,7 +18,7 @@ use crate::{
     native_runtime::{AgentEvent, OperationState},
     permission::ControllerDecision,
     presentation::{ActivityPaneChoice, ComposerPreset},
-    vision::ImageAttachment,
+    vision::{ImageAttachment, image_path_in_text},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use std::collections::VecDeque;
@@ -200,6 +200,12 @@ pub(super) enum UpdateEffect {
     },
     Attach(String),
     AttachDropped(String),
+    AttachAndSubmit {
+        operation_id: OperationId,
+        input: String,
+        path: String,
+        approved_external: bool,
+    },
     AttachClipboard,
     SelectModel(String),
     SetReasoning(String),
@@ -256,6 +262,12 @@ pub(super) enum Overlay {
     },
     PastePreview {
         text: String,
+    },
+    ExternalImageApproval {
+        operation_id: OperationId,
+        input: String,
+        path: String,
+        selected: usize,
     },
     Help,
     Queue,
@@ -518,9 +530,13 @@ impl TuiState {
     }
 
     pub(super) fn stage_image(&mut self, attachment: ImageAttachment) {
+        let _ = self.try_stage_image(attachment);
+    }
+
+    fn try_stage_image(&mut self, attachment: ImageAttachment) -> bool {
         if self.pending_images.len() >= MAX_IMAGES {
             self.status = "At most 8 images may be staged for one turn".to_owned();
-            return;
+            return false;
         }
         let total = self
             .pending_images
@@ -530,7 +546,7 @@ impl TuiState {
             .saturating_add(attachment.image.byte_len);
         if total > MAX_IMAGE_BYTES {
             self.status = "Image attachments exceed the 20 MiB per-turn budget".to_owned();
-            return;
+            return false;
         }
         let source = attachment.source_path.clone();
         self.pending_images.push(attachment);
@@ -538,6 +554,39 @@ impl TuiState {
             "Staged image {source} ({} pending)",
             self.pending_images.len()
         );
+        true
+    }
+
+    pub(super) fn attach_and_submit(
+        &mut self,
+        input: String,
+        attachment: ImageAttachment,
+    ) -> UpdateEffect {
+        if self.try_stage_image(attachment) {
+            self.submit_text(input)
+        } else {
+            self.composer.replace(input);
+            UpdateEffect::None
+        }
+    }
+
+    pub(super) fn submit_without_auto_attachment(&mut self, input: String) -> UpdateEffect {
+        self.submit_text(input)
+    }
+
+    pub(super) fn request_external_image_approval(
+        &mut self,
+        operation_id: OperationId,
+        input: String,
+        path: String,
+    ) {
+        self.overlay = Some(Overlay::ExternalImageApproval {
+            operation_id,
+            input,
+            path: path.clone(),
+            selected: 0,
+        });
+        self.status = format!("Approve reading external image {path}?");
     }
 
     pub(super) fn pending_image_count(&self) -> usize {
@@ -548,10 +597,12 @@ impl TuiState {
         if choices.is_empty() {
             self.status = "No models are available in configured/cached catalogs".to_owned();
         } else {
-            self.overlay = Some(Overlay::ModelPicker {
-                choices,
-                selected: 0,
-            });
+            let selected_model = format!("{}/{}", self.connection, self.model);
+            let selected = choices
+                .iter()
+                .position(|choice| choice.split_whitespace().next() == Some(&selected_model))
+                .unwrap_or(0);
+            self.overlay = Some(Overlay::ModelPicker { choices, selected });
         }
     }
 

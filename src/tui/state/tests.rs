@@ -56,6 +56,59 @@ fn pasted_image_path_is_staged_as_a_drop_without_inserting_text() {
 }
 
 #[test]
+fn a_message_containing_an_image_path_requests_automatic_attachment() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state
+        .composer
+        .replace(r#"C:\Users\xana\Downloads\photo.png what is this?"#.to_owned());
+
+    let effect = state.update_input(InputAction::Submit);
+
+    assert!(matches!(
+        effect,
+        UpdateEffect::AttachAndSubmit { input, path, approved_external: false, .. }
+            if input.ends_with("what is this?") && path.ends_with("photo.png")
+    ));
+}
+
+#[test]
+fn external_image_approval_can_continue_or_restore_the_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.request_external_image_approval(
+        OperationId::new(),
+        "please inspect it".to_owned(),
+        "C:\\outside\\photo.png".to_owned(),
+    );
+
+    let effect = state.update_input(InputAction::Confirm);
+
+    assert!(matches!(
+        effect,
+        UpdateEffect::AttachAndSubmit {
+            approved_external: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn cancelling_external_image_approval_restores_the_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.request_external_image_approval(
+        OperationId::new(),
+        "please inspect it".to_owned(),
+        "C:\\outside\\photo.png".to_owned(),
+    );
+
+    assert_eq!(state.update_input(InputAction::Cancel), UpdateEffect::None);
+
+    assert_eq!(state.composer.text, "please inspect it");
+    assert!(state.status.contains("draft restored"));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
 fn busy_submissions_queue_in_order_and_can_be_edited_or_removed() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = true;
@@ -129,6 +182,66 @@ fn input_and_runtime_events_follow_one_explicit_update_path() {
     });
     assert!(!state.busy);
     assert_eq!(state.messages.back().unwrap().text, "hi there");
+}
+
+#[test]
+fn committed_tool_requests_and_results_are_visible_without_restart() {
+    let operation_id = OperationId::new();
+    let invocation_id = ToolInvocationId::new();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.active_operation = Some(operation_id);
+    state.apply_runtime(&AgentEvent::AssistantMessage {
+        operation_id,
+        message: Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(crate::message::ToolCall {
+                id: "call-1".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            })],
+        },
+    });
+    state.apply_runtime(&AgentEvent::ToolFinished {
+        operation_id,
+        invocation_id,
+        result: Message::tool_result(crate::message::ToolResult::success(
+            "call-1",
+            "file contents",
+        )),
+    });
+
+    let visible = state
+        .messages
+        .iter()
+        .map(|message| message.text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(visible, vec!["[tool call: read_file]", "file contents"]);
+    let activity = state.activity.back().expect("tool activity");
+    assert_eq!(activity.state, ActivityState::Complete);
+    assert!(activity.detail.contains("file contents"));
+}
+
+#[test]
+fn native_provider_reasoning_is_bounded_and_accumulates_in_activity() {
+    let operation_id = OperationId::new();
+    let step_id = StepId::new();
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+
+    for text in ["checking ", "the image"] {
+        state.apply_runtime(&AgentEvent::ProviderReasoningDelta {
+            operation_id,
+            step_id,
+            text: text.to_owned(),
+        });
+    }
+
+    let card = state
+        .activity
+        .iter()
+        .find(|card| card.kind == ActivityKind::ReasoningRaw)
+        .expect("native reasoning card");
+    assert_eq!(card.detail, "checking the image");
+    assert!(!card.expanded);
 }
 
 #[test]

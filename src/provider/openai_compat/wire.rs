@@ -156,6 +156,8 @@ pub(super) struct WireStreamChoice {
 pub(super) struct WireDelta {
     #[serde(default)]
     pub(super) content: Option<String>,
+    #[serde(default, alias = "reasoning_content")]
+    pub(super) reasoning: Option<String>,
     #[serde(default)]
     pub(super) tool_calls: Option<Vec<WireToolCallDelta>>,
 }

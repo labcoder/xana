@@ -1,9 +1,6 @@
 //! Bounded actor that lets the TUI observe and control a Codex-owned inner loop.
 
-use super::{
-    ManagedChatConfig, ManagedThreadState, checked_original_path, ensure_thread_loaded,
-    initial_managed_thread,
-};
+use super::{ManagedChatConfig, ManagedThreadState, ensure_thread_loaded, initial_managed_thread};
 use crate::{
     frontend::ManagedClientEvent,
     identity::OperationId,
@@ -257,7 +254,15 @@ async fn run_actor(
                 };
                 let local_images = match images
                     .iter()
-                    .map(|image| checked_original_path(&config.workspace, &image.source_path))
+                    .map(|image| {
+                        config
+                            .artifact_store
+                            .verified_path(
+                                &image.image.artifact,
+                                crate::artifact::MAX_ARTIFACT_BYTES,
+                            )
+                            .map_err(anyhow::Error::from)
+                    })
                     .collect::<anyhow::Result<Vec<_>>>()
                 {
                     Ok(images) => images,

@@ -253,8 +253,10 @@ Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
 commands work in plain and TUI conversations, and exposed routes add the
 permission-gated `generate_image` tool to native agents.
 Image-capable conversational models accept bounded PNG/JPEG/GIF artifacts from
-`/attach PATH`, the explicit `/attach --clipboard` action, or a workspace image
-dragged into the TUI. Xana fully decodes and content-addresses one copy before
+`/attach PATH`, the explicit `/attach --clipboard` action, a local image
+dragged into the TUI, or one image-looking local path in ordinary message text.
+An external path requires an exact allow-once prompt before Xana reads it. Xana
+fully decodes and content-addresses one copy before
 provider use; clipboard access is never ambient.
 
 ## Diagnose and recover an installation
@@ -355,6 +357,13 @@ children. The plain renderer keeps `/activity quiet|normal|verbose` for
 append-only detail and `/details` for the last retained turn. `verbose` can show raw reasoning text only when Codex
 actually emits it; Xana cannot expose private hidden chain-of-thought.
 
+Native providers use the same owner-aware presentation boundary. Provider-
+exposed reasoning is retained separately from assistant prose, and committed
+tool requests and results appear live in the conversation and activity panes.
+Provider connection, response-start, and stream-idle waits are bounded; safe
+typed failures retain the useful wire cause instead of becoming an opaque
+“invalid stream” message.
+
 ## Models and connections
 
 The normal model UX is intentionally shallow:
@@ -367,7 +376,9 @@ xana model use CONNECTION/MODEL
 xana model use codex/MODEL --effort auto|EFFORT --summary auto|concise|detailed|off
 ```
 
-Inside chat, `/model` lists models and `/model CONNECTION/MODEL` selects one.
+Inside chat, `/model` lists models with known input, tool, reasoning, and
+context capabilities, and `/model CONNECTION/MODEL` selects one. The CLI also
+distinguishes the effective selection from the configured profile default.
 Switching between Xana's native loop and a managed runtime starts a new
 conversation rather than silently translating history. Within managed Codex
 chat, `/model codex/MODEL`, `/reasoning EFFORT`, and `/reasoning-summary MODE`
@@ -544,14 +555,17 @@ allowed native tools use the process's ordinary host access. Codex-managed
 turns use Codex's own tools/sandbox and Xana projects command/file approval
 requests into the terminal.
 
-Use `/attach WORKSPACE_RELATIVE_IMAGE`, `/attach --clipboard`, or drag a PNG,
-JPEG, or GIF from the current workspace into the TUI to stage image input.
+Use `/attach WORKSPACE_RELATIVE_IMAGE`, `/attach --clipboard`, drag a PNG,
+JPEG, or GIF into the TUI, or include one image-looking local path in an
+ordinary message to stage image input.
 Xana keeps immutable artifact references, enforces file/pixel/count/aggregate
 budgets, preserves attachment order, and fails closed unless the selected
-model advertises image input. A dropped absolute path is accepted only after
-it resolves beneath the workspace and is reduced to a workspace-relative
-reference. OpenAI-compatible and Anthropic bytes are resolved only at the
-provider wire edge; Codex receives checked workspace paths.
+model advertises image input. A path inside the launch workspace follows
+ordinary workspace policy. An existing image outside it requires an exact
+interactive allow-once decision before Xana imports a bounded immutable copy;
+denial never sends the message. OpenAI-compatible and Anthropic bytes are
+resolved only at the provider wire edge; Codex receives the verified Xana
+artifact path rather than the original external source.
 
 ## Prompt, context, and recovery
 

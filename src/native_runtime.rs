@@ -769,6 +769,7 @@ impl Runtime {
     }
 
     fn handle_conversation_commit(&mut self, commit: ConversationCommit) {
+        let projected_message = commit.message.clone();
         let result = if self
             .active
             .as_ref()
@@ -786,14 +787,20 @@ impl Runtime {
             Err("conversation commit has no durable session".to_owned())
         };
 
-        if result.is_ok()
-            && let Some((invocation_id, result_message)) = commit.tool_finished
-        {
-            self.emit(AgentEvent::ToolFinished {
-                operation_id: commit.operation_id,
-                invocation_id,
-                result: result_message,
-            });
+        if result.is_ok() {
+            if projected_message.role == crate::message::Role::Assistant {
+                self.emit(AgentEvent::AssistantMessage {
+                    operation_id: commit.operation_id,
+                    message: projected_message,
+                });
+            }
+            if let Some((invocation_id, result_message)) = commit.tool_finished {
+                self.emit(AgentEvent::ToolFinished {
+                    operation_id: commit.operation_id,
+                    invocation_id,
+                    result: result_message,
+                });
+            }
         }
         let _ = commit.acknowledged.send(result);
     }

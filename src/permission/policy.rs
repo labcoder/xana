@@ -125,7 +125,7 @@ impl PermissionPolicy {
             .iter()
             .filter(|rule| rule_matches(rule, request))
             .collect::<Vec<_>>();
-        let winning_decision = if matching
+        let mut winning_decision = if matching
             .iter()
             .any(|rule| rule.decision == PolicyDecision::Deny)
         {
@@ -143,6 +143,11 @@ impl PermissionPolicy {
         } else {
             self.default
         };
+        if matches!(request.scope, PermissionScope::ExternalPath { .. })
+            && winning_decision == PolicyDecision::Allow
+        {
+            winning_decision = PolicyDecision::Ask;
+        }
         PolicyExplanation {
             matched_rule_ids: matching.iter().map(|rule| rule.id.clone()).collect(),
             winning_decision,
@@ -168,6 +173,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
         let request_path = match &request.scope {
             PermissionScope::WorkspacePath { canonical_path } => canonical_path,
             PermissionScope::Command { canonical_cwd, .. } => canonical_cwd,
+            PermissionScope::ExternalPath { .. } => return false,
             PermissionScope::External { .. } => return false,
             PermissionScope::Unscoped => return false,
         };
@@ -180,6 +186,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             PermissionScope::Command { command, .. } if command == expected => {}
             PermissionScope::Command { .. }
             | PermissionScope::WorkspacePath { .. }
+            | PermissionScope::ExternalPath { .. }
             | PermissionScope::External { .. }
             | PermissionScope::Unscoped => return false,
         }

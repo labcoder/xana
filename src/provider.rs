@@ -27,6 +27,8 @@ pub(crate) trait ConversationalProvider: Send + Sync {
 pub(crate) trait DeltaSink: Send + Sync {
     fn text_delta(&self, step_id: StepId, text: &str);
 
+    fn reasoning_delta(&self, _step_id: StepId, _text: &str) {}
+
     fn usage(&self, _usage: ProviderUsage) {}
 }
 
@@ -39,14 +41,37 @@ pub(crate) struct ProviderUsage {
 
 #[derive(Debug)]
 pub(crate) struct ProviderError {
+    kind: ProviderErrorKind,
     message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProviderErrorKind {
+    Request,
+    Transport,
+    Rejected,
+    InvalidStream,
+    Timeout,
+    Other,
 }
 
 impl ProviderError {
     pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
+            kind: ProviderErrorKind::Other,
             message: message.into(),
         }
+    }
+
+    pub(crate) fn classified(kind: ProviderErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> ProviderErrorKind {
+        self.kind
     }
 }
 

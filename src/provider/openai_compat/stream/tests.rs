@@ -44,6 +44,18 @@ fn usage_only_stream_chunk_keeps_optional_token_fields_typed() {
 }
 
 #[test]
+fn ollama_reasoning_delta_is_typed_separately_from_answer_text() {
+    let response: WireStreamResponse = serde_json::from_value(serde_json::json!({
+        "choices": [{"delta": {"reasoning": "checking the image", "content": null}}]
+    }))
+    .expect("Ollama-compatible reasoning response");
+
+    let delta = response.choices.into_iter().next().unwrap().delta;
+    assert_eq!(delta.reasoning.as_deref(), Some("checking the image"));
+    assert!(delta.content.is_none());
+}
+
+#[test]
 fn decoder_accepts_lf_crlf_comments_and_multiple_data_lines() {
     let input = b": keepalive\r\ndata: first\r\ndata: second\r\n\r\ndata: third\n\n";
     let items = decode_in_chunks(input, 3).expect("mixed stream framing");
@@ -85,6 +97,7 @@ fn accumulator_preserves_text_order() {
         accumulator
             .apply(WireDelta {
                 content: Some("hel".to_owned()),
+                reasoning: None,
                 tool_calls: None,
             })
             .expect("first delta"),
@@ -94,6 +107,7 @@ fn accumulator_preserves_text_order() {
         accumulator
             .apply(WireDelta {
                 content: Some("lo".to_owned()),
+                reasoning: None,
                 tool_calls: None,
             })
             .expect("second delta"),
@@ -130,6 +144,7 @@ fn accumulator_joins_split_tool_identity_name_and_arguments() {
         accumulator
             .apply(WireDelta {
                 content: None,
+                reasoning: None,
                 tool_calls: Some(vec![delta]),
             })
             .expect("tool delta");
@@ -151,6 +166,7 @@ fn accumulator_rejects_malformed_arguments_at_finish() {
     accumulator
         .apply(WireDelta {
             content: None,
+            reasoning: None,
             tool_calls: Some(vec![WireToolCallDelta {
                 index: 0,
                 id: Some("call-1".to_owned()),

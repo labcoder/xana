@@ -1,5 +1,6 @@
 use super::workspace_path::{
-    FileIdentity, WorkspacePathError, resolve_existing, revalidate_path, verify_open_file,
+    FileIdentity, ResolvedPathLocation, WorkspacePathError, resolve_existing_for_read,
+    revalidate_path, verify_open_file,
 };
 use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
 use crate::permission::PermissionScope;
@@ -114,8 +115,8 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
         });
     }
 
-    let resolved =
-        resolve_existing(args.path.clone(), workspace_root).map_err(ReadFileError::Path)?;
+    let (resolved, location) = resolve_existing_for_read(args.path.clone(), workspace_root)
+        .map_err(ReadFileError::Path)?;
     let requested_path = resolved.requested_path;
     let canonical_path = resolved.canonical_path;
     let identity = resolved.identity;
@@ -136,6 +137,7 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
         requested_path,
         canonical_path,
         identity,
+        location,
     })
 }
 
@@ -208,8 +210,7 @@ impl Tool for ReadFile {
         ToolDefinition {
             name: "read_file".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Read a UTF-8 file beneath the workspace root using a relative path"
-                .into(),
+            description: "Read a UTF-8 file. Workspace-relative paths use normal workspace policy; absolute paths outside the workspace require explicit approval".into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -217,7 +218,7 @@ impl Tool for ReadFile {
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "UTF-8 file path relative to the workspace root"
+                        "description": "Workspace-relative path, or an absolute path that Xana must ask permission to read"
                     },
                     "start_line": {
                         "type": "integer",
@@ -244,8 +245,13 @@ impl Tool for ReadFile {
         let plan = plan_read_file(arguments, workspace_root).map_err(|error| error.to_string())?;
         let final_arguments =
             serde_json::to_value(&plan.args).map_err(|error| error.to_string())?;
-        let scope = PermissionScope::WorkspacePath {
-            canonical_path: plan.canonical_path.clone(),
+        let scope = match plan.location {
+            ResolvedPathLocation::Workspace => PermissionScope::WorkspacePath {
+                canonical_path: plan.canonical_path.clone(),
+            },
+            ResolvedPathLocation::External => PermissionScope::ExternalPath {
+                canonical_path: plan.canonical_path.clone(),
+            },
         };
         Ok(PlannedToolInvocation::new(final_arguments, scope, plan))
     }
@@ -267,6 +273,7 @@ struct ReadFilePlan {
     requested_path: String,
     canonical_path: PathBuf,
     identity: FileIdentity,
+    location: ResolvedPathLocation,
 }
 
 #[cfg(test)]
@@ -300,17 +307,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_blank_absolute_and_parent_paths() {
+    fn rejects_blank_and_parent_paths() {
         let workspace = tempdir().expect("temporary workspace");
-        let cases = [
-            "   ".to_owned(),
-            workspace
-                .path()
-                .join("absolute.txt")
-                .to_string_lossy()
-                .into_owned(),
-            "../outside.txt".to_owned(),
-        ];
+        let cases = ["   ".to_owned(), "../outside.txt".to_owned()];
 
         for requested_path in cases {
             let result = read_file(&json!({"path": &requested_path}), workspace.path());
@@ -322,6 +321,26 @@ mod tests {
                 })) if actual == requested_path
             ));
         }
+    }
+
+    #[test]
+    fn plans_an_absolute_file_outside_the_workspace_as_an_exact_external_scope() {
+        let workspace = tempdir().expect("temporary workspace");
+        let outside = tempdir().expect("outside directory");
+        let path = outside.path().join("notes.txt");
+        fs::write(&path, "outside notes\n").expect("outside fixture");
+        let tool = ReadFile;
+
+        let planned = tool
+            .plan(&json!({"path": path.to_string_lossy()}), workspace.path())
+            .expect("an existing external file should reach the permission boundary");
+
+        assert_eq!(
+            planned.scope,
+            PermissionScope::ExternalPath {
+                canonical_path: path.canonicalize().expect("canonical outside fixture")
+            }
+        );
     }
 
     #[test]

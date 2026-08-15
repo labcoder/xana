@@ -62,16 +62,19 @@ thread; the previous Codex-owned thread is left intact in Codex history.
 
 ## Image attachments
 
-Use `/attach WORKSPACE_RELATIVE_IMAGE_PATH` before a turn to stage a PNG, JPEG,
-or GIF image. Xana validates the path, file type, byte limit, and pixel limit,
+Use `/attach WORKSPACE_RELATIVE_IMAGE_PATH`, drag a local image, or include one
+image-looking local path in an ordinary message to stage a PNG, JPEG, or GIF.
+For an existing path outside the workspace, an interactive frontend asks once
+for that exact canonical file before importing it. Xana validates the path,
+file type, byte limit, and pixel limit,
 then stores immutable artifact bytes and keeps only an image reference in the
 pending turn. `/clear` also clears pending attachments and reports how many it
 removed. Sending a turn consumes staged attachments exactly once.
 
 The model must advertise image input support before media can cross a provider
 boundary. OpenAI-compatible and Anthropic adapters resolve verified artifact
-bytes only at the wire edge. Managed Codex receives canonical local paths that
-were checked beneath the selected workspace. Xana does not fetch image URLs,
+bytes only at the wire edge. Managed Codex receives the verified immutable Xana
+artifact path, never the original external source. Xana does not fetch image URLs,
 run OCR, generate images, or display terminal graphics.
 
 ## Root `AGENTS.md`

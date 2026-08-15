@@ -77,7 +77,8 @@ reasoning options match the running app-server/account. Xana caches that
 bounded non-secret live result before compatibility validation. An unavailable
 selection therefore fails with bounded advertised choices and can be repaired
 immediately with `model use`, without a redundant refresh. Implemented sources
-are Ollama `/api/tags`, OpenAI and
+are Ollama `/api/tags` followed by bounded `/api/show` capability probes,
+OpenAI and
 custom `/v1/models`, OpenRouter `/api/v1/models/user`, Anthropic `/v1/models`,
 and Codex `model/list`. Remote claims and explicit overrides are merged by
 field; unknown capabilities remain unknown and image input fails closed.
@@ -85,8 +86,10 @@ Catalog responses and caches are bounded and contain no credentials.
 
 Quick Setup is the one deliberate pre-install discovery path. It constructs a
 staged registry, establishes the endpoint/executable plus credential/account,
-and fetches a live catalog without writing the normal catalog cache. Only an
-id from that result can become the installed default model. A hidden API key
+and fetches a live catalog before committing anything. Only an id from that
+result can become the installed default model. After the configuration commit,
+Xana writes the same bounded non-secret result to the normal catalog cache so
+the first conversation sees the capabilities that setup validated. A hidden API key
 is held in zeroizing memory until confirmation; configuration contains only
 its OS-store id or environment-variable name. A successful replacement clears
 the separate foreground selection in the rollback-safe transaction, making
@@ -94,7 +97,9 @@ the installed default connection/model effective for the next conversation
 instead of resuming an older valid or now-orphaned override. This transaction
 does not turn ordinary startup into implicit network discovery.
 
-`xana model` lists the unified catalog. `xana model use
+`xana model` lists the unified catalog, distinguishes the effective foreground
+selection from the configured profile default, and exposes known input, tool,
+reasoning, and context capabilities. `xana model use
 CONNECTION/MODEL` persists the next-conversation selection. `/model` lists or
 selects from chat. Native selection restarts Xana's foreground conversation;
 switching between native and managed execution never copies history silently.
@@ -107,12 +112,15 @@ live advertised choices rather than maintaining a vendor-specific enum.
 
 `ConversationalProvider` is the single generation contract consumed by Xana's
 headless native agent. It receives provider-neutral messages, the frozen tool
-schema snapshot, a step id, and a text-delta sink. Account management,
+schema snapshot, a step id, and a text-and-reasoning delta sink. Account management,
 credential lookup, catalog discovery, model selection, and unrelated media
 services are deliberately absent.
 
 The OpenAI-compatible adapter is used by Ollama, custom endpoints, the OpenAI
 API, and OpenRouter. Authentication and attribution remain connection policy.
+It preserves provider-exposed reasoning separately from assistant output,
+classifies safe request, transport, rejection, invalid-stream, and timeout
+failures, and bounds connection, response-start, and stream-idle waits.
 The Anthropic Messages adapter separately maps the same internal semantics to
 Anthropic's top-level system field, structured content and tool blocks, and
 typed SSE sequence. Both adapters resolve artifact-backed images only at the

@@ -27,14 +27,10 @@ pub(super) fn customize_quick(
     input: &mut impl BufRead,
     output: &mut impl Write,
 ) -> Result<Customization> {
+    let rendered = merge_existing_connection_if_valid(paths, rendered)?;
     if args.section == Some(SetupSectionChoice::Connection) {
-        let config = if paths.config_file().is_file() {
-            merge_connection(&fs::read_to_string(paths.config_file())?, &rendered)?
-        } else {
-            rendered
-        };
         return Ok(Customization {
-            config,
+            config: rendered,
             preferences: None,
             effects: vec!["new conversation (connection/model owner changed)"],
         });
@@ -43,7 +39,7 @@ pub(super) fn customize_quick(
         return Ok(Customization {
             config: rendered,
             preferences: None,
-            effects: vec!["new conversation"],
+            effects: vec!["new conversation (selected connection/model changed)"],
         });
     }
 
@@ -201,10 +197,17 @@ fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
         .context("providers must be a table")?;
     providers.insert(&new_provider.0, new_provider.1);
 
-    let new_profile = replacement["profiles"]["default"]
+    let replacement_default = replacement["default_profile"]
+        .as_str()
+        .context("replacement setup has no default profile name")?;
+    let current_default = current["default_profile"]
+        .as_str()
+        .context("existing config has no default profile name")?
+        .to_owned();
+    let new_profile = replacement["profiles"][replacement_default]
         .as_table()
         .context("replacement setup has no default profile")?;
-    let profile = current["profiles"]["default"]
+    let profile = current["profiles"][&current_default]
         .as_table_mut()
         .context("existing config has no default profile")?;
     for key in [
@@ -220,6 +223,17 @@ fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
         }
     }
     validate_document(current)
+}
+
+fn merge_existing_connection_if_valid(paths: &XanaPaths, replacement: String) -> Result<String> {
+    if !paths.config_file().is_file() {
+        return Ok(replacement);
+    }
+    let existing = fs::read_to_string(paths.config_file())?;
+    if XanaConfig::parse(&existing).is_err() {
+        return Ok(replacement);
+    }
+    merge_connection(&existing, &replacement)
 }
 
 fn edit_permissions_shell(
@@ -647,6 +661,80 @@ mod tests {
         assert!(merged.starts_with("# retained"));
         assert!(merged.contains("permission_mode = \"deny\""));
         assert!(merged.contains("model = \"new\""));
+    }
+
+    #[test]
+    fn connection_merge_updates_the_existing_named_default_profile() {
+        let existing = base()
+            .replace(
+                "default_profile = \"default\"",
+                "default_profile = \"main\"",
+            )
+            .replace("[profiles.default", "[profiles.main")
+            .replace("profile = \"default\"", "profile = \"main\"");
+        let replacement = base().replace("old", "new");
+
+        let merged = merge_connection(&existing, &replacement).unwrap();
+
+        assert!(merged.contains("default_profile = \"main\""));
+        assert!(merged.contains("[profiles.main]"));
+        assert!(merged.contains("model = \"new\""));
+    }
+
+    #[test]
+    fn quick_reconfiguration_preserves_existing_connections() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(paths.config_file(), base()).unwrap();
+        let replacement = XanaConfig::render_initial(InitialConfig {
+            connection: InitialConnection::Native {
+                name: "remote".into(),
+                kind: crate::config::ProviderKind::OpenAiCompat,
+                base_url: Some("http://localhost:1234/v1".into()),
+                credential: None,
+            },
+            model: "remote-model".into(),
+            max_tool_rounds: 8,
+            shell: ShellConfig::default(),
+            permission_mode: PermissionMode::Ask,
+            reasoning_effort: None,
+        })
+        .unwrap();
+
+        let customization = customize_quick(
+            replacement,
+            &SetupArgs::default(),
+            &paths,
+            &mut std::io::Cursor::new(Vec::<u8>::new()),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        assert!(customization.config.contains("[providers.ollama]"));
+        assert!(customization.config.contains("[providers.remote]"));
+        assert!(customization.config.contains("connection = \"remote\""));
+    }
+
+    #[test]
+    fn reusable_setup_base_preserves_valid_connections_but_can_repair_invalid_config() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        let replacement = base().replace("old", "new");
+
+        fs::write(paths.config_file(), base()).unwrap();
+        let merged = merge_existing_connection_if_valid(&paths, replacement.clone()).unwrap();
+        assert!(merged.contains("# keep me"));
+        assert!(merged.contains("model = \"new\""));
+
+        fs::write(paths.config_file(), "not valid TOML = [").unwrap();
+        assert_eq!(
+            merge_existing_connection_if_valid(&paths, replacement.clone()).unwrap(),
+            replacement
+        );
     }
 
     #[test]

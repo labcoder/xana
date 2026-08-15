@@ -7,6 +7,7 @@ use crate::{
     vision::{ImageRef, MediaResolver},
 };
 use std::error::Error;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 fn first_fixture_message(json: &str) -> WireMessage {
     let response = match serde_json::from_str::<WireChatResponse>(json) {
@@ -324,6 +325,38 @@ async fn unrepresentable_history_fails_before_http() {
         }
         Ok(_) => panic!("expected request conversion to fail"),
     }
+}
+
+#[tokio::test]
+async fn stream_failures_preserve_the_specific_safe_cause() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request).await.unwrap();
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+        stream
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+    });
+    let client = OpenAiCompatClient::new(format!("http://{address}/v1"), "test-model".into());
+
+    let error = client
+        .send_message(&[Message::text(Role::User, "hello")], &[])
+        .await
+        .expect_err("missing DONE must fail");
+
+    assert_eq!(error.kind, OpenAiCompatErrorKind::Stream);
+    assert!(error.to_string().contains("ended before the [DONE] marker"));
+    server.await.unwrap();
 }
 
 #[test]

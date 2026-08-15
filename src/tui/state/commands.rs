@@ -175,7 +175,12 @@ impl TuiState {
     fn update_overlay(&mut self, action: InputAction) -> UpdateEffect {
         match action {
             InputAction::Cancel => {
-                self.overlay = None;
+                if let Some(Overlay::ExternalImageApproval { input, .. }) = self.overlay.take() {
+                    self.composer.replace(input);
+                    self.status = "External image was not read; draft restored".to_owned();
+                } else {
+                    self.overlay = None;
+                }
                 UpdateEffect::None
             }
             InputAction::Insert(text) => {
@@ -238,6 +243,7 @@ impl TuiState {
             Some(Overlay::ModelPicker { choices, .. })
             | Some(Overlay::ReasoningPicker { choices, .. }) => choices.len(),
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
+            Some(Overlay::ExternalImageApproval { .. }) => 2,
             Some(Overlay::Artifact { .. }) => 4,
             Some(Overlay::SessionPicker { query, choices, .. }) => choices
                 .iter()
@@ -253,6 +259,7 @@ impl TuiState {
             | Some(Overlay::ModelPicker { selected, .. })
             | Some(Overlay::ReasoningPicker { selected, .. })
             | Some(Overlay::Approval { selected, .. })
+            | Some(Overlay::ExternalImageApproval { selected, .. })
             | Some(Overlay::Artifact { selected, .. })
             | Some(Overlay::SessionPicker { selected, .. }) => *selected = index,
             _ => return false,
@@ -268,6 +275,7 @@ impl TuiState {
             Some(Overlay::Approval { prompt, selected }) => {
                 (selected, approval_choice_count(prompt))
             }
+            Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
             Some(Overlay::Artifact { selected, .. }) => (selected, 4),
             Some(Overlay::SessionPicker {
                 query,
@@ -336,6 +344,25 @@ impl TuiState {
                     UpdateEffect::ViewSession(row.conversation)
                 }),
             Overlay::Approval { prompt, selected } => self.confirm_approval(*prompt, selected),
+            Overlay::ExternalImageApproval {
+                operation_id,
+                input,
+                path,
+                selected,
+            } => {
+                if selected == 0 {
+                    UpdateEffect::AttachAndSubmit {
+                        operation_id,
+                        input,
+                        path,
+                        approved_external: true,
+                    }
+                } else {
+                    self.composer.replace(input);
+                    self.status = "External image was not read; draft restored".to_owned();
+                    UpdateEffect::None
+                }
+            }
             Overlay::Artifact {
                 artifact, selected, ..
             } => {
@@ -368,6 +395,14 @@ impl TuiState {
             };
         }
         let input = self.composer.take().trim().to_owned();
+        if let Some(path) = image_path_in_text(&input) {
+            return UpdateEffect::AttachAndSubmit {
+                operation_id: OperationId::new(),
+                input,
+                path,
+                approved_external: false,
+            };
+        }
         self.submit_text(input)
     }
 

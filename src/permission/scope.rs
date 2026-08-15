@@ -50,6 +50,14 @@ pub(crate) fn scope_contains(grant: &PermissionScope, request: &PermissionScope)
             },
         ) => request.starts_with(grant),
         (
+            PermissionScope::ExternalPath {
+                canonical_path: grant,
+            },
+            PermissionScope::ExternalPath {
+                canonical_path: request,
+            },
+        ) => grant == request,
+        (
             PermissionScope::Command {
                 shell: grant_shell,
                 canonical_cwd: grant_cwd,
