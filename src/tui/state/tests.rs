@@ -56,6 +56,21 @@ fn pasted_image_path_is_staged_as_a_drop_without_inserting_text() {
 }
 
 #[test]
+fn vision_command_selects_or_clears_the_next_turn_route() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.replace("/vision describe".to_owned());
+
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert_eq!(state.pending_vision_route.as_deref(), Some("describe"));
+    assert!(state.status.contains("next image turn"));
+
+    state.composer.replace("/vision auto".to_owned());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(state.pending_vision_route.is_none());
+}
+
+#[test]
 fn a_message_containing_two_image_paths_requests_both_automatic_attachments() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;
@@ -216,12 +231,14 @@ fn input_and_runtime_events_follow_one_explicit_update_path() {
         operation_id,
         input,
         images,
+        vision_route,
     } = state.update_input(InputAction::Submit)
     else {
         panic!("submit effect");
     };
     assert_eq!(input, "hello");
     assert!(images.is_empty());
+    assert!(vision_route.is_none());
     state.mark_submitted(operation_id, input);
     state.apply_runtime(&AgentEvent::AssistantTextDelta {
         operation_id,

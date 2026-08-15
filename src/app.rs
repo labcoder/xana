@@ -18,6 +18,8 @@ mod projects;
 mod recovery;
 mod sessions;
 mod skills;
+pub(crate) mod vision;
+mod vision_commands;
 
 use connections::{
     codex_launch, model_manager, run_auth_command, run_connection_command, run_model_command,
@@ -152,6 +154,11 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdin = io::stdin();
             image_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
         }
+        Some(Command::Vision(args)) => {
+            let stdout = io::stdout();
+            let stdin = io::stdin();
+            vision_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
+        }
         Some(Command::Connect(args)) => match args.integration {
             Some(cli::ConnectIntegration::Provider) => {
                 let setup = cli::SetupArgs {
@@ -179,6 +186,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 writeln!(output, "  MCP             xana mcp list")?;
                 writeln!(output, "  external agent  xana external-agent list")?;
                 writeln!(output, "  image routes    xana image list")?;
+                writeln!(output, "  vision routes   xana vision list")?;
                 if let Some(integration) = integration {
                     writeln!(
                         output,

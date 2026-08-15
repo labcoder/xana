@@ -19,6 +19,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 
 pub(crate) mod openai_images;
+pub(crate) mod openai_vision;
 pub(crate) mod openrouter_images;
 mod tool;
 
@@ -463,6 +464,13 @@ pub(crate) fn image_descriptor_registry() -> Result<FocusedServiceRegistry, Focu
     let mut registry = FocusedServiceRegistry::default();
     registry.register_descriptor(openai_images::descriptor())?;
     registry.register_descriptor(openrouter_images::descriptor())?;
+    Ok(registry)
+}
+
+pub(crate) fn descriptor_registry() -> Result<FocusedServiceRegistry, FocusedServiceError> {
+    let mut registry = image_descriptor_registry()?;
+    registry.register_descriptor(openai_vision::openai_descriptor())?;
+    registry.register_descriptor(openai_vision::openrouter_descriptor())?;
     Ok(registry)
 }
 

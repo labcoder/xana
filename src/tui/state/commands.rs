@@ -178,6 +178,17 @@ impl TuiState {
                 if let Some(Overlay::ExternalImageApproval { input, .. }) = self.overlay.take() {
                     self.composer.replace(input);
                     self.status = "External image was not read; draft restored".to_owned();
+                } else if let Some(Overlay::VisionApproval {
+                    input,
+                    images,
+                    plan,
+                    ..
+                }) = self.overlay.take()
+                {
+                    self.composer.replace(input);
+                    self.restore_images(images);
+                    self.pending_vision_route = Some(plan.route.name);
+                    self.status = "Vision specialist was not authorized; draft restored".to_owned();
                 } else {
                     self.overlay = None;
                 }
@@ -243,7 +254,7 @@ impl TuiState {
             Some(Overlay::ModelPicker { choices, .. })
             | Some(Overlay::ReasoningPicker { choices, .. }) => choices.len(),
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
-            Some(Overlay::ExternalImageApproval { .. }) => 2,
+            Some(Overlay::ExternalImageApproval { .. }) | Some(Overlay::VisionApproval { .. }) => 2,
             Some(Overlay::Artifact { .. }) => 4,
             Some(Overlay::SessionPicker { query, choices, .. }) => choices
                 .iter()
@@ -260,6 +271,7 @@ impl TuiState {
             | Some(Overlay::ReasoningPicker { selected, .. })
             | Some(Overlay::Approval { selected, .. })
             | Some(Overlay::ExternalImageApproval { selected, .. })
+            | Some(Overlay::VisionApproval { selected, .. })
             | Some(Overlay::Artifact { selected, .. })
             | Some(Overlay::SessionPicker { selected, .. }) => *selected = index,
             _ => return false,
@@ -276,6 +288,7 @@ impl TuiState {
                 (selected, approval_choice_count(prompt))
             }
             Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
+            Some(Overlay::VisionApproval { selected, .. }) => (selected, 2),
             Some(Overlay::Artifact { selected, .. }) => (selected, 4),
             Some(Overlay::SessionPicker {
                 query,
@@ -361,6 +374,28 @@ impl TuiState {
                 } else {
                     self.composer.replace(input);
                     self.status = "External image was not read; draft restored".to_owned();
+                    UpdateEffect::None
+                }
+            }
+            Overlay::VisionApproval {
+                operation_id,
+                input,
+                images,
+                plan,
+                selected,
+            } => {
+                if selected == 0 {
+                    UpdateEffect::PrepareVision {
+                        operation_id,
+                        input,
+                        images,
+                        plan,
+                    }
+                } else {
+                    self.composer.replace(input);
+                    self.restore_images(images);
+                    self.pending_vision_route = Some(plan.route.name);
+                    self.status = "Vision specialist was not authorized; draft restored".to_owned();
                     UpdateEffect::None
                 }
             }
@@ -507,6 +542,24 @@ impl TuiState {
                     UpdateEffect::OpenReasoningPicker
                 } else {
                     UpdateEffect::SetReasoning(command.arguments)
+                }
+            }
+            CommandId::Vision => {
+                self.composer.take();
+                if self.busy {
+                    self.status =
+                        "Wait for or interrupt the active turn before changing vision routing"
+                            .to_owned();
+                    UpdateEffect::None
+                } else if command.arguments.is_empty() {
+                    self.status = "Use /vision auto to prefer native input or /vision ROUTE to force one specialist on the next image turn".to_owned();
+                    UpdateEffect::None
+                } else if command.arguments == "auto" {
+                    self.set_vision_route(None);
+                    UpdateEffect::None
+                } else {
+                    self.set_vision_route(Some(command.arguments));
+                    UpdateEffect::None
                 }
             }
             CommandId::Sessions => {

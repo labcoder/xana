@@ -265,6 +265,14 @@ Multiple paths in one message are preserved in order. External paths are
 listed together in an exact allow-once prompt before Xana reads them. Xana
 fully decodes and content-addresses each approved copy before
 provider use; clipboard access is never ambient.
+Text-only conversational models can use an exact profile-exposed
+`vision.analyze` route through `openai.vision` or `openrouter.vision`. Xana
+prefers native image input when the selected model supports it; `/vision ROUTE`
+is an explicit one-turn override and `/vision auto` restores native-first
+routing. Specialist output is visibly labeled untrusted and attributed to its
+route, connection, model, and immutable source artifact IDs. Inspect or invoke
+routes with `xana vision list`, `xana vision inspect ROUTE`, and `xana vision
+analyze IMAGE... --question QUESTION --route ROUTE --yes`.
 
 ## Diagnose and recover an installation
 

@@ -615,6 +615,14 @@ async fn run_once(
     )
     .map_err(anyhow::Error::msg)
     .context("could not activate profile image-generation tool")?;
+    let vision = super::vision::VisionTurnService::new(
+        child_registry.clone(),
+        profile_service_routes.clone(),
+        profile_egress.clone(),
+        permission_mode,
+        artifact_store.clone(),
+        artifact_owner,
+    );
     let restored_plans = session.started_orchestration_plans();
     let child_supervisor = if child_registry.routes.is_empty() {
         None
@@ -729,6 +737,7 @@ async fn run_once(
         owner: artifact_owner,
         models: manager,
         presentation,
+        vision,
     };
 
     if let Some(input) = one_shot {

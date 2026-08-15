@@ -300,6 +300,7 @@ fn overlay_choice_at(
         super::state::Overlay::ExternalImageApproval { external_paths, .. } => {
             3 + external_paths.len()
         }
+        super::state::Overlay::VisionApproval { .. } => 9,
         super::state::Overlay::Artifact { preview, .. } => {
             if preview.is_some() {
                 6

@@ -264,3 +264,56 @@ fn route_status_is_explicit_without_resolving_credentials_or_network() {
     let missing = services.inspect(&registry, &profile.service_routes, "missing");
     assert!(!missing.configured);
 }
+
+#[test]
+fn production_descriptor_registry_covers_generation_and_specialist_vision() {
+    let services = descriptor_registry().expect("production focused-service descriptors");
+    let config = XanaConfig::parse_registry(
+        r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+
+[providers.chat]
+kind = "ollama"
+
+[profiles.default]
+connection = "chat"
+model = "text-only"
+service_routes = ["vision"]
+egress_policy = "vision"
+
+[service_connections.vision]
+adapter = "openai.vision"
+credential = { source = "environment", variable = "OPENAI_API_KEY" }
+
+[service_routes.vision]
+operation = "vision.analyze"
+connection = "vision"
+model = "gpt-4.1-mini"
+default = true
+egress_policy = "vision"
+
+[egress_policies.vision]
+allowed = ["prompt_text", "selected_artifacts"]
+"#,
+    )
+    .unwrap();
+    let profile = &config.profiles["default"];
+
+    let route = services
+        .resolve(
+            &config,
+            &profile.service_routes,
+            &config.egress_policies["vision"].allowed,
+            ServiceOperation::VisionAnalyze,
+            None,
+        )
+        .expect("default specialist route");
+
+    assert_eq!(route.adapter, "openai.vision");
+    assert_eq!(route.operation, ServiceOperation::VisionAnalyze);
+    assert_eq!(route.descriptor.max_input_artifacts, 8);
+    assert!(route.descriptor.inputs.contains(&MediaModality::Image));
+    assert!(route.descriptor.outputs.contains(&MediaModality::Text));
+}

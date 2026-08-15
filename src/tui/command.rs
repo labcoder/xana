@@ -18,6 +18,7 @@ pub(super) enum CommandId {
     Mcp,
     ExternalAgent,
     Image,
+    Vision,
     Setup,
     Usage,
     Activity,
@@ -204,6 +205,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         mode: "list|inspect ROUTE|generate [PROMPT] [--route ROUTE] [--yes]",
         summary: "Inspect or invoke an exposed image-generation route",
         arguments: "list",
+    },
+    CommandSpec {
+        id: CommandId::Vision,
+        name: "vision",
+        mode: "[auto|ROUTE]",
+        summary: "Prefer native vision or select a specialist for the next image turn",
+        arguments: "",
     },
     CommandSpec {
         id: CommandId::Queue,

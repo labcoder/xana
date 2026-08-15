@@ -132,14 +132,23 @@ pub(super) async fn dispatch_managed_effect(
             operation_id,
             input,
             images,
+            vision_route,
         } => {
             let model = driver.models.iter().find(|model| model.id == state.model);
-            if !images.is_empty()
+            if vision_route.is_some() {
+                state.restore_submission(
+                    input,
+                    images,
+                    vision_route,
+                    "Managed Codex owns image interpretation; specialist vision routing is available in native Xana conversations".to_owned(),
+                );
+            } else if !images.is_empty()
                 && !model.is_some_and(|model| model.input_modalities.contains("image"))
             {
                 state.restore_submission(
                     input,
                     images,
+                    None,
                     format!(
                         "{}/{} is not advertised as image-capable",
                         state.connection, state.model
@@ -149,7 +158,7 @@ pub(super) async fn dispatch_managed_effect(
                 .submit(operation_id, input.clone(), images.clone())
                 .await
             {
-                state.restore_submission(input, images, reason);
+                state.restore_submission(input, images, None, reason);
             } else {
                 state.mark_submitted(operation_id, input);
             }
@@ -160,8 +169,19 @@ pub(super) async fn dispatch_managed_effect(
             }
         }
         UpdateEffect::Steer { input, .. } => {
-            state.restore_submission(input, Vec::new(), "Codex app-server does not advertise same-turn steering; message retained as a draft".to_owned());
+            state.restore_submission(input, Vec::new(), None, "Codex app-server does not advertise same-turn steering; message retained as a draft".to_owned());
         }
+        UpdateEffect::PrepareVision {
+            input,
+            images,
+            plan,
+            ..
+        } => state.restore_submission(
+            input,
+            images,
+            Some(plan.route.name),
+            "Specialist vision routing is available in native Xana conversations; Codex manages its own image input".to_owned(),
+        ),
         UpdateEffect::Attach(path) => {
             match ImageIngestor::new(artifact_store.clone(), ImageLimits::default())
                 .ingest_path(workspace, &path, owner)
@@ -506,6 +526,7 @@ pub(super) async fn dispatch_effect(
             operation_id,
             input,
             images,
+            vision_route,
         } => {
             if !images.is_empty() {
                 let descriptor = header
@@ -516,6 +537,7 @@ pub(super) async fn dispatch_effect(
                     state.restore_submission(
                         input,
                         images,
+                        vision_route,
                         format!(
                             "{}/{} is not declared image-capable; refresh its catalog or add an explicit model override",
                             header.provider_name, header.model
@@ -530,6 +552,7 @@ pub(super) async fn dispatch_effect(
                     state.restore_submission(
                         input,
                         images,
+                        vision_route,
                         format!("could not start turn: {error}"),
                     );
                     return Ok(None);
@@ -559,12 +582,24 @@ pub(super) async fn dispatch_effect(
                 state.restore_submission(
                     input,
                     images,
+                    vision_route,
                     result
                         .reason
                         .unwrap_or_else(|| "command rejected".to_owned()),
                 );
             }
         }
+        UpdateEffect::PrepareVision {
+            input,
+            images,
+            plan,
+            ..
+        } => state.restore_submission(
+            input,
+            images,
+            Some(plan.route.name),
+            "Vision preparation was not claimed by the native execution owner".to_owned(),
+        ),
         UpdateEffect::Interrupt { operation_id } => {
             let result = client
                 .send(RuntimeCommand::InterruptOperation { operation_id })

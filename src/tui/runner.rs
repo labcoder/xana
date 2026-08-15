@@ -24,9 +24,10 @@ use crate::{
 use anyhow::{Context, Result};
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::{
-    sync::oneshot,
+    sync::{mpsc, oneshot},
     time::{Instant, MissedTickBehavior},
 };
+use tokio_util::sync::CancellationToken;
 
 const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const WORK_INDICATOR_INTERVAL: Duration = Duration::from_millis(250);
@@ -36,7 +37,7 @@ trait ExecutionOwner {
 
     async fn next_event(&mut self) -> Result<Self::Event>;
 
-    fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()>;
+    async fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()>;
 
     async fn dispatch(
         &mut self,
@@ -153,7 +154,7 @@ async fn drive<Owner: ExecutionOwner>(
             }
             owner_event = owner.next_event() => {
                 dirty = true;
-                owner.apply_event(state, owner_event?)?;
+                owner.apply_event(state, owner_event?).await?;
             }
             _ = work_indicator.tick(), if !prepared.profile.reduced_motion && state.busy && state.active_operation.is_some() => {
                 dirty |= state.advance_work_indicator();
@@ -170,16 +171,90 @@ struct NativeOwner<'a> {
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
     active_root: Option<ActiveRootLease>,
+    vision_events: mpsc::Receiver<NativeVisionEvent>,
+    vision_sender: mpsc::Sender<NativeVisionEvent>,
+    vision_cancellation: Option<(crate::identity::OperationId, CancellationToken)>,
+}
+
+enum NativeOwnerEvent {
+    Runtime(AgentEvent),
+    Vision(NativeVisionEvent),
+}
+
+enum NativeVisionEvent {
+    Prepared {
+        operation_id: crate::identity::OperationId,
+        prepared: crate::app::vision::PreparedVisionTurn,
+    },
+    Failed {
+        operation_id: crate::identity::OperationId,
+        input: String,
+        images: Vec<crate::vision::ImageAttachment>,
+        route: String,
+        reason: String,
+    },
 }
 
 impl ExecutionOwner for NativeOwner<'_> {
-    type Event = AgentEvent;
+    type Event = NativeOwnerEvent;
 
     async fn next_event(&mut self) -> Result<Self::Event> {
-        self.client.next_event().await.map_err(anyhow::Error::new)
+        tokio::select! {
+            event = self.client.next_event() => event.map(NativeOwnerEvent::Runtime).map_err(anyhow::Error::new),
+            event = self.vision_events.recv() => event
+                .map(NativeOwnerEvent::Vision)
+                .ok_or_else(|| anyhow::anyhow!("vision preparation channel stopped")),
+        }
     }
 
-    fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
+    async fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
+        let event = match event {
+            NativeOwnerEvent::Vision(NativeVisionEvent::Prepared {
+                operation_id,
+                prepared,
+            }) => {
+                self.vision_cancellation = None;
+                state.finish_vision_preparation(&prepared.receipt);
+                let result = self
+                    .client
+                    .send(crate::native_runtime::RuntimeCommand::SubmitTurn {
+                        operation_id,
+                        input: prepared.model_input,
+                    })
+                    .await
+                    .context("native TUI runtime stopped after vision preparation")?;
+                if !result.accepted {
+                    self.active_root = None;
+                    state.fail_vision_preparation(
+                        result
+                            .reason
+                            .unwrap_or_else(|| "prepared vision turn was rejected".to_owned()),
+                    );
+                }
+                return Ok(());
+            }
+            NativeOwnerEvent::Vision(NativeVisionEvent::Failed {
+                operation_id,
+                input,
+                images,
+                route,
+                reason,
+            }) => {
+                self.vision_cancellation = None;
+                self.active_root = None;
+                state.fail_vision_preparation(format!(
+                    "Vision specialist failed before turn {operation_id}: {reason}"
+                ));
+                state.restore_submission(
+                    input,
+                    images,
+                    Some(route),
+                    "Vision specialist failed; draft and images restored".to_owned(),
+                );
+                return Ok(());
+            }
+            NativeOwnerEvent::Runtime(event) => event,
+        };
         let terminal = matches!(
             event,
             AgentEvent::OperationStateChanged {
@@ -205,23 +280,186 @@ impl ExecutionOwner for NativeOwner<'_> {
         session_preferences: &mut session::SessionPreferenceStore,
         clipboard: &mut clipboard::Clipboard,
     ) -> Result<Option<ChatExit>> {
-        dispatch_effect(
-            effect,
-            state,
-            &self.client,
-            self.header,
-            &self.workspace_host,
-            &self.conversation,
-            &mut self.active_root,
-            preferences_path,
-            session_preferences,
-            clipboard,
-        )
-        .await
+        match effect {
+            UpdateEffect::Submit {
+                operation_id,
+                input,
+                images,
+                vision_route,
+            } if !images.is_empty() => {
+                let descriptor = self
+                    .header
+                    .models
+                    .descriptor(&self.header.provider_name, &self.header.model)
+                    .context("could not resolve selected model capabilities")?;
+                let plan = match self.header.vision.route_turn(
+                    descriptor.input_modalities.contains("image"),
+                    vision_route.as_deref(),
+                ) {
+                    Ok(crate::app::vision::VisionTurnRoute::Native) => {
+                        return dispatch_effect(
+                            UpdateEffect::Submit {
+                                operation_id,
+                                input,
+                                images,
+                                vision_route: None,
+                            },
+                            state,
+                            &self.client,
+                            self.header,
+                            &self.workspace_host,
+                            &self.conversation,
+                            &mut self.active_root,
+                            preferences_path,
+                            session_preferences,
+                            clipboard,
+                        )
+                        .await;
+                    }
+                    Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => plan,
+                    Err(error) => {
+                        state.restore_submission(
+                            input,
+                            images,
+                            vision_route,
+                            format!(
+                                "Image input is unsupported for {}/{} and no usable vision specialist is available: {error:#}. Run `xana connect vision` or select an image-capable model.",
+                                self.header.provider_name, self.header.model
+                            ),
+                        );
+                        return Ok(None);
+                    }
+                };
+                match plan.permission_mode {
+                    crate::config::PermissionMode::Deny => {
+                        state.restore_submission(
+                            input,
+                            images,
+                            Some(plan.route.name),
+                            "Vision specialist use is denied by the active profile".to_owned(),
+                        );
+                        Ok(None)
+                    }
+                    crate::config::PermissionMode::Ask => {
+                        state.request_vision_approval(operation_id, input, images, plan);
+                        Ok(None)
+                    }
+                    crate::config::PermissionMode::Allow => {
+                        self.start_vision(operation_id, input, images, plan, state)
+                            .await
+                    }
+                }
+            }
+            UpdateEffect::PrepareVision {
+                operation_id,
+                input,
+                images,
+                plan,
+            } => {
+                self.start_vision(operation_id, input, images, plan, state)
+                    .await
+            }
+            UpdateEffect::Interrupt { operation_id }
+                if self
+                    .vision_cancellation
+                    .as_ref()
+                    .is_some_and(|(active, _)| *active == operation_id) =>
+            {
+                if let Some((_, cancellation)) = self.vision_cancellation.take() {
+                    cancellation.cancel();
+                }
+                state.set_status("Cancelling vision specialist preparation…");
+                Ok(None)
+            }
+            effect => {
+                dispatch_effect(
+                    effect,
+                    state,
+                    &self.client,
+                    self.header,
+                    &self.workspace_host,
+                    &self.conversation,
+                    &mut self.active_root,
+                    preferences_path,
+                    session_preferences,
+                    clipboard,
+                )
+                .await
+            }
+        }
     }
 
-    async fn shutdown(self, _state: &TuiState) -> Result<()> {
+    async fn shutdown(mut self, _state: &TuiState) -> Result<()> {
+        if let Some((_, cancellation)) = self.vision_cancellation.take() {
+            cancellation.cancel();
+        }
         Ok(())
+    }
+}
+
+impl NativeOwner<'_> {
+    async fn start_vision(
+        &mut self,
+        operation_id: crate::identity::OperationId,
+        input: String,
+        images: Vec<crate::vision::ImageAttachment>,
+        plan: crate::app::vision::VisionPlan,
+        state: &mut TuiState,
+    ) -> Result<Option<ChatExit>> {
+        let lease = match self.workspace_host.acquire_root(self.conversation.clone()) {
+            Ok(lease) => lease,
+            Err(error) => {
+                state.restore_submission(
+                    input,
+                    images,
+                    Some(plan.route.name),
+                    format!("could not start vision turn: {error}"),
+                );
+                return Ok(None);
+            }
+        };
+        let cancellation = CancellationToken::new();
+        self.vision_cancellation = Some((operation_id, cancellation.clone()));
+        self.active_root = Some(lease);
+        state.mark_submitted(operation_id, input.clone());
+        state.set_status(format!(
+            "Analyzing {} image(s) via {}…",
+            images.len(),
+            plan.route.name
+        ));
+        let service = self.header.vision.clone();
+        let source_images = images
+            .iter()
+            .map(|attachment| attachment.image.clone())
+            .collect();
+        let route = plan.route.name.clone();
+        let events = self.vision_sender.clone();
+        tokio::spawn(async move {
+            let event = match service
+                .execute(
+                    operation_id,
+                    input.clone(),
+                    source_images,
+                    plan,
+                    cancellation,
+                )
+                .await
+            {
+                Ok(prepared) => NativeVisionEvent::Prepared {
+                    operation_id,
+                    prepared,
+                },
+                Err(error) => NativeVisionEvent::Failed {
+                    operation_id,
+                    input,
+                    images,
+                    route,
+                    reason: format!("{error:#}"),
+                },
+            };
+            let _ = events.send(event).await;
+        });
+        Ok(None)
     }
 }
 
@@ -244,7 +482,7 @@ impl ExecutionOwner for ManagedOwner {
         })
     }
 
-    fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
+    async fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
         match event {
             ManagedTuiEvent::Notification(event) => state.apply_managed_event(&event),
             ManagedTuiEvent::Approval { request, reply } => {
@@ -337,6 +575,7 @@ pub(crate) async fn run_native(
     state.set_rail_expanded(session_preferences.rail_expanded());
     state.refresh_sessions(workspace_host.snapshot()?);
 
+    let (vision_sender, vision_events) = mpsc::channel(1);
     run(
         prepared,
         state,
@@ -346,6 +585,9 @@ pub(crate) async fn run_native(
             workspace_host,
             conversation,
             active_root: None,
+            vision_events,
+            vision_sender,
+            vision_cancellation: None,
         },
         session_preferences,
     )
