@@ -224,16 +224,7 @@ impl<W: Write> EventRenderer<W> {
             }
             AgentEvent::PermissionRequested { request } => {
                 self.finish_stream()?;
-                writeln!(
-                    self.output,
-                    "{}\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
-                    self.presentation
-                        .paint(SemanticToken::Approval, "xana> permission required"),
-                    request.tool_name,
-                    request.effect_class,
-                    display_scope(&request.scope),
-                    request.final_arguments
-                )?;
+                render_permission_request(&mut self.output, request, &self.presentation)?;
             }
             AgentEvent::PermissionAudited { .. } => {}
             AgentEvent::InvocationIntentCommitted { .. }
@@ -303,14 +294,10 @@ impl<W: Write> EventRenderer<W> {
                     self.finish_stream()?;
                     writeln!(
                         self.output,
-                        "xana> child {} [{}] requires permission\ntool: {}\neffect: {:?}\nscope: {}\narguments: {}\nThis effect uses Xana's ordinary host permissions; it is not contained.",
-                        attribution.agent_id,
-                        attribution.route,
-                        request.tool_name,
-                        request.effect_class,
-                        display_scope(&request.scope),
-                        request.final_arguments
+                        "xana> child {} [{}] requires permission",
+                        attribution.agent_id, attribution.route,
                     )?;
+                    render_permission_request(&mut self.output, request, &self.presentation)?;
                 }
                 ChildActivity::PermissionAudited { .. }
                 | ChildActivity::ToolFinished { .. }
@@ -882,7 +869,23 @@ pub(crate) async fn run_chat(
                             .route_turn(native_vision, pending_vision_route.as_deref())
                         {
                             Ok(crate::app::vision::VisionTurnRoute::Native) => None,
-                            Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => Some(plan),
+                            Ok(crate::app::vision::VisionTurnRoute::SpecialistDenied(_)) => {
+                                for attachment in attachments {
+                                    pending_images.push(attachment);
+                                }
+                                println!(
+                                    "xana> vision specialist use is denied by the active profile"
+                                );
+                                continue;
+                            }
+                            Ok(crate::app::vision::VisionTurnRoute::SpecialistAllowed(plan)) => {
+                                Some((plan, false))
+                            }
+                            Ok(
+                                crate::app::vision::VisionTurnRoute::SpecialistApprovalRequired(
+                                    plan,
+                                ),
+                            ) => Some((plan, true)),
                             Err(error) => {
                                 for attachment in attachments {
                                     pending_images.push(attachment);
@@ -895,37 +898,30 @@ pub(crate) async fn run_chat(
                             }
                         }
                     };
-                    if let Some(plan) = specialist_plan {
+                    if let Some((plan, approval_required)) = specialist_plan {
                         println!("xana> {}", plan.preview(turn_images.len()));
-                        match plan.permission_mode {
-                            crate::config::PermissionMode::Deny => {
-                                for attachment in attachments {
-                                    pending_images.push(attachment);
-                                }
-                                println!(
-                                    "xana> vision specialist use is denied by the active profile"
-                                );
-                                continue;
-                            }
-                            crate::config::PermissionMode::Ask => {
-                                let answer = editor.readline(
-                                    "xana> send these images to the named specialist once? [y/N] ",
-                                );
-                                if !matches!(
-                                    answer.as_deref().map(str::trim),
-                                    Ok("y" | "Y" | "yes" | "YES" | "Yes")
-                                ) {
+                        let decision = if approval_required {
+                            match editor
+                                .readline("xana> outbound decision: [o]nce, [a]lways allow, [n]o once, always [d]eny, [c]ancel [n]: ")
+                                .as_deref()
+                                .map(str::trim)
+                            {
+                                Ok("o" | "O" | "once" | "y" | "Y" | "yes") => Some(crate::outbound::OutboundApprovalDecision::AllowOnce),
+                                Ok("a" | "A" | "always") => Some(crate::outbound::OutboundApprovalDecision::SaveAllow),
+                                Ok("d" | "D" | "deny") => Some(crate::outbound::OutboundApprovalDecision::SaveDeny),
+                                Ok("c" | "C" | "cancel") => Some(crate::outbound::OutboundApprovalDecision::Cancel),
+                                Ok("" | "n" | "N" | "no") => Some(crate::outbound::OutboundApprovalDecision::DenyOnce),
+                                _ => {
                                     for attachment in attachments {
                                         pending_images.push(attachment);
                                     }
-                                    println!(
-                                        "xana> specialist vision was not authorized; message was not sent"
-                                    );
+                                    println!("xana> specialist vision was not authorized; message was not sent");
                                     continue;
                                 }
                             }
-                            crate::config::PermissionMode::Allow => {}
-                        }
+                        } else {
+                            None
+                        };
                         println!(
                             "xana> analyzing attached images with the named vision specialist..."
                         );
@@ -935,6 +931,7 @@ pub(crate) async fn run_chat(
                             turn_input,
                             turn_images,
                             *plan,
+                            decision,
                             cancellation.clone(),
                         );
                         tokio::pin!(execution);
@@ -952,9 +949,22 @@ pub(crate) async fn run_chat(
                                 for attachment in attachments {
                                     pending_images.push(attachment);
                                 }
-                                println!(
-                                    "xana> vision specialist failed: {error:#}; message was not sent"
-                                );
+                                if matches!(
+                                    decision,
+                                    Some(
+                                        crate::outbound::OutboundApprovalDecision::DenyOnce
+                                            | crate::outbound::OutboundApprovalDecision::SaveDeny
+                                            | crate::outbound::OutboundApprovalDecision::Cancel
+                                    )
+                                ) {
+                                    println!(
+                                        "xana> specialist vision was not authorized; message was not sent"
+                                    );
+                                } else {
+                                    println!(
+                                        "xana> vision specialist failed: {error:#}; message was not sent"
+                                    );
+                                }
                                 continue;
                             }
                         };
@@ -1309,7 +1319,20 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
 ) -> io::Result<ControllerDecision> {
-    write!(output, "decision [d=deny/o=once/s=session; default d]: ")?;
+    let external_scope = matches!(request.scope, PermissionScope::External { .. });
+    let exact_external = external_scope && request.outbound_review.is_some();
+    if exact_external {
+        write!(
+            output,
+            "decision [d=deny/o=once/a=always allow/n=always deny; default d]: "
+        )?;
+    } else {
+        write!(output, "decision [d=deny/o=once")?;
+        if !external_scope {
+            write!(output, "/s=session")?;
+        }
+        write!(output, "; default d]: ")?;
+    }
     output.flush()?;
 
     let mut answer = String::new();
@@ -1319,11 +1342,41 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
 
     Ok(match answer.trim().to_ascii_lowercase().as_str() {
         "o" | "once" | "y" | "yes" => ControllerDecision::AllowOnce,
-        "s" | "session" => ControllerDecision::AllowSession {
+        "s" | "session" if !external_scope => ControllerDecision::AllowSession {
             scope: request.scope.clone(),
         },
+        "a" | "always" | "allow" if exact_external => ControllerDecision::SaveOutboundAllow,
+        "n" | "never" if exact_external => ControllerDecision::SaveOutboundDeny,
         _ => ControllerDecision::Deny,
     })
+}
+
+fn render_permission_request(
+    output: &mut dyn Write,
+    request: &PermissionRequest,
+    presentation: &ResolvedPresentation,
+) -> io::Result<()> {
+    writeln!(
+        output,
+        "{}\ntool: {}\neffect: {:?}",
+        presentation.paint(SemanticToken::Approval, "xana> permission required"),
+        request.tool_name,
+        request.effect_class,
+    )?;
+    if let Some(review) = &request.outbound_review {
+        writeln!(output, "{}", review.render())?;
+    } else {
+        writeln!(
+            output,
+            "scope: {}\narguments: {}",
+            display_scope(&request.scope),
+            request.final_arguments
+        )?;
+    }
+    writeln!(
+        output,
+        "This effect uses Xana's ordinary host permissions; it is not contained."
+    )
 }
 
 fn display_scope(scope: &PermissionScope) -> String {
@@ -1542,6 +1595,7 @@ mod tests {
             effect_class: crate::tool::EffectClass::Read,
             final_arguments: serde_json::json!({"path": "README.md"}),
             scope: PermissionScope::Unscoped,
+            outbound_review: None,
         };
         for (answer, expected) in [
             ("o\n", ControllerDecision::AllowOnce),
@@ -1562,6 +1616,62 @@ mod tests {
                 expected
             );
             assert_eq!(output, b"decision [d=deny/o=once/s=session; default d]: ");
+        }
+    }
+
+    #[test]
+    fn external_permission_prompt_offers_exact_saved_choices_without_session_scope() {
+        let recipient = crate::outbound::RecipientIdentity::new(
+            crate::outbound::RecipientKind::ExternalAgent,
+            "reviewer",
+            "https://agent.example.test",
+            b"reviewer",
+        )
+        .unwrap();
+        let review = crate::outbound::OutboundRequest::new(
+            OperationId::new(),
+            recipient.clone(),
+            "delegate review",
+            vec![
+                crate::outbound::OutboundItem::new(
+                    crate::config::OutboundDataClass::PromptText,
+                    "delegated task",
+                    None,
+                    "current request",
+                    b"review".to_vec(),
+                )
+                .unwrap(),
+            ],
+        )
+        .unwrap()
+        .review();
+        let request = PermissionRequest {
+            operation_id: OperationId::new(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "delegate_agent".to_owned(),
+            effect_class: crate::tool::EffectClass::External,
+            final_arguments: serde_json::json!({"task": "review"}),
+            scope: PermissionScope::External {
+                recipient_identity_digest: recipient.identity_digest,
+                operation: "delegate".to_owned(),
+            },
+            outbound_review: Some(review),
+        };
+        for (answer, expected) in [
+            ("a\n", ControllerDecision::SaveOutboundAllow),
+            ("n\n", ControllerDecision::SaveOutboundDeny),
+            ("s\n", ControllerDecision::Deny),
+        ] {
+            let mut input = io::Cursor::new(answer.as_bytes());
+            let mut output = Vec::new();
+            assert_eq!(
+                permission_decision_with_io(&request, &mut input, &mut output).unwrap(),
+                expected
+            );
+            assert_eq!(
+                output,
+                b"decision [d=deny/o=once/a=always allow/n=always deny; default d]: "
+            );
         }
     }
 }

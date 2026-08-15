@@ -1168,7 +1168,7 @@ fn config_edits_fail_closed_while_another_writer_holds_the_lock() {
     let path = directory.path().join("config.toml");
     fs::write(&path, MINIMAL).expect("write config");
     let before = fs::read(&path).expect("read config before edit");
-    let lock = ConfigEditLock::acquire(&path).expect("hold edit lock");
+    let lock = ConfigTransactionLock::acquire(&path).expect("hold edit lock");
 
     let error = XanaConfig::add_profile(
         &path,
@@ -1195,4 +1195,16 @@ fn config_edits_fail_closed_while_another_writer_holds_the_lock() {
         },
     )
     .expect("edit succeeds after lock release");
+}
+
+#[test]
+fn config_transaction_lock_creates_a_private_missing_parent() {
+    let directory = tempdir().expect("temporary config directory");
+    let path = directory.path().join("fresh/nested/config.toml");
+
+    let lock = ConfigTransactionLock::acquire(&path).expect("fresh config lock");
+
+    assert!(path.parent().unwrap().is_dir());
+    assert!(path.with_file_name("config.toml.lock").is_file());
+    drop(lock);
 }

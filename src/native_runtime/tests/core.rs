@@ -97,6 +97,7 @@ fn commands_and_events_round_trip_through_json() {
                 effect_class: crate::tool::EffectClass::Read,
                 final_arguments: serde_json::json!({"path": "README.md"}),
                 scope: PermissionScope::Unscoped,
+                outbound_review: None,
             },
         },
         AgentEvent::PermissionAudited {
@@ -108,6 +109,7 @@ fn commands_and_events_round_trip_through_json() {
                     effect_class: crate::tool::EffectClass::Read,
                     final_arguments: serde_json::json!({"path": "README.md"}),
                     scope: PermissionScope::Unscoped,
+                    outbound_review: None,
                 },
                 policy_evaluation: PolicyDecision::Ask,
                 controller_decision: Some(ControllerDecision::AllowOnce),
@@ -134,6 +136,7 @@ fn commands_and_events_round_trip_through_json() {
                         effect_class: crate::tool::EffectClass::Read,
                         final_arguments: serde_json::json!({"path": "README.md"}),
                         scope: PermissionScope::Unscoped,
+                        outbound_review: None,
                     },
                     policy_evaluation: PolicyDecision::Allow,
                     controller_decision: None,

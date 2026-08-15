@@ -427,6 +427,7 @@ impl ChildExecution for PermissionChildExecution {
                     effect_class: crate::tool::EffectClass::Execute,
                     final_arguments: serde_json::json!({"action": "test"}),
                     scope: PermissionScope::Unscoped,
+                    outbound_review: None,
                 })
                 .await;
             if matches!(
@@ -499,6 +500,7 @@ impl ChildExecution for ActivityFloodChildExecution {
                     effect_class: crate::tool::EffectClass::Execute,
                     final_arguments: serde_json::json!({"action":"test"}),
                     scope: PermissionScope::Unscoped,
+                    outbound_review: None,
                 },
             });
             ChildExecutionOutcome::Completed(ChildExecutionOutput {

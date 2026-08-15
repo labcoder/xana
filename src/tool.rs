@@ -84,17 +84,72 @@ pub(crate) trait Tool: Send + Sync {
         planned: &'a PlannedToolInvocation,
         context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>>;
+
+    /// Resolves an exact saved outbound decision without performing I/O.
+    /// External tools must override this method so the registry can avoid a
+    /// redundant generic prompt while retaining the guard as final authority.
+    fn outbound_disposition(
+        &self,
+        _planned: &PlannedToolInvocation,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
+        Ok(None)
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct ToolExecutionContext {
     pub(crate) operation_id: OperationId,
     pub(crate) events: Option<crate::native_runtime::AgentEventSender>,
+    pub(crate) outbound_approval: Option<crate::outbound::ReviewedOutboundApproval>,
+}
+
+impl ToolExecutionContext {
+    pub(crate) fn authorized(
+        operation_id: OperationId,
+        events: Option<crate::native_runtime::AgentEventSender>,
+        authorization: &Authorization,
+    ) -> Self {
+        let outbound_approval = match authorization {
+            Authorization::Allowed(fact)
+                if matches!(fact.request.scope, PermissionScope::External { .. }) =>
+            {
+                let decision = match fact.controller_decision.as_ref() {
+                    Some(crate::permission::ControllerDecision::SaveOutboundAllow) => {
+                        Some(crate::outbound::OutboundApprovalDecision::SaveAllow)
+                    }
+                    Some(crate::permission::ControllerDecision::SaveOutboundDeny) => {
+                        Some(crate::outbound::OutboundApprovalDecision::SaveDeny)
+                    }
+                    Some(
+                        crate::permission::ControllerDecision::AllowOnce
+                        | crate::permission::ControllerDecision::AllowSession { .. },
+                    ) => Some(crate::outbound::OutboundApprovalDecision::AllowOnce),
+                    Some(crate::permission::ControllerDecision::Deny) => None,
+                    None if fact.policy_evaluation == crate::permission::PolicyDecision::Ask => {
+                        Some(crate::outbound::OutboundApprovalDecision::AllowOnce)
+                    }
+                    None => None,
+                };
+                decision
+                    .zip(fact.request.outbound_review.clone())
+                    .map(|(decision, review)| {
+                        crate::outbound::ReviewedOutboundApproval::new(review, decision)
+                    })
+            }
+            Authorization::Allowed(_) | Authorization::Denied(_) => None,
+        };
+        Self {
+            operation_id,
+            events,
+            outbound_approval,
+        }
+    }
 }
 
 pub(crate) struct PlannedToolInvocation {
     pub(crate) final_arguments: Value,
     pub(crate) scope: PermissionScope,
+    outbound_review: Option<crate::outbound::OutboundApprovalRequest>,
     executable: Box<dyn Any + Send + Sync>,
 }
 
@@ -126,6 +181,11 @@ impl PreparedToolInvocation<'_> {
             effect_class: self.definition.effect_class,
             final_arguments: self.planned.final_arguments.clone(),
             scope: self.planned.scope.clone(),
+            outbound_review: self
+                .planned
+                .outbound_review
+                .clone()
+                .map(|review| review.for_operation(operation_id)),
         }
     }
 
@@ -142,8 +202,17 @@ impl PlannedToolInvocation {
         Self {
             final_arguments,
             scope,
+            outbound_review: None,
             executable: Box::new(executable),
         }
+    }
+
+    pub(crate) fn with_outbound_review(
+        mut self,
+        review: crate::outbound::OutboundApprovalRequest,
+    ) -> Self {
+        self.outbound_review = Some(review);
+        self
     }
 
     pub(crate) fn executable<T: Any>(&self, tool_name: &str) -> Result<&T, String> {
@@ -251,6 +320,73 @@ impl ToolRegistry {
                 return result;
             }
         };
+        let saved_outbound = if matches!(planned.scope(), PermissionScope::External { .. }) {
+            if planned.planned.outbound_review.is_none() {
+                self.record_tool_event(
+                    context.operation_id,
+                    RuntimeTelemetryKind::ToolFailed,
+                    &call.name,
+                );
+                return ToolResult::error(
+                    call.id.clone(),
+                    "external tool is missing Xana's exact outbound review",
+                );
+            }
+            match planned
+                .implementation
+                .outbound_disposition(&planned.planned)
+            {
+                Ok(Some(disposition)) => Some(disposition),
+                Ok(None) => {
+                    self.record_tool_event(
+                        context.operation_id,
+                        RuntimeTelemetryKind::ToolFailed,
+                        &call.name,
+                    );
+                    return ToolResult::error(
+                        call.id.clone(),
+                        "external tool is missing Xana's outbound authorization preflight",
+                    );
+                }
+                Err(error) => {
+                    self.record_tool_event(
+                        context.operation_id,
+                        RuntimeTelemetryKind::ToolFailed,
+                        &call.name,
+                    );
+                    return ToolResult::error(call.id.clone(), error);
+                }
+            }
+        } else {
+            None
+        };
+        if matches!(
+            saved_outbound,
+            Some(
+                crate::outbound::OutboundDisposition::SavedAllow
+                    | crate::outbound::OutboundDisposition::SavedDeny
+            )
+        ) {
+            return match planned
+                .execute(ToolExecutionContext {
+                    operation_id: context.operation_id,
+                    events: context.events.cloned(),
+                    outbound_approval: None,
+                })
+                .await
+            {
+                Ok(output) => ToolResult::success(call.id.clone(), output),
+                Err(error) => {
+                    self.record_tool_event(
+                        context.operation_id,
+                        RuntimeTelemetryKind::ToolFailed,
+                        &call.name,
+                    );
+                    ToolResult::error(call.id.clone(), error)
+                }
+            };
+        }
+
         let request = planned.permission_request(context.operation_id, context.invocation_id);
         let authorization = match context.permissions.authorize(request).await {
             Ok(authorization) => authorization,
@@ -276,10 +412,11 @@ impl ToolRegistry {
         }
 
         match planned
-            .execute(ToolExecutionContext {
-                operation_id: context.operation_id,
-                events: context.events.cloned(),
-            })
+            .execute(ToolExecutionContext::authorized(
+                context.operation_id,
+                context.events.cloned(),
+                &authorization,
+            ))
             .await
         {
             Ok(output) => ToolResult::success(call.id.clone(), output),

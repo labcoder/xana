@@ -629,6 +629,13 @@ mod tests {
     }
 
     #[test]
+    fn clipboard_unavailability_has_an_actionable_platform_remedy() {
+        let remedy = clipboard_image_remediation();
+        assert!(remedy.contains("clipboard") || remedy.contains("copy an image"));
+        assert!(remedy.contains("/attach --clipboard"));
+    }
+
+    #[test]
     fn malformed_and_decompression_bomb_images_fail_before_artifact_publication() {
         let limits = ImageLimits {
             max_bytes: 1024,

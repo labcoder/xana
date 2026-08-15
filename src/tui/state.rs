@@ -196,6 +196,7 @@ pub(super) enum UpdateEffect {
         input: String,
         images: Vec<ImageAttachment>,
         plan: Box<crate::app::vision::VisionPlan>,
+        decision: crate::outbound::OutboundApprovalDecision,
     },
     Interrupt {
         operation_id: OperationId,
@@ -964,6 +965,8 @@ fn message_row_estimate(message: &VisibleMessage) -> usize {
 enum ApprovalChoice {
     Once,
     Session,
+    SaveAllow,
+    SaveDeny,
     Deny,
 }
 
@@ -974,6 +977,12 @@ fn approval_choices(prompt: &ApprovalPrompt) -> Vec<ApprovalChoice> {
     }
     if prompt.allow_session {
         choices.push(ApprovalChoice::Session);
+    }
+    if prompt.save_allow {
+        choices.push(ApprovalChoice::SaveAllow);
+    }
+    if prompt.save_deny {
+        choices.push(ApprovalChoice::SaveDeny);
     }
     if prompt.deny {
         choices.push(ApprovalChoice::Deny);
@@ -992,6 +1001,8 @@ fn controller_decision(
     match choice {
         ApprovalChoice::Once => ControllerDecision::AllowOnce,
         ApprovalChoice::Session => ControllerDecision::AllowSession { scope },
+        ApprovalChoice::SaveAllow => ControllerDecision::SaveOutboundAllow,
+        ApprovalChoice::SaveDeny => ControllerDecision::SaveOutboundDeny,
         ApprovalChoice::Deny => ControllerDecision::Deny,
     }
 }

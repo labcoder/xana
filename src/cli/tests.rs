@@ -590,6 +590,34 @@ fn parses_bounded_local_diagnostic_commands() {
     assert!(
         Cli::try_parse_from(["xana", "logs", "show", "xana-1.jsonl", "--lines", "1001"]).is_err()
     );
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "outbound", "list"])
+            .unwrap()
+            .command,
+        Some(Command::Outbound(OutboundArgs {
+            command: OutboundCommand::List
+        }))
+    ));
+    let digest = "a".repeat(64);
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "outbound",
+            "revoke",
+            &digest,
+            "selected-artifacts",
+            "--yes"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Outbound(OutboundArgs {
+            command: OutboundCommand::Revoke {
+                class: OutboundClassChoice::SelectedArtifacts,
+                yes: true,
+                ..
+            }
+        }))
+    ));
 }
 
 #[test]

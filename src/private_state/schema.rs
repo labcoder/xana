@@ -303,6 +303,40 @@ pub(crate) struct OutboundDecisionDocument {
     pub(crate) decisions: BTreeMap<String, OutboundDecisionRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutboundAuditRecord {
+    pub(crate) recorded_unix_ms: u64,
+    pub(crate) operation_id: String,
+    pub(crate) recipient_kind: String,
+    pub(crate) recipient_connection: String,
+    pub(crate) recipient_destination: String,
+    pub(crate) recipient_identity_digest: String,
+    pub(crate) data_classes: Vec<OutboundDataClass>,
+    pub(crate) item_count: usize,
+    pub(crate) reference_count: usize,
+    pub(crate) total_bytes: usize,
+    pub(crate) stage: String,
+    pub(crate) decision_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OutboundAuditDocument {
+    pub(crate) version: u32,
+    #[serde(default)]
+    pub(crate) records: Vec<OutboundAuditRecord>,
+}
+
+impl Default for OutboundAuditDocument {
+    fn default() -> Self {
+        Self {
+            version: PRIVATE_RECORD_VERSION,
+            records: Vec::new(),
+        }
+    }
+}
+
 impl Default for OutboundDecisionDocument {
     fn default() -> Self {
         Self {

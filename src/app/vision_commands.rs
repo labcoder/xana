@@ -38,7 +38,8 @@ pub(crate) async fn run(
         permission,
         ArtifactStore::new(paths.data_dir().join("artifacts")),
         owner,
-    );
+    )
+    .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);
     match command {
         VisionCommand::List { json } => {
             let statuses = service.statuses()?;
@@ -141,6 +142,7 @@ pub(crate) async fn run(
                 question,
                 staged,
                 plan,
+                Some(crate::outbound::OutboundApprovalDecision::AllowOnce),
                 cancellation.clone(),
             );
             tokio::pin!(execution);

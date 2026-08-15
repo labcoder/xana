@@ -297,6 +297,7 @@ impl ManagedEventHandler for ChildManagedHandler {
                         "cwd": request.cwd,
                     }),
                     scope: scope.clone(),
+                    outbound_review: None,
                 })
                 .await
                 .map_err(|_| CodexError::Protocol("child permission broker closed".to_owned()))?;

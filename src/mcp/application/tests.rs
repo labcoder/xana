@@ -4,7 +4,7 @@ use crate::{
     identity::{OperationId, ToolInvocationId},
     message::{ToolCall, ToolResultStatus},
     native_runtime::AgentEvent,
-    permission::{PermissionBroker, PermissionPolicy, PolicyDecision},
+    permission::{ControllerDecision, PermissionBroker, PermissionPolicy, PolicyDecision},
     tool::ToolContext,
 };
 use serde_json::json;
@@ -91,12 +91,34 @@ impl McpPrimitiveTransport for FakeTransport {
 }
 
 fn application(fake: Arc<FakeTransport>) -> McpApplication {
+    let root = tempdir().unwrap().keep();
+    let paths = crate::paths::XanaPaths::resolve(Some(root.into_os_string())).unwrap();
+    let recipient = RecipientIdentity::new(
+        crate::outbound::RecipientKind::McpStdio,
+        "docs",
+        "fake",
+        b"fake-server",
+    )
+    .unwrap();
+    let configured_identity_digest = recipient.identity_digest.clone();
+    let guarded = Arc::new(McpGuardedTransport::new(
+        fake,
+        OutboundGuard::open(&paths).unwrap(),
+        recipient,
+        OutboundPolicyLayers {
+            connection_allowed: OutboundDataClass::ALL.into_iter().collect(),
+            user_ceiling: OutboundDataClass::ALL.into_iter().collect(),
+            profile_allowed: OutboundDataClass::ALL.into_iter().collect(),
+            conversation_allowed: None,
+        },
+        Some(OutboundApprovalDecision::AllowOnce),
+    ));
     let mut application = McpApplication::new(["read_file".to_owned()]);
     application
         .add_server(
             McpServerExposure {
                 server: "docs".into(),
-                configured_identity_digest: "a".repeat(64),
+                configured_identity_digest,
                 enabled: true,
                 profile_selected: true,
                 allowlist: McpPrimitiveAllowlist {
@@ -106,7 +128,7 @@ fn application(fake: Arc<FakeTransport>) -> McpApplication {
                     prompts: ["review".to_owned()].into_iter().collect(),
                 },
             },
-            fake,
+            guarded,
         )
         .expect("server is valid");
     application
@@ -198,8 +220,33 @@ async fn remote_tool_runs_after_exact_permission_and_reports_provenance() {
     let workspace = tempdir().unwrap();
     let policy =
         PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), workspace.path()).unwrap();
-    let (events, _receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
-    let (permissions, task) = PermissionBroker::spawn(policy, false, events);
+    let (events, mut receiver) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    let (permissions, task) = PermissionBroker::spawn(policy, true, events);
+    let approval = {
+        let permissions = permissions.clone();
+        tokio::spawn(async move {
+            while let Some(event) = receiver.recv().await {
+                if let AgentEvent::PermissionRequested { request } = event {
+                    let review = request
+                        .outbound_review
+                        .as_ref()
+                        .expect("MCP approval carries an exact outbound review");
+                    assert_eq!(review.recipient.connection, "docs");
+                    assert_eq!(review.classes, [OutboundDataClass::PromptText]);
+                    assert_eq!(review.items.len(), 1);
+                    permissions
+                        .decide(
+                            request.operation_id,
+                            request.invocation_id,
+                            ControllerDecision::SaveOutboundAllow,
+                        )
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+        })
+    };
     let result = registry
         .invoke(
             &ToolCall {
@@ -219,6 +266,24 @@ async fn remote_tool_runs_after_exact_permission_and_reports_provenance() {
     assert_eq!(result.status, ToolResultStatus::Success);
     assert!(result.output.contains("\"server\":\"docs\""));
     assert!(result.output.contains("\"untrusted\":true"));
+    approval.await.unwrap();
+    let reused = registry
+        .invoke(
+            &ToolCall {
+                id: "call-3".into(),
+                name: "mcp.docs.lookup".into(),
+                arguments: json!({"q":"again"}),
+            },
+            ToolContext {
+                workspace_root: workspace.path(),
+                operation_id: OperationId::new(),
+                invocation_id: ToolInvocationId::new(),
+                permissions: &permissions,
+                events: None,
+            },
+        )
+        .await;
+    assert_eq!(reused.status, ToolResultStatus::Success);
     permissions.shutdown();
     task.await.unwrap();
 }
@@ -263,6 +328,7 @@ async fn outbound_policy_denial_prevents_discovery_transport_io() {
             profile_allowed: OutboundDataClass::ALL.into_iter().collect(),
             conversation_allowed: None,
         },
+        Some(OutboundApprovalDecision::AllowOnce),
     ));
     let mut application = McpApplication::new(std::iter::empty());
     application

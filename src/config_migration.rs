@@ -5,7 +5,7 @@
 
 use crate::{
     bounded_file,
-    config::{CONFIG_VERSION, XanaConfig},
+    config::{CONFIG_VERSION, ConfigTransactionLock, XanaConfig},
     paths::XanaPaths,
     private_state::{
         PrivateRecordInspection, PrivateRecordStatus, ensure_interoperable_records,
@@ -66,7 +66,8 @@ impl ConfigMigrationPlan {
         self,
         paths: &XanaPaths,
     ) -> Result<ConfigMigrationOutcome, ConfigMigrationError> {
-        let _lock = MigrationLock::acquire(&paths.config_migration_lock_file())?;
+        let _lock = ConfigTransactionLock::acquire(&self.config_path)
+            .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
         let current =
             bounded_file::read(&self.config_path, MAX_CONFIG_BYTES).map_err(map_read_error)?;
         if current != self.original {
@@ -117,7 +118,6 @@ pub(crate) struct ConfigMigrationOutcome {
 
 #[derive(Debug)]
 pub(crate) enum ConfigMigrationError {
-    Busy(PathBuf),
     Changed(PathBuf),
     Io { path: PathBuf, source: io::Error },
     Invalid(String),
@@ -127,11 +127,6 @@ pub(crate) enum ConfigMigrationError {
 impl fmt::Display for ConfigMigrationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Busy(path) => write!(
-                formatter,
-                "another Xana process owns configuration migration ({})",
-                path.display()
-            ),
             Self::Changed(path) => write!(
                 formatter,
                 "{} changed after the migration review; create a new plan",
@@ -147,7 +142,7 @@ impl Error for ConfigMigrationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::Busy(_) | Self::Changed(_) | Self::Invalid(_) | Self::Private(_) => None,
+            Self::Changed(_) | Self::Invalid(_) | Self::Private(_) => None,
         }
     }
 }
@@ -229,46 +224,6 @@ fn map_read_error(error: bounded_file::BoundedReadError) -> ConfigMigrationError
     }
 }
 
-struct MigrationLock {
-    file: fs::File,
-}
-
-impl MigrationLock {
-    fn acquire(path: &Path) -> Result<Self, ConfigMigrationError> {
-        let parent = path.parent().ok_or_else(|| {
-            ConfigMigrationError::Invalid(format!("{} has no parent directory", path.display()))
-        })?;
-        fs::create_dir_all(parent).map_err(|source| ConfigMigrationError::Io {
-            path: parent.to_owned(),
-            source,
-        })?;
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|source| ConfigMigrationError::Io {
-                path: path.to_owned(),
-                source,
-            })?;
-        match file.try_lock() {
-            Ok(()) => Ok(Self { file }),
-            Err(fs::TryLockError::WouldBlock) => Err(ConfigMigrationError::Busy(path.to_owned())),
-            Err(fs::TryLockError::Error(source)) => Err(ConfigMigrationError::Io {
-                path: path.to_owned(),
-                source,
-            }),
-        }
-    }
-}
-
-impl Drop for MigrationLock {
-    fn drop(&mut self) {
-        let _ = self.file.unlock();
-    }
-}
-
 #[cfg(unix)]
 fn protect_open_file(file: &fs::File) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
@@ -325,7 +280,7 @@ mod tests {
         let migrated = fs::read_to_string(paths.config_file()).unwrap();
         assert!(migrated.contains("# keep this comment\nversion = 4"));
         assert_eq!(fs::read(&outcome.backup_path).unwrap(), original);
-        assert_eq!(outcome.initialized_private_records, 6);
+        assert_eq!(outcome.initialized_private_records, 7);
         assert!(XanaConfig::parse(&migrated).is_ok());
     }
 
@@ -364,12 +319,10 @@ mod tests {
     fn a_held_migration_lock_fails_before_mutation() {
         let (_directory, paths, original) = paths_and_v3();
         let plan = ConfigMigrationPlan::build(&paths).unwrap();
-        let held = MigrationLock::acquire(&paths.config_migration_lock_file()).unwrap();
+        let held = ConfigTransactionLock::acquire(paths.config_file()).unwrap();
 
-        assert!(matches!(
-            plan.apply(&paths),
-            Err(ConfigMigrationError::Busy(_))
-        ));
+        let error = plan.apply(&paths).unwrap_err();
+        assert!(error.to_string().contains("another Xana process"));
         assert_eq!(fs::read(paths.config_file()).unwrap(), original);
         drop(held);
     }

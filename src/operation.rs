@@ -292,10 +292,11 @@ impl<'a> OperationExecutor<'a> {
             )
         } else {
             let execution = planned
-                .execute(crate::tool::ToolExecutionContext {
+                .execute(crate::tool::ToolExecutionContext::authorized(
                     operation_id,
-                    events: self.events.clone(),
-                })
+                    self.events.clone(),
+                    &authorization,
+                ))
                 .await;
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;
             match execution {

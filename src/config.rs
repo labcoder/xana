@@ -1081,7 +1081,7 @@ impl XanaConfig {
                 profile: format!("provider {} model", input.id),
             });
         }
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1131,7 +1131,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.connections.contains_key(id) {
             return Err(ConfigError::UnknownProvider {
@@ -1172,7 +1172,7 @@ impl XanaConfig {
         input: NewExternalAgent,
     ) -> Result<(), ConfigError> {
         validate_name("external agent", &input.id)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1218,7 +1218,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_external_agent(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.external_agents.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown external agent {id:?}")));
@@ -1256,7 +1256,7 @@ impl XanaConfig {
         validate_name("service route", &input.route)?;
         validate_name("service connection", &input.connection)?;
         validate_name("profile", &input.profile)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1350,7 +1350,7 @@ impl XanaConfig {
     pub(crate) fn add_mcp_server(path: &Path, input: NewMcpServer) -> Result<(), ConfigError> {
         validate_name("MCP server", &input.id)?;
         validate_name("profile", &input.profile)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1463,7 +1463,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_mcp_server(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if !registry.mcp_servers.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown MCP server {id:?}")));
@@ -1499,7 +1499,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn remove_service_route(path: &Path, route: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         let declaration = registry
             .service_routes
@@ -1550,7 +1550,7 @@ impl XanaConfig {
 
     pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
         validate_name("profile", &input.id)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1575,7 +1575,7 @@ impl XanaConfig {
         id: &str,
         update: ProfileUpdate,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1629,7 +1629,7 @@ impl XanaConfig {
         value: &str,
         enabled: bool,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1668,7 +1668,7 @@ impl XanaConfig {
         id: &str,
     ) -> Result<(), ConfigError> {
         validate_name("profile", id)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1692,7 +1692,7 @@ impl XanaConfig {
 
     pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
         validate_name("profile", new)?;
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1734,7 +1734,7 @@ impl XanaConfig {
         id: &str,
         archived: bool,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let source = read_config(path)?;
         let mut document = source
             .parse::<toml_edit::DocumentMut>()
@@ -1759,7 +1759,7 @@ impl XanaConfig {
     }
 
     pub(crate) fn delete_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigEditLock::acquire(path)?;
+        let _lock = ConfigTransactionLock::acquire(path)?;
         let registry = Self::load_registry_from(path)?;
         if registry.default_profile == id {
             return Err(ConfigError::Edit(
@@ -1789,12 +1789,21 @@ impl XanaConfig {
     }
 }
 
-struct ConfigEditLock {
+/// Cross-process transaction lock shared by every configuration writer.
+pub(crate) struct ConfigTransactionLock {
     _file: File,
 }
 
-impl ConfigEditLock {
-    fn acquire(config_path: &Path) -> Result<Self, ConfigError> {
+impl ConfigTransactionLock {
+    pub(crate) fn acquire(config_path: &Path) -> Result<Self, ConfigError> {
+        let parent = config_path.parent().ok_or_else(|| {
+            ConfigError::Edit("configuration path has no parent directory".into())
+        })?;
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Io {
+            path: parent.to_owned(),
+            source,
+        })?;
+        restrict_config_directory_permissions(parent)?;
         let file_name = config_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -1825,6 +1834,20 @@ impl ConfigEditLock {
         })?;
         Ok(Self { _file: file })
     }
+}
+
+#[cfg(unix)]
+fn restrict_config_directory_permissions(path: &Path) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|source| ConfigError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+#[cfg(not(unix))]
+fn restrict_config_directory_permissions(_path: &Path) -> Result<(), ConfigError> {
+    Ok(())
 }
 
 fn is_lock_contention(error: &io::Error) -> bool {

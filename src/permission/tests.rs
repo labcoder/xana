@@ -17,6 +17,7 @@ fn request(scope: PermissionScope) -> PermissionRequest {
         effect_class: EffectClass::Read,
         final_arguments: serde_json::json!({"path": "notes.txt"}),
         scope,
+        outbound_review: None,
     }
 }
 
@@ -71,6 +72,28 @@ fn external_file_reads_always_require_a_controller_unless_denied() {
     let workspace = tempdir().expect("workspace");
     let external = request(PermissionScope::ExternalPath {
         canonical_path: workspace.path().join("outside.txt"),
+    });
+
+    assert_eq!(
+        policy(PolicyDecision::Allow, Vec::new(), workspace.path())
+            .explain(&external)
+            .winning_decision,
+        PolicyDecision::Ask
+    );
+    assert_eq!(
+        policy(PolicyDecision::Deny, Vec::new(), workspace.path())
+            .explain(&external)
+            .winning_decision,
+        PolicyDecision::Deny
+    );
+}
+
+#[test]
+fn external_services_always_require_an_exact_controller_unless_denied() {
+    let workspace = tempdir().expect("workspace");
+    let external = request(PermissionScope::External {
+        recipient_identity_digest: "recipient-digest".to_owned(),
+        operation: "vision.analyze".to_owned(),
     });
 
     assert_eq!(

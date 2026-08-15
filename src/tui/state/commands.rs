@@ -254,7 +254,8 @@ impl TuiState {
             Some(Overlay::ModelPicker { choices, .. })
             | Some(Overlay::ReasoningPicker { choices, .. }) => choices.len(),
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
-            Some(Overlay::ExternalImageApproval { .. }) | Some(Overlay::VisionApproval { .. }) => 2,
+            Some(Overlay::ExternalImageApproval { .. }) => 2,
+            Some(Overlay::VisionApproval { .. }) => 4,
             Some(Overlay::Artifact { .. }) => 4,
             Some(Overlay::SessionPicker { query, choices, .. }) => choices
                 .iter()
@@ -288,7 +289,7 @@ impl TuiState {
                 (selected, approval_choice_count(prompt))
             }
             Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
-            Some(Overlay::VisionApproval { selected, .. }) => (selected, 2),
+            Some(Overlay::VisionApproval { selected, .. }) => (selected, 4),
             Some(Overlay::Artifact { selected, .. }) => (selected, 4),
             Some(Overlay::SessionPicker {
                 query,
@@ -384,20 +385,21 @@ impl TuiState {
                 plan,
                 selected,
             } => {
-                if selected == 0 {
-                    UpdateEffect::PrepareVision {
-                        operation_id,
-                        input,
-                        images,
-                        plan,
-                    }
-                } else {
-                    self.composer.replace(input);
-                    self.restore_images(images);
-                    self.pending_vision_route = Some(plan.route.name);
-                    self.status = "Vision specialist was not authorized; draft restored".to_owned();
-                    UpdateEffect::None
-                }
+                let decision = [
+                    crate::outbound::OutboundApprovalDecision::AllowOnce,
+                    crate::outbound::OutboundApprovalDecision::SaveAllow,
+                    crate::outbound::OutboundApprovalDecision::DenyOnce,
+                    crate::outbound::OutboundApprovalDecision::SaveDeny,
+                ]
+                .get(selected)
+                .copied();
+                decision.map_or(UpdateEffect::None, |decision| UpdateEffect::PrepareVision {
+                    operation_id,
+                    input,
+                    images,
+                    plan,
+                    decision,
+                })
             }
             Overlay::Artifact {
                 artifact, selected, ..

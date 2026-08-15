@@ -12,9 +12,10 @@ use crate::{
     },
     identity::{OperationId, PrincipalId},
     outbound::{
-        OutboundApprovalController, OutboundApprovalDecision, OutboundAuditEvent, OutboundGuard,
-        OutboundItem, OutboundPolicyLayers, OutboundRequest, OutboundTransport,
-        OutboundTransportFailure, RecipientIdentity, RecipientKind,
+        NoopOutboundAuditObserver, ObservedOutboundAudit, OutboundApprovalDecision,
+        OutboundAuditObserver, OutboundDisposition, OutboundGuard, OutboundItem,
+        OutboundPolicyLayers, OutboundRequest, OutboundTransport, OutboundTransportFailure,
+        RecipientIdentity, RecipientKind, ReviewedOutboundApproval,
     },
     vision::ImageRef,
 };
@@ -32,7 +33,9 @@ pub(crate) struct VisionPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum VisionTurnRoute {
     Native,
-    Specialist(Box<VisionPlan>),
+    SpecialistDenied(Box<VisionPlan>),
+    SpecialistAllowed(Box<VisionPlan>),
+    SpecialistApprovalRequired(Box<VisionPlan>),
 }
 
 impl VisionPlan {
@@ -72,6 +75,7 @@ pub(crate) struct VisionTurnService {
     permission_mode: PermissionMode,
     artifacts: ArtifactStore,
     owner: PrincipalId,
+    audit: Arc<dyn OutboundAuditObserver>,
 }
 
 impl VisionTurnService {
@@ -92,7 +96,13 @@ impl VisionTurnService {
             permission_mode,
             artifacts,
             owner,
+            audit: Arc::new(NoopOutboundAuditObserver),
         }
+    }
+
+    pub(crate) fn with_outbound_audit(mut self, audit: Arc<dyn OutboundAuditObserver>) -> Self {
+        self.audit = audit;
+        self
     }
 
     pub(crate) fn plan(&self, selected_route: Option<&str>) -> Result<VisionPlan> {
@@ -129,9 +139,29 @@ impl VisionTurnService {
         if conversational_model_accepts_images && selected_route.is_none() {
             return Ok(VisionTurnRoute::Native);
         }
-        self.plan(selected_route)
-            .map(Box::new)
-            .map(VisionTurnRoute::Specialist)
+        self.plan(selected_route).and_then(|plan| {
+            if plan.permission_mode == PermissionMode::Deny {
+                return Ok(VisionTurnRoute::SpecialistDenied(Box::new(plan)));
+            }
+            let recipient = vision_recipient(&plan.route)?;
+            match self.outbound.disposition(
+                &recipient,
+                [
+                    OutboundDataClass::PromptText,
+                    OutboundDataClass::SelectedArtifacts,
+                ],
+            )? {
+                OutboundDisposition::SavedAllow => {
+                    Ok(VisionTurnRoute::SpecialistAllowed(Box::new(plan)))
+                }
+                OutboundDisposition::SavedDeny => {
+                    Ok(VisionTurnRoute::SpecialistDenied(Box::new(plan)))
+                }
+                OutboundDisposition::ReviewRequired => {
+                    Ok(VisionTurnRoute::SpecialistApprovalRequired(Box::new(plan)))
+                }
+            }
+        })
     }
 
     pub(crate) fn statuses(&self) -> Result<Vec<crate::focused_service::ServiceRouteStatus>> {
@@ -157,42 +187,19 @@ impl VisionTurnService {
         question: String,
         images: Vec<ImageRef>,
         plan: VisionPlan,
+        outbound_decision: Option<OutboundApprovalDecision>,
         cancellation: CancellationToken,
     ) -> Result<PreparedVisionTurn> {
         if images.is_empty() {
             anyhow::bail!("specialist vision requires at least one attached image");
         }
-        let secret = CredentialResolver::default().resolve(
-            plan.route
-                .credential
-                .as_ref()
-                .context("selected vision route has no credential reference")?,
-        )?;
-        let provider = match plan.route.adapter.as_str() {
-            "openai.vision" => VisionProvider::OpenAi,
-            "openrouter.vision" => VisionProvider::OpenRouter,
-            adapter => anyhow::bail!("unsupported vision adapter {adapter:?}"),
-        };
-        let mut execution = FocusedServiceRegistry::default();
-        execution.register(Arc::new(OpenAiVisionAdapter::new(provider, secret)))?;
-        let destination = format!(
-            "{}/chat/completions",
-            plan.route
-                .base_url
-                .as_deref()
-                .unwrap_or_else(|| provider.default_base_url())
-                .trim_end_matches('/')
-        );
-        let identity_material = format!(
-            "{}\n{}\n{}\n{}",
-            plan.route.adapter, plan.route.connection, destination, plan.route.model
-        );
-        let recipient = RecipientIdentity::new(
-            RecipientKind::FocusedService,
-            plan.route.connection.clone(),
-            destination,
-            identity_material.as_bytes(),
-        )?;
+        if !matches!(
+            plan.route.adapter.as_str(),
+            "openai.vision" | "openrouter.vision"
+        ) {
+            anyhow::bail!("unsupported vision adapter {:?}", plan.route.adapter);
+        }
+        let recipient = vision_recipient(&plan.route)?;
         let mut outbound_items = vec![OutboundItem::new(
             OutboundDataClass::PromptText,
             "vision question",
@@ -247,7 +254,6 @@ impl VisionTurnService {
             .map(|image| image.artifact.reference.id.to_string())
             .collect::<Vec<_>>();
         let mut transport = VisionTransport {
-            execution,
             request: Some(FocusedServiceRequest {
                 operation_id,
                 route: plan.route,
@@ -263,14 +269,15 @@ impl VisionTurnService {
             expected_item_count: images.len() + 1,
             failure: None,
         };
-        let mut approval = PreapprovedOutbound;
-        let mut audit = Vec::<OutboundAuditEvent>::new();
+        let mut approval = outbound_decision
+            .map(|decision| ReviewedOutboundApproval::new(outbound_request.review(), decision));
+        let mut audit = ObservedOutboundAudit::new(self.audit.as_ref());
         let result = match self
             .outbound
             .dispatch(
                 outbound_request,
                 &policy,
-                Some(&mut approval),
+                approval.as_mut(),
                 &mut transport,
                 &mut audit,
             )
@@ -324,23 +331,34 @@ impl VisionTurnService {
     }
 }
 
-/// The terminal frontends resolve Xana's visible permission prompt before
-/// invoking `execute`. The outbound guard still owns saved denials, effective
-/// data ceilings, exact recipient identity, auditing, and the only transport
-/// dispatch boundary.
-struct PreapprovedOutbound;
-
-impl OutboundApprovalController for PreapprovedOutbound {
-    fn decide<'a>(
-        &'a mut self,
-        _request: &'a crate::outbound::OutboundApprovalRequest,
-    ) -> BoxFuture<'a, OutboundApprovalDecision> {
-        Box::pin(async { OutboundApprovalDecision::AllowOnce })
-    }
+fn vision_recipient(route: &ResolvedServiceRoute) -> Result<RecipientIdentity> {
+    let default_base_url = match route.adapter.as_str() {
+        "openai.vision" => VisionProvider::OpenAi.default_base_url(),
+        "openrouter.vision" => VisionProvider::OpenRouter.default_base_url(),
+        adapter => anyhow::bail!("unsupported vision adapter {adapter:?}"),
+    };
+    let destination = format!(
+        "{}/chat/completions",
+        route
+            .base_url
+            .as_deref()
+            .unwrap_or(default_base_url)
+            .trim_end_matches('/')
+    );
+    let identity_material = format!(
+        "{}\n{}\n{}\n{}",
+        route.adapter, route.connection, destination, route.model
+    );
+    RecipientIdentity::new(
+        RecipientKind::FocusedService,
+        route.connection.clone(),
+        destination,
+        identity_material.as_bytes(),
+    )
+    .map_err(Into::into)
 }
 
 struct VisionTransport {
-    execution: FocusedServiceRegistry,
     request: Option<FocusedServiceRequest>,
     context: Option<FocusedServiceContext>,
     expected_recipient: RecipientIdentity,
@@ -368,7 +386,46 @@ impl OutboundTransport for VisionTransport {
                 .context
                 .take()
                 .ok_or(OutboundTransportFailure::Protocol)?;
-            match self.execution.execute(request, context).await {
+            let secret = match request
+                .route
+                .credential
+                .as_ref()
+                .ok_or_else(|| {
+                    FocusedServiceError::MissingCredentialReference(
+                        request.route.connection.clone(),
+                    )
+                })
+                .and_then(|reference| {
+                    CredentialResolver::default()
+                        .resolve(reference)
+                        .map_err(|_| FocusedServiceError::Authentication)
+                }) {
+                Ok(secret) => secret,
+                Err(error) => {
+                    let failure = map_transport_failure(&error);
+                    self.failure = Some(error);
+                    return Err(failure);
+                }
+            };
+            let provider = match request.route.adapter.as_str() {
+                "openai.vision" => VisionProvider::OpenAi,
+                "openrouter.vision" => VisionProvider::OpenRouter,
+                _ => {
+                    self.failure = Some(FocusedServiceError::AdapterUnavailable(
+                        request.route.adapter.clone(),
+                    ));
+                    return Err(OutboundTransportFailure::Unavailable);
+                }
+            };
+            let mut execution = FocusedServiceRegistry::default();
+            if let Err(error) =
+                execution.register(Arc::new(OpenAiVisionAdapter::new(provider, secret)))
+            {
+                let failure = map_transport_failure(&error);
+                self.failure = Some(error);
+                return Err(failure);
+            }
+            match execution.execute(request, context).await {
                 Ok(result) => Ok(result),
                 Err(error) => {
                     let failure = map_transport_failure(&error);

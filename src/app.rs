@@ -14,6 +14,7 @@ mod image_commands;
 mod mcp_commands;
 pub(crate) mod one_shot;
 mod operations;
+mod outbound_commands;
 mod plugins;
 mod profiles;
 mod projects;
@@ -106,6 +107,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Logs(args)) => {
             let stdout = io::stdout();
             diagnostics_commands::run(args.command, &paths, &mut stdout.lock())
+        }
+        Some(Command::Outbound(args)) => {
+            let stdout = io::stdout();
+            outbound_commands::run(args.command, &paths, &mut stdout.lock())
         }
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {

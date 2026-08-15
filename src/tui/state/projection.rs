@@ -403,6 +403,9 @@ impl TuiState {
                         crate::managed::codex::ApprovalDecision::Decline
                     }
                     ApprovalChoice::Deny => crate::managed::codex::ApprovalDecision::Cancel,
+                    ApprovalChoice::SaveAllow | ApprovalChoice::SaveDeny => {
+                        crate::managed::codex::ApprovalDecision::Cancel
+                    }
                 };
                 UpdateEffect::DecideManagedApproval(decision)
             }

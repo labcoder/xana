@@ -635,6 +635,7 @@ mod tests {
                     "path": "README.md"
                 }),
                 scope: crate::permission::PermissionScope::Unscoped,
+                outbound_review: None,
             },
         });
         let json = serde_json::to_string(&event).unwrap();

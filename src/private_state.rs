@@ -10,9 +10,10 @@ mod store;
 pub(crate) use schema::{
     ExternalAgentSkillRecord, ExternalAgentStateDocument, ExternalAgentStateRecord,
     ExternalAgentTaskRecord, FrozenProfileSnapshot, InstalledPackageRecord, LocalBindingRecord,
-    OutboundDecisionDocument, OutboundDecisionRecord, PackageRevisionRecord, PackageSourceKind,
-    PackageSourceRecord, PackageStateDocument, ProjectBindingsDocument, ProjectLifecycle,
-    ProjectRecord, ProjectRegistryDocument, SavedOutboundDecision,
+    OutboundAuditDocument, OutboundAuditRecord, OutboundDecisionDocument, OutboundDecisionRecord,
+    PackageRevisionRecord, PackageSourceKind, PackageSourceRecord, PackageStateDocument,
+    ProjectBindingsDocument, ProjectLifecycle, ProjectRecord, ProjectRegistryDocument,
+    SavedOutboundDecision,
 };
 pub(crate) use store::{
     PrivateRecordInspection, PrivateRecordStatus, PrivateStateError, UpdateDocumentError,

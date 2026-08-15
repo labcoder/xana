@@ -1,6 +1,7 @@
 use super::schema::{
-    EndpointTrustDocument, ExternalAgentStateDocument, OutboundDecisionDocument,
-    PRIVATE_RECORD_VERSION, PackageStateDocument, ProjectBindingsDocument, ProjectRegistryDocument,
+    EndpointTrustDocument, ExternalAgentStateDocument, OutboundAuditDocument,
+    OutboundDecisionDocument, PRIVATE_RECORD_VERSION, PackageStateDocument,
+    ProjectBindingsDocument, ProjectRegistryDocument,
 };
 use crate::{bounded_file, paths::XanaPaths};
 use serde::{Serialize, de::DeserializeOwned};
@@ -107,6 +108,7 @@ pub(crate) fn inspect_interoperable_records(paths: &XanaPaths) -> Vec<PrivateRec
             &paths.external_agent_state_file(),
         ),
         inspect::<OutboundDecisionDocument>("outbound decisions", &paths.outbound_decisions_file()),
+        inspect::<OutboundAuditDocument>("outbound audit", &paths.outbound_audit_file()),
     ]
 }
 
@@ -142,6 +144,11 @@ pub(crate) fn ensure_interoperable_records(
     ensure_one(
         &paths.outbound_decisions_file(),
         &OutboundDecisionDocument::default(),
+        &mut created,
+    )?;
+    ensure_one(
+        &paths.outbound_audit_file(),
+        &OutboundAuditDocument::default(),
         &mut created,
     )?;
     Ok(created)
@@ -355,7 +362,7 @@ mod tests {
         let first = ensure_interoperable_records(&paths).unwrap();
         let second = ensure_interoperable_records(&paths).unwrap();
 
-        assert_eq!(first.len(), 6);
+        assert_eq!(first.len(), 7);
         assert!(second.is_empty());
         assert!(
             inspect_interoperable_records(&paths)

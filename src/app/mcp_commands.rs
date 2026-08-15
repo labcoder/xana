@@ -7,10 +7,12 @@ use crate::{
         NewMcpServer, OutboundDataClass, XanaConfig,
     },
     credential::CredentialResolver,
+    identity::OperationId,
     mcp::{
-        McpApplication, McpArgument, McpEnvironmentValue, McpGuardedTransport, McpHttpClient,
-        McpHttpConnection, McpHttpEndpoint, McpHttpSecurity, McpLocalServer, McpPrimitiveAllowlist,
-        McpProcessConfig, McpServerExposure, McpStdioClient, mcp_http_recipient,
+        McpApplication, McpApplicationError, McpArgument, McpEnvironmentValue, McpGuardedTransport,
+        McpHttpClient, McpHttpConnection, McpHttpEndpoint, McpHttpSecurity, McpLocalServer,
+        McpPrimitiveAllowlist, McpPrimitiveTransport, McpProcessConfig, McpServerExposure,
+        McpStdioClient, McpTransportResponse, mcp_http_recipient,
     },
     outbound::{OutboundGuard, OutboundPolicyLayers, RecipientIdentity, RecipientKind},
     paths::XanaPaths,
@@ -22,9 +24,84 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 const DISPLAY_LIMIT: usize = 64;
+
+#[derive(Clone)]
+enum DeferredMcpTransportSpec {
+    Stdio(McpProcessConfig),
+    Http {
+        endpoint: McpHttpEndpoint,
+        credential: Option<CredentialReference>,
+    },
+}
+
+struct DeferredMcpTransport {
+    spec: DeferredMcpTransportSpec,
+    active: Mutex<Option<Arc<dyn McpPrimitiveTransport>>>,
+}
+
+impl DeferredMcpTransport {
+    fn new(spec: DeferredMcpTransportSpec) -> Self {
+        Self {
+            spec,
+            active: Mutex::new(None),
+        }
+    }
+
+    async fn active(&self) -> Result<Arc<dyn McpPrimitiveTransport>, McpApplicationError> {
+        let mut active = self.active.lock().await;
+        if let Some(transport) = active.as_ref() {
+            return Ok(Arc::clone(transport));
+        }
+        let transport: Arc<dyn McpPrimitiveTransport> = match &self.spec {
+            DeferredMcpTransportSpec::Stdio(config) => Arc::new(
+                McpStdioClient::spawn(config.clone())
+                    .await
+                    .map_err(|error| McpApplicationError::Transport(error.to_string()))?,
+            ),
+            DeferredMcpTransportSpec::Http {
+                endpoint,
+                credential,
+            } => {
+                let bearer = credential
+                    .as_ref()
+                    .map(|reference| CredentialResolver::default().resolve(reference))
+                    .transpose()
+                    .map_err(|error| McpApplicationError::Transport(error.to_string()))?;
+                let client = McpHttpClient::connect(endpoint.clone())
+                    .await
+                    .map_err(|error| McpApplicationError::Transport(error.to_string()))?;
+                Arc::new(McpHttpConnection::new(client, bearer))
+            }
+        };
+        *active = Some(Arc::clone(&transport));
+        Ok(transport)
+    }
+}
+
+impl McpPrimitiveTransport for DeferredMcpTransport {
+    fn request<'a>(
+        &'a self,
+        method: &'a str,
+        params: serde_json::Value,
+        tool_schema: Option<serde_json::Value>,
+        operation_id: OperationId,
+        cancellation: &'a CancellationToken,
+    ) -> futures::future::BoxFuture<
+        'a,
+        std::result::Result<McpTransportResponse, McpApplicationError>,
+    > {
+        Box::pin(async move {
+            self.active()
+                .await?
+                .request(method, params, tool_schema, operation_id, cancellation)
+                .await
+        })
+    }
+}
 
 pub(super) async fn run(
     command: McpCommand,
@@ -154,6 +231,7 @@ pub(super) async fn run(
         _ => {}
     }
     let server = command_server(&command).expect("non-list MCP command has a server");
+    let saves_metadata_approval = matches!(command, McpCommand::Refresh { .. });
     let workspace = std::env::current_dir()
         .context("could not resolve the MCP workspace")?
         .canonicalize()
@@ -170,9 +248,29 @@ pub(super) async fn run(
         &profile.mcp_servers,
         &profile.mcp_allowlists,
         &profile_egress,
+        Some(if saves_metadata_approval {
+            crate::outbound::OutboundApprovalDecision::SaveAllow
+        } else {
+            crate::outbound::OutboundApprovalDecision::AllowOnce
+        }),
     )
     .await?;
     let cancellation = CancellationToken::new();
+    if saves_metadata_approval {
+        let review = application
+            .outbound_review(
+                server,
+                "server/discover",
+                &serde_json::json!({}),
+                OperationId::new(),
+            )?
+            .context("MCP server has no outbound review contract")?;
+        writeln!(output, "{}", review.render())?;
+        writeln!(
+            output,
+            "This explicit refresh saves the exact recipient/workspace_metadata grant; revoke it with `xana outbound revoke`."
+        )?;
+    }
     application
         .refresh(server, &cancellation)
         .await
@@ -323,10 +421,17 @@ pub(super) async fn activate_profile_tools(
         servers,
         allowlists,
         profile_egress,
+        None,
     )
     .await?;
     let cancellation = CancellationToken::new();
     for server in servers {
+        if !matches!(
+            application.outbound_disposition(server, "server/discover", &serde_json::json!({}),)?,
+            Some(crate::outbound::OutboundDisposition::SavedAllow)
+        ) {
+            continue;
+        }
         application
             .refresh(server, &cancellation)
             .await
@@ -377,13 +482,13 @@ async fn build_application(
     selected_servers: &[String],
     allowlists: &BTreeMap<String, McpPrimitiveSelection>,
     profile_egress: &[OutboundDataClass],
+    default_decision: Option<crate::outbound::OutboundApprovalDecision>,
 ) -> Result<McpApplication> {
     let mut application = McpApplication::new(
         crate::tool::BUILTIN_TOOL_NAMES
             .iter()
             .map(|name| (*name).to_owned()),
     );
-    let credentials = CredentialResolver::default();
     for server in selected_servers {
         let declaration = registry
             .mcp_servers
@@ -416,7 +521,9 @@ async fn build_application(
                     .iter()
                     .map(|(name, value)| (name.clone(), McpEnvironmentValue::new(value.clone())))
                     .collect();
-                let transport = Arc::new(McpStdioClient::spawn(config).await?) as Arc<_>;
+                let transport = Arc::new(DeferredMcpTransport::new(
+                    DeferredMcpTransportSpec::Stdio(config),
+                )) as Arc<_>;
                 let recipient = RecipientIdentity::new(
                     RecipientKind::McpStdio,
                     server,
@@ -434,14 +541,12 @@ async fn build_application(
                         allow_loopback_http: true,
                     },
                 )?;
-                let client = McpHttpClient::connect(endpoint).await?;
-                let bearer = credential
-                    .as_ref()
-                    .map(|reference| credentials.resolve(reference))
-                    .transpose()?;
-                let recipient = mcp_http_recipient(server, client.endpoint(), None, None)?;
+                let recipient = mcp_http_recipient(server, &endpoint, None, None)?;
                 (
-                    Arc::new(McpHttpConnection::new(client, bearer)) as Arc<_>,
+                    Arc::new(DeferredMcpTransport::new(DeferredMcpTransportSpec::Http {
+                        endpoint,
+                        credential: credential.clone(),
+                    })) as Arc<_>,
                     recipient,
                 )
             }
@@ -454,12 +559,16 @@ async fn build_application(
             profile_allowed: profile_egress.iter().copied().collect(),
             conversation_allowed: None,
         };
-        let transport = Arc::new(McpGuardedTransport::new(
-            transport,
-            OutboundGuard::open(paths)?,
-            recipient,
-            policy,
-        ));
+        let transport = Arc::new(
+            McpGuardedTransport::new(
+                transport,
+                OutboundGuard::open(paths)?,
+                recipient,
+                policy,
+                default_decision,
+            )
+            .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?),
+        );
         application.add_server(exposure, transport)?;
     }
     Ok(application)
@@ -534,4 +643,112 @@ fn parse_arguments(arguments: Vec<String>) -> Result<BTreeMap<String, String>> {
         }
     }
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn application_construction_does_not_spawn_stdio_before_guarded_request() {
+        let registry = XanaConfig::parse_registry(
+            r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+
+[providers.local]
+kind = "ollama"
+
+[profiles.default]
+connection = "local"
+model = "qwen"
+mcp_servers = ["lazy"]
+egress_policy = "mcp"
+
+[profiles.default.mcp_allowlists.lazy]
+tools = ["review"]
+
+[mcp_servers.lazy]
+transport = "stdio"
+command = "xana-command-that-must-not-exist"
+enabled = true
+egress_policy = "mcp"
+
+[egress_policies.mcp]
+allowed = ["prompt_text", "workspace_metadata"]
+"#,
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        let profile = &registry.profiles["default"];
+
+        let application = build_application(
+            &registry,
+            &paths,
+            directory.path(),
+            &["lazy".to_owned()],
+            &profile.mcp_allowlists,
+            &registry.egress_policies["mcp"].allowed,
+            None,
+        )
+        .await;
+
+        assert!(application.is_ok(), "construction must remain effect free");
+    }
+
+    #[tokio::test]
+    async fn profile_activation_skips_unapproved_mcp_recipient_without_spawning() {
+        let registry = XanaConfig::parse_registry(
+            r#"
+version = 4
+default_profile = "default"
+permission_mode = "ask"
+
+[providers.local]
+kind = "ollama"
+
+[profiles.default]
+connection = "local"
+model = "qwen"
+mcp_servers = ["lazy"]
+egress_policy = "mcp"
+
+[profiles.default.mcp_allowlists.lazy]
+tools = ["review"]
+
+[mcp_servers.lazy]
+transport = "stdio"
+command = "xana-command-that-must-not-exist"
+enabled = true
+egress_policy = "mcp"
+
+[egress_policies.mcp]
+allowed = ["prompt_text", "workspace_metadata"]
+"#,
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        let profile = &registry.profiles["default"];
+        let mut tools = crate::tool::ToolRegistry::new();
+
+        let activated = activate_profile_tools(
+            &registry,
+            &paths,
+            directory.path(),
+            &["lazy".to_owned()],
+            &profile.mcp_allowlists,
+            &registry.egress_policies["mcp"].allowed,
+            &mut tools,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(activated, 0);
+        assert!(tools.definitions().is_empty());
+    }
 }

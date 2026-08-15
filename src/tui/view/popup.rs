@@ -108,9 +108,14 @@ pub(super) fn render(
                 Line::raw("Usage/cost: reported when available; otherwise unknown"),
                 Line::raw(""),
             ];
-            for (index, label) in ["Allow once", "Deny and restore draft"]
-                .into_iter()
-                .enumerate()
+            for (index, label) in [
+                "Allow once",
+                "Always allow this exact recipient and data classes",
+                "Deny once and restore draft",
+                "Always deny this exact recipient and data classes",
+            ]
+            .into_iter()
+            .enumerate()
             {
                 lines.push(Line::styled(
                     format!("{} {label}", if *selected == index { ">" } else { " " }),
@@ -225,6 +230,14 @@ pub(super) fn render(
             for (label, enabled) in [
                 ("Allow once", prompt.allow_once),
                 ("Allow exact scope for this session", prompt.allow_session),
+                (
+                    "Always allow this exact recipient and data classes",
+                    prompt.save_allow,
+                ),
+                (
+                    "Always deny this exact recipient and data classes",
+                    prompt.save_deny,
+                ),
                 ("Deny", prompt.deny),
             ] {
                 if !enabled {

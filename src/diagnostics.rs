@@ -27,6 +27,68 @@ pub(crate) fn runtime_telemetry() -> Arc<dyn crate::telemetry::RuntimeTelemetry>
     Arc::new(DiagnosticTelemetry)
 }
 
+pub(crate) fn outbound_audit(
+    paths: &XanaPaths,
+) -> Result<Arc<dyn crate::outbound::OutboundAuditObserver>> {
+    Ok(Arc::new(DiagnosticOutboundAudit {
+        journal: crate::outbound::OutboundAuditJournal::open(paths)?,
+    }))
+}
+
+struct DiagnosticOutboundAudit {
+    journal: crate::outbound::OutboundAuditJournal,
+}
+
+impl crate::outbound::OutboundAuditObserver for DiagnosticOutboundAudit {
+    fn observe(
+        &self,
+        event: &crate::outbound::OutboundAuditEvent,
+    ) -> std::result::Result<(), crate::private_state::PrivateStateError> {
+        if let Err(error) = self.journal.append(event) {
+            emit(
+                DiagnosticFact::new(
+                    DiagnosticLevel::Error,
+                    DiagnosticTarget::Security,
+                    EventKind::IntegrationFailed,
+                    EventOutcome::Failed,
+                )
+                .subject("outbound_audit_journal")
+                .correlation(event.operation_id.to_string()),
+            );
+            return Err(error);
+        }
+        use crate::outbound::OutboundAuditStage;
+        let (level, outcome) = match event.stage {
+            OutboundAuditStage::Requested | OutboundAuditStage::Sending => {
+                (DiagnosticLevel::Debug, EventOutcome::Started)
+            }
+            OutboundAuditStage::Allowed { .. } | OutboundAuditStage::Succeeded => {
+                (DiagnosticLevel::Info, EventOutcome::Completed)
+            }
+            OutboundAuditStage::Denied { .. } => (DiagnosticLevel::Warn, EventOutcome::Denied),
+            OutboundAuditStage::Cancelled => (DiagnosticLevel::Info, EventOutcome::Cancelled),
+            OutboundAuditStage::Failed => (DiagnosticLevel::Warn, EventOutcome::Failed),
+        };
+        let mut fact = DiagnosticFact::new(
+            level,
+            DiagnosticTarget::Security,
+            EventKind::OutboundTransfer,
+            outcome,
+        )
+        .subject(format!(
+            "{:?}:{}:{}:{:?}",
+            event.recipient_kind,
+            event.recipient_connection,
+            event.recipient_identity_digest,
+            event.stage
+        ))
+        .correlation(event.operation_id.to_string());
+        fact.size_bytes = Some(event.total_bytes as u64);
+        emit(fact);
+        Ok(())
+    }
+}
+
 struct DiagnosticTelemetry;
 
 impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
@@ -64,6 +126,7 @@ impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
 
 const RECORD_VERSION: u32 = 1;
 const CRASH_VERSION: u32 = 1;
+const HEALTH_VERSION: u32 = 1;
 const SUPPORT_BUNDLE_VERSION: u32 = 1;
 const MAX_BREADCRUMBS: usize = 64;
 const MAX_DIRECTORY_ENTRIES: usize = 1_024;
@@ -88,6 +151,7 @@ pub(crate) enum EventKind {
     FrontendDisconnected,
     StorageFailed,
     IntegrationFailed,
+    OutboundTransfer,
     TaskPanicked,
 }
 
@@ -200,6 +264,11 @@ pub(crate) struct DiagnosticHealth {
     pub(crate) enabled: bool,
     pub(crate) log_dir_exists: bool,
     pub(crate) crash_dir_exists: bool,
+    pub(crate) directory_metadata_allows_writes: bool,
+    pub(crate) permissions_private: bool,
+    pub(crate) retention_compliant: bool,
+    pub(crate) retained_files: usize,
+    pub(crate) retained_bytes: u64,
     pub(crate) unsafe_path: bool,
     pub(crate) inspection_error: bool,
     pub(crate) stale_markers: usize,
@@ -211,11 +280,22 @@ pub(crate) struct DiagnosticHealth {
 struct ActiveDiagnostics {
     sender: SyncSender<WriterMessage>,
     dropped: AtomicU64,
+    dropped_total: AtomicU64,
     writer_faults: Arc<AtomicU64>,
     sequence: AtomicU64,
     settings: DiagnosticsConfig,
     crash_dir: PathBuf,
     breadcrumbs: Mutex<VecDeque<DiagnosticRecord>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DiagnosticHealthSummary {
+    version: u32,
+    timestamp_ms: u64,
+    pid: u32,
+    dropped_events: u64,
+    writer_faults: u64,
 }
 
 enum WriterMessage {
@@ -243,6 +323,7 @@ impl DiagnosticRuntime {
         let stale_markers = count_stale_markers(&crash_dir)?;
         cleanup_logs(&log_dir, &settings)?;
         cleanup_crashes(&crash_dir, &settings)?;
+        cleanup_health_summaries(&crash_dir, &settings)?;
         cleanup_stale_markers(&crash_dir, &settings)?;
         let timestamp = now_ms();
         let pid = std::process::id();
@@ -286,6 +367,7 @@ impl DiagnosticRuntime {
         let active = Arc::new(ActiveDiagnostics {
             sender,
             dropped: AtomicU64::new(0),
+            dropped_total: AtomicU64::new(0),
             writer_faults,
             sequence: AtomicU64::new(0),
             settings,
@@ -312,6 +394,7 @@ impl Drop for DiagnosticRuntime {
     fn drop(&mut self) {
         let (ack_sender, ack_receiver) = mpsc::sync_channel(1);
         let deadline = std::time::Instant::now() + SHUTDOWN_WAIT;
+        let mut acknowledged = false;
         loop {
             match self
                 .active
@@ -319,7 +402,7 @@ impl Drop for DiagnosticRuntime {
                 .try_send(WriterMessage::Shutdown(ack_sender.clone()))
             {
                 Ok(()) => {
-                    let _ = ack_receiver.recv_timeout(SHUTDOWN_WAIT);
+                    acknowledged = ack_receiver.recv_timeout(SHUTDOWN_WAIT).is_ok();
                     break;
                 }
                 Err(TrySendError::Full(_)) if std::time::Instant::now() < deadline => {
@@ -329,17 +412,21 @@ impl Drop for DiagnosticRuntime {
             }
         }
         if let Some(writer) = self.writer.take()
-            && writer.is_finished()
+            && (acknowledged || writer.is_finished())
         {
             let _ = writer.join();
         }
+        let dropped_events = self.active.dropped_total.load(Ordering::Relaxed);
+        let writer_faults = self.active.writer_faults.load(Ordering::Relaxed);
+        let health_persisted = (dropped_events == 0 && writer_faults == 0)
+            || write_health_summary(&self.active.crash_dir, dropped_events, writer_faults).is_ok();
         *active_slot().write().expect("diagnostics slot poisoned") = None;
         let clean_shutdown = !thread::panicking();
         if let Some(file) = self.marker_file.take() {
             let _ = FileExt::unlock(&file);
             drop(file);
         }
-        if clean_shutdown {
+        if clean_shutdown && health_persisted {
             let _ = fs::remove_file(&self.marker_path);
         }
     }
@@ -376,6 +463,7 @@ pub(crate) fn emit(fact: DiagnosticFact) {
         active
             .dropped
             .fetch_add(carried_drops + 1, Ordering::Relaxed);
+        active.dropped_total.fetch_add(1, Ordering::Relaxed);
         return;
     };
     encoded.push(b'\n');
@@ -385,6 +473,7 @@ pub(crate) fn emit(fact: DiagnosticFact) {
             active
                 .dropped
                 .fetch_add(carried_drops + 1, Ordering::Relaxed);
+            active.dropped_total.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -430,19 +519,38 @@ pub(crate) fn inspect(paths: &XanaPaths) -> DiagnosticHealth {
         path_has_symlink(&log_dir).unwrap_or(true) || path_has_symlink(&crash_dir).unwrap_or(true);
     let stale_marker_result = count_stale_markers(&crash_dir);
     let invalid_report_result = count_invalid_crash_reports(&crash_dir);
-    let inspection_error = stale_marker_result.is_err() || invalid_report_result.is_err();
+    let inventory_result = inspect_log_inventory(&log_dir, &settings);
+    let persisted_health_result = read_health_summaries(&crash_dir, &settings);
+    let directory_metadata_allows_writes =
+        directory_metadata_allows_writes(&log_dir) && directory_metadata_allows_writes(&crash_dir);
+    let permissions_private = directory_is_private(&log_dir) && directory_is_private(&crash_dir);
+    let inspection_error = stale_marker_result.is_err()
+        || invalid_report_result.is_err()
+        || inventory_result.is_err()
+        || persisted_health_result.is_err();
     let stale_markers = stale_marker_result.unwrap_or_default();
     let invalid_reports = invalid_report_result.unwrap_or_default();
-    let dropped_events = current_active()
-        .map(|active| active.dropped.load(Ordering::Relaxed))
-        .unwrap_or_default();
-    let writer_faults = current_active()
-        .map(|active| active.writer_faults.load(Ordering::Relaxed))
-        .unwrap_or_default();
+    let persisted_health = persisted_health_result.unwrap_or_default();
+    let dropped_events = persisted_health.0.saturating_add(
+        current_active()
+            .map(|active| active.dropped_total.load(Ordering::Relaxed))
+            .unwrap_or_default(),
+    );
+    let writer_faults = persisted_health.1.saturating_add(
+        current_active()
+            .map(|active| active.writer_faults.load(Ordering::Relaxed))
+            .unwrap_or_default(),
+    );
+    let inventory = inventory_result.unwrap_or_default();
     DiagnosticHealth {
         enabled: settings.enabled,
         log_dir_exists: log_dir.is_dir(),
         crash_dir_exists: crash_dir.is_dir(),
+        directory_metadata_allows_writes,
+        permissions_private,
+        retention_compliant: inventory.compliant,
+        retained_files: inventory.files,
+        retained_bytes: inventory.bytes,
         log_dir,
         crash_dir,
         unsafe_path,
@@ -452,6 +560,86 @@ pub(crate) fn inspect(paths: &XanaPaths) -> DiagnosticHealth {
         dropped_events,
         writer_faults,
     }
+}
+
+#[derive(Default)]
+struct LogInventory {
+    files: usize,
+    bytes: u64,
+    compliant: bool,
+}
+
+fn inspect_log_inventory(path: &Path, settings: &DiagnosticsConfig) -> io::Result<LogInventory> {
+    if !path.exists() {
+        return Ok(LogInventory {
+            compliant: true,
+            ..LogInventory::default()
+        });
+    }
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(u64::from(settings.retention_days) * 24 * 60 * 60);
+    let mut inventory = LogInventory {
+        compliant: true,
+        ..LogInventory::default()
+    };
+    for (index, entry) in fs::read_dir(path)?.enumerate() {
+        if index >= MAX_DIRECTORY_ENTRIES {
+            inventory.compliant = false;
+            break;
+        }
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let name = entry.file_name();
+        let recognized = file_type.is_file()
+            && name
+                .to_str()
+                .is_some_and(|name| name.starts_with("xana-") && name.ends_with(".jsonl"));
+        if !recognized {
+            continue;
+        }
+        let metadata = entry.metadata()?;
+        inventory.files += 1;
+        inventory.bytes = inventory.bytes.saturating_add(metadata.len());
+        if metadata.len() > settings.max_file_bytes
+            || metadata
+                .modified()
+                .ok()
+                .and_then(|modified| now.duration_since(modified).ok())
+                .is_some_and(|age| age > retention)
+        {
+            inventory.compliant = false;
+        }
+    }
+    inventory.compliant &= inventory.files <= usize::from(settings.max_files)
+        && inventory.bytes <= settings.max_total_bytes;
+    Ok(inventory)
+}
+
+fn directory_metadata_allows_writes(path: &Path) -> bool {
+    let candidate = if path.exists() {
+        Some(path)
+    } else {
+        path.ancestors().find(|candidate| candidate.exists())
+    };
+    candidate
+        .and_then(|candidate| fs::metadata(candidate).ok())
+        .is_some_and(|metadata| metadata.is_dir() && !metadata.permissions().readonly())
+}
+
+#[cfg(unix)]
+fn directory_is_private(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    if !path.exists() {
+        return true;
+    }
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o077 == 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn directory_is_private(_path: &Path) -> bool {
+    true
 }
 
 pub(crate) fn list(paths: &XanaPaths) -> Result<Vec<DiagnosticEntry>> {
@@ -595,6 +783,26 @@ fn writer_loop(
             }
         }
     }
+}
+
+fn write_health_summary(directory: &Path, dropped_events: u64, writer_faults: u64) -> Result<()> {
+    let summary = DiagnosticHealthSummary {
+        version: HEALTH_VERSION,
+        timestamp_ms: now_ms(),
+        pid: std::process::id(),
+        dropped_events,
+        writer_faults,
+    };
+    let path = unique_file_path(
+        directory,
+        &format!("health-{}-{}", now_ms(), std::process::id()),
+        "json",
+    )?;
+    let mut file = create_private_file(&path)?;
+    serde_json::to_writer(&mut file, &summary)?;
+    file.flush()?;
+    file.sync_data()?;
+    Ok(())
 }
 
 struct FileSink {

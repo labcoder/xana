@@ -175,6 +175,7 @@ where
                     .execute(crate::tool::ToolExecutionContext {
                         operation_id,
                         events: None,
+                        outbound_approval: None,
                     })
                     .await
                 {

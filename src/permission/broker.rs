@@ -43,7 +43,7 @@ struct PendingRequest {
 
 enum BrokerCommand {
     Authorize {
-        request: PermissionRequest,
+        request: Box<PermissionRequest>,
         reply: oneshot::Sender<Authorization>,
     },
     Decide {
@@ -101,7 +101,7 @@ impl PermissionBroker {
         while let Some(command) = self.commands.recv().await {
             match command {
                 BrokerCommand::Authorize { request, reply } => {
-                    self.authorize(request, reply);
+                    self.authorize(*request, reply);
                 }
                 BrokerCommand::Decide {
                     operation_id,
@@ -245,6 +245,18 @@ impl PermissionBroker {
                 invocation_id,
             });
         }
+        if matches!(
+            decision,
+            ControllerDecision::SaveOutboundAllow | ControllerDecision::SaveOutboundDeny
+        ) && !matches!(
+            pending.request.scope,
+            crate::permission::PermissionScope::External { .. }
+        ) {
+            return Err(DecisionError::ScopeMismatch {
+                operation_id,
+                invocation_id,
+            });
+        }
 
         if let ControllerDecision::AllowSession { scope } = &decision {
             self.grants
@@ -260,6 +272,11 @@ impl PermissionBroker {
             ControllerDecision::Deny => PolicyDecision::Deny,
             ControllerDecision::AllowOnce => PolicyDecision::Allow,
             ControllerDecision::AllowSession { .. } => PolicyDecision::Allow,
+            // These choices authorize only entry into the mandatory outbound
+            // guard, which persists and enforces the exact send decision.
+            ControllerDecision::SaveOutboundAllow | ControllerDecision::SaveOutboundDeny => {
+                PolicyDecision::Allow
+            }
         };
         let _ = self.events.send(AgentEvent::OperationStateChanged {
             operation_id,
@@ -314,7 +331,10 @@ impl PermissionBrokerHandle {
         let invocation_id = request.invocation_id;
         let (reply, receiver) = oneshot::channel();
         self.commands
-            .send(BrokerCommand::Authorize { request, reply })
+            .send(BrokerCommand::Authorize {
+                request: Box::new(request),
+                reply,
+            })
             .map_err(|_| BrokerUnavailable)?;
         let mut guard = CancellationGuard {
             commands: self.commands.clone(),

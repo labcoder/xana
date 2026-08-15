@@ -18,11 +18,13 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
+mod image;
 pub(crate) mod openai_images;
 pub(crate) mod openai_vision;
 pub(crate) mod openrouter_images;
 mod tool;
 
+pub(crate) use image::{ImageGenerationPlan, ImageGenerationService};
 pub(crate) use tool::activate_profile_image_tool;
 
 pub(crate) const MAX_FOCUSED_PROMPT_BYTES: usize = 64 * 1024;

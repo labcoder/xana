@@ -147,8 +147,10 @@ impl XanaPaths {
             .join("outbound-decisions.json")
     }
 
-    pub(crate) fn config_migration_lock_file(&self) -> PathBuf {
-        self.runtime_dir.join("config-migration.lock")
+    pub(crate) fn outbound_audit_file(&self) -> PathBuf {
+        self.data_dir
+            .join("interoperable")
+            .join("outbound-audit.json")
     }
 }
 
@@ -206,8 +208,8 @@ mod tests {
             root.join("data/interoperable/outbound-decisions.json")
         );
         assert_eq!(
-            paths.config_migration_lock_file(),
-            root.join("run/config-migration.lock")
+            paths.outbound_audit_file(),
+            root.join("data/interoperable/outbound-audit.json")
         );
     }
 
