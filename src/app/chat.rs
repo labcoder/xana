@@ -665,6 +665,8 @@ async fn run_once(
         Some((handle, supervisor))
     };
     let environment = PromptEnvironment {
+        connection: provider_name.clone(),
+        model: model.clone(),
         operating_system: std::env::consts::OS.to_owned(),
         working_directory: workspace_root.clone(),
         configured_shell,

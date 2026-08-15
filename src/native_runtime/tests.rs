@@ -604,6 +604,8 @@ fn make_agent(provider: Box<dyn ConversationalProvider>) -> Agent {
     let definitions = tools.definitions();
     let workspace = std::env::current_dir().expect("current directory");
     let environment = PromptEnvironment {
+        connection: "test-connection".to_owned(),
+        model: "test-model".to_owned(),
         operating_system: "test".to_owned(),
         working_directory: workspace.clone(),
         configured_shell: "test shell".to_owned(),
@@ -654,6 +656,8 @@ fn persistent_agent(
     let assembler = PromptAssembler::new(
         definitions,
         PromptEnvironment {
+            connection: "test-connection".to_owned(),
+            model: "test-model".to_owned(),
             operating_system: "test".to_owned(),
             working_directory: workspace.clone(),
             configured_shell: "test shell".to_owned(),

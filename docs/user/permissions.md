@@ -17,6 +17,14 @@ approve themselves.
 | `ask` | Ask the controlling terminal for a decision; this is the initializer default |
 | `allow` | Run the effect automatically with Xana's host permissions |
 
+One narrow exception avoids a meaningless prompt: with the `ask` default and
+no matching rule, `xana_docs` may read Xana's immutable, version-matched
+documentation compiled into the running binary. That scope reaches no host
+file, process, workspace, credential, or network resource. An explicit
+matching `ask` or `deny` rule still wins, and `permission_mode = "deny"` still
+denies it. All ordinary workspace, external-path, command, network, and
+external-service effects keep the configured behavior above.
+
 Existing version 1 files that explicitly use `allow` remain valid and retain
 automatic authority. To adopt the safer interactive default, change the value
 to `ask` and run `xana config check`.
@@ -75,8 +83,11 @@ matching is an exact string comparison, not shell parsing or wildcard syntax.
 
 ## What an ask means
 
-For `ask`, the terminal shows the tool, effect, normalized final arguments,
-and canonical scope. The available decisions are:
+For `ask`, the terminal shows a user-facing action name, effect, and one
+normalized scope summary. Commands show the exact command once with their
+working directory and selected shell; file actions show their canonical path.
+Internal Rust debug representations and duplicated raw JSON are not part of
+the approval contract. The available decisions are:
 
 - deny;
 - allow this invocation once; or

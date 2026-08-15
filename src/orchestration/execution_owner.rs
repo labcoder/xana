@@ -155,6 +155,8 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
         let assembler = PromptAssembler::new(
             definitions,
             PromptEnvironment {
+                connection: resolved.connection.clone(),
+                model: resolved.model.id.clone(),
                 operating_system: std::env::consts::OS.to_owned(),
                 working_directory: self.workspace_root.clone(),
                 configured_shell: self.configured_shell.clone(),

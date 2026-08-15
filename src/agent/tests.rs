@@ -81,6 +81,8 @@ fn make_agent(
     let tools = ToolRegistry::builtins(shell).expect("built-in registry");
     let definitions = tools.definitions();
     let environment = PromptEnvironment {
+        connection: "test-connection".to_owned(),
+        model: "test-model".to_owned(),
         operating_system: "test".to_owned(),
         working_directory: workspace.to_owned(),
         configured_shell: "test shell".to_owned(),

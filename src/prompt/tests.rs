@@ -7,6 +7,8 @@ use crate::{
 
 fn environment() -> PromptEnvironment {
     PromptEnvironment {
+        connection: "test-connection".to_owned(),
+        model: "test-model".to_owned(),
         operating_system: "test-os".to_owned(),
         working_directory: PathBuf::from("/owned/workspace"),
         configured_shell: "Test shell (test-shell -lc)".to_owned(),
@@ -75,8 +77,8 @@ fn approved_identity_matches_v1_fixture() {
 }
 
 #[test]
-fn approved_guidelines_match_v1_fixture() {
-    assert_eq!(GUIDELINES, include_str!("fixtures/guidelines-v1.md"));
+fn approved_guidelines_match_v2_fixture() {
+    assert_eq!(GUIDELINES, include_str!("fixtures/guidelines-v2.md"));
 }
 
 #[test]
@@ -159,6 +161,12 @@ fn environment_and_cli_surface_are_owned_inputs() {
     assert!(environment.text.contains("test-os"));
     assert!(environment.text.contains("/owned/workspace"));
     assert!(environment.text.contains("Test shell"));
+    assert!(
+        environment
+            .text
+            .contains("Active connection: test-connection")
+    );
+    assert!(environment.text.contains("Active model: test-model"));
     assert!(surface.text.contains("Xana CLI"));
 }
 
@@ -183,7 +191,7 @@ fn canonical_rendering_normalizes_line_endings() {
 fn prompt_snapshot_records_assembly_version_and_layer_order() {
     let snapshot = snapshot(&[project_source("project:AGENTS.md", "project rules", 100)]);
 
-    assert_eq!(snapshot.version, "xana-prompt-v1");
+    assert_eq!(snapshot.version, "xana-prompt-v2");
     assert_eq!(snapshot.system_message.role, Role::System);
     assert_eq!(
         snapshot

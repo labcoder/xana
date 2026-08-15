@@ -72,6 +72,8 @@ async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_tur
     let assembler = PromptAssembler::new(
         definitions,
         PromptEnvironment {
+            connection: "test-connection".to_owned(),
+            model: "test-model".to_owned(),
             operating_system: "test".to_owned(),
             working_directory: workspace.clone(),
             configured_shell: "test shell".to_owned(),

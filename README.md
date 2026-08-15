@@ -591,7 +591,9 @@ The capability-resolved native tool snapshot contains:
 - `run_command`: configured-shell execution with independently bounded stdout
   and stderr;
 - `read_document`: bounded UTF-8 or CSV-to-Markdown extraction; and
-- `xana_docs`: bounded reads from Xana's curated, version-matched docs.
+- `xana_docs`: bounded reads from Xana's curated, version-matched docs. Its
+  immutable in-binary resource scope does not prompt under an otherwise
+  unmatched `ask` default; explicit matching rules and `deny` still apply.
 
 Every effect crosses Xana's permission broker. Permission is not containment:
 allowed native tools use the process's ordinary host access. Codex-managed
@@ -613,8 +615,9 @@ artifact path rather than the original external source.
 
 ## Prompt, context, and recovery
 
-Each native root turn freezes one versioned system-prompt snapshot containing
-Xana's built-in identity/guidelines, the actual tool catalog, runtime context,
+Each native root turn freezes one `xana-prompt-v2` system-prompt snapshot
+containing Xana's built-in identity/guidelines, the actual tool catalog,
+active connection/model runtime context,
 a concise reference to `xana_docs`, a bounded durable root `AGENTS.md` view when
 present, and exact explicitly activated Agent Skills from user, project, or
 enabled-plugin scope. Xana does not discover `XANA.md` or nested `AGENTS.md`.

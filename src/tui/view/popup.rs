@@ -8,11 +8,13 @@ use super::{overlay_area, palette_window_start, semantic_style};
 use crate::presentation::{ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{
-        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Wrap,
+        Block, Borders, Cell, Clear, HighlightSpacing, Paragraph, Row, Table, TableState, Widget,
+        Wrap,
     },
 };
 
@@ -30,8 +32,20 @@ pub(super) fn render(
         render_command_palette(frame, popup, state, query, *selected, profile);
         return;
     }
+    if let Overlay::ActivityDetail {
+        card,
+        scroll,
+        selection,
+    } = overlay
+    {
+        render_activity_detail(frame, popup, card, *scroll, selection.as_ref(), profile);
+        return;
+    }
     let (title, lines) = match overlay {
         Overlay::Palette { .. } => unreachable!("palette is rendered as a stateful table"),
+        Overlay::ActivityDetail { .. } => {
+            unreachable!("activity detail is rendered as a scrollable document")
+        }
         Overlay::PastePreview { text } => (
             " Confirm pasted draft ",
             vec![
@@ -214,7 +228,7 @@ pub(super) fn render(
         Overlay::Approval { prompt, selected } => {
             let mut lines = vec![
                 Line::styled(
-                    format!("Authority requested by {}", prompt.owner),
+                    format!("Requested by: {}", prompt.owner),
                     semantic_style(profile, SemanticToken::Approval).add_modifier(Modifier::BOLD),
                 ),
                 Line::raw(prompt.title.clone()),
@@ -229,7 +243,10 @@ pub(super) fn render(
             let mut index = 0usize;
             for (label, enabled) in [
                 ("Allow once", prompt.allow_once),
-                ("Allow exact scope for this session", prompt.allow_session),
+                (
+                    "Allow this exact scope for this session",
+                    prompt.allow_session,
+                ),
                 (
                     "Always allow this exact recipient and data classes",
                     prompt.save_allow,
@@ -312,6 +329,136 @@ pub(super) fn render(
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+fn render_activity_detail(
+    frame: &mut Frame<'_>,
+    popup: Rect,
+    card: &super::super::activity::ActivityCard,
+    scroll: u16,
+    selection: Option<&super::super::state::ConversationSelection>,
+    profile: ResolvedPresentation,
+) {
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Activity details ")
+        .border_style(semantic_style(profile, SemanticToken::Focus))
+        .borders(Borders::ALL);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    frame.render_widget(
+        activity_detail_paragraph(card, scroll, profile, sections[0]),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Up/Down or wheel scroll · drag to select · Ctrl+C copy · Esc close")
+            .style(semantic_style(profile, SemanticToken::Muted)),
+        sections[1],
+    );
+    if let Some(selection) = selection {
+        super::conversation::highlight_selection(
+            frame.buffer_mut(),
+            sections[0],
+            selection.start,
+            selection.end,
+        );
+    }
+}
+
+fn activity_detail_paragraph(
+    card: &super::super::activity::ActivityCard,
+    scroll: u16,
+    profile: ResolvedPresentation,
+    area: Rect,
+) -> Paragraph<'static> {
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("Owner: ", semantic_style(profile, SemanticToken::Muted)),
+            Span::raw(card.owner.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("Type: ", semantic_style(profile, SemanticToken::Muted)),
+            Span::raw(activity_kind_label(card.kind)),
+        ]),
+        Line::from(vec![
+            Span::styled("State: ", semantic_style(profile, SemanticToken::Muted)),
+            Span::raw(activity_state_label(card.state)),
+        ]),
+        Line::from(vec![
+            Span::styled("Summary: ", semantic_style(profile, SemanticToken::Muted)),
+            Span::raw(card.summary.clone()),
+        ]),
+        Line::raw(""),
+    ];
+    lines.extend(card.detail.lines().map(|line| Line::raw(line.to_owned())));
+    let width = usize::from(area.width.max(1));
+    let total_rows = lines
+        .iter()
+        .map(|line| line.width().div_ceil(width).max(1))
+        .sum::<usize>();
+    let visible_rows = usize::from(area.height.max(1));
+    let maximum = total_rows.saturating_sub(visible_rows);
+    Paragraph::new(Text::from(lines))
+        .wrap(Wrap { trim: false })
+        .scroll((
+            usize::from(scroll).min(maximum).min(usize::from(u16::MAX)) as u16,
+            0,
+        ))
+}
+
+const fn activity_kind_label(kind: super::super::activity::ActivityKind) -> &'static str {
+    use super::super::activity::ActivityKind;
+    match kind {
+        ActivityKind::Status => "status",
+        ActivityKind::Plan => "plan",
+        ActivityKind::Tool => "tool",
+        ActivityKind::Child => "child agent",
+        ActivityKind::Managed => "managed runtime",
+        ActivityKind::ReasoningSummary => "reasoning summary",
+        ActivityKind::ReasoningRaw => "reasoning detail",
+        ActivityKind::Diff => "diff",
+        ActivityKind::Approval => "approval",
+        ActivityKind::Warning => "warning",
+        ActivityKind::Error => "error",
+    }
+}
+
+const fn activity_state_label(state: super::super::activity::ActivityState) -> &'static str {
+    use super::super::activity::ActivityState;
+    match state {
+        ActivityState::Running => "running",
+        ActivityState::Waiting => "waiting",
+        ActivityState::Complete => "complete",
+        ActivityState::Failed => "failed",
+    }
+}
+
+pub(super) fn activity_detail_content_area(area: Rect) -> Rect {
+    let popup = super::overlay_area(area);
+    let inner = Rect::new(
+        popup.x.saturating_add(1),
+        popup.y.saturating_add(1),
+        popup.width.saturating_sub(2),
+        popup.height.saturating_sub(2),
+    );
+    Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner)[0]
+}
+
+pub(super) fn activity_detail_selected_text(
+    state: &TuiState,
+    area: Rect,
+    start: super::super::state::ScreenPoint,
+    end: super::super::state::ScreenPoint,
+) -> String {
+    let Some(Overlay::ActivityDetail { card, scroll, .. }) = &state.overlay else {
+        return String::new();
+    };
+    let content = activity_detail_content_area(area);
+    let mut buffer = Buffer::empty(content);
+    activity_detail_paragraph(card, *scroll, ResolvedPresentation::plain(), content)
+        .render(content, &mut buffer);
+    super::conversation::selection_text(&buffer, content, start, end)
 }
 
 fn render_command_palette(

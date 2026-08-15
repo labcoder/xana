@@ -16,6 +16,13 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
+use unicode_width::UnicodeWidthStr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActivityHit {
+    Summary(usize),
+    Detail(usize),
+}
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
     let area = frame.area();
@@ -38,6 +45,22 @@ pub(super) fn pointer_action(
     area: Rect,
 ) -> Option<super::state::InputAction> {
     if let Some(overlay) = &state.overlay {
+        if let super::state::Overlay::ActivityDetail { selection, .. } = overlay {
+            let content = popup::activity_detail_content_area(area);
+            if selecting && selection.is_some() {
+                return Some(super::state::InputAction::ExtendActivitySelection(
+                    clamp_point(content, column, row),
+                ));
+            }
+            if contains(content, column, row) {
+                return Some(super::state::InputAction::BeginActivitySelection(
+                    clamp_point(content, column, row),
+                ));
+            }
+            return selection
+                .is_some()
+                .then_some(super::state::InputAction::ClearActivitySelection);
+        }
         let popup = overlay_area(area);
         let Some(content_row) = row.checked_sub(popup.y.saturating_add(1)) else {
             return state
@@ -97,14 +120,20 @@ pub(super) fn pointer_action(
             });
         }
         if activity_visible(state) && contains(columns[2], column, row) {
-            return activity_at(state, row.saturating_sub(columns[2].y.saturating_add(1)))
-                .map(super::state::InputAction::ToggleActivity);
+            return activity_action_at(
+                state,
+                row.saturating_sub(columns[2].y.saturating_add(1)),
+                columns[2].width.saturating_sub(2),
+            );
         }
     } else if activity_visible(state) {
         let drawer = activity_drawer_area(area);
         if contains(drawer, column, row) {
-            return activity_at(state, row.saturating_sub(drawer.y.saturating_add(1)))
-                .map(super::state::InputAction::ToggleActivity);
+            return activity_action_at(
+                state,
+                row.saturating_sub(drawer.y.saturating_add(1)),
+                drawer.width.saturating_sub(2),
+            );
         }
     }
     if contains(conversation_content, column, row) {
@@ -124,6 +153,15 @@ pub(super) fn pointer_release_action(
     state: &TuiState,
     area: Rect,
 ) -> Option<super::state::InputAction> {
+    if let Some(super::state::Overlay::ActivityDetail { selection, .. }) = &state.overlay {
+        let selection = selection.as_ref()?;
+        let content = popup::activity_detail_content_area(area);
+        let end = clamp_point(content, column, row);
+        let text = (selection.dragged || end != selection.start)
+            .then(|| popup::activity_detail_selected_text(state, area, selection.start, end))
+            .filter(|text| !text.is_empty());
+        return Some(super::state::InputAction::FinishActivitySelection { end, text });
+    }
     let selection = state.conversation_selection.as_ref()?;
     let layout = shell_layout(area, state);
     let conversation_area = conversation_area(layout, state, area.width);
@@ -262,20 +300,51 @@ fn contains(area: Rect, column: u16, row: u16) -> bool {
     column >= area.x && column < area.right() && row >= area.y && row < area.bottom()
 }
 
-fn activity_at(state: &TuiState, content_row: u16) -> Option<usize> {
+fn activity_action_at(
+    state: &TuiState,
+    content_row: u16,
+    content_width: u16,
+) -> Option<super::state::InputAction> {
+    activity_at(state, content_row, content_width).map(|hit| match hit {
+        ActivityHit::Summary(index) => super::state::InputAction::ToggleActivity(index),
+        ActivityHit::Detail(index) => super::state::InputAction::OpenActivityDetail(index),
+    })
+}
+
+fn activity_at(state: &TuiState, content_row: u16, content_width: u16) -> Option<ActivityHit> {
     let mut start = 0u16;
     for (index, card) in state.activity.iter().enumerate() {
-        let height = if card.expanded && !card.detail.is_empty() {
-            2
-        } else {
-            1
-        };
-        if content_row >= start && content_row < start.saturating_add(height) {
-            return Some(index);
+        let width = usize::from(content_width.max(1));
+        let summary_width =
+            UnicodeWidthStr::width(format!("  {}: {}", card.owner, card.summary).as_str());
+        let summary_height = summary_width
+            .div_ceil(width)
+            .max(1)
+            .min(usize::from(u16::MAX)) as u16;
+        if content_row >= start && content_row < start.saturating_add(summary_height) {
+            return Some(ActivityHit::Summary(index));
         }
-        start = start.saturating_add(height);
+        start = start.saturating_add(summary_height);
+        if card.expanded && !card.detail.is_empty() {
+            let detail_height = wrapped_rows(&card.detail, width);
+            if content_row >= start && content_row < start.saturating_add(detail_height) {
+                return Some(ActivityHit::Detail(index));
+            }
+            start = start.saturating_add(detail_height);
+        }
     }
     None
+}
+
+fn wrapped_rows(text: &str, width: usize) -> u16 {
+    text.lines()
+        .map(|line| {
+            UnicodeWidthStr::width(format!("  {line}").as_str())
+                .div_ceil(width)
+                .max(1)
+        })
+        .sum::<usize>()
+        .min(usize::from(u16::MAX)) as u16
 }
 
 fn overlay_choice_at(
@@ -309,6 +378,7 @@ fn overlay_choice_at(
             }
         }
         super::state::Overlay::PastePreview { .. }
+        | super::state::Overlay::ActivityDetail { .. }
         | super::state::Overlay::Help
         | super::state::Overlay::Queue => return None,
     };
@@ -523,10 +593,12 @@ fn activity(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'stati
                     Span::raw(card.summary.clone()),
                 ])];
                 if card.expanded && !card.detail.is_empty() {
-                    lines.push(Line::styled(
-                        format!("  {}", card.detail),
-                        semantic_style(profile, SemanticToken::Muted),
-                    ));
+                    lines.extend(card.detail.lines().map(|detail| {
+                        Line::styled(
+                            format!("  {detail}"),
+                            semantic_style(profile, SemanticToken::Muted),
+                        )
+                    }));
                 }
                 lines
             })

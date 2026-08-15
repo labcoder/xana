@@ -771,6 +771,8 @@ async fn runtime_crash_sites_commit_acceptance_step_and_conversation_in_order() 
         let assembler = PromptAssembler::new(
             definitions,
             PromptEnvironment {
+                connection: "test-connection".to_owned(),
+                model: "test-model".to_owned(),
                 operating_system: "test".to_owned(),
                 working_directory: workspace_root.clone(),
                 configured_shell: "test shell".to_owned(),

@@ -112,7 +112,12 @@ pub(super) fn selected_text(
     selection_text(&buffer, panel_content(area), start, end)
 }
 
-fn highlight_selection(buffer: &mut Buffer, area: Rect, start: ScreenPoint, end: ScreenPoint) {
+pub(super) fn highlight_selection(
+    buffer: &mut Buffer,
+    area: Rect,
+    start: ScreenPoint,
+    end: ScreenPoint,
+) {
     for point in selected_points(area, start, end) {
         if let Some(cell) = buffer.cell_mut((point.column, point.row)) {
             cell.set_style(cell.style().add_modifier(Modifier::REVERSED));
@@ -120,7 +125,12 @@ fn highlight_selection(buffer: &mut Buffer, area: Rect, start: ScreenPoint, end:
     }
 }
 
-fn selection_text(buffer: &Buffer, area: Rect, start: ScreenPoint, end: ScreenPoint) -> String {
+pub(super) fn selection_text(
+    buffer: &Buffer,
+    area: Rect,
+    start: ScreenPoint,
+    end: ScreenPoint,
+) -> String {
     let (start, end) = ordered_points(
         clamp_point(area, start.column, start.row),
         clamp_point(area, end.column, end.row),

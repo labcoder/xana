@@ -42,6 +42,9 @@ pub(crate) enum PermissionScope {
         recipient_identity_digest: String,
         operation: String,
     },
+    BuiltInResource {
+        id: String,
+    },
     Unscoped,
 }
 
