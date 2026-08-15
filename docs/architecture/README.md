@@ -936,17 +936,19 @@ profile-level exposure, preview or require `--yes`, validate the entire schema,
 retain the exact prior config as `config.toml.bak`, and atomically replace the
 live file. No provider, MCP process, or endpoint is started by configuration.
 
-Six runtime-owned, versioned JSON records live under the data root's
+Seven runtime-owned, versioned JSON records live under the data root's
 `interoperable/` directory: the project registry and conversation membership,
 local project bindings, installed-package/lock state, endpoint trust, external
-agent state, and outbound decisions.
+agent state, outbound decisions, and the bounded metadata-only outbound audit
+journal.
 They are separately bounded, owner-protected where the platform supports it,
 strictly decoded, and atomically replaced under a cross-process record lock.
 They contain references and decisions, never resolved credentials.
 
 Configuration migration is an explicit plan/review/apply transaction. The
 read-only plan snapshots the exact config bytes, validates semantic equivalence,
-and inspects private record versions. Apply acquires a migration lock, rejects a
+and inspects private record versions. Apply acquires the same configuration
+transaction lock used by setup and structured edits, rejects a
 concurrent config edit, initializes missing private records, writes an exact
 backup, then atomically replaces `config.toml` as the final version marker.
 Corrupt or future private records fail closed and are never overwritten; an
@@ -1203,18 +1205,29 @@ approval. The bounded `outbound-decisions.json` record lives under the private
 `data/interoperable/` owner and uses the same locked atomic versioned update
 path as other interoperable state.
 
+An interactive decision is carried with the complete redacted review that the
+controller displayed. `OutboundGuard` compares that reviewed structure with
+the request at the send seam; any recipient, purpose, class, item, byte-count,
+or content-digest mismatch becomes a one-shot denial before transport or grant
+persistence.
+
 Audit events cover request, decision, send, cancellation, success, and failure.
 They retain recipient identity, classes, counts, byte bounds, decision source,
 and outcome, but never payload bytes, prompts, file content, artifact content,
-credentials, or hidden reasoning. Transport failures are reduced to typed safe
-categories before they cross this boundary. Noninteractive unresolved approval
-fails closed.
+credentials, or hidden reasoning. The request/decision/sending records are an
+authoritative pre-send commit boundary: their failure prevents transport I/O.
+Once transport I/O has completed, a success, cancellation, or failure audit
+append is observational and cannot discard the original receipt/error or invite
+an unsafe retry. Journal degradation is emitted separately to the bounded
+diagnostic sink. Transport failures are reduced to typed safe categories before
+they cross this boundary. Noninteractive unresolved approval fails closed.
 
-MCP stdio and Streamable HTTP application requests implement the guarded
-outbound seam and revalidate the exact recipient digest before sending. A2A
-and focused-service transports remain unavailable rather than shipping an
-unguarded alternate path; every application integration must call
-`OutboundGuard::dispatch` as the only payload-bearing send seam.
+MCP stdio and Streamable HTTP application requests, A2A delegation, focused
+image generation, and specialist vision implement the guarded outbound seam
+and revalidate the exact recipient digest before sending. Credentials and
+network clients are resolved inside that seam after approval. Every application
+integration calls `OutboundGuard::dispatch` as its only payload-bearing send
+seam; denial performs zero protected transport work.
 
 ### MCP protocol and progressive catalog boundary
 
@@ -1249,6 +1262,13 @@ The application layer converts an exact, allowlisted tool into a dynamic
 native and remote tools behind one permission broker without turning the MCP
 transport into an authority source. Resources and prompts use separate
 explicit typed actions.
+
+Profile activation never starts or contacts a newly configured MCP recipient.
+An explicit `xana mcp refresh SERVER` renders the content-free discovery review
+and records the exact recipient/`workspace_metadata` grant. A later conversation
+may then discover that allowlisted server during activation; without the saved
+grant it skips the server and remains usable. Tool invocation still performs a
+separate exact `prompt_text` review, and saved grants remain revocable.
 
 ```mermaid
 flowchart LR

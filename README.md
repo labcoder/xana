@@ -209,6 +209,9 @@ the ordinary permission broker and outbound-data gate. Resource content and
 prompt templates remain attributed untrusted data and never become ambient
 system instructions. The same typed commands are available as `/mcp ...` in
 plain chat and the TUI. See [MCP](docs/user/mcp.md).
+`xana mcp refresh SERVER` is also the explicit, reviewed action that saves the
+exact discovery-metadata grant; normal chat startup skips unapproved MCP peers
+without spawning or connecting to them.
 
 For local composition, `xana mcp serve --workspace PATH --profile PROFILE
 --allow xana_docs` exposes an isolated, stdio-only, noninteractive MCP process.
@@ -223,8 +226,10 @@ selection. New recipient/class combinations require approval, unresolved
 noninteractive requests fail closed, and audits retain counts and digests
 rather than selected content. MCP application calls already implement that
 exact dispatch seam. A2A delegation uses it for explicitly selected messages,
-files, artifacts, and workspace metadata; focused-service activation remains
-unavailable until its application integration lands. See [Outbound
+files, artifacts, and workspace metadata; image-generation and specialist-
+vision requests use the same seam before credential or network setup. Use
+`xana outbound list` and `xana outbound revoke IDENTITY_DIGEST CLASS --yes` to
+inspect or remove saved recipient/class decisions. See [Outbound
 data approvals and privacy](docs/user/outbound-data.md).
 
 Xana also has a bounded client-side protocol and progressive catalog foundation
@@ -249,11 +254,11 @@ artifacts, tracks task state, and supports explicit or best-effort cancellation.
 Startup never discovers endpoints implicitly, and trust alone sends no task or
 local data. See [External A2A agents](docs/user/external-agents.md).
 
-Focused service routes are independent from the conversational model. The
-first production adapter, `openai.images`, generates one bounded GPT Image 2
-artifact through the official OpenAI API-key endpoint with exact route/model/
-option provenance, usage visibility, typed failures, cancellation, and no
-silent retries or fallback. See [Focused image services](docs/user/focused-services.md).
+Focused service routes are independent from the conversational model.
+`openai.images` and `openrouter.images` generate one bounded artifact through
+an exact selected provider with route/model/option provenance, usage visibility,
+typed failures, cancellation, and no silent retries or fallback. See [Focused
+image services](docs/user/focused-services.md).
 Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
 `xana image generate PROMPT --route ROUTE --yes`; equivalent `/image ...`
 commands work in plain and TUI conversations, and exposed routes add the

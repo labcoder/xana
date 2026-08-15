@@ -13,6 +13,10 @@ Xana loads one strict, versioned `config.toml`, with a 1 MiB file limit.
 Human-authored configuration declares connections and profiles; static
 secrets, cached catalogs, model selection, sessions, and artifacts live
 elsewhere.
+Every Xana-owned config mutation uses the same cross-process lock and atomic
+replace boundary. Setup, focused connection edits, MCP changes, profile edits,
+and migration therefore fail closed rather than overwriting a concurrent
+writer; direct human edits remain visible as a changed-input conflict.
 
 ## Quick Setup
 

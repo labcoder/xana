@@ -2,7 +2,7 @@
 
 > Audience: Contributors and coding agents  
 > Authority: Prescriptive  
-> Status: Accepted
+> Status: Implemented
 
 ## Context
 
@@ -259,7 +259,7 @@ automatic provider/agent routing.
 
 ## Implementation status
 
-This proposal is Accepted and prescriptive. Agent Skills discovery/activation
+This proposal is Implemented and prescriptive. Agent Skills discovery/activation
 and Agent Plugin inspection, exact acquisition, scoped enablement, explicit
 update/reapproval, rollback, removal, and garbage collection are implemented.
 The shared outbound data-class gate, exact recipient/class decisions,
@@ -286,8 +286,7 @@ offline profile-readiness checks. A2A delegation now sends only explicitly
 selected typed data through the ordinary permission and outbound gates,
 streams bounded task/message/artifact activity, ingests attributed immutable
 artifacts, retains bounded task state, and requests cancellation on explicit
-command or dropped execution. Focused-service routing remains the accepted
-unimplemented slice, so this proposal remains Accepted rather than Implemented.
-Current behavior remains described by Architecture
-and User Documentation. Once every accepted slice ships, this proposal must be
-marked Implemented.
+command or dropped execution. Focused image-generation and specialist-vision
+routes now use the same typed egress, exact approval, diagnostic-audit, and
+credential-after-approval boundaries. Current behavior is described by
+Architecture and User Documentation; the explicit deferrals remain proposed.
