@@ -73,6 +73,99 @@ struct ConfigDocument {
     service_routes: BTreeMap<String, ServiceRouteDeclaration>,
     #[serde(default)]
     egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
+    #[serde(default)]
+    diagnostics: DiagnosticsConfig,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DiagnosticLevel {
+    Error,
+    Warn,
+    #[default]
+    Info,
+    Debug,
+    Trace,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DiagnosticTarget {
+    Application,
+    Runtime,
+    Provider,
+    Tool,
+    Frontend,
+    Storage,
+    Integration,
+    Security,
+}
+
+fn default_diagnostic_targets() -> Vec<DiagnosticTarget> {
+    vec![
+        DiagnosticTarget::Application,
+        DiagnosticTarget::Runtime,
+        DiagnosticTarget::Provider,
+        DiagnosticTarget::Tool,
+        DiagnosticTarget::Frontend,
+        DiagnosticTarget::Storage,
+        DiagnosticTarget::Integration,
+        DiagnosticTarget::Security,
+    ]
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_retention_days() -> u16 {
+    7
+}
+
+fn default_diagnostic_file_bytes() -> u64 {
+    4 * 1024 * 1024
+}
+
+fn default_diagnostic_total_bytes() -> u64 {
+    32 * 1024 * 1024
+}
+
+fn default_diagnostic_files() -> u16 {
+    32
+}
+
+fn default_diagnostic_queue() -> usize {
+    1_024
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct DiagnosticsConfig {
+    pub(crate) enabled: bool,
+    pub(crate) level: DiagnosticLevel,
+    pub(crate) targets: Vec<DiagnosticTarget>,
+    pub(crate) directory: Option<PathBuf>,
+    pub(crate) retention_days: u16,
+    pub(crate) max_file_bytes: u64,
+    pub(crate) max_total_bytes: u64,
+    pub(crate) max_files: u16,
+    pub(crate) queue_capacity: usize,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_true(),
+            level: DiagnosticLevel::Info,
+            targets: default_diagnostic_targets(),
+            directory: None,
+            retention_days: default_retention_days(),
+            max_file_bytes: default_diagnostic_file_bytes(),
+            max_total_bytes: default_diagnostic_total_bytes(),
+            max_files: default_diagnostic_files(),
+            queue_capacity: default_diagnostic_queue(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -354,6 +447,7 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) service_connections: BTreeMap<String, ServiceConnectionDeclaration>,
     pub(crate) service_routes: BTreeMap<String, ServiceRouteDeclaration>,
     pub(crate) egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
+    pub(crate) diagnostics: DiagnosticsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -951,6 +1045,7 @@ impl XanaConfig {
             service_connections: BTreeMap::new(),
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
+            diagnostics: DiagnosticsConfig::default(),
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -1982,6 +2077,7 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
     Shell::resolve(document.shell.clone()).map_err(ConfigError::InvalidShell)?;
     PermissionPolicy::validate_rules(&document.permission_rules)
         .map_err(ConfigError::InvalidPermissionPolicy)?;
+    validate_diagnostics(&document.diagnostics)?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
@@ -2176,6 +2272,61 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
     Ok(())
 }
 
+fn validate_diagnostics(settings: &DiagnosticsConfig) -> Result<(), ConfigError> {
+    let invalid = |reason: &str| ConfigError::InvalidInteroperableConfig {
+        section: "diagnostics",
+        name: "settings".into(),
+        reason: reason.into(),
+    };
+    if !(1..=365).contains(&settings.retention_days) {
+        return Err(invalid("retention_days must be in 1..=365"));
+    }
+    if !(64 * 1024..=64 * 1024 * 1024).contains(&settings.max_file_bytes) {
+        return Err(invalid("max_file_bytes must be in 65536..=67108864"));
+    }
+    if settings.max_total_bytes < settings.max_file_bytes
+        || settings.max_total_bytes > 512 * 1024 * 1024
+    {
+        return Err(invalid(
+            "max_total_bytes must be at least max_file_bytes and at most 536870912",
+        ));
+    }
+    if !(1..=256).contains(&settings.max_files) {
+        return Err(invalid("max_files must be in 1..=256"));
+    }
+    if !(64..=8_192).contains(&settings.queue_capacity) {
+        return Err(invalid("queue_capacity must be in 64..=8192"));
+    }
+    if settings.targets.is_empty()
+        || settings
+            .targets
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != settings.targets.len()
+    {
+        return Err(invalid("targets must be non-empty and unique"));
+    }
+    if let Some(directory) = &settings.directory
+        && (directory.as_os_str().is_empty()
+            || directory.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+            || (!directory.is_absolute()
+                && directory
+                    .components()
+                    .any(|component| !matches!(component, std::path::Component::Normal(_)))))
+    {
+        return Err(invalid(
+            "directory must be absolute or a normalized data-root-relative path",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, ConfigError> {
     validate_document(&document)?;
 
@@ -2298,6 +2449,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         service_connections: document.service_connections,
         service_routes: document.service_routes,
         egress_policies: document.egress_policies,
+        diagnostics: document.diagnostics,
     }
 }
 

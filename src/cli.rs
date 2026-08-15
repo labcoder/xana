@@ -218,6 +218,9 @@ pub(crate) enum Command {
     /// Open the provider-neutral integration hub or one focused setup path.
     #[command(display_order = 16)]
     Connect(ConnectArgs),
+    /// Inspect local metadata-only logs and crash diagnostics.
+    #[command(display_order = 17)]
+    Logs(LogsArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -236,6 +239,45 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct LogsArgs {
+    #[command(subcommand)]
+    pub(crate) command: LogsCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum LogsCommand {
+    /// Print the configured local log and crash directories.
+    Path,
+    /// List bounded structured log and crash-report entries.
+    List,
+    /// Show sanitized records from one exact listed entry.
+    Show {
+        name: String,
+        #[arg(long, default_value_t = 200, value_parser = parse_log_lines)]
+        lines: usize,
+        /// Continue following a structured log until interrupted.
+        #[arg(long)]
+        follow: bool,
+    },
+    /// Create one bounded, metadata-only local JSON support bundle.
+    Export {
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+fn parse_log_lines(value: &str) -> Result<usize, String> {
+    let value = value
+        .parse::<usize>()
+        .map_err(|_| "log line count must be an integer in 1..=1000".to_owned())?;
+    if (1..=1_000).contains(&value) {
+        Ok(value)
+    } else {
+        Err("log line count must be in 1..=1000".to_owned())
+    }
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

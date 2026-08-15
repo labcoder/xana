@@ -300,6 +300,15 @@ deterministic owner-permission repairs on Unix and unlocked stale-descriptor
 removal; it never logs in, selects a provider/model, weakens permissions,
 kills a process, or deletes conversations.
 
+Normal Xana execution writes bounded structured metadata—not transcripts—to
+the resolved `data/logs` directory, with seven-day retention by default and a
+nonblocking loss-counted writer. Panics and monitored runtime-task loss produce
+best-effort redacted reports under `data/crashes`; clean shutdown removes its
+locked run marker, while a stale marker remains visible after an unclean exit.
+Use `xana logs path|list|show|export`; exports are bounded local JSON files and
+are never uploaded. Doctor and log-inspection commands remain read-only. See
+[Logs and crash diagnostics](docs/user/diagnostics.md).
+
 Use `xana config edit` for a manual edit through a bounded temporary copy. The
 live file is replaced only after full schema validation and a concurrent-change
 check, with the exact prior file retained as `config.toml.bak`. Invalid or

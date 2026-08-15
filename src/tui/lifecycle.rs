@@ -24,6 +24,17 @@ trait TerminalControl {
 
 struct CrosstermControl;
 
+pub(super) fn restore_process_terminal_best_effort() {
+    let _ = execute!(
+        io::stdout(),
+        Show,
+        DisableBracketedPaste,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    );
+    let _ = disable_raw_mode();
+}
+
 impl TerminalControl for CrosstermControl {
     fn enable_raw(&mut self) -> io::Result<()> {
         enable_raw_mode()

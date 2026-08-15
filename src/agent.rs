@@ -285,7 +285,19 @@ impl Agent {
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
                 .await
-                .map_err(|error| anyhow::anyhow!("provider {:?}: {error}", error.kind()))?;
+                .map_err(|error| {
+                    crate::diagnostics::emit(
+                        crate::diagnostics::DiagnosticFact::new(
+                            crate::config::DiagnosticLevel::Warn,
+                            crate::config::DiagnosticTarget::Provider,
+                            crate::diagnostics::EventKind::ProviderFailed,
+                            crate::diagnostics::EventOutcome::Failed,
+                        )
+                        .subject(format!("{:?}", error.kind()))
+                        .correlation(operation_id.to_string()),
+                    );
+                    anyhow::anyhow!("provider {:?}: {error}", error.kind())
+                })?;
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {

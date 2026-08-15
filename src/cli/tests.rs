@@ -570,6 +570,29 @@ fn parses_config_path_check_and_edit() {
 }
 
 #[test]
+fn parses_bounded_local_diagnostic_commands() {
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "logs", "path"])
+            .unwrap()
+            .command,
+        Some(Command::Logs(LogsArgs {
+            command: LogsCommand::Path
+        }))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "logs", "show", "xana-1.jsonl", "--lines", "50"])
+            .unwrap()
+            .command,
+        Some(Command::Logs(LogsArgs {
+            command: LogsCommand::Show { lines: 50, .. }
+        }))
+    ));
+    assert!(
+        Cli::try_parse_from(["xana", "logs", "show", "xana-1.jsonl", "--lines", "1001"]).is_err()
+    );
+}
+
+#[test]
 fn parses_explicit_resume_and_session_inspection() {
     let id = SessionId::new();
     let resume =

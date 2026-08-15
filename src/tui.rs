@@ -27,6 +27,10 @@ use std::{io, path::PathBuf};
 
 pub(crate) use runner::{run_managed, run_native};
 
+pub(crate) fn restore_terminal_best_effort() {
+    lifecycle::restore_process_terminal_best_effort();
+}
+
 pub(crate) struct PreparedTui {
     terminal: TerminalSession,
     profile: ResolvedPresentation,

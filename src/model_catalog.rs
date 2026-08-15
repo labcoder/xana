@@ -1078,6 +1078,7 @@ mod tests {
             service_connections: BTreeMap::new(),
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
         }
     }
 
@@ -1140,6 +1141,7 @@ mod tests {
             service_connections: BTreeMap::new(),
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
+            diagnostics: crate::config::DiagnosticsConfig::default(),
         }
     }
 

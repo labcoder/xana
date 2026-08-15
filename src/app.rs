@@ -7,11 +7,12 @@
 mod chat;
 mod connect;
 mod connections;
+mod diagnostics_commands;
 mod external_agents;
 mod hosting;
 mod image_commands;
 mod mcp_commands;
-mod one_shot;
+pub(crate) mod one_shot;
 mod operations;
 mod plugins;
 mod profiles;
@@ -102,6 +103,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             }
         }
         Some(Command::Doctor(args)) => run_doctor_command(&args, &paths).await,
+        Some(Command::Logs(args)) => {
+            let stdout = io::stdout();
+            diagnostics_commands::run(args.command, &paths, &mut stdout.lock())
+        }
         Some(Command::Reset(args)) => run_reset_command(&args, &paths),
         Some(Command::Config(args)) => {
             let stdout = io::stdout();
