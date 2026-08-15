@@ -2,7 +2,7 @@
 
 > Audience: Contributors and coding agents  
 > Authority: Prescriptive  
-> Status: Accepted
+> Status: Implemented
 
 ## Context
 
@@ -202,7 +202,9 @@ accepted.
 
 ## Implementation status
 
-This proposal is Accepted and prescriptive but not yet implemented. Current
-behavior remains described by Architecture and User Documentation. Once all
-accepted slices ship, the implementation change must update those documents
-and mark this proposal Implemented.
+The accepted Milestone 3 slice is implemented. Xana now owns optional private
+projects and membership, user-global and portable project profiles, immutable
+resolved conversation snapshots, explicit same-workspace placement and
+cross-workspace continuation, bounded `.agents/xana/` import/share, and locked
+plan/review/apply migration. Architecture and User Documentation describe the
+current behavior. The broader deferrals above remain proposed work.

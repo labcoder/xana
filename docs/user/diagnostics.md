@@ -50,6 +50,9 @@ Xana rejects relative traversal and symlink components, creates files with
 exclusive create semantics, and cleans only recognized regular `.jsonl` logs
 inside the configured log root. Old malformed files cannot prevent startup;
 sink faults degrade diagnostics rather than runtime authority or execution.
+On ordinary shutdown Xana requests a writer drain and waits for its bounded
+acknowledgement before joining the writer; an unresponsive sink is detached at
+the deadline rather than hanging process exit.
 
 ## What is and is not recorded
 
@@ -64,6 +67,10 @@ values, prompt or response bodies, hidden reasoning, file/clipboard contents,
 raw paths or URLs, tool arguments/results, or artifact bytes. Session journals,
 permission audit facts, and operation recovery remain separate authoritative
 records; logs do not duplicate them.
+The separate `data/interoperable/outbound-audit.json` journal contains only
+bounded recipient/class/count/digest metadata and keeps at most 512 records.
+Its pre-send facts are authoritative; diagnostic forwarding remains
+observational and follows the log settings above.
 
 ## Crashes and unclean exits
 
@@ -78,7 +85,10 @@ An OS kill, power loss, or process abort may leave only the unclean marker; Xana
 does not claim it can always write an in-process report. Raw memory dumps,
 telemetry, automatic uploads, and hosted crash reporting are not supported.
 
-`xana doctor` inspects configured roots, path safety, record validity, stale
-markers, writer faults, and observed event loss without creating or deleting
-diagnostic state. Normal Xana execution starts the writer; `doctor` and `logs`
-inspection commands remain read-only.
+`xana doctor` inspects configured roots, path safety, portable write-permission
+metadata, owner-only permissions, file/count/byte/age retention compliance,
+record validity, stale markers, writer faults, and observed event loss without
+creating or deleting diagnostic state. Normal Xana execution starts the writer;
+`doctor` and `logs` inspection commands remain read-only.
+Because this check creates no probe file, it cannot prove free space or every
+platform ACL; a later writer fault remains a separate visible health signal.

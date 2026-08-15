@@ -143,7 +143,9 @@ ROUTE` forces an exact exposed specialist for the next image turn even when the
 conversation model accepts images; `/vision auto` restores native-first routing.
 The plain loop and TUI both preview the recipient, model, outbound prompt and
 selected-artifact classes, cost availability, and permission decision before
-dispatch.
+dispatch. Allow once, save allow, deny once, save deny, and cancel remain
+distinct decisions; saved decisions can be inspected and revoked with `xana
+outbound list` and `xana outbound revoke`.
 
 ```toml
 [service_connections.openai-vision]
@@ -178,7 +180,8 @@ xana vision inspect describe
 xana vision analyze first.png second.jpg --question "Compare these" --route describe --yes
 ```
 
-One-shot analysis requires `--yes` before Xana reads named external files,
-resolves a credential, or opens the network. Without native support or a usable
+One-shot analysis requires `--yes` before Xana reads named external files.
+Every specialist and image-generation request then traverses the same exact
+outbound guard before Xana resolves a credential or opens the network. Without native support or a usable
 exposed route, the turn is preserved and Xana reports `xana connect vision` as
 the setup path rather than silently choosing a provider.

@@ -33,11 +33,16 @@ edge:
   external source path.
 
 The application-level vision router makes the native-versus-specialist choice
-once for both terminal frontends. A model that advertises image input uses the
+once for both terminal frontends and owns the deny-versus-review classification.
+A model that advertises image input uses the
 native path unless the user selected an exact route for the next turn. A
 text-only model resolves the profile's sole default `vision.analyze` route or
 fails before provider I/O. The focused adapter makes exactly one multimodal
-request through the existing OpenAI-compatible wire boundary. Its text result
+request through `OutboundGuard`; the exact UI decision is passed into that
+guard rather than reconstructed as a synthetic approval. Credentials and the
+provider adapter are resolved only inside the approved transport seam. Denial,
+cancellation, missing controller authority, or a saved deny therefore performs
+zero specialist credential or network work. Its text result
 is bounded, labeled as an untrusted derivative, attributed to route/connection/
 adapter/model and source artifact IDs, and only then passed to the text-only
 conversation model. Raw image bytes are resolved at that specialist wire edge
@@ -48,8 +53,9 @@ Both require effective `prompt_text` and `selected_artifacts` egress, explicit
 permission, and a profile-exposed route. They report token usage when the
 provider supplies it and report cost as unavailable rather than estimating it.
 The TUI performs specialist preparation as one cancellation-aware background
-operation over a one-slot event channel, preserving frame rendering and
-restoring the complete draft and image set on denial or failure.
+operation over a one-slot event channel. Panics in that task become redacted
+diagnostic crash facts, while denial or failure restores the complete draft and
+image set and leaves frame rendering responsive.
 
 Encoded bytes and external source paths are not written into Xana's native
 conversation records. Image capabilities fail closed when catalog evidence is

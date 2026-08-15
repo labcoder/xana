@@ -124,11 +124,22 @@ atomically replace the complete configuration, retain `config.toml.bak`, and
 do not start a process or request until a later explicit refresh or use.
 `remove` deletes only the declaration and its profile references.
 
+`refresh SERVER` prints the exact content-free recipient review, connects only
+after that explicit action, and saves the recipient/`workspace_metadata` grant.
+This grant lets future conversations discover the allowlisted catalog without a
+pre-TUI prompt. Until refresh establishes it, profile activation skips that MCP
+server instead of starting a process, contacting an endpoint, or preventing the
+rest of the conversation from opening. Inspect or revoke the grant with
+`xana outbound list` and `xana outbound revoke`.
+
 The same command family is available as `/mcp ...` in plain chat and the TUI;
 Xana restores the conversation after the typed operation. Starting a native
-conversation activates only allowlisted MCP tools. Exact schemas load on
-demand and remote tool execution passes both the normal Xana permission broker
-and the shared outbound-data gate before transport I/O.
+conversation activates only allowlisted MCP tools from servers with an exact
+saved discovery grant. Exact schemas load on demand and remote tool execution
+shows the outbound gate's redacted destination/item review in the normal Xana
+permission surface before transport I/O. Saving that separate `prompt_text`
+decision avoids redundant later prompts for the same recipient and class; a
+saved denial remains authoritative.
 
 Resource reads and prompts are intentionally not tools. `read` returns an
 attributed `untrusted = true` document only after an explicit action. `prompt`

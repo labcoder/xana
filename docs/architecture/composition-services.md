@@ -17,10 +17,17 @@ only the resulting logical tool names are instantiated in the runtime registry.
 Authorization remains an invocation-time permission-broker decision and is
 never implied by discovery.
 
-The production snapshot currently exposes `read_file`, `list_files`,
+The base production snapshot currently exposes `read_file`, `list_files`,
 `edit_file`, `run_command`, `read_document`, and `xana_docs` in deterministic
 order. Adding or removing a capability requires a new agent composition; a
 model's schema does not mutate during a native turn.
+
+Profile-exposed `image.generate` routes add one `generate_image` tool. Planning
+resolves an exact route, recipient identity, and prompt data class. Execution
+passes the actual external-effect authorization into `OutboundGuard`; only the
+guard-owned send seam may resolve credentials, construct the adapter, or open
+the network. Generated binary output is published to the artifact store rather
+than copied into the transcript.
 
 `self_docs` is a curated `include_str!` catalog with logical ids, audience,
 authority, lifecycle, topics, product version, traversal rejection, and an
