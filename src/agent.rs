@@ -18,6 +18,7 @@ use crate::{
     tool::{ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -96,12 +97,92 @@ pub(crate) struct AgentTurnResult {
     pub(crate) usage: AgentTurnUsage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AgentTurnUsage {
     pub(crate) input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
     pub(crate) total_tokens: Option<u64>,
     pub(crate) requests: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionUsage {
+    turns: u64,
+    requests: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    total_tokens: u64,
+    input_complete: bool,
+    output_complete: bool,
+    total_complete: bool,
+}
+
+impl Default for SessionUsage {
+    fn default() -> Self {
+        Self {
+            turns: 0,
+            requests: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            total_tokens: 0,
+            input_complete: true,
+            output_complete: true,
+            total_complete: true,
+        }
+    }
+}
+
+impl SessionUsage {
+    pub(crate) fn observe(&mut self, usage: AgentTurnUsage) {
+        self.turns = self.turns.saturating_add(1);
+        self.requests = self.requests.saturating_add(usage.requests);
+        accumulate(
+            &mut self.input_tokens,
+            &mut self.input_complete,
+            usage.input_tokens,
+        );
+        accumulate(
+            &mut self.output_tokens,
+            &mut self.output_complete,
+            usage.output_tokens,
+        );
+        accumulate(
+            &mut self.total_tokens,
+            &mut self.total_complete,
+            usage.total_tokens,
+        );
+    }
+
+    pub(crate) fn render(&self) -> String {
+        if self.turns == 0 {
+            return "Current process: no completed turns yet; token usage is unknown until a provider reports it. Provider quota, rate-limit reset, and wallet balance are not exposed by this connection.".to_owned();
+        }
+        format!(
+            "Current process: {} turn(s), {} provider request(s) · input {} · output {} · total {}. Provider quota, rate-limit reset, and wallet balance are unavailable unless the active connection exposes them.",
+            self.turns,
+            self.requests,
+            token_count(self.input_tokens, self.input_complete),
+            token_count(self.output_tokens, self.output_complete),
+            token_count(self.total_tokens, self.total_complete),
+        )
+    }
+}
+
+fn accumulate(total: &mut u64, complete: &mut bool, observed: Option<u64>) {
+    match observed {
+        Some(value) => *total = total.saturating_add(value),
+        None => *complete = false,
+    }
+}
+
+fn token_count(value: u64, complete: bool) -> String {
+    if complete {
+        value.to_string()
+    } else if value == 0 {
+        "unknown".to_owned()
+    } else {
+        format!("at least {value} (partial)")
+    }
 }
 
 impl Agent {
@@ -122,6 +203,7 @@ impl Agent {
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_turn(
         &self,
         operation_id: OperationId,
@@ -167,7 +249,7 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: impl Into<AgentEventSender>,
         durable: Option<DurableTurnServices>,
-    ) -> Result<Message> {
+    ) -> Result<AgentTurnResult> {
         self.run_turn_inner(
             operation_id,
             messages,
@@ -177,7 +259,6 @@ impl Agent {
             durable,
         )
         .await
-        .map(|result| result.message)
     }
 
     async fn run_turn_inner(

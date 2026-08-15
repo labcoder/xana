@@ -2,7 +2,10 @@
 
 mod appearance;
 
-use super::{SetupOutcome, atomic_write, confirm, prompt_default};
+use super::{
+    SetupOutcome, atomic_write, confirm, prompt_default,
+    ui::{SelectOption, SetupUi},
+};
 use crate::{
     cli::{SetupArgs, SetupSectionChoice},
     config::XanaConfig,
@@ -26,6 +29,7 @@ pub(super) fn customize_quick(
     paths: &XanaPaths,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<Customization> {
     let rendered = merge_existing_connection_if_valid(paths, rendered)?;
     if args.section == Some(SetupSectionChoice::Connection) {
@@ -46,9 +50,9 @@ pub(super) fn customize_quick(
     writeln!(output)?;
     writeln!(output, "Full Custom Setup")?;
     let mut document = rendered.parse::<DocumentMut>()?;
-    edit_permissions_shell(&mut document, args, input, output, true, true)?;
+    edit_permissions_shell(&mut document, args, input, output, true, true, ui)?;
     edit_profiles_routes(&mut document, args, input, output, true)?;
-    let preferences = appearance::edit(args, paths, input, output, true)?;
+    let preferences = appearance::edit(args, paths, input, output, true, ui)?;
     let config = validate_document(document)?;
     Ok(Customization {
         config,
@@ -66,13 +70,14 @@ pub(super) fn run_section(
     paths: &XanaPaths,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<SetupOutcome> {
     let section = args.section.context("missing setup section")?;
     if section == SetupSectionChoice::Appearance {
         if args.non_interactive && appearance::flags_empty(args) {
             bail!("noninteractive appearance setup requires at least one appearance option");
         }
-        let preferences = appearance::edit(args, paths, input, output, !args.non_interactive)?;
+        let preferences = appearance::edit(args, paths, input, output, !args.non_interactive, ui)?;
         let rendered = preferences.render()?;
         PresentationPreferences::parse(&rendered)?;
         writeln!(output, "Review")?;
@@ -143,6 +148,7 @@ pub(super) fn run_section(
                 output,
                 !args.non_interactive,
                 false,
+                ui,
             )?;
             "new conversation (shell or authority snapshot changed)"
         }
@@ -243,6 +249,7 @@ fn edit_permissions_shell(
     output: &mut impl Write,
     full: bool,
     preserve_permission: bool,
+    ui: SetupUi,
 ) -> Result<()> {
     let permission = match args.permission_mode {
         Some(value) => permission_name(value).to_owned(),
@@ -252,7 +259,48 @@ fn edit_permissions_shell(
                 .context("permission_mode must be a string")?
                 .to_owned()
         }
+        None if ui.rich => {
+            let options = [
+                SelectOption::new("ask", "prompt before effectful tools; recommended default"),
+                SelectOption::new(
+                    "deny",
+                    "block effectful tools unless a narrower rule allows them",
+                ),
+                SelectOption::new(
+                    "allow",
+                    "allow effectful tools under ordinary host permissions",
+                ),
+            ];
+            let current = document["permission_mode"].as_str().unwrap_or("ask");
+            let default = options
+                .iter()
+                .position(|option| option.label == current)
+                .unwrap_or(0);
+            super::ui::select(
+                output,
+                ui,
+                "Choose the default permission mode",
+                &options,
+                default,
+            )?
+            .map(|index| options[index].label.clone())
+            .context("permission selection was cancelled")?
+        }
         None => {
+            writeln!(output)?;
+            writeln!(output, "Permission modes:")?;
+            writeln!(
+                output,
+                "  ask    prompt before effectful tools (recommended)"
+            )?;
+            writeln!(
+                output,
+                "  deny   block effectful tools unless a rule allows them"
+            )?;
+            writeln!(
+                output,
+                "  allow  allow tools under ordinary host permissions"
+            )?;
             let current = document["permission_mode"].as_str().unwrap_or("ask");
             prompt_default(input, output, "Permission mode", current)?
         }
@@ -265,7 +313,31 @@ fn edit_permissions_shell(
             .as_str()
             .context("shell.kind must be a string")?
             .to_owned(),
+        None if ui.rich => {
+            let options = [
+                SelectOption::new("platform", "use the operating system's native default"),
+                SelectOption::new("posix", "use a POSIX-compatible sh shell"),
+                SelectOption::new("git_bash", "use Git for Windows Bash"),
+                SelectOption::new("powershell", "use PowerShell / pwsh"),
+                SelectOption::new("cmd", "use Windows Command Prompt"),
+            ];
+            let current = document["shell"]["kind"].as_str().unwrap_or("platform");
+            let default = options
+                .iter()
+                .position(|option| option.label == current)
+                .unwrap_or(0);
+            super::ui::select(output, ui, "Choose the command shell", &options, default)?
+                .map(|index| options[index].label.clone())
+                .context("shell selection was cancelled")?
+        }
         None => {
+            writeln!(output)?;
+            writeln!(output, "Shells:")?;
+            writeln!(output, "  platform    operating-system default")?;
+            writeln!(output, "  posix       POSIX-compatible sh")?;
+            writeln!(output, "  git_bash    Git for Windows Bash")?;
+            writeln!(output, "  powershell  PowerShell / pwsh")?;
+            writeln!(output, "  cmd         Windows Command Prompt")?;
             let current = document["shell"]["kind"].as_str().unwrap_or("platform");
             prompt_default(input, output, "Shell", current)?
         }
@@ -633,6 +705,13 @@ mod tests {
     use crate::shell::ShellConfig;
     use tempfile::tempdir;
 
+    fn plain_ui() -> SetupUi {
+        SetupUi {
+            profile: crate::presentation::ResolvedPresentation::test_plain(),
+            rich: false,
+        }
+    }
+
     fn base() -> String {
         let rendered = XanaConfig::render_initial(InitialConfig {
             connection: InitialConnection::Native {
@@ -709,6 +788,7 @@ mod tests {
             &paths,
             &mut std::io::Cursor::new(Vec::<u8>::new()),
             &mut Vec::new(),
+            plain_ui(),
         )
         .unwrap();
 
@@ -762,6 +842,7 @@ mod tests {
             &mut Vec::new(),
             false,
             false,
+            plain_ui(),
         )
         .unwrap();
         let rendered = validate_document(document).unwrap();
@@ -812,6 +893,7 @@ mod tests {
             &paths,
             &mut std::io::Cursor::new(Vec::<u8>::new()),
             &mut Vec::new(),
+            plain_ui(),
         )
         .unwrap();
         assert_eq!(

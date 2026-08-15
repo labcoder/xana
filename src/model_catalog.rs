@@ -46,6 +46,8 @@ pub(crate) struct ModelDescriptor {
     pub(crate) id: String,
     pub(crate) display_name: String,
     pub(crate) input_modalities: BTreeSet<String>,
+    #[serde(default)]
+    pub(crate) output_modalities: BTreeSet<String>,
     pub(crate) tools: Option<bool>,
     pub(crate) reasoning: Option<bool>,
     #[serde(default)]
@@ -54,9 +56,49 @@ pub(crate) struct ModelDescriptor {
     pub(crate) default_reasoning_effort: Option<String>,
     pub(crate) context_tokens: Option<usize>,
     pub(crate) max_output_tokens: Option<usize>,
+    #[serde(default)]
+    pub(crate) pricing: ModelPricing,
     pub(crate) source: DescriptorSource,
     #[serde(default)]
     pub(crate) is_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub(crate) struct ModelPricing {
+    pub(crate) input_per_token: Option<String>,
+    pub(crate) output_per_token: Option<String>,
+    pub(crate) request: Option<String>,
+    pub(crate) image: Option<String>,
+    pub(crate) web_search: Option<String>,
+    pub(crate) internal_reasoning: Option<String>,
+}
+
+impl ModelPricing {
+    pub(crate) fn summary(&self) -> Option<String> {
+        fn per_million(value: &str) -> Option<String> {
+            let value = value.parse::<f64>().ok()? * 1_000_000.0;
+            Some(if value >= 1.0 {
+                format!("${value:.2}/M")
+            } else {
+                format!("${value:.4}/M")
+            })
+        }
+
+        let mut parts = Vec::new();
+        if let Some(value) = self.input_per_token.as_deref().and_then(per_million) {
+            parts.push(format!("in {value}"));
+        }
+        if let Some(value) = self.output_per_token.as_deref().and_then(per_million) {
+            parts.push(format!("out {value}"));
+        }
+        if let Some(value) = &self.request {
+            parts.push(format!("request ${value}"));
+        }
+        if let Some(value) = &self.image {
+            parts.push(format!("image ${value}"));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
 }
 
 impl ModelDescriptor {
@@ -69,12 +111,14 @@ impl ModelDescriptor {
             } else {
                 value.input_modalities.iter().cloned().collect()
             },
+            output_modalities: BTreeSet::new(),
             tools: value.tools,
             reasoning: value.reasoning,
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
             context_tokens: value.context_tokens,
             max_output_tokens: value.max_output_tokens,
+            pricing: ModelPricing::default(),
             source: DescriptorSource::Configured,
             is_default: false,
         }
@@ -769,6 +813,9 @@ fn merge_remote(configured: &mut ModelDescriptor, remote: &ModelDescriptor) {
     {
         configured.input_modalities = remote.input_modalities.clone();
     }
+    if configured.output_modalities.is_empty() && !remote.output_modalities.is_empty() {
+        configured.output_modalities = remote.output_modalities.clone();
+    }
     configured.tools = configured.tools.or(remote.tools);
     configured.reasoning = configured.reasoning.or(remote.reasoning);
     if configured.reasoning != Some(false) && configured.reasoning_efforts.is_empty() {
@@ -782,6 +829,9 @@ fn merge_remote(configured: &mut ModelDescriptor, remote: &ModelDescriptor) {
     }
     configured.context_tokens = configured.context_tokens.or(remote.context_tokens);
     configured.max_output_tokens = configured.max_output_tokens.or(remote.max_output_tokens);
+    if configured.pricing == ModelPricing::default() {
+        configured.pricing = remote.pricing.clone();
+    }
     configured.display_name = remote.display_name.clone();
     configured.is_default = remote.is_default;
 }
@@ -891,6 +941,18 @@ fn parse_catalog(kind: ProviderKind, value: &Value) -> Result<Vec<ModelDescripto
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_else(|| ["text".to_owned()].into_iter().collect());
+        let output_modalities = value
+            .pointer("/architecture/output_modalities")
+            .or_else(|| value.get("output_modalities"))
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_owned)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
         let parameters = value
             .get("supported_parameters")
             .and_then(Value::as_array)
@@ -907,6 +969,7 @@ fn parse_catalog(kind: ProviderKind, value: &Value) -> Result<Vec<ModelDescripto
                 .to_owned(),
             id,
             input_modalities: architecture_modalities,
+            output_modalities,
             tools: parameters.contains("tools").then_some(true),
             reasoning: parameters
                 .iter()
@@ -922,6 +985,7 @@ fn parse_catalog(kind: ProviderKind, value: &Value) -> Result<Vec<ModelDescripto
                 .get("max_output_tokens")
                 .and_then(Value::as_u64)
                 .and_then(|value| usize::try_from(value).ok()),
+            pricing: parse_pricing(value.get("pricing")),
             source: DescriptorSource::Remote,
             is_default: value
                 .get("isDefault")
@@ -932,6 +996,26 @@ fn parse_catalog(kind: ProviderKind, value: &Value) -> Result<Vec<ModelDescripto
     models.sort_by(|left, right| left.id.cmp(&right.id));
     models.dedup_by(|left, right| left.id == right.id);
     Ok(models)
+}
+
+fn parse_pricing(value: Option<&Value>) -> ModelPricing {
+    fn price(value: Option<&Value>) -> Option<String> {
+        match value? {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => Some(value.to_string()),
+            _ => None,
+        }
+    }
+
+    let value = value.and_then(Value::as_object);
+    ModelPricing {
+        input_per_token: price(value.and_then(|value| value.get("prompt"))),
+        output_per_token: price(value.and_then(|value| value.get("completion"))),
+        request: price(value.and_then(|value| value.get("request"))),
+        image: price(value.and_then(|value| value.get("image"))),
+        web_search: price(value.and_then(|value| value.get("web_search"))),
+        internal_reasoning: price(value.and_then(|value| value.get("internal_reasoning"))),
+    }
 }
 
 #[cfg(test)]
@@ -1064,6 +1148,7 @@ mod tests {
             id: "gpt-5.6-sol".into(),
             display_name: "GPT-5.6-Sol".into(),
             input_modalities: ["text".into(), "image".into()].into_iter().collect(),
+            output_modalities: ["text".into()].into_iter().collect(),
             tools: Some(true),
             reasoning: Some(true),
             reasoning_efforts: vec![
@@ -1079,6 +1164,7 @@ mod tests {
             default_reasoning_effort: Some("low".into()),
             context_tokens: None,
             max_output_tokens: None,
+            pricing: ModelPricing::default(),
             source: DescriptorSource::ManagedRuntime,
             is_default: true,
         }
@@ -1170,14 +1256,23 @@ mod tests {
     fn openrouter_catalog_preserves_capability_evidence() {
         let value = serde_json::json!({"data":[{
             "id":"openai/example",
-            "architecture":{"input_modalities":["text","image"]},
+            "architecture":{
+                "input_modalities":["text","image"],
+                "output_modalities":["text","image"]
+            },
             "supported_parameters":["tools","reasoning"],
-            "context_length":1234
+            "context_length":1234,
+            "pricing":{"prompt":"0.00000015","completion":"0.00000060"}
         }]});
         let models = parse_catalog(ProviderKind::OpenRouter, &value).unwrap();
         assert!(models[0].input_modalities.contains("image"));
+        assert!(models[0].output_modalities.contains("image"));
         assert_eq!(models[0].tools, Some(true));
         assert_eq!(models[0].context_tokens, Some(1234));
+        assert_eq!(
+            models[0].pricing.summary().as_deref(),
+            Some("in $0.1500/M · out $0.6000/M")
+        );
     }
 
     #[test]

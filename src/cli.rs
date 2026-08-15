@@ -447,6 +447,10 @@ pub(crate) struct SetupArgs {
     #[arg(long, help_heading = "Setup mode")]
     pub(crate) non_interactive: bool,
 
+    /// Use the append-only setup flow without full-screen selectors.
+    #[arg(long, help_heading = "Setup mode")]
+    pub(crate) plain: bool,
+
     /// Run provider-neutral Quick Setup without asking which setup path to use.
     #[arg(
         long,

@@ -900,6 +900,20 @@ fn format_model_choice(connection: &str, model: &crate::model_catalog::ModelDesc
     if let Some(context) = model.context_tokens {
         capabilities.push(format!("{}k ctx", context.div_ceil(1_000)));
     }
+    if !model.output_modalities.is_empty() {
+        capabilities.push(format!(
+            "out {}",
+            model
+                .output_modalities
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("+")
+        ));
+    }
+    if let Some(pricing) = model.pricing.summary() {
+        capabilities.push(pricing);
+    }
     format!("{connection}/{}  [{}]", model.id, capabilities.join(" · "))
 }
 

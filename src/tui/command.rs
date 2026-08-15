@@ -19,6 +19,7 @@ pub(super) enum CommandId {
     ExternalAgent,
     Image,
     Setup,
+    Usage,
     Activity,
     Artifact,
     Attach,
@@ -286,6 +287,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "setup",
         mode: "[quick|full|connection|permissions-shell|profiles-routes|appearance]",
         summary: "Run guided or focused setup",
+        arguments: "",
+    },
+    CommandSpec {
+        id: CommandId::Usage,
+        name: "usage",
+        mode: "",
+        summary: "Show observed token usage and known account-limit availability",
         arguments: "",
     },
     CommandSpec {

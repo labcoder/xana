@@ -1,6 +1,9 @@
 //! Presentation-preference editing for advanced setup.
 
-use super::super::prompt_default;
+use super::super::{
+    prompt_default,
+    ui::{SelectOption, SetupUi},
+};
 use crate::{
     cli::{
         ActivityChoice, ComposerChoice, DensityChoice, GlyphChoice, MotionChoice, SetupArgs,
@@ -22,6 +25,7 @@ pub(super) fn edit(
     input: &mut impl BufRead,
     output: &mut impl Write,
     full: bool,
+    ui: SetupUi,
 ) -> Result<PresentationPreferences> {
     let mut preferences = PresentationPreferences::load(&paths.presentation_file()).preferences;
     if args.non_interactive && !full && flags_empty(args) {
@@ -29,13 +33,52 @@ pub(super) fn edit(
     }
     preferences.theme = match args.theme {
         Some(value) => map_theme(value),
-        None if full && !args.non_interactive => parse_theme(&prompt_default(
-            input,
-            output,
-            "Theme",
-            theme_name(preferences.theme),
-        )?)
-        .context("theme must be auto, dark, light, or monochrome")?,
+        None if full && !args.non_interactive && ui.rich => {
+            let options = [
+                SelectOption::new("auto", "terminal background · rose, aqua, amber, slate"),
+                SelectOption::new("dark", "deep water · coral rose, seafoam, amber, pearl"),
+                SelectOption::new("light", "mist · mulberry, teal, ochre, charcoal"),
+                SelectOption::new("monochrome", "no color controls; maximum compatibility"),
+            ];
+            let current = theme_name(preferences.theme);
+            let default = options
+                .iter()
+                .position(|option| option.label == current)
+                .unwrap_or(0);
+            let selected = super::super::ui::select(
+                output,
+                ui,
+                "Choose a theme — palette previews",
+                &options,
+                default,
+            )?
+            .context("theme selection was cancelled")?;
+            parse_theme(&options[selected].label).expect("selector contains valid theme values")
+        }
+        None if full && !args.non_interactive => {
+            writeln!(output)?;
+            writeln!(output, "Themes:")?;
+            writeln!(
+                output,
+                "  auto        terminal background · rose, aqua, amber, slate"
+            )?;
+            writeln!(
+                output,
+                "  dark        deep water · coral rose, seafoam, amber, pearl"
+            )?;
+            writeln!(
+                output,
+                "  light       mist · mulberry, teal, ochre, charcoal"
+            )?;
+            writeln!(output, "  monochrome  no color controls")?;
+            parse_theme(&prompt_default(
+                input,
+                output,
+                "Theme",
+                theme_name(preferences.theme),
+            )?)
+            .context("theme must be auto, dark, light, or monochrome")?
+        }
         None => preferences.theme,
     };
     if let Some(value) = args.glyphs {

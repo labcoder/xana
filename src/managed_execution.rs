@@ -157,7 +157,7 @@ pub(crate) async fn run_codex_chat(
         }
     }
     println!(
-        "/model, /reasoning, /reasoning-summary, /activity, and /details control this managed conversation; /attach adds an image; /doctor pauses for read-only diagnostics; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
+        "/model, /reasoning, /reasoning-summary, /activity, /details, and /usage control this managed conversation; /attach adds an image; /doctor pauses for read-only diagnostics; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
     );
 
     let mut editor = DefaultEditor::new().context("could not initialize terminal editor")?;
@@ -215,6 +215,19 @@ pub(crate) async fn run_codex_chat(
         }
         if input == "/details" {
             render_retained_activity(&last_activity)?;
+            continue;
+        }
+        if input == "/usage" {
+            if let Some((input, output, total)) = last_activity.usage() {
+                println!(
+                    "xana> current managed thread usage: input {input}, output {output}, total {total}"
+                );
+            } else {
+                println!("xana> current managed thread usage is unknown until Codex reports it");
+            }
+            println!(
+                "xana> provider quota, reset time, and wallet balance are not exposed by this managed runtime"
+            );
             continue;
         }
         if let Some(value) = input.strip_prefix("/activity").map(str::trim) {
@@ -815,12 +828,14 @@ mod tests {
             id: id.to_owned(),
             display_name: id.to_owned(),
             input_modalities: BTreeSet::new(),
+            output_modalities: BTreeSet::new(),
             tools: Some(true),
             reasoning: None,
             reasoning_efforts: Vec::new(),
             default_reasoning_effort: None,
             context_tokens: None,
             max_output_tokens: None,
+            pricing: crate::model_catalog::ModelPricing::default(),
             source: DescriptorSource::ManagedRuntime,
             is_default,
         }

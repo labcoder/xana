@@ -413,3 +413,25 @@ async fn zero_round_limit_fails_before_history_changes() {
     assert!(result.is_err());
     assert!(history.is_empty());
 }
+
+#[test]
+fn session_usage_labels_partial_provider_observations() {
+    let mut usage = SessionUsage::default();
+    usage.observe(AgentTurnUsage {
+        input_tokens: Some(120),
+        output_tokens: None,
+        total_tokens: None,
+        requests: 1,
+    });
+    usage.observe(AgentTurnUsage {
+        input_tokens: Some(80),
+        output_tokens: Some(20),
+        total_tokens: Some(100),
+        requests: 1,
+    });
+
+    let rendered = usage.render();
+    assert!(rendered.contains("input 200"));
+    assert!(rendered.contains("output at least 20 (partial)"));
+    assert!(rendered.contains("wallet balance are unavailable"));
+}

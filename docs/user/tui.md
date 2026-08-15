@@ -82,6 +82,7 @@ Palette actions and slash input use that one registry:
 - `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
+- `/usage`
 - `/doctor`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
@@ -93,10 +94,18 @@ turns and preserves the Codex thread. Native reasoning control is unavailable.
 Activity visibility changes only what the frontend renders and never changes
 model reasoning effort.
 
-`/setup` restores the terminal before opening the same transient setup flow as
-the CLI command. A focused section is available from slash input or the
-searchable palette; configuration changes end the current foreground owner
-explicitly and restart only after the reviewed setup operation completes.
+`/setup` restores the chat terminal before opening the same keyboard-driven,
+full-screen selectors as `xana setup`. A focused section is available from
+slash input or the searchable palette; configuration changes end the current
+foreground owner explicitly and return only after the reviewed setup operation
+completes. Repeated transitions use one application-owned restart loop rather
+than nesting frontend launches.
+
+`/usage` shows token usage observed during the current Xana process for native
+connections or the latest cumulative thread usage reported by managed Codex.
+Partial and unavailable values are labeled rather than treated as zero. Account
+quota, rate-limit reset, and wallet/credit balance remain unavailable when the
+active connection does not expose them through a supported interface.
 
 `/doctor` pauses an idle foreground owner, restores the terminal, runs the
 same redacted read-only report as `xana doctor`, then resumes the selected

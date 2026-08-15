@@ -588,6 +588,20 @@ impl TuiState {
                     }
                 }
             }
+            CommandId::Usage => {
+                self.composer.take();
+                let summary = self.managed_usage.map_or_else(
+                    || self.native_usage.render(),
+                    |(input, output, total)| {
+                        format!(
+                            "Current managed thread: input {input} · output {output} · total {total}. Provider quota, rate-limit reset, and wallet balance are not exposed by this managed runtime."
+                        )
+                    },
+                );
+                self.push_message(MessageKind::System, format!("Usage\n{summary}"));
+                self.status = "Usage shown in the conversation".to_owned();
+                UpdateEffect::None
+            }
             CommandId::Doctor => {
                 self.composer.take();
                 if self.busy {

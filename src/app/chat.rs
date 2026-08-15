@@ -68,12 +68,61 @@ impl ChatSurface {
 
 pub(super) async fn run(
     paths: &XanaPaths,
+    mut surface: ChatSurface,
+    mut resume: Option<crate::identity::SessionId>,
+    mut continue_chat: bool,
+    mut force_new: bool,
+    mut one_shot: Option<String>,
+) -> Result<Option<OneShotSuccess>> {
+    loop {
+        match run_once(paths, surface, resume, continue_chat, force_new, one_shot).await? {
+            ChatRun::Complete(result) => return Ok(result),
+            ChatRun::Exited {
+                exit,
+                presentation,
+                restart_tui,
+                tui_required,
+            } => {
+                let Some(restart) =
+                    continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required)
+                        .await?
+                else {
+                    return Ok(None);
+                };
+                surface = restart.surface;
+                resume = restart.resume;
+                continue_chat = false;
+                force_new = restart.force_new;
+                one_shot = None;
+            }
+        }
+    }
+}
+
+enum ChatRun {
+    Complete(Option<OneShotSuccess>),
+    Exited {
+        exit: plain_terminal::ChatExit,
+        presentation: presentation::ResolvedPresentation,
+        restart_tui: bool,
+        tui_required: bool,
+    },
+}
+
+struct ChatRestart {
+    surface: ChatSurface,
+    resume: Option<crate::identity::SessionId>,
+    force_new: bool,
+}
+
+async fn run_once(
+    paths: &XanaPaths,
     surface: ChatSurface,
     resume: Option<crate::identity::SessionId>,
     continue_chat: bool,
     force_new: bool,
     one_shot: Option<String>,
-) -> Result<Option<OneShotSuccess>> {
+) -> Result<ChatRun> {
     let presentation = surface.profile();
     match (&surface, one_shot.is_none()) {
         (ChatSurface::Plain(mode), true) => {
@@ -324,7 +373,7 @@ pub(super) async fn run(
                     &workspace_host,
                 )
                 .await
-                .map(Some)
+                .map(|result| ChatRun::Complete(Some(result)))
                 .map_err(anyhow::Error::new)
             }
             None => {
@@ -369,7 +418,12 @@ pub(super) async fn run(
                         plain_terminal::ChatExit::Quit
                     }
                 };
-                continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
+                Ok(ChatRun::Exited {
+                    exit,
+                    presentation,
+                    restart_tui,
+                    tui_required,
+                })
             }
         };
     }
@@ -688,7 +742,7 @@ pub(super) async fn run(
             conversation,
         )
         .await
-        .map(Some)
+        .map(|result| ChatRun::Complete(Some(result)))
         .map_err(anyhow::Error::new);
     }
 
@@ -715,7 +769,12 @@ pub(super) async fn run(
             plain_terminal::ChatExit::Quit
         }
     };
-    continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required).await
+    Ok(ChatRun::Exited {
+        exit,
+        presentation,
+        restart_tui,
+        tui_required,
+    })
 }
 
 async fn continue_after_chat_exit(
@@ -724,7 +783,7 @@ async fn continue_after_chat_exit(
     presentation: presentation::ResolvedPresentation,
     restart_tui: bool,
     tui_required: bool,
-) -> Result<Option<OneShotSuccess>> {
+) -> Result<Option<ChatRestart>> {
     if exit == plain_terminal::ChatExit::Quit {
         return Ok(None);
     }
@@ -735,7 +794,8 @@ async fn continue_after_chat_exit(
         eprintln!("xana: {error:#}");
     }
     if let plain_terminal::ChatExit::Setup(request) = &exit {
-        let args = crate::setup::args_for_request(request)?;
+        let mut args = crate::setup::args_for_request(request)?;
+        args.plain = !restart_tui;
         force_new_conversation = run_setup_command(&args, paths)
             .await?
             .requires_new_conversation();
@@ -773,15 +833,11 @@ async fn continue_after_chat_exit(
     } else {
         ChatSurface::Plain(BannerMode::hidden(presentation))
     };
-    Box::pin(run(
-        paths,
-        restart_surface,
-        doctor_resume,
-        false,
-        force_new_conversation,
-        None,
-    ))
-    .await
+    Ok(Some(ChatRestart {
+        surface: restart_surface,
+        resume: doctor_resume,
+        force_new: force_new_conversation,
+    }))
 }
 
 async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {

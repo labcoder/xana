@@ -31,7 +31,10 @@ use std::{
     io::{BufRead, Read, Write},
     path::{Path, PathBuf},
 };
-use ui::{choose_setup_path, write_completion_receipt, write_setup_heading};
+use ui::{
+    SelectOption, SetupUi, choose_setup_path, write_completion_receipt, write_setup_heading,
+    write_setup_logo,
+};
 
 const MAX_SECRET_BYTES: u64 = 64 * 1024;
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
@@ -165,6 +168,7 @@ pub(crate) async fn run(
     args: &SetupArgs,
     paths: &XanaPaths,
     input_is_terminal: bool,
+    output_is_terminal: bool,
     input: &mut impl BufRead,
     output: &mut impl Write,
     profile: ResolvedPresentation,
@@ -183,7 +187,11 @@ pub(crate) async fn run(
     if args.non_interactive && !args.dry_run && !args.yes {
         bail!("noninteractive setup requires --yes before changing durable state");
     }
-    let Some(args) = choose_setup_path(args, input, output, profile)? else {
+    let setup_ui = SetupUi {
+        profile,
+        rich: input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive,
+    };
+    let Some(args) = choose_setup_path(args, input, output, setup_ui)? else {
         writeln!(output, "Setup cancelled; no changes made.")?;
         return Ok(SetupOutcome::Unchanged);
     };
@@ -192,7 +200,7 @@ pub(crate) async fn run(
         .section
         .is_some_and(|section| section != crate::cli::SetupSectionChoice::Connection)
     {
-        let outcome = custom::run_section(args, paths, input, output)?;
+        let outcome = custom::run_section(args, paths, input, output, setup_ui)?;
         if matches!(outcome, SetupOutcome::Committed { .. }) {
             crate::private_state::ensure_interoperable_records(paths)
                 .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
@@ -201,6 +209,9 @@ pub(crate) async fn run(
         return Ok(outcome);
     }
 
+    if setup_ui.rich {
+        write_setup_logo(output, profile)?;
+    }
     write_setup_heading(output, profile, "Xana Quick Setup")?;
     writeln!(
         output,
@@ -211,11 +222,12 @@ pub(crate) async fn run(
         )
     )?;
 
-    let kind = choose_kind(args, input, output, profile)?;
+    let kind = choose_kind(args, input, output, setup_ui)?;
     let connection = choose_connection(args, kind, input, output)?;
     let base_url = choose_base_url(args, kind, input, output)?;
     let (codex_program, codex_home) = choose_codex(args, kind, input, output)?;
-    let (credential, staged_secret) = choose_credential(args, kind, &connection, input, output)?;
+    let (credential, staged_secret) =
+        choose_credential(args, kind, &connection, input, output, setup_ui)?;
 
     writeln!(output)?;
     writeln!(output, "Establishing connection before model selection...")?;
@@ -247,13 +259,13 @@ pub(crate) async fn run(
         )
     )?;
 
-    let model = choose_model(args, &models, input, output, profile)?;
+    let model = choose_model(args, &models, input, output, setup_ui)?;
     let descriptor = models
         .iter()
         .find(|candidate| candidate.id == model)
         .expect("choose_model returns an advertised model");
-    let reasoning_effort = choose_reasoning(args, kind, descriptor, input, output)?;
-    let permission_mode = choose_permission(args, input, output)?;
+    let reasoning_effort = choose_reasoning(args, kind, descriptor, input, output, setup_ui)?;
+    let permission_mode = choose_permission(args, input, output, setup_ui)?;
 
     let draft = SetupDraft {
         model,
@@ -263,7 +275,7 @@ pub(crate) async fn run(
     };
     let rendered = XanaConfig::render_initial(draft.initial_config())
         .context("could not render the validated setup configuration")?;
-    let customization = custom::customize_quick(rendered, args, paths, input, output)?;
+    let customization = custom::customize_quick(rendered, args, paths, input, output, setup_ui)?;
     let rendered = customization.config;
 
     writeln!(output)?;
@@ -341,7 +353,7 @@ fn choose_kind(
     args: &SetupArgs,
     input: &mut impl BufRead,
     output: &mut impl Write,
-    profile: ResolvedPresentation,
+    ui: SetupUi,
 ) -> Result<ProviderKind> {
     if let Some(kind) = args.kind {
         return Ok(kind.into());
@@ -349,11 +361,35 @@ fn choose_kind(
     if args.non_interactive {
         bail!("noninteractive setup requires --kind");
     }
+    if ui.rich {
+        let options = [
+            SelectOption::new("Ollama", "local Ollama endpoint; no API key"),
+            SelectOption::new(
+                "OpenAI-compatible",
+                "custom endpoint; API key may be optional",
+            ),
+            SelectOption::new("OpenAI API", "OpenAI platform API key"),
+            SelectOption::new("OpenRouter", "OpenRouter API key and live catalog"),
+            SelectOption::new("Anthropic", "Anthropic API key"),
+            SelectOption::new("Codex", "local Codex CLI and vendor-owned account"),
+        ];
+        return match ui::select(output, ui, "Choose a connection kind", &options, 0)? {
+            Some(0) => Ok(ProviderKind::Ollama),
+            Some(1) => Ok(ProviderKind::OpenAiCompat),
+            Some(2) => Ok(ProviderKind::OpenAi),
+            Some(3) => Ok(ProviderKind::OpenRouter),
+            Some(4) => Ok(ProviderKind::Anthropic),
+            Some(5) => Ok(ProviderKind::Codex),
+            Some(_) => unreachable!("selector returned an unknown connection kind"),
+            None => Err(SetupCancelled.into()),
+        };
+    }
     writeln!(output)?;
     writeln!(
         output,
         "{}",
-        profile.paint(SemanticToken::Accent, "Choose a connection kind:")
+        ui.profile
+            .paint(SemanticToken::Accent, "Choose a connection kind:")
     )?;
     for (number, label, detail) in [
         (1, "Ollama", "local Ollama endpoint; no API key"),
@@ -370,13 +406,13 @@ fn choose_kind(
         writeln!(
             output,
             "  {} {}. {}  {}",
-            profile.paint(
+            ui.profile.paint(
                 SemanticToken::Muted,
-                if profile.unicode { "○" } else { "o" }
+                if ui.profile.unicode { "○" } else { "o" }
             ),
-            profile.paint(SemanticToken::Focus, &number.to_string()),
+            ui.profile.paint(SemanticToken::Focus, &number.to_string()),
             label,
-            profile.paint(SemanticToken::Muted, detail),
+            ui.profile.paint(SemanticToken::Muted, detail),
         )?;
     }
     match prompt_required(input, output, "Choice [1-6]: ")?.as_str() {
@@ -467,6 +503,7 @@ fn choose_credential(
     connection: &str,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<(SetupCredential, Option<SecretString>)> {
     if matches!(kind, ProviderKind::Ollama | ProviderKind::Codex) {
         if args.credential_env.is_some() || args.key_from_stdin {
@@ -491,6 +528,51 @@ fn choose_credential(
             return Ok((SetupCredential::None, None));
         }
         bail!("API setup requires --credential-env VARIABLE or --key-from-stdin");
+    }
+    if ui.rich {
+        let mut options = vec![
+            SelectOption::new(
+                "Environment variable",
+                "keep the secret outside Xana and resolve it at runtime",
+            ),
+            SelectOption::new(
+                "Operating-system credential store",
+                "enter the API key once using hidden input",
+            ),
+        ];
+        if kind == ProviderKind::OpenAiCompat {
+            options.push(SelectOption::new(
+                "No credential",
+                "use only when the endpoint does not require authentication",
+            ));
+        }
+        match ui::select(output, ui, "Choose a credential source", &options, 0)? {
+            Some(0) => {
+                return Ok((
+                    SetupCredential::Environment(prompt_required(
+                        input,
+                        output,
+                        "Environment variable: ",
+                    )?),
+                    None,
+                ));
+            }
+            Some(1) => {
+                let value = rpassword::prompt_password("API key (hidden): ")
+                    .context("could not read hidden API key")?;
+                return Ok((
+                    SetupCredential::Stored {
+                        id: connection.to_owned(),
+                    },
+                    Some(SecretString::new(value)?),
+                ));
+            }
+            Some(2) if kind == ProviderKind::OpenAiCompat => {
+                return Ok((SetupCredential::None, None));
+            }
+            Some(_) => unreachable!("selector returned an unknown credential source"),
+            None => return Err(SetupCancelled.into()),
+        }
     }
     writeln!(output, "Credential source:")?;
     writeln!(output, "  1. environment variable")?;
@@ -564,7 +646,7 @@ fn choose_model(
     models: &[ModelDescriptor],
     input: &mut impl BufRead,
     output: &mut impl Write,
-    profile: ResolvedPresentation,
+    ui: SetupUi,
 ) -> Result<String> {
     if let Some(requested) = &args.model {
         if models.iter().any(|model| model.id == *requested) {
@@ -578,34 +660,133 @@ fn choose_model(
     if args.non_interactive {
         bail!("noninteractive setup requires --model");
     }
-    writeln!(
-        output,
-        "{}",
-        profile.paint(SemanticToken::Accent, "Available models:")
-    )?;
-    for (index, model) in models.iter().enumerate() {
+    if ui.rich {
+        let options = models
+            .iter()
+            .map(|model| {
+                SelectOption::new(&model.id, model_detail(model)).with_keywords(format!(
+                    "{} {}",
+                    model.display_name,
+                    model
+                        .input_modalities
+                        .iter()
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ))
+            })
+            .collect::<Vec<_>>();
+        return ui::select(output, ui, "Choose a model", &options, 0)?
+            .map(|index| models[index].id.clone())
+            .ok_or_else(|| SetupCancelled.into());
+    }
+
+    let mut query = String::new();
+    let mut page = 0_usize;
+    const PAGE_SIZE: usize = 20;
+    loop {
+        let query_lower = query.to_ascii_lowercase();
+        let filtered = models
+            .iter()
+            .filter(|model| {
+                query_lower.is_empty()
+                    || model.id.to_ascii_lowercase().contains(&query_lower)
+                    || model
+                        .display_name
+                        .to_ascii_lowercase()
+                        .contains(&query_lower)
+            })
+            .collect::<Vec<_>>();
+        let pages = filtered.len().max(1).div_ceil(PAGE_SIZE);
+        page = page.min(pages.saturating_sub(1));
+        let start = page * PAGE_SIZE;
+        let end = (start + PAGE_SIZE).min(filtered.len());
+        writeln!(output)?;
         writeln!(
             output,
-            "  {} {}. {}",
-            profile.paint(
-                SemanticToken::Muted,
-                if profile.unicode { "○" } else { "o" }
-            ),
-            profile.paint(SemanticToken::Focus, &(index + 1).to_string()),
-            model.id
+            "{}",
+            ui.profile.paint(
+                SemanticToken::Accent,
+                &format!("Available models — page {} of {}", page + 1, pages)
+            )
         )?;
+        if filtered.is_empty() {
+            writeln!(output, "  No models match {query:?}.")?;
+        }
+        for (local_index, model) in filtered[start..end].iter().enumerate() {
+            writeln!(output, "  {:>2}. {}", local_index + 1, model.id)?;
+            writeln!(output, "      {}", model_detail(model))?;
+        }
+        writeln!(
+            output,
+            "  Enter 1-{}, an exact id, /FILTER, n (next), or p (previous).",
+            end.saturating_sub(start)
+        )?;
+        let selection = prompt_required(input, output, "Model: ")?;
+        match selection.as_str() {
+            "n" | "next" if page + 1 < pages => page += 1,
+            "p" | "prev" | "previous" if page > 0 => page -= 1,
+            _ if selection.starts_with('/') => {
+                query = selection.trim_start_matches('/').to_owned();
+                page = 0;
+            }
+            _ => {
+                if let Ok(index) = selection.parse::<usize>()
+                    && let Some(model) = index
+                        .checked_sub(1)
+                        .and_then(|index| filtered[start..end].get(index))
+                {
+                    return Ok(model.id.clone());
+                }
+                if models.iter().any(|model| model.id == selection) {
+                    return Ok(selection);
+                }
+                writeln!(
+                    output,
+                    "The selected model was not present in this live catalog."
+                )?;
+            }
+        }
     }
-    let selection = prompt_required(input, output, "Model number or exact id: ")?;
-    if let Ok(index) = selection.parse::<usize>()
-        && let Some(model) = index.checked_sub(1).and_then(|index| models.get(index))
-    {
-        return Ok(model.id.clone());
+}
+
+fn model_detail(model: &ModelDescriptor) -> String {
+    let mut facts = vec![format!(
+        "input {}",
+        model
+            .input_modalities
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("+")
+    )];
+    if !model.output_modalities.is_empty() {
+        facts.push(format!(
+            "output {}",
+            model
+                .output_modalities
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("+")
+        ));
     }
-    if models.iter().any(|model| model.id == selection) {
-        Ok(selection)
-    } else {
-        bail!("the selected model was not present in the live catalog")
+    if model.tools == Some(true) {
+        facts.push("tools".to_owned());
     }
+    if model.reasoning == Some(true) {
+        facts.push("reasoning".to_owned());
+    }
+    if let Some(context) = model.context_tokens {
+        facts.push(format!("{}k context", context.div_ceil(1_000)));
+    }
+    if let Some(output) = model.max_output_tokens {
+        facts.push(format!("{}k max output", output.div_ceil(1_000)));
+    }
+    if let Some(pricing) = model.pricing.summary() {
+        facts.push(pricing);
+    }
+    facts.join(" · ")
 }
 
 fn choose_reasoning(
@@ -614,6 +795,7 @@ fn choose_reasoning(
     model: &ModelDescriptor,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<Option<String>> {
     if kind != ProviderKind::Codex {
         if args.reasoning_effort.is_some() {
@@ -625,6 +807,20 @@ fn choose_reasoning(
         Some(value) => Some(value.clone()),
         None if args.non_interactive || model.reasoning_efforts.is_empty() => {
             model.default_reasoning_effort.clone()
+        }
+        None if ui.rich => {
+            let options = model
+                .reasoning_efforts
+                .iter()
+                .map(|effort| SelectOption::new(&effort.id, &effort.description))
+                .collect::<Vec<_>>();
+            let default = model
+                .default_reasoning_effort
+                .as_ref()
+                .and_then(|default| options.iter().position(|option| option.label == *default))
+                .unwrap_or(0);
+            ui::select(output, ui, "Choose reasoning effort", &options, default)?
+                .map(|index| model.reasoning_efforts[index].id.clone())
         }
         None => {
             writeln!(output, "Reasoning efforts advertised by {}:", model.id)?;
@@ -656,6 +852,7 @@ fn choose_permission(
     args: &SetupArgs,
     input: &mut impl BufRead,
     output: &mut impl Write,
+    ui: SetupUi,
 ) -> Result<PermissionMode> {
     if let Some(value) = args.permission_mode {
         return Ok(value.into());
@@ -663,7 +860,46 @@ fn choose_permission(
     if args.non_interactive {
         bail!("noninteractive setup requires --permission-mode");
     }
-    writeln!(output, "Permission modes: deny, ask, allow")?;
+    if ui.rich {
+        let options = [
+            SelectOption::new("Ask", "prompt before effectful tools; recommended default"),
+            SelectOption::new(
+                "Deny",
+                "block effectful tools unless a narrower rule allows them",
+            ),
+            SelectOption::new(
+                "Allow",
+                "allow effectful tools under ordinary host permissions",
+            ),
+        ];
+        return match ui::select(
+            output,
+            ui,
+            "Choose the default permission mode",
+            &options,
+            0,
+        )? {
+            Some(0) => Ok(PermissionMode::Ask),
+            Some(1) => Ok(PermissionMode::Deny),
+            Some(2) => Ok(PermissionMode::Allow),
+            Some(_) => unreachable!("selector returned an unknown permission mode"),
+            None => Err(SetupCancelled.into()),
+        };
+    }
+    writeln!(output)?;
+    writeln!(output, "Permission modes:")?;
+    writeln!(
+        output,
+        "  ask    prompt before effectful tools (recommended)"
+    )?;
+    writeln!(
+        output,
+        "  deny   block effectful tools unless a narrower rule allows them"
+    )?;
+    writeln!(
+        output,
+        "  allow  allow effectful tools under ordinary host permissions"
+    )?;
     match prompt_default(input, output, "Permission mode", "ask")?
         .to_ascii_lowercase()
         .as_str()
@@ -865,6 +1101,13 @@ mod tests {
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+    fn plain_ui() -> SetupUi {
+        SetupUi {
+            profile: ResolvedPresentation::test_plain(),
+            rich: false,
+        }
+    }
+
     #[derive(Default)]
     struct FakeStore(Mutex<BTreeMap<String, String>>);
 
@@ -991,6 +1234,7 @@ mod tests {
             &args,
             &paths,
             false,
+            false,
             &mut input,
             &mut output,
             ResolvedPresentation::test_plain(),
@@ -1074,15 +1318,7 @@ mod tests {
         };
         let mut input = io::Cursor::new("\n");
         let mut output = Vec::new();
-        assert!(
-            choose_kind(
-                &args,
-                &mut input,
-                &mut output,
-                ResolvedPresentation::test_plain(),
-            )
-            .is_err()
-        );
+        assert!(choose_kind(&args, &mut input, &mut output, plain_ui(),).is_err());
         let transcript = String::from_utf8(output).unwrap();
         assert!(!transcript.to_ascii_lowercase().contains("recommended"));
     }
@@ -1093,20 +1329,54 @@ mod tests {
         let mut input = io::Cursor::new("\n");
         let mut output = Vec::new();
 
-        let selected = choose_setup_path(
-            &args,
-            &mut input,
-            &mut output,
-            ResolvedPresentation::test_plain(),
-        )
-        .unwrap()
-        .unwrap();
+        let selected = choose_setup_path(&args, &mut input, &mut output, plain_ui())
+            .unwrap()
+            .unwrap();
 
         assert!(selected.quick);
         let transcript = String::from_utf8(output).unwrap();
         assert!(transcript.contains("Choose a guided path"));
         assert!(transcript.contains("Quick Setup"));
         assert!(transcript.contains("Appearance"));
+    }
+
+    #[test]
+    fn plain_model_selection_bounds_large_catalog_output() {
+        let models = (1..=410)
+            .map(|index| ModelDescriptor {
+                id: format!("provider/model-{index:03}"),
+                display_name: format!("Model {index:03}"),
+                input_modalities: ["text".to_owned()].into_iter().collect(),
+                output_modalities: ["text".to_owned()].into_iter().collect(),
+                tools: Some(true),
+                reasoning: Some(false),
+                reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_tokens: Some(32_768),
+                max_output_tokens: Some(4_096),
+                pricing: crate::model_catalog::ModelPricing::default(),
+                source: crate::model_catalog::DescriptorSource::Remote,
+                is_default: false,
+            })
+            .collect::<Vec<_>>();
+        let mut input = io::Cursor::new("1\n");
+        let mut output = Vec::new();
+
+        let selected = choose_model(
+            &SetupArgs::default(),
+            &models,
+            &mut input,
+            &mut output,
+            plain_ui(),
+        )
+        .unwrap();
+
+        assert_eq!(selected, "provider/model-001");
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("page 1 of 21"));
+        assert!(transcript.contains("provider/model-020"));
+        assert!(!transcript.contains("provider/model-021"));
+        assert!(!transcript.contains("provider/model-410"));
     }
 
     #[test]

@@ -90,6 +90,7 @@ pub(crate) async fn run(
         &args,
         paths,
         true,
+        true,
         input,
         output,
         crate::presentation::ResolvedPresentation::plain(),

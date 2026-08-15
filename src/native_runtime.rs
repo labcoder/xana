@@ -12,7 +12,9 @@ pub(crate) use protocol::{
 };
 
 use crate::{
-    agent::{Agent, ConversationCommit, ConversationCommitSender, DurableTurnServices},
+    agent::{
+        Agent, AgentTurnResult, ConversationCommit, ConversationCommitSender, DurableTurnServices,
+    },
     identity::OperationId,
     message::{Message, Role},
     operation::{CrashSite, DurableOperationCommand, DurableOperationSender, SuspensionReason},
@@ -80,7 +82,7 @@ struct ActiveOperation {
 struct OperationCompletion {
     operation_id: OperationId,
     history: Vec<Message>,
-    result: Result<Message, String>,
+    result: Result<AgentTurnResult, String>,
 }
 
 impl RuntimeHandle {
@@ -556,13 +558,13 @@ impl Runtime {
                 }
                 None => {
                     agent
-                        .run_turn(operation_id, &mut history, permissions, events)
+                        .run_turn_with_usage(operation_id, &mut history, permissions, events)
                         .await
                 }
             }
             .map_err(|error| error.to_string());
-            if let Ok(message) = &result {
-                history.push(message.clone());
+            if let Ok(result) = &result {
+                history.push(result.message.clone());
             }
             let _ = completions.send(OperationCompletion {
                 operation_id,
@@ -615,7 +617,7 @@ impl Runtime {
         }
 
         match completion.result {
-            Ok(message) => {
+            Ok(result) => {
                 self.history = completion.history;
                 if active.progress_committed
                     && !self.commit_operation_finished(
@@ -625,9 +627,13 @@ impl Runtime {
                 {
                     return;
                 }
+                self.emit(AgentEvent::UsageObserved {
+                    operation_id: completion.operation_id,
+                    usage: result.usage,
+                });
                 self.emit(AgentEvent::AssistantMessage {
                     operation_id: completion.operation_id,
-                    message,
+                    message: result.message,
                 });
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id: completion.operation_id,

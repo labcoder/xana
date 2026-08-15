@@ -15,6 +15,7 @@ impl TuiState {
                 state: OperationState::Running,
             } => {
                 self.busy = true;
+                self.work_indicator_frame = 0;
                 self.active_operation = Some(*operation_id);
                 self.status = "Working…".to_owned();
             }
@@ -23,6 +24,7 @@ impl TuiState {
                 state: OperationState::Finished(outcome),
             } => {
                 self.busy = false;
+                self.work_indicator_frame = 0;
                 self.active_operation = None;
                 self.status = format!("Turn {outcome:?}");
                 self.push_card(ActivityCard::new(
@@ -39,6 +41,7 @@ impl TuiState {
                 state: OperationState::Suspended,
             } => {
                 self.busy = false;
+                self.work_indicator_frame = 0;
                 self.active_operation = None;
                 self.status =
                     "Turn interrupted; any uncertain effects remain recoverable".to_owned();
@@ -81,12 +84,14 @@ impl TuiState {
                 operation_id,
                 message,
             } => self.finish_assistant(*operation_id, message),
+            AgentEvent::UsageObserved { usage, .. } => self.native_usage.observe(*usage),
             AgentEvent::PermissionRequested { request } => {
                 self.status = format!("Approval required: {}", request.tool_name);
                 self.open_approval(ApprovalPrompt::native(request.clone()));
             }
             AgentEvent::OperationFailed { reason, .. } => {
                 self.busy = false;
+                self.work_indicator_frame = 0;
                 self.active_operation = None;
                 self.status = bounded(reason.clone(), MAX_ACTIVITY_BYTES);
                 self.push_card(ActivityCard::new(
@@ -412,6 +417,7 @@ impl TuiState {
             }
             ManagedClientEvent::TurnCompleted { status, error } => {
                 self.busy = false;
+                self.work_indicator_frame = 0;
                 self.active_operation = None;
                 self.status = error.as_ref().map_or_else(
                     || format!("Managed turn {status}"),
@@ -420,6 +426,13 @@ impl TuiState {
             }
             ManagedClientEvent::ModelRerouted { to_model, .. } => {
                 self.model = to_model.clone();
+            }
+            ManagedClientEvent::TokenUsageUpdated {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            } => {
+                self.managed_usage = Some((*input_tokens, *output_tokens, *total_tokens));
             }
             _ => {}
         }
@@ -444,6 +457,7 @@ impl TuiState {
         if self.active_operation == Some(operation_id) {
             self.active_operation = None;
             self.busy = false;
+            self.work_indicator_frame = 0;
         }
         if let Some(error) = error {
             self.status = bounded(format!("Managed turn failed: {error}"), MAX_ACTIVITY_BYTES);
