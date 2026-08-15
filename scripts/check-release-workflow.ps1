@@ -5,6 +5,7 @@ $path = ".github/workflows/release.yml"
 $workflow = Get-Content -Raw -LiteralPath $path
 $ciWorkflow = Get-Content -Raw -LiteralPath ".github/workflows/ci.yml"
 $draftScript = Get-Content -Raw -LiteralPath "scripts/create-release-draft.ps1"
+$distInstaller = Get-Content -Raw -LiteralPath "scripts/install-cargo-dist.sh"
 $uses = @([regex]::Matches(
     $workflow + "`n" + $ciWorkflow,
     '(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)'
@@ -33,7 +34,7 @@ $required = @(
     "github.event_name == 'push'",
     "manual no-publish builds must use the reviewed main branch",
     "check-release-ci-evidence.ps1",
-    "verify-sha256.sh",
+    "install-cargo-dist.sh",
     "check-release-plan.ps1",
     "assemble-release-bundle.ps1",
     "timeout-minutes: 45",
@@ -61,10 +62,10 @@ $ciRequired = @(
     "--test-threads=4",
     "stdio_lifecycle_is_stable_under_repetition",
     "report-ci-environment.ps1",
+    "install-cargo-dist.sh",
     "runner.temp }}/xana-package-target",
     "test-release-ci-evidence.ps1",
-    "test-create-release-draft.ps1",
-    "verify-sha256.sh"
+    "test-create-release-draft.ps1"
 )
 foreach ($text in $ciRequired) {
     if (-not $ciWorkflow.Contains($text)) { throw "CI workflow is missing required contract: $text" }
@@ -74,6 +75,17 @@ if ($ciWorkflow -match '(?m)^\s*tags:\s*$') {
 }
 if ($workflow -match '(?m)^  quality:\s*$') {
     throw "release workflow must consume exact main CI evidence instead of repeating quality jobs"
+}
+foreach ($text in @(
+    'cargo_dist_version="0.32.0"',
+    'installer_sha256="b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5"',
+    "curl --proto '=https' --tlsv1.2",
+    "verify-sha256.sh",
+    "trap 'rm -f"
+)) {
+    if (-not $distInstaller.Contains($text)) {
+        throw "cargo-dist bootstrap is missing required contract: $text"
+    }
 }
 if (-not $draftScript.Contains("--draft") -or
     -not $draftScript.Contains("gh release view") -or
