@@ -19,10 +19,6 @@ concurrency:
   group: release-preview-${{ github.ref }}-${{ inputs.version || 'tag' }}
   cancel-in-progress: false
 
-env:
-  CARGO_DIST_VERSION: "0.32.0"
-  CARGO_DIST_INSTALLER_SHA256: "b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5"
-
 jobs:
   ci_evidence:
     name: Require exact green main CI
@@ -59,15 +55,7 @@ jobs:
 
       - name: Install verified release planner
         shell: bash
-        run: |
-          set -euo pipefail
-          installer="$(mktemp)"
-          trap 'rm -f -- "$installer"' EXIT
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
-            --output "$installer"
-          bash ./scripts/verify-sha256.sh "$installer" "$CARGO_DIST_INSTALLER_SHA256"
-          sh "$installer"
+        run: bash ./scripts/install-cargo-dist.sh
 
       - name: Bind tag, Cargo, and manifest version
         id: version
@@ -143,15 +131,7 @@ jobs:
 
       - name: Install verified release builder
         shell: bash
-        run: |
-          set -euo pipefail
-          installer="$(mktemp)"
-          trap 'rm -f -- "$installer"' EXIT
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            "https://github.com/axodotdev/cargo-dist/releases/download/v${CARGO_DIST_VERSION}/cargo-dist-installer.sh" \
-            --output "$installer"
-          bash ./scripts/verify-sha256.sh "$installer" "$CARGO_DIST_INSTALLER_SHA256"
-          sh "$installer"
+        run: bash ./scripts/install-cargo-dist.sh
 
       - name: Build exact native archive
         shell: pwsh

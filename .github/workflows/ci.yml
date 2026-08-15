@@ -128,16 +128,7 @@ jobs:
         id: dist
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: bash
-        run: |
-          set -euo pipefail
-          installer="$(mktemp)"
-          trap 'rm -f -- "$installer"' EXIT
-          curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
-            https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh \
-            --output "$installer"
-          bash ./scripts/verify-sha256.sh "$installer" \
-            b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5
-          sh "$installer"
+        run: bash ./scripts/install-cargo-dist.sh
 
       - name: Verify Release Preview plan
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' && steps.dist.outcome == 'success' }}
