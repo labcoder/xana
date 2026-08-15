@@ -814,7 +814,11 @@ does not recommend or preselect a provider. The Quick connection flow stages a
 typed native or managed connection without filesystem effects,
 establishes the endpoint/executable and credential/account, and performs a
 non-persistent live catalog fetch before accepting model and managed reasoning
-choices. The validated version 3 document and any hidden OS-store secret stay
+choices. Interactive terminals use a keyboard-driven full-screen selector with
+search and paging; the append-only `setup --plain` surface pages large catalogs
+and accepts exact ids or filters without dumping every model. Both surfaces show
+only catalog-backed modality, tool, reasoning, limit, and pricing facts. The
+validated version 3 document and any hidden OS-store secret stay
 in memory through the bounded redacted review. After confirmation, the prior
 file is backed up exactly and config is atomically replaced; secret mutation
 and the separate foreground model selection are reconciled within the same
@@ -824,7 +828,9 @@ OAuth is vendor-owned and is
 reported outside that transaction. Bare interactive startup and `/setup`
 enter the same application operation after restoring any full-screen terminal;
 non-TTY startup emits the exact flag-driven form. The legacy hidden `init`
-command remains create-new compatibility only. Path and configuration
+command remains create-new compatibility only. Chat/setup/doctor/control
+transitions return through one iterative application lifecycle; they do not
+recursively await another chat launcher. Path and configuration
 diagnostics do not construct an agent.
 
 Full Custom Setup extends that staged transaction across shell, permission

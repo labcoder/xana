@@ -524,6 +524,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::InvocationResultCommitted { .. } => "invocation result",
         AgentEvent::ToolFinished { .. } => "tool result",
         AgentEvent::AssistantMessage { .. } => "assistant message",
+        AgentEvent::UsageObserved { .. } => "usage observation",
         AgentEvent::OperationFailed { .. } => "operation failure",
         AgentEvent::ConversationCleared => "conversation clear",
         AgentEvent::CommandRejected { .. } => "command rejection",

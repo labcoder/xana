@@ -784,12 +784,14 @@ fn model_descriptor_from_wire(value: &Value) -> Result<ModelDescriptor, CodexErr
             .to_owned(),
         id,
         input_modalities,
+        output_modalities: ["text".to_owned()].into_iter().collect(),
         tools: Some(true),
         reasoning: Some(!reasoning_efforts.is_empty()),
         reasoning_efforts,
         default_reasoning_effort,
         context_tokens: None,
         max_output_tokens: None,
+        pricing: crate::model_catalog::ModelPricing::default(),
         source: DescriptorSource::ManagedRuntime,
         is_default: value
             .get("isDefault")

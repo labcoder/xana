@@ -4,6 +4,7 @@
 //! does not own conversation history or call providers and tools directly.
 
 use crate::{
+    agent::SessionUsage,
     artifact::ArtifactStore,
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     identity::{OperationId, PrincipalId, SessionId, ToolInvocationId},
@@ -62,6 +63,7 @@ enum InputAction<'a> {
     Model(&'a str),
     Doctor,
     Setup(&'a str),
+    Usage,
     ControlCommand { family: &'a str, arguments: &'a str },
     Agents,
     Agent(&'a str),
@@ -113,6 +115,9 @@ fn classify_input(line: &str) -> InputAction<'_> {
     if trimmed == "/setup" {
         return InputAction::Setup("");
     }
+    if trimmed == "/usage" {
+        return InputAction::Usage;
+    }
     if trimmed == "/doctor" {
         return InputAction::Doctor;
     }
@@ -157,6 +162,7 @@ struct EventRenderer<W> {
     streaming_text: bool,
     streaming_step: Option<crate::identity::StepId>,
     presentation: ResolvedPresentation,
+    usage: SessionUsage,
 }
 
 impl<W: Write> EventRenderer<W> {
@@ -166,6 +172,7 @@ impl<W: Write> EventRenderer<W> {
             streaming_text: false,
             streaming_step: None,
             presentation,
+            usage: SessionUsage::default(),
         }
     }
 
@@ -236,6 +243,7 @@ impl<W: Write> EventRenderer<W> {
                     write_assistant(&mut self.output, message, self.presentation)?;
                 }
             }
+            AgentEvent::UsageObserved { usage, .. } => self.usage.observe(*usage),
             AgentEvent::OperationFailed { reason, .. } => {
                 self.finish_stream()?;
                 writeln!(
@@ -373,6 +381,11 @@ impl<W: Write> EventRenderer<W> {
             }
         }
         Ok(())
+    }
+
+    fn write_usage(&mut self) -> io::Result<()> {
+        self.finish_stream()?;
+        writeln!(self.output, "xana> usage: {}", self.usage.render())
     }
 
     fn finish_stream(&mut self) -> io::Result<()> {
@@ -651,6 +664,7 @@ pub(crate) async fn run_chat(
                     }
                     Err(error) => println!("xana> {error}"),
                 },
+                InputAction::Usage => renderer.write_usage()?,
                 InputAction::ControlCommand { family, arguments } => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
                     exit = ChatExit::ControlCommand {
@@ -1196,6 +1210,7 @@ mod tests {
         assert_eq!(classify_input("/quit"), InputAction::Quit);
         assert_eq!(classify_input("/doctor"), InputAction::Doctor);
         assert_eq!(classify_input("/setup"), InputAction::Setup(""));
+        assert_eq!(classify_input("/usage"), InputAction::Usage);
         assert_eq!(
             classify_input("/setup appearance"),
             InputAction::Setup("appearance")

@@ -111,6 +111,10 @@ pub(crate) enum AgentEvent {
         operation_id: OperationId,
         message: Message,
     },
+    UsageObserved {
+        operation_id: OperationId,
+        usage: crate::agent::AgentTurnUsage,
+    },
     OperationFailed {
         operation_id: OperationId,
         reason: String,

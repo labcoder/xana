@@ -82,12 +82,18 @@ cargo install --path . --locked
 
 ## Choose a first connection
 
-`xana setup` is the canonical first-run and rerunnable guided entry point. It
-asks for Quick Setup, Full Setup, or a focused section; `xana setup --quick`
+`xana setup` is the canonical first-run and rerunnable guided entry point. On
+an interactive terminal it uses arrow-key selection, paging, live filtering,
+and a compact Xana waterline mark; `xana setup --plain` keeps append-only,
+bounded prompts. It asks for Quick Setup, Full Setup, or a focused section;
+`xana setup --quick`
 selects Quick directly. Xana does not preselect or recommend a provider. It
 first establishes the chosen local,
 API-key, or managed Codex connection and fetches its live catalog; only then
-does it offer model and reasoning choices. Ordinary configuration remains in
+does it offer model and reasoning choices. Large catalogs are never dumped:
+the rich selector filters and pages, while plain setup accepts `/FILTER`,
+next/previous, or an exact id. Known capabilities, limits, output modalities,
+and provider-published pricing appear with each model. Ordinary configuration remains in
 memory until the redacted review is confirmed, then the credential reference
 and valid config are committed atomically. Cancelling preserves the previous
 installation. A minimal Ollama document is:
@@ -377,8 +383,8 @@ xana model use CONNECTION/MODEL
 xana model use codex/MODEL --effort auto|EFFORT --summary auto|concise|detailed|off
 ```
 
-Inside chat, `/model` lists models with known input, tool, reasoning, and
-context capabilities, and `/model CONNECTION/MODEL` selects one. The CLI also
+Inside chat, `/model` lists models with known input/output, tool, reasoning,
+context, and pricing facts, and `/model CONNECTION/MODEL` selects one. The CLI also
 distinguishes the effective selection from the configured profile default.
 Switching between Xana's native loop and a managed runtime starts a new
 conversation rather than silently translating history. Within managed Codex
@@ -386,6 +392,10 @@ chat, `/model codex/MODEL`, `/reasoning EFFORT`, and `/reasoning-summary MODE`
 apply to subsequent turns without starting a new Codex thread or discarding
 its context. `/reasoning auto` restores the selected model's advertised
 default.
+
+`/usage` reports provider-observed tokens for the current Xana process (or the
+latest cumulative managed-thread observation). It labels partial/unknown data
+and does not invent provider quota, reset, or wallet balances when unavailable.
 
 Use `xana connection list|add|status|set-key|delete-key|login|logout|refresh|remove`
 for advanced connection and credential control. See

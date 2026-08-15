@@ -30,8 +30,10 @@ protocol, not A2A.
 A **connection** is a named provider or managed-runtime configuration. It owns a
 kind, endpoint/process policy, credential owner, configured model overrides,
 and cached model catalog. A **model descriptor** is owned by one connection and
-records its id, display name, known modalities, tool/reasoning support, limits,
-source, and default status. Managed descriptors also retain the reasoning
+records its id, display name, known input/output modalities, tool/reasoning
+support, limits, provider-published pricing fields, source, and default status.
+Pricing is preserved as non-secret catalog evidence and is never promoted into
+an exact billing claim. Managed descriptors also retain the reasoning
 efforts advertised by the runtime, their descriptions, and the model default.
 A **selection** contains `(connection_id, model_id)` plus route-specific model
 options. Today those options are Codex reasoning effort and summary mode. The
@@ -82,7 +84,10 @@ OpenAI and
 custom `/v1/models`, OpenRouter `/api/v1/models/user`, Anthropic `/v1/models`,
 and Codex `model/list`. Remote claims and explicit overrides are merged by
 field; unknown capabilities remain unknown and image input fails closed.
-Catalog responses and caches are bounded and contain no credentials.
+Catalog responses and caches are bounded and contain no credentials. OpenRouter
+catalog parsing retains advertised output modalities and per-token/request/image
+prices alongside its input modalities and supported parameters. Providers that
+omit these fields remain explicitly unknown.
 
 Quick Setup is the one deliberate pre-install discovery path. It constructs a
 staged registry, establishes the endpoint/executable plus credential/account,
@@ -99,7 +104,7 @@ does not turn ordinary startup into implicit network discovery.
 
 `xana model` lists the unified catalog, distinguishes the effective foreground
 selection from the configured profile default, and exposes known input, tool,
-reasoning, and context capabilities. `xana model use
+reasoning, context, output-modality, and pricing facts. `xana model use
 CONNECTION/MODEL` persists the next-conversation selection. `/model` lists or
 selects from chat. Native selection restarts Xana's foreground conversation;
 switching between native and managed execution never copies history silently.

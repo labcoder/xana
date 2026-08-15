@@ -86,6 +86,17 @@ impl RetainedActivity {
         self.bytes += cost;
         self.events.push(notification.clone());
     }
+
+    pub(super) fn usage(&self) -> Option<(u64, u64, u64)> {
+        self.events.iter().rev().find_map(|event| match event {
+            ManagedClientEvent::TokenUsageUpdated {
+                input_tokens,
+                output_tokens,
+                total_tokens,
+            } => Some((*input_tokens, *output_tokens, *total_tokens)),
+            _ => None,
+        })
+    }
 }
 
 pub(super) struct TerminalManagedHandler {

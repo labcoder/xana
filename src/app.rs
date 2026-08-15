@@ -437,6 +437,7 @@ async fn run_setup_command(
         args,
         paths,
         input_is_terminal,
+        output_is_terminal,
         &mut input,
         &mut output,
         profile,

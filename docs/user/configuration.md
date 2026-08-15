@@ -22,12 +22,23 @@ xana config check
 xana config migrate
 ```
 
-Bare `xana setup` first asks whether to run Quick Setup, Full Setup, or one
-focused section. Quick Setup is the setup-path default, but it still offers
+Bare `xana setup` opens Xana's keyboard-driven terminal wizard when both input
+and output are terminals. Arrow keys move, Page Up/Page Down page, typing
+filters the current choices, Enter selects, and Escape goes back. The wizard
+uses the compact Xana waterline mark and visually separated steps. Use
+`xana setup --plain` for the permanent append-only prompts; its large model
+catalogs are paged and accept `/FILTER`, next/previous, or an exact model id.
+Both surfaces run the same transaction and validation.
+
+Setup first asks whether to run Quick Setup, Full Setup, or one focused
+section. Quick Setup is the setup-path default, but it still offers
 every supported connection kind without recommending or preselecting a
 provider. Use `xana setup --quick` to bypass the path menu. It validates the
 endpoint or executable first, then the credential or Codex-owned account, then
-fetches the live catalog before model and reasoning selection. The platform
+fetches the live catalog before model and reasoning selection. The selector
+shows known input/output modalities, tool/reasoning support, context/output
+limits, and provider-published token/request/image pricing. Missing facts remain
+unknown; Xana does not infer capabilities or prices from model names. The platform
 shell and bounded native defaults are used; full profile, route, and shell
 editing remains an advanced configuration task.
 
@@ -105,11 +116,13 @@ printf '%s' "$OPENAI_API_KEY" | xana setup --non-interactive --kind openai \
   --permission-mode ask --yes
 ```
 
-Bare interactive `xana` offers the guided setup-path menu when configuration
+Bare interactive `xana` offers the rich guided setup-path menu when configuration
 is missing or invalid. Non-TTY startup fails promptly with the exact
 noninteractive command shape. Inside plain or full-screen chat, `/setup` closes
-the current foreground owner, restores the terminal, runs the same setup
-transaction, and starts a new conversation using the installed choice.
+the current foreground owner, restores the terminal, runs the same rich setup
+transaction, and returns to Xana using the installed choice. The application
+lifecycle is iterative, so repeated setup, doctor, model, and new-conversation
+transitions do not nest chat launchers.
 
 ## Full Custom and focused sections
 
