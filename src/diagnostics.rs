@@ -875,8 +875,12 @@ fn retain_breadcrumb(active: &ActiveDiagnostics, record: DiagnosticRecord) {
 
 fn install_panic_hook() {
     PANIC_HOOK.get_or_init(|| {
-        let _ = std::panic::take_hook();
+        let previous = std::panic::take_hook();
+        #[cfg(not(test))]
+        drop(previous);
         std::panic::set_hook(Box::new(move |information| {
+            #[cfg(test)]
+            previous(information);
             crate::tui::restore_terminal_best_effort();
             if let Some(active) = current_active() {
                 write_crash_report(

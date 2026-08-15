@@ -57,7 +57,9 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         McpArgument::visible("-Command"),
         McpArgument::visible(script),
     ];
-    config.request_timeout = Duration::from_secs(5);
+    // Hosted Windows runners can cold-start several PowerShell fixtures in
+    // parallel. Keep this test-only process budget above that startup cost.
+    config.request_timeout = Duration::from_secs(15);
     config.shutdown_grace = Duration::from_millis(200);
     config
 }

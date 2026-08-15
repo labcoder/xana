@@ -426,13 +426,18 @@ fn normalize_dropped_path(source: &str) -> Result<PathBuf, ImageError> {
         if !path.starts_with('/') {
             return Err(ImageError::InvalidPath);
         }
-        let mut path = percent_decode_path(path)?;
+        let path = percent_decode_path(path)?;
         #[cfg(windows)]
-        if path.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic)
-            && path.as_bytes().get(2) == Some(&b':')
         {
-            path.remove(0);
+            let mut path = path;
+            if path.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic)
+                && path.as_bytes().get(2) == Some(&b':')
+            {
+                path.remove(0);
+            }
+            path
         }
+        #[cfg(not(windows))]
         path
     } else {
         source.to_owned()
