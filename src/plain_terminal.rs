@@ -42,6 +42,7 @@ pub(crate) struct ChatHeader {
     pub(crate) owner: PrincipalId,
     pub(crate) models: ModelManager,
     pub(crate) presentation: ResolvedPresentation,
+    pub(crate) vision: crate::app::vision::VisionTurnService,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,7 @@ enum InputAction<'a> {
     Clear,
     Attach(&'a str),
     Model(&'a str),
+    Vision(&'a str),
     Doctor,
     Setup(&'a str),
     Usage,
@@ -111,6 +113,9 @@ fn classify_input(line: &str) -> InputAction<'_> {
     }
     if let Some(selection) = trimmed.strip_prefix("/model") {
         return InputAction::Model(selection.trim());
+    }
+    if let Some(selection) = trimmed.strip_prefix("/vision") {
+        return InputAction::Vision(selection.trim());
     }
     if trimmed == "/setup" {
         return InputAction::Setup("");
@@ -592,6 +597,7 @@ pub(crate) async fn run_chat(
     let stdout = anstream::stdout();
     let mut renderer = EventRenderer::new(stdout.lock(), header.presentation);
     let mut pending_images = PendingImages::default();
+    let mut pending_vision_route: Option<String> = None;
     let mut exit = ChatExit::Quit;
 
     loop {
@@ -656,6 +662,50 @@ pub(crate) async fn run_chat(
                         Err(error) => println!("xana> could not select model: {error}"),
                     }
                 }
+                InputAction::Vision(selection) => {
+                    if selection.is_empty() {
+                        let statuses = header.vision.statuses()?;
+                        if statuses.is_empty() {
+                            println!("xana> no vision.analyze routes are exposed by this profile");
+                        } else {
+                            println!("xana> vision specialist routes:");
+                            for status in statuses {
+                                println!(
+                                    "  {} [{}]{}",
+                                    status.route,
+                                    if status.ready { "ready" } else { "unavailable" },
+                                    status
+                                        .reason
+                                        .as_deref()
+                                        .map(|reason| format!(" - {reason}"))
+                                        .unwrap_or_default()
+                                );
+                            }
+                            println!(
+                                "xana> use /vision ROUTE for the next image turn, or /vision auto"
+                            );
+                        }
+                        continue;
+                    }
+                    if selection == "auto" {
+                        pending_vision_route = None;
+                        println!(
+                            "xana> native vision will be preferred; a default specialist is used only for a text-only model"
+                        );
+                        continue;
+                    }
+                    match header.vision.plan(Some(selection)) {
+                        Ok(plan) => {
+                            println!(
+                                "xana> selected {} for the next image turn; {}",
+                                selection,
+                                plan.preview(0)
+                            );
+                            pending_vision_route = Some(selection.to_owned());
+                        }
+                        Err(error) => println!("xana> could not select vision route: {error:#}"),
+                    }
+                }
                 InputAction::Setup(section) => match crate::setup::args_for_request(section) {
                     Ok(_) => {
                         runtime.send(RuntimeCommand::Shutdown).await?;
@@ -718,7 +768,7 @@ pub(crate) async fn run_chat(
                     let descriptor = header
                         .models
                         .descriptor(&header.provider_name, &header.model)?;
-                    if descriptor.input_modalities.contains("image") {
+                    {
                         let paths = image_paths_in_text(input);
                         if paths.len() > MAX_IMAGES_PER_TURN {
                             println!("xana> at most 8 images may be sent in one turn");
@@ -805,13 +855,6 @@ pub(crate) async fn run_chat(
                         println!("xana> at most 8 images may be sent in one turn");
                         continue;
                     }
-                    if pending_images.len() > 0 && !descriptor.input_modalities.contains("image") {
-                        println!(
-                            "xana> {}/{} is not declared image-capable; refresh its catalog or add an explicit model override",
-                            header.provider_name, header.model
-                        );
-                        continue;
-                    }
                     let attachments = pending_images.take_for_turn();
                     let total_image_bytes = attachments
                         .iter()
@@ -825,19 +868,128 @@ pub(crate) async fn run_chat(
                         continue;
                     }
                     let images = attachments
-                        .into_iter()
-                        .map(|attachment| attachment.image)
+                        .iter()
+                        .map(|attachment| attachment.image.clone())
                         .collect::<Vec<_>>();
-                    let command = if images.is_empty() {
+                    let native_vision = descriptor.input_modalities.contains("image");
+                    let mut turn_input = input.to_owned();
+                    let mut turn_images = images;
+                    let specialist_plan = if turn_images.is_empty() {
+                        None
+                    } else {
+                        match header
+                            .vision
+                            .route_turn(native_vision, pending_vision_route.as_deref())
+                        {
+                            Ok(crate::app::vision::VisionTurnRoute::Native) => None,
+                            Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => Some(plan),
+                            Err(error) => {
+                                for attachment in attachments {
+                                    pending_images.push(attachment);
+                                }
+                                println!(
+                                    "xana> image input is unsupported for {}/{} and no usable vision specialist was selected: {error:#}; configure one with `xana connect vision` or choose an image-capable model",
+                                    header.provider_name, header.model
+                                );
+                                continue;
+                            }
+                        }
+                    };
+                    if let Some(plan) = specialist_plan {
+                        println!("xana> {}", plan.preview(turn_images.len()));
+                        match plan.permission_mode {
+                            crate::config::PermissionMode::Deny => {
+                                for attachment in attachments {
+                                    pending_images.push(attachment);
+                                }
+                                println!(
+                                    "xana> vision specialist use is denied by the active profile"
+                                );
+                                continue;
+                            }
+                            crate::config::PermissionMode::Ask => {
+                                let answer = editor.readline(
+                                    "xana> send these images to the named specialist once? [y/N] ",
+                                );
+                                if !matches!(
+                                    answer.as_deref().map(str::trim),
+                                    Ok("y" | "Y" | "yes" | "YES" | "Yes")
+                                ) {
+                                    for attachment in attachments {
+                                        pending_images.push(attachment);
+                                    }
+                                    println!(
+                                        "xana> specialist vision was not authorized; message was not sent"
+                                    );
+                                    continue;
+                                }
+                            }
+                            crate::config::PermissionMode::Allow => {}
+                        }
+                        println!(
+                            "xana> analyzing attached images with the named vision specialist..."
+                        );
+                        let cancellation = tokio_util::sync::CancellationToken::new();
+                        let execution = header.vision.execute(
+                            operation_id,
+                            turn_input,
+                            turn_images,
+                            plan,
+                            cancellation.clone(),
+                        );
+                        tokio::pin!(execution);
+                        let prepared = tokio::select! {
+                            result = &mut execution => result,
+                            signal = tokio::signal::ctrl_c() => {
+                                signal.context("could not listen for vision cancellation")?;
+                                cancellation.cancel();
+                                execution.await
+                            }
+                        };
+                        let prepared = match prepared {
+                            Ok(prepared) => prepared,
+                            Err(error) => {
+                                for attachment in attachments {
+                                    pending_images.push(attachment);
+                                }
+                                println!(
+                                    "xana> vision specialist failed: {error:#}; message was not sent"
+                                );
+                                continue;
+                            }
+                        };
+                        println!(
+                            "xana> specialist description ready: route {}, model {}, source artifacts {}; cost {}",
+                            prepared.receipt.route,
+                            prepared.receipt.model,
+                            prepared.receipt.source_artifact_ids.join(", "),
+                            if prepared.receipt.cost_available {
+                                "reported"
+                            } else {
+                                "unavailable"
+                            }
+                        );
+                        turn_input = prepared.model_input;
+                        turn_images = Vec::new();
+                        pending_vision_route = None;
+                    } else if !turn_images.is_empty() {
+                        println!(
+                            "xana> native image input: {}/{} receives {} immutable source artifact(s) directly; no specialist request",
+                            header.provider_name,
+                            header.model,
+                            turn_images.len()
+                        );
+                    }
+                    let command = if turn_images.is_empty() {
                         RuntimeCommand::SubmitTurn {
                             operation_id,
-                            input: input.to_owned(),
+                            input: turn_input,
                         }
                     } else {
                         RuntimeCommand::SubmitTurnWithImages {
                             operation_id,
-                            input: input.to_owned(),
-                            images,
+                            input: turn_input,
+                            images: turn_images,
                         }
                     };
                     let root_lease = match workspace_host.acquire_root(conversation.clone()) {
@@ -1228,6 +1380,11 @@ mod tests {
             InputAction::Attach("assets/photo.png")
         );
         assert_eq!(classify_input("/attach"), InputAction::Attach(""));
+        assert_eq!(classify_input("/vision"), InputAction::Vision(""));
+        assert_eq!(
+            classify_input("/vision describe"),
+            InputAction::Vision("describe")
+        );
         assert_eq!(
             classify_input("/project"),
             InputAction::ControlCommand {

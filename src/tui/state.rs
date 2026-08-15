@@ -189,6 +189,13 @@ pub(super) enum UpdateEffect {
         operation_id: OperationId,
         input: String,
         images: Vec<ImageAttachment>,
+        vision_route: Option<String>,
+    },
+    PrepareVision {
+        operation_id: OperationId,
+        input: String,
+        images: Vec<ImageAttachment>,
+        plan: crate::app::vision::VisionPlan,
     },
     Interrupt {
         operation_id: OperationId,
@@ -251,6 +258,7 @@ pub(super) enum ArtifactAction {
 pub(super) struct QueuedTurn {
     pub(super) input: String,
     images: Vec<ImageAttachment>,
+    vision_route: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -267,6 +275,13 @@ pub(super) enum Overlay {
         input: String,
         paths: Vec<String>,
         external_paths: Vec<String>,
+        selected: usize,
+    },
+    VisionApproval {
+        operation_id: OperationId,
+        input: String,
+        images: Vec<ImageAttachment>,
+        plan: crate::app::vision::VisionPlan,
         selected: usize,
     },
     Help,
@@ -322,6 +337,7 @@ pub(super) struct TuiState {
     pub(super) managed_usage: Option<(u64, u64, u64)>,
     capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
+    pending_vision_route: Option<String>,
     background_messages: Option<VecDeque<VisibleMessage>>,
     history_start: usize,
     history_has_older: bool,
@@ -363,6 +379,7 @@ impl TuiState {
             managed_usage: None,
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            pending_vision_route: None,
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -409,6 +426,7 @@ impl TuiState {
             managed_usage: None,
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            pending_vision_route: None,
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -454,6 +472,7 @@ impl TuiState {
             managed_usage: None,
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
+            pending_vision_route: None,
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -472,9 +491,13 @@ impl TuiState {
             return UpdateEffect::None;
         }
         let images = self.take_pending_images();
+        let vision_route = (!images.is_empty())
+            .then(|| self.pending_vision_route.take())
+            .flatten();
         if self.viewed_conversation != self.runtime_conversation {
             self.composer.replace(input);
             self.restore_images(images);
+            self.pending_vision_route = vision_route;
             self.status = "Draft retained; return to the runtime conversation or use exact resume before submitting".to_owned();
             return UpdateEffect::None;
         }
@@ -491,7 +514,11 @@ impl TuiState {
                 self.status = "Follow-up queue reached its 32-item/2 MiB bound".to_owned();
                 return UpdateEffect::None;
             }
-            self.followups.push_back(QueuedTurn { input, images });
+            self.followups.push_back(QueuedTurn {
+                input,
+                images,
+                vision_route,
+            });
             self.status = format!("Queued follow-up {}", self.followups.len());
             return UpdateEffect::None;
         }
@@ -499,6 +526,7 @@ impl TuiState {
             operation_id: OperationId::new(),
             input,
             images,
+            vision_route,
         }
     }
 
@@ -517,13 +545,19 @@ impl TuiState {
         &mut self,
         input: String,
         images: Vec<ImageAttachment>,
+        vision_route: Option<String>,
         reason: String,
     ) {
         if self.composer.text.is_empty() {
             self.composer.replace(input);
             self.restore_images(images);
+            self.pending_vision_route = vision_route;
         } else if self.followups.len() < MAX_FOLLOWUPS {
-            self.followups.push_front(QueuedTurn { input, images });
+            self.followups.push_front(QueuedTurn {
+                input,
+                images,
+                vision_route,
+            });
         }
         self.status = reason;
         self.busy = false;
@@ -540,6 +574,7 @@ impl TuiState {
             operation_id: OperationId::new(),
             input: turn.input,
             images: turn.images,
+            vision_route: turn.vision_route,
         })
     }
 
@@ -646,6 +681,66 @@ impl TuiState {
             "Approve reading {} external image(s)?",
             external_paths.len()
         );
+    }
+
+    pub(super) fn request_vision_approval(
+        &mut self,
+        operation_id: OperationId,
+        input: String,
+        images: Vec<ImageAttachment>,
+        plan: crate::app::vision::VisionPlan,
+    ) {
+        self.status = plan.preview(images.len());
+        self.overlay = Some(Overlay::VisionApproval {
+            operation_id,
+            input,
+            images,
+            plan,
+            selected: 0,
+        });
+    }
+
+    pub(super) fn set_vision_route(&mut self, route: Option<String>) {
+        self.pending_vision_route = route.clone();
+        self.status = match route {
+            Some(route) => format!("Vision specialist {route:?} selected for the next image turn"),
+            None => {
+                "Native vision preferred; a default specialist is used only when needed".to_owned()
+            }
+        };
+    }
+
+    pub(super) fn finish_vision_preparation(
+        &mut self,
+        receipt: &crate::app::vision::VisionReceipt,
+    ) {
+        self.push_activity(&format!(
+            "vision derivative ready via {}/{} from {} source artifact(s); usage {}; cost {}",
+            receipt.connection,
+            receipt.model,
+            receipt.source_artifact_ids.len(),
+            if receipt.usage_available {
+                "reported"
+            } else {
+                "unavailable"
+            },
+            if receipt.cost_available {
+                "reported"
+            } else {
+                "unavailable"
+            }
+        ));
+        self.status = format!(
+            "Vision derivative ready via route {}; continuing the same turn",
+            receipt.route
+        );
+    }
+
+    pub(super) fn fail_vision_preparation(&mut self, reason: String) {
+        self.busy = false;
+        self.work_indicator_frame = 0;
+        self.active_operation = None;
+        self.status = reason;
     }
 
     pub(super) fn pending_image_count(&self) -> usize {

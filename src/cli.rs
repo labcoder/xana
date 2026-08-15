@@ -212,8 +212,11 @@ pub(crate) enum Command {
     /// List, inspect, or invoke focused image-generation routes.
     #[command(display_order = 14)]
     Image(ImageArgs),
-    /// Open the provider-neutral integration hub or one focused setup path.
+    /// List, inspect, or invoke focused vision-analysis routes.
     #[command(display_order = 15)]
+    Vision(VisionArgs),
+    /// Open the provider-neutral integration hub or one focused setup path.
+    #[command(display_order = 16)]
     Connect(ConnectArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
@@ -251,6 +254,7 @@ pub(crate) enum ConnectIntegration {
     #[value(name = "external-agent")]
     ExternalAgent,
     Image,
+    Vision,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]
@@ -285,6 +289,43 @@ pub(crate) enum ImageCommand {
         #[arg(long)]
         yes: bool,
         /// Emit the result receipt as JSON on stdout.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct VisionArgs {
+    #[command(subcommand)]
+    pub(crate) command: VisionCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum VisionCommand {
+    /// List vision-analysis routes exposed by the default profile.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Inspect one named route without resolving a secret or using the network.
+    Inspect {
+        route: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Analyze one or more bounded local image artifacts through an exact route.
+    Analyze {
+        #[arg(required = true, num_args = 1..=8, value_name = "IMAGE")]
+        images: Vec<PathBuf>,
+        /// Question text. When omitted, Xana reads bounded UTF-8 text from stdin.
+        #[arg(long)]
+        question: Option<String>,
+        /// Exact route; otherwise the profile's sole declared default is used.
+        #[arg(long)]
+        route: Option<String>,
+        /// Approve reading named external files and sending exact bounded inputs.
+        #[arg(long)]
+        yes: bool,
         #[arg(long)]
         json: bool,
     },

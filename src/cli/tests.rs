@@ -971,6 +971,43 @@ fn parses_focused_image_commands() {
 }
 
 #[test]
+fn parses_focused_vision_commands() {
+    assert_eq!(
+        Cli::try_parse_from(["xana", "vision", "list", "--json"])
+            .unwrap()
+            .command,
+        Some(Command::Vision(VisionArgs {
+            command: VisionCommand::List { json: true },
+        }))
+    );
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "vision",
+            "analyze",
+            "first.png",
+            "second.jpg",
+            "--question",
+            "Compare these images",
+            "--route",
+            "describe",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Vision(VisionArgs {
+            command: VisionCommand::Analyze {
+                images: vec!["first.png".into(), "second.jpg".into()],
+                question: Some("Compare these images".into()),
+                route: Some("describe".into()),
+                yes: true,
+                json: false,
+            },
+        }))
+    );
+}
+
+#[test]
 fn rejects_unknown_commands_and_invalid_round_counts() {
     let unknown =
         Cli::try_parse_from(["xana", "unknown"]).expect_err("unknown command should fail");

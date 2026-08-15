@@ -32,7 +32,27 @@ edge:
   responsibility for its provider encoding and never receives the original
   external source path.
 
-Encoded bytes and source paths are not written into Xana's native conversation
-records. Image capabilities fail closed when catalog evidence or an explicit
-override is absent. There is no URL fetching, OCR, image generation, Files API
-upload, or terminal image rendering.
+The application-level vision router makes the native-versus-specialist choice
+once for both terminal frontends. A model that advertises image input uses the
+native path unless the user selected an exact route for the next turn. A
+text-only model resolves the profile's sole default `vision.analyze` route or
+fails before provider I/O. The focused adapter makes exactly one multimodal
+request through the existing OpenAI-compatible wire boundary. Its text result
+is bounded, labeled as an untrusted derivative, attributed to route/connection/
+adapter/model and source artifact IDs, and only then passed to the text-only
+conversation model. Raw image bytes are resolved at that specialist wire edge
+and are not duplicated into the conversation, activity, session, or receipt.
+
+`openai.vision` and `openrouter.vision` are the current specialist adapters.
+Both require effective `prompt_text` and `selected_artifacts` egress, explicit
+permission, and a profile-exposed route. They report token usage when the
+provider supplies it and report cost as unavailable rather than estimating it.
+The TUI performs specialist preparation as one cancellation-aware background
+operation over a one-slot event channel, preserving frame rendering and
+restoring the complete draft and image set on denial or failure.
+
+Encoded bytes and external source paths are not written into Xana's native
+conversation records. Image capabilities fail closed when catalog evidence is
+absent and no specialist route can bridge the turn. There is no URL fetching,
+OCR, Files API upload, or terminal image rendering. Focused image generation is
+a separate operation described in `composition-services.md`.

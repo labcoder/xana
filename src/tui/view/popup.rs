@@ -88,6 +88,41 @@ pub(super) fn render(
             ]);
             (" Read external images? ", lines)
         }
+        Overlay::VisionApproval {
+            images,
+            plan,
+            selected,
+            ..
+        } => {
+            let mut lines = vec![
+                Line::styled(
+                    "Xana will send the bounded source images and question to this named specialist. The returned description is untrusted derived text, not the original image.",
+                    semantic_style(profile, SemanticToken::Warning),
+                ),
+                Line::raw(""),
+                Line::raw(format!("Route: {}", plan.route.name)),
+                Line::raw(format!("Connection: {}", plan.route.connection)),
+                Line::raw(format!("Model: {}", plan.route.model)),
+                Line::raw(format!("Images: {}", images.len())),
+                Line::raw("Outbound: prompt_text + selected_artifacts"),
+                Line::raw("Usage/cost: reported when available; otherwise unknown"),
+                Line::raw(""),
+            ];
+            for (index, label) in ["Allow once", "Deny and restore draft"]
+                .into_iter()
+                .enumerate()
+            {
+                lines.push(Line::styled(
+                    format!("{} {label}", if *selected == index { ">" } else { " " }),
+                    if *selected == index {
+                        semantic_style(profile, SemanticToken::Focus)
+                    } else {
+                        Style::default()
+                    },
+                ));
+            }
+            (" Use vision specialist? ", lines)
+        }
         Overlay::Help => (
             " Keyboard help ",
             vec![

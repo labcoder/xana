@@ -108,11 +108,13 @@ async fn scripted_turn_crosses_the_real_embedded_client_and_finishes_in_view_sta
         operation_id,
         input,
         images,
+        vision_route,
     } = state.update_input(InputAction::Submit)
     else {
         panic!("submit effect");
     };
     assert!(images.is_empty());
+    assert!(vision_route.is_none());
     state.mark_submitted(operation_id, input.clone());
     client
         .send(RuntimeCommand::SubmitTurn {
@@ -160,11 +162,13 @@ async fn delayed_provider_does_not_block_frontend_updates() {
         operation_id,
         input,
         images,
+        vision_route,
     } = state.update_input(InputAction::Submit)
     else {
         panic!("submit effect");
     };
     assert!(images.is_empty());
+    assert!(vision_route.is_none());
     state.mark_submitted(operation_id, input.clone());
     client
         .send(RuntimeCommand::SubmitTurn {

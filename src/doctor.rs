@@ -208,12 +208,20 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
         ),
         Some("xana connect".into()),
     ));
-    let Ok(descriptors) = crate::focused_service::image_descriptor_registry() else {
+    let Ok(descriptors) = crate::focused_service::descriptor_registry() else {
         return;
     };
     for (profile_name, profile) in &registry.profiles {
         for route in &profile.service_routes {
             let status = descriptors.inspect(&registry, &profile.service_routes, route);
+            let action = status.operation.map(|operation| match operation {
+                crate::focused_service::ServiceOperation::ImageGenerate => {
+                    format!("xana image inspect {route}")
+                }
+                crate::focused_service::ServiceOperation::VisionAnalyze => {
+                    format!("xana vision inspect {route}")
+                }
+            });
             report.push(Finding::new(
                 format!("service.{profile_name}.{route}"),
                 if status.ready {
@@ -229,7 +237,7 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
                 status
                     .reason
                     .unwrap_or_else(|| "configured and exposed".into()),
-                (!status.ready).then(|| format!("xana image inspect {route}")),
+                (!status.ready).then_some(action).flatten(),
             ));
         }
     }

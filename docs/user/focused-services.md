@@ -1,9 +1,11 @@
-# Focused image services
+# Focused image and vision services
 
 Focused services are named, profile-exposed operations independent from Xana's
 conversational model. The current adapters are `openai.images` for direct
 OpenAI API-key image generation and `openrouter.images` for OpenRouter's
-dedicated Image API. ChatGPT/Codex subscriptions are not used for either path.
+dedicated Image API, plus `openai.vision` and `openrouter.vision` for one
+OpenAI-compatible multimodal analysis turn. ChatGPT/Codex subscriptions are
+not used for these focused-service paths.
 
 ```toml
 [service_connections.openai-images]
@@ -115,8 +117,49 @@ request. Provider payload encoding happens only at the wire edge; session,
 frontend, and diagnostic records retain the artifact reference and dimensions,
 not base64 bytes.
 
-Xana does not silently spend money on a specialist when the active model lacks
-image input. Choose an image-capable conversational model or explicitly invoke
-an exposed `vision.analyze` route once a compatible specialist adapter is
-configured; native raw input and derived, untrusted specialist text are distinct
-provenance modes.
+When the conversational model accepts images, Xana sends the immutable source
+artifacts directly and makes no specialist request. A text-only model instead
+uses the profile's sole default `vision.analyze` route, if one exists. `/vision
+ROUTE` forces an exact exposed specialist for the next image turn even when the
+conversation model accepts images; `/vision auto` restores native-first routing.
+The plain loop and TUI both preview the recipient, model, outbound prompt and
+selected-artifact classes, cost availability, and permission decision before
+dispatch.
+
+```toml
+[service_connections.openai-vision]
+adapter = "openai.vision"
+credential = { source = "environment", variable = "OPENAI_API_KEY" }
+
+[service_routes.describe]
+operation = "vision.analyze"
+connection = "openai-vision"
+model = "gpt-5.4-mini"
+default = true
+egress_policy = "vision-input"
+
+[egress_policies.vision-input]
+allowed = ["prompt_text", "selected_artifacts"]
+```
+
+Add `"describe"` to the profile's `service_routes`. `openrouter.vision` uses
+the same route shape with an OpenRouter API credential and optional base URL.
+The specialist receives one bounded multimodal request containing the question
+and source images. Xana submits only its labeled, untrusted description to the
+text-only conversational model. The visible receipt names route, connection,
+adapter, model, source artifact IDs, usage availability, cost availability, and
+privacy boundary; it never equates the derivative with the source.
+
+Read-only route inspection and one-shot analysis are also available outside a
+conversation:
+
+```console
+xana vision list
+xana vision inspect describe
+xana vision analyze first.png second.jpg --question "Compare these" --route describe --yes
+```
+
+One-shot analysis requires `--yes` before Xana reads named external files,
+resolves a credential, or opens the network. Without native support or a usable
+exposed route, the turn is preserved and Xana reports `xana connect vision` as
+the setup path rather than silently choosing a provider.
