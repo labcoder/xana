@@ -146,6 +146,24 @@ impl EmbeddedObserver {
                     None => ObservationStreamExit::ForwarderPanicked,
                 };
                 self.exit = Some(exit);
+                if matches!(
+                    exit,
+                    ObservationStreamExit::Runtime(RuntimeExit::Panicked)
+                        | ObservationStreamExit::RuntimeTaskLost
+                        | ObservationStreamExit::ForwarderPanicked
+                ) {
+                    crate::diagnostics::record_task_panic("foreground-runtime");
+                } else if matches!(
+                    exit,
+                    ObservationStreamExit::ObserverClosed | ObservationStreamExit::ObserverStalled
+                ) {
+                    crate::diagnostics::emit(crate::diagnostics::DiagnosticFact::new(
+                        crate::config::DiagnosticLevel::Warn,
+                        crate::config::DiagnosticTarget::Frontend,
+                        crate::diagnostics::EventKind::FrontendDisconnected,
+                        crate::diagnostics::EventOutcome::Unavailable,
+                    ));
+                }
                 exit
             }
         };

@@ -159,6 +159,35 @@ fn config_path_honors_an_absolute_xana_home() {
 }
 
 #[test]
+fn diagnostic_commands_list_and_export_metadata_without_starting_another_log() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+
+    let listed = xana(&home)
+        .args(["logs", "list"])
+        .output()
+        .expect("list diagnostics");
+    assert_success(&listed);
+    let listing = String::from_utf8_lossy(&listed.stdout);
+    assert!(listing.contains("log\txana-"));
+
+    let bundle = directory.path().join("support.json");
+    let exported = xana(&home)
+        .args(["logs", "export", "--output", bundle.to_str().unwrap()])
+        .output()
+        .expect("export diagnostics");
+    assert_success(&exported);
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(bundle).unwrap()).unwrap();
+    assert_eq!(value["version"], 1);
+    assert!(
+        value["logs"]
+            .as_array()
+            .is_some_and(|logs| !logs.is_empty())
+    );
+}
+
+#[test]
 fn redirected_bare_launch_stays_plain_and_explicit_tui_fails_cleanly() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");

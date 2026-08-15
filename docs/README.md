@@ -12,6 +12,9 @@ engineering contracts used to change it.
 - [Configuration](user/configuration.md) explains setup, provider/profile
   settings, platform paths, `XANA_HOME`, doctor, validated editing, and scoped
   reset.
+- [Logs and crash diagnostics](user/diagnostics.md) explains metadata-only
+  structured logs, retention and resource bounds, panic/unclean-exit reports,
+  local inspection, and redacted support bundles.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, input budgets, and instruction
   boundaries.

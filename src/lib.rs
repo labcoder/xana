@@ -17,6 +17,7 @@ mod config_edit;
 mod config_migration;
 mod context;
 mod credential;
+mod diagnostics;
 mod doctor;
 mod documents;
 mod focused_service;
@@ -70,16 +71,68 @@ fn run_cli(cli: Cli) -> Result<()> {
     run_on_application_stack(move || run_cli_on_application_thread(cli))?
 }
 
-fn run_cli_on_application_thread(cli: Cli) -> Result<()> {
+fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
+    app::one_shot::preflight(&mut cli)?;
+    let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
+        .context("could not resolve Xana paths")?;
+    let diagnostics_read_only = match &cli.command {
+        Some(cli::Command::Doctor(_) | cli::Command::Logs(_) | cli::Command::Config(_)) => true,
+        Some(cli::Command::Setup(args)) => args.if_needed || args.dry_run,
+        Some(cli::Command::Reset(args)) => args.dry_run,
+        _ => false,
+    };
+    let diagnostic_runtime = if diagnostics_read_only {
+        None
+    } else {
+        match diagnostics::DiagnosticRuntime::start(&paths) {
+            Ok(runtime) => runtime,
+            Err(_) => {
+                eprintln!(
+                    "warning: Xana diagnostics are unavailable; run `xana doctor` for the local path and permission checks"
+                );
+                None
+            }
+        }
+    };
+    if let Some(runtime) = &diagnostic_runtime {
+        if runtime.stale_markers() > 0 {
+            eprintln!(
+                "warning: Xana found {} prior unclean-exit marker(s); run `xana logs list` and `xana doctor`",
+                runtime.stale_markers()
+            );
+        }
+        diagnostics::emit(diagnostics::DiagnosticFact::new(
+            config::DiagnosticLevel::Info,
+            config::DiagnosticTarget::Application,
+            diagnostics::EventKind::ApplicationStarted,
+            diagnostics::EventOutcome::Started,
+        ));
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("could not create Xana runtime")?;
-    runtime.block_on(async {
-        let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
-            .context("could not resolve Xana paths")?;
-        app::run(cli, paths).await
-    })
+    let result = runtime.block_on(app::run(cli, paths));
+    diagnostics::emit(diagnostics::DiagnosticFact::new(
+        if result.is_ok() {
+            config::DiagnosticLevel::Info
+        } else {
+            config::DiagnosticLevel::Error
+        },
+        config::DiagnosticTarget::Application,
+        if result.is_ok() {
+            diagnostics::EventKind::ApplicationStopped
+        } else {
+            diagnostics::EventKind::ApplicationFailed
+        },
+        if result.is_ok() {
+            diagnostics::EventOutcome::Completed
+        } else {
+            diagnostics::EventOutcome::Failed
+        },
+    ));
+    drop(diagnostic_runtime);
+    result
 }
 
 fn run_on_application_stack<T, F>(operation: F) -> Result<T>

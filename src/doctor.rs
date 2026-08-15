@@ -144,6 +144,7 @@ pub(crate) async fn inspect(
     let mut report = DoctorReport::new();
     inspect_configuration(paths, &mut report);
     inspect_owned_paths(paths, &mut report);
+    inspect_diagnostics(paths, &mut report);
     inspect_presentation(paths, &mut report);
     inspect_terminal(terminal, &mut report);
     inspect_descriptor(paths, &mut report);
@@ -152,6 +153,60 @@ pub(crate) async fn inspect(
     inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report, probe_connections).await;
     report
+}
+
+fn inspect_diagnostics(paths: &XanaPaths, report: &mut DoctorReport) {
+    let health = crate::diagnostics::inspect(paths);
+    let status = if !health.enabled {
+        Severity::Info
+    } else if health.inspection_error
+        || health.unsafe_path
+        || health.invalid_reports > 0
+        || health.writer_faults > 0
+    {
+        Severity::Error
+    } else if !health.log_dir_exists || !health.crash_dir_exists || health.stale_markers > 0 {
+        Severity::Warning
+    } else {
+        Severity::Ok
+    };
+    report.push(Finding::new(
+        "diagnostics.storage",
+        status,
+        if health.enabled {
+            "metadata-only diagnostics are enabled"
+        } else {
+            "metadata-only diagnostics are disabled"
+        },
+        format!(
+            "logs={}; crashes={}; log_dir_exists={}; crash_dir_exists={}; unsafe_path={}; inspection_error={}; invalid_reports={}; dropped_events={}; writer_faults={}",
+            health.log_dir.display(),
+            health.crash_dir.display(),
+            health.log_dir_exists,
+            health.crash_dir_exists,
+            health.unsafe_path,
+            health.inspection_error,
+            health.invalid_reports,
+            health.dropped_events,
+            health.writer_faults
+        ),
+        Some("xana logs path".into()),
+    ));
+    report.push(Finding::new(
+        "diagnostics.unclean_exit",
+        if health.stale_markers > 0 {
+            Severity::Warning
+        } else {
+            Severity::Ok
+        },
+        if health.stale_markers > 0 {
+            "a prior Xana process did not complete clean shutdown"
+        } else {
+            "no stale unclean-exit markers were found"
+        },
+        format!("stale_markers={}", health.stale_markers),
+        (health.stale_markers > 0).then(|| "xana logs list".into()),
+    ));
 }
 
 fn inspect_private_records(paths: &XanaPaths, report: &mut DoctorReport) {

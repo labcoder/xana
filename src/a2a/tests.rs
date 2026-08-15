@@ -181,6 +181,7 @@ fn zero_selected_agents_does_not_touch_private_state() {
         service_connections: BTreeMap::new(),
         service_routes: BTreeMap::new(),
         egress_policies: BTreeMap::new(),
+        diagnostics: crate::config::DiagnosticsConfig::default(),
     };
     assert!(
         ExternalAgentManager::open(&paths)

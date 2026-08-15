@@ -230,14 +230,48 @@ impl ToolRegistry {
     pub(crate) async fn invoke(&self, call: &ToolCall, context: ToolContext<'_>) -> ToolResult {
         let planned = match self.plan(call, context.workspace_root) {
             Ok(planned) => planned,
-            Err(result) => return result,
+            Err(result) => {
+                crate::diagnostics::emit(
+                    crate::diagnostics::DiagnosticFact::new(
+                        crate::config::DiagnosticLevel::Warn,
+                        crate::config::DiagnosticTarget::Tool,
+                        crate::diagnostics::EventKind::ToolFailed,
+                        crate::diagnostics::EventOutcome::Failed,
+                    )
+                    .subject(&call.name)
+                    .correlation(context.operation_id.to_string()),
+                );
+                return result;
+            }
         };
         let request = planned.permission_request(context.operation_id, context.invocation_id);
         let authorization = match context.permissions.authorize(request).await {
             Ok(authorization) => authorization,
-            Err(error) => return ToolResult::error(call.id.clone(), error.to_string()),
+            Err(error) => {
+                crate::diagnostics::emit(
+                    crate::diagnostics::DiagnosticFact::new(
+                        crate::config::DiagnosticLevel::Warn,
+                        crate::config::DiagnosticTarget::Tool,
+                        crate::diagnostics::EventKind::ToolFailed,
+                        crate::diagnostics::EventOutcome::Failed,
+                    )
+                    .subject(&call.name)
+                    .correlation(context.operation_id.to_string()),
+                );
+                return ToolResult::error(call.id.clone(), error.to_string());
+            }
         };
         if matches!(authorization, Authorization::Denied(_)) {
+            crate::diagnostics::emit(
+                crate::diagnostics::DiagnosticFact::new(
+                    crate::config::DiagnosticLevel::Warn,
+                    crate::config::DiagnosticTarget::Tool,
+                    crate::diagnostics::EventKind::ToolDenied,
+                    crate::diagnostics::EventOutcome::Denied,
+                )
+                .subject(&call.name)
+                .correlation(context.operation_id.to_string()),
+            );
             return ToolResult::error(
                 call.id.clone(),
                 format!("permission denied for tool {:?}", call.name),
@@ -252,7 +286,19 @@ impl ToolRegistry {
             .await
         {
             Ok(output) => ToolResult::success(call.id.clone(), output),
-            Err(error) => ToolResult::error(call.id.clone(), error),
+            Err(error) => {
+                crate::diagnostics::emit(
+                    crate::diagnostics::DiagnosticFact::new(
+                        crate::config::DiagnosticLevel::Warn,
+                        crate::config::DiagnosticTarget::Tool,
+                        crate::diagnostics::EventKind::ToolFailed,
+                        crate::diagnostics::EventOutcome::Failed,
+                    )
+                    .subject(&call.name)
+                    .correlation(context.operation_id.to_string()),
+                );
+                ToolResult::error(call.id.clone(), error)
+            }
         }
     }
 

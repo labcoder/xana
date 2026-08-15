@@ -157,6 +157,13 @@ impl ProductDocCatalog {
 static USER_AUDIENCE: &[DocAudience] = &[DocAudience::User, DocAudience::Agent];
 static CONTRIBUTOR_AUDIENCE: &[DocAudience] = &[DocAudience::Contributor, DocAudience::Agent];
 static USER_TOPICS: &[&str] = &["configuration", "installation", "usage"];
+static DIAGNOSTIC_TOPICS: &[&str] = &[
+    "diagnostics",
+    "logs",
+    "crashes",
+    "privacy",
+    "troubleshooting",
+];
 static AUTOMATION_TOPICS: &[&str] = &["usage", "cli", "automation", "json", "sessions"];
 static TUI_TOPICS: &[&str] = &[
     "usage",
@@ -261,6 +268,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: USER_TOPICS,
         body: include_str!("../docs/user/configuration.md"),
+    },
+    BundledDoc {
+        id: "user.diagnostics",
+        title: "Logs and crash diagnostics",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: DIAGNOSTIC_TOPICS,
+        body: include_str!("../docs/user/diagnostics.md"),
     },
     BundledDoc {
         id: "user.installation",

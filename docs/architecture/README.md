@@ -871,6 +871,37 @@ produce a migration-required finding with `xana config migrate --apply`; the
 read-only inspection never creates them. Invalid, unsupported, or unreadable
 records produce a separate error without echoing their contents.
 
+Process diagnostics are a separate, non-authoritative product. Ownership
+boundaries emit fixed typed metadata into a bounded `try_send` queue only after
+identifier sanitization; runtime work never awaits the writer. One Xana-owned
+thread serializes versioned JSONL, rotates at mandatory file limits, and cleans
+only recognized regular files inside a validated non-symlink root. Session
+journals, permission audits, prompts, tool payloads, files, and model text never
+enter this stream. Queue pressure and sink faults are counters, not execution
+backpressure.
+
+```mermaid
+flowchart LR
+    O["Application/runtime ownership boundaries"] --> R["Typed metadata + pre-enqueue redaction"]
+    R --> Q["Bounded nonblocking queue"]
+    Q --> W["Single rolling JSONL writer"]
+    W --> L["Private bounded data/logs"]
+    Q -. "full: count loss" .-> H["Doctor health"]
+    P["Panic or monitored task loss"] --> T["Best-effort terminal restore"]
+    T --> C["Structured crash report + bounded breadcrumbs"]
+    C --> D["Private data/crashes"]
+    S["Session/audit/prompt/tool/file content"] -. "excluded" .-> R
+```
+
+The process retains an exclusive lock on one run marker. Clean shutdown flushes
+for a bounded interval and removes that marker; a later process can identify an
+unlocked stale marker without confusing a concurrently running Xana process.
+Panic reports contain hashes rather than panic text, source paths, or raw
+backtraces. OS termination may leave only a marker. `doctor` and `logs`
+inspection deliberately do not start the writer, preserving their read-only
+contract. Support export reparses known records, applies a second secret-shaped
+scan, writes a new bounded local JSON document, and has no upload path.
+
 Manual config editing stages an owner-protected bounded sibling file, invokes
 an exact editor executable without a shell, validates the complete schema,
 detects a concurrent live-file change, writes an exact backup, and atomically

@@ -11,6 +11,30 @@ use std::io::{self, IsTerminal, Read};
 
 const MAX_ONE_SHOT_INPUT_BYTES: u64 = 1024 * 1024;
 
+pub(crate) fn preflight(cli: &mut crate::cli::Cli) -> Result<()> {
+    let Some(argument) = cli.print.take() else {
+        return Ok(());
+    };
+    match resolve_one_shot_input(argument) {
+        Ok(input) => {
+            cli.print = Some(Some(input));
+            Ok(())
+        }
+        Err(failure) => {
+            let output = if cli.json || cli.output == Some(crate::cli::OutputChoice::Json) {
+                OneShotOutput::Json
+            } else {
+                OneShotOutput::Text
+            };
+            let stdout = io::stdout();
+            let stderr = io::stderr();
+            write_failure(output, &failure, &mut stdout.lock(), &mut stderr.lock())
+                .context("could not write one-shot preflight failure")?;
+            Err(anyhow::Error::new(failure.rendered()))
+        }
+    }
+}
+
 pub(super) async fn run_and_render(
     paths: &XanaPaths,
     resume: Option<SessionId>,

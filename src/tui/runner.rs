@@ -481,6 +481,15 @@ impl ExecutionOwner for ManagedOwner {
 
     async fn next_event(&mut self) -> Result<Self::Event> {
         self.driver.next_event().await.ok_or_else(|| {
+            crate::diagnostics::emit(
+                crate::diagnostics::DiagnosticFact::new(
+                    crate::config::DiagnosticLevel::Error,
+                    crate::config::DiagnosticTarget::Runtime,
+                    crate::diagnostics::EventKind::ManagedRuntimeExited,
+                    crate::diagnostics::EventOutcome::Failed,
+                )
+                .subject(&self.connection),
+            );
             anyhow::anyhow!("Codex managed runtime stopped while the TUI was attached")
         })
     }

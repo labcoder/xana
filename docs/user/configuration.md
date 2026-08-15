@@ -596,6 +596,9 @@ readable.
 | `service_routes.<id>` | Exact `image.generate` or `vision.analyze` route selecting a connection, model, bounded options, optional description/default, and egress policy |
 | `egress_policies.<id>.allowed` | Exact outbound data classes that a configured integration may receive |
 | `routes.<id>.profile` | Exact profile selected by a child task route; no fallback |
+| `diagnostics.enabled`, `level`, `targets` | Metadata-only process logging switch, `error`–`trace` threshold, and stable target classes |
+| `diagnostics.directory` | Optional absolute or normalized Xana-data-relative log directory; crash reports remain in Xana's crash directory |
+| `diagnostics.retention_days`, `max_file_bytes`, `max_total_bytes`, `max_files`, `queue_capacity` | Mandatory rolling retention, disk, file-count, and nonblocking memory ceilings |
 
 Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
 `reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and
@@ -616,8 +619,10 @@ For `{ source = "stored", id = "openrouter" }`, Xana uses service
 Secret Service. There is no plaintext fallback. `{ source = "environment",
 variable = "OPENROUTER_API_KEY" }` reads only that process variable.
 
-`config.toml`, model caches, selections, sessions, artifacts, logs, and
-`XANA_HOME` never store static key bytes. Deleting a Xana key is separate from
+`config.toml`, model caches, selections, sessions, artifacts, logs, crash
+reports, and `XANA_HOME` never store static key bytes. Diagnostic verbosity
+never includes prompt/tool/file contents or hidden reasoning; see [Logs and
+crash diagnostics](diagnostics.md). Deleting a Xana key is separate from
 logging out of Codex because the credential owners differ.
 
 ## Paths and `XANA_HOME`

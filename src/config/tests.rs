@@ -64,6 +64,41 @@ fn minimal_v1_resolves_default_profile_and_default_round_limit() {
 }
 
 #[test]
+fn diagnostics_defaults_are_bounded_and_invalid_unlimited_values_are_rejected() {
+    let registry = XanaConfig::parse_registry(MINIMAL).unwrap();
+    assert!(registry.diagnostics.enabled);
+    assert_eq!(registry.diagnostics.level, DiagnosticLevel::Info);
+    assert_eq!(registry.diagnostics.retention_days, 7);
+    assert_eq!(registry.diagnostics.max_file_bytes, 4 * 1024 * 1024);
+    assert_eq!(registry.diagnostics.max_total_bytes, 32 * 1024 * 1024);
+
+    let invalid = format!(
+        "{MINIMAL}\n[diagnostics]\nretention_days = 0\nmax_file_bytes = 0\nmax_total_bytes = 0\nmax_files = 0\nqueue_capacity = 0\n"
+    );
+    assert!(matches!(
+        XanaConfig::parse_registry(&invalid),
+        Err(ConfigError::InvalidInteroperableConfig {
+            section: "diagnostics",
+            ..
+        })
+    ));
+
+    let ambiguous = if cfg!(windows) {
+        r#"C:\diagnostics\..\secrets"#
+    } else {
+        "/tmp/diagnostics/../secrets"
+    };
+    let invalid_path = format!("{MINIMAL}\n[diagnostics]\ndirectory = {ambiguous:?}\n");
+    assert!(matches!(
+        XanaConfig::parse_registry(&invalid_path),
+        Err(ConfigError::InvalidInteroperableConfig {
+            section: "diagnostics",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn v3_registry_preserves_complete_profiles_and_exact_routes() {
     let input = r#"
 version = 3
