@@ -647,6 +647,17 @@ cargo test --workspace --all-targets --all-features
 cargo test --workspace --all-targets --no-default-features
 ```
 
+On Windows, the CI-parity runner uses an isolated target directory, the same
+four-thread test pressure as GitHub's public Windows runner, the hermetic MCP
+stdio stress regression, and the installer/package contract suites:
+
+```powershell
+./scripts/ci-local.ps1
+```
+
+Pass `-RequireClean` to enforce Cargo's clean-worktree packaging check, or
+`-IncludeReleasePlan` when pinned `cargo-dist` 0.32.0 is already installed.
+
 ## License
 
 MIT - see [LICENSE](./LICENSE).

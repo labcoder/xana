@@ -31,6 +31,8 @@ $required = @(
     "install/install.sh",
     "install/install.ps1",
     "scripts/new-release-manifest.ps1",
+    "scripts/ci-local.ps1",
+    "scripts/report-ci-environment.ps1",
     "scripts/test-install-ps1.ps1",
     "scripts/check-release-workflow.ps1",
     "scripts/test-create-release-draft.ps1",

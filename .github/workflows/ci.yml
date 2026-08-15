@@ -5,6 +5,7 @@ on:
     branches:
       - main
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -13,26 +14,37 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+
 jobs:
   checks:
-    name: ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        include:
+          - name: Linux / Ubuntu 24.04
+            runner: ubuntu-24.04
+            test_args: ""
+          - name: macOS / 15 ARM64
+            runner: macos-15
+            test_args: ""
+          - name: Windows / Server 2025
+            runner: windows-2025
+            test_args: "-- --test-threads=4"
 
     steps:
       - name: Check out repository
+        id: checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
       - name: Install pinned Rust
+        id: rust
         uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
         with:
           components: rustfmt, clippy
@@ -44,34 +56,53 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
+      - name: Report execution environment
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        shell: pwsh
+        run: ./scripts/report-ci-environment.ps1
+
       - name: Check formatting
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Run all-feature workspace tests
-        run: cargo test --workspace --all-targets --all-features
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
 
       - name: Run no-default-feature workspace tests
-        run: cargo test --workspace --all-targets --no-default-features
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
+
+      - name: Stress MCP stdio lifecycle
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: >-
+          cargo test --locked --lib --all-features
+          mcp::stdio::tests::stdio_lifecycle_is_stable_under_repetition --
+          --ignored --exact
 
       - name: Audit package contents
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
         run: ./scripts/check-package-contents.ps1
 
       - name: Verify Bash installer behavior
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: bash
         run: |
           bash ./scripts/test-install-sh.sh
           bash ./scripts/test-release-sha256.sh
 
       - name: Verify PowerShell installer behavior
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
         run: ./scripts/test-install-ps1.ps1
 
       - name: Verify release workflow and bundle assembly
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
         run: |
           ./scripts/check-release-workflow.ps1
@@ -81,29 +112,34 @@ jobs:
           ./scripts/test-release-bundle.ps1
 
       - name: Verify installation documentation and removal
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
         run: |
           ./scripts/check-installation-docs.ps1
           ./scripts/test-removal-recipes.ps1
 
       - name: Verify packageable application
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/xana-package-target
         run: cargo package --package xana --locked
 
       - name: Install pinned release planner
-        if: runner.os == 'Linux'
+        id: dist
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: bash
         run: |
           set -euo pipefail
           installer="$(mktemp)"
+          trap 'rm -f -- "$installer"' EXIT
           curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
             https://github.com/axodotdev/cargo-dist/releases/download/v0.32.0/cargo-dist-installer.sh \
             --output "$installer"
           bash ./scripts/verify-sha256.sh "$installer" \
             b657cf8c04a8b7bc28f39d220f7e6dd11bbd2bdb072c552262bd9ccf597261b5
           sh "$installer"
-          rm -f -- "$installer"
 
       - name: Verify Release Preview plan
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' && steps.dist.outcome == 'success' }}
         shell: pwsh
         run: ./scripts/check-release-plan.ps1
