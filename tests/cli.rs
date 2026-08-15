@@ -16,6 +16,20 @@ fn xana(home: &Path) -> Command {
     command
 }
 
+fn canonical_temp_root(directory: &tempfile::TempDir) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        directory
+            .path()
+            .canonicalize()
+            .expect("canonical temporary directory")
+    }
+    #[cfg(not(unix))]
+    {
+        directory.path().to_path_buf()
+    }
+}
+
 fn assert_success(output: &std::process::Output) {
     assert!(
         output.status.success(),
@@ -161,7 +175,7 @@ fn config_path_honors_an_absolute_xana_home() {
 #[test]
 fn diagnostic_commands_list_and_export_metadata_without_starting_another_log() {
     let directory = tempdir().expect("temporary Xana home");
-    let home = directory.path().join("xana-home");
+    let home = canonical_temp_root(&directory).join("xana-home");
     init_native(&home, "http://127.0.0.1:9/v1");
 
     let listed = xana(&home)
@@ -170,7 +184,10 @@ fn diagnostic_commands_list_and_export_metadata_without_starting_another_log() {
         .expect("list diagnostics");
     assert_success(&listed);
     let listing = String::from_utf8_lossy(&listed.stdout);
-    assert!(listing.contains("log\txana-"));
+    assert!(
+        listing.contains("log\txana-"),
+        "diagnostic listing did not contain a Xana log: {listing:?}"
+    );
 
     let bundle = directory.path().join("support.json");
     let exported = xana(&home)
