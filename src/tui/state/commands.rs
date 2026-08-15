@@ -211,7 +211,7 @@ impl TuiState {
                 }
                 UpdateEffect::None
             }
-            InputAction::Insert(text) => {
+            InputAction::Insert(text) | InputAction::Paste(text) => {
                 match &mut self.overlay {
                     Some(Overlay::Palette { query, selected })
                     | Some(Overlay::SessionPicker {
@@ -219,6 +219,14 @@ impl TuiState {
                     }) => {
                         append_bounded(query, &sanitize_input(&text), 256);
                         *selected = 0;
+                    }
+                    Some(Overlay::ProfileCreate {
+                        fields,
+                        selected,
+                        error,
+                    }) => {
+                        append_bounded(&mut fields[*selected], &sanitize_input(&text), 256);
+                        *error = None;
                     }
                     _ => {}
                 }
@@ -233,6 +241,14 @@ impl TuiState {
                         query.pop();
                         *selected = 0;
                     }
+                    Some(Overlay::ProfileCreate {
+                        fields,
+                        selected,
+                        error,
+                    }) => {
+                        fields[*selected].pop();
+                        *error = None;
+                    }
                     _ => {}
                 }
                 UpdateEffect::None
@@ -243,6 +259,8 @@ impl TuiState {
                 }) = &mut self.overlay
                 {
                     *selection = None;
+                    *scroll = scroll.saturating_sub(1);
+                } else if let Some(Overlay::CommandResult { scroll, .. }) = &mut self.overlay {
                     *scroll = scroll.saturating_sub(1);
                 } else {
                     self.move_overlay_selection(false);
@@ -255,6 +273,8 @@ impl TuiState {
                 }) = &mut self.overlay
                 {
                     *selection = None;
+                    *scroll = scroll.saturating_add(1);
+                } else if let Some(Overlay::CommandResult { scroll, .. }) = &mut self.overlay {
                     *scroll = scroll.saturating_add(1);
                 } else {
                     self.move_overlay_selection(true);
@@ -272,6 +292,12 @@ impl TuiState {
                     } else {
                         scroll.saturating_add(delta as u16)
                     };
+                } else if let Some(Overlay::CommandResult { scroll, .. }) = &mut self.overlay {
+                    *scroll = if delta.is_negative() {
+                        scroll.saturating_sub(delta.unsigned_abs())
+                    } else {
+                        scroll.saturating_add(delta as u16)
+                    };
                 } else {
                     for _ in 0..delta.unsigned_abs() {
                         self.move_overlay_selection(delta.is_positive());
@@ -280,7 +306,10 @@ impl TuiState {
                 UpdateEffect::None
             }
             InputAction::Confirm | InputAction::Submit
-                if matches!(self.overlay, Some(Overlay::ActivityDetail { .. })) =>
+                if matches!(
+                    self.overlay,
+                    Some(Overlay::ActivityDetail { .. } | Overlay::CommandResult { .. })
+                ) =>
             {
                 UpdateEffect::None
             }
@@ -363,6 +392,7 @@ impl TuiState {
                 .iter()
                 .filter(|row| session_matches(row, query))
                 .count(),
+            Some(Overlay::ProfileCreate { .. }) => 3,
             _ => 0,
         };
         if index >= len {
@@ -376,7 +406,8 @@ impl TuiState {
             | Some(Overlay::ExternalImageApproval { selected, .. })
             | Some(Overlay::VisionApproval { selected, .. })
             | Some(Overlay::Artifact { selected, .. })
-            | Some(Overlay::SessionPicker { selected, .. }) => *selected = index,
+            | Some(Overlay::SessionPicker { selected, .. })
+            | Some(Overlay::ProfileCreate { selected, .. }) => *selected = index,
             _ => return false,
         }
         true
@@ -393,6 +424,7 @@ impl TuiState {
             Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
             Some(Overlay::VisionApproval { selected, .. }) => (selected, 4),
             Some(Overlay::Artifact { selected, .. }) => (selected, 4),
+            Some(Overlay::ProfileCreate { selected, .. }) => (selected, 3),
             Some(Overlay::SessionPicker {
                 query,
                 choices,
@@ -519,7 +551,45 @@ impl TuiState {
                     action,
                 })
             }
-            Overlay::ActivityDetail { .. } | Overlay::Help | Overlay::Queue => UpdateEffect::None,
+            Overlay::ProfileCreate {
+                fields,
+                selected,
+                error: _,
+            } => {
+                if selected < fields.len() - 1 {
+                    self.overlay = Some(Overlay::ProfileCreate {
+                        fields,
+                        selected: selected + 1,
+                        error: None,
+                    });
+                    return UpdateEffect::None;
+                }
+                if let Some((index, _)) = fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, value)| value.trim().is_empty())
+                {
+                    self.overlay = Some(Overlay::ProfileCreate {
+                        fields,
+                        selected: index,
+                        error: Some("Name, connection, and model are required".to_owned()),
+                    });
+                    return UpdateEffect::None;
+                }
+                let [name, connection, model] = fields.map(|value| {
+                    shlex::try_quote(value.trim())
+                        .map(|value| value.into_owned())
+                        .unwrap_or(value)
+                });
+                UpdateEffect::ControlCommand {
+                    family: "profile".to_owned(),
+                    arguments: format!("create {name} --connection {connection} --model {model}"),
+                }
+            }
+            Overlay::ActivityDetail { .. }
+            | Overlay::CommandResult { .. }
+            | Overlay::Help
+            | Overlay::Queue => UpdateEffect::None,
         }
     }
 
@@ -696,6 +766,21 @@ impl TuiState {
                         self.status = command_usage(CommandId::Sessions);
                         UpdateEffect::None
                     }
+                }
+            }
+            CommandId::Profile if command.arguments.trim() == "create" => {
+                self.composer.take();
+                if self.busy {
+                    self.status = "Wait for or interrupt the active turn before creating a profile"
+                        .to_owned();
+                    UpdateEffect::None
+                } else {
+                    self.overlay = Some(Overlay::ProfileCreate {
+                        fields: [String::new(), self.connection.clone(), self.model.clone()],
+                        selected: 0,
+                        error: None,
+                    });
+                    UpdateEffect::None
                 }
             }
             CommandId::Project

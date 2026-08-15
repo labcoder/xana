@@ -1,19 +1,30 @@
 //! Rich terminal setup presentation with a permanent line-oriented fallback.
 
-use super::{SetupArgs, SetupCancelled, prompt_default};
+use super::{SetupArgs, SetupBack, SetupCancelled, prompt_default};
 use crate::{
     paths::XanaPaths,
-    presentation::{ResolvedPresentation, SemanticToken},
+    presentation::{
+        ColorDepth, DensityChoice, GlyphChoice, MotionChoice, PresentationPreferences,
+        ResolvedPresentation, ResolvedTheme, SemanticToken, ThemeChoice, WidthClass,
+    },
 };
 use anyhow::{Result, bail};
 use crossterm::{
-    cursor::{Hide, MoveTo, Show},
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{
-        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
-        enable_raw_mode, size,
+    cursor::{Hide, Show},
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
     },
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
 };
 use std::io::{self, BufRead, Write};
 
@@ -23,11 +34,44 @@ pub(super) struct SetupUi {
     pub(super) rich: bool,
 }
 
+pub(super) fn preview_preferences(
+    mut ui: SetupUi,
+    preferences: &PresentationPreferences,
+) -> SetupUi {
+    match preferences.theme {
+        ThemeChoice::Auto => {}
+        ThemeChoice::Dark => ui.profile.theme = ResolvedTheme::Dark,
+        ThemeChoice::Light => ui.profile.theme = ResolvedTheme::Light,
+        ThemeChoice::Monochrome => {
+            ui.profile.theme = ResolvedTheme::Monochrome;
+            ui.profile.color_depth = ColorDepth::None;
+        }
+    }
+    if ui.profile.theme != ResolvedTheme::Monochrome && ui.profile.color_depth == ColorDepth::None {
+        ui.profile.color_depth = ColorDepth::Ansi256;
+    }
+    match preferences.glyphs {
+        GlyphChoice::Auto => {}
+        GlyphChoice::Unicode => ui.profile.unicode = true,
+        GlyphChoice::Ascii => ui.profile.unicode = false,
+    }
+    match preferences.motion {
+        MotionChoice::Auto => {}
+        MotionChoice::Full => ui.profile.reduced_motion = false,
+        MotionChoice::Reduced => ui.profile.reduced_motion = true,
+    }
+    if preferences.density == DensityChoice::Compact {
+        ui.profile.width = WidthClass::Compact;
+    }
+    ui
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct SelectOption {
     pub(super) label: String,
     pub(super) detail: String,
     pub(super) keywords: String,
+    pub(super) swatches: Vec<crate::presentation::PresentationColor>,
 }
 
 impl SelectOption {
@@ -36,6 +80,7 @@ impl SelectOption {
             label: label.into(),
             detail: detail.into(),
             keywords: String::new(),
+            swatches: Vec::new(),
         }
     }
 
@@ -43,6 +88,36 @@ impl SelectOption {
         self.keywords = keywords.into();
         self
     }
+
+    pub(super) fn with_swatches(
+        mut self,
+        swatches: impl IntoIterator<Item = crate::presentation::PresentationColor>,
+    ) -> Self {
+        self.swatches.extend(swatches);
+        self
+    }
+}
+
+pub(super) fn enter_rich(output: &mut impl Write) -> Result<()> {
+    enable_raw_mode().map_err(anyhow::Error::new)?;
+    if let Err(error) = execute!(output, EnterAlternateScreen, EnableBracketedPaste, Hide) {
+        let _ = disable_raw_mode();
+        return Err(error.into());
+    }
+    Ok(())
+}
+
+pub(super) fn leave_rich(output: &mut impl Write) -> Result<()> {
+    let screen = execute!(output, Show, DisableBracketedPaste, LeaveAlternateScreen);
+    let raw = disable_raw_mode();
+    screen.map_err(anyhow::Error::new)?;
+    raw.map_err(anyhow::Error::new)
+}
+
+pub(super) fn play_intro(output: &mut impl Write, profile: ResolvedPresentation) -> Result<()> {
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::new)?;
+    crate::tui::play_intro(&mut terminal, profile).map_err(anyhow::Error::new)
 }
 
 pub(super) fn choose_setup_path(
@@ -191,19 +266,305 @@ pub(super) fn select(
         return Ok(None);
     }
 
-    enable_raw_mode().map_err(anyhow::Error::new)?;
-    if let Err(error) = execute!(output, EnterAlternateScreen, Hide) {
-        let _ = disable_raw_mode();
-        return Err(error.into());
+    select_inner(output, ui.profile, title, options, default)
+}
+
+pub(super) fn prompt_value(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    ui: SetupUi,
+    label: &str,
+    default: &str,
+    required: bool,
+    secret: bool,
+) -> Result<String> {
+    if !ui.rich {
+        let value = prompt_default(input, output, label, default)?;
+        if required && value.trim().is_empty() {
+            anyhow::bail!("{label} is required");
+        }
+        return Ok(value);
     }
-    let result = select_inner(output, ui.profile, title, options, default);
-    let cleanup = execute!(output, Show, LeaveAlternateScreen)
-        .map_err(anyhow::Error::new)
-        .and_then(|()| disable_raw_mode().map_err(anyhow::Error::new));
-    match (result, cleanup) {
-        (Ok(selection), Ok(())) => Ok(selection),
-        (Err(error), _) => Err(error),
-        (Ok(_), Err(error)) => Err(error),
+    prompt_value_inner(output, ui.profile, label, default, required, secret)?
+        .ok_or_else(|| SetupBack.into())
+}
+
+fn prompt_value_inner(
+    output: &mut impl Write,
+    profile: ResolvedPresentation,
+    label: &str,
+    default: &str,
+    required: bool,
+    secret: bool,
+) -> Result<Option<String>> {
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::new)?;
+    terminal.clear().map_err(anyhow::Error::new)?;
+    let mut value = default.to_owned();
+    let mut warning = None;
+    loop {
+        terminal
+            .draw(|frame| {
+                draw_text_prompt(frame, profile, label, &value, secret, warning.as_deref())
+            })
+            .map_err(anyhow::Error::new)?;
+        match event::read().map_err(anyhow::Error::new)? {
+            Event::Paste(text) => {
+                let available = 16 * 1024usize.saturating_sub(value.len());
+                value.extend(text.chars().take(available));
+                warning = None;
+            }
+            Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                KeyCode::Esc => return Ok(None),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Err(SetupCancelled.into());
+                }
+                KeyCode::Enter => {
+                    let value = value.trim().to_owned();
+                    if required && value.is_empty() {
+                        warning = Some(format!("{label} is required"));
+                    } else {
+                        return Ok(Some(value));
+                    }
+                }
+                KeyCode::Backspace => {
+                    value.pop();
+                    warning = None;
+                }
+                KeyCode::Char(character)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                        && value.len() < 16 * 1024 =>
+                {
+                    value.push(character);
+                    warning = None;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+fn draw_text_prompt(
+    frame: &mut ratatui::Frame<'_>,
+    profile: ResolvedPresentation,
+    label: &str,
+    value: &str,
+    secret: bool,
+    warning: Option<&str>,
+) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(surface_style(profile, false)), area);
+    let content = centered(area, area.width.min(78), 12.min(area.height));
+    let block = Block::default()
+        .title(Line::styled(
+            " Xana Setup ",
+            semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(semantic_style(profile, SemanticToken::Accent))
+        .style(surface_style(profile, true));
+    let inner = block.inner(content);
+    frame.render_widget(block, content);
+    let rendered = if secret {
+        if profile.unicode { "•" } else { "*" }.repeat(value.chars().count())
+    } else if value.is_empty() {
+        "Type a value…".to_owned()
+    } else {
+        value.to_owned()
+    };
+    let lines = vec![
+        Line::styled(
+            label.to_owned(),
+            semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::styled(
+            rendered,
+            semantic_style(
+                profile,
+                if value.is_empty() {
+                    SemanticToken::Muted
+                } else {
+                    SemanticToken::Assistant
+                },
+            ),
+        ),
+        Line::raw(""),
+        warning.map_or_else(
+            || {
+                Line::styled(
+                    "Enter accept · Esc back · Ctrl+C cancel",
+                    semantic_style(profile, SemanticToken::Muted),
+                )
+            },
+            |warning| {
+                Line::styled(
+                    warning.to_owned(),
+                    semantic_style(profile, SemanticToken::Warning),
+                )
+            },
+        ),
+    ];
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+}
+
+pub(super) fn show_status(
+    output: &mut impl Write,
+    ui: SetupUi,
+    title: &str,
+    detail: &str,
+) -> Result<()> {
+    if !ui.rich {
+        writeln!(output, "{title}")?;
+        writeln!(output, "  {detail}")?;
+        return Ok(());
+    }
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::new)?;
+    terminal.clear().map_err(anyhow::Error::new)?;
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            frame.render_widget(
+                Block::default().style(surface_style(ui.profile, false)),
+                area,
+            );
+            let popup = centered(area, area.width.min(74), 11.min(area.height));
+            let block = Block::default()
+                .title(Line::styled(
+                    " Xana Setup ",
+                    semantic_style(ui.profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+                ))
+                .borders(Borders::ALL)
+                .border_style(semantic_style(ui.profile, SemanticToken::Accent))
+                .style(surface_style(ui.profile, true));
+            let inner = block.inner(popup);
+            frame.render_widget(block, popup);
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(
+                        title.to_owned(),
+                        semantic_style(ui.profile, SemanticToken::Focus)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Line::raw(""),
+                    Line::styled(
+                        detail.to_owned(),
+                        semantic_style(ui.profile, SemanticToken::Assistant),
+                    ),
+                    Line::raw(""),
+                    Line::styled(
+                        "Please wait…",
+                        semantic_style(ui.profile, SemanticToken::Muted),
+                    ),
+                ])
+                .wrap(Wrap { trim: false }),
+                inner,
+            );
+        })
+        .map_err(anyhow::Error::new)?;
+    Ok(())
+}
+
+pub(super) fn confirm_review(
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    ui: SetupUi,
+    title: &str,
+    lines: &[String],
+) -> Result<bool> {
+    if !ui.rich {
+        return super::confirm(input, output, &format!("{title} [y/N]: "));
+    }
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::new)?;
+    terminal.clear().map_err(anyhow::Error::new)?;
+    let mut selected = 0usize;
+    loop {
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame.render_widget(
+                    Block::default().style(surface_style(ui.profile, false)),
+                    area,
+                );
+                let height = u16::try_from(lines.len())
+                    .unwrap_or(u16::MAX)
+                    .saturating_add(10)
+                    .min(area.height);
+                let popup = centered(area, area.width.min(88), height);
+                let block = Block::default()
+                    .title(Line::styled(
+                        format!(" Xana Setup · {title} "),
+                        semantic_style(ui.profile, SemanticToken::Accent)
+                            .add_modifier(Modifier::BOLD),
+                    ))
+                    .borders(Borders::ALL)
+                    .border_style(semantic_style(ui.profile, SemanticToken::Accent))
+                    .style(surface_style(ui.profile, true));
+                let inner = block.inner(popup);
+                frame.render_widget(block, popup);
+                let chunks =
+                    Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).split(inner);
+                frame.render_widget(
+                    Paragraph::new(lines.iter().cloned().map(Line::raw).collect::<Vec<_>>())
+                        .wrap(Wrap { trim: false }),
+                    chunks[0],
+                );
+                let choices = ["Apply changes", "Back", "Cancel setup"];
+                frame.render_widget(
+                    Paragraph::new(
+                        choices
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, label)| {
+                                Line::styled(
+                                    format!(
+                                        "{} {label}",
+                                        if index == selected { "▶" } else { " " }
+                                    ),
+                                    semantic_style(
+                                        ui.profile,
+                                        if index == selected {
+                                            SemanticToken::Focus
+                                        } else {
+                                            SemanticToken::Muted
+                                        },
+                                    ),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ),
+                    chunks[1],
+                );
+            })
+            .map_err(anyhow::Error::new)?;
+        let Event::Key(key) = event::read().map_err(anyhow::Error::new)? else {
+            continue;
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Esc => return Err(SetupBack.into()),
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Err(SetupCancelled.into());
+            }
+            KeyCode::Up => selected = selected.saturating_sub(1),
+            KeyCode::Down => selected = (selected + 1).min(2),
+            KeyCode::Enter => {
+                return match selected {
+                    0 => Ok(true),
+                    1 => Err(SetupBack.into()),
+                    2 => Err(SetupCancelled.into()),
+                    _ => unreachable!(),
+                };
+            }
+            _ => {}
+        }
     }
 }
 
@@ -214,6 +575,9 @@ fn select_inner(
     options: &[SelectOption],
     default: usize,
 ) -> Result<Option<usize>> {
+    let backend = CrosstermBackend::new(output);
+    let mut terminal = Terminal::new(backend).map_err(anyhow::Error::new)?;
+    terminal.clear().map_err(anyhow::Error::new)?;
     let mut query = String::new();
     let mut selected = default.min(options.len().saturating_sub(1));
     loop {
@@ -232,7 +596,11 @@ fn select_inner(
         if selected >= filtered.len() {
             selected = filtered.len().saturating_sub(1);
         }
-        draw_selector(output, profile, title, options, &filtered, selected, &query)?;
+        terminal
+            .draw(|frame| {
+                draw_selector(frame, profile, title, options, &filtered, selected, &query)
+            })
+            .map_err(anyhow::Error::new)?;
         let Event::Key(key) = event::read().map_err(anyhow::Error::new)? else {
             continue;
         };
@@ -273,49 +641,65 @@ fn select_inner(
 }
 
 fn draw_selector(
-    output: &mut impl Write,
+    frame: &mut ratatui::Frame<'_>,
     profile: ResolvedPresentation,
     title: &str,
     options: &[SelectOption],
     filtered: &[usize],
     selected: usize,
     query: &str,
-) -> io::Result<()> {
-    let (_, height) = size().unwrap_or((80, 24));
-    let visible_rows = usize::from(height.saturating_sub(12)).clamp(4, 14);
+) {
+    let area = frame.area();
+    frame.render_widget(Block::default().style(surface_style(profile, false)), area);
+    let content = centered(area, area.width.min(86), area.height.min(32));
+    let visible_rows = usize::from(content.height.saturating_sub(10) / 2).clamp(3, 12);
     let start = selected
         .saturating_sub(visible_rows / 2)
         .min(filtered.len().saturating_sub(visible_rows));
     let end = (start + visible_rows).min(filtered.len());
-    execute!(output, MoveTo(0, 0), Clear(ClearType::All))?;
-    write_setup_logo(output, profile)?;
-    writeln!(output, "{}", profile.paint(SemanticToken::Accent, title))?;
-    writeln!(
-        output,
-        "{}",
-        profile.paint(
-            SemanticToken::Muted,
-            "↑/↓ move · PgUp/PgDn page · type to filter · Enter choose · Esc back"
-        )
-    )?;
-    writeln!(output)?;
-    writeln!(
-        output,
-        "  {} {}",
-        profile.paint(SemanticToken::Muted, "Search:"),
-        if query.is_empty() {
-            profile.paint(SemanticToken::Muted, "all options")
-        } else {
-            profile.paint(SemanticToken::Focus, query)
-        }
-    )?;
-    writeln!(output)?;
+    let block = Block::default()
+        .title(Line::styled(
+            format!(" Xana Setup · {title} "),
+            semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(semantic_style(profile, SemanticToken::Accent))
+        .style(surface_style(profile, true));
+    let inner = block.inner(content);
+    frame.render_widget(block, content);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(2),
+            Constraint::Min(3),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+    let search = Line::from(vec![
+        Span::styled("Search  ", semantic_style(profile, SemanticToken::Muted)),
+        Span::styled(
+            if query.is_empty() {
+                "all options"
+            } else {
+                query
+            },
+            semantic_style(
+                profile,
+                if query.is_empty() {
+                    SemanticToken::Muted
+                } else {
+                    SemanticToken::Focus
+                },
+            ),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(search), chunks[0]);
+    let mut lines = Vec::new();
     if filtered.is_empty() {
-        writeln!(
-            output,
-            "  {}",
-            profile.paint(SemanticToken::Warning, "No matching options")
-        )?;
+        lines.push(Line::styled(
+            "No matching options",
+            semantic_style(profile, SemanticToken::Warning),
+        ));
     } else {
         for (position, option_index) in filtered[start..end].iter().enumerate() {
             let option = &options[*option_index];
@@ -325,69 +709,114 @@ fn draw_selector(
             } else {
                 " "
             };
-            writeln!(
-                output,
-                "  {} {}",
-                profile.paint(
-                    if active {
-                        SemanticToken::Focus
-                    } else {
-                        SemanticToken::Muted
-                    },
-                    marker
+            let mut title = vec![
+                Span::styled(
+                    format!(" {marker} "),
+                    semantic_style(
+                        profile,
+                        if active {
+                            SemanticToken::Focus
+                        } else {
+                            SemanticToken::Muted
+                        },
+                    ),
                 ),
-                profile.paint(
-                    if active {
-                        SemanticToken::Focus
+                Span::styled(
+                    option.label.clone(),
+                    semantic_style(
+                        profile,
+                        if active {
+                            SemanticToken::Focus
+                        } else {
+                            SemanticToken::Assistant
+                        },
+                    )
+                    .add_modifier(if active {
+                        Modifier::BOLD
                     } else {
-                        SemanticToken::Assistant
-                    },
-                    &option.label
-                )
-            )?;
-            writeln!(
-                output,
-                "      {}",
-                profile.paint(SemanticToken::Muted, &option.detail)
-            )?;
+                        Modifier::empty()
+                    }),
+                ),
+            ];
+            for color in &option.swatches {
+                title.push(Span::raw("  "));
+                title.push(Span::styled(
+                    "██",
+                    Style::default()
+                        .fg(to_ratatui_color(*color))
+                        .bg(to_ratatui_color(*color)),
+                ));
+            }
+            lines.push(Line::from(title));
+            lines.push(Line::styled(
+                format!("     {}", option.detail),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
         }
     }
-    writeln!(output)?;
-    writeln!(
-        output,
-        "  {} of {} matching · {} total",
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), chunks[1]);
+    let footer = format!(
+        "{} of {} matching · {} total   ↑/↓ move · type to filter · Enter choose · Esc back",
         if filtered.is_empty() { 0 } else { selected + 1 },
         filtered.len(),
         options.len()
-    )?;
-    output.flush()
+    );
+    frame.render_widget(
+        Paragraph::new(Line::styled(
+            footer,
+            semantic_style(profile, SemanticToken::Muted),
+        )),
+        chunks[2],
+    );
 }
 
-pub(super) fn write_setup_logo(
-    output: &mut impl Write,
-    profile: ResolvedPresentation,
-) -> io::Result<()> {
-    let lines = if profile.unicode {
-        [
-            "             ╭────────╮",
-            "          .─´  ◕    ◕  `─.",
-            "    ≋≋≋≋╱       ╰─╯       ╲≋≋≋≋",
-            "        ╰─.____________.─╯",
-            "              X A N A",
-        ]
-    } else {
-        [
-            "             .--------.",
-            "          .-'  o    o  '-.",
-            "    ~~~~/       .--.       \\~~~~",
-            "        '-.____________.-'",
-            "              X A N A",
-        ]
-    };
-    for line in lines {
-        writeln!(output, "{}", profile.paint(SemanticToken::Accent, line))?;
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(area.height.saturating_sub(height) / 2),
+            Constraint::Length(height.min(area.height)),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(area.width.saturating_sub(width) / 2),
+            Constraint::Length(width.min(area.width)),
+            Constraint::Min(0),
+        ])
+        .split(vertical[1])[1]
+}
+
+fn semantic_style(profile: ResolvedPresentation, token: SemanticToken) -> Style {
+    profile
+        .color(token)
+        .map(to_ratatui_color)
+        .map_or_else(Style::default, |color| Style::default().fg(color))
+}
+
+fn surface_style(profile: ResolvedPresentation, raised: bool) -> Style {
+    profile
+        .surface_color(raised)
+        .map(to_ratatui_color)
+        .map_or_else(Style::default, |color| Style::default().bg(color))
+}
+
+fn to_ratatui_color(color: crate::presentation::PresentationColor) -> Color {
+    use crate::presentation::PresentationColor;
+    match color {
+        PresentationColor::Rgb(red, green, blue) => Color::Rgb(red, green, blue),
+        PresentationColor::Indexed(index) => Color::Indexed(index),
+        PresentationColor::Red => Color::Red,
+        PresentationColor::Green => Color::Green,
+        PresentationColor::Yellow => Color::Yellow,
+        PresentationColor::Magenta => Color::Magenta,
+        PresentationColor::Cyan => Color::Cyan,
+        PresentationColor::DarkGray => Color::DarkGray,
+        PresentationColor::Black => Color::Black,
+        PresentationColor::White => Color::White,
     }
-    writeln!(output)
 }
 
 pub(super) fn write_setup_heading(
@@ -466,7 +895,10 @@ pub(super) fn write_completion_receipt(
         "+---------------------------------------------------------+"
     )?;
     writeln!(output)?;
-    writeln!(output, "Xana installed the configuration atomically.")?;
+    writeln!(
+        output,
+        "Xana committed the reviewed setup changes atomically."
+    )?;
     writeln!(output, "  Config:      {}", paths.config_file().display())?;
     if paths.config_file().with_extension("toml.bak").exists() {
         writeln!(
@@ -502,4 +934,30 @@ pub(super) fn write_completion_receipt(
         output,
         "From a source checkout, prefix commands with `cargo run --`, for example `cargo run -- doctor`."
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn appearance_preview_restores_color_after_monochrome() {
+        let ui = SetupUi {
+            profile: ResolvedPresentation::test_plain(),
+            rich: true,
+        };
+        let mut preferences = PresentationPreferences::default();
+        preferences.theme = ThemeChoice::Light;
+        preferences.glyphs = GlyphChoice::Unicode;
+        preferences.motion = MotionChoice::Full;
+        preferences.density = DensityChoice::Compact;
+
+        let preview = preview_preferences(ui, &preferences);
+
+        assert_eq!(preview.profile.theme, ResolvedTheme::Light);
+        assert_eq!(preview.profile.color_depth, ColorDepth::Ansi256);
+        assert!(preview.profile.unicode);
+        assert!(!preview.profile.reduced_motion);
+        assert_eq!(preview.profile.width, WidthClass::Compact);
+    }
 }

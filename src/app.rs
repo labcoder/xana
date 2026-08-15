@@ -280,7 +280,12 @@ fn prepare_default_chat_surface(
     }
     let preferences =
         presentation::PresentationPreferences::load(&paths.presentation_file()).preferences;
-    match tui::prepare(mode.profile(), preferences, paths.presentation_file()) {
+    match tui::prepare(
+        mode.profile(),
+        preferences,
+        paths.presentation_file(),
+        paths.clone(),
+    ) {
         Ok(prepared) => Ok(chat::ChatSurface::Tui {
             prepared,
             required: require_tui,
@@ -553,6 +558,24 @@ fn banner_mode(
         suppressed,
         profile,
     )
+}
+
+pub(crate) fn resolved_presentation(
+    paths: &XanaPaths,
+    input_is_terminal: bool,
+    output_is_terminal: bool,
+) -> presentation::ResolvedPresentation {
+    banner_mode(paths, true, input_is_terminal, output_is_terminal, false).profile()
+}
+
+pub(crate) async fn run_tui_control_command(
+    paths: &XanaPaths,
+    family: &str,
+    arguments: &str,
+) -> Result<String> {
+    let mut output = Vec::new();
+    chat::run_chat_control_command(paths, family, arguments, &mut output).await?;
+    String::from_utf8(output).context("control command returned non-UTF-8 output")
 }
 
 #[cfg(test)]

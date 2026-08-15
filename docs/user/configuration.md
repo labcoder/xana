@@ -30,7 +30,11 @@ xana config migrate
 Bare `xana setup` opens Xana's keyboard-driven terminal wizard when both input
 and output are terminals. Arrow keys move, Page Up/Page Down page, typing
 filters the current choices, Enter selects, and Escape goes back. The wizard
-uses the compact Xana waterline mark and visually separated steps. Use
+owns one alternate-screen lifecycle, so moving through a list updates Ratatui's
+diff buffer rather than clearing and repainting the terminal. On supported
+wide terminals it opens with the canonical Xana portrait and a skippable,
+roughly 1.5-second water transition. Reduced-motion and constrained terminals
+skip the effect. Use
 `xana setup --plain` for the permanent append-only prompts; its large model
 catalogs are paged and accept `/FILTER`, next/previous, or an exact model id.
 Both surfaces run the same transaction and validation.
@@ -50,6 +54,11 @@ editing remains an advanced configuration task.
 `xana setup` is safe to rerun. Quick, full, and focused connection setup merge
 the newly established connection into a valid existing document, retaining
 other connections and unrelated profile, route, shell, and permission fields.
+When a valid configuration already contains connections, rich setup first
+offers the configured connections for live revalidation and model selection,
+plus an explicit Add or update choice. One installation can therefore retain
+Ollama, OpenRouter, OpenAI, Anthropic, OpenAI-compatible, and managed Codex
+connections and switch the active connection/model without erasing the rest.
 An invalid existing document can still be replaced through setup. Xana stages
 ordinary configuration in memory,
 shows a bounded redacted review, and replaces `config.toml` atomically only
@@ -68,6 +77,9 @@ commands. Cancellation and connection failures write nothing. If a newly
 staged OS-store key cannot be followed by a config commit, the prior key is
 restored. Codex OAuth remains vendor-owned and is never represented as part of
 that rollback. `--dry-run` establishes and validates without committing.
+Escape from a nested selector returns to setup home; Escape from setup home or
+the explicit Cancel choice exits successfully with no changes. Cancellation is
+not reported as an application crash.
 
 ### Check readiness after installation
 
@@ -138,6 +150,10 @@ The production configuration, permission, capability, route, and budget
 validators run before commit. A rule entered by flags uses the bounded form
 `ID:DECISION:EFFECT[:WORKSPACE]`; setup does not add automatic routing or
 provider scoring.
+Interactive Full Setup keeps permission, shell, profile, route, orchestration,
+theme, glyph, motion, density, composer, activity, and final review steps in
+the same full-screen shell. Appearance choices preview their palette in memory;
+only the final reviewed commit writes durable preferences.
 
 Rerun only one semantic section when the whole installation does not need to
 be replaced:

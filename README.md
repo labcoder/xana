@@ -19,7 +19,10 @@ Interactive terminal surfaces use one semantic presentation language with
 dark, light, monochrome, Unicode/ASCII, narrow-width, and reduced-motion
 fallbacks. Redirected output and `NO_COLOR` remain plain and control-free. See
 [Terminal presentation](docs/user/presentation.md) for automatic detection and
-the separate machine-local preference file.
+the separate machine-local preference file. Wide full-screen launches use a
+skippable, bounded TachyonFX transition over Xana's canonical portrait; setup
+keeps its forms, palette swatches, reviews, and cancellation inside one stable
+Ratatui screen.
 
 Native connections run Xana's own agent loop. Codex is a managed runtime: Xana
 provides the CLI and process/event/approval bridge but does not wrap the turn
@@ -509,6 +512,8 @@ scrolling; queued drag motion samples the newest pointer position instead of
 replaying stale coordinates. Ctrl+Q exits. Bracketed and detected key-stream
 pastes are coalesced into one bounded confirmation, so pasted newlines do not
 submit separate messages.
+`/mcp list` renders in a scrollable in-TUI result, while bare `/profile create`
+opens a prefilled form and commits through the ordinary typed profile command.
 An active turn also places a low-rate animated `Xana is working...` marker at
 the conversation tail. This local indicator is static under reduced-motion
 preferences and never enters the transcript or model context.

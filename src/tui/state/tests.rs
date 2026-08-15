@@ -664,6 +664,58 @@ fn project_and_profile_slash_commands_use_the_shared_control_path() {
 }
 
 #[test]
+fn bare_profile_create_opens_a_prefilled_form_and_emits_one_typed_command() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.connection = "ollama".to_owned();
+    state.model = "qwen3:8b".to_owned();
+    state.composer.replace("/profile create".to_owned());
+
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(matches!(
+        state.overlay,
+        Some(Overlay::ProfileCreate {
+            ref fields,
+            selected: 0,
+            ..
+        }) if fields == &["".to_owned(), "ollama".to_owned(), "qwen3:8b".to_owned()]
+    ));
+
+    state.update_input(InputAction::Insert("daily review".to_owned()));
+    state.update_input(InputAction::Confirm);
+    state.update_input(InputAction::Confirm);
+    assert_eq!(
+        state.update_input(InputAction::Confirm),
+        UpdateEffect::ControlCommand {
+            family: "profile".to_owned(),
+            arguments: "create 'daily review' --connection ollama --model qwen3:8b".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn profile_create_keeps_invalid_drafts_in_the_form() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.connection.clear();
+    state.model.clear();
+    state.composer.replace("/profile create".to_owned());
+    state.update_input(InputAction::Submit);
+
+    state.update_input(InputAction::Confirm);
+    state.update_input(InputAction::Confirm);
+    assert_eq!(state.update_input(InputAction::Confirm), UpdateEffect::None);
+    assert!(matches!(
+        state.overlay,
+        Some(Overlay::ProfileCreate {
+            selected: 0,
+            error: Some(_),
+            ..
+        })
+    ));
+}
+
+#[test]
 fn clicking_the_sessions_title_persists_the_hidden_state() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
 

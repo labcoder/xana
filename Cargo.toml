@@ -52,6 +52,7 @@ image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg
 reqwest = { version = "0.13.4", features = ["form", "json", "rustls", "stream"] }
 rpassword = "7.5.4"
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm"] }
+tachyonfx = { version = "0.25.1", default-features = false, features = ["std"] }
 rustyline = "18.0.1"
 same-file = "1.0.6"
 serde = { version = "1.0.229", features = ["derive"] }

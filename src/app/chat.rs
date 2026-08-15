@@ -805,7 +805,8 @@ async fn continue_after_chat_exit(
     }
     let mut force_new_conversation = exit == plain_terminal::ChatExit::NewConversation;
     if let plain_terminal::ChatExit::ControlCommand { family, arguments } = &exit
-        && let Err(error) = run_chat_control_command(paths, family, arguments).await
+        && let Err(error) =
+            run_chat_control_command(paths, family, arguments, &mut std::io::stdout().lock()).await
     {
         eprintln!("xana: {error:#}");
     }
@@ -831,7 +832,13 @@ async fn continue_after_chat_exit(
     let restart_surface = if restart_tui {
         let preferences =
             presentation::PresentationPreferences::load(&paths.presentation_file()).preferences;
-        match tui::prepare(presentation, preferences, paths.presentation_file()) {
+        let presentation = super::resolved_presentation(paths, true, true);
+        match tui::prepare(
+            presentation,
+            preferences,
+            paths.presentation_file(),
+            paths.clone(),
+        ) {
             Ok(prepared) => ChatSurface::Tui {
                 prepared,
                 required: tui_required,
@@ -856,7 +863,12 @@ async fn continue_after_chat_exit(
     }))
 }
 
-async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &str) -> Result<()> {
+pub(super) async fn run_chat_control_command(
+    paths: &XanaPaths,
+    family: &str,
+    arguments: &str,
+    output: &mut dyn Write,
+) -> Result<()> {
     if arguments.len() > 16 * 1024 {
         anyhow::bail!("control command exceeds the 16 KiB input limit");
     }
@@ -872,30 +884,26 @@ async fn run_chat_control_command(paths: &XanaPaths, family: &str, arguments: &s
     let command = cli::Cli::try_parse_from(arguments)
         .map_err(|error| anyhow::anyhow!(error.render().ansi().to_string()))?
         .command;
-    let stdout = std::io::stdout();
     match command {
         Some(cli::Command::Project(args)) => {
-            super::projects::run_command(args.command, paths, &mut stdout.lock())
+            super::projects::run_command(args.command, paths, output)
         }
         Some(cli::Command::Profile(args)) => {
-            super::profiles::run_command(args.command, paths, &mut stdout.lock())
+            super::profiles::run_command(args.command, paths, output)
         }
-        Some(cli::Command::Skill(args)) => {
-            super::skills::run_command(args.command, paths, &mut stdout.lock())
-        }
+        Some(cli::Command::Skill(args)) => super::skills::run_command(args.command, paths, output),
         Some(cli::Command::Plugin(args)) => {
-            super::plugins::run_command(args.command, paths, &mut stdout.lock())
+            super::plugins::run_command(args.command, paths, output)
         }
         Some(cli::Command::Mcp(args)) => {
-            super::mcp_commands::run(args.command, paths, &mut stdout.lock()).await
+            super::mcp_commands::run(args.command, paths, output).await
         }
         Some(cli::Command::ExternalAgent(args)) => {
-            super::external_agents::run(args.command, paths, &mut stdout.lock()).await
+            super::external_agents::run(args.command, paths, output).await
         }
         Some(cli::Command::Image(args)) => {
             let stdin = std::io::stdin();
-            super::image_commands::run(args.command, paths, &mut stdin.lock(), &mut stdout.lock())
-                .await
+            super::image_commands::run(args.command, paths, &mut stdin.lock(), output).await
         }
         _ => {
             anyhow::bail!(

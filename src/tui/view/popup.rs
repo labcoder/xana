@@ -4,7 +4,7 @@ use super::super::{
     command, session,
     state::{Overlay, TuiState},
 };
-use super::{overlay_area, palette_window_start, semantic_style};
+use super::{overlay_area, palette_window_start, semantic_style, surface_style};
 use crate::presentation::{ResolvedPresentation, SemanticToken};
 use ratatui::{
     Frame,
@@ -41,10 +41,63 @@ pub(super) fn render(
         render_activity_detail(frame, popup, card, *scroll, selection.as_ref(), profile);
         return;
     }
+    if let Overlay::CommandResult {
+        title,
+        content,
+        scroll,
+    } = overlay
+    {
+        render_command_result(frame, popup, title, content, *scroll, profile);
+        return;
+    }
     let (title, lines) = match overlay {
         Overlay::Palette { .. } => unreachable!("palette is rendered as a stateful table"),
         Overlay::ActivityDetail { .. } => {
             unreachable!("activity detail is rendered as a scrollable document")
+        }
+        Overlay::CommandResult { .. } => {
+            unreachable!("command result is rendered as a scrollable document")
+        }
+        Overlay::ProfileCreate {
+            fields,
+            selected,
+            error,
+        } => {
+            let mut lines = vec![Line::styled(
+                "Create a reusable global profile. The current connection and model are prefilled.",
+                semantic_style(profile, SemanticToken::Muted),
+            )];
+            for (index, (label, value)) in ["Name", "Connection", "Model"]
+                .into_iter()
+                .zip(fields)
+                .enumerate()
+            {
+                lines.push(Line::styled(
+                    format!(
+                        "{} {label:<11} {}{}",
+                        if index == *selected { ">" } else { " " },
+                        value,
+                        if value.is_empty() { "_" } else { "" }
+                    ),
+                    if index == *selected {
+                        semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ));
+            }
+            if let Some(error) = error {
+                lines.push(Line::styled(
+                    error.clone(),
+                    semantic_style(profile, SemanticToken::Danger),
+                ));
+            }
+            lines.push(Line::raw(""));
+            lines.push(Line::styled(
+                "Type to edit · Up/Down choose field · Enter advances/creates · Esc cancels",
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+            (" Create profile ", lines)
         }
         Overlay::PastePreview { text } => (
             " Confirm pasted draft ",
@@ -324,10 +377,41 @@ pub(super) fn render(
                 Block::default()
                     .title(title)
                     .border_style(semantic_style(profile, SemanticToken::Focus))
+                    .style(surface_style(profile, true))
                     .borders(Borders::ALL),
             )
             .wrap(Wrap { trim: false }),
         popup,
+    );
+}
+
+fn render_command_result(
+    frame: &mut Frame<'_>,
+    popup: Rect,
+    title: &str,
+    content: &str,
+    scroll: u16,
+    profile: ResolvedPresentation,
+) {
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(format!(" {title} "))
+        .border_style(semantic_style(profile, SemanticToken::Focus))
+        .style(surface_style(profile, true))
+        .borders(Borders::ALL);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let sections = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(content.to_owned())
+            .scroll((scroll, 0))
+            .wrap(Wrap { trim: false }),
+        sections[0],
+    );
+    frame.render_widget(
+        Paragraph::new("Up/Down or wheel scroll · Esc close")
+            .style(semantic_style(profile, SemanticToken::Muted)),
+        sections[1],
     );
 }
 
@@ -343,6 +427,7 @@ fn render_activity_detail(
     let block = Block::default()
         .title(" Activity details ")
         .border_style(semantic_style(profile, SemanticToken::Focus))
+        .style(surface_style(profile, true))
         .borders(Borders::ALL);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
@@ -473,6 +558,7 @@ fn render_command_palette(
     let block = Block::default()
         .title(" Commands ")
         .border_style(semantic_style(profile, SemanticToken::Focus))
+        .style(surface_style(profile, true))
         .borders(Borders::ALL);
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
