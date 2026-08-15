@@ -77,3 +77,7 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo test --workspace --all-targets --no-default-features
 ```
+
+Windows contributors can run the same commands, four-thread scheduling,
+hermetic MCP process stress, installers, and repository contracts in an
+isolated Cargo target directory with `./scripts/ci-local.ps1`.

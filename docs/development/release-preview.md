@@ -105,18 +105,23 @@ artifact. Manual dispatch has no draft-creation job. An exact matching
 `vX.Y.Z` tag performs the same work, then gives only the final job `contents:
 write` so it can leave an unpublished GitHub draft.
 
-Ordinary CI runs on pull requests and pushes to `main`, but not tag pushes. It
-uses a commit-pinned Rust cache that retains dependency build artifacts while
-excluding Xana workspace outputs and Cargo-installed binaries; only trusted
-`main` pushes save cache entries. Superseded runs are cancelled. The Release
+Ordinary CI runs on pull requests, pushes to `main`, and explicit manual
+dispatches, but not tag pushes. It uses named Ubuntu 24.04, macOS 15 ARM64, and
+Windows Server 2025 runner families plus a commit-pinned Rust cache that
+retains dependency build artifacts while excluding Xana workspace outputs and
+Cargo-installed binaries; only trusted `main` pushes save cache entries.
+Superseded runs are cancelled. Validation steps continue after an earlier
+validation failure unless setup failed or the run was cancelled, so one root
+failure does not hide later package and installer evidence. The Release
 Preview does not consume those cached outputs or CI binaries: all public
 archives are fresh native builds of the evidenced commit. Every job has an
 explicit timeout, intermediate release-plan/native artifacts expire after one
 day, and only the complete review bundle is retained for fourteen days.
 
 The workflow uses immutable action commits, verified cargo-dist 0.32.0, current
-standard `macos-15` ARM64 and `macos-15-intel` runners, and fixed Windows/Linux
-runners. Run the local authority and assembly checks before any remote run:
+standard `macos-15` ARM64 and `macos-15-intel` runners, plus fixed
+`windows-2025` and `ubuntu-24.04` runners. Run the local authority and assembly
+checks before any remote run:
 
 ```powershell
 ./scripts/check-release-workflow.ps1
