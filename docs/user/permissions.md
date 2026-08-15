@@ -150,7 +150,10 @@ directory grant. Write and listing tools remain workspace-confined.
 canonical working directory, and exact command string. Invalid arguments and
 workspace escapes fail before policy evaluation. The immutable planned
 arguments that receive permission are the arguments the concrete tool
-executes.
+executes. Its `cwd` may be workspace-relative or an absolute path that
+canonicalizes inside the launch workspace; an external absolute `cwd` remains
+invalid. A command that references an approved external file should keep
+`cwd = "."` and use the absolute file path in the command itself.
 
 Each result produces an audit fact containing its ids, tool and
 effect, scope, final arguments, policy outcome, optional terminal decision,

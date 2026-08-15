@@ -65,6 +65,11 @@ each bounded model through `/api/show` with bounded concurrency. Xana maps
 Ollama's advertised `vision`, `tools`, and `thinking` capabilities plus context
 length into the provider-neutral descriptor. This is why a locally installed
 vision model can accept images without a manual capability override.
+Incoming Chat Completions streams accumulate text and indexed tool-call fields
+independently because providers may interleave those sibling delta fields.
+Xana then canonicalizes one internal assistant message as answer text followed
+by tool calls in index order; wire arrival order is not treated as an internal
+content-block ordering guarantee.
 
 The native OpenAI-compatible adapter currently uses Chat Completions and has
 no first-class reasoning-effort or reasoning-summary wire mapping. Those model

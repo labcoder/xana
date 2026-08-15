@@ -64,9 +64,6 @@ impl StreamAccumulator {
     pub(super) fn apply(&mut self, delta: WireDelta) -> Result<Vec<String>, StreamError> {
         let mut fragments = Vec::new();
         if let Some(text) = delta.content.filter(|text| !text.is_empty()) {
-            if !self.tool_calls.is_empty() {
-                return Err(StreamError::TextAfterToolCall);
-            }
             if self.text.len().saturating_add(text.len()) > MAX_STREAMED_TEXT_BYTES {
                 return Err(StreamError::ResponseTextTooLarge {
                     limit: MAX_STREAMED_TEXT_BYTES,
@@ -172,7 +169,6 @@ pub(super) enum StreamError {
     InvalidJson(serde_json::Error),
     MissingChoice,
     MissingDone,
-    TextAfterToolCall,
     ResponseTextTooLarge {
         limit: usize,
     },
@@ -221,10 +217,6 @@ impl fmt::Display for StreamError {
             Self::InvalidJson(_) => write!(f, "stream data is not valid response JSON"),
             Self::MissingChoice => write!(f, "stream response contained no choice"),
             Self::MissingDone => write!(f, "stream ended before the [DONE] marker"),
-            Self::TextAfterToolCall => write!(
-                f,
-                "streamed text after a tool call cannot preserve internal content order"
-            ),
             Self::ResponseTextTooLarge { limit } => {
                 write!(f, "streamed response text exceeds the {limit}-byte limit")
             }
@@ -257,7 +249,6 @@ impl Error for StreamError {
             | Self::IncompleteFrame { .. }
             | Self::MissingChoice
             | Self::MissingDone
-            | Self::TextAfterToolCall
             | Self::ResponseTextTooLarge { .. }
             | Self::ToolDataTooLarge { .. }
             | Self::TooManyToolCalls { .. }

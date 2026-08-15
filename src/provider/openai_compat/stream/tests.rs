@@ -161,6 +161,72 @@ fn accumulator_joins_split_tool_identity_name_and_arguments() {
 }
 
 #[test]
+fn accumulator_accepts_text_after_a_tool_delta_and_canonicalizes_the_message() {
+    let mut accumulator = StreamAccumulator::default();
+    accumulator
+        .apply(WireDelta {
+            content: None,
+            reasoning: None,
+            tool_calls: Some(vec![WireToolCallDelta {
+                index: 0,
+                id: Some("call-1".to_owned()),
+                function: Some(WireFunctionDelta {
+                    name: Some("read_file".to_owned()),
+                    arguments: Some(r#"{"path":"README.md"}"#.to_owned()),
+                }),
+            }]),
+        })
+        .expect("tool delta");
+
+    assert_eq!(
+        accumulator
+            .apply(WireDelta {
+                content: Some("I will inspect it.".to_owned()),
+                reasoning: None,
+                tool_calls: None,
+            })
+            .expect("later text is a valid sibling field"),
+        vec!["I will inspect it."]
+    );
+    assert_eq!(
+        accumulator.finish().expect("assistant message").content,
+        vec![
+            ContentBlock::Text("I will inspect it.".to_owned()),
+            ContentBlock::ToolCall(ToolCall {
+                id: "call-1".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: serde_json::json!({"path": "README.md"}),
+            }),
+        ]
+    );
+}
+
+#[test]
+fn accumulator_accepts_text_and_tools_in_the_same_delta() {
+    let mut accumulator = StreamAccumulator::default();
+    let fragments = accumulator
+        .apply(WireDelta {
+            content: Some("Checking now.".to_owned()),
+            reasoning: None,
+            tool_calls: Some(vec![WireToolCallDelta {
+                index: 0,
+                id: Some("call-1".to_owned()),
+                function: Some(WireFunctionDelta {
+                    name: Some("list_files".to_owned()),
+                    arguments: Some(r#"{"path":"."}"#.to_owned()),
+                }),
+            }]),
+        })
+        .expect("sibling response fields");
+
+    assert_eq!(fragments, vec!["Checking now."]);
+    assert!(matches!(
+        accumulator.finish().expect("assistant message").content.as_slice(),
+        [ContentBlock::Text(text), ContentBlock::ToolCall(_)] if text == "Checking now."
+    ));
+}
+
+#[test]
 fn accumulator_rejects_malformed_arguments_at_finish() {
     let mut accumulator = StreamAccumulator::default();
     accumulator

@@ -24,6 +24,12 @@ fn definition_declares_execute_and_never() {
     assert_eq!(definition.effect_class, EffectClass::Execute);
     assert_eq!(definition.replay_safety, ReplaySafety::Never);
     assert_eq!(definition.parameters["additionalProperties"], false);
+    assert!(
+        definition.parameters["properties"]["cwd"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("cwd='.'")
+    );
 }
 
 #[test]
@@ -50,6 +56,43 @@ fn outside_workspace_cwd_is_rejected() {
     let workspace = tempdir().expect("temporary workspace");
     let result = tool().plan_inner(
         &serde_json::json!({"command": "echo no", "cwd": "../outside"}),
+        workspace.path(),
+    );
+
+    assert!(matches!(result, Err(RunCommandError::InvalidCwd { .. })));
+}
+
+#[test]
+fn absolute_cwd_inside_workspace_is_accepted() {
+    let workspace = tempdir().expect("temporary workspace");
+    let planned = tool()
+        .plan_inner(
+            &serde_json::json!({
+                "command": "echo yes",
+                "cwd": workspace.path().display().to_string(),
+            }),
+            workspace.path(),
+        )
+        .expect("absolute workspace cwd");
+
+    assert_eq!(
+        planned.canonical_cwd,
+        workspace
+            .path()
+            .canonicalize()
+            .expect("canonical workspace")
+    );
+}
+
+#[test]
+fn absolute_cwd_outside_workspace_remains_rejected() {
+    let workspace = tempdir().expect("temporary workspace");
+    let outside = tempdir().expect("outside directory");
+    let result = tool().plan_inner(
+        &serde_json::json!({
+            "command": "echo no",
+            "cwd": outside.path().display().to_string(),
+        }),
         workspace.path(),
     );
 
