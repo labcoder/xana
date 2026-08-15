@@ -243,6 +243,54 @@ pub(crate) struct ConnectArgs {
     /// Open one integration path; omit to inspect the hub without mutation.
     #[arg(value_enum)]
     pub(crate) integration: Option<ConnectIntegration>,
+
+    /// Exact focused-service route name for image/vision setup.
+    #[arg(long)]
+    pub(crate) route: Option<String>,
+
+    /// Exact focused-service connection name for image/vision setup.
+    #[arg(long)]
+    pub(crate) service_connection: Option<String>,
+
+    /// Select the focused-service API-key provider.
+    #[arg(long, value_enum)]
+    pub(crate) service_provider: Option<FocusedServiceProviderChoice>,
+
+    /// Exact focused-service model id.
+    #[arg(long)]
+    pub(crate) model: Option<String>,
+
+    /// Environment variable containing the focused-service API key.
+    #[arg(long)]
+    pub(crate) credential_env: Option<String>,
+
+    /// Optional HTTPS API base URL override.
+    #[arg(long)]
+    pub(crate) base_url: Option<String>,
+
+    /// Profile that exposes the new route; defaults to the configured default profile.
+    #[arg(long)]
+    pub(crate) profile: Option<String>,
+
+    /// Make this route the operation default.
+    #[arg(long)]
+    pub(crate) make_default: bool,
+
+    /// Remove the exact named focused-service route instead of adding one.
+    #[arg(long, conflicts_with_all = ["service_connection", "service_provider", "model", "credential_env", "base_url", "profile", "make_default"])]
+    pub(crate) remove: bool,
+
+    /// Confirm an exact noninteractive focused-service configuration edit.
+    #[arg(long)]
+    pub(crate) yes: bool,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum FocusedServiceProviderChoice {
+    #[value(name = "openai", alias = "open-ai")]
+    OpenAi,
+    #[value(name = "openrouter", alias = "open-router")]
+    OpenRouter,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
@@ -392,6 +440,50 @@ pub(crate) struct McpArgs {
 pub(crate) enum McpCommand {
     /// List configured servers without starting processes or network work.
     List,
+    /// Add and enable one exact stdio server for a profile.
+    AddStdio {
+        server: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long = "arg", allow_hyphen_values = true)]
+        arguments: Vec<String>,
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long = "allow-tool")]
+        tools: Vec<String>,
+        #[arg(long = "allow-resource")]
+        resources: Vec<String>,
+        #[arg(long = "allow-prompt")]
+        prompts: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Add and enable one exact Streamable HTTP server for a profile.
+    AddHttp {
+        server: String,
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        credential_env: Option<String>,
+        #[arg(long)]
+        profile: Option<String>,
+        #[arg(long = "allow-tool")]
+        tools: Vec<String>,
+        #[arg(long = "allow-resource")]
+        resources: Vec<String>,
+        #[arg(long = "allow-prompt")]
+        prompts: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Remove one configured server and its profile references.
+    Remove {
+        server: String,
+        #[arg(long)]
+        yes: bool,
+    },
     /// Connect to one selected server and refresh its bounded catalog.
     Refresh {
         #[arg(value_name = "SERVER")]
@@ -678,6 +770,10 @@ pub(crate) struct ResetArgs {
 
 #[derive(Debug, Args, PartialEq, Eq, Default)]
 pub(crate) struct DoctorArgs {
+    /// Run bounded live provider/Codex probes after the default local checks.
+    #[arg(long)]
+    pub(crate) probe_connections: bool,
+
     /// Apply only the deterministic repairs listed in the diagnostic preview.
     #[arg(long)]
     pub(crate) fix: bool,

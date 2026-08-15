@@ -3,8 +3,8 @@
 use crate::{
     cli::McpCommand,
     config::{
-        ConnectionRegistry, McpPrimitiveSelection, McpServerDeclaration, OutboundDataClass,
-        XanaConfig,
+        ConnectionRegistry, CredentialReference, McpPrimitiveSelection, McpServerDeclaration,
+        NewMcpServer, OutboundDataClass, XanaConfig,
     },
     credential::CredentialResolver,
     mcp::{
@@ -33,8 +33,125 @@ pub(super) async fn run(
 ) -> Result<()> {
     let registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load MCP configuration")?;
-    if matches!(command, McpCommand::List) {
-        return list_configured(&registry, output);
+    match command {
+        McpCommand::List => return list_configured(&registry, output),
+        McpCommand::AddStdio {
+            server,
+            command,
+            arguments,
+            cwd,
+            profile,
+            tools,
+            resources,
+            prompts,
+            yes,
+        } => {
+            if !yes {
+                anyhow::bail!(
+                    "MCP configuration requires --yes after reviewing the exact command, arguments, profile, and allowlist"
+                )
+            }
+            let profile = profile.unwrap_or_else(|| registry.default_profile.clone());
+            XanaConfig::add_mcp_server(
+                paths.config_file(),
+                NewMcpServer {
+                    id: server.clone(),
+                    declaration: McpServerDeclaration::Stdio {
+                        command,
+                        args: arguments,
+                        environment: BTreeMap::new(),
+                        cwd,
+                        enabled: true,
+                        egress_policy: None,
+                    },
+                    profile: profile.clone(),
+                    selection: McpPrimitiveSelection {
+                        tools,
+                        resources,
+                        resource_templates: Vec::new(),
+                        prompts,
+                    },
+                },
+            )?;
+            writeln!(
+                output,
+                "MCP stdio server {server:?} added and enabled for profile {profile:?}."
+            )?;
+            writeln!(
+                output,
+                "Backup: {}",
+                paths.config_file().with_extension("toml.bak").display()
+            )?;
+            writeln!(output, "Next: xana mcp refresh {server}")?;
+            return Ok(());
+        }
+        McpCommand::AddHttp {
+            server,
+            url,
+            credential_env,
+            profile,
+            tools,
+            resources,
+            prompts,
+            yes,
+        } => {
+            if !yes {
+                anyhow::bail!(
+                    "MCP configuration requires --yes after reviewing the exact endpoint, profile, credential reference, and allowlist"
+                )
+            }
+            let profile = profile.unwrap_or_else(|| registry.default_profile.clone());
+            XanaConfig::add_mcp_server(
+                paths.config_file(),
+                NewMcpServer {
+                    id: server.clone(),
+                    declaration: McpServerDeclaration::StreamableHttp {
+                        url,
+                        credential: credential_env
+                            .map(|variable| CredentialReference::Environment { variable }),
+                        enabled: true,
+                        egress_policy: None,
+                    },
+                    profile: profile.clone(),
+                    selection: McpPrimitiveSelection {
+                        tools,
+                        resources,
+                        resource_templates: Vec::new(),
+                        prompts,
+                    },
+                },
+            )?;
+            writeln!(
+                output,
+                "MCP HTTP server {server:?} added and enabled for profile {profile:?}."
+            )?;
+            writeln!(
+                output,
+                "Backup: {}",
+                paths.config_file().with_extension("toml.bak").display()
+            )?;
+            writeln!(output, "Next: xana mcp refresh {server}")?;
+            return Ok(());
+        }
+        McpCommand::Remove { server, yes } => {
+            if !yes {
+                anyhow::bail!(
+                    "MCP removal requires --yes and removes only the declaration and profile references"
+                )
+            }
+            XanaConfig::remove_mcp_server(paths.config_file(), &server)?;
+            writeln!(
+                output,
+                "MCP server {server:?} and its profile references were removed."
+            )?;
+            writeln!(
+                output,
+                "Backup: {}",
+                paths.config_file().with_extension("toml.bak").display()
+            )?;
+            return Ok(());
+        }
+        _ => {}
     }
     let server = command_server(&command).expect("non-list MCP command has a server");
     let workspace = std::env::current_dir()
@@ -119,7 +236,10 @@ pub(super) async fn run(
         McpCommand::Serve { .. } => {
             anyhow::bail!("`mcp serve` must be started from Xana's top-level command")
         }
-        McpCommand::List => unreachable!("handled before refresh"),
+        McpCommand::List
+        | McpCommand::AddStdio { .. }
+        | McpCommand::AddHttp { .. }
+        | McpCommand::Remove { .. } => unreachable!("handled before refresh"),
     }
     Ok(())
 }
@@ -395,7 +515,11 @@ fn command_server(command: &McpCommand) -> Option<&str> {
         | McpCommand::Read { server, .. }
         | McpCommand::Prompts { server, .. }
         | McpCommand::Prompt { server, .. } => Some(server),
-        McpCommand::List | McpCommand::Serve { .. } => None,
+        McpCommand::List
+        | McpCommand::Serve { .. }
+        | McpCommand::AddStdio { .. }
+        | McpCommand::AddHttp { .. }
+        | McpCommand::Remove { .. } => None,
     }
 }
 

@@ -371,6 +371,7 @@ pub(super) async fn run_doctor_command(args: &cli::DoctorArgs, paths: &XanaPaths
             output_is_terminal: io::stdout().is_terminal(),
             dumb: std::env::var("TERM").is_ok_and(|value| value.eq_ignore_ascii_case("dumb")),
         },
+        args.probe_connections,
     )
     .await;
     if args.output == OutputChoice::Json {

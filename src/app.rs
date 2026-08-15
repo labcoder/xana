@@ -5,6 +5,7 @@
 //! inward; it does not put frontend or process-global concerns into `Agent`.
 
 mod chat;
+mod connect;
 mod connections;
 mod external_agents;
 mod hosting;
@@ -174,26 +175,33 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 };
                 run_setup_command(&setup, &paths).await.map(|_| ())
             }
+            Some(cli::ConnectIntegration::Image) => {
+                let stdin = io::stdin();
+                let stdout = io::stdout();
+                connect::run_focused_service(
+                    &args,
+                    connect::FocusedServiceKind::Image,
+                    &paths,
+                    stdin.is_terminal(),
+                    &mut stdin.lock(),
+                    &mut stdout.lock(),
+                )
+            }
+            Some(cli::ConnectIntegration::Vision) => {
+                let stdin = io::stdin();
+                let stdout = io::stdout();
+                connect::run_focused_service(
+                    &args,
+                    connect::FocusedServiceKind::Vision,
+                    &paths,
+                    stdin.is_terminal(),
+                    &mut stdin.lock(),
+                    &mut stdout.lock(),
+                )
+            }
             integration => {
                 let mut output = io::stdout().lock();
-                writeln!(
-                    output,
-                    "Xana integration hub (read-only until you choose an exact command)"
-                )?;
-                writeln!(output, "  provider        xana connect provider")?;
-                writeln!(output, "  profile         xana connect profile")?;
-                writeln!(output, "  plugin          xana plugin list")?;
-                writeln!(output, "  MCP             xana mcp list")?;
-                writeln!(output, "  external agent  xana external-agent list")?;
-                writeln!(output, "  image routes    xana image list")?;
-                writeln!(output, "  vision routes   xana vision list")?;
-                if let Some(integration) = integration {
-                    writeln!(
-                        output,
-                        "Selected {integration:?}; use the exact command shown above so review, cancellation, and failures remain explicit."
-                    )?;
-                }
-                Ok(())
+                connect::write_hub(&args, integration, &mut output)
             }
         },
         Some(Command::Operation(args)) => {

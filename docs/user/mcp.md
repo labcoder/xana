@@ -97,17 +97,32 @@ allowed = ["prompt_text", "workspace_metadata"]
 ```
 
 Configuration alone performs no process or network work. Use these explicit
-commands to connect and inspect the bounded catalog:
+commands to add one reviewed declaration, connect, and inspect the bounded
+catalog:
 
 ```text
 xana mcp list
+xana mcp add-stdio docs --command docs-mcp-server --arg=--stdio \
+  --profile default --allow-tool search --allow-resource docs://guide --yes
+xana mcp add-http remote-docs --url https://mcp.example.test/rpc \
+  --credential-env DOCS_MCP_TOKEN --profile default --allow-tool search --yes
 xana mcp refresh docs
 xana mcp tools docs
 xana mcp resources docs
 xana mcp read docs docs://guide
 xana mcp prompts docs
 xana mcp prompt docs review --arg text="review this"
+xana mcp remove docs --yes
 ```
+
+`add-stdio` stores an exact executable and argument vector; it never constructs
+a shell command. `add-http` stores an exact endpoint and optional environment
+credential reference, never the credential value. Both enable the declaration,
+select it in exactly one profile, and grant only the repeated primitive names
+listed on the command. An empty allowlist grants nothing. They validate and
+atomically replace the complete configuration, retain `config.toml.bak`, and
+do not start a process or request until a later explicit refresh or use.
+`remove` deletes only the declaration and its profile references.
 
 The same command family is available as `/mcp ...` in plain chat and the TUI;
 Xana restores the conversation after the typed operation. Starting a native
@@ -195,10 +210,11 @@ its access token can be used. Corrupt/unavailable storage, revoked refresh,
 insufficient scope, rate limiting, and transport failure remain distinct and
 never fall back to an unrelated environment credential.
 
-The MCP command family currently resolves credentials already referenced by
-configuration. Guided connect/login/logout and comprehensive doctor/recovery
-flows are added by the interoperability setup slice. OAuth tokens remain in
-the OS credential store; no CLI output includes them.
+The MCP command family resolves credentials already referenced by
+configuration. OAuth tokens remain in the OS credential store; no CLI output
+includes them. `xana doctor` inspects declarations and profile exposure without
+starting a process or network request; live server catalog checks remain the
+explicit `xana mcp refresh SERVER` action.
 
 ## Local Xana MCP server
 

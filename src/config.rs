@@ -382,6 +382,28 @@ pub(crate) struct NewExternalAgent {
     pub(crate) egress_policy: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewServiceRoute {
+    pub(crate) route: String,
+    pub(crate) connection: String,
+    pub(crate) adapter: String,
+    pub(crate) base_url: Option<String>,
+    pub(crate) credential: CredentialReference,
+    pub(crate) operation: String,
+    pub(crate) model: String,
+    pub(crate) description: Option<String>,
+    pub(crate) profile: String,
+    pub(crate) make_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewMcpServer {
+    pub(crate) id: String,
+    pub(crate) declaration: McpServerDeclaration,
+    pub(crate) profile: String,
+    pub(crate) selection: McpPrimitiveSelection,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProfileUpdate {
     pub(crate) connection: Option<String>,
@@ -1125,6 +1147,301 @@ impl XanaConfig {
         atomic_config_write(path, rendered.as_bytes())
     }
 
+    pub(crate) fn add_service_route(
+        path: &Path,
+        input: NewServiceRoute,
+    ) -> Result<(), ConfigError> {
+        validate_name("service route", &input.route)?;
+        validate_name("service connection", &input.connection)?;
+        validate_name("profile", &input.profile)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        migrate_profile_connection_keys(&mut document)?;
+
+        if !document
+            .get("profiles")
+            .and_then(toml_edit::Item::as_table)
+            .is_some_and(|profiles| profiles.contains_key(&input.profile))
+        {
+            return Err(ConfigError::Edit(format!(
+                "unknown profile {:?}",
+                input.profile
+            )));
+        }
+        ensure_table(&mut document, "service_connections")?;
+        let service_connections = document["service_connections"]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit("service_connections must be a table".into()))?;
+        if service_connections.contains_key(&input.connection) {
+            return Err(ConfigError::Edit(format!(
+                "service connection {:?} already exists",
+                input.connection
+            )));
+        }
+        let mut connection = toml_edit::Table::new();
+        connection["adapter"] = toml_edit::value(input.adapter);
+        if let Some(base_url) = input.base_url {
+            connection["base_url"] = toml_edit::value(base_url);
+        }
+        connection["credential"] = credential_item(input.credential);
+        service_connections[&input.connection] = toml_edit::Item::Table(connection);
+
+        ensure_table(&mut document, "egress_policies")?;
+        let required = ["prompt_text", "selected_artifacts"];
+        let route_policy = insert_exact_egress_policy(
+            &mut document,
+            &format!("service-route-{}", input.route),
+            &required,
+        )?;
+        let profile_policy = profile_egress_policy_with(
+            &mut document,
+            &input.profile,
+            &format!("profile-{}-service-{}", input.profile, input.route),
+            &required,
+        )?;
+        let profile = document["profiles"][&input.profile]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit("profile must be a table".into()))?;
+        profile["egress_policy"] = toml_edit::value(profile_policy);
+        merge_string_array(profile, "service_routes", &[&input.route])?;
+
+        ensure_table(&mut document, "service_routes")?;
+        let service_routes = document["service_routes"]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit("service_routes must be a table".into()))?;
+        if service_routes.contains_key(&input.route) {
+            return Err(ConfigError::Edit(format!(
+                "service route {:?} already exists",
+                input.route
+            )));
+        }
+        if input.make_default {
+            for (_, item) in service_routes.iter_mut() {
+                if let Some(route) = item.as_table_mut()
+                    && route.get("operation").and_then(toml_edit::Item::as_str)
+                        == Some(input.operation.as_str())
+                {
+                    route["default"] = toml_edit::value(false);
+                }
+            }
+        }
+        let mut route = toml_edit::Table::new();
+        route["operation"] = toml_edit::value(input.operation);
+        route["connection"] = toml_edit::value(input.connection);
+        route["model"] = toml_edit::value(input.model);
+        if let Some(description) = input.description {
+            route["description"] = toml_edit::value(description);
+        }
+        route["default"] = toml_edit::value(input.make_default);
+        route["egress_policy"] = toml_edit::value(route_policy);
+        service_routes[&input.route] = toml_edit::Item::Table(route);
+
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
+        atomic_config_write_with_backup(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn add_mcp_server(path: &Path, input: NewMcpServer) -> Result<(), ConfigError> {
+        validate_name("MCP server", &input.id)?;
+        validate_name("profile", &input.profile)?;
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        migrate_profile_connection_keys(&mut document)?;
+        if !document
+            .get("profiles")
+            .and_then(toml_edit::Item::as_table)
+            .is_some_and(|profiles| profiles.contains_key(&input.profile))
+        {
+            return Err(ConfigError::Edit(format!(
+                "unknown profile {:?}",
+                input.profile
+            )));
+        }
+        ensure_table(&mut document, "mcp_servers")?;
+        if document["mcp_servers"]
+            .as_table()
+            .is_some_and(|servers| servers.contains_key(&input.id))
+        {
+            return Err(ConfigError::Edit(format!(
+                "MCP server {:?} already exists",
+                input.id
+            )));
+        }
+        let mut server = toml_edit::Table::new();
+        match input.declaration {
+            McpServerDeclaration::Stdio {
+                command,
+                args,
+                environment,
+                cwd,
+                enabled,
+                ..
+            } => {
+                server["transport"] = toml_edit::value("stdio");
+                server["command"] = toml_edit::value(command);
+                server["args"] = toml_edit::value(toml_owned_string_array(args));
+                if !environment.is_empty() {
+                    let mut values = toml_edit::InlineTable::new();
+                    for (name, value) in environment {
+                        values.insert(&name, value.into());
+                    }
+                    server["environment"] =
+                        toml_edit::Item::Value(toml_edit::Value::InlineTable(values));
+                }
+                if let Some(cwd) = cwd {
+                    server["cwd"] = toml_edit::value(cwd.to_string_lossy().into_owned());
+                }
+                server["enabled"] = toml_edit::value(enabled);
+            }
+            McpServerDeclaration::StreamableHttp {
+                url,
+                credential,
+                enabled,
+                ..
+            } => {
+                server["transport"] = toml_edit::value("streamable_http");
+                server["url"] = toml_edit::value(url);
+                if let Some(credential) = credential {
+                    server["credential"] = credential_item(credential);
+                }
+                server["enabled"] = toml_edit::value(enabled);
+            }
+        }
+
+        ensure_table(&mut document, "egress_policies")?;
+        let required = ["prompt_text", "workspace_metadata"];
+        let server_policy = insert_exact_egress_policy(
+            &mut document,
+            &format!("mcp-server-{}", input.id),
+            &required,
+        )?;
+        let profile_policy = profile_egress_policy_with(
+            &mut document,
+            &input.profile,
+            &format!("profile-{}-mcp-{}", input.profile, input.id),
+            &required,
+        )?;
+        server["egress_policy"] = toml_edit::value(server_policy);
+        document["mcp_servers"]
+            .as_table_mut()
+            .expect("table was ensured")
+            .insert(&input.id, toml_edit::Item::Table(server));
+
+        let profile = document["profiles"][&input.profile]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit("profile must be a table".into()))?;
+        profile["egress_policy"] = toml_edit::value(profile_policy);
+        merge_string_array(profile, "mcp_servers", &[&input.id])?;
+        if profile.get("mcp_allowlists").is_none() {
+            profile["mcp_allowlists"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        let allowlists = profile["mcp_allowlists"]
+            .as_table_mut()
+            .ok_or_else(|| ConfigError::Edit("profile mcp_allowlists must be a table".into()))?;
+        let mut allowlist = toml_edit::Table::new();
+        allowlist["tools"] = toml_edit::value(toml_owned_string_array(input.selection.tools));
+        allowlist["resources"] =
+            toml_edit::value(toml_owned_string_array(input.selection.resources));
+        allowlist["resource_templates"] =
+            toml_edit::value(toml_owned_string_array(input.selection.resource_templates));
+        allowlist["prompts"] = toml_edit::value(toml_owned_string_array(input.selection.prompts));
+        allowlists[&input.id] = toml_edit::Item::Table(allowlist);
+
+        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
+        atomic_config_write_with_backup(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn remove_mcp_server(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let registry = Self::load_registry_from(path)?;
+        if !registry.mcp_servers.contains_key(id) {
+            return Err(ConfigError::Edit(format!("unknown MCP server {id:?}")));
+        }
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        document
+            .get_mut("mcp_servers")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("mcp_servers must be a table".into()))?
+            .remove(id);
+        if let Some(profiles) = document
+            .get_mut("profiles")
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            for (_, item) in profiles.iter_mut() {
+                if let Some(profile) = item.as_table_mut() {
+                    remove_string_array_value(profile, "mcp_servers", id)?;
+                    if let Some(allowlists) = profile
+                        .get_mut("mcp_allowlists")
+                        .and_then(toml_edit::Item::as_table_mut)
+                    {
+                        allowlists.remove(id);
+                    }
+                }
+            }
+        }
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
+        atomic_config_write_with_backup(path, rendered.as_bytes())
+    }
+
+    pub(crate) fn remove_service_route(path: &Path, route: &str) -> Result<(), ConfigError> {
+        let registry = Self::load_registry_from(path)?;
+        let declaration = registry
+            .service_routes
+            .get(route)
+            .ok_or_else(|| ConfigError::Edit(format!("unknown service route {route:?}")))?;
+        let connection = declaration.connection.clone();
+        let source = read_config(path)?;
+        let mut document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        document
+            .get_mut("service_routes")
+            .and_then(toml_edit::Item::as_table_mut)
+            .ok_or_else(|| ConfigError::Edit("service_routes must be a table".into()))?
+            .remove(route);
+        if let Some(profiles) = document
+            .get_mut("profiles")
+            .and_then(toml_edit::Item::as_table_mut)
+        {
+            for (_, item) in profiles.iter_mut() {
+                if let Some(profile) = item.as_table_mut() {
+                    remove_string_array_value(profile, "service_routes", route)?;
+                }
+            }
+        }
+        let connection_still_used = document
+            .get("service_routes")
+            .and_then(toml_edit::Item::as_table)
+            .is_some_and(|routes| {
+                routes.iter().any(|(_, item)| {
+                    item.as_table()
+                        .and_then(|route| route.get("connection"))
+                        .and_then(toml_edit::Item::as_str)
+                        == Some(connection.as_str())
+                })
+            });
+        if !connection_still_used
+            && let Some(connections) = document
+                .get_mut("service_connections")
+                .and_then(toml_edit::Item::as_table_mut)
+        {
+            connections.remove(&connection);
+        }
+        let rendered = document.to_string();
+        Self::parse_registry(&rendered)?;
+        atomic_config_write_with_backup(path, rendered.as_bytes())
+    }
+
     pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
         validate_name("profile", &input.id)?;
         let source = read_config(path)?;
@@ -1389,6 +1706,169 @@ fn set_optional_string(table: &mut toml_edit::Table, key: &str, value: Option<Op
     }
 }
 
+fn ensure_table(document: &mut toml_edit::DocumentMut, key: &str) -> Result<(), ConfigError> {
+    if document.get(key).is_none() {
+        document[key] = toml_edit::Item::Table(toml_edit::Table::new());
+    }
+    document[key]
+        .as_table()
+        .map(|_| ())
+        .ok_or_else(|| ConfigError::Edit(format!("{key} must be a table")))
+}
+
+fn insert_exact_egress_policy(
+    document: &mut toml_edit::DocumentMut,
+    base: &str,
+    allowed: &[&str],
+) -> Result<String, ConfigError> {
+    ensure_table(document, "egress_policies")?;
+    let policies = document["egress_policies"]
+        .as_table_mut()
+        .ok_or_else(|| ConfigError::Edit("egress_policies must be a table".into()))?;
+    let name = unique_table_name(policies, base)?;
+    let mut policy = toml_edit::Table::new();
+    policy["allowed"] = toml_edit::value(toml_string_array(allowed));
+    policies.insert(&name, toml_edit::Item::Table(policy));
+    Ok(name)
+}
+
+fn profile_egress_policy_with(
+    document: &mut toml_edit::DocumentMut,
+    profile: &str,
+    derived_name: &str,
+    required: &[&str],
+) -> Result<String, ConfigError> {
+    let existing = document["profiles"][profile]
+        .get("egress_policy")
+        .and_then(toml_edit::Item::as_str)
+        .map(str::to_owned);
+    let mut allowed = match existing.as_deref() {
+        Some(name) => document["egress_policies"][name]
+            .get("allowed")
+            .and_then(toml_edit::Item::as_array)
+            .ok_or_else(|| ConfigError::Edit(format!("egress policy {name:?} is invalid")))?
+            .iter()
+            .filter_map(toml_edit::Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>(),
+        None => Vec::new(),
+    };
+    if required
+        .iter()
+        .all(|required| allowed.iter().any(|value| value == required))
+    {
+        return existing.ok_or_else(|| {
+            ConfigError::Edit("profile egress policy resolution was inconsistent".into())
+        });
+    }
+    for required in required {
+        if !allowed.iter().any(|value| value == required) {
+            allowed.push((*required).to_owned());
+        }
+    }
+    allowed.sort();
+    allowed.dedup();
+    let borrowed = allowed.iter().map(String::as_str).collect::<Vec<_>>();
+    insert_exact_egress_policy(document, derived_name, &borrowed)
+}
+
+fn unique_table_name(table: &toml_edit::Table, base: &str) -> Result<String, ConfigError> {
+    if !table.contains_key(base) {
+        return Ok(base.to_owned());
+    }
+    for suffix in 2..=1_000 {
+        let candidate = format!("{base}-{suffix}");
+        if !table.contains_key(&candidate) {
+            return Ok(candidate);
+        }
+    }
+    Err(ConfigError::Edit(format!(
+        "could not allocate a unique egress policy derived from {base:?}"
+    )))
+}
+
+fn credential_item(reference: CredentialReference) -> toml_edit::Item {
+    let mut credential = toml_edit::InlineTable::new();
+    match reference {
+        CredentialReference::Environment { variable } => {
+            credential.insert("source", "environment".into());
+            credential.insert("variable", variable.into());
+        }
+        CredentialReference::Stored { id } => {
+            credential.insert("source", "stored".into());
+            credential.insert("id", id.into());
+        }
+    }
+    toml_edit::Item::Value(toml_edit::Value::InlineTable(credential))
+}
+
+fn toml_string_array(values: &[&str]) -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(*value);
+    }
+    array
+}
+
+fn toml_owned_string_array(values: Vec<String>) -> toml_edit::Array {
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(value);
+    }
+    array
+}
+
+fn merge_string_array(
+    table: &mut toml_edit::Table,
+    key: &str,
+    added: &[&str],
+) -> Result<(), ConfigError> {
+    let mut values = table
+        .get(key)
+        .and_then(toml_edit::Item::as_array)
+        .map(|array| {
+            array
+                .iter()
+                .filter_map(toml_edit::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for value in added {
+        if !values.iter().any(|existing| existing == value) {
+            values.push((*value).to_owned());
+        }
+    }
+    values.sort();
+    values.dedup();
+    let mut array = toml_edit::Array::new();
+    for value in values {
+        array.push(value);
+    }
+    table[key] = toml_edit::value(array);
+    Ok(())
+}
+
+fn remove_string_array_value(
+    table: &mut toml_edit::Table,
+    key: &str,
+    removed: &str,
+) -> Result<(), ConfigError> {
+    let Some(current) = table.get(key) else {
+        return Ok(());
+    };
+    let array = current
+        .as_array()
+        .ok_or_else(|| ConfigError::Edit(format!("{key} must be an array")))?;
+    let values = array
+        .iter()
+        .filter_map(toml_edit::Value::as_str)
+        .filter(|value| *value != removed)
+        .collect::<Vec<_>>();
+    table[key] = toml_edit::value(toml_string_array(&values));
+    Ok(())
+}
+
 fn validate_and_write_profile_edit(
     path: &Path,
     mut document: toml_edit::DocumentMut,
@@ -1446,6 +1926,47 @@ fn atomic_config_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
         path: path.to_owned(),
         source,
     })
+}
+
+fn atomic_config_write_with_backup(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
+    let previous = read_config(path)?.into_bytes();
+    let backup = path.with_extension("toml.bak");
+    let prior_backup = match bounded_file::read(&backup, MAX_CONFIG_BYTES) {
+        Ok(bytes) => Some(bytes),
+        Err(bounded_file::BoundedReadError::Io { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            None
+        }
+        Err(error) => {
+            return Err(match error {
+                bounded_file::BoundedReadError::TooLarge { actual, limit, .. } => {
+                    ConfigError::TooLarge { actual, limit }
+                }
+                bounded_file::BoundedReadError::Io { path, source } => {
+                    ConfigError::Io { path, source }
+                }
+            });
+        }
+    };
+    atomic_config_write(&backup, &previous)?;
+    if let Err(error) = atomic_config_write(path, bytes) {
+        match prior_backup {
+            Some(bytes) => atomic_config_write(&backup, &bytes)?,
+            None => match fs::remove_file(&backup) {
+                Ok(()) => {}
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(ConfigError::Io {
+                        path: backup,
+                        source,
+                    });
+                }
+            },
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 impl ConfigError {
