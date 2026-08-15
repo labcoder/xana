@@ -21,15 +21,17 @@ fn request(id: u64, method: &str, params: Value) -> Vec<u8> {
     .unwrap()
 }
 
-async fn server_once(response: Vec<u8>) -> (String, tokio::task::JoinHandle<Vec<u8>>) {
+async fn server_once(
+    response: Vec<u8>,
+) -> (String, tokio::task::JoinHandle<std::io::Result<Vec<u8>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let task = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
+        let (mut stream, _) = listener.accept().await?;
         let mut request = Vec::new();
         let mut buffer = [0_u8; 2048];
         loop {
-            let count = stream.read(&mut buffer).await.unwrap();
+            let count = stream.read(&mut buffer).await?;
             if count == 0 {
                 break;
             }
@@ -51,11 +53,25 @@ async fn server_once(response: Vec<u8>) -> (String, tokio::task::JoinHandle<Vec<
                 break;
             }
         }
-        stream.write_all(&response).await.unwrap();
-        stream.shutdown().await.unwrap();
-        request
+        stream.write_all(&response).await?;
+        stream.shutdown().await?;
+        Ok(request)
     });
     (format!("http://{address}/mcp"), task)
+}
+
+fn assert_response_sent_or_client_closed(result: std::io::Result<Vec<u8>>) {
+    if let Err(error) = result {
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::NotConnected
+            ),
+            "oversized-response server failed unexpectedly: {error}"
+        );
+    }
 }
 
 async fn client_for(url: &str) -> McpHttpClient {
@@ -103,7 +119,7 @@ async fn posts_required_metadata_auth_and_tool_headers() {
         .unwrap();
     assert_eq!(response.final_response, body);
 
-    let wire = String::from_utf8(observed.await.unwrap()).unwrap();
+    let wire = String::from_utf8(observed.await.unwrap().unwrap()).unwrap();
     let lower = wire.to_ascii_lowercase();
     assert!(lower.contains("mcp-protocol-version: 2026-07-28"));
     assert!(lower.contains("mcp-method: tools/call"));
@@ -144,7 +160,7 @@ async fn collects_request_scoped_sse_progress_and_final_response() {
         )
         .await
         .unwrap();
-    server.await.unwrap();
+    server.await.unwrap().unwrap();
     assert_eq!(received.notifications.len(), 1);
     assert_eq!(
         serde_json::from_slice::<Value>(&received.final_response).unwrap()["id"],
@@ -179,7 +195,7 @@ async fn rejects_redirects_and_classifies_auth_and_rate_errors() {
             )
             .await
             .unwrap_err();
-        server.await.unwrap();
+        server.await.unwrap().unwrap();
         assert!(matches!(
             (expected, error),
             ("redirect", McpHttpError::RedirectRejected)
@@ -278,7 +294,7 @@ fn endpoint_and_auth_identity_invalidate_saved_recipient_decisions() {
 }
 
 #[tokio::test]
-async fn rejects_oversized_or_malformed_responses() {
+async fn rejects_oversized_responses_when_the_client_closes_early() {
     let body = vec![b'x'; MAX_RESPONSE_BYTES + 1];
     let (url, server) = server_once(json_response("200 OK", &body, "")).await;
     assert!(matches!(
@@ -293,8 +309,11 @@ async fn rejects_oversized_or_malformed_responses() {
             .await,
         Err(McpHttpError::ResponseTooLarge)
     ));
-    server.await.unwrap();
+    assert_response_sent_or_client_closed(server.await.unwrap());
+}
 
+#[tokio::test]
+async fn rejects_malformed_responses_after_receiving_the_complete_body() {
     let wrong = br#"{"jsonrpc":"2.0","id":4,"result":{},"error":{}}"#;
     let (url, server) = server_once(json_response("200 OK", wrong, "")).await;
     assert!(matches!(
@@ -309,5 +328,5 @@ async fn rejects_oversized_or_malformed_responses() {
             .await,
         Err(McpHttpError::ProtocolShape)
     ));
-    server.await.unwrap();
+    server.await.unwrap().unwrap();
 }
