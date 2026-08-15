@@ -112,3 +112,20 @@ fn integration_hub_reports_readiness_and_ordered_mcp_prerequisites() {
     assert!(!paths.package_state_file().exists());
     assert!(!paths.external_agent_state_file().exists());
 }
+
+#[test]
+fn integration_hub_reports_corrupt_private_state_instead_of_zero_counts() {
+    let (_directory, paths) = fixture();
+    std::fs::create_dir_all(paths.package_state_file().parent().unwrap()).unwrap();
+    std::fs::write(paths.package_state_file(), b"not-json").unwrap();
+    let mut args = empty_args();
+    args.integration = Some(ConnectIntegration::Plugin);
+    let mut output = Vec::new();
+
+    write_hub(&args, args.integration, &paths, &mut output).unwrap();
+
+    let rendered = String::from_utf8(output).unwrap();
+    assert!(rendered.contains("plugins         unavailable"));
+    assert!(rendered.contains("xana doctor"));
+    assert!(!rendered.contains("installed=0 healthy=0"));
+}

@@ -18,9 +18,10 @@ use crate::{
     credential::SecretString,
     identity::OperationId,
     outbound::{
-        OutboundApprovalController, OutboundApprovalDecision, OutboundApprovalRequest,
-        OutboundAuditEvent, OutboundGuard, OutboundItem, OutboundPolicyLayers, OutboundRequest,
-        OutboundTransport, OutboundTransportFailure, RecipientIdentity,
+        NoopOutboundAuditObserver, ObservedOutboundAudit, OutboundApprovalDecision,
+        OutboundApprovalRequest, OutboundAuditObserver, OutboundGuard, OutboundItem,
+        OutboundPolicyLayers, OutboundRequest, OutboundTransport, OutboundTransportFailure,
+        RecipientIdentity, ReviewedOutboundApproval,
     },
     permission::PermissionScope,
     tool::{
@@ -64,6 +65,35 @@ pub(crate) trait McpPrimitiveTransport: Send + Sync {
         operation_id: OperationId,
         cancellation: &'a CancellationToken,
     ) -> BoxFuture<'a, Result<McpTransportResponse, McpApplicationError>>;
+
+    fn request_with_approval<'a>(
+        &'a self,
+        method: &'a str,
+        params: Value,
+        tool_schema: Option<Value>,
+        operation_id: OperationId,
+        cancellation: &'a CancellationToken,
+        _approval: Option<ReviewedOutboundApproval>,
+    ) -> BoxFuture<'a, Result<McpTransportResponse, McpApplicationError>> {
+        self.request(method, params, tool_schema, operation_id, cancellation)
+    }
+
+    fn outbound_review(
+        &self,
+        _method: &str,
+        _params: &Value,
+        _operation_id: OperationId,
+    ) -> Result<Option<OutboundApprovalRequest>, McpApplicationError> {
+        Ok(None)
+    }
+
+    fn outbound_disposition(
+        &self,
+        _method: &str,
+        _params: &Value,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, McpApplicationError> {
+        Ok(None)
+    }
 }
 
 impl McpPrimitiveTransport for McpStdioClient {
@@ -153,6 +183,14 @@ pub(crate) struct McpGuardedTransport {
     guard: OutboundGuard,
     recipient: RecipientIdentity,
     policy: OutboundPolicyLayers,
+    default_decision: Option<OutboundApprovalDecision>,
+    audit: Arc<dyn OutboundAuditObserver>,
+}
+
+enum DispatchApproval {
+    None,
+    Reviewed(ReviewedOutboundApproval),
+    Default(OutboundApprovalDecision),
 }
 
 impl McpGuardedTransport {
@@ -161,48 +199,43 @@ impl McpGuardedTransport {
         guard: OutboundGuard,
         recipient: RecipientIdentity,
         policy: OutboundPolicyLayers,
+        default_decision: Option<OutboundApprovalDecision>,
     ) -> Self {
         Self {
             inner,
             guard,
             recipient,
             policy,
+            default_decision,
+            audit: Arc::new(NoopOutboundAuditObserver),
         }
     }
-}
 
-impl McpPrimitiveTransport for McpGuardedTransport {
-    fn request<'a>(
+    pub(crate) fn with_outbound_audit(mut self, audit: Arc<dyn OutboundAuditObserver>) -> Self {
+        self.audit = audit;
+        self
+    }
+
+    fn dispatch<'a>(
         &'a self,
         method: &'a str,
         params: Value,
         tool_schema: Option<Value>,
         operation_id: OperationId,
         cancellation: &'a CancellationToken,
+        approval: DispatchApproval,
     ) -> BoxFuture<'a, Result<McpTransportResponse, McpApplicationError>> {
         Box::pin(async move {
-            let bytes = serde_json::to_vec(&json!({"method": method, "params": params}))
-                .map_err(|_| McpApplicationError::InvalidArguments)?;
-            let class = if matches!(method, "tools/call" | "prompts/get") {
-                OutboundDataClass::PromptText
-            } else {
-                OutboundDataClass::WorkspaceMetadata
+            let request =
+                mcp_outbound_request(operation_id, self.recipient.clone(), method, &params)?;
+            let mut controller = match approval {
+                DispatchApproval::None => None,
+                DispatchApproval::Reviewed(approval) => Some(approval),
+                DispatchApproval::Default(decision) => {
+                    Some(ReviewedOutboundApproval::new(request.review(), decision))
+                }
             };
-            let item = OutboundItem::new(
-                class,
-                format!("MCP {method}"),
-                None,
-                "profile MCP primitive",
-                bytes,
-            )?;
-            let request = OutboundRequest::new(
-                operation_id,
-                self.recipient.clone(),
-                format!("MCP {method}"),
-                vec![item],
-            )?;
-            let mut controller = PreapprovedController;
-            let mut audit = Vec::<OutboundAuditEvent>::new();
+            let mut audit = ObservedOutboundAudit::new(self.audit.as_ref());
             let mut send = GuardedSend {
                 inner: Arc::clone(&self.inner),
                 method: method.to_owned(),
@@ -216,7 +249,7 @@ impl McpPrimitiveTransport for McpGuardedTransport {
                 .dispatch(
                     request,
                     &self.policy,
-                    Some(&mut controller),
+                    controller.as_mut(),
                     &mut send,
                     &mut audit,
                 )
@@ -226,15 +259,97 @@ impl McpPrimitiveTransport for McpGuardedTransport {
     }
 }
 
-struct PreapprovedController;
-
-impl OutboundApprovalController for PreapprovedController {
-    fn decide<'a>(
-        &'a mut self,
-        _request: &'a OutboundApprovalRequest,
-    ) -> BoxFuture<'a, OutboundApprovalDecision> {
-        Box::pin(async { OutboundApprovalDecision::AllowOnce })
+impl McpPrimitiveTransport for McpGuardedTransport {
+    fn request<'a>(
+        &'a self,
+        method: &'a str,
+        params: Value,
+        tool_schema: Option<Value>,
+        operation_id: OperationId,
+        cancellation: &'a CancellationToken,
+    ) -> BoxFuture<'a, Result<McpTransportResponse, McpApplicationError>> {
+        self.dispatch(
+            method,
+            params,
+            tool_schema,
+            operation_id,
+            cancellation,
+            self.default_decision
+                .map_or(DispatchApproval::None, DispatchApproval::Default),
+        )
     }
+
+    fn request_with_approval<'a>(
+        &'a self,
+        method: &'a str,
+        params: Value,
+        tool_schema: Option<Value>,
+        operation_id: OperationId,
+        cancellation: &'a CancellationToken,
+        approval: Option<ReviewedOutboundApproval>,
+    ) -> BoxFuture<'a, Result<McpTransportResponse, McpApplicationError>> {
+        self.dispatch(
+            method,
+            params,
+            tool_schema,
+            operation_id,
+            cancellation,
+            approval.map_or(DispatchApproval::None, DispatchApproval::Reviewed),
+        )
+    }
+
+    fn outbound_review(
+        &self,
+        method: &str,
+        params: &Value,
+        operation_id: OperationId,
+    ) -> Result<Option<OutboundApprovalRequest>, McpApplicationError> {
+        Ok(Some(
+            mcp_outbound_request(operation_id, self.recipient.clone(), method, params)?.review(),
+        ))
+    }
+
+    fn outbound_disposition(
+        &self,
+        method: &str,
+        _params: &Value,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, McpApplicationError> {
+        Ok(Some(self.guard.disposition(
+            &self.recipient,
+            [mcp_outbound_class(method)],
+        )?))
+    }
+}
+
+fn mcp_outbound_class(method: &str) -> OutboundDataClass {
+    if matches!(method, "tools/call" | "prompts/get") {
+        OutboundDataClass::PromptText
+    } else {
+        OutboundDataClass::WorkspaceMetadata
+    }
+}
+
+fn mcp_outbound_request(
+    operation_id: OperationId,
+    recipient: RecipientIdentity,
+    method: &str,
+    params: &Value,
+) -> Result<OutboundRequest, McpApplicationError> {
+    let bytes = serde_json::to_vec(&json!({"method": method, "params": params}))
+        .map_err(|_| McpApplicationError::InvalidArguments)?;
+    let item = OutboundItem::new(
+        mcp_outbound_class(method),
+        format!("MCP {method}"),
+        None,
+        "profile MCP primitive",
+        bytes,
+    )?;
+    Ok(OutboundRequest::new(
+        operation_id,
+        recipient,
+        format!("MCP {method}"),
+        vec![item],
+    )?)
 }
 
 struct GuardedSend {
@@ -278,7 +393,6 @@ impl OutboundTransport for GuardedSend {
 
 struct McpServerRuntime {
     transport: Arc<dyn McpPrimitiveTransport>,
-    recipient_identity_digest: String,
 }
 
 pub(crate) struct McpApplication {
@@ -299,18 +413,11 @@ impl McpApplication {
         exposure: McpServerExposure,
         transport: Arc<dyn McpPrimitiveTransport>,
     ) -> Result<(), McpApplicationError> {
-        let recipient_identity_digest = exposure.configured_identity_digest.clone();
         let server = exposure.server.clone();
         self.catalog.get_mut().add_server(exposure)?;
         if self
             .servers
-            .insert(
-                server,
-                McpServerRuntime {
-                    transport,
-                    recipient_identity_digest,
-                },
-            )
+            .insert(server, McpServerRuntime { transport })
             .is_some()
         {
             return Err(McpApplicationError::DuplicateServer);
@@ -351,6 +458,29 @@ impl McpApplication {
         Ok(())
     }
 
+    pub(crate) fn outbound_review(
+        &self,
+        server: &str,
+        method: &str,
+        params: &Value,
+        operation_id: OperationId,
+    ) -> Result<Option<OutboundApprovalRequest>, McpApplicationError> {
+        self.runtime(server)?
+            .transport
+            .outbound_review(method, params, operation_id)
+    }
+
+    pub(crate) fn outbound_disposition(
+        &self,
+        server: &str,
+        method: &str,
+        params: &Value,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, McpApplicationError> {
+        self.runtime(server)?
+            .transport
+            .outbound_disposition(method, params)
+    }
+
     pub(crate) async fn activate_tools(
         &self,
         registry: &mut ToolRegistry,
@@ -381,7 +511,6 @@ impl McpApplication {
             registry.register_boxed(Box::new(McpRemoteTool {
                 definition,
                 transport: Arc::clone(&runtime.transport),
-                recipient_identity_digest: runtime.recipient_identity_digest.clone(),
             }))?;
             activated += 1;
         }
@@ -640,7 +769,6 @@ impl McpCatalogSource for ExactToolSource {
 struct McpRemoteTool {
     definition: McpToolDefinition,
     transport: Arc<dyn McpPrimitiveTransport>,
-    recipient_identity_digest: String,
 }
 
 struct CancelOnDrop(CancellationToken);
@@ -681,14 +809,24 @@ impl Tool for McpRemoteTool {
                 "MCP tool arguments exceed the {MAX_ARGUMENT_BYTES}-byte limit"
             ));
         }
+        let outbound_params = json!({
+            "name": self.definition.summary.source_name,
+            "arguments": arguments,
+        });
+        let review = self
+            .transport
+            .outbound_review("tools/call", &outbound_params, OperationId::new())
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "MCP transport has no outbound review contract".to_owned())?;
         Ok(PlannedToolInvocation::new(
             arguments.clone(),
             PermissionScope::External {
-                recipient_identity_digest: self.recipient_identity_digest.clone(),
+                recipient_identity_digest: review.recipient.identity_digest.clone(),
                 operation: self.definition.summary.qualified_name.clone(),
             },
             arguments.clone(),
-        ))
+        )
+        .with_outbound_review(review))
     }
 
     fn execute<'a>(
@@ -703,7 +841,7 @@ impl Tool for McpRemoteTool {
             let cancellation = CancelOnDrop(CancellationToken::new());
             let response = self
                 .transport
-                .request(
+                .request_with_approval(
                     "tools/call",
                     json!({
                         "name": self.definition.summary.source_name,
@@ -712,6 +850,7 @@ impl Tool for McpRemoteTool {
                     Some(self.definition.input_schema.clone()),
                     _context.operation_id,
                     &cancellation.0,
+                    _context.outbound_approval,
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -723,6 +862,22 @@ impl Tool for McpRemoteTool {
                 result,
             )
         })
+    }
+
+    fn outbound_disposition(
+        &self,
+        planned: &PlannedToolInvocation,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
+        let arguments = planned.executable::<Value>(&self.definition.summary.qualified_name)?;
+        self.transport
+            .outbound_disposition(
+                "tools/call",
+                &json!({
+                    "name": self.definition.summary.source_name,
+                    "arguments": arguments,
+                }),
+            )
+            .map_err(|error| error.to_string())
     }
 }
 

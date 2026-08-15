@@ -104,6 +104,7 @@ fn permission_fact(
             effect_class: EffectClass::Read,
             final_arguments: arguments.clone(),
             scope: PermissionScope::Unscoped,
+            outbound_review: None,
         },
         policy_evaluation: PolicyDecision::Allow,
         controller_decision: None,

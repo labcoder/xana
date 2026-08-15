@@ -551,6 +551,7 @@ mod tests {
             scope: PermissionScope::WorkspacePath {
                 canonical_path: workspace.join("notes.txt"),
             },
+            outbound_review: None,
         };
 
         for (mode, expected) in [

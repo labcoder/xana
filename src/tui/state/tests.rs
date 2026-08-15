@@ -341,6 +341,7 @@ fn hidden_activity_cannot_hide_or_duplicate_a_native_approval() {
         effect_class: crate::tool::EffectClass::Execute,
         final_arguments: serde_json::json!({"command": "cargo test"}),
         scope: crate::permission::PermissionScope::Unscoped,
+        outbound_review: None,
     };
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.activity_visibility = ActivityVisibility::Hidden;

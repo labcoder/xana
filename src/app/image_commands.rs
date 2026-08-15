@@ -4,17 +4,12 @@ use crate::{
     artifact::ArtifactStore,
     cli::ImageCommand,
     config::{ConnectionRegistry, OutboundDataClass, PermissionMode, XanaConfig},
-    credential::CredentialResolver,
-    focused_service::{
-        FocusedServiceContext, FocusedServiceRegistry, FocusedServiceRequest, ServiceOperation,
-        image_descriptor_registry, openai_images::OpenAiImageAdapter,
-        openrouter_images::OpenRouterImageAdapter,
-    },
+    focused_service::{ImageGenerationService, image_descriptor_registry},
     identity::{OperationId, PrincipalId},
     paths::XanaPaths,
 };
 use anyhow::{Context, Result};
-use std::{io::Read, io::Write, sync::Arc};
+use std::{io::Read, io::Write};
 use tokio_util::sync::CancellationToken;
 
 const MAX_STDIN_PROMPT_BYTES: u64 = 64 * 1024;
@@ -79,25 +74,20 @@ pub(crate) async fn run(
             json,
         } => {
             let prompt = prompt.map_or_else(|| read_prompt(input), Ok)?;
-            let resolved = descriptors.resolve(
-                &registry,
-                routes,
-                egress,
-                ServiceOperation::ImageGenerate,
-                route.as_deref(),
-            )?;
-            if !resolved
-                .allowed_outbound
-                .contains(&OutboundDataClass::PromptText)
-            {
-                anyhow::bail!(
-                    "route {:?} is not allowed to send prompt_text by the effective egress policy",
-                    resolved.name
-                );
-            }
             if permission == PermissionMode::Deny {
                 anyhow::bail!("image generation is denied by the default profile permission mode");
             }
+            let service = ImageGenerationService::new(
+                registry.clone(),
+                routes.to_vec(),
+                egress.to_vec(),
+                crate::outbound::OutboundGuard::open(paths)?,
+                ArtifactStore::new(paths.data_dir().join("artifacts")),
+                PrincipalId::new(),
+            )
+            .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);
+            let plan = service.plan(OperationId::new(), prompt, route.as_deref())?;
+            let resolved = plan.route();
             if !yes {
                 anyhow::bail!(
                     "image generation requires exact noninteractive approval; review route {:?}, provider {:?}, model {:?}, outbound [prompt_text], cost [unknown], then rerun with --yes",
@@ -110,35 +100,12 @@ pub(crate) async fn run(
                 "Generating via route {:?}, connection {:?}, model {:?}; outbound prompt_text; cost unknown...",
                 resolved.name, resolved.connection, resolved.model
             );
-            let secret = CredentialResolver::default().resolve(
-                resolved
-                    .credential
-                    .as_ref()
-                    .context("selected image route has no credential reference")?,
-            )?;
-            let mut execution = FocusedServiceRegistry::default();
-            match resolved.adapter.as_str() {
-                "openai.images" => {
-                    execution.register(Arc::new(OpenAiImageAdapter::new(secret)?))?
-                }
-                "openrouter.images" => {
-                    execution.register(Arc::new(OpenRouterImageAdapter::new(secret)?))?
-                }
-                adapter => anyhow::bail!("unsupported image adapter {adapter:?}"),
-            }
             let cancellation = CancellationToken::new();
-            let request = FocusedServiceRequest {
-                operation_id: OperationId::new(),
-                route: resolved,
-                prompt,
-                input_artifacts: Vec::new(),
-            };
-            let context = FocusedServiceContext {
-                artifacts: ArtifactStore::new(paths.data_dir().join("artifacts")),
-                owner: PrincipalId::new(),
-                cancellation: cancellation.clone(),
-            };
-            let execution = execution.execute(request, context);
+            let approval = crate::outbound::ReviewedOutboundApproval::new(
+                plan.outbound_review()?,
+                crate::outbound::OutboundApprovalDecision::AllowOnce,
+            );
+            let execution = service.execute(plan, Some(approval), cancellation.clone());
             tokio::pin!(execution);
             let result = tokio::select! {
                 result = &mut execution => result?,

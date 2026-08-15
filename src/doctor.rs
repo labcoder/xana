@@ -332,7 +332,11 @@ fn inspect_diagnostics(paths: &XanaPaths, report: &mut DoctorReport) {
         Severity::Info
     } else if health.inspection_error
         || health.unsafe_path
+        || !health.directory_metadata_allows_writes
+        || !health.permissions_private
+        || !health.retention_compliant
         || health.invalid_reports > 0
+        || health.dropped_events > 0
         || health.writer_faults > 0
     {
         Severity::Error
@@ -350,11 +354,16 @@ fn inspect_diagnostics(paths: &XanaPaths, report: &mut DoctorReport) {
             "metadata-only diagnostics are disabled"
         },
         format!(
-            "logs={}; crashes={}; log_dir_exists={}; crash_dir_exists={}; unsafe_path={}; inspection_error={}; invalid_reports={}; dropped_events={}; writer_faults={}",
+            "logs={}; crashes={}; log_dir_exists={}; crash_dir_exists={}; write_metadata_allows={}; private_permissions={}; retention_compliant={}; retained_files={}; retained_bytes={}; unsafe_path={}; inspection_error={}; invalid_reports={}; dropped_events={}; writer_faults={}",
             health.log_dir.display(),
             health.crash_dir.display(),
             health.log_dir_exists,
             health.crash_dir_exists,
+            health.directory_metadata_allows_writes,
+            health.permissions_private,
+            health.retention_compliant,
+            health.retained_files,
+            health.retained_bytes,
             health.unsafe_path,
             health.inspection_error,
             health.invalid_reports,

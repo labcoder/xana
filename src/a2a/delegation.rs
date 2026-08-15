@@ -9,9 +9,9 @@ use crate::{
     mcp::{McpHttpEndpoint, McpHttpSecurity, pinned_client},
     native_runtime::{AgentEvent, AgentEventSender},
     outbound::{
-        OutboundApprovalController, OutboundApprovalDecision, OutboundApprovalRequest,
-        OutboundAuditEvent, OutboundGuard, OutboundItem, OutboundPolicyLayers, OutboundRequest,
-        OutboundTransport, OutboundTransportFailure, RecipientIdentity, RecipientKind,
+        ObservedOutboundAudit, OutboundAuditObserver, OutboundGuard, OutboundItem,
+        OutboundPolicyLayers, OutboundRequest, OutboundTransport, OutboundTransportFailure,
+        RecipientIdentity, RecipientKind,
     },
     paths::XanaPaths,
     private_state::ExternalAgentStateRecord,
@@ -31,6 +31,7 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::Arc,
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -138,6 +139,7 @@ pub(crate) fn activate_profile_delegation_tools(
             owner: activation.owner,
             policy,
             security: McpHttpSecurity::default(),
+            audit: crate::diagnostics::outbound_audit(activation.paths)?,
         })?;
         count += 1;
     }
@@ -154,6 +156,7 @@ pub(crate) struct A2aDelegationTool {
     owner: PrincipalId,
     policy: OutboundPolicyLayers,
     security: McpHttpSecurity,
+    audit: Arc<dyn OutboundAuditObserver>,
 }
 
 impl A2aDelegationTool {
@@ -393,6 +396,14 @@ impl Tool for A2aDelegationTool {
             "items":items.len(),
             "bytes":items.iter().map(|item| item.bytes().len()).sum::<usize>(),
         });
+        let review = OutboundRequest::new(
+            OperationId::new(),
+            self.recipient(),
+            format!("delegate task to {}", self.trusted.agent_name),
+            items.clone(),
+        )
+        .map_err(|error| error.to_string())?
+        .review();
         Ok(PlannedToolInvocation::new(
             final_arguments,
             crate::permission::PermissionScope::External {
@@ -400,7 +411,8 @@ impl Tool for A2aDelegationTool {
                 operation: self.tool_name(),
             },
             DelegationPlan { items },
-        ))
+        )
+        .with_outbound_review(review))
     }
 
     fn execute<'a>(
@@ -410,17 +422,6 @@ impl Tool for A2aDelegationTool {
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             let plan = planned.executable::<DelegationPlan>(&self.tool_name())?;
-            let endpoint = McpHttpEndpoint::parse(&self.trusted.interface_url, self.security)
-                .map_err(|_| "trusted A2A interface endpoint is no longer valid".to_owned())?;
-            let client = pinned_client(endpoint.url(), self.security, REQUEST_TIMEOUT)
-                .await
-                .map_err(|_| "could not establish the trusted A2A connection".to_owned())?;
-            let credential = self
-                .declaration_credential
-                .as_ref()
-                .map(|reference| CredentialResolver::default().resolve(reference))
-                .transpose()
-                .map_err(|_| "external-agent credential is unavailable".to_owned())?;
             let cancellation = CancelOnDrop(CancellationToken::new());
             let classes = plan
                 .items
@@ -446,12 +447,11 @@ impl Tool for A2aDelegationTool {
                 plan.items.clone(),
             )
             .map_err(|error| error.to_string())?;
-            let mut controller = PreapprovedController;
-            let mut audit = Vec::<OutboundAuditEvent>::new();
+            let mut controller = context.outbound_approval;
+            let mut audit = ObservedOutboundAudit::new(self.audit.as_ref());
             let mut transport = A2aSendTransport {
-                client,
-                endpoint: endpoint.url().clone(),
-                credential,
+                interface_url: self.trusted.interface_url.clone(),
+                security: self.security,
                 credential_reference: self.declaration_credential.clone(),
                 recipient_digest: self.trusted.identity_digest.clone(),
                 connection: self.connection.clone(),
@@ -469,7 +469,7 @@ impl Tool for A2aDelegationTool {
                 .dispatch(
                     request,
                     &self.policy,
-                    Some(&mut controller),
+                    controller.as_mut(),
                     &mut transport,
                     &mut audit,
                 )
@@ -478,6 +478,21 @@ impl Tool for A2aDelegationTool {
             serde_json::to_string(&receipt)
                 .map_err(|_| "A2A delegation result could not be encoded".to_owned())
         })
+    }
+
+    fn outbound_disposition(
+        &self,
+        planned: &PlannedToolInvocation,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
+        let plan = planned.executable::<DelegationPlan>(&self.tool_name())?;
+        OutboundGuard::open(&self.paths)
+            .map_err(|error| error.to_string())?
+            .disposition(
+                &self.recipient(),
+                plan.items.iter().map(OutboundItem::class),
+            )
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 }
 
@@ -489,21 +504,9 @@ impl Drop for CancelOnDrop {
     }
 }
 
-struct PreapprovedController;
-
-impl OutboundApprovalController for PreapprovedController {
-    fn decide<'a>(
-        &'a mut self,
-        _request: &'a OutboundApprovalRequest,
-    ) -> BoxFuture<'a, OutboundApprovalDecision> {
-        Box::pin(async { OutboundApprovalDecision::AllowOnce })
-    }
-}
-
 struct A2aSendTransport {
-    client: reqwest::Client,
-    endpoint: reqwest::Url,
-    credential: Option<SecretString>,
+    interface_url: String,
+    security: McpHttpSecurity,
     credential_reference: Option<CredentialReference>,
     recipient_digest: String,
     connection: String,
@@ -532,7 +535,20 @@ impl OutboundTransport for A2aSendTransport {
             {
                 return Err(OutboundTransportFailure::Rejected);
             }
-            self.send_items(items).await.map_err(A2aWireError::classify)
+            let endpoint = McpHttpEndpoint::parse(&self.interface_url, self.security)
+                .map_err(|_| OutboundTransportFailure::Rejected)?;
+            let client = pinned_client(endpoint.url(), self.security, REQUEST_TIMEOUT)
+                .await
+                .map_err(|_| OutboundTransportFailure::Unavailable)?;
+            let credential = self
+                .credential_reference
+                .as_ref()
+                .map(|reference| CredentialResolver::default().resolve(reference))
+                .transpose()
+                .map_err(|_| OutboundTransportFailure::Rejected)?;
+            self.send_items(items, &client, endpoint.url(), credential.as_ref())
+                .await
+                .map_err(A2aWireError::classify)
         })
     }
 }
@@ -541,6 +557,9 @@ impl A2aSendTransport {
     async fn send_items(
         &mut self,
         items: &[OutboundItem],
+        client: &reqwest::Client,
+        endpoint: &reqwest::Url,
+        credential: Option<&SecretString>,
     ) -> Result<A2aDelegationReceipt, A2aWireError> {
         let parts = outbound_parts(items)?;
         let request_id = uuid::Uuid::new_v4().to_string();
@@ -562,9 +581,8 @@ impl A2aSendTransport {
                 "configuration":{"acceptedOutputModes":["text/plain"]}
             }
         });
-        let mut request = self
-            .client
-            .post(self.endpoint.clone())
+        let mut request = client
+            .post(endpoint.clone())
             .header(header::CONTENT_TYPE, "application/json")
             .header("A2A-Version", A2A_PROTOCOL_VERSION)
             .header(
@@ -576,7 +594,7 @@ impl A2aSendTransport {
                 },
             )
             .json(&body);
-        if let Some(credential) = &self.credential {
+        if let Some(credential) = credential {
             request = request.bearer_auth(credential.expose());
         }
         let response = tokio::select! {
@@ -604,8 +622,8 @@ impl A2aSendTransport {
             self.operation_id,
         );
         let mut cancel_guard = RemoteCancelGuard::new(
-            self.client.clone(),
-            self.endpoint.clone(),
+            client.clone(),
+            endpoint.clone(),
             self.credential_reference.clone(),
             self.connection.clone(),
             self.recipient_digest.clone(),

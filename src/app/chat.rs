@@ -611,6 +611,7 @@ async fn run_once(
         &profile_egress,
         artifact_store.clone(),
         artifact_owner,
+        paths,
         &mut tools,
     )
     .map_err(anyhow::Error::msg)
@@ -624,7 +625,8 @@ async fn run_once(
         permission_mode,
         artifact_store.clone(),
         artifact_owner,
-    );
+    )
+    .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);
     let restored_plans = session.started_orchestration_plans();
     let child_supervisor = if child_registry.routes.is_empty() {
         None

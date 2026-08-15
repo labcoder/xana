@@ -90,23 +90,43 @@ pub(super) struct ApprovalPrompt {
     pub(super) details: Vec<String>,
     pub(super) allow_once: bool,
     pub(super) allow_session: bool,
+    pub(super) save_allow: bool,
+    pub(super) save_deny: bool,
     pub(super) deny: bool,
 }
 
 impl ApprovalPrompt {
     pub(super) fn native(request: PermissionRequest) -> Self {
         let scope = format!("{:?}", request.scope);
-        let arguments = request.final_arguments.to_string();
+        let external_scope = matches!(
+            request.scope,
+            crate::permission::PermissionScope::External { .. }
+        );
+        let exact_external = external_scope && request.outbound_review.is_some();
+        let details = request.outbound_review.as_ref().map_or_else(
+            || {
+                vec![
+                    bounded(scope, MAX_SUMMARY_BYTES),
+                    bounded(request.final_arguments.to_string(), MAX_DETAIL_BYTES),
+                ]
+            },
+            |review| {
+                review
+                    .render()
+                    .lines()
+                    .map(|line| bounded(line.to_owned(), MAX_DETAIL_BYTES))
+                    .collect()
+            },
+        );
         Self {
             owner: "Xana native root".to_owned(),
             title: format!("{} ({:?})", request.tool_name, request.effect_class),
-            details: vec![
-                bounded(scope, MAX_SUMMARY_BYTES),
-                bounded(arguments, MAX_DETAIL_BYTES),
-            ],
+            details,
             target: ApprovalTarget::Native(request),
             allow_once: true,
-            allow_session: true,
+            allow_session: !external_scope,
+            save_allow: exact_external,
+            save_deny: exact_external,
             deny: true,
         }
     }
@@ -117,20 +137,38 @@ impl ApprovalPrompt {
             attribution.agent_id, attribution.route
         );
         let scope = format!("{:?}", request.scope);
-        let arguments = request.final_arguments.to_string();
+        let external_scope = matches!(
+            request.scope,
+            crate::permission::PermissionScope::External { .. }
+        );
+        let exact_external = external_scope && request.outbound_review.is_some();
+        let details = request.outbound_review.as_ref().map_or_else(
+            || {
+                vec![
+                    bounded(scope, MAX_SUMMARY_BYTES),
+                    bounded(request.final_arguments.to_string(), MAX_DETAIL_BYTES),
+                ]
+            },
+            |review| {
+                review
+                    .render()
+                    .lines()
+                    .map(|line| bounded(line.to_owned(), MAX_DETAIL_BYTES))
+                    .collect()
+            },
+        );
         Self {
             owner,
             title: format!("{} ({:?})", request.tool_name, request.effect_class),
-            details: vec![
-                bounded(scope, MAX_SUMMARY_BYTES),
-                bounded(arguments, MAX_DETAIL_BYTES),
-            ],
+            details,
             target: ApprovalTarget::Child {
                 attribution,
                 request,
             },
             allow_once: true,
-            allow_session: true,
+            allow_session: !external_scope,
+            save_allow: exact_external,
+            save_deny: exact_external,
             deny: true,
         }
     }
@@ -155,6 +193,8 @@ impl ApprovalPrompt {
             details,
             allow_once: request.available_decisions.contains("accept"),
             allow_session: request.available_decisions.contains("acceptForSession"),
+            save_allow: false,
+            save_deny: false,
             deny: request.available_decisions.contains("decline")
                 || request.available_decisions.contains("cancel"),
             target: ApprovalTarget::Managed(request),

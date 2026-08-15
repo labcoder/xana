@@ -81,62 +81,78 @@ pub(super) fn write_hub(
     )?;
     writeln!(output, "  image route     xana connect image")?;
     writeln!(output, "  vision route    xana connect vision")?;
-    let registry = XanaConfig::load_registry_from(paths.config_file()).ok();
+    let registry = XanaConfig::load_registry_from(paths.config_file());
     let plugins = if paths.package_state_file().exists() {
-        PluginManager::open(paths).list().unwrap_or_default()
+        Some(PluginManager::open(paths).list())
     } else {
-        Vec::new()
+        Some(Ok(Vec::new()))
     };
-    let healthy_plugins = plugins
-        .iter()
-        .filter(|plugin| !plugin.health.starts_with("degraded:"))
-        .count();
+    let healthy_plugins = plugins.as_ref().and_then(|result| {
+        result.as_ref().ok().map(|plugins| {
+            plugins
+                .iter()
+                .filter(|plugin| !plugin.health.starts_with("degraded:"))
+                .count()
+        })
+    });
     let external_state = paths
         .external_agent_state_file()
         .exists()
         .then(|| read_document::<ExternalAgentStateDocument>(&paths.external_agent_state_file()))
-        .transpose()
-        .ok()
-        .flatten();
-    let trusted_agents = external_state.as_ref().map_or(0, |state| {
-        state
-            .agents
-            .values()
-            .filter(|agent| agent.trusted_identity_digest.is_some())
-            .count()
+        .transpose();
+    let trusted_agents = external_state.as_ref().map(|state| {
+        state.as_ref().map_or(0, |state| {
+            state
+                .agents
+                .values()
+                .filter(|agent| agent.trusted_identity_digest.is_some())
+                .count()
+        })
     });
     writeln!(output)?;
     writeln!(output, "Current readiness (redacted, no discovery started)")?;
-    writeln!(
-        output,
-        "  plugins         declared={} installed={} healthy={}",
-        registry.as_ref().map_or(0, |value| value.plugins.len()),
-        plugins.len(),
-        healthy_plugins
-    )?;
-    writeln!(
-        output,
-        "  MCP clients     configured={} exposed_by_profiles={}",
-        registry.as_ref().map_or(0, |value| value.mcp_servers.len()),
-        registry.as_ref().map_or(0, |value| {
-            value
+    match (&registry, &plugins, healthy_plugins) {
+        (Ok(registry), Some(Ok(plugins)), Some(healthy)) => writeln!(
+            output,
+            "  plugins         declared={} installed={} healthy={}",
+            registry.plugins.len(),
+            plugins.len(),
+            healthy
+        )?,
+        _ => writeln!(
+            output,
+            "  plugins         unavailable; run `xana doctor` for exact recovery"
+        )?,
+    }
+    match &registry {
+        Ok(registry) => writeln!(
+            output,
+            "  MCP clients     configured={} exposed_by_profiles={}",
+            registry.mcp_servers.len(),
+            registry
                 .profiles
                 .values()
                 .filter(|profile| !profile.mcp_servers.is_empty())
                 .count()
-        })
-    )?;
-    writeln!(
-        output,
-        "  external agents configured={} refreshed={} trusted={}",
-        registry
-            .as_ref()
-            .map_or(0, |value| value.external_agents.len()),
-        external_state
-            .as_ref()
-            .map_or(0, |state| state.agents.len()),
-        trusted_agents
-    )?;
+        )?,
+        Err(_) => writeln!(
+            output,
+            "  MCP clients     unavailable; run `xana doctor` for exact recovery"
+        )?,
+    }
+    match (&registry, &external_state, trusted_agents) {
+        (Ok(registry), Ok(state), Ok(trusted)) => writeln!(
+            output,
+            "  external agents configured={} refreshed={} trusted={}",
+            registry.external_agents.len(),
+            state.as_ref().map_or(0, |state| state.agents.len()),
+            trusted
+        )?,
+        _ => writeln!(
+            output,
+            "  external agents unavailable; run `xana doctor` for exact recovery"
+        )?,
+    }
     if let Some(integration) = integration {
         writeln!(output)?;
         writeln!(output, "Next steps")?;

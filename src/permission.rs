@@ -10,6 +10,7 @@ pub(crate) use scope::scope_contains;
 
 use crate::{
     identity::{OperationId, ToolInvocationId},
+    outbound::OutboundApprovalRequest,
     tool::EffectClass,
 };
 use serde::{Deserialize, Serialize};
@@ -52,6 +53,8 @@ pub(crate) struct PermissionRequest {
     pub(crate) effect_class: EffectClass,
     pub(crate) final_arguments: Value,
     pub(crate) scope: PermissionScope,
+    #[serde(default)]
+    pub(crate) outbound_review: Option<OutboundApprovalRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +62,8 @@ pub(crate) enum ControllerDecision {
     Deny,
     AllowOnce,
     AllowSession { scope: PermissionScope },
+    SaveOutboundAllow,
+    SaveOutboundDeny,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

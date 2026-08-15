@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    credential::CredentialResolver,
+    paths::XanaPaths,
     permission::PermissionScope,
     tool::{
         EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition,
@@ -19,17 +19,8 @@ struct GenerateImageArgs {
 }
 
 #[derive(Clone)]
-struct GenerateImagePlan {
-    prompt: String,
-    route: ResolvedServiceRoute,
-}
-
 struct GenerateImageTool {
-    registry: ConnectionRegistry,
-    exposed_routes: Vec<String>,
-    profile_egress: Vec<OutboundDataClass>,
-    artifacts: ArtifactStore,
-    owner: PrincipalId,
+    service: ImageGenerationService,
 }
 
 pub(crate) fn activate_profile_image_tool(
@@ -38,6 +29,7 @@ pub(crate) fn activate_profile_image_tool(
     profile_egress: &[OutboundDataClass],
     artifacts: ArtifactStore,
     owner: PrincipalId,
+    paths: &XanaPaths,
     tools: &mut ToolRegistry,
 ) -> Result<(), String> {
     let descriptors = image_descriptor_registry().map_err(|error| error.to_string())?;
@@ -52,11 +44,17 @@ pub(crate) fn activate_profile_image_tool(
     }
     tools
         .register(GenerateImageTool {
-            registry: registry.clone(),
-            exposed_routes: exposed_routes.to_vec(),
-            profile_egress: profile_egress.to_vec(),
-            artifacts,
-            owner,
+            service: ImageGenerationService::new(
+                registry.clone(),
+                exposed_routes.to_vec(),
+                profile_egress.to_vec(),
+                crate::outbound::OutboundGuard::open(paths).map_err(|error| error.to_string())?,
+                artifacts,
+                owner,
+            )
+            .with_outbound_audit(
+                crate::diagnostics::outbound_audit(paths).map_err(|error| error.to_string())?,
+            ),
         })
         .map_err(|error| error.to_string())
 }
@@ -88,47 +86,28 @@ impl Tool for GenerateImageTool {
     ) -> Result<PlannedToolInvocation, String> {
         let arguments: GenerateImageArgs = serde_json::from_value(arguments.clone())
             .map_err(|error| format!("invalid generate_image arguments: {error}"))?;
-        let route = image_descriptor_registry()
-            .map_err(|error| error.to_string())?
-            .resolve(
-                &self.registry,
-                &self.exposed_routes,
-                &self.profile_egress,
-                ServiceOperation::ImageGenerate,
+        let plan = self
+            .service
+            .plan(
+                OperationId::new(),
+                arguments.prompt.clone(),
                 arguments.route.as_deref(),
             )
             .map_err(|error| error.to_string())?;
-        let request = FocusedServiceRequest {
-            operation_id: OperationId::new(),
-            route: route.clone(),
-            prompt: arguments.prompt.clone(),
-            input_artifacts: Vec::new(),
-        };
-        request.validate().map_err(|error| error.to_string())?;
-        if !route
-            .allowed_outbound
-            .contains(&OutboundDataClass::PromptText)
-        {
-            return Err(
-                "the effective route/profile egress policy does not allow prompt_text".to_owned(),
-            );
-        }
-        let identity = blake3::hash(
-            format!("{}\0{}\0{}", route.connection, route.adapter, route.model).as_bytes(),
-        )
-        .to_hex()
-        .to_string();
+        let review = plan.outbound_review().map_err(|error| error.to_string())?;
         Ok(PlannedToolInvocation::new(
-            json!({"prompt": arguments.prompt, "route": route.name}),
+            json!({
+                "prompt": arguments.prompt,
+                "route": plan.route().name,
+                "outbound_classes": ["prompt_text"],
+            }),
             PermissionScope::External {
-                recipient_identity_digest: identity,
+                recipient_identity_digest: plan.recipient_identity_digest().to_owned(),
                 operation: ServiceOperation::ImageGenerate.as_str().to_owned(),
             },
-            GenerateImagePlan {
-                prompt: request.prompt,
-                route,
-            },
-        ))
+            plan,
+        )
+        .with_outbound_review(review))
     }
 
     fn execute<'a>(
@@ -137,47 +116,27 @@ impl Tool for GenerateImageTool {
         context: ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
-            let plan = planned.executable::<GenerateImagePlan>("generate_image")?;
-            let secret =
-                CredentialResolver::default()
-                    .resolve(plan.route.credential.as_ref().ok_or_else(|| {
-                        "selected image route has no credential reference".to_owned()
-                    })?)
-                    .map_err(|_| "selected image credential is unavailable".to_owned())?;
-            let mut execution = FocusedServiceRegistry::default();
-            match plan.route.adapter.as_str() {
-                "openai.images" => execution
-                    .register(Arc::new(
-                        openai_images::OpenAiImageAdapter::new(secret)
-                            .map_err(|error| error.to_string())?,
-                    ))
-                    .map_err(|error| error.to_string())?,
-                "openrouter.images" => execution
-                    .register(Arc::new(
-                        openrouter_images::OpenRouterImageAdapter::new(secret)
-                            .map_err(|error| error.to_string())?,
-                    ))
-                    .map_err(|error| error.to_string())?,
-                adapter => return Err(format!("unsupported image adapter {adapter:?}")),
-            }
-            let result = execution
-                .execute(
-                    FocusedServiceRequest {
-                        operation_id: context.operation_id,
-                        route: plan.route.clone(),
-                        prompt: plan.prompt.clone(),
-                        input_artifacts: Vec::new(),
-                    },
-                    FocusedServiceContext {
-                        artifacts: self.artifacts.clone(),
-                        owner: self.owner,
-                        cancellation: CancellationToken::new(),
-                    },
-                )
+            let plan = planned.executable::<ImageGenerationPlan>("generate_image")?;
+            let plan = plan.clone().for_operation(context.operation_id);
+            let cancellation = CancellationToken::new();
+            let result = self
+                .service
+                .execute(plan, context.outbound_approval, cancellation)
                 .await
                 .map_err(|error| error.to_string())?;
             serde_json::to_string(&result)
                 .map_err(|_| "image result could not be encoded".to_owned())
         })
+    }
+
+    fn outbound_disposition(
+        &self,
+        planned: &PlannedToolInvocation,
+    ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
+        let plan = planned.executable::<ImageGenerationPlan>("generate_image")?;
+        self.service
+            .disposition(plan)
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
 }

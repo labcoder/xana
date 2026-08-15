@@ -134,14 +134,33 @@ async fn trusted_tool_sends_only_selected_classes_streams_and_ingests_artifact()
         owner: PrincipalId::new(),
         policy: all_policy(),
         security: McpHttpSecurity::default(),
+        audit: Arc::new(crate::outbound::NoopOutboundAuditObserver),
     }
     .allow_loopback();
     let mut registry = ToolRegistry::new();
     registry.register(tool).unwrap();
     let policy =
         PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), workspace.path()).unwrap();
-    let (broker_events, _broker_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let (permissions, broker_task) = PermissionBroker::spawn(policy, false, broker_events);
+    let (broker_events, mut broker_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (permissions, broker_task) = PermissionBroker::spawn(policy, true, broker_events);
+    let approval = {
+        let permissions = permissions.clone();
+        tokio::spawn(async move {
+            while let Some(event) = broker_receiver.recv().await {
+                if let AgentEvent::PermissionRequested { request } = event {
+                    permissions
+                        .decide(
+                            request.operation_id,
+                            request.invocation_id,
+                            crate::permission::ControllerDecision::AllowOnce,
+                        )
+                        .await
+                        .unwrap();
+                    break;
+                }
+            }
+        })
+    };
     let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
     let event_sender = AgentEventSender::from(event_sender);
     let canonical_workspace = workspace.path().canonicalize().unwrap();
@@ -166,6 +185,7 @@ async fn trusted_tool_sends_only_selected_classes_streams_and_ingests_artifact()
             },
         )
         .await;
+    approval.await.unwrap();
     permissions.shutdown();
     broker_task.await.unwrap();
     assert_eq!(
@@ -225,6 +245,7 @@ async fn denied_outbound_scope_sends_zero_network_bytes() {
         owner: PrincipalId::new(),
         policy: all_policy(),
         security: McpHttpSecurity::default(),
+        audit: Arc::new(crate::outbound::NoopOutboundAuditObserver),
     }
     .allow_loopback();
     let mut registry = ToolRegistry::new();
@@ -276,6 +297,7 @@ fn planner_rejects_escape_and_oversized_task_without_network_work() {
         security: McpHttpSecurity {
             allow_loopback_http: true,
         },
+        audit: Arc::new(crate::outbound::NoopOutboundAuditObserver),
     };
     assert!(
         tool.plan(

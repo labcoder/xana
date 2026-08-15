@@ -73,6 +73,27 @@ fn saturation_never_blocks_and_reports_loss_on_a_later_record() {
 }
 
 #[test]
+fn standalone_inspection_reports_prior_writer_health_failures() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let (_directory, paths) = fixture();
+    let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
+    runtime.active.dropped_total.store(3, Ordering::Relaxed);
+    runtime.active.writer_faults.store(2, Ordering::Relaxed);
+    drop(runtime);
+
+    let health = inspect(&paths);
+
+    assert_eq!(health.dropped_events, 3);
+    assert_eq!(health.writer_faults, 2);
+    assert!(
+        !list(&paths)
+            .unwrap()
+            .iter()
+            .any(|entry| entry.name.starts_with("health-"))
+    );
+}
+
+#[test]
 fn stale_locked_markers_and_crash_reports_are_distinct() {
     let _guard = TEST_LOCK.lock().unwrap();
     let (_directory, paths) = fixture();
@@ -161,6 +182,25 @@ fn cleanup_deletes_only_recognized_bounded_files() {
 }
 
 #[test]
+fn inspection_reports_retention_and_disk_bound_violations() {
+    let directory = tempdir().unwrap();
+    let logs = directory.path().join("logs");
+    ensure_private_directory(&logs).unwrap();
+    fs::write(logs.join("xana-oversized.jsonl"), vec![b'x'; 65_537]).unwrap();
+    let settings = DiagnosticsConfig {
+        max_files: 1,
+        max_file_bytes: 65_536,
+        max_total_bytes: 65_536,
+        ..DiagnosticsConfig::default()
+    };
+
+    let inventory = inspect_log_inventory(&logs, &settings).unwrap();
+    assert_eq!(inventory.files, 1);
+    assert_eq!(inventory.bytes, 65_537);
+    assert!(!inventory.compliant);
+}
+
+#[test]
 fn cleanup_never_deletes_another_live_process_log() {
     let _guard = TEST_LOCK.lock().unwrap();
     let (_directory, paths) = fixture();
@@ -233,4 +273,18 @@ fn oversized_diagnostic_directories_fail_closed_instead_of_scanning_forever() {
     let error = cleanup_logs(directory.path(), &DiagnosticsConfig::default()).unwrap_err();
 
     assert!(error.to_string().contains("inspection bound"));
+}
+
+#[test]
+fn unrelated_entries_cannot_hide_an_incomplete_retention_scan() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    let directory = tempdir().unwrap();
+    for index in 0..MAX_DIRECTORY_ENTRIES {
+        fs::write(directory.path().join(format!("owner-{index}.txt")), b"x").unwrap();
+    }
+    fs::write(directory.path().join("xana-hidden.jsonl"), b"{}\n").unwrap();
+
+    let inventory = inspect_log_inventory(directory.path(), &DiagnosticsConfig::default()).unwrap();
+
+    assert!(!inventory.compliant);
 }

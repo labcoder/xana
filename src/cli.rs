@@ -120,6 +120,30 @@ pub(crate) enum ActivityChoice {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum OutboundClassChoice {
+    PromptText,
+    XanaSummary,
+    SelectedMessages,
+    SelectedFileContents,
+    SelectedArtifacts,
+    WorkspaceMetadata,
+}
+
+impl From<OutboundClassChoice> for crate::config::OutboundDataClass {
+    fn from(value: OutboundClassChoice) -> Self {
+        use crate::config::OutboundDataClass;
+        match value {
+            OutboundClassChoice::PromptText => OutboundDataClass::PromptText,
+            OutboundClassChoice::XanaSummary => OutboundDataClass::XanaSummary,
+            OutboundClassChoice::SelectedMessages => OutboundDataClass::SelectedMessages,
+            OutboundClassChoice::SelectedFileContents => OutboundDataClass::SelectedFileContents,
+            OutboundClassChoice::SelectedArtifacts => OutboundDataClass::SelectedArtifacts,
+            OutboundClassChoice::WorkspaceMetadata => OutboundDataClass::WorkspaceMetadata,
+        }
+    }
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "xana",
@@ -221,6 +245,9 @@ pub(crate) enum Command {
     /// Inspect local metadata-only logs and crash diagnostics.
     #[command(display_order = 17)]
     Logs(LogsArgs),
+    /// Inspect or revoke saved outbound-data decisions.
+    #[command(display_order = 18)]
+    Outbound(OutboundArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
     Serve(ServeArgs),
@@ -239,6 +266,28 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct OutboundArgs {
+    #[command(subcommand)]
+    pub(crate) command: OutboundCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum OutboundCommand {
+    /// List metadata-only saved allow and deny decisions.
+    List,
+    /// Revoke one exact recipient identity and data-class decision.
+    Revoke {
+        #[arg(value_name = "IDENTITY_DIGEST")]
+        identity_digest: String,
+        #[arg(value_enum)]
+        class: OutboundClassChoice,
+        /// Confirm the exact state change.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

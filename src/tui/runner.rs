@@ -324,7 +324,23 @@ impl ExecutionOwner for NativeOwner<'_> {
                         )
                         .await;
                     }
-                    Ok(crate::app::vision::VisionTurnRoute::Specialist(plan)) => *plan,
+                    Ok(crate::app::vision::VisionTurnRoute::SpecialistDenied(plan)) => {
+                        state.restore_submission(
+                            input,
+                            images,
+                            Some(plan.route.name),
+                            "Vision specialist use is denied by the active profile".to_owned(),
+                        );
+                        return Ok(None);
+                    }
+                    Ok(crate::app::vision::VisionTurnRoute::SpecialistAllowed(plan)) => {
+                        return self
+                            .start_vision(operation_id, input, images, *plan, None, state)
+                            .await;
+                    }
+                    Ok(crate::app::vision::VisionTurnRoute::SpecialistApprovalRequired(plan)) => {
+                        *plan
+                    }
                     Err(error) => {
                         state.restore_submission(
                             input,
@@ -338,33 +354,17 @@ impl ExecutionOwner for NativeOwner<'_> {
                         return Ok(None);
                     }
                 };
-                match plan.permission_mode {
-                    crate::config::PermissionMode::Deny => {
-                        state.restore_submission(
-                            input,
-                            images,
-                            Some(plan.route.name),
-                            "Vision specialist use is denied by the active profile".to_owned(),
-                        );
-                        Ok(None)
-                    }
-                    crate::config::PermissionMode::Ask => {
-                        state.request_vision_approval(operation_id, input, images, plan);
-                        Ok(None)
-                    }
-                    crate::config::PermissionMode::Allow => {
-                        self.start_vision(operation_id, input, images, plan, state)
-                            .await
-                    }
-                }
+                state.request_vision_approval(operation_id, input, images, plan);
+                Ok(None)
             }
             UpdateEffect::PrepareVision {
                 operation_id,
                 input,
                 images,
                 plan,
+                decision,
             } => {
-                self.start_vision(operation_id, input, images, *plan, state)
+                self.start_vision(operation_id, input, images, *plan, Some(decision), state)
                     .await
             }
             UpdateEffect::Interrupt { operation_id }
@@ -420,6 +420,7 @@ impl NativeOwner<'_> {
         input: String,
         images: Vec<crate::vision::ImageAttachment>,
         plan: crate::app::vision::VisionPlan,
+        decision: Option<crate::outbound::OutboundApprovalDecision>,
         state: &mut TuiState,
     ) -> Result<Option<ChatExit>> {
         let lease = match self.workspace_host.acquire_root(self.conversation.clone()) {
@@ -456,6 +457,7 @@ impl NativeOwner<'_> {
                 input.clone(),
                 source_images,
                 plan,
+                decision,
                 cancellation,
             ))
             .catch_unwind()

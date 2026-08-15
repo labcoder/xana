@@ -1,6 +1,9 @@
 //! Validated, race-aware manual configuration editing.
 
-use crate::{bounded_file, config::XanaConfig};
+use crate::{
+    bounded_file,
+    config::{ConfigTransactionLock, XanaConfig},
+};
 use anyhow::{Context, Result, bail};
 use std::{
     fs,
@@ -102,6 +105,8 @@ impl ConfigDraft {
                 self.path.display()
             )
         })?;
+        let _lock = ConfigTransactionLock::acquire(&self.live_path)
+            .context("could not lock configuration for the final edit transaction")?;
         let current = read_bounded(&self.live_path).with_context(|| {
             format!(
                 "live configuration changed or became unreadable; draft retained at {}",

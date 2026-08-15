@@ -143,8 +143,10 @@ impl PermissionPolicy {
         } else {
             self.default
         };
-        if matches!(request.scope, PermissionScope::ExternalPath { .. })
-            && winning_decision == PolicyDecision::Allow
+        if matches!(
+            request.scope,
+            PermissionScope::ExternalPath { .. } | PermissionScope::External { .. }
+        ) && winning_decision == PolicyDecision::Allow
         {
             winning_decision = PolicyDecision::Ask;
         }

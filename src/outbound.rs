@@ -12,8 +12,9 @@ use crate::{
     identity::OperationId,
     paths::XanaPaths,
     private_state::{
-        OutboundDecisionDocument, OutboundDecisionRecord, PrivateStateError, SavedOutboundDecision,
-        UpdateDocumentError, ensure_interoperable_records, read_document, update_document,
+        OutboundAuditDocument, OutboundAuditRecord, OutboundDecisionDocument,
+        OutboundDecisionRecord, PrivateStateError, SavedOutboundDecision, UpdateDocumentError,
+        ensure_interoperable_records, read_document, update_document,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -31,8 +32,10 @@ const MAX_ITEM_BYTES: usize = 4 * 1024 * 1024;
 // One vision turn may contain several immutable images whose aggregate input
 // is bounded separately at 20 MiB. The common egress gate must be able to
 // review that complete, already-bounded request rather than forcing a bypass.
-const MAX_TOTAL_BYTES: usize = crate::vision::MAX_IMAGE_BYTES_PER_TURN as usize;
+const MAX_TOTAL_BYTES: usize = crate::vision::MAX_IMAGE_BYTES_PER_TURN as usize
+    + crate::focused_service::MAX_FOCUSED_PROMPT_BYTES;
 const MAX_SAVED_DECISIONS: usize = 1024;
+const MAX_AUDIT_RECORDS: usize = 512;
 const MAX_IDENTITY_MATERIAL_BYTES: usize = 16 * 1024;
 const MAX_CONNECTION_BYTES: usize = 128;
 const MAX_DESTINATION_BYTES: usize = 2048;
@@ -256,7 +259,7 @@ impl OutboundRequest {
         self.items.iter().map(OutboundItem::class).collect()
     }
 
-    fn review(&self) -> OutboundApprovalRequest {
+    pub(crate) fn review(&self) -> OutboundApprovalRequest {
         OutboundApprovalRequest {
             operation_id: self.operation_id,
             recipient: self.recipient.clone(),
@@ -324,6 +327,11 @@ pub(crate) struct OutboundApprovalRequest {
 }
 
 impl OutboundApprovalRequest {
+    pub(crate) fn for_operation(mut self, operation_id: OperationId) -> Self {
+        self.operation_id = operation_id;
+        self
+    }
+
     pub(crate) fn render(&self) -> String {
         let mut output = format!(
             "Send to {} ({}, {}) for {}:\n",
@@ -361,11 +369,50 @@ pub(crate) enum OutboundApprovalDecision {
     Cancel,
 }
 
+/// A user's decision bound to the exact redacted review they approved.
+///
+/// Adapters must pass this controller to [`OutboundGuard`] instead of carrying
+/// a bare decision. If a later request differs from the reviewed recipient,
+/// purpose, classes, items, byte counts, or content digests, the controller
+/// fails closed before a grant can be persisted or a transport can run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReviewedOutboundApproval {
+    review: OutboundApprovalRequest,
+    decision: OutboundApprovalDecision,
+}
+
+impl ReviewedOutboundApproval {
+    pub(crate) fn new(review: OutboundApprovalRequest, decision: OutboundApprovalDecision) -> Self {
+        Self { review, decision }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OutboundDisposition {
+    SavedAllow,
+    SavedDeny,
+    ReviewRequired,
+}
+
 pub(crate) trait OutboundApprovalController {
     fn decide<'a>(
         &'a mut self,
         request: &'a OutboundApprovalRequest,
     ) -> BoxFuture<'a, OutboundApprovalDecision>;
+}
+
+impl OutboundApprovalController for ReviewedOutboundApproval {
+    fn decide<'a>(
+        &'a mut self,
+        request: &'a OutboundApprovalRequest,
+    ) -> BoxFuture<'a, OutboundApprovalDecision> {
+        let decision = if self.review == *request {
+            self.decision
+        } else {
+            OutboundApprovalDecision::DenyOnce
+        };
+        Box::pin(async move { decision })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,12 +453,75 @@ pub(crate) struct OutboundAuditEvent {
 }
 
 pub(crate) trait OutboundAuditSink {
-    fn record(&mut self, event: OutboundAuditEvent);
+    fn record(&mut self, event: OutboundAuditEvent) -> Result<(), OutboundError>;
 }
 
 impl OutboundAuditSink for Vec<OutboundAuditEvent> {
-    fn record(&mut self, event: OutboundAuditEvent) {
+    fn record(&mut self, event: OutboundAuditEvent) -> Result<(), OutboundError> {
         self.push(event);
+        Ok(())
+    }
+}
+
+pub(crate) trait OutboundAuditObserver: Send + Sync {
+    fn observe(&self, event: &OutboundAuditEvent) -> Result<(), PrivateStateError>;
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct NoopOutboundAuditObserver;
+
+impl OutboundAuditObserver for NoopOutboundAuditObserver {
+    fn observe(&self, _event: &OutboundAuditEvent) -> Result<(), PrivateStateError> {
+        Ok(())
+    }
+}
+
+pub(crate) struct ObservedOutboundAudit<'a> {
+    observer: &'a dyn OutboundAuditObserver,
+}
+
+impl<'a> ObservedOutboundAudit<'a> {
+    pub(crate) fn new(observer: &'a dyn OutboundAuditObserver) -> Self {
+        Self { observer }
+    }
+}
+
+impl OutboundAuditSink for ObservedOutboundAudit<'_> {
+    fn record(&mut self, event: OutboundAuditEvent) -> Result<(), OutboundError> {
+        self.observer.observe(&event).map_err(OutboundError::Audit)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OutboundAuditJournal {
+    path: std::path::PathBuf,
+}
+
+impl OutboundAuditJournal {
+    pub(crate) fn open(paths: &XanaPaths) -> Result<Self, PrivateStateError> {
+        ensure_interoperable_records(paths)?;
+        Ok(Self {
+            path: paths.outbound_audit_file(),
+        })
+    }
+
+    pub(crate) fn append(&self, event: &OutboundAuditEvent) -> Result<(), PrivateStateError> {
+        let record = audit_record(event);
+        update_document::<OutboundAuditDocument, _, std::convert::Infallible>(
+            &self.path,
+            |document| {
+                if document.records.len() >= MAX_AUDIT_RECORDS {
+                    let remove = document.records.len() - MAX_AUDIT_RECORDS + 1;
+                    document.records.drain(..remove);
+                }
+                document.records.push(record);
+                Ok(())
+            },
+        )
+        .map_err(|error| match error {
+            UpdateDocumentError::State(error) => error,
+            UpdateDocumentError::Update(never) => match never {},
+        })
     }
 }
 
@@ -439,6 +549,14 @@ pub(crate) struct OutboundGuard {
     decisions_file: std::path::PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SavedOutboundDecisionView {
+    pub(crate) recipient_identity_digest: String,
+    pub(crate) data_class: OutboundDataClass,
+    pub(crate) decision: SavedOutboundDecision,
+    pub(crate) updated_unix_ms: u64,
+}
+
 impl OutboundGuard {
     pub(crate) fn open(paths: &XanaPaths) -> Result<Self, OutboundError> {
         ensure_interoperable_records(paths).map_err(OutboundError::State)?;
@@ -452,7 +570,53 @@ impl OutboundGuard {
         recipient: &RecipientIdentity,
         class: OutboundDataClass,
     ) -> Result<bool, OutboundError> {
-        let key = decision_key(&recipient.identity_digest, class);
+        self.revoke_digest(&recipient.identity_digest, class)
+    }
+
+    pub(crate) fn disposition(
+        &self,
+        recipient: &RecipientIdentity,
+        classes: impl IntoIterator<Item = OutboundDataClass>,
+    ) -> Result<OutboundDisposition, OutboundError> {
+        let classes = classes.into_iter().collect::<BTreeSet<_>>();
+        let saved = self.saved_decisions(recipient, &classes)?;
+        if saved
+            .iter()
+            .any(|decision| matches!(decision, Some(SavedOutboundDecision::Deny)))
+        {
+            Ok(OutboundDisposition::SavedDeny)
+        } else if saved
+            .iter()
+            .all(|decision| matches!(decision, Some(SavedOutboundDecision::Allow)))
+        {
+            Ok(OutboundDisposition::SavedAllow)
+        } else {
+            Ok(OutboundDisposition::ReviewRequired)
+        }
+    }
+
+    pub(crate) fn list_decisions(&self) -> Result<Vec<SavedOutboundDecisionView>, OutboundError> {
+        let document = read_document::<OutboundDecisionDocument>(&self.decisions_file)
+            .map_err(OutboundError::State)?;
+        Ok(document
+            .decisions
+            .into_values()
+            .map(|record| SavedOutboundDecisionView {
+                recipient_identity_digest: record.recipient_identity_digest,
+                data_class: record.data_class,
+                decision: record.decision,
+                updated_unix_ms: record.updated_unix_ms,
+            })
+            .collect())
+    }
+
+    pub(crate) fn revoke_digest(
+        &self,
+        identity_digest: &str,
+        class: OutboundDataClass,
+    ) -> Result<bool, OutboundError> {
+        validate_identity_digest(identity_digest)?;
+        let key = decision_key(identity_digest, class);
         update_document::<OutboundDecisionDocument, _, OutboundError>(
             &self.decisions_file,
             |document| Ok(document.decisions.remove(&key).is_some()),
@@ -474,7 +638,7 @@ impl OutboundGuard {
         A: OutboundAuditSink,
     {
         let review = request.review();
-        audit.record(audit_event(&review, OutboundAuditStage::Requested));
+        audit.record(audit_event(&review, OutboundAuditStage::Requested))?;
         let classes = request.classes();
         if !classes.is_subset(&policy.effective()) {
             audit.record(audit_event(
@@ -482,11 +646,12 @@ impl OutboundGuard {
                 OutboundAuditStage::Denied {
                     source: OutboundDecisionSource::PolicyCeiling,
                 },
-            ));
+            ))?;
             return Err(OutboundError::Denied(OutboundDecisionSource::PolicyCeiling));
         }
 
         let saved = self.saved_decisions(&request.recipient, &classes)?;
+        let mut allowed_already_recorded = false;
         let source = if saved
             .iter()
             .any(|decision| matches!(decision, Some(SavedOutboundDecision::Deny)))
@@ -496,25 +661,9 @@ impl OutboundGuard {
                 OutboundAuditStage::Denied {
                     source: OutboundDecisionSource::Saved,
                 },
-            ));
+            ))?;
             return Err(OutboundError::Denied(OutboundDecisionSource::Saved));
-        } else if saved
-            .iter()
-            .all(|decision| matches!(decision, Some(SavedOutboundDecision::Allow)))
-        {
-            OutboundDecisionSource::Saved
-        } else {
-            let Some(controller) = controller.as_mut() else {
-                audit.record(audit_event(
-                    &review,
-                    OutboundAuditStage::Denied {
-                        source: OutboundDecisionSource::ApprovalUnavailable,
-                    },
-                ));
-                return Err(OutboundError::Denied(
-                    OutboundDecisionSource::ApprovalUnavailable,
-                ));
-            };
+        } else if let Some(controller) = controller.as_mut() {
             match controller.decide(&review).await {
                 OutboundApprovalDecision::DenyOnce => {
                     audit.record(audit_event(
@@ -522,44 +671,87 @@ impl OutboundGuard {
                         OutboundAuditStage::Denied {
                             source: OutboundDecisionSource::UserOnce,
                         },
-                    ));
+                    ))?;
                     return Err(OutboundError::Denied(OutboundDecisionSource::UserOnce));
                 }
                 OutboundApprovalDecision::SaveDeny => {
-                    self.save_decisions(&request.recipient, &classes, SavedOutboundDecision::Deny)?;
                     audit.record(audit_event(
                         &review,
                         OutboundAuditStage::Denied {
                             source: OutboundDecisionSource::UserSaved,
                         },
-                    ));
+                    ))?;
+                    if let Err(error) = self.save_decisions(
+                        &request.recipient,
+                        &classes,
+                        SavedOutboundDecision::Deny,
+                    ) {
+                        let _ = audit.record(audit_event(&review, OutboundAuditStage::Failed));
+                        return Err(error);
+                    }
                     return Err(OutboundError::Denied(OutboundDecisionSource::UserSaved));
                 }
                 OutboundApprovalDecision::Cancel => {
-                    audit.record(audit_event(&review, OutboundAuditStage::Cancelled));
+                    audit.record(audit_event(&review, OutboundAuditStage::Cancelled))?;
                     return Err(OutboundError::Cancelled);
                 }
                 OutboundApprovalDecision::AllowOnce => OutboundDecisionSource::UserOnce,
                 OutboundApprovalDecision::SaveAllow => {
-                    self.save_decisions(
+                    audit.record(audit_event(
+                        &review,
+                        OutboundAuditStage::Allowed {
+                            source: OutboundDecisionSource::UserSaved,
+                        },
+                    ))?;
+                    allowed_already_recorded = true;
+                    if let Err(error) = self.save_decisions(
                         &request.recipient,
                         &classes,
                         SavedOutboundDecision::Allow,
-                    )?;
+                    ) {
+                        let _ = audit.record(audit_event(&review, OutboundAuditStage::Failed));
+                        return Err(error);
+                    }
                     OutboundDecisionSource::UserSaved
                 }
             }
+        } else if saved
+            .iter()
+            .all(|decision| matches!(decision, Some(SavedOutboundDecision::Allow)))
+        {
+            OutboundDecisionSource::Saved
+        } else {
+            audit.record(audit_event(
+                &review,
+                OutboundAuditStage::Denied {
+                    source: OutboundDecisionSource::ApprovalUnavailable,
+                },
+            ))?;
+            return Err(OutboundError::Denied(
+                OutboundDecisionSource::ApprovalUnavailable,
+            ));
         };
 
-        audit.record(audit_event(&review, OutboundAuditStage::Allowed { source }));
-        audit.record(audit_event(&review, OutboundAuditStage::Sending));
+        if !allowed_already_recorded {
+            audit.record(audit_event(&review, OutboundAuditStage::Allowed { source }))?;
+        }
+        audit.record(audit_event(&review, OutboundAuditStage::Sending))?;
         match transport.send(&request.recipient, &request.items).await {
             Ok(receipt) => {
-                audit.record(audit_event(&review, OutboundAuditStage::Succeeded));
+                // The external effect has committed. Audit degradation must not
+                // discard the receipt and invite an unsafe retry.
+                let _ = audit.record(audit_event(&review, OutboundAuditStage::Succeeded));
                 Ok(receipt)
             }
             Err(failure) => {
-                audit.record(audit_event(&review, OutboundAuditStage::Failed));
+                let stage = if failure == OutboundTransportFailure::Cancelled {
+                    OutboundAuditStage::Cancelled
+                } else {
+                    OutboundAuditStage::Failed
+                };
+                // Preserve the transport outcome even when the completion
+                // observation cannot be durably appended.
+                let _ = audit.record(audit_event(&review, stage));
                 Err(OutboundError::Transport(failure))
             }
         }
@@ -626,6 +818,19 @@ impl OutboundGuard {
     }
 }
 
+fn validate_identity_digest(identity_digest: &str) -> Result<(), OutboundError> {
+    if identity_digest.len() != 64
+        || !identity_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(OutboundError::InvalidRequest(
+            "recipient identity digest must be exactly 64 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(())
+}
+
 fn audit_event(review: &OutboundApprovalRequest, stage: OutboundAuditStage) -> OutboundAuditEvent {
     OutboundAuditEvent {
         operation_id: review.operation_id,
@@ -642,6 +847,47 @@ fn audit_event(review: &OutboundApprovalRequest, stage: OutboundAuditStage) -> O
             .count(),
         total_bytes: review.total_bytes,
         stage,
+    }
+}
+
+fn audit_record(event: &OutboundAuditEvent) -> OutboundAuditRecord {
+    let (stage, decision_source) = match event.stage {
+        OutboundAuditStage::Requested => ("requested", None),
+        OutboundAuditStage::Allowed { source } => ("allowed", Some(source_name(source))),
+        OutboundAuditStage::Denied { source } => ("denied", Some(source_name(source))),
+        OutboundAuditStage::Cancelled => ("cancelled", None),
+        OutboundAuditStage::Sending => ("sending", None),
+        OutboundAuditStage::Succeeded => ("succeeded", None),
+        OutboundAuditStage::Failed => ("failed", None),
+    };
+    OutboundAuditRecord {
+        recorded_unix_ms: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .try_into()
+            .unwrap_or(u64::MAX),
+        operation_id: event.operation_id.to_string(),
+        recipient_kind: event.recipient_kind.as_str().to_owned(),
+        recipient_connection: event.recipient_connection.clone(),
+        recipient_destination: event.recipient_destination.clone(),
+        recipient_identity_digest: event.recipient_identity_digest.clone(),
+        data_classes: event.classes.clone(),
+        item_count: event.item_count,
+        reference_count: event.reference_count,
+        total_bytes: event.total_bytes,
+        stage: stage.to_owned(),
+        decision_source: decision_source.map(str::to_owned),
+    }
+}
+
+const fn source_name(source: OutboundDecisionSource) -> &'static str {
+    match source {
+        OutboundDecisionSource::PolicyCeiling => "policy_ceiling",
+        OutboundDecisionSource::Saved => "saved",
+        OutboundDecisionSource::UserOnce => "user_once",
+        OutboundDecisionSource::UserSaved => "user_saved",
+        OutboundDecisionSource::ApprovalUnavailable => "approval_unavailable",
     }
 }
 
@@ -685,6 +931,7 @@ pub(crate) enum OutboundError {
     Denied(OutboundDecisionSource),
     Cancelled,
     SavedDecisionLimit,
+    Audit(PrivateStateError),
     Clock,
     State(PrivateStateError),
     Transport(OutboundTransportFailure),
@@ -715,6 +962,7 @@ impl fmt::Display for OutboundError {
             Self::SavedDecisionLimit => {
                 formatter.write_str("saved outbound-decision limit has been reached")
             }
+            Self::Audit(error) => write!(formatter, "could not commit outbound audit: {error}"),
             Self::Clock => formatter.write_str("system time is unavailable"),
             Self::State(error) => {
                 write!(formatter, "outbound policy state is unavailable: {error}")
@@ -729,7 +977,7 @@ impl fmt::Display for OutboundError {
 impl Error for OutboundError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::State(error) => Some(error),
+            Self::Audit(error) | Self::State(error) => Some(error),
             Self::InvalidRequest(_)
             | Self::UnsafeReviewText { .. }
             | Self::InvalidItemCount { .. }

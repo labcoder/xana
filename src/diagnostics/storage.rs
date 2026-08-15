@@ -80,6 +80,70 @@ pub(super) fn cleanup_crashes(directory: &Path, settings: &DiagnosticsConfig) ->
     cleanup_recognized(directory, settings, "json", "crash-")
 }
 
+pub(super) fn cleanup_health_summaries(
+    directory: &Path,
+    settings: &DiagnosticsConfig,
+) -> Result<()> {
+    let mut files = collect_regular_files(directory, "json")?;
+    retain_recognized(&mut files, "health-");
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(u64::from(settings.retention_days) * 24 * 60 * 60);
+    for file in &files {
+        if file
+            .modified
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > retention)
+        {
+            let _ = remove_if_unlocked(&file.path);
+        }
+    }
+    files = collect_regular_files(directory, "json")?;
+    retain_recognized(&mut files, "health-");
+    files.sort_by_key(|file| file.modified);
+    let excess = files.len().saturating_sub(256);
+    for file in files.into_iter().take(excess) {
+        let _ = remove_if_unlocked(&file.path);
+    }
+    Ok(())
+}
+
+pub(super) fn read_health_summaries(
+    directory: &Path,
+    settings: &DiagnosticsConfig,
+) -> Result<(u64, u64)> {
+    let now = SystemTime::now();
+    let retention = Duration::from_secs(u64::from(settings.retention_days) * 24 * 60 * 60);
+    let mut totals = (0_u64, 0_u64);
+    let mut inspected = 0_usize;
+    for file in collect_regular_files(directory, "json")? {
+        let Some(name) = file.path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name.starts_with("health-") {
+            continue;
+        }
+        inspected += 1;
+        if inspected > 256 || file.bytes > 4096 {
+            bail!("diagnostic health history exceeds its inspection bound");
+        }
+        if file
+            .modified
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age > retention)
+        {
+            continue;
+        }
+        let summary: DiagnosticHealthSummary = serde_json::from_reader(File::open(&file.path)?)
+            .with_context(|| format!("invalid diagnostic health record {}", file.path.display()))?;
+        if summary.version != HEALTH_VERSION {
+            bail!("unsupported diagnostic health record version");
+        }
+        totals.0 = totals.0.saturating_add(summary.dropped_events);
+        totals.1 = totals.1.saturating_add(summary.writer_faults);
+    }
+    Ok(totals)
+}
+
 pub(super) fn cleanup_stale_markers(directory: &Path, settings: &DiagnosticsConfig) -> Result<()> {
     let now = SystemTime::now();
     let retention = Duration::from_secs(u64::from(settings.retention_days) * 24 * 60 * 60);

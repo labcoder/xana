@@ -997,6 +997,8 @@ fn install_with_preferences(
         crate::presentation::PresentationPreferences::parse(input)
             .context("refusing to install invalid presentation preferences")?;
     }
+    let _lock = crate::config::ConfigTransactionLock::acquire(path)
+        .context("could not lock configuration for the setup transaction")?;
     let previous_config = read_optional_bounded(path, MAX_CONFIG_BYTES)?;
     let backup = path.with_extension("toml.bak");
     let previous_backup = read_optional_bounded(&backup, MAX_CONFIG_BYTES)?;
