@@ -64,7 +64,7 @@ checked-in release manifest generator is:
 ```powershell
 ./scripts/new-release-manifest.ps1 \
   -ArtifactDirectory target/distrib \
-  -Version 0.5.1
+  -Version 0.6.0
 ```
 
 It accepts only the exact four archive names, hashes their bytes itself, bounds

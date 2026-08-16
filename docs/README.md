@@ -121,6 +121,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   provenance, draft, and publication evidence.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
+- [Xana 0.6.0 release notes](releases/0.6.0.md) describe the Interoperable
+  milestone and its project, extension, integration, multimodal, and diagnostic
+  capabilities.
 - [Xana 0.5.1 release notes](releases/0.5.1.md) describe the first published
   Release Preview and its unchanged unsigned-preview trust limits.
 - [Xana Documentation](../CONTEXT.md) is the glossary for documentation
