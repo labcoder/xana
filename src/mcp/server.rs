@@ -7,10 +7,14 @@ use crate::{
     identity::{OperationId, ToolInvocationId},
     message::{ToolCall, ToolResultStatus},
     permission::{PermissionBroker, PermissionPolicy},
-    tool::{ToolContext, ToolRegistry},
+    tool::{DeferredCleanup, ToolContext, ToolRegistry},
 };
+use futures::FutureExt;
 use serde_json::{Map, Value, json};
-use std::{collections::HashMap, error::Error, fmt, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, error::Error, fmt, panic::AssertUnwindSafe, path::PathBuf, sync::Arc,
+    time::Duration,
+};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::mpsc,
@@ -61,95 +65,123 @@ impl McpLocalServer {
         R: tokio::io::AsyncRead + Unpin + Send + 'static,
         W: AsyncWrite + Unpin,
     {
+        let Self {
+            workspace,
+            profile,
+            tools,
+            permissions,
+            mut broker_task,
+        } = self;
         let (frames, mut frame_receiver) = mpsc::channel(RESPONSE_CAPACITY);
-        let reader_task = tokio::spawn(read_frames(ServerLineReader::new(reader), frames));
-        let (responses, mut response_receiver) = mpsc::channel(RESPONSE_CAPACITY);
+        let mut reader_task = tokio::spawn(read_frames(ServerLineReader::new(reader), frames));
         let mut requests = JoinSet::new();
         let mut active = HashMap::<u64, CancellationToken>::new();
         let mut input_closed = false;
 
-        while !input_closed || !active.is_empty() {
-            tokio::select! {
-                frame = frame_receiver.recv(), if !input_closed => {
-                    match frame {
-                        Some(Ok(frame)) => {
-                            match parse_client_message(&frame) {
-                                Ok(ClientMessage::Cancel(id)) => {
-                                    if let Some(token) = active.get(&id) {
-                                        token.cancel();
+        let run_result = async {
+            while !input_closed || !active.is_empty() {
+                tokio::select! {
+                    frame = frame_receiver.recv(), if !input_closed => {
+                        match frame {
+                            Some(Ok(frame)) => {
+                                match parse_client_message(&frame) {
+                                    Ok(ClientMessage::Cancel(id)) => {
+                                        if let Some(token) = active.get(&id) {
+                                            token.cancel();
+                                        }
                                     }
-                                }
-                                Ok(ClientMessage::Request(request)) => {
-                                    if active.len() >= MAX_OUTSTANDING_REQUESTS {
-                                        write_json(&mut writer, &error_response(Some(Value::from(request.id)), -32001, "too many outstanding requests")).await?;
-                                        continue;
+                                    Ok(ClientMessage::Request(request)) => {
+                                        if active.len() >= MAX_OUTSTANDING_REQUESTS {
+                                            write_json(&mut writer, &error_response(Some(Value::from(request.id)), -32001, "too many outstanding requests")).await?;
+                                            continue;
+                                        }
+                                        if active.contains_key(&request.id) {
+                                            write_json(&mut writer, &error_response(Some(Value::from(request.id)), -32600, "duplicate request id")).await?;
+                                            continue;
+                                        }
+                                        let cancellation = CancellationToken::new();
+                                        let emits_progress = request.method == "tools/call";
+                                        let request_id = request.id;
+                                        active.insert(request.id, cancellation.clone());
+                                        let tools = Arc::clone(&tools);
+                                        let workspace = workspace.clone();
+                                        let profile = profile.clone();
+                                        let permissions = permissions.clone();
+                                        requests.spawn(async move {
+                                            let emits_progress = request.method == "tools/call";
+                                            AssertUnwindSafe(handle_request(
+                                                request,
+                                                tools,
+                                                workspace,
+                                                profile,
+                                                permissions,
+                                                cancellation,
+                                            ))
+                                            .catch_unwind()
+                                            .await
+                                            .unwrap_or_else(|_| CompletedResponse::panicked(request_id, emits_progress))
+                                        });
+                                        if emits_progress {
+                                            write_json(&mut writer, &progress_notification(request_id, 0.0, "authorized request accepted")).await?;
+                                        }
                                     }
-                                    if active.contains_key(&request.id) {
-                                        write_json(&mut writer, &error_response(Some(Value::from(request.id)), -32600, "duplicate request id")).await?;
-                                        continue;
+                                    Err((id, code, message)) => {
+                                        write_json(&mut writer, &error_response(id, code, message)).await?;
                                     }
-                                    let cancellation = CancellationToken::new();
-                                    let emits_progress = request.method == "tools/call";
-                                    let request_id = request.id;
-                                    active.insert(request.id, cancellation.clone());
-                                    let response_sender = responses.clone();
-                                    let tools = Arc::clone(&self.tools);
-                                    let workspace = self.workspace.clone();
-                                    let profile = self.profile.clone();
-                                    let permissions = self.permissions.clone();
-                                    requests.spawn(async move {
-                                        let response = handle_request(
-                                            request,
-                                            tools,
-                                            workspace,
-                                            profile,
-                                            permissions,
-                                            cancellation,
-                                        ).await;
-                                        let _ = response_sender.send(response).await;
-                                    });
-                                    if emits_progress {
-                                        write_json(&mut writer, &progress_notification(request_id, 0.0, "authorized request accepted")).await?;
-                                    }
-                                }
-                                Err((id, code, message)) => {
-                                    write_json(&mut writer, &error_response(id, code, message)).await?;
                                 }
                             }
-                        }
-                        Some(Err(error)) => {
-                            write_json(&mut writer, &error_response(None, -32700, &error.to_string())).await?;
-                        }
-                        None => {
-                            input_closed = true;
-                            for cancellation in active.values() {
-                                cancellation.cancel();
+                            Some(Err(error)) => {
+                                write_json(&mut writer, &error_response(None, -32700, &error.to_string())).await?;
+                            }
+                            None => {
+                                input_closed = true;
+                                for cancellation in active.values() {
+                                    cancellation.cancel();
+                                }
                             }
                         }
                     }
-                }
-                response = response_receiver.recv(), if !active.is_empty() => {
-                    if let Some(response) = response {
-                        active.remove(&response.id);
-                        if response.emits_progress {
-                            write_json(&mut writer, &progress_notification(response.id, 1.0, "request finished")).await?;
+                    completed = requests.join_next(), if !requests.is_empty() => {
+                        match completed {
+                            Some(Ok(response)) => {
+                                active.remove(&response.id);
+                                if response.emits_progress {
+                                    write_json(&mut writer, &progress_notification(response.id, 1.0, "request finished")).await?;
+                                }
+                                write_json(&mut writer, &response.value).await?;
+                            }
+                            Some(Err(_)) => return Err(McpLocalServerError::RequestTask),
+                            None => {}
                         }
-                        write_json(&mut writer, &response.value).await?;
                     }
                 }
             }
+            writer.flush().await?;
+            Ok(())
         }
-
-        drop(responses);
-        self.permissions.shutdown();
-        let _ = tokio::time::timeout(SHUTDOWN_DEADLINE, async {
-            while requests.join_next().await.is_some() {}
-            let _ = self.broker_task.await;
-            let _ = reader_task.await;
-        })
         .await;
-        writer.flush().await?;
-        Ok(())
+
+        for cancellation in active.values() {
+            cancellation.cancel();
+        }
+        permissions.shutdown();
+        reader_task.abort();
+        if tokio::time::timeout(SHUTDOWN_DEADLINE, async {
+            while requests.join_next().await.is_some() {}
+            let _ = (&mut broker_task).await;
+            let _ = (&mut reader_task).await;
+        })
+        .await
+        .is_err()
+        {
+            requests.abort_all();
+            while requests.join_next().await.is_some() {}
+            broker_task.abort();
+            reader_task.abort();
+            let _ = broker_task.await;
+            let _ = reader_task.await;
+        }
+        run_result
     }
 }
 
@@ -318,6 +350,20 @@ struct CompletedResponse {
     value: Value,
 }
 
+impl CompletedResponse {
+    fn panicked(id: u64, emits_progress: bool) -> Self {
+        Self {
+            id,
+            emits_progress,
+            value: error_response(
+                Some(Value::from(id)),
+                -32603,
+                "local MCP request handler panicked",
+            ),
+        }
+    }
+}
+
 async fn handle_request(
     request: ClientRequest,
     tools: Arc<ToolRegistry>,
@@ -328,6 +374,8 @@ async fn handle_request(
 ) -> CompletedResponse {
     let id = request.id;
     let result = match request.method.as_str() {
+        #[cfg(test)]
+        "test/panic" => panic!("test-only MCP request panic"),
         "server/discover" => Ok(json!({
             "supportedVersions":[MCP_PROTOCOL_VERSION],
             "capabilities":{"tools":{"listChanged":false}},
@@ -370,6 +418,7 @@ async fn handle_request(
                         name: name.to_owned(),
                         arguments,
                     };
+                    let cleanup = DeferredCleanup::default();
                     let invocation = tools.invoke(
                         &call,
                         ToolContext {
@@ -378,13 +427,16 @@ async fn handle_request(
                             invocation_id: ToolInvocationId::new(),
                             permissions: &permissions,
                             events: None,
+                            cleanup: cleanup.clone(),
                         },
                     );
-                    match tokio::select! {
+                    let outcome = tokio::select! {
                         biased;
                         () = cancellation.cancelled() => None,
                         result = invocation => Some(result),
-                    } {
+                    };
+                    cleanup.drain().await;
+                    match outcome {
                         None => Err((-32800, "request cancelled")),
                         Some(result) => {
                             let is_error = result.status == ToolResultStatus::Error;
@@ -464,6 +516,7 @@ pub(crate) enum McpLocalServerError {
     FrameTooLarge,
     MalformedFrame,
     PartialFrame,
+    RequestTask,
 }
 
 impl fmt::Display for McpLocalServerError {
@@ -474,6 +527,7 @@ impl fmt::Display for McpLocalServerError {
             Self::FrameTooLarge => write!(formatter, "MCP frame exceeds {MAX_FRAME_BYTES} bytes"),
             Self::MalformedFrame => formatter.write_str("MCP frame must not be empty"),
             Self::PartialFrame => formatter.write_str("MCP input closed during a partial frame"),
+            Self::RequestTask => formatter.write_str("local MCP request task stopped unexpectedly"),
         }
     }
 }
@@ -482,7 +536,11 @@ impl Error for McpLocalServerError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::Encode | Self::FrameTooLarge | Self::MalformedFrame | Self::PartialFrame => None,
+            Self::Encode
+            | Self::FrameTooLarge
+            | Self::MalformedFrame
+            | Self::PartialFrame
+            | Self::RequestTask => None,
         }
     }
 }

@@ -45,6 +45,29 @@ fn stderr_server_config(temp: &TempDir) -> McpProcessConfig {
     fixture_server_config(temp, "stderr")
 }
 
+fn tree_server_config(temp: &TempDir, pid_path: &std::path::Path) -> McpProcessConfig {
+    let mut config = fixture_server_config(temp, "tree");
+    config.arguments.push(McpArgument::visible(pid_path));
+    config.shutdown_grace = Duration::from_millis(50);
+    config
+}
+
+fn process_exists(process_id: u32) -> bool {
+    if cfg!(windows) {
+        let output = std::process::Command::new("tasklist.exe")
+            .args(["/FI", &format!("PID eq {process_id}"), "/FO", "CSV", "/NH"])
+            .output()
+            .expect("tasklist starts");
+        String::from_utf8_lossy(&output.stdout).contains(&process_id.to_string())
+    } else {
+        std::process::Command::new("kill")
+            .args(["-0", &process_id.to_string()])
+            .status()
+            .expect("kill probe starts")
+            .success()
+    }
+}
+
 #[test]
 fn process_configuration_is_exact_bounded_and_redacted() {
     let temp = TempDir::new().expect("temporary directory");
@@ -219,6 +242,65 @@ async fn ignored_stdin_forces_bounded_process_cleanup() {
     assert!(report.success);
     assert!(started.elapsed() < Duration::from_secs(5));
     assert_eq!(client.health().phase, McpProcessPhase::Stopped);
+}
+
+#[tokio::test]
+async fn dropping_the_last_frontend_owner_stops_the_child_process() {
+    let temp = TempDir::new().expect("temporary directory");
+    let client = McpStdioClient::spawn(sleeping_server_config(&temp))
+        .await
+        .expect("server starts");
+    let mut activity = client.subscribe_activity();
+
+    drop(client);
+
+    let report = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match activity.recv().await {
+                Ok(McpProcessActivity::Stopped { forced, success }) => {
+                    break (forced, success);
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("process owner closed without reporting terminal cleanup")
+                }
+            }
+        }
+    })
+    .await
+    .expect("frontend disconnect cleanup is bounded");
+    assert!(report.0, "the sleeping fixture requires forced cleanup");
+    assert!(report.1, "the owned process was not reaped successfully");
+}
+
+#[tokio::test]
+async fn forced_shutdown_reaps_the_owned_descendant_process_tree() {
+    let temp = TempDir::new().expect("temporary directory");
+    let pid_path = temp.path().join("descendant.pid");
+    let client = McpStdioClient::spawn(tree_server_config(&temp, &pid_path))
+        .await
+        .expect("server starts");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !pid_path.exists() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let descendant = std::fs::read_to_string(&pid_path)
+        .expect("fixture publishes descendant pid")
+        .parse::<u32>()
+        .expect("descendant pid is numeric");
+    assert!(process_exists(descendant));
+
+    let report = client.shutdown().await.expect("shutdown completes");
+
+    assert!(report.forced);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while process_exists(descendant) && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        !process_exists(descendant),
+        "descendant process survived cleanup"
+    );
 }
 
 #[tokio::test]

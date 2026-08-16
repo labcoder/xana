@@ -2,12 +2,13 @@
 
 use super::{PackageSource, PluginError, SourceIdentity};
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     fs,
     io::{self, Read},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, SystemTime},
+    thread,
+    time::{Duration, Instant, SystemTime},
 };
 
 const MAX_PACKAGE_FILES: usize = 8_192;
@@ -16,6 +17,8 @@ const MAX_PACKAGE_FILE_BYTES: usize = 8 * 1024 * 1024;
 const MAX_PACKAGE_DEPTH: usize = 32;
 const MAX_GIT_TREE_OUTPUT: usize = 2 * 1024 * 1024;
 const STAGING_RETENTION: Duration = Duration::from_secs(24 * 60 * 60);
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 pub(super) struct AcquiredSource {
     pub(super) root: PathBuf,
@@ -93,13 +96,13 @@ pub(super) fn acquire(
             staging: None,
         }),
         PackageSource::Git { url, revision } => {
-            validate_git_source(url, revision)?;
+            let url = validate_git_source(url, revision)?;
             let staging = create_staging(package_store)?;
             let root = staging.directory.join("bundle");
-            acquire_git(url, revision, &staging.directory, &root)?;
+            acquire_git(&url, revision, &staging.directory, &root)?;
             Ok(AcquiredSource {
                 root,
-                identity: SourceIdentity::git(url, revision),
+                identity: SourceIdentity::git(&url, revision),
                 staging: Some(staging),
             })
         }
@@ -260,6 +263,7 @@ fn bounded_entries(root: &Path) -> Result<Vec<PathBuf>, PluginError> {
     let mut output = Vec::new();
     let mut files = 0_usize;
     let mut total = 0_usize;
+    let mut portable_paths = HashSet::new();
     while let Some((directory, depth)) = pending.pop_front() {
         if depth > MAX_PACKAGE_DEPTH {
             return Err(PluginError::Limit {
@@ -283,9 +287,12 @@ fn bounded_entries(root: &Path) -> Result<Vec<PathBuf>, PluginError> {
                 continue;
             }
             let path = child.path();
-            let _ = normalized_relative(path.strip_prefix(root).map_err(|_| {
+            let normalized = normalized_relative(path.strip_prefix(root).map_err(|_| {
                 PluginError::Invalid("plugin entry escaped its source root".to_owned())
             })?)?;
+            if !portable_paths.insert(normalized.to_lowercase()) {
+                return Err(PluginError::UnsafePath(path));
+            }
             let metadata = fs::symlink_metadata(&path).map_err(|source| PluginError::Io {
                 path: path.clone(),
                 source,
@@ -352,7 +359,7 @@ fn normalized_relative(path: &Path) -> Result<String, PluginError> {
         let part = part
             .to_str()
             .ok_or_else(|| PluginError::UnsafePath(path.to_owned()))?;
-        if part.is_empty() || part.chars().any(char::is_control) {
+        if !portable_component(part) {
             return Err(PluginError::UnsafePath(path.to_owned()));
         }
         if index > 0 {
@@ -363,7 +370,28 @@ fn normalized_relative(path: &Path) -> Result<String, PluginError> {
     Ok(output)
 }
 
-fn validate_git_source(url: &str, revision: &str) -> Result<(), PluginError> {
+fn portable_component(part: &str) -> bool {
+    if part.is_empty()
+        || !part.is_ascii()
+        || part.ends_with(['.', ' '])
+        || part
+            .chars()
+            .any(|character| character.is_control() || r#"<>:"/\|?*"#.contains(character))
+    {
+        return false;
+    }
+    let stem = part.split('.').next().unwrap_or(part).to_ascii_uppercase();
+    !matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CLOCK$" | "CONIN$" | "CONOUT$"
+    ) && !matches!(
+        stem.strip_prefix("COM")
+            .or_else(|| stem.strip_prefix("LPT")),
+        Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³")
+    )
+}
+
+fn validate_git_source(url: &str, revision: &str) -> Result<String, PluginError> {
     if revision.len() != 40 || !revision.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(PluginError::Invalid(
             "Git plugin revisions must be exact 40-character commit IDs".to_owned(),
@@ -379,7 +407,44 @@ fn validate_git_source(url: &str, revision: &str) -> Result<(), PluginError> {
             "Git plugin sources must use an explicit HTTPS URL".to_owned(),
         ));
     }
-    Ok(())
+    if local_test {
+        return Ok(url.to_owned());
+    }
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| PluginError::Invalid("Git plugin URL is invalid".to_owned()))?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.query().is_some()
+        || parsed.fragment().is_some()
+    {
+        return Err(PluginError::Invalid(
+            "Git plugin URLs must be credential-free HTTPS origins without query or fragment data"
+                .to_owned(),
+        ));
+    }
+    Ok(parsed.to_string())
+}
+
+fn git_command() -> Command {
+    let mut command = Command::new("git");
+    command.env_clear();
+    for name in ["PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GCM_INTERACTIVE", "Never")
+        .env("LC_ALL", "C");
+    command
 }
 
 fn acquire_git(
@@ -390,13 +455,10 @@ fn acquire_git(
 ) -> Result<(), PluginError> {
     let repository = staging.join("repository.git");
     run_git(
-        Command::new("git")
-            .arg("init")
-            .arg("--bare")
-            .arg(&repository),
+        git_command().arg("init").arg("--bare").arg(&repository),
         "initialize temporary repository",
     )?;
-    let mut fetch = Command::new("git");
+    let mut fetch = git_command();
     fetch
         .arg("-C")
         .arg(&repository)
@@ -416,7 +478,7 @@ fn acquire_git(
         .arg(revision);
     run_git(&mut fetch, "fetch exact plugin revision")?;
     let resolved = git_output(
-        Command::new("git")
+        git_command()
             .arg("-C")
             .arg(&repository)
             .args(["rev-parse", "FETCH_HEAD^{commit}"]),
@@ -430,7 +492,7 @@ fn acquire_git(
         });
     }
     let tree = git_output(
-        Command::new("git").arg("-C").arg(&repository).args([
+        git_command().arg("-C").arg(&repository).args([
             "ls-tree",
             "-r",
             "--full-tree",
@@ -448,7 +510,7 @@ fn acquire_git(
         path: destination.to_owned(),
         source,
     })?;
-    let mut command = Command::new("git");
+    let mut command = git_command();
     command
         .arg("-C")
         .arg(&repository)
@@ -456,6 +518,7 @@ fn acquire_git(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    configure_process_group(&mut command);
     let mut child = command.spawn().map_err(|source| PluginError::Process {
         action: "archive exact plugin revision",
         source,
@@ -464,14 +527,17 @@ fn acquire_git(
         .stdout
         .take()
         .ok_or_else(|| PluginError::Invalid("Git archive stdout was not available".to_owned()))?;
-    let extracted = extract_tar(stdout, destination);
-    if extracted.is_err() {
-        let _ = child.kill();
-    }
-    let status = child.wait().map_err(|source| PluginError::Process {
-        action: "wait for plugin archive",
-        source,
-    })?;
+    let destination = destination.to_owned();
+    let extraction = thread::spawn(move || extract_tar(stdout, &destination));
+    let status = wait_for_child(
+        &mut child,
+        "archive exact plugin revision",
+        GIT_COMMAND_TIMEOUT,
+    );
+    let extracted = extraction
+        .join()
+        .map_err(|_| PluginError::Invalid("Git archive extraction worker panicked".to_owned()))?;
+    let status = status?;
     extracted?;
     if !status.success() {
         return Err(PluginError::ProcessFailed("archive exact plugin revision"));
@@ -483,6 +549,7 @@ fn extract_tar(reader: impl Read, destination: &Path) -> Result<(), PluginError>
     let mut archive = tar::Archive::new(reader);
     let mut files = 0_usize;
     let mut total = 0_usize;
+    let mut portable_paths = HashSet::new();
     let entries = archive
         .entries()
         .map_err(|source| PluginError::Archive(source.to_string()))?;
@@ -499,7 +566,10 @@ fn extract_tar(reader: impl Read, destination: &Path) -> Result<(), PluginError>
         let relative = entry
             .path()
             .map_err(|source| PluginError::Archive(source.to_string()))?;
-        let _ = normalized_relative(&relative)?;
+        let normalized = normalized_relative(&relative)?;
+        if !portable_paths.insert(normalized.to_lowercase()) {
+            return Err(PluginError::UnsafePath(relative.into_owned()));
+        }
         if kind.is_dir() {
             fs::create_dir_all(destination.join(&relative)).map_err(|source| PluginError::Io {
                 path: destination.join(&relative),
@@ -543,12 +613,22 @@ fn extract_tar(reader: impl Read, destination: &Path) -> Result<(), PluginError>
 }
 
 fn run_git(command: &mut Command, action: &'static str) -> Result<(), PluginError> {
-    let status = command
+    run_git_with_timeout(command, action, GIT_COMMAND_TIMEOUT)
+}
+
+fn run_git_with_timeout(
+    command: &mut Command,
+    action: &'static str,
+    timeout: Duration,
+) -> Result<(), PluginError> {
+    configure_process_group(command);
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
+        .spawn()
         .map_err(|source| PluginError::Process { action, source })?;
+    let status = wait_for_child(&mut child, action, timeout)?;
     if status.success() {
         Ok(())
     } else {
@@ -561,6 +641,7 @@ fn git_output(
     limit: usize,
     action: &'static str,
 ) -> Result<String, PluginError> {
+    configure_process_group(command);
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -572,23 +653,26 @@ fn git_output(
             "Git output was unavailable while trying to {action}"
         ))
     })?;
-    let mut bytes = Vec::new();
-    stdout
-        .by_ref()
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)
+    let output = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout
+            .by_ref()
+            .take((limit + 1) as u64)
+            .read_to_end(&mut bytes)?;
+        Ok::<_, io::Error>(bytes)
+    });
+    let status = wait_for_child(&mut child, action, GIT_COMMAND_TIMEOUT);
+    let bytes = output
+        .join()
+        .map_err(|_| PluginError::Invalid("Git output reader panicked".to_owned()))?
         .map_err(|source| PluginError::Process { action, source })?;
+    let status = status?;
     if bytes.len() > limit {
-        let _ = child.kill();
-        let _ = child.wait();
         return Err(PluginError::Limit {
             what: "Git metadata output",
             limit,
         });
     }
-    let status = child
-        .wait()
-        .map_err(|source| PluginError::Process { action, source })?;
     if !status.success() {
         return Err(PluginError::ProcessFailed(action));
     }
@@ -597,4 +681,186 @@ fn git_output(
             "Git returned non-UTF-8 output while trying to {action}"
         ))
     })
+}
+
+fn wait_for_child(
+    child: &mut std::process::Child,
+    action: &'static str,
+    timeout: Duration,
+) -> Result<std::process::ExitStatus, PluginError> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(source) => {
+                kill_process_tree(child);
+                let _ = child.wait();
+                return Err(PluginError::Process { action, source });
+            }
+        }
+        if Instant::now() >= deadline {
+            kill_process_tree(child);
+            let _ = child.wait();
+            return Err(PluginError::ProcessTimeout(action));
+        }
+        thread::sleep(PROCESS_POLL_INTERVAL);
+    }
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    command.process_group(0);
+}
+
+#[cfg(windows)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = Command::new("kill")
+        .args(["-KILL", &format!("-{}", child.id())])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(windows)]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = Command::new("taskkill.exe")
+        .args(["/PID", &child.id().to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = child.kill();
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kill_process_tree(child: &mut std::process::Child) {
+    let _ = child.kill();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn portable_components_reject_cross_platform_aliases_and_reserved_names() {
+        for rejected in [
+            "CON",
+            "nul.txt",
+            "COM1",
+            "COM¹.txt",
+            "LPT9.log",
+            "LPT²",
+            "CONIN$",
+            "CONOUT$.txt",
+            "caf\u{e9}.md",
+            "cafe\u{301}.md",
+            "trailing.",
+            "trailing ",
+            "colon:name",
+            "back\\slash",
+        ] {
+            assert!(!portable_component(rejected), "accepted {rejected:?}");
+        }
+        assert!(portable_component("portable-name.toml"));
+    }
+
+    #[test]
+    fn git_sources_reject_credentials_and_ambiguous_url_data() {
+        let revision = "a".repeat(40);
+        for rejected in [
+            "https://user@example.com/plugin.git",
+            "https://user:secret@example.com/plugin.git",
+            "https://example.com/plugin.git?token=secret",
+            "https://example.com/plugin.git#revision",
+        ] {
+            assert!(validate_git_source(rejected, &revision).is_err());
+        }
+        assert_eq!(
+            validate_git_source("https://example.com/plugin.git", &revision).unwrap(),
+            "https://example.com/plugin.git"
+        );
+    }
+
+    #[test]
+    fn git_commands_disable_ambient_configuration_and_prompts() {
+        let command = git_command();
+        let environment = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            environment.get("GIT_CONFIG_NOSYSTEM"),
+            Some(&Some("1".to_owned()))
+        );
+        assert_eq!(
+            environment.get("GIT_TERMINAL_PROMPT"),
+            Some(&Some("0".to_owned()))
+        );
+        assert_eq!(
+            environment.get("GCM_INTERACTIVE"),
+            Some(&Some("Never".to_owned()))
+        );
+    }
+
+    #[test]
+    fn archive_rejects_paths_that_alias_on_case_insensitive_filesystems() {
+        let mut bytes = Vec::new();
+        {
+            let mut archive = tar::Builder::new(&mut bytes);
+            for name in ["Skills/guide.md", "skills/guide.md"] {
+                let mut header = tar::Header::new_gnu();
+                header.set_mode(0o644);
+                header.set_size(1);
+                header.set_cksum();
+                archive
+                    .append_data(&mut header, name, b"x" as &[u8])
+                    .unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        let destination = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            extract_tar(std::io::Cursor::new(bytes), destination.path()),
+            Err(PluginError::UnsafePath(_))
+        ));
+    }
+
+    #[test]
+    fn child_deadline_kills_the_owned_process() {
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/S", "/C", "ping -n 30 127.0.0.1 >NUL"]);
+            command
+        } else {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 30"]);
+            command
+        };
+        let error = run_git_with_timeout(
+            &mut command,
+            "run deadline fixture",
+            Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert!(matches!(error, PluginError::ProcessTimeout(_)));
+    }
 }

@@ -1,7 +1,9 @@
 use std::{
     env,
     ffi::OsStr,
+    fs,
     io::{self, BufRead, Write},
+    process::{Command, Stdio},
     thread,
     time::Duration,
 };
@@ -10,10 +12,32 @@ fn main() {
     match env::args().nth(1).as_deref().unwrap_or("serve") {
         "serve" => serve(),
         "sleep" => thread::sleep(Duration::from_secs(30)),
+        "tree" => spawn_tree(),
         "stderr" => drain_stderr(),
         "malformed" => malformed(),
         mode => panic!("unknown fixture mode: {mode}"),
     }
+}
+
+fn spawn_tree() {
+    let mut command = if cfg!(windows) {
+        let mut command = Command::new("cmd.exe");
+        command.args(["/D", "/S", "/C", "ping -n 30 127.0.0.1 >NUL"]);
+        command
+    } else {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30"]);
+        command
+    };
+    let child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("fixture spawns descendant");
+    let path = env::args().nth(2).expect("tree fixture requires pid path");
+    fs::write(path, child.id().to_string()).expect("fixture writes descendant pid");
+    thread::sleep(Duration::from_secs(30));
 }
 
 fn serve() {

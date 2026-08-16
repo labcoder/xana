@@ -197,6 +197,7 @@ async fn remote_tool_does_zero_transport_io_when_permission_denies() {
                 invocation_id: ToolInvocationId::new(),
                 permissions: &permissions,
                 events: None,
+                cleanup: crate::tool::DeferredCleanup::default(),
             },
         )
         .await;
@@ -260,6 +261,7 @@ async fn remote_tool_runs_after_exact_permission_and_reports_provenance() {
                 invocation_id: ToolInvocationId::new(),
                 permissions: &permissions,
                 events: None,
+                cleanup: crate::tool::DeferredCleanup::default(),
             },
         )
         .await;
@@ -280,6 +282,7 @@ async fn remote_tool_runs_after_exact_permission_and_reports_provenance() {
                 invocation_id: ToolInvocationId::new(),
                 permissions: &permissions,
                 events: None,
+                cleanup: crate::tool::DeferredCleanup::default(),
             },
         )
         .await;
