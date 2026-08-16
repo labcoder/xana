@@ -1123,11 +1123,14 @@ flowchart LR
 
 `PluginManager` owns inert Agent Plugins 1.0.0 inspection and private package
 state. A local directory is read directly for preview and copied through a
-bounded staging tree for install. An explicitly selected HTTPS Git source is
-fetched at one exact 40-character commit into a temporary bare repository with
-hooks and submodule recursion disabled, then extracted through a path-validating
-bounded archive reader. Linked development mode keeps a canonical local path
-and remains visibly mutable.
+bounded staging tree for install. An explicitly selected credential-free HTTPS
+Git source is fetched at one exact 40-character commit into a temporary bare
+repository with prompting, credential helpers, ambient Git configuration, URL
+rewrites, hooks, and submodule recursion disabled, then extracted through a
+path-validating bounded archive reader. Portable archive paths use bounded ASCII
+components, avoiding case, normalization, device-name, and trailing-dot/space
+aliases across supported filesystems. Linked development mode keeps a canonical
+local path and remains visibly mutable.
 
 `plugin.json` is the fatal package boundary. Invalid skills and MCP entries use
 the narrower failure boundaries required by the standard. Review records only
@@ -1173,7 +1176,7 @@ atomically replace versioned state.
 
 Plugin MCP declarations remain declarative data here. No plugin-origin process
 or network connection can exist until the supervised MCP transport phase, which
-will consume the exact resolved package revision and own shutdown on lifecycle
+consumes the exact resolved package revision and owns shutdown on lifecycle
 changes. This preserves the process-ownership contract without pretending an
 unimplemented runtime needs cleanup today.
 
@@ -1467,16 +1470,31 @@ flowchart LR
     S --> E["Typed Xana activity stream"]
     A --> I["Immutable ArtifactStore or safe HTTPS reference"]
     R --> T["Bounded private task state"]
-    C["Explicit cancel or dropped execution"] --> X["Best-effort remote CancelTask"]
+    C["Dropped or interrupted in-flight delegation"] --> L["Runtime-owned bounded cleanup lease"]
+    L --> X["Best-effort remote CancelTask"]
+    EC["Explicit tracked-task cancel"] --> DI["Durable cancellation intent"]
+    DI --> B["Directly awaited bounded CancelTask"]
+    B --> T
     X --> T
 ```
 
 The remote agent owns its loop, context, tools, and side effects. Xana owns
 recipient trust, disclosure, local observation, cancellation attempts, and
-artifact provenance. A completed or failed task yields a bounded receipt. An
-unconfirmed cancellation is recorded as detached/unknown rather than being
-reported as stopped. All remote messages and artifacts remain attributed,
-untrusted data.
+artifact provenance. Once the transport learns a remote task identity, it arms
+a lease. Terminal task state disarms the lease; dropping a nonterminal
+delegation transfers cancellation into the runtime's bounded deferred-cleanup
+scope. The operation owner awaits that scope after normal tool execution and
+after aborting an interrupted native turn, so dropping the request future does
+not also drop its cancellation attempt. Each operation has its own cleanup
+supervisor; cleanup tasks start under that supervisor and remain owned even if
+one waiter is interrupted. Durable cancellation intent commits before cleanup
+admission. The queue and drain deadline are bounded, and requested, confirmed,
+failed, timed-out, unknown, and unscheduled outcomes remain distinct in task
+state. Unconfirmed or unscheduled cancellation is reported as detached/unknown
+rather than stopped. Abrupt operating-system
+termination is outside that controlled-shutdown guarantee. A completed or
+failed task yields a bounded receipt. All remote messages and artifacts remain
+attributed, untrusted data.
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.

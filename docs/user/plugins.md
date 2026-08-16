@@ -4,9 +4,10 @@ Xana supports the declarative package boundary in the Agent Plugins 1.0.0
 Working Draft. A plugin may contribute Agent Skills and MCP server declarations;
 it cannot load native code, Rust extensions, hooks, scripts, or WASM into Xana.
 
-Installation and enablement are separate. Inspecting or installing a package
-does not activate a skill, start a process, connect to an endpoint, look up a
-credential, or change a profile.
+Installation and enablement are separate. Inspecting or installing a local
+package does not activate a skill, start a plugin-declared process, connect to a
+plugin-declared endpoint, look up a credential, or change a profile. An
+explicitly selected Git source does run bounded Git acquisition and HTTPS I/O.
 
 ## Review before installing
 
@@ -46,13 +47,18 @@ the displayed review. Normal installs copy a bounded, validated tree into a
 private content-addressed store. Symlinks, junctions/reparse points, traversal,
 special files, non-portable paths, submodules, oversized files/trees, revision
 drift, and changes during copying fail before package state is published.
-Reinstalling the same source and digest is idempotent; changed content requires
+Portable package paths use bounded ASCII components so case, Unicode
+normalization, Windows device aliases, and trailing-dot/space behavior cannot
+materialize different trees across supported filesystems. Reinstalling the same source and digest is idempotent; changed content requires
 the explicit update lifecycle rather than silently replacing an install.
 
 Git is invoked only for an explicitly selected Git source. Xana fetches the
 exact commit into a temporary bare repository with hooks and submodule
 recursion disabled, validates the resulting archive, and records the exact
-revision. Package discovery never downloads schemas or other content.
+credential-free HTTPS URL and revision. User information, query strings, and
+fragments are rejected. Git prompting, credential helpers, ambient Git
+configuration, and URL rewrite rules are disabled for acquisition. Package
+discovery never downloads schemas or other content.
 
 ## Linked development mode
 
@@ -105,9 +111,9 @@ implicit install or fallback.
 
 Enabled plugin skills join normal Agent Skills discovery under the qualified
 name `plugin:PLUGIN/SKILL`. Cross-source same-name skills therefore remain
-explicit rather than colliding silently. MCP declarations are still inert in
-this milestone: the supervised MCP runtime is introduced by the next phase, so
-no plugin lifecycle command currently starts a process or network connection.
+explicit rather than colliding silently. A plugin MCP declaration remains inert
+during plugin lifecycle commands; it can start only through Xana's separate,
+profile-allowlisted, outbound-guarded MCP runtime.
 
 Disable the same exact scope with matching flags:
 
