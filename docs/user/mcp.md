@@ -166,7 +166,10 @@ frames, partial frames, process exit, timeout, and queue pressure remain typed.
 Xana owns the child and its process group. Dropping the final client, explicit
 shutdown, cancellation, a crash, or a protocol failure starts cleanup. Closing
 stdin gives the peer a two-second graceful deadline by default; Xana then kills
-the owned process tree. Restart is an explicit fresh spawn and never replays a
+the owned process tree. Explicit shutdown and dropping the final frontend owner
+both enter this bounded cleanup path; process-tree cleanup includes descendants
+spawned by the configured server. An uncatchable operating-system termination
+of Xana itself is outside that guarantee. Restart is an explicit fresh spawn and never replays a
 request. Health distinguishes starting, discovering, ready, degraded,
 stopping, stopped, and crashed states.
 

@@ -101,11 +101,21 @@ xana external-agent tasks research
 xana external-agent cancel research TASK_ID --yes
 ```
 
-Dropping an in-flight delegation triggers a best-effort remote cancellation.
-If cancellation cannot be confirmed, Xana reports and records the task as
-`detached_unknown`; it never claims that the remote effect stopped. Removing an
-external-agent declaration also removes its local Card and task records, not
-the remote agent's own history.
+Dropping or explicitly interrupting an in-flight delegation transfers any
+identified remote task into Xana's runtime-owned cleanup scope. Xana records it
+as `detached_unknown` before scheduling a best-effort remote cancellation, then
+waits for that bounded cleanup during ordinary turn completion and controlled
+runtime shutdown. If the cleanup queue is full, its deadline expires, or the
+remote endpoint does not confirm cancellation, Xana leaves the task recorded as
+`detached_unknown`; `remote_cancel` distinguishes `requested_unconfirmed`,
+`confirmed`, `failed`, `timed_out`, `unknown`, and `not_scheduled` outcomes. A
+cancellation request is admitted only after its durable intent is recorded. If
+that write fails, Xana surfaces the detachment and sends no remote request. It
+never claims that the remote effect stopped. Abruptly
+terminating Xana at the operating-system level cannot guarantee that a final
+remote cancellation request is delivered. Removing an external-agent
+declaration also removes its local Card and task records, not the remote
+agent's own history.
 
 Trust does not silently send a prompt, transcript, workspace, file, artifact,
 or metadata to the endpoint. It establishes recipient identity only; each
