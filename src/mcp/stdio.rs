@@ -915,7 +915,11 @@ fn configure_process_group(_command: &mut Command) {}
 async fn kill_process_tree(child: &mut Child) {
     if let Some(id) = child.id() {
         let _ = Command::new("kill")
-            .args([OsString::from("-KILL"), OsString::from(format!("-{id}"))])
+            .args([
+                OsString::from("-KILL"),
+                OsString::from("--"),
+                OsString::from(format!("-{id}")),
+            ])
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
