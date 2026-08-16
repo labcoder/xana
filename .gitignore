@@ -1,4 +1,5 @@
 /target
+/.experiments/
 
 # Local secrets and machine-specific environment
 .env
