@@ -6,6 +6,57 @@ use crate::{
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
 
+struct DropTrackedReader<R> {
+    inner: R,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl<R> Drop for DropTrackedReader<R> {
+    fn drop(&mut self) {
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for DropTrackedReader<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+        buffer: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_read(context, buffer)
+    }
+}
+
+struct FailingWriter;
+
+impl tokio::io::AsyncWrite for FailingWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+        _buffer: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "fixture output closed",
+        )))
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 fn server(workspace: &std::path::Path, decision: PolicyDecision) -> McpLocalServer {
     let shell = Shell::resolve(ShellConfig::default()).expect("platform shell");
     let names = ["xana_docs".to_owned()].into_iter().collect();
@@ -95,6 +146,59 @@ async fn hand_written_client_discovers_lists_calls_and_closes_cleanly() {
 }
 
 #[tokio::test]
+async fn sequential_requests_are_reaped_while_the_server_remains_open() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, server_io) = tokio::io::duplex(2 * MAX_FRAME_BYTES);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let task = tokio::spawn(
+        server(workspace.path(), PolicyDecision::Allow).run_io(server_read, server_write),
+    );
+    let (client_read, mut client_write) = tokio::io::split(client);
+    let mut client_read = BufReader::new(client_read);
+
+    for id in 1..=64 {
+        send_frame(
+            &mut client_write,
+            &encode_request(McpRequestId::new(id).unwrap(), "server/discover", json!({})).unwrap(),
+        )
+        .await;
+        let response = read_response(&mut client_read).await;
+        assert_eq!(response["id"], id);
+    }
+
+    client_write.shutdown().await.unwrap();
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn panicking_request_returns_an_error_and_does_not_wedge_shutdown() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (client, server_io) = tokio::io::duplex(4096);
+    let (server_read, server_write) = tokio::io::split(server_io);
+    let task = tokio::spawn(
+        server(workspace.path(), PolicyDecision::Allow).run_io(server_read, server_write),
+    );
+    let (client_read, mut client_write) = tokio::io::split(client);
+    let mut client_read = BufReader::new(client_read);
+
+    send_frame(
+        &mut client_write,
+        &encode_request(McpRequestId::new(9).unwrap(), "test/panic", json!({})).unwrap(),
+    )
+    .await;
+    let response = read_response(&mut client_read).await;
+    assert_eq!(response["id"], 9);
+    assert_eq!(response["error"]["code"], -32603);
+
+    client_write.shutdown().await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("server shutdown is bounded")
+        .expect("server task joins")
+        .expect("panicking request is isolated");
+}
+
+#[tokio::test]
 async fn deny_policy_and_unallowlisted_calls_fail_without_execution() {
     let workspace = tempfile::tempdir().unwrap();
     let request = ClientRequest {
@@ -171,4 +275,28 @@ async fn malformed_partial_and_oversized_frames_are_bounded() {
         partial.read_frame().await,
         Err(McpLocalServerError::PartialFrame)
     ));
+}
+
+#[tokio::test]
+async fn output_failure_still_cleans_up_the_owned_reader_and_broker() {
+    let workspace = tempfile::tempdir().unwrap();
+    let (mut client, server_io) = tokio::io::duplex(1024);
+    let (server_read, _unused_server_write) = tokio::io::split(server_io);
+    let reader_dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let tracked_reader = DropTrackedReader {
+        inner: server_read,
+        dropped: std::sync::Arc::clone(&reader_dropped),
+    };
+    let task = tokio::spawn(
+        server(workspace.path(), PolicyDecision::Allow).run_io(tracked_reader, FailingWriter),
+    );
+
+    client.write_all(b"not-json\n").await.unwrap();
+    let error = tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("server cleanup is bounded")
+        .expect("server task joins")
+        .expect_err("closed output fails the server");
+    assert!(matches!(error, McpLocalServerError::Io(_)));
+    assert!(reader_dropped.load(std::sync::atomic::Ordering::SeqCst));
 }

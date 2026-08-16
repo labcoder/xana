@@ -1123,6 +1123,7 @@ pub(crate) enum PluginError {
         source: io::Error,
     },
     ProcessFailed(&'static str),
+    ProcessTimeout(&'static str),
     Archive(String),
     Invalid(String),
     UnsupportedSchema(String),
@@ -1171,6 +1172,12 @@ impl fmt::Display for PluginError {
             Self::Process { action, source } => write!(formatter, "could not {action}: {source}"),
             Self::ProcessFailed(action) => {
                 write!(formatter, "could not {action}; Git exited unsuccessfully")
+            }
+            Self::ProcessTimeout(action) => {
+                write!(
+                    formatter,
+                    "could not {action}; Git exceeded its fixed deadline"
+                )
             }
             Self::Archive(reason) => write!(
                 formatter,
