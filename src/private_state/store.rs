@@ -116,42 +116,51 @@ pub(crate) fn ensure_interoperable_records(
     paths: &XanaPaths,
 ) -> Result<Vec<PathBuf>, PrivateStateError> {
     let mut created = Vec::new();
-    ensure_one(
-        &paths.projects_file(),
-        &ProjectRegistryDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.project_bindings_file(),
-        &ProjectBindingsDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.package_state_file(),
-        &PackageStateDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.endpoint_trust_file(),
-        &EndpointTrustDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.external_agent_state_file(),
-        &ExternalAgentStateDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.outbound_decisions_file(),
-        &OutboundDecisionDocument::default(),
-        &mut created,
-    )?;
-    ensure_one(
-        &paths.outbound_audit_file(),
-        &OutboundAuditDocument::default(),
-        &mut created,
-    )?;
-    Ok(created)
+    let initialized = (|| {
+        ensure_one(
+            &paths.projects_file(),
+            &ProjectRegistryDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.project_bindings_file(),
+            &ProjectBindingsDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.package_state_file(),
+            &PackageStateDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.endpoint_trust_file(),
+            &EndpointTrustDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.external_agent_state_file(),
+            &ExternalAgentStateDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.outbound_decisions_file(),
+            &OutboundDecisionDocument::default(),
+            &mut created,
+        )?;
+        ensure_one(
+            &paths.outbound_audit_file(),
+            &OutboundAuditDocument::default(),
+            &mut created,
+        )?;
+        Ok(())
+    })();
+    match initialized {
+        Ok(()) => Ok(created),
+        Err(error) => {
+            rollback_created(&created)?;
+            Err(error)
+        }
+    }
 }
 
 pub(crate) fn read_document<T: DeserializeOwned>(path: &Path) -> Result<T, PrivateStateError> {
@@ -211,6 +220,25 @@ fn ensure_one<T: DeserializeOwned + Serialize>(
             Ok(())
         }
         Err(error) => Err(error),
+    }
+}
+
+fn rollback_created(paths: &[PathBuf]) -> Result<(), PrivateStateError> {
+    let mut failures = Vec::new();
+    for path in paths.iter().rev() {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => failures.push(format!("{}: {source}", path.display())),
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(PrivateStateError::Invalid(format!(
+            "could not completely roll back private-state initialization: {}",
+            failures.join("; ")
+        )))
     }
 }
 
@@ -391,6 +419,37 @@ mod tests {
             read_document::<ProjectRegistryDocument>(&paths.projects_file()),
             Err(PrivateStateError::UnsupportedVersion { found: 99, .. })
         ));
+    }
+
+    #[test]
+    fn later_initialization_failure_rolls_back_every_record_created_by_the_attempt() {
+        let directory = tempdir().unwrap();
+        let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
+        fs::create_dir_all(paths.endpoint_trust_file()).unwrap();
+
+        assert!(ensure_interoperable_records(&paths).is_err());
+
+        assert!(!paths.projects_file().exists());
+        assert!(!paths.project_bindings_file().exists());
+        assert!(!paths.package_state_file().exists());
+        assert!(paths.endpoint_trust_file().is_dir());
+        assert!(!paths.external_agent_state_file().exists());
+        assert!(!paths.outbound_decisions_file().exists());
+        assert!(!paths.outbound_audit_file().exists());
+    }
+
+    #[test]
+    fn rollback_attempts_every_path_after_one_cleanup_failure() {
+        let directory = tempdir().unwrap();
+        let removable = directory.path().join("removable.json");
+        let invalid = directory.path().join("directory.json");
+        fs::write(&removable, b"temporary").unwrap();
+        fs::create_dir(&invalid).unwrap();
+
+        let error = rollback_created(&[removable.clone(), invalid]).unwrap_err();
+
+        assert!(error.to_string().contains("could not completely roll back"));
+        assert!(!removable.exists(), "later cleanup was not attempted");
     }
 
     #[test]
