@@ -15,9 +15,12 @@ artifacts, or managed processes.
 
 This proposal accepts the local interface architecture required before those
 surfaces are implemented. It does not select a Desktop framework. Tauri 2 with
-React and GPUI must first render and operate the same disposable fixture, and
-the owner selects the stack from measured evidence. Until that decision is
-recorded, neither prototype is production architecture.
+a measured web presentation and native GPUI must first render and operate the
+same disposable fixture, and the owner selects the stack from measured
+evidence. React is a candidate rather than a requirement. GPUI also receives an
+exact-pinned WASM viability gate before Xana prices a separately implemented
+browser peer. Until that decision is recorded, neither prototype is production
+architecture.
 
 The required native source-build targets remain Windows x64, macOS ARM64,
 macOS Intel, and Linux x64 glibc. A framework that cannot satisfy a target must
@@ -338,20 +341,26 @@ flowchart LR
 
 ## Framework comparison and owner decision gate
 
-M4 must build disposable Tauri 2/React and GPUI slices from one versioned
-fixture and interaction checklist. Both must account for the complete product
-topology: Tauri must prove its presentation can serve both Desktop and a local
-browser peer; GPUI must include the measured cost and maintenance of a separate
-browser presentation. Both report inactive CLI/TUI impact, target availability,
-startup, input/event-to-paint latency, frame behavior, idle CPU/redraw, memory,
-size, build complexity, dependencies/licenses, accessibility, IME, rich content,
+M4 must build disposable Tauri 2 and native GPUI slices from one versioned
+fixture and interaction checklist. The Tauri slice must use the lightest web
+presentation that proves the workload; React is not mandatory. Before treating
+GPUI as necessarily requiring a second browser implementation, the comparison
+must run one exact-pinned GPUI/WASM viability gate and record whether it is
+runnable, blocked, or unsuitable and why. Both slices must then account for the
+complete Desktop plus local-browser topology rather than comparing only native
+windows. Both report inactive CLI/TUI impact, target availability, startup,
+input/event-to-paint latency, frame behavior, idle CPU/redraw, memory, size,
+build complexity, dependencies/licenses, accessibility, IME, rich content,
 security boundary, testing, and maintenance.
 
 The comparison cannot connect providers, read credentials, mutate Xana state,
-execute tools, or expose a network listener. It cannot select a winner. At the
-decision gate, the owner may select one stack, reject both, or request one
-bounded follow-up. A selected stack requires a later accepted decision and
-production security boundary before prototype code can be adopted.
+or execute tools. A disposable standalone mock host may bind an
+operating-system-selected loopback port for the shared fixture only; it uses no
+real secrets, accepts no non-loopback traffic, and is not a product host or
+durable service. The comparison cannot select a winner. At the decision gate,
+the owner may select one stack, reject both, or request one bounded follow-up.
+A selected stack requires a later accepted decision and production security
+boundary before prototype code can be adopted.
 
 ## Implementation sequence
 

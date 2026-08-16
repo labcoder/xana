@@ -97,7 +97,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   defines the prescriptive local Desktop/browser, execution-host,
   controller/observer, typed-content, Workbench, Espejo, lifecycle, and
   non-split-brain contracts. It deliberately leaves the Desktop framework for
-  an owner decision after equal Tauri/React and GPUI prototypes.
+  an owner decision after equal Tauri-web and native-GPUI prototypes plus an
+  exact-pinned GPUI/WASM viability gate.
 - [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
   records the bounded four-target native preview, source-controlled installers,
   Xana-owned readiness handoff, attributable draft assembly, and explicit
