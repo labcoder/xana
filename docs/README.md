@@ -93,6 +93,11 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   defines exact named image-generation and specialist-vision routes separate
   from conversational providers. Architecture and User Documentation own the
   shipped contract.
+- [Accepted local multi-surface Workbench and execution host](proposals/0022-local-multisurface-workbench-and-execution-host.md)
+  defines the prescriptive local Desktop/browser, execution-host,
+  controller/observer, typed-content, Workbench, Espejo, lifecycle, and
+  non-split-brain contracts. It deliberately leaves the Desktop framework for
+  an owner decision after equal Tauri/React and GPUI prototypes.
 - [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
   records the bounded four-target native preview, source-controlled installers,
   Xana-owned readiness handoff, attributable draft assembly, and explicit
@@ -108,6 +113,10 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   Documentation now own the shipped contract.
 - [Code organization](development/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
+- [M3 to M4 interface handoff](development/m3-to-m4-interface-handoff.md)
+  records the code-evidenced Xana 0.6.0 capabilities, schema versions,
+  compatibility aliases, proposal states, and explicit deferrals that local
+  interface work must preserve.
 - [Xana 0.5.0 architecture closure evidence](development/architecture-closure-evidence-0.5.0.md)
   records the one-package boundary audit, canonical module vocabulary, local
   verification, and deliberately deferred public extraction.

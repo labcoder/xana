@@ -151,4 +151,8 @@ Windows validation must remain meaningful.
 
 Particular future system shapes live in [proposals](proposals/). A proposal may
 apply several principles without becoming authoritative until its status is
-Accepted.
+Accepted. The accepted
+[local multi-surface Workbench and execution-host proposal](proposals/0022-local-multisurface-workbench-and-execution-host.md)
+applies the headless-engine, explicit-authority, typed-boundary, lifecycle,
+structured-concurrency, media-reference, and cross-platform principles to the
+next local interfaces without changing the principles themselves.
