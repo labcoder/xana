@@ -52,7 +52,7 @@ fn tree_server_config(temp: &TempDir, pid_path: &std::path::Path) -> McpProcessC
     config
 }
 
-fn process_exists(process_id: u32) -> bool {
+fn process_is_running(process_id: u32) -> bool {
     if cfg!(windows) {
         let output = std::process::Command::new("tasklist.exe")
             .args(["/FI", &format!("PID eq {process_id}"), "/FO", "CSV", "/NH"])
@@ -60,11 +60,19 @@ fn process_exists(process_id: u32) -> bool {
             .expect("tasklist starts");
         String::from_utf8_lossy(&output.stdout).contains(&process_id.to_string())
     } else {
-        std::process::Command::new("kill")
-            .args(["-0", &process_id.to_string()])
-            .status()
-            .expect("kill probe starts")
-            .success()
+        let output = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &process_id.to_string()])
+            .output()
+            .expect("process-state probe starts");
+        if !output.status.success() {
+            return false;
+        }
+        let state = String::from_utf8_lossy(&output.stdout);
+        let state = state.trim();
+        // A killed grandchild can remain briefly as a zombie until its dead
+        // parent is adopted and reaped. It has already stopped executing and
+        // no longer represents a surviving MCP process-tree effect.
+        !state.is_empty() && !state.starts_with('Z')
     }
 }
 
@@ -288,17 +296,17 @@ async fn forced_shutdown_reaps_the_owned_descendant_process_tree() {
         .expect("fixture publishes descendant pid")
         .parse::<u32>()
         .expect("descendant pid is numeric");
-    assert!(process_exists(descendant));
+    assert!(process_is_running(descendant));
 
     let report = client.shutdown().await.expect("shutdown completes");
 
     assert!(report.forced);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while process_exists(descendant) && Instant::now() < deadline {
+    while process_is_running(descendant) && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        !process_exists(descendant),
+        !process_is_running(descendant),
         "descendant process survived cleanup"
     );
 }
