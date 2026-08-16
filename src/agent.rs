@@ -18,7 +18,7 @@ use crate::{
     telemetry::{
         NoopRuntimeTelemetry, RuntimeTelemetry, RuntimeTelemetryEvent, RuntimeTelemetryKind,
     },
-    tool::{ToolContext, ToolRegistry},
+    tool::{DeferredCleanup, ToolContext, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -216,18 +216,23 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: impl Into<AgentEventSender>,
     ) -> Result<Message> {
-        self.run_turn_inner(
-            operation_id,
-            messages,
-            &self.prompt,
-            permissions,
-            events.into(),
-            None,
-        )
-        .await
-        .map(|result| result.message)
+        let cleanup = DeferredCleanup::default();
+        let result = self
+            .run_turn_inner(
+                operation_id,
+                messages,
+                &self.prompt,
+                permissions,
+                events.into(),
+                None,
+                cleanup.clone(),
+            )
+            .await;
+        cleanup.drain().await;
+        result.map(|result| result.message)
     }
 
+    #[cfg(test)]
     pub(crate) async fn run_turn_with_usage(
         &self,
         operation_id: OperationId,
@@ -235,37 +240,66 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: impl Into<AgentEventSender>,
     ) -> Result<AgentTurnResult> {
+        let cleanup = DeferredCleanup::default();
+        let result = self
+            .run_turn_inner(
+                operation_id,
+                messages,
+                &self.prompt,
+                permissions,
+                events.into(),
+                None,
+                cleanup.clone(),
+            )
+            .await;
+        cleanup.drain().await;
+        result
+    }
+
+    pub(crate) async fn run_turn_with_usage_in_scope(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        permissions: PermissionBrokerHandle,
+        events: AgentEventSender,
+        cleanup: DeferredCleanup,
+    ) -> Result<AgentTurnResult> {
         self.run_turn_inner(
             operation_id,
             messages,
             &self.prompt,
             permissions,
-            events.into(),
+            events,
             None,
+            cleanup,
         )
         .await
     }
 
-    pub(crate) async fn run_turn_with_prompt(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_turn_with_prompt_in_scope(
         &self,
         operation_id: OperationId,
         messages: &mut Vec<Message>,
         prompt: &PromptSnapshot,
         permissions: PermissionBrokerHandle,
-        events: impl Into<AgentEventSender>,
+        events: AgentEventSender,
         durable: Option<DurableTurnServices>,
+        cleanup: DeferredCleanup,
     ) -> Result<AgentTurnResult> {
         self.run_turn_inner(
             operation_id,
             messages,
             prompt,
             permissions,
-            events.into(),
+            events,
             durable,
+            cleanup,
         )
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_turn_inner(
         &self,
         operation_id: OperationId,
@@ -274,6 +308,7 @@ impl Agent {
         permissions: PermissionBrokerHandle,
         events: AgentEventSender,
         durable: Option<DurableTurnServices>,
+        cleanup: DeferredCleanup,
     ) -> Result<AgentTurnResult> {
         let definitions = self.tools.definitions();
         let delta_sink = EventDeltaSink {
@@ -340,6 +375,7 @@ impl Agent {
                         durable.operations.clone(),
                         Arc::clone(&self.boundary_observer),
                         Some(events.clone()),
+                        cleanup.clone(),
                     )
                     .invoke_tool(operation_id, step_id, invocation_id, call.clone())
                     .await?
@@ -353,6 +389,7 @@ impl Agent {
                                 invocation_id,
                                 permissions: &permissions,
                                 events: Some(&events),
+                                cleanup: cleanup.clone(),
                             },
                         )
                         .await

@@ -1,5 +1,9 @@
 //! Bounded A2A 1.0 task delegation behind Xana's ordinary tool and egress gates.
 
+mod cancellation;
+
+use cancellation::{RemoteCancellation, RemoteTaskLease, cancellation_status};
+
 use super::{A2A_PROTOCOL_VERSION, A2aError, ExternalAgentManager};
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore, MAX_ARTIFACT_BYTES},
@@ -17,7 +21,7 @@ use crate::{
     private_state::ExternalAgentStateRecord,
     sse::SseDecoder,
     tool::{
-        EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition,
+        DeferredCleanup, EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition,
         ToolExecutionContext, ToolRegistry,
     },
 };
@@ -186,6 +190,23 @@ pub(crate) async fn cancel_tracked_task(
     declaration: &crate::config::ExternalAgentDeclaration,
     task_id: &str,
 ) -> anyhow::Result<crate::private_state::ExternalAgentTaskRecord> {
+    cancel_tracked_task_with_security(
+        manager,
+        connection,
+        declaration,
+        task_id,
+        McpHttpSecurity::default(),
+    )
+    .await
+}
+
+async fn cancel_tracked_task_with_security(
+    manager: &ExternalAgentManager,
+    connection: &str,
+    declaration: &crate::config::ExternalAgentDeclaration,
+    task_id: &str,
+    security: McpHttpSecurity,
+) -> anyhow::Result<crate::private_state::ExternalAgentTaskRecord> {
     let trusted = manager.trusted_record(connection, declaration)?;
     let tracked = manager
         .task(connection, task_id)?
@@ -201,31 +222,55 @@ pub(crate) async fn cancel_tracked_task(
     ) {
         anyhow::bail!("external task is already terminal ({})", tracked.state);
     }
-    let security = McpHttpSecurity::default();
-    let endpoint = McpHttpEndpoint::parse(&trusted.interface_url, security)
-        .map_err(|_| anyhow::anyhow!("trusted A2A interface endpoint is no longer valid"))?;
-    let client = pinned_client(endpoint.url(), security, CANCEL_TIMEOUT)
-        .await
-        .map_err(|_| anyhow::anyhow!("could not establish the trusted A2A connection"))?;
-    let confirmed = cancel_remote_task(
+    manager.record_task(
+        connection,
+        &trusted.identity_digest,
+        task_id,
+        tracked.context_id.as_deref(),
+        "detached_unknown",
+        "requested_unconfirmed",
+    )?;
+    let endpoint = match McpHttpEndpoint::parse(&trusted.interface_url, security) {
+        Ok(endpoint) => endpoint,
+        Err(_) => {
+            return Ok(manager.record_task(
+                connection,
+                &trusted.identity_digest,
+                task_id,
+                tracked.context_id.as_deref(),
+                "detached_unknown",
+                "failed",
+            )?);
+        }
+    };
+    let client = match pinned_client(endpoint.url(), security, CANCEL_TIMEOUT).await {
+        Ok(client) => client,
+        Err(_) => {
+            return Ok(manager.record_task(
+                connection,
+                &trusted.identity_digest,
+                task_id,
+                tracked.context_id.as_deref(),
+                "detached_unknown",
+                "failed",
+            )?);
+        }
+    };
+    let outcome = cancel_remote_task(
         &client,
         endpoint.url().clone(),
         declaration.credential.as_ref(),
         task_id,
     )
-    .await
-    .map_err(|_| anyhow::anyhow!("remote cancellation could not be confirmed"))?;
+    .await;
+    let (state, remote_cancel) = cancellation_status(&outcome);
     Ok(manager.record_task(
         connection,
         &trusted.identity_digest,
         task_id,
         tracked.context_id.as_deref(),
-        if confirmed {
-            "canceled"
-        } else {
-            &tracked.state
-        },
-        if confirmed { "confirmed" } else { "failed" },
+        state,
+        remote_cancel,
     )?)
 }
 
@@ -463,6 +508,7 @@ impl Tool for A2aDelegationTool {
                 cancellation: cancellation.0.clone(),
                 events: context.events,
                 operation_id: context.operation_id,
+                cleanup: context.cleanup,
             };
             let receipt = OutboundGuard::open(&self.paths)
                 .map_err(|error| error.to_string())?
@@ -518,6 +564,7 @@ struct A2aSendTransport {
     cancellation: CancellationToken,
     events: Option<AgentEventSender>,
     operation_id: OperationId,
+    cleanup: DeferredCleanup,
 }
 
 impl OutboundTransport for A2aSendTransport {
@@ -611,17 +658,7 @@ impl A2aSendTransport {
             status if !status.is_success() => return Err(A2aWireError::Http),
             _ => {}
         }
-        let mut collector = DelegationCollector::new(
-            self.connection.clone(),
-            self.agent_name.clone(),
-            self.recipient_digest.clone(),
-            self.manager.clone(),
-            self.artifacts.clone(),
-            self.owner,
-            self.events.clone(),
-            self.operation_id,
-        );
-        let mut cancel_guard = RemoteCancelGuard::new(
+        let remote_cancellation = RemoteCancellation::new(
             client.clone(),
             endpoint.clone(),
             self.credential_reference.clone(),
@@ -632,54 +669,65 @@ impl A2aSendTransport {
             self.operation_id,
             self.agent_name.clone(),
         );
+        let mut collector = DelegationCollector::new(
+            self.connection.clone(),
+            self.agent_name.clone(),
+            self.recipient_digest.clone(),
+            self.manager.clone(),
+            self.artifacts.clone(),
+            self.owner,
+            self.events.clone(),
+            self.operation_id,
+            RemoteTaskLease::new(self.cleanup.clone(), remote_cancellation),
+        );
         let media_type = response
             .headers()
             .get(header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.split(';').next())
-            .map(str::trim);
-        match media_type {
-            Some("text/event-stream") if self.streaming => {
-                let mut stream = response.bytes_stream();
-                let mut decoder = SseDecoder::default();
-                let mut total = 0_usize;
-                let mut events = 0_usize;
-                loop {
-                    let next = tokio::select! {
-                        biased;
-                        _ = self.cancellation.cancelled() => {
-                            cancel_guard.set_task(collector.task_id());
-                            return Err(A2aWireError::Cancelled);
+            .map(|value| value.trim().to_owned());
+        let collected = async {
+            match media_type.as_deref() {
+                Some("text/event-stream") if self.streaming => {
+                    let mut stream = response.bytes_stream();
+                    let mut decoder = SseDecoder::default();
+                    let mut total = 0_usize;
+                    let mut events = 0_usize;
+                    loop {
+                        let next = tokio::select! {
+                            biased;
+                            _ = self.cancellation.cancelled() => {
+                                return Err(A2aWireError::Cancelled);
+                            }
+                            next = stream.next() => next,
+                        };
+                        let Some(chunk) = next else { break };
+                        let chunk = chunk.map_err(classify_reqwest)?;
+                        total = total.saturating_add(chunk.len());
+                        if total > MAX_RESPONSE_BYTES {
+                            return Err(A2aWireError::TooLarge);
                         }
-                        next = stream.next() => next,
-                    };
-                    let Some(chunk) = next else { break };
-                    let chunk = chunk.map_err(classify_reqwest)?;
-                    total = total.saturating_add(chunk.len());
-                    if total > MAX_RESPONSE_BYTES {
-                        return Err(A2aWireError::TooLarge);
-                    }
-                    for event in decoder.push(&chunk).map_err(|_| A2aWireError::Protocol)? {
-                        events = events.saturating_add(1);
-                        if events > MAX_STREAM_EVENTS {
-                            return Err(A2aWireError::TooManyEvents);
+                        for event in decoder.push(&chunk).map_err(|_| A2aWireError::Protocol)? {
+                            events = events.saturating_add(1);
+                            if events > MAX_STREAM_EVENTS {
+                                return Err(A2aWireError::TooManyEvents);
+                            }
+                            collector.consume_envelope(&event.data, &request_id)?;
                         }
-                        collector.consume_envelope(&event.data, &request_id)?;
-                        cancel_guard.set_task(collector.task_id());
                     }
+                    decoder.finish().map_err(|_| A2aWireError::Protocol)?;
                 }
-                decoder.finish().map_err(|_| A2aWireError::Protocol)?;
+                Some("application/json" | "application/a2a+json") if !self.streaming => {
+                    let bytes = collect_body(response, &self.cancellation).await?;
+                    collector.consume_envelope(&bytes, &request_id)?;
+                }
+                _ => return Err(A2aWireError::MediaType),
             }
-            Some("application/json" | "application/a2a+json") if !self.streaming => {
-                let bytes = collect_body(response, &self.cancellation).await?;
-                collector.consume_envelope(&bytes, &request_id)?;
-                cancel_guard.set_task(collector.task_id());
-            }
-            _ => return Err(A2aWireError::MediaType),
+            Ok(())
         }
-        let receipt = collector.finish()?;
-        cancel_guard.disarm();
-        Ok(receipt)
+        .await;
+        collected?;
+        collector.finish()
     }
 }
 
@@ -767,6 +815,7 @@ struct DelegationCollector {
     pending: BTreeMap<String, PendingArtifact>,
     artifact_bytes: usize,
     direct_message: bool,
+    remote_task: RemoteTaskLease,
 }
 
 struct PendingArtifact {
@@ -787,6 +836,7 @@ impl DelegationCollector {
         owner: PrincipalId,
         events: Option<AgentEventSender>,
         operation_id: OperationId,
+        remote_task: RemoteTaskLease,
     ) -> Self {
         Self {
             connection,
@@ -807,11 +857,8 @@ impl DelegationCollector {
             pending: BTreeMap::new(),
             artifact_bytes: 0,
             direct_message: false,
+            remote_task,
         }
-    }
-
-    fn task_id(&self) -> Option<String> {
-        self.task_id.clone()
     }
 
     fn consume_envelope(&mut self, bytes: &[u8], expected_id: &str) -> Result<(), A2aWireError> {
@@ -918,6 +965,7 @@ impl DelegationCollector {
             self.context_id = context_id.clone();
         }
         if is_new {
+            self.remote_task.arm(task_id.clone());
             emit(
                 self.events.as_ref(),
                 self.operation_id,
@@ -1141,8 +1189,8 @@ impl DelegationCollector {
         if !self.direct_message && self.task_id.is_none() {
             return Err(A2aWireError::Protocol);
         }
-        if !self.direct_message
-            && !matches!(
+        let terminal = self.direct_message
+            || matches!(
                 self.state.as_str(),
                 "completed"
                     | "failed"
@@ -1150,10 +1198,12 @@ impl DelegationCollector {
                     | "rejected"
                     | "input_required"
                     | "auth_required"
-            )
-        {
+            );
+        if !terminal {
             self.state = "detached_unknown".into();
-            self.record_state(&self.state, "unknown")?;
+            self.record_state(&self.state, "requested_unconfirmed")?;
+        } else {
+            self.remote_task.disarm();
         }
         Ok(A2aDelegationReceipt {
             ownership: "external_a2a_agent",
@@ -1163,131 +1213,17 @@ impl DelegationCollector {
             task_id: self.task_id,
             context_id: self.context_id,
             terminal_state: self.state,
-            remote_cancel: "not_requested".into(),
+            remote_cancel: if terminal {
+                "not_requested"
+            } else {
+                "requested_unconfirmed"
+            }
+            .into(),
             messages: self.messages,
             artifacts: self.ingested,
             safe_references: self.references,
             untrusted: true,
         })
-    }
-}
-
-struct RemoteCancelGuard {
-    armed: bool,
-    task_id: Option<String>,
-    client: reqwest::Client,
-    endpoint: reqwest::Url,
-    credential: Option<CredentialReference>,
-    connection: String,
-    identity_digest: String,
-    manager: ExternalAgentManager,
-    events: Option<AgentEventSender>,
-    operation_id: OperationId,
-    agent_name: String,
-}
-
-impl RemoteCancelGuard {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        client: reqwest::Client,
-        endpoint: reqwest::Url,
-        credential: Option<CredentialReference>,
-        connection: String,
-        identity_digest: String,
-        manager: ExternalAgentManager,
-        events: Option<AgentEventSender>,
-        operation_id: OperationId,
-        agent_name: String,
-    ) -> Self {
-        Self {
-            armed: true,
-            task_id: None,
-            client,
-            endpoint,
-            credential,
-            connection,
-            identity_digest,
-            manager,
-            events,
-            operation_id,
-            agent_name,
-        }
-    }
-
-    fn set_task(&mut self, task_id: Option<String>) {
-        if task_id.is_some() {
-            self.task_id = task_id;
-        }
-    }
-
-    fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for RemoteCancelGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-        let Some(task_id) = self.task_id.clone() else {
-            return;
-        };
-        let _ = self.manager.record_task(
-            &self.connection,
-            &self.identity_digest,
-            &task_id,
-            None,
-            "detached_unknown",
-            "requested_unconfirmed",
-        );
-        emit(
-            self.events.as_ref(),
-            self.operation_id,
-            &self.connection,
-            &self.agent_name,
-            ExternalAgentActivityKind::CancellationRequested {
-                task_id: task_id.clone(),
-            },
-        );
-        let client = self.client.clone();
-        let endpoint = self.endpoint.clone();
-        let credential = self.credential.clone();
-        let manager = self.manager.clone();
-        let connection = self.connection.clone();
-        let identity = self.identity_digest.clone();
-        let events = self.events.clone();
-        let operation_id = self.operation_id;
-        let agent_name = self.agent_name.clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let confirmed =
-                    cancel_remote_task(&client, endpoint, credential.as_ref(), &task_id)
-                        .await
-                        .unwrap_or(false);
-                let _ = manager.record_task(
-                    &connection,
-                    &identity,
-                    &task_id,
-                    None,
-                    if confirmed {
-                        "canceled"
-                    } else {
-                        "detached_unknown"
-                    },
-                    if confirmed { "confirmed" } else { "unknown" },
-                );
-                if !confirmed {
-                    emit(
-                        events.as_ref(),
-                        operation_id,
-                        &connection,
-                        &agent_name,
-                        ExternalAgentActivityKind::Detached { task_id },
-                    );
-                }
-            });
-        }
     }
 }
 

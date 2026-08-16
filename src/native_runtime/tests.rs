@@ -82,6 +82,20 @@ struct BlockingTransport {
     release: Arc<Notify>,
 }
 
+struct PanickingTransport;
+
+impl ConversationalProvider for PanickingTransport {
+    fn stream_message<'a>(
+        &'a self,
+        _messages: &'a [Message],
+        _tools: &'a [&'a ToolDefinition],
+        _step_id: StepId,
+        _deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
+        Box::pin(async move { panic!("provider panic fixture") })
+    }
+}
+
 struct ImmediateChildFactory {
     workspace: std::path::PathBuf,
     requests: Arc<Mutex<Vec<SpawnAgentRequest>>>,

@@ -11,7 +11,7 @@ use crate::{
     native_runtime::AgentEvent,
     permission::{Authorization, PermissionAuditFact, PermissionBrokerHandle},
     session::SessionRecord,
-    tool::{ReplaySafety, ToolRegistry},
+    tool::{DeferredCleanup, ReplaySafety, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -201,6 +201,7 @@ pub(crate) struct OperationExecutor<'a> {
     commits: DurableOperationSender,
     observer: Arc<dyn BoundaryObserver>,
     events: Option<crate::native_runtime::AgentEventSender>,
+    cleanup: DeferredCleanup,
 }
 
 impl<'a> OperationExecutor<'a> {
@@ -211,6 +212,7 @@ impl<'a> OperationExecutor<'a> {
         commits: DurableOperationSender,
         observer: Arc<dyn BoundaryObserver>,
         events: Option<crate::native_runtime::AgentEventSender>,
+        cleanup: DeferredCleanup,
     ) -> Self {
         Self {
             tools,
@@ -219,6 +221,7 @@ impl<'a> OperationExecutor<'a> {
             commits,
             observer,
             events,
+            cleanup,
         }
     }
 
@@ -296,6 +299,7 @@ impl<'a> OperationExecutor<'a> {
                     operation_id,
                     self.events.clone(),
                     &authorization,
+                    self.cleanup.clone(),
                 ))
                 .await;
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;

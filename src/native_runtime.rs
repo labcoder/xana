@@ -25,6 +25,7 @@ use crate::{
     permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
     prompt::{PromptAssembler, PromptSnapshot},
     session::{DurableSession, SessionRecord},
+    tool::DeferredCleanup,
 };
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
@@ -77,6 +78,7 @@ struct ActiveOperation {
     persist_from: usize,
     progress_committed: bool,
     task: JoinHandle<()>,
+    cleanup: DeferredCleanup,
 }
 
 struct OperationCompletion {
@@ -259,7 +261,7 @@ impl Runtime {
                 command = self.commands.recv() => {
                     let Some(command) = command else {
                         self.permissions.controller_lost();
-                        self.interrupt_active();
+                        self.interrupt_active().await;
                         self.shutdown_children().await;
                         return RuntimeExit::ControllerDropped;
                     };
@@ -269,7 +271,7 @@ impl Runtime {
                 }
                 completion = self.completions.recv(), if self.active.is_some() => {
                     if let Some(completion) = completion {
-                        self.handle_completion(completion);
+                        self.handle_completion(completion).await;
                     }
                 }
                 broker_event = self.broker_events.recv() => {
@@ -338,7 +340,7 @@ impl Runtime {
             }
             RuntimeCommand::InterruptOperation { operation_id } => {
                 match self.active.as_ref().map(|active| active.operation_id) {
-                    Some(active) if active == operation_id => self.interrupt_active(),
+                    Some(active) if active == operation_id => self.interrupt_active().await,
                     Some(active) => self.emit(AgentEvent::CommandRejected {
                         reason: format!(
                             "cannot interrupt operation {operation_id}; active operation is {active}"
@@ -449,7 +451,7 @@ impl Runtime {
             }
             RuntimeCommand::Shutdown => {
                 self.permissions.shutdown();
-                self.interrupt_active();
+                self.interrupt_active().await;
                 self.shutdown_children().await;
                 return true;
             }
@@ -543,29 +545,44 @@ impl Runtime {
             state: OperationState::Running,
         });
         let persist_from = history.len();
+        let cleanup = DeferredCleanup::default();
+        let operation_cleanup = cleanup.clone();
         let task = tokio::spawn(async move {
-            let result = match prompt {
-                Some(prompt) => {
-                    agent
-                        .run_turn_with_prompt(
-                            operation_id,
-                            &mut history,
-                            &prompt,
-                            permissions,
-                            events,
-                            Some(DurableTurnServices::new(
-                                conversation_committer,
-                                durable_operation_sender,
-                            )),
-                        )
-                        .await
+            let result = AssertUnwindSafe(async {
+                match prompt {
+                    Some(prompt) => {
+                        agent
+                            .run_turn_with_prompt_in_scope(
+                                operation_id,
+                                &mut history,
+                                &prompt,
+                                permissions,
+                                events.into(),
+                                Some(DurableTurnServices::new(
+                                    conversation_committer,
+                                    durable_operation_sender,
+                                )),
+                                operation_cleanup,
+                            )
+                            .await
+                    }
+                    None => {
+                        agent
+                            .run_turn_with_usage_in_scope(
+                                operation_id,
+                                &mut history,
+                                permissions,
+                                events.into(),
+                                operation_cleanup,
+                            )
+                            .await
+                    }
                 }
-                None => {
-                    agent
-                        .run_turn_with_usage(operation_id, &mut history, permissions, events)
-                        .await
-                }
-            }
+            })
+            .catch_unwind()
+            .await
+            .map_err(|_| anyhow::anyhow!("native operation task panicked"))
+            .and_then(|result| result)
             .map_err(|error| error.to_string());
             if let Ok(result) = &result {
                 history.push(result.message.clone());
@@ -581,15 +598,18 @@ impl Runtime {
             persist_from,
             progress_committed: self.session.is_some(),
             task,
+            cleanup,
         });
     }
 
-    fn handle_completion(&mut self, completion: OperationCompletion) {
+    async fn handle_completion(&mut self, completion: OperationCompletion) {
         let Some(active) = self.active.take() else {
             return;
         };
         if active.operation_id != completion.operation_id {
             active.task.abort();
+            let _ = active.task.await;
+            active.cleanup.drain().await;
             self.emit(AgentEvent::CommandRejected {
                 reason: format!(
                     "completion for {} did not match active operation {}",
@@ -598,6 +618,8 @@ impl Runtime {
             });
             return;
         }
+        let _ = active.task.await;
+        active.cleanup.drain().await;
 
         if let Some(session) = &mut self.session {
             let persist_from = if active.progress_committed {
@@ -695,24 +717,33 @@ impl Runtime {
         }
     }
 
-    fn interrupt_active(&mut self) {
+    async fn interrupt_active(&mut self) {
         if let Some(active) = self.active.take() {
-            active.task.abort();
-            if active.progress_committed {
+            let ActiveOperation {
+                operation_id,
+                progress_committed,
+                task,
+                cleanup,
+                ..
+            } = active;
+            task.abort();
+            let _ = task.await;
+            cleanup.drain().await;
+            if progress_committed {
                 if let Some(session) = &mut self.session {
                     let _ = session.append_record(SessionRecord::OperationSuspended {
-                        operation_id: active.operation_id,
+                        operation_id,
                         reason: SuspensionReason::ProcessInterrupted,
                     });
                 }
                 self.emit(AgentEvent::OperationStateChanged {
-                    operation_id: active.operation_id,
+                    operation_id,
                     state: OperationState::Suspended,
                 });
                 return;
             }
             self.emit(AgentEvent::OperationStateChanged {
-                operation_id: active.operation_id,
+                operation_id,
                 state: OperationState::Finished(OperationOutcome::Interrupted),
             });
         }

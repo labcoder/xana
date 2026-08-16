@@ -8,7 +8,7 @@ use crate::{
     native_runtime::{AgentEvent, OperationOutcome},
     permission::{Authorization, ControllerDecision, PermissionBrokerHandle, PermissionRequest},
     session::{DurableSession, RestoredOperation, SessionRecord},
-    tool::{ReplaySafety, ToolRegistry},
+    tool::{DeferredCleanup, ReplaySafety, ToolRegistry},
 };
 use anyhow::{Context, Result, bail};
 use std::{error::Error, fmt};
@@ -42,6 +42,7 @@ pub(crate) async fn execute_recovery<C>(
 where
     C: FnMut(&PermissionRequest) -> Result<ControllerDecision>,
 {
+    let cleanup = DeferredCleanup::default();
     let operation = session
         .restored_operation(operation_id)
         .context("operation does not exist in this session")?;
@@ -176,6 +177,7 @@ where
                         operation_id,
                         events: None,
                         outbound_approval: None,
+                        cleanup: cleanup.clone(),
                     })
                     .await
                 {
@@ -194,6 +196,7 @@ where
                         },
                     ),
                 };
+                cleanup.drain().await;
                 append_recovery_result(session, intent, outcome, tool_result, intent.result_id)?;
                 break;
             }

@@ -647,6 +647,7 @@ async fn invoke_until_crash(site: CrashSite) -> (Vec<SessionRecord>, usize, Oper
         commits.clone(),
         observer.clone(),
         None,
+        crate::tool::DeferredCleanup::default(),
     );
 
     let result = executor
