@@ -1791,7 +1791,7 @@ impl XanaConfig {
 
 /// Cross-process transaction lock shared by every configuration writer.
 pub(crate) struct ConfigTransactionLock {
-    _file: File,
+    file: File,
 }
 
 impl ConfigTransactionLock {
@@ -1832,7 +1832,16 @@ impl ConfigTransactionLock {
                 }
             }
         })?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
+    }
+}
+
+impl Drop for ConfigTransactionLock {
+    fn drop(&mut self) {
+        // Closing a file releases its advisory lock, but make the transaction
+        // boundary explicit so a following writer in this process never has
+        // to depend on platform-specific close timing.
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
