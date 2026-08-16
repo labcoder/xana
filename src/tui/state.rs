@@ -1123,7 +1123,7 @@ fn bounded(mut value: String, limit: usize) -> String {
     value
 }
 
-fn append_bounded(target: &mut String, value: &str, limit: usize) {
+pub(super) fn append_bounded(target: &mut String, value: &str, limit: usize) {
     if target.len() >= limit {
         return;
     }

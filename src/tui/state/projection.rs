@@ -68,7 +68,7 @@ impl TuiState {
                         && card.identity == identity
                         && card.kind == ActivityKind::ReasoningRaw
                 }) {
-                    append_bounded(&mut card.detail, text, MAX_ACTIVITY_BYTES);
+                    card.append_detail(text);
                 } else {
                     self.push_card(ActivityCard::new(
                         "Xana native",

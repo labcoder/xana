@@ -54,12 +54,18 @@ impl ActivityCard {
         detail: impl Into<String>,
     ) -> Self {
         Self {
-            owner: bounded(owner.into(), MAX_SUMMARY_BYTES),
-            identity: bounded(identity.into(), MAX_SUMMARY_BYTES),
+            owner: bounded(super::rich_text::sanitize(&owner.into()), MAX_SUMMARY_BYTES),
+            identity: bounded(
+                super::rich_text::sanitize(&identity.into()),
+                MAX_SUMMARY_BYTES,
+            ),
             kind,
             state,
-            summary: bounded(summary.into(), MAX_SUMMARY_BYTES),
-            detail: bounded(detail.into(), MAX_DETAIL_BYTES),
+            summary: bounded(
+                super::rich_text::sanitize(&summary.into()),
+                MAX_SUMMARY_BYTES,
+            ),
+            detail: bounded(super::rich_text::sanitize(&detail.into()), MAX_DETAIL_BYTES),
             expanded: matches!(
                 kind,
                 ActivityKind::Approval | ActivityKind::Warning | ActivityKind::Error
@@ -69,6 +75,14 @@ impl ActivityCard {
 
     pub(super) fn is_substantive(&self) -> bool {
         !matches!(self.kind, ActivityKind::Status | ActivityKind::ReasoningRaw)
+    }
+
+    pub(super) fn append_detail(&mut self, value: &str) {
+        super::state::append_bounded(
+            &mut self.detail,
+            &super::rich_text::sanitize(value),
+            MAX_DETAIL_BYTES,
+        );
     }
 }
 
@@ -461,4 +475,29 @@ fn bounded(mut value: String, limit: usize) -> String {
     value.truncate(boundary);
     value.push_str("...");
     value
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn activity_text_makes_terminal_and_bidi_controls_inert() {
+        let mut card = ActivityCard::new(
+            "owner\u{1b}[31m",
+            "identity\u{202e}",
+            ActivityKind::ReasoningRaw,
+            ActivityState::Running,
+            "summary\u{7}",
+            "detail\u{202d}",
+        );
+        card.append_detail("delta\u{1b}[2J");
+
+        for value in [&card.owner, &card.identity, &card.summary, &card.detail] {
+            assert!(!value.contains('\u{1b}'));
+            assert!(!value.contains('\u{202d}'));
+            assert!(!value.contains('\u{202e}'));
+        }
+        assert!(card.detail.contains("delta"));
+    }
 }
