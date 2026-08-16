@@ -66,6 +66,14 @@ impl ConfigMigrationPlan {
         self,
         paths: &XanaPaths,
     ) -> Result<ConfigMigrationOutcome, ConfigMigrationError> {
+        self.apply_with(paths, &FilesystemMigrationWriter)
+    }
+
+    fn apply_with(
+        self,
+        paths: &XanaPaths,
+        writer: &dyn MigrationWriter,
+    ) -> Result<ConfigMigrationOutcome, ConfigMigrationError> {
         let _lock = ConfigTransactionLock::acquire(&self.config_path)
             .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
         let current =
@@ -86,19 +94,21 @@ impl ConfigMigrationPlan {
             }
         }
 
-        let created = ensure_interoperable_records(paths)
-            .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
         let backup_path = self.config_path.with_extension("toml.bak");
         let previous_backup = read_optional(&backup_path)?;
-        if let Err(error) = atomic_write(&backup_path, &self.original) {
-            remove_created(&created);
-            return Err(error);
+        let created = ensure_interoperable_records(paths)
+            .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
+        if let Err(error) = writer.write(&backup_path, &self.original, MigrationWrite::Backup) {
+            return Err(with_rollback_failures(error, remove_created(&created)));
         }
-        if let Err(error) = atomic_write(&self.config_path, &self.migrated) {
-            let restore = restore_optional(&backup_path, previous_backup.as_deref());
-            remove_created(&created);
-            restore?;
-            return Err(error);
+        if let Err(error) = writer.write(&self.config_path, &self.migrated, MigrationWrite::Config)
+        {
+            let restore = writer.restore(&backup_path, previous_backup.as_deref());
+            let mut failures = remove_created(&created);
+            if let Err(restore) = restore {
+                failures.push(restore.to_string());
+            }
+            return Err(with_rollback_failures(error, failures));
         }
 
         Ok(ConfigMigrationOutcome {
@@ -106,6 +116,40 @@ impl ConfigMigrationPlan {
             initialized_private_records: created.len(),
             backup_path,
         })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MigrationWrite {
+    Backup,
+    Config,
+}
+
+trait MigrationWriter {
+    fn write(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        stage: MigrationWrite,
+    ) -> Result<(), ConfigMigrationError>;
+
+    fn restore(&self, path: &Path, bytes: Option<&[u8]>) -> Result<(), ConfigMigrationError>;
+}
+
+struct FilesystemMigrationWriter;
+
+impl MigrationWriter for FilesystemMigrationWriter {
+    fn write(
+        &self,
+        path: &Path,
+        bytes: &[u8],
+        _stage: MigrationWrite,
+    ) -> Result<(), ConfigMigrationError> {
+        atomic_write(path, bytes)
+    }
+
+    fn restore(&self, path: &Path, bytes: Option<&[u8]>) -> Result<(), ConfigMigrationError> {
+        restore_optional(path, bytes)
     }
 }
 
@@ -119,9 +163,16 @@ pub(crate) struct ConfigMigrationOutcome {
 #[derive(Debug)]
 pub(crate) enum ConfigMigrationError {
     Changed(PathBuf),
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     Invalid(String),
     Private(String),
+    Rollback {
+        operation: Box<ConfigMigrationError>,
+        failures: Vec<String>,
+    },
 }
 
 impl fmt::Display for ConfigMigrationError {
@@ -134,6 +185,14 @@ impl fmt::Display for ConfigMigrationError {
             ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Invalid(reason) | Self::Private(reason) => formatter.write_str(reason),
+            Self::Rollback {
+                operation,
+                failures,
+            } => write!(
+                formatter,
+                "{operation}; rollback was incomplete: {}",
+                failures.join("; ")
+            ),
         }
     }
 }
@@ -142,6 +201,7 @@ impl Error for ConfigMigrationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
+            Self::Rollback { operation, .. } => Some(operation.as_ref()),
             Self::Changed(_) | Self::Invalid(_) | Self::Private(_) => None,
         }
     }
@@ -202,9 +262,29 @@ fn restore_optional(path: &Path, bytes: Option<&[u8]>) -> Result<(), ConfigMigra
     }
 }
 
-fn remove_created(paths: &[PathBuf]) {
+fn remove_created(paths: &[PathBuf]) -> Vec<String> {
+    let mut failures = Vec::new();
     for path in paths.iter().rev() {
-        let _ = fs::remove_file(path);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(source) => failures.push(format!("{}: {source}", path.display())),
+        }
+    }
+    failures
+}
+
+fn with_rollback_failures(
+    operation: ConfigMigrationError,
+    failures: Vec<String>,
+) -> ConfigMigrationError {
+    if failures.is_empty() {
+        operation
+    } else {
+        ConfigMigrationError::Rollback {
+            operation: Box::new(operation),
+            failures,
+        }
     }
 }
 
@@ -244,6 +324,40 @@ mod tests {
     };
     use std::ffi::OsString;
     use tempfile::tempdir;
+
+    struct FaultWriter {
+        fail_config: Option<io::ErrorKind>,
+        fail_restore: bool,
+    }
+
+    impl MigrationWriter for FaultWriter {
+        fn write(
+            &self,
+            path: &Path,
+            bytes: &[u8],
+            stage: MigrationWrite,
+        ) -> Result<(), ConfigMigrationError> {
+            if stage == MigrationWrite::Config
+                && let Some(kind) = self.fail_config
+            {
+                return Err(ConfigMigrationError::Io {
+                    path: path.to_owned(),
+                    source: io::Error::new(kind, "injected final config commit failure"),
+                });
+            }
+            atomic_write(path, bytes)
+        }
+
+        fn restore(&self, path: &Path, bytes: Option<&[u8]>) -> Result<(), ConfigMigrationError> {
+            if self.fail_restore {
+                return Err(ConfigMigrationError::Io {
+                    path: path.to_owned(),
+                    source: io::Error::other("injected backup restore failure"),
+                });
+            }
+            restore_optional(path, bytes)
+        }
+    }
 
     fn paths_and_v3() -> (tempfile::TempDir, XanaPaths, Vec<u8>) {
         let directory = tempdir().unwrap();
@@ -325,5 +439,109 @@ mod tests {
         assert!(error.to_string().contains("another Xana process"));
         assert_eq!(fs::read(paths.config_file()).unwrap(), original);
         drop(held);
+    }
+
+    #[test]
+    fn backup_failure_removes_every_record_created_by_the_attempt() {
+        let (_directory, paths, original) = paths_and_v3();
+        let plan = ConfigMigrationPlan::build(&paths).unwrap();
+        fs::create_dir(paths.config_file().with_extension("toml.bak")).unwrap();
+
+        assert!(plan.apply(&paths).is_err());
+
+        assert_eq!(fs::read(paths.config_file()).unwrap(), original);
+        let records = inspect_interoperable_records(&paths);
+        assert!(
+            records
+                .iter()
+                .all(|record| record.status == PrivateRecordStatus::Missing),
+            "{records:?}"
+        );
+    }
+
+    #[test]
+    fn cleanup_reports_failure_but_still_attempts_every_created_path() {
+        let directory = tempdir().unwrap();
+        let removable = directory.path().join("removable.json");
+        let invalid = directory.path().join("directory.json");
+        fs::write(&removable, b"temporary").unwrap();
+        fs::create_dir(&invalid).unwrap();
+
+        let failures = remove_created(&[removable.clone(), invalid]);
+
+        assert_eq!(failures.len(), 1);
+        assert!(!removable.exists(), "later cleanup was not attempted");
+    }
+
+    #[test]
+    fn final_commit_io_failures_restore_backup_config_and_private_state() {
+        for kind in [
+            io::ErrorKind::WriteZero,
+            io::ErrorKind::Interrupted,
+            io::ErrorKind::Other,
+        ] {
+            let (_directory, paths, original) = paths_and_v3();
+            let backup = paths.config_file().with_extension("toml.bak");
+            fs::write(&backup, b"prior backup").unwrap();
+            let writer = FaultWriter {
+                fail_config: Some(kind),
+                fail_restore: false,
+            };
+
+            assert!(
+                ConfigMigrationPlan::build(&paths)
+                    .unwrap()
+                    .apply_with(&paths, &writer)
+                    .is_err()
+            );
+            assert_eq!(fs::read(paths.config_file()).unwrap(), original);
+            assert_eq!(fs::read(backup).unwrap(), b"prior backup");
+            assert!(
+                inspect_interoperable_records(&paths)
+                    .iter()
+                    .all(|record| record.status == PrivateRecordStatus::Missing)
+            );
+        }
+    }
+
+    #[test]
+    fn backup_restore_failure_is_reported_after_every_private_cleanup() {
+        let (_directory, paths, original) = paths_and_v3();
+        fs::write(
+            paths.config_file().with_extension("toml.bak"),
+            b"prior backup",
+        )
+        .unwrap();
+        let writer = FaultWriter {
+            fail_config: Some(io::ErrorKind::WriteZero),
+            fail_restore: true,
+        };
+
+        let error = ConfigMigrationPlan::build(&paths)
+            .unwrap()
+            .apply_with(&paths, &writer)
+            .unwrap_err();
+
+        assert!(matches!(error, ConfigMigrationError::Rollback { .. }));
+        assert_eq!(fs::read(paths.config_file()).unwrap(), original);
+        assert!(
+            inspect_interoperable_records(&paths)
+                .iter()
+                .all(|record| record.status == PrivateRecordStatus::Missing)
+        );
+    }
+
+    #[test]
+    fn abandoning_a_reviewed_plan_before_apply_mutates_nothing() {
+        let (_directory, paths, original) = paths_and_v3();
+        drop(ConfigMigrationPlan::build(&paths).unwrap());
+
+        assert_eq!(fs::read(paths.config_file()).unwrap(), original);
+        assert!(!paths.config_file().with_extension("toml.bak").exists());
+        assert!(
+            inspect_interoperable_records(&paths)
+                .iter()
+                .all(|record| record.status == PrivateRecordStatus::Missing)
+        );
     }
 }
