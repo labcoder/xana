@@ -68,7 +68,7 @@ xana config check
 xana
 ```
 
-Use `--tag v0.5.1` or `--rev COMMIT_SHA` for an exact build. Xana is not
+Use `--tag v0.6.0` or `--rev COMMIT_SHA` for an exact build. Xana is not
 published to crates.io and has no automatic updater. Re-run an installer or
 locked Cargo command to update. See [Installation, updates, verification, and
 removal](docs/user/installation.md) for exact versions, manual archive and
