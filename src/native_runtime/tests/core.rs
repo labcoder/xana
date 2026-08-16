@@ -5,6 +5,29 @@ use crate::frontend::{
     ClientCommand, ClientEvent, ClientSnapshotSeed, EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
 };
 
+#[tokio::test]
+async fn panicking_provider_finishes_the_operation_as_failed() {
+    let mut runtime = spawn_runtime(make_agent(Box::new(PanickingTransport)));
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "panic fixture".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            receive_finished(&mut runtime, operation_id),
+        )
+        .await
+        .expect("panicking operation reaches a terminal state"),
+        OperationOutcome::Failed,
+    );
+}
+
 #[test]
 fn commands_and_events_round_trip_through_json() {
     let operation_id = OperationId::new();

@@ -26,11 +26,11 @@ use crate::{
     },
     self_docs,
     shell::Shell,
-    tool::ToolRegistry,
+    tool::{DeferredCleanup, ToolRegistry},
     vision::MediaResolver,
 };
 use futures::future::BoxFuture;
-use std::{path::PathBuf, sync::Arc};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 pub(crate) struct ChildExecutionOwnerFactory {
     registry: ConnectionRegistry,
@@ -233,20 +233,26 @@ impl ChildExecution for NativeChildExecution {
     ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async move {
             let mut history = self.history;
-            let run = self.agent.run_turn_with_usage(
-                context.operation_id,
-                &mut history,
-                context.permissions,
-                context.events,
-            );
-            tokio::pin!(run);
-            let result = tokio::select! {
-                result = &mut run => match result {
-                    Ok(result) => result,
-                    Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
-                },
-                _ = context.cancellation.cancelled() => {
-                    return ChildExecutionOutcome::Cancelled("native child was cancelled".to_owned());
+            let cleanup = DeferredCleanup::default();
+            let selected = await_native_child_turn(
+                self.agent.run_turn_with_usage_in_scope(
+                    context.operation_id,
+                    &mut history,
+                    context.permissions,
+                    context.events,
+                    cleanup.clone(),
+                ),
+                &context.cancellation,
+                &cleanup,
+            )
+            .await;
+            let result = match selected {
+                Some(Ok(result)) => result,
+                Some(Err(error)) => return ChildExecutionOutcome::Failed(error.to_string()),
+                None => {
+                    return ChildExecutionOutcome::Cancelled(
+                        "native child was cancelled".to_owned(),
+                    );
                 }
             };
             let text = match report_text(&result.message) {
@@ -265,6 +271,27 @@ impl ChildExecution for NativeChildExecution {
             })
         })
     }
+}
+
+async fn await_native_child_turn<F, T>(
+    turn: F,
+    cancellation: &tokio_util::sync::CancellationToken,
+    cleanup: &DeferredCleanup,
+) -> Option<T>
+where
+    F: Future<Output = T>,
+{
+    let selected = {
+        tokio::pin!(turn);
+        tokio::select! {
+            result = &mut turn => Some(result),
+            _ = cancellation.cancelled() => None,
+        }
+    };
+    // The turn future must be gone before admission closes so task-owned drop
+    // guards can register their bounded cleanup work.
+    cleanup.drain().await;
+    selected
 }
 
 fn compose_native_provider(
@@ -451,12 +478,39 @@ mod tests {
     use crate::shell::ShellConfig;
     use crate::tool::EffectClass;
     use std::fs;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::Mutex;
+    use std::task::{Context, Poll};
     use tempfile::tempdir;
 
     #[derive(Default)]
     struct FakeManagedRunner {
         seen: Arc<Mutex<Vec<ManagedCodexChildSpec>>>,
+    }
+
+    struct CleanupOnDrop {
+        cleanup: DeferredCleanup,
+        completed: Option<tokio::sync::oneshot::Sender<()>>,
+    }
+
+    impl Future for CleanupOnDrop {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+
+    impl Drop for CleanupOnDrop {
+        fn drop(&mut self) {
+            let Some(completed) = self.completed.take() else {
+                return;
+            };
+            assert!(self.cleanup.schedule(Box::pin(async move {
+                let _ = completed.send(());
+            })));
+        }
     }
 
     impl ManagedCodexRunner for FakeManagedRunner {
@@ -503,6 +557,27 @@ mod tests {
         };
 
         assert_eq!(report_text(&message), Ok("one two".to_owned()));
+    }
+
+    #[tokio::test]
+    async fn cancelled_native_child_drops_the_turn_before_draining_its_cleanup() {
+        let cleanup = DeferredCleanup::default();
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        cancellation.cancel();
+        let (completed, observed) = tokio::sync::oneshot::channel();
+
+        let selected = await_native_child_turn(
+            CleanupOnDrop {
+                cleanup: cleanup.clone(),
+                completed: Some(completed),
+            },
+            &cancellation,
+            &cleanup,
+        )
+        .await;
+
+        assert!(selected.is_none());
+        observed.await.expect("drop-owned cleanup was drained");
     }
 
     #[test]

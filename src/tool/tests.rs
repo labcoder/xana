@@ -420,6 +420,7 @@ async fn invoke_fake(
                 invocation_id,
                 permissions,
                 events: None,
+                cleanup: DeferredCleanup::default(),
             },
         )
         .await
@@ -571,6 +572,7 @@ async fn invalid_arguments_never_reach_permission_evaluation() {
                 invocation_id: ToolInvocationId::new(),
                 permissions: &broker,
                 events: None,
+                cleanup: DeferredCleanup::default(),
             },
         )
         .await;
@@ -581,4 +583,50 @@ async fn invalid_arguments_never_reach_permission_evaluation() {
         events.try_recv(),
         Err(tokio::sync::mpsc::error::TryRecvError::Empty)
     ));
+}
+#[tokio::test]
+async fn deferred_cleanup_survives_an_interrupted_waiter() {
+    let cleanup = DeferredCleanup::default();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let task_release = Arc::clone(&release);
+    let task_completed = Arc::clone(&completed);
+    assert!(cleanup.schedule(Box::pin(async move {
+        task_release.notified().await;
+        task_completed.store(true, std::sync::atomic::Ordering::SeqCst);
+    })));
+
+    let interrupted_scope = cleanup.clone();
+    let waiter = tokio::spawn(async move { interrupted_scope.drain().await });
+    tokio::task::yield_now().await;
+    waiter.abort();
+    let _ = waiter.await;
+
+    release.notify_waiters();
+    cleanup.drain().await;
+    assert!(completed.load(std::sync::atomic::Ordering::SeqCst));
+}
+
+#[tokio::test]
+async fn deferred_cleanup_scopes_do_not_drain_each_other() {
+    let first = DeferredCleanup::default();
+    let second = DeferredCleanup::default();
+    let release = Arc::new(tokio::sync::Notify::new());
+    let first_release = Arc::clone(&release);
+    assert!(first.schedule(Box::pin(async move {
+        first_release.notified().await;
+    })));
+    let second_finished = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let finished = Arc::clone(&second_finished);
+    assert!(second.schedule(Box::pin(async move {
+        finished.store(true, std::sync::atomic::Ordering::SeqCst);
+    })));
+
+    tokio::time::timeout(Duration::from_secs(1), second.drain())
+        .await
+        .expect("the independent cleanup scope finishes");
+    assert!(second_finished.load(std::sync::atomic::Ordering::SeqCst));
+
+    release.notify_waiters();
+    first.drain().await;
 }

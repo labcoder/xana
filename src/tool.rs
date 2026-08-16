@@ -31,6 +31,12 @@ use std::any::Any;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+const MAX_DEFERRED_CLEANUPS: usize = 16;
+const DEFERRED_CLEANUP_DEADLINE: Duration = Duration::from_secs(6);
 
 pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "read_file",
@@ -101,6 +107,7 @@ pub(crate) struct ToolExecutionContext {
     pub(crate) operation_id: OperationId,
     pub(crate) events: Option<crate::native_runtime::AgentEventSender>,
     pub(crate) outbound_approval: Option<crate::outbound::ReviewedOutboundApproval>,
+    pub(crate) cleanup: DeferredCleanup,
 }
 
 impl ToolExecutionContext {
@@ -108,6 +115,7 @@ impl ToolExecutionContext {
         operation_id: OperationId,
         events: Option<crate::native_runtime::AgentEventSender>,
         authorization: &Authorization,
+        cleanup: DeferredCleanup,
     ) -> Self {
         let outbound_approval = match authorization {
             Authorization::Allowed(fact)
@@ -142,7 +150,112 @@ impl ToolExecutionContext {
             operation_id,
             events,
             outbound_approval,
+            cleanup,
         }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct DeferredCleanup {
+    inner: Arc<CleanupSupervisor>,
+}
+
+impl DeferredCleanup {
+    pub(crate) fn schedule(&self, cleanup: BoxFuture<'static, ()>) -> bool {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return false;
+        };
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !state.accepting || state.active >= MAX_DEFERRED_CLEANUPS {
+            return false;
+        }
+        state.active += 1;
+        let slot = CleanupSlot {
+            inner: Arc::clone(&self.inner),
+        };
+        let cancelled = self.inner.cancelled.clone();
+        self.inner.tracker.spawn_on(
+            async move {
+                let _slot = slot;
+                tokio::select! {
+                    biased;
+                    () = cancelled.cancelled() => {}
+                    () = cleanup => {}
+                }
+            },
+            &runtime,
+        );
+        true
+    }
+
+    pub(crate) async fn drain(&self) {
+        {
+            let mut state = self
+                .inner
+                .state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.accepting = false;
+            self.inner.tracker.close();
+        }
+        if tokio::time::timeout(DEFERRED_CLEANUP_DEADLINE, self.inner.tracker.wait())
+            .await
+            .is_err()
+        {
+            self.inner.cancelled.cancel();
+            let _ =
+                tokio::time::timeout(Duration::from_millis(250), self.inner.tracker.wait()).await;
+        }
+    }
+}
+
+struct CleanupSupervisor {
+    tracker: TaskTracker,
+    cancelled: CancellationToken,
+    state: Mutex<CleanupState>,
+}
+
+impl Default for CleanupSupervisor {
+    fn default() -> Self {
+        Self {
+            tracker: TaskTracker::new(),
+            cancelled: CancellationToken::new(),
+            state: Mutex::new(CleanupState {
+                accepting: true,
+                active: 0,
+            }),
+        }
+    }
+}
+
+impl Drop for CleanupSupervisor {
+    fn drop(&mut self) {
+        self.tracker.close();
+        self.cancelled.cancel();
+    }
+}
+
+struct CleanupState {
+    accepting: bool,
+    active: usize,
+}
+
+struct CleanupSlot {
+    inner: Arc<CleanupSupervisor>,
+}
+
+impl Drop for CleanupSlot {
+    fn drop(&mut self) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.active = state.active.saturating_sub(1);
     }
 }
 
@@ -222,13 +335,14 @@ impl PlannedToolInvocation {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct ToolContext<'a> {
     pub(crate) workspace_root: &'a Path,
     pub(crate) operation_id: OperationId,
     pub(crate) invocation_id: ToolInvocationId,
     pub(crate) permissions: &'a PermissionBrokerHandle,
     pub(crate) events: Option<&'a crate::native_runtime::AgentEventSender>,
+    pub(crate) cleanup: DeferredCleanup,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -257,14 +371,14 @@ struct RegisteredTool {
 
 pub(crate) struct ToolRegistry {
     tools: Vec<RegisteredTool>,
-    telemetry: std::sync::Arc<dyn RuntimeTelemetry>,
+    telemetry: Arc<dyn RuntimeTelemetry>,
 }
 
 impl Default for ToolRegistry {
     fn default() -> Self {
         Self {
             tools: Vec::new(),
-            telemetry: std::sync::Arc::new(NoopRuntimeTelemetry),
+            telemetry: Arc::new(NoopRuntimeTelemetry),
         }
     }
 }
@@ -367,14 +481,15 @@ impl ToolRegistry {
                     | crate::outbound::OutboundDisposition::SavedDeny
             )
         ) {
-            return match planned
+            let execution = planned
                 .execute(ToolExecutionContext {
                     operation_id: context.operation_id,
                     events: context.events.cloned(),
                     outbound_approval: None,
+                    cleanup: context.cleanup.clone(),
                 })
-                .await
-            {
+                .await;
+            return match execution {
                 Ok(output) => ToolResult::success(call.id.clone(), output),
                 Err(error) => {
                     self.record_tool_event(
@@ -411,14 +526,15 @@ impl ToolRegistry {
             );
         }
 
-        match planned
+        let execution = planned
             .execute(ToolExecutionContext::authorized(
                 context.operation_id,
                 context.events.cloned(),
                 &authorization,
+                context.cleanup.clone(),
             ))
-            .await
-        {
+            .await;
+        match execution {
             Ok(output) => ToolResult::success(call.id.clone(), output),
             Err(error) => {
                 self.record_tool_event(
@@ -431,10 +547,7 @@ impl ToolRegistry {
         }
     }
 
-    pub(crate) fn set_runtime_telemetry(
-        &mut self,
-        telemetry: std::sync::Arc<dyn RuntimeTelemetry>,
-    ) {
+    pub(crate) fn set_runtime_telemetry(&mut self, telemetry: Arc<dyn RuntimeTelemetry>) {
         self.telemetry = telemetry;
     }
 
@@ -571,6 +684,7 @@ impl ToolRegistry {
                     invocation_id: ToolInvocationId::new(),
                     permissions: &permissions,
                     events: None,
+                    cleanup: DeferredCleanup::default(),
                 },
             )
             .await
