@@ -125,6 +125,17 @@ the correlated decision. Rendering a plan, reasoning summary, command output,
 diff, or other managed activity is observation only and never grants
 authority.
 
+Before starting or resuming a Codex conversation, Xana explicitly requests
+user-reviewed approvals and checks the returned policy and workspace. It
+requires the workspace-write sandbox, disabled network access, and no extra
+writable roots beyond the launch workspace; Codex's normal temporary-directory
+access remains part of that preset. A different reviewer (including automatic
+review), missing policy information, or a substituted workspace/thread stops
+the connection before a turn starts. Check the selected Codex CLI and its
+user/organization configuration; Xana will not override managed requirements
+or silently accept broader access. This is not a promise that every inner tool
+needs approval: ordinary sandbox-permitted operations can run without asking.
+
 Foreground Codex approval choices remain local to that managed conversation;
 they do not become native Xana grants. A supervised Codex child instead routes
 each callback through that child's existing Xana permission broker, preserving

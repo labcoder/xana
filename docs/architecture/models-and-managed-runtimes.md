@@ -171,7 +171,16 @@ changes, and later resumes.
 Thread start and resume use the app-server request-form `workspace-write`
 sandbox preset. Codex's response policy is a different tagged shape whose
 `type` may be `workspaceWrite`; Xana does not reuse that response spelling in
-requests. Protocol tests cover both lifecycle request builders. Connection
+requests. Both requests explicitly select the `user` approval reviewer. Before
+returning a usable thread handle, Xana checks the effective reviewer, approval
+policy, workspace-write sandbox, and exact launch workspace. Network access
+must remain disabled and additional writable roots must be absent or name only
+that workspace. Codex's ordinary workspace-write temporary-directory behavior
+is unchanged. Resume must return the requested thread id. Missing or different
+policy fields make the connection unusable before another turn can be sent;
+Xana does not overwrite organization requirements to force compatibility.
+Scripted subprocess scenarios exercise both successful lifecycles and rejected
+policies without vendor credentials or model calls. Connection
 status reports the exact Codex CLI executable version that Xana launched so a
 wire-compatibility failure can be distinguished from the separately updated
 desktop application.

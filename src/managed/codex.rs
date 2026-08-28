@@ -1,6 +1,7 @@
 //! Codex app-server adapter using the vendor-owned JSONL protocol.
 
 mod events;
+mod thread_policy;
 
 use crate::{
     model_catalog::{DescriptorSource, ModelDescriptor, ReasoningEffort, ReasoningSummary},
@@ -18,6 +19,7 @@ use std::{
     process::Stdio,
     time::Duration,
 };
+use thread_policy::checked_thread_id;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader, BufWriter},
     process::{Child, ChildStdin, ChildStdout, Command},
@@ -662,6 +664,7 @@ fn thread_start_params(
         "model": model,
         "cwd": workspace,
         "approvalPolicy": policy.approval.wire(),
+        "approvalsReviewer": "user",
         "sandbox": policy.sandbox.wire(),
         "ephemeral": policy.ephemeral,
         "serviceName": "xana",
@@ -681,6 +684,7 @@ fn thread_resume_params(
         "model": model,
         "cwd": workspace,
         "approvalPolicy": policy.approval.wire(),
+        "approvalsReviewer": "user",
         "sandbox": policy.sandbox.wire(),
         "developerInstructions": developer_instructions
     })
@@ -707,19 +711,6 @@ fn turn_start_params(
         );
     }
     Value::Object(params)
-}
-
-fn thread_id_from_result(result: &Value, method: &str) -> Result<String, CodexError> {
-    let id = result
-        .pointer("/thread/id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CodexError::Protocol(format!("{method} omitted thread id")))?;
-    if id.is_empty() || id.len() > 4096 {
-        return Err(CodexError::Protocol(format!(
-            "{method} returned an invalid thread id"
-        )));
-    }
-    Ok(id.to_owned())
 }
 
 fn model_descriptor_from_wire(value: &Value) -> Result<ModelDescriptor, CodexError> {
@@ -931,11 +922,7 @@ impl CodexAppServer {
     ) -> Result<AccountStatus, CodexError> {
         let mut success = None;
         let mut handler = CapturingHandler;
-        if !self.protocol_usable {
-            return Err(CodexError::Protocol(
-                "app-server connection is unavailable after a prior timeout".into(),
-            ));
-        }
+        self.ensure_usable()?;
         let completion = timeout(
             LOGIN_TIMEOUT,
             self.peer.wait_for(
@@ -1068,7 +1055,11 @@ impl CodexAppServer {
                 handler,
             )
             .await?;
-        thread_id_from_result(&result, "thread/start")
+        let thread = checked_thread_id(&result, "thread/start", workspace, policy, None);
+        if thread.is_err() {
+            self.protocol_usable = false;
+        }
+        thread
     }
 
     pub(crate) async fn resume_thread<H: ManagedEventHandler>(
@@ -1092,7 +1083,17 @@ impl CodexAppServer {
                 handler,
             )
             .await?;
-        thread_id_from_result(&result, "thread/resume")
+        let thread = checked_thread_id(
+            &result,
+            "thread/resume",
+            workspace,
+            ManagedThreadPolicy::default(),
+            Some(thread_id),
+        );
+        if thread.is_err() {
+            self.protocol_usable = false;
+        }
+        thread
     }
 
     pub(crate) async fn run_turn<H: ManagedEventHandler>(
@@ -1136,6 +1137,7 @@ impl CodexAppServer {
         cancellation: Option<&CancellationToken>,
         handler: &mut H,
     ) -> Result<ManagedTurnResult, CodexError> {
+        self.ensure_usable()?;
         let mut user_input = vec![json!({"type": "text", "text": input.text})];
         user_input.extend(
             input
@@ -1175,11 +1177,6 @@ impl CodexAppServer {
         let mut completed_status = None;
         let mut completed_error = None;
         let mut usage = None;
-        if !self.protocol_usable {
-            return Err(CodexError::Protocol(
-                "app-server connection is unavailable after a prior timeout".into(),
-            ));
-        }
         let completion = timeout(
             TURN_TIMEOUT,
             self.peer.wait_for_turn(
@@ -1274,11 +1271,7 @@ impl CodexAppServer {
         params: Value,
         handler: &mut H,
     ) -> Result<Value, CodexError> {
-        if !self.protocol_usable {
-            return Err(CodexError::Protocol(
-                "app-server connection is unavailable after a prior timeout".into(),
-            ));
-        }
+        self.ensure_usable()?;
         match timeout(REQUEST_TIMEOUT, self.peer.request(method, params, handler)).await {
             Ok(result) => result,
             Err(_) => {
@@ -1286,6 +1279,15 @@ impl CodexAppServer {
                 Err(CodexError::Timeout(method))
             }
         }
+    }
+
+    fn ensure_usable(&self) -> Result<(), CodexError> {
+        if !self.protocol_usable {
+            return Err(CodexError::Protocol(
+                "app-server connection is unavailable after a prior protocol or policy failure; restart the managed connection".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub(crate) async fn shutdown(mut self) -> Result<(), CodexError> {

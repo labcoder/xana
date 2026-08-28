@@ -3,6 +3,8 @@ use std::sync::Arc;
 use tokio::io::{BufReader, duplex, sink, split};
 use tokio::sync::Notify;
 
+mod lifecycle;
+
 #[derive(Default)]
 struct TestHandler {
     notifications: Vec<ManagedNotification>,
