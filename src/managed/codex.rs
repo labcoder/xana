@@ -1,5 +1,6 @@
 //! Codex app-server adapter using the vendor-owned JSONL protocol.
 
+mod approvals;
 mod events;
 mod thread_policy;
 
@@ -477,10 +478,11 @@ where
             .and_then(Value::as_str)
             .ok_or_else(|| CodexError::Protocol("message is missing method".into()))?
             .to_owned();
-        if let Some(id) = message.get("id").cloned() {
-            let params = message.get("params").cloned().unwrap_or(Value::Null);
-            let result = approval_response(&method, &params, handler).await?;
-            self.send(&json!({"id": id, "result": result})).await
+        if message.get("id").is_some() {
+            Err(CodexError::Protocol(format!(
+                "server request {} arrived outside an acknowledged active turn",
+                bounded_text(&method, 256)
+            )))
         } else {
             let params = message.get("params").cloned().unwrap_or(Value::Null);
             handler.notification(normalize_notification(method, params)?)
@@ -527,6 +529,7 @@ where
     ) -> Result<bool, CodexError> {
         let mut interruption: Option<TurnInterruption> = None;
         let mut terminal_seen = false;
+        let mut seen_approvals = HashSet::new();
         loop {
             let message = if let Some(interruption) = &interruption {
                 let deadline = interruption.deadline;
@@ -566,8 +569,10 @@ where
                 && let Some(method) = method.as_deref()
             {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
+                approvals::validate_scope(id, &params, thread_id, turn_id, &mut seen_approvals)?;
+                let request = approvals::decode(method, &params)?;
                 let result = if interruption.is_some() {
-                    cancelled_approval_response(method, &params)?
+                    approvals::cancel(&request)?
                 } else {
                     // Only the controller future is dropped here; no response
                     // bytes have been written. A stale oneshot answer can no
@@ -576,9 +581,9 @@ where
                         biased;
                         _ = wait_for_cancellation(cancellation) => {
                             interruption = Some(self.interrupt_turn(thread_id, turn_id).await?);
-                            cancelled_approval_response(method, &params)?
+                            approvals::cancel(&request)?
                         }
-                        result = approval_response(method, &params, handler) => result?,
+                        result = approvals::answer(&request, handler) => result?,
                     }
                 };
                 let response = json!({"id":id,"result":result});
@@ -670,69 +675,6 @@ fn response_result(message: Value) -> Result<Value, CodexError> {
         _ => Err(CodexError::Protocol(
             "response must contain exactly one result or error".into(),
         )),
-    }
-}
-
-async fn approval_response<H: ManagedEventHandler + ?Sized>(
-    method: &str,
-    params: &Value,
-    handler: &mut H,
-) -> Result<Value, CodexError> {
-    let decision = handler.approve(approval_request(method, params)?).await?;
-    Ok(json!({"decision": decision.wire()}))
-}
-
-fn cancelled_approval_response(method: &str, params: &Value) -> Result<Value, CodexError> {
-    let request = approval_request(method, params)?;
-    let decision = [ApprovalDecision::Cancel, ApprovalDecision::Decline]
-        .into_iter()
-        .find(|decision| request.available_decisions.contains(decision.wire()))
-        .ok_or_else(|| CodexError::Protocol("approval offers no cancellation or denial".into()))?;
-    Ok(json!({"decision": decision.wire()}))
-}
-
-fn approval_request(method: &str, params: &Value) -> Result<ApprovalRequest, CodexError> {
-    match method {
-        "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            Ok(ApprovalRequest {
-                item_id: params
-                    .get("itemId")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned),
-                method: method.to_owned(),
-                available_decisions: params
-                    .get("availableDecisions")
-                    .and_then(Value::as_array)
-                    .map(|values| {
-                        values
-                            .iter()
-                            .take(16)
-                            .filter_map(Value::as_str)
-                            .filter(|value| value.len() <= 64)
-                            .map(str::to_owned)
-                            .collect()
-                    })
-                    .unwrap_or_else(|| {
-                        ["accept", "acceptForSession", "decline", "cancel"]
-                            .into_iter()
-                            .map(str::to_owned)
-                            .collect()
-                    }),
-                reason: params
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .map(|value| bounded_text(value, 4096)),
-                command: params
-                    .get("command")
-                    .and_then(Value::as_str)
-                    .map(|value| bounded_text(value, MAX_ITEM_DETAIL_BYTES)),
-                cwd: params
-                    .get("cwd")
-                    .and_then(Value::as_str)
-                    .map(|value| bounded_text(value, 4096)),
-            })
-        }
-        _ => Err(CodexError::UnsupportedServerRequest(method.to_owned())),
     }
 }
 

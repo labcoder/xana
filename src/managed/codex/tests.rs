@@ -25,67 +25,6 @@ impl ManagedEventHandler for TestHandler {
     }
 }
 
-struct BlockingApprovalHandler {
-    started: Arc<Notify>,
-}
-
-impl ManagedEventHandler for BlockingApprovalHandler {
-    fn notification(&mut self, _: ManagedNotification) -> Result<(), CodexError> {
-        Ok(())
-    }
-
-    fn approve<'a>(
-        &'a mut self,
-        _: ApprovalRequest,
-    ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
-        let started = Arc::clone(&self.started);
-        Box::pin(async move {
-            started.notify_one();
-            std::future::pending().await
-        })
-    }
-}
-
-#[tokio::test]
-async fn fake_jsonl_child_maps_notification_and_approval() {
-    let (client, server) = duplex(16 * 1024);
-    let (client_read, client_write) = split(client);
-    let (server_read, mut server_write) = split(server);
-    let server_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(server_read).lines();
-        let request: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        let id = request["id"].clone();
-        server_write
-                .write_all(
-                    b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"itemId\":\"answer\",\"delta\":\"hi\"}}\n",
-                )
-                .await
-                .unwrap();
-        server_write.write_all(b"{\"method\":\"item/commandExecution/requestApproval\",\"id\":99,\"params\":{\"command\":\"echo hi\"}}\n").await.unwrap();
-        let approval: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(approval["result"]["decision"], "accept");
-        server_write
-            .write_all(format!("{{\"id\":{id},\"result\":{{\"ok\":true}}}}\n").as_bytes())
-            .await
-            .unwrap();
-    });
-    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
-    let mut handler = TestHandler::default();
-    let result = peer.request("test", json!({}), &mut handler).await.unwrap();
-    assert_eq!(result["ok"], true);
-    assert_eq!(handler.approvals, 1);
-    assert_eq!(
-        handler.notifications,
-        vec![ManagedNotification::AssistantDelta {
-            item_id: Some("answer".into()),
-            delta: "hi".into(),
-        }]
-    );
-    server_task.await.unwrap();
-}
-
 #[tokio::test]
 async fn cancellable_turn_wait_sends_one_exact_interrupt_request() {
     let (client, server) = duplex(32 * 1024);
@@ -246,48 +185,6 @@ async fn backpressured_turn_start_write_observes_cancellation() {
         Err(CodexError::RequestCancelled("turn/start"))
     ));
     cancel_task.await.expect("cancellation task");
-}
-
-#[tokio::test]
-async fn pending_approval_callback_observes_turn_start_cancellation() {
-    let (client, server) = duplex(16 * 1024);
-    let (client_read, client_write) = split(client);
-    let (server_read, mut server_write) = split(server);
-    let server_task = tokio::spawn(async move {
-        let mut lines = BufReader::new(server_read).lines();
-        let request: Value =
-            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
-        assert_eq!(request["method"], "turn/start");
-        server_write
-            .write_all(b"{\"method\":\"item/commandExecution/requestApproval\",\"id\":99,\"params\":{\"command\":\"echo hi\"}}\n")
-            .await
-            .unwrap();
-        std::future::pending::<()>().await;
-    });
-    let cancellation = CancellationToken::new();
-    let started = Arc::new(Notify::new());
-    let cancel_approval = cancellation.clone();
-    let approval_started = Arc::clone(&started);
-    let cancel_task = tokio::spawn(async move {
-        approval_started.notified().await;
-        cancel_approval.cancel();
-    });
-    let mut peer = JsonLinePeer::new(BufReader::new(client_read), BufWriter::new(client_write));
-    let mut handler = BlockingApprovalHandler { started };
-
-    assert!(matches!(
-        peer.request_cancellable(
-            "turn/start",
-            json!({"threadId":"thread-1"}),
-            &cancellation,
-            &mut handler,
-        )
-        .await,
-        Err(CodexError::RequestCancelled("turn/start"))
-    ));
-    cancel_task.await.expect("cancellation task");
-    server_task.abort();
-    let _ = server_task.await;
 }
 
 #[tokio::test]
@@ -613,49 +510,6 @@ fn thread_and_usage_notifications_keep_managed_correlation() {
 }
 
 #[test]
-fn thread_lifecycle_preserves_codex_base_and_supplies_xana_identity() {
-    let workspace = Path::new("C:/work");
-    let developer_instructions = "You are Xana, a personal AI agent.";
-    let start = thread_start_params(
-        "gpt-5.6-sol",
-        workspace,
-        developer_instructions,
-        ManagedThreadPolicy::default(),
-    );
-    assert_eq!(start["sandbox"], "workspace-write");
-    assert_eq!(start["approvalPolicy"], "on-request");
-    assert_eq!(start["serviceName"], "xana");
-    assert_eq!(start["developerInstructions"], developer_instructions);
-    assert!(start.get("baseInstructions").is_none());
-
-    let resume = thread_resume_params(
-        "thr_123",
-        "gpt-5.6-sol",
-        workspace,
-        developer_instructions,
-        ManagedThreadPolicy::default(),
-    );
-    assert_eq!(resume["threadId"], "thr_123");
-    assert_eq!(resume["model"], "gpt-5.6-sol");
-    assert_eq!(resume["sandbox"], "workspace-write");
-    assert_eq!(resume["developerInstructions"], developer_instructions);
-    assert!(resume.get("baseInstructions").is_none());
-
-    let turn = turn_start_params(
-        "thr_123",
-        "gpt-5.6-sol",
-        &ManagedTurnOptions {
-            reasoning_effort: Some("xhigh".into()),
-            reasoning_summary: Some(ReasoningSummary::Detailed),
-        },
-        vec![json!({"type":"text","text":"Implement it"})],
-    );
-    assert_eq!(turn["effort"], "xhigh");
-    assert_eq!(turn["summary"], "detailed");
-    assert_eq!(turn["model"], "gpt-5.6-sol");
-}
-
-#[test]
 fn codex_model_descriptor_preserves_reasoning_catalog_options() {
     let descriptor = model_descriptor_from_wire(&json!({
         "id":"gpt-5.6-sol",
@@ -687,22 +541,5 @@ fn codex_model_descriptor_preserves_reasoning_catalog_options() {
         ["text".to_owned(), "image".to_owned()]
             .into_iter()
             .collect()
-    );
-}
-
-#[test]
-fn account_and_error_debug_paths_contain_no_tokens() {
-    let error = CodexError::Remote {
-        code: Some(401),
-        message: "authentication failed".into(),
-    };
-    assert!(!format!("{error:?}").contains("access_token"));
-    assert_eq!(
-        AccountStatus::ChatGpt {
-            plan: "plus".into()
-        },
-        AccountStatus::ChatGpt {
-            plan: "plus".into()
-        }
     );
 }

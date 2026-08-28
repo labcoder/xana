@@ -31,6 +31,41 @@ fn seed(workspace: &std::path::Path, data_root: &std::path::Path) -> HostSnapsho
 }
 
 #[test]
+fn managed_approval_transport_preserves_authority_bearing_command_and_cwd_tails() {
+    use super::protocol::{HostObservation, ManagedApprovalSnapshot, encode_frame};
+    use crate::{identity::OperationId, managed::codex::ApprovalRequest};
+    let command = format!("echo {} && important-tail", "argument ".repeat(90));
+    let cwd = format!("C:/workspace/{}important-cwd-tail", "nested/".repeat(90));
+    let request = ApprovalRequest {
+        item_id: Some("command-1".into()),
+        method: "item/commandExecution/requestApproval".into(),
+        available_decisions: ["accept".into(), "decline".into()].into_iter().collect(),
+        reason: None,
+        command: Some(command.clone()),
+        cwd: Some(cwd.clone()),
+    };
+    let frame = ServerFrame::Observation(HostObservation {
+        version: LOCAL_HOST_PROTOCOL_VERSION,
+        sequence: 1,
+        event: HostEvent::ManagedApprovalRequested(ManagedApprovalSnapshot::bounded(
+            uuid::Uuid::new_v4(),
+            OperationId::new(),
+            request,
+        )),
+    });
+    let received = decode_server_frame(&encode_frame(&frame).unwrap()).unwrap();
+    let ServerFrame::Observation(HostObservation {
+        event: HostEvent::ManagedApprovalRequested(approval),
+        ..
+    }) = received
+    else {
+        panic!("expected managed approval");
+    };
+    assert_eq!(approval.command.as_deref(), Some(command.as_str()));
+    assert_eq!(approval.cwd.as_deref(), Some(cwd.as_str()));
+}
+
+#[test]
 fn snapshot_subscription_and_publication_have_one_atomic_sequence_boundary() {
     let directory = tempdir().unwrap();
     let workspace = directory.path().join("workspace");

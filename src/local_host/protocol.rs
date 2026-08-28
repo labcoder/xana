@@ -344,9 +344,11 @@ impl ManagedApprovalSnapshot {
             approval_id,
             operation_id,
             method: bounded_label(request.method),
-            reason: request.reason.map(bounded_label),
-            command: request.command.map(bounded_label),
-            cwd: request.cwd.map(bounded_label),
+            reason: request.reason,
+            // The adapter has already bounded these fields. Truncating a
+            // command or cwd for transport hides what the controller approves.
+            command: request.command,
+            cwd: request.cwd,
             available_decisions: request
                 .available_decisions
                 .into_iter()

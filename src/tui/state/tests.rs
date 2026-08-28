@@ -452,6 +452,23 @@ fn fake_codex_transcript_preserves_reasoning_and_managed_ownership() {
             .any(|card| { card.kind == ActivityKind::Tool && card.identity == "command-1" })
     );
     assert_eq!(state.messages.back().unwrap().kind, MessageKind::Assistant);
+
+    let cwd = format!("C:/workspace/{}important-tail", "nested/".repeat(90));
+    let approval =
+        crate::tui::activity::ApprovalPrompt::managed(crate::managed::codex::ApprovalRequest {
+            item_id: Some("command-1".into()),
+            method: "item/commandExecution/requestApproval".into(),
+            available_decisions: ["accept".into(), "decline".into()].into_iter().collect(),
+            reason: None,
+            command: Some("cargo test".into()),
+            cwd: Some(cwd.clone()),
+        });
+    assert!(
+        approval
+            .details
+            .iter()
+            .any(|detail| detail == &format!("cwd: {cwd}"))
+    );
 }
 
 #[test]

@@ -143,9 +143,18 @@ connection; restart the managed connection instead of retrying on an uncertain
 stream. A vendor-reported rejection received as a complete response does not
 by itself require a restart.
 
+Xana validates approval request/turn identity and the offered choices. It will
+not approve a duplicate request, a request arriving before the turn is
+acknowledged, or a choice the runtime did not offer. Commands and working
+directories are shown without shortening; requests above the supported size
+bounds are rejected. Network-destination approvals, extra session write roots,
+and separate permission-grant requests currently stop the managed turn because
+the controller cannot represent their scope safely. User-input questions and
+MCP elicitation also remain unsupported.
+
 Foreground Codex approval choices remain local to that managed conversation;
 they do not become native Xana grants. A supervised Codex child instead routes
-each callback through that child's existing Xana permission broker, preserving
+each representable command callback through its existing permission broker, preserving
 parent, child, route, operation, and invocation correlation. An effective
 `deny` mode makes a managed Codex child route unavailable because the current
 app-server contract cannot prove that every inner tool effect is disabled;
@@ -160,7 +169,11 @@ matching Xana grant authorizes a later callback without another terminal
 prompt, Xana returns only Codex's one-effect `accept` decision. It never returns
 `acceptForSession`, whose future scope Xana cannot validate. If app-server does
 not offer a one-effect acceptance, Xana declines the callback so the next
-effect cannot bypass the child broker.
+effect cannot bypass the child broker. Child callbacks without an exact command
+and an existing working directory inside the child workspace are declined.
+File-change callbacks are currently unrepresentable there; they cannot become
+generic reusable grants. This does not disable ordinary file writes that Codex
+can perform inside its sandbox without a callback.
 
 For native and managed children alike, the resolved child mode is also a hard
 ceiling over matching configured rules: a `deny` child cannot be reopened by

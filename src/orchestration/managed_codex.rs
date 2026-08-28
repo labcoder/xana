@@ -242,21 +242,22 @@ impl ChildManagedHandler {
         }
     }
 
-    fn scope(&self, request: &ApprovalRequest) -> PermissionScope {
-        let (Some(command), Some(cwd)) = (&request.command, &request.cwd) else {
-            return PermissionScope::Unscoped;
-        };
-        let Ok(canonical_cwd) = PathBuf::from(cwd).canonicalize() else {
-            return PermissionScope::Unscoped;
-        };
-        if !canonical_cwd.starts_with(&self.workspace) {
-            return PermissionScope::Unscoped;
+    fn scope(&self, request: &ApprovalRequest) -> Option<PermissionScope> {
+        if request.method != "item/commandExecution/requestApproval" {
+            return None;
         }
-        PermissionScope::Command {
+        let (Some(command), Some(cwd)) = (&request.command, &request.cwd) else {
+            return None;
+        };
+        let canonical_cwd = PathBuf::from(cwd).canonicalize().ok()?;
+        if !canonical_cwd.starts_with(&self.workspace) {
+            return None;
+        }
+        Some(PermissionScope::Command {
             shell: "codex-managed".to_owned(),
             canonical_cwd,
             command: command.clone(),
-        }
+        })
     }
 }
 
@@ -277,18 +278,18 @@ impl ManagedEventHandler for ChildManagedHandler {
         request: ApprovalRequest,
     ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>> {
         Box::pin(async move {
-            let scope = self.scope(&request);
+            // Unscoped requests cannot become reusable broad grants. Until
+            // the child broker can represent a patch's exact scope, decline it.
+            let Some(scope) = self.scope(&request) else {
+                return self.rejection(&request);
+            };
             let authorization = self
                 .permissions
                 .authorize(PermissionRequest {
                     operation_id: self.operation_id,
                     invocation_id: ToolInvocationId::new(),
                     tool_name: "codex_managed_approval".to_owned(),
-                    effect_class: if request.method.contains("fileChange") {
-                        EffectClass::Write
-                    } else {
-                        EffectClass::Execute
-                    },
+                    effect_class: EffectClass::Execute,
                     final_arguments: json!({
                         "method": request.method,
                         "item_id": request.item_id,
@@ -437,12 +438,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn denied_managed_approval_fails_closed_without_controller_input() {
+    async fn unrepresentable_child_approval_is_declined_even_with_an_allow_policy() {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory.path().canonicalize().expect("workspace");
         let operation_id = OperationId::new();
         let (events, _event_receiver) = tokio::sync::mpsc::unbounded_channel();
-        let policy = PermissionPolicy::new(PolicyDecision::Deny, Vec::new(), &workspace)
+        let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace)
             .expect("permission policy");
         let (permissions, broker) = PermissionBroker::spawn(policy, true, events.clone());
         let mut handler = ChildManagedHandler {

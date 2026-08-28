@@ -186,6 +186,23 @@ status reports the exact Codex CLI executable version that Xana launched so a
 wire-compatibility failure can be distinguished from the separately updated
 desktop application.
 
+The private approval decoder owns the supported wire choices and scope checks;
+frontends do not interpret vendor JSON. Callbacks must follow the acknowledged
+turn start and name that exact thread and turn. Request ids must be bounded
+strings or integers, may not repeat within the turn, and are limited to 1,024
+per turn. The controller may return only a supported choice actually offered
+by the runtime. An absent optional decision list uses the stable legacy
+choices; a malformed list never restores that default.
+
+Command approvals require the full command. Authority-bearing command and cwd
+values are rejected, not shortened, above 16 KiB and 4 KiB respectively. Local
+host and terminal approval projections preserve those accepted values.
+`networkApprovalContext`, session write `grantRoot`, permission-grant requests,
+user-input questions, and MCP elicitation are not yet representable end to end
+by the current controllers and fail closed. Supporting them needs explicit
+typed scope and controller interactions; a plain command or patch approval is
+not a substitute. No experimental protocol opt-in is enabled.
+
 Codex owns its OAuth flow, access and refresh tokens, model backend, inner
 history, tools, sandbox, and approval semantics. Xana never reads or copies
 `auth.json`. `xana connection login codex` delegates browser or device-code
@@ -279,7 +296,12 @@ hidden reasoning or all streaming deltas.
 The broker may remember an exact Xana session grant, but the adapter still
 returns only app-server's one-effect `accept` response for every authorized
 callback. It never delegates session-grant scope to the managed runtime; an
-app-server request that offers only `acceptForSession` fails closed. The
+app-server request that offers only `acceptForSession` fails closed. Child
+callbacks require an exact command and an existing cwd within the child
+workspace. Missing or unrepresentable scopes, including file-change callbacks,
+are declined rather than becoming reusable `Unscoped` broker grants. This is
+an approval-callback restriction, not a claim that Codex cannot perform ordinary
+sandbox-permitted file writes. The
 newline-framed JSON transport retains an incomplete frame across cancellation
 races, and cancellation is polled before continuously ready app-server input,
 so an interrupted request cannot corrupt the following frame or starve the

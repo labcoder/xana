@@ -187,7 +187,7 @@ impl ApprovalPrompt {
             ));
         }
         if let Some(cwd) = &request.cwd {
-            details.push(format!("cwd: {}", bounded(cwd.clone(), MAX_SUMMARY_BYTES)));
+            details.push(format!("cwd: {cwd}"));
         }
         Self {
             owner: "Codex managed task".to_owned(),
