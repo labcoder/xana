@@ -312,3 +312,87 @@ async fn resume_refuses_a_different_vendor_thread() {
     server.shutdown().await.expect("fixture shuts down");
     fixture.assert_complete();
 }
+
+#[tokio::test]
+async fn unfinished_rpc_or_invalid_turn_stops_the_child_before_reuse() {
+    let fixture = Fixture::new();
+    for (method, response) in [
+        ("account/read", "not-json"),
+        ("turn/start", r#"{"id":2,"result":{"turn":{"id":""}}}"#),
+        (
+            "turn/start",
+            r#"{"id":99,"method":"unsupported/request","params":{}}"#,
+        ),
+    ] {
+        let mut server = fixture
+            .spawn(&format!("READ \"method\":\"{method}\"\nSEND {response}\n"))
+            .await;
+        let mut handler = TestHandler::default();
+        let options = ManagedTurnOptions {
+            reasoning_effort: None,
+            reasoning_summary: None,
+        };
+        let input = || ManagedTurnInput {
+            text: "fixture".into(),
+            local_images: Vec::new(),
+        };
+        let result = if method == "account/read" {
+            server.account_status().await.map(|_| ())
+        } else {
+            server
+                .run_turn_cancellable(
+                    "thread-1",
+                    "model-fixture",
+                    &options,
+                    input(),
+                    &CancellationToken::new(),
+                    &mut handler,
+                )
+                .await
+                .map(|_| ())
+        };
+        assert!(result.is_err(), "invalid response must fail: {response}");
+        let reuse = server
+            .run_turn_cancellable(
+                "thread-1",
+                "model-fixture",
+                &options,
+                input(),
+                &CancellationToken::new(),
+                &mut handler,
+            )
+            .await;
+        assert!(
+            matches!(reuse, Err(CodexError::Protocol(ref message)) if message.contains("unavailable")),
+            "uncertain protocol state must reject reuse before a write: {reuse:?}"
+        );
+        timeout(Duration::from_secs(2), server.child.wait())
+            .await
+            .expect("failed protocol retires the process promptly")
+            .expect("child exit is reaped");
+        server.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn correlated_remote_rejection_does_not_poison_a_synchronized_connection() {
+    let fixture = Fixture::new();
+    let mut server = fixture
+        .spawn(
+            "READ \"method\":\"account/read\"\n\
+         SEND {\"id\":2,\"error\":{\"code\":-32600,\"message\":\"fixture rejection\"}}\n\
+         READ \"method\":\"account/read\"\n\
+         SEND {\"id\":3,\"result\":{\"account\":null}}\n",
+        )
+        .await;
+    assert!(matches!(
+        server.account_status().await,
+        Err(CodexError::Remote { .. })
+    ));
+    assert_eq!(
+        server.account_status().await.unwrap(),
+        AccountStatus::LoggedOut
+    );
+    server.shutdown().await.unwrap();
+    fixture.assert_complete();
+}

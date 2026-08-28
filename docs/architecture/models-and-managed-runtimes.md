@@ -143,9 +143,10 @@ reroutes, warnings, completion, and approvals into typed managed events. It
 supervises process lifetime and rejects oversized, malformed, unsupported, or
 timed-out protocol exchanges. Version-probe stdout is drained with fixed
 retention, turn-level assistant accumulation and pending activity items are
-bounded, and a timed-out or interrupted exchange poisons that process
-connection rather than allowing a later request to consume an ambiguous
-response.
+bounded. An unfinished RPC, malformed reply, invalid turn id, or failed turn
+exchange retires the process connection and requests child termination rather
+than allowing another request to consume an ambiguous response. A complete,
+correlated remote rejection leaves the connection synchronized and reusable.
 
 Application composition passes Xana's canonical, versioned built-in identity
 to every thread start and delegated resume as `developerInstructions`. The
@@ -247,7 +248,14 @@ flowchart LR
 Managed cancellation is cooperative across that boundary: the child adapter
 sends one `turn/interrupt` for the active thread/turn and keeps consuming
 events until one absolute three-second post-cancellation deadline while Codex resolves the
-completion race. Cancellation also races process startup, account validation,
+completion race. An active approval wait is cancellable: Xana drops the pending
+controller answer, sends the exact interrupt, and returns only an advertised
+cancellation or denial for that callback and any callbacks arriving during
+interruption. Both the terminal event and interrupt acknowledgement must be
+consumed before the connection can be reused, in either arrival order. The
+same absolute deadline bounds all of this work. Cancellation during a response
+write retires the connection because a partial outgoing frame cannot safely
+be reused. Cancellation also races process startup, account validation,
 and thread creation; once observed, it prevents the model turn from starting.
 An older app-server that does
 not support the request is closed and yields an attributed failed child with

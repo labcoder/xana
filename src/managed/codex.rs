@@ -321,6 +321,12 @@ struct JsonLinePeer<R, W> {
     writer: W,
     next_id: u64,
     incoming: Vec<u8>,
+    awaiting_response: bool,
+}
+
+struct TurnInterruption {
+    response_id: Option<u64>,
+    deadline: tokio::time::Instant,
 }
 
 impl<R, W> JsonLinePeer<R, W>
@@ -334,6 +340,7 @@ where
             writer,
             next_id: 1,
             incoming: Vec::new(),
+            awaiting_response: false,
         }
     }
 
@@ -390,14 +397,16 @@ where
     ) -> Result<Value, CodexError> {
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
+        self.awaiting_response = true;
         self.send(&json!({"method": method, "id": id, "params": params}))
             .await?;
         loop {
             let message = self.receive().await?;
             if message.get("id").and_then(Value::as_u64) == Some(id)
+                && message.get("method").is_none()
                 && (message.get("result").is_some() || message.get("error").is_some())
             {
-                return response_result(message);
+                return self.finish_response(message);
             }
             self.handle_incoming(message, handler).await?;
         }
@@ -415,6 +424,7 @@ where
         }
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
+        self.awaiting_response = true;
         let request = json!({"method": method, "id": id, "params": params});
         tokio::select! {
             biased;
@@ -432,9 +442,10 @@ where
                 message = self.receive() => message?,
             };
             if message.get("id").and_then(Value::as_u64) == Some(id)
+                && message.get("method").is_none()
                 && (message.get("result").is_some() || message.get("error").is_some())
             {
-                return response_result(message);
+                return self.finish_response(message);
             }
             tokio::select! {
                 biased;
@@ -444,6 +455,16 @@ where
                 handled = self.handle_incoming(message, handler) => handled?,
             }
         }
+    }
+
+    fn finish_response(&mut self, message: Value) -> Result<Value, CodexError> {
+        let result = response_result(message);
+        // Only a complete, correlated response resolves the RPC. A Remote
+        // error returned by a controller callback is not such a response.
+        if result.is_ok() || matches!(result, Err(CodexError::Remote { .. })) {
+            self.awaiting_response = false;
+        }
+        result
     }
 
     async fn handle_incoming<H: ManagedEventHandler + ?Sized>(
@@ -504,59 +525,78 @@ where
         mut complete: impl FnMut(&ManagedNotification) -> Result<bool, CodexError>,
         handler: &mut H,
     ) -> Result<bool, CodexError> {
-        let mut cancellation_observed = false;
-        let mut interrupt_response_id = None;
-        let mut interruption_deadline = None;
+        let mut interruption: Option<TurnInterruption> = None;
+        let mut terminal_seen = false;
         loop {
-            let message = if !cancellation_observed {
-                tokio::select! {
-                    biased;
-                    _ = wait_for_cancellation(cancellation) => {
-                        cancellation_observed = true;
-                        let deadline = tokio::time::Instant::now() + INTERRUPT_COMPLETION_TIMEOUT;
-                        interruption_deadline = Some(deadline);
-                        let id = self.next_id;
-                        self.next_id = self.next_id.saturating_add(1);
-                        tokio::time::timeout_at(deadline, self.send(&json!({
-                                "method":"turn/interrupt",
-                                "id":id,
-                                "params":{"threadId":thread_id,"turnId":turn_id}
-                            })))
-                            .await
-                            .map_err(|_| CodexError::Timeout("turn interruption"))??;
-                        interrupt_response_id = Some(id);
-                        continue;
-                    }
-                    message = self.receive() => message?,
-                }
-            } else {
-                let deadline = interruption_deadline
-                    .expect("observed cancellation establishes an interruption deadline");
+            let message = if let Some(interruption) = &interruption {
+                let deadline = interruption.deadline;
                 if tokio::time::Instant::now() >= deadline {
                     return Err(CodexError::Timeout("turn interruption"));
                 }
                 tokio::time::timeout_at(deadline, self.receive())
                     .await
                     .map_err(|_| CodexError::Timeout("turn interruption"))??
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = wait_for_cancellation(cancellation) => {
+                        interruption = Some(self.interrupt_turn(thread_id, turn_id).await?);
+                        continue;
+                    }
+                    message = self.receive() => message?,
+                }
             };
-            if interrupt_response_id.is_some()
-                && message.get("id").and_then(Value::as_u64) == interrupt_response_id
+            if let Some(interruption) = interruption.as_mut()
+                && interruption.response_id.is_some()
+                && message.get("method").is_none()
+                && message.get("id").and_then(Value::as_u64) == interruption.response_id
             {
                 response_result(message)?;
-                interrupt_response_id = None;
+                interruption.response_id = None;
+                if terminal_seen {
+                    return Ok(true);
+                }
                 continue;
             }
             let method = message
                 .get("method")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            if message.get("id").is_some() && method.is_some() {
-                if let Some(deadline) = interruption_deadline {
-                    tokio::time::timeout_at(deadline, self.handle_incoming(message, handler))
+            if let Some(id) = message.get("id")
+                && let Some(method) = method.as_deref()
+            {
+                let params = message.get("params").cloned().unwrap_or(Value::Null);
+                let result = if interruption.is_some() {
+                    cancelled_approval_response(method, &params)?
+                } else {
+                    // Only the controller future is dropped here; no response
+                    // bytes have been written. A stale oneshot answer can no
+                    // longer authorize work after cancellation wins.
+                    tokio::select! {
+                        biased;
+                        _ = wait_for_cancellation(cancellation) => {
+                            interruption = Some(self.interrupt_turn(thread_id, turn_id).await?);
+                            cancelled_approval_response(method, &params)?
+                        }
+                        result = approval_response(method, &params, handler) => result?,
+                    }
+                };
+                let response = json!({"id":id,"result":result});
+                if let Some(interruption) = &interruption {
+                    tokio::time::timeout_at(interruption.deadline, self.send(&response))
                         .await
                         .map_err(|_| CodexError::Timeout("turn interruption"))??;
                 } else {
-                    self.handle_incoming(message, handler).await?;
+                    // A cancelled write may have emitted a partial JSONL
+                    // frame. The caller must retire this connection rather
+                    // than try to send an interrupt on an uncertain stream.
+                    tokio::select! {
+                        biased;
+                        _ = wait_for_cancellation(cancellation) => {
+                            return Err(CodexError::RequestCancelled("approval response"));
+                        }
+                        sent = self.send(&response) => sent?,
+                    }
                 }
                 continue;
             }
@@ -567,12 +607,42 @@ where
                 method,
                 message.get("params").cloned().unwrap_or(Value::Null),
             )?;
-            let done = complete(&notification)?;
+            let done = !terminal_seen && complete(&notification)?;
             handler.notification(notification)?;
             if done {
-                return Ok(cancellation_observed);
+                terminal_seen = true;
+                if interruption
+                    .as_ref()
+                    .is_none_or(|state| state.response_id.is_none())
+                {
+                    return Ok(interruption.is_some());
+                }
             }
         }
+    }
+
+    async fn interrupt_turn(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+    ) -> Result<TurnInterruption, CodexError> {
+        let deadline = tokio::time::Instant::now() + INTERRUPT_COMPLETION_TIMEOUT;
+        let id = self.next_id;
+        self.next_id = self.next_id.saturating_add(1);
+        tokio::time::timeout_at(
+            deadline,
+            self.send(&json!({
+                "method":"turn/interrupt",
+                "id":id,
+                "params":{"threadId":thread_id,"turnId":turn_id}
+            })),
+        )
+        .await
+        .map_err(|_| CodexError::Timeout("turn interruption"))??;
+        Ok(TurnInterruption {
+            response_id: Some(id),
+            deadline,
+        })
     }
 }
 
@@ -584,22 +654,23 @@ async fn wait_for_cancellation(cancellation: Option<&CancellationToken>) {
 }
 
 fn response_result(message: Value) -> Result<Value, CodexError> {
-    if let Some(error) = message.get("error") {
-        return Err(CodexError::Remote {
-            code: error.get("code").and_then(Value::as_i64),
-            message: bounded_text(
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error"),
-                4096,
-            ),
-        });
+    match (message.get("result"), message.get("error")) {
+        (Some(result), None) => Ok(result.clone()),
+        (None, Some(error)) => {
+            let code = error.get("code").and_then(Value::as_i64);
+            let text = error.get("message").and_then(Value::as_str);
+            match (code, text) {
+                (Some(code), Some(text)) => Err(CodexError::Remote {
+                    code: Some(code),
+                    message: bounded_text(text, 4096),
+                }),
+                _ => Err(CodexError::Protocol("malformed error response".into())),
+            }
+        }
+        _ => Err(CodexError::Protocol(
+            "response must contain exactly one result or error".into(),
+        )),
     }
-    message
-        .get("result")
-        .cloned()
-        .ok_or_else(|| CodexError::Protocol("response is missing result".into()))
 }
 
 async fn approval_response<H: ManagedEventHandler + ?Sized>(
@@ -607,48 +678,59 @@ async fn approval_response<H: ManagedEventHandler + ?Sized>(
     params: &Value,
     handler: &mut H,
 ) -> Result<Value, CodexError> {
+    let decision = handler.approve(approval_request(method, params)?).await?;
+    Ok(json!({"decision": decision.wire()}))
+}
+
+fn cancelled_approval_response(method: &str, params: &Value) -> Result<Value, CodexError> {
+    let request = approval_request(method, params)?;
+    let decision = [ApprovalDecision::Cancel, ApprovalDecision::Decline]
+        .into_iter()
+        .find(|decision| request.available_decisions.contains(decision.wire()))
+        .ok_or_else(|| CodexError::Protocol("approval offers no cancellation or denial".into()))?;
+    Ok(json!({"decision": decision.wire()}))
+}
+
+fn approval_request(method: &str, params: &Value) -> Result<ApprovalRequest, CodexError> {
     match method {
         "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" => {
-            let decision = handler
-                .approve(ApprovalRequest {
-                    item_id: params
-                        .get("itemId")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    method: method.to_owned(),
-                    available_decisions: params
-                        .get("availableDecisions")
-                        .and_then(Value::as_array)
-                        .map(|values| {
-                            values
-                                .iter()
-                                .take(16)
-                                .filter_map(Value::as_str)
-                                .filter(|value| value.len() <= 64)
-                                .map(str::to_owned)
-                                .collect()
-                        })
-                        .unwrap_or_else(|| {
-                            ["accept", "acceptForSession", "decline", "cancel"]
-                                .into_iter()
-                                .map(str::to_owned)
-                                .collect()
-                        }),
-                    reason: params
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .map(|value| bounded_text(value, 4096)),
-                    command: params
-                        .get("command")
-                        .and_then(Value::as_str)
-                        .map(|value| bounded_text(value, MAX_ITEM_DETAIL_BYTES)),
-                    cwd: params
-                        .get("cwd")
-                        .and_then(Value::as_str)
-                        .map(|value| bounded_text(value, 4096)),
-                })
-                .await?;
-            Ok(json!({"decision": decision.wire()}))
+            Ok(ApprovalRequest {
+                item_id: params
+                    .get("itemId")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                method: method.to_owned(),
+                available_decisions: params
+                    .get("availableDecisions")
+                    .and_then(Value::as_array)
+                    .map(|values| {
+                        values
+                            .iter()
+                            .take(16)
+                            .filter_map(Value::as_str)
+                            .filter(|value| value.len() <= 64)
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_else(|| {
+                        ["accept", "acceptForSession", "decline", "cancel"]
+                            .into_iter()
+                            .map(str::to_owned)
+                            .collect()
+                    }),
+                reason: params
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .map(|value| bounded_text(value, 4096)),
+                command: params
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .map(|value| bounded_text(value, MAX_ITEM_DETAIL_BYTES)),
+                cwd: params
+                    .get("cwd")
+                    .and_then(Value::as_str)
+                    .map(|value| bounded_text(value, 4096)),
+            })
         }
         _ => Err(CodexError::UnsupportedServerRequest(method.to_owned())),
     }
@@ -1155,23 +1237,25 @@ impl CodexAppServer {
             .await
             {
                 Ok(Ok(result)) => result,
-                Ok(Err(error @ CodexError::RequestCancelled(_))) => {
-                    self.protocol_usable = false;
-                    return Err(error);
-                }
-                Ok(Err(error)) => return Err(error),
+                Ok(Err(error)) => return Err(self.failed_request(error)),
                 Err(_) => {
-                    self.protocol_usable = false;
-                    return Err(CodexError::Timeout("turn/start"));
+                    return Err(self.retire(CodexError::Timeout("turn/start")));
                 }
             },
             None => self.request("turn/start", params, handler).await?,
         };
-        let turn_id = result
+        let turn_id = match result
             .pointer("/turn/id")
             .and_then(Value::as_str)
-            .ok_or_else(|| CodexError::Protocol("turn/start omitted turn id".into()))?
-            .to_owned();
+            .filter(|id| !id.is_empty() && id.len() <= 4096)
+        {
+            Some(id) => id.to_owned(),
+            None => {
+                return Err(self.retire(CodexError::Protocol(
+                    "turn/start returned a missing or invalid turn id".into(),
+                )));
+            }
+        };
         let mut streamed_text = String::new();
         let mut final_text = None::<String>;
         let mut completed_status = None;
@@ -1234,15 +1318,13 @@ impl CodexAppServer {
         let completion = match completion {
             Ok(completion) => completion,
             Err(_) => {
-                self.protocol_usable = false;
-                return Err(CodexError::Timeout("turn completion"));
+                return Err(self.retire(CodexError::Timeout("turn completion")));
             }
         };
         let interruption_requested = match completion {
             Ok(interruption_requested) => interruption_requested,
             Err(error) => {
-                self.protocol_usable = false;
-                return Err(error);
+                return Err(self.retire(error));
             }
         };
         let status = completed_status.unwrap_or_else(|| "unknown".into());
@@ -1273,11 +1355,27 @@ impl CodexAppServer {
     ) -> Result<Value, CodexError> {
         self.ensure_usable()?;
         match timeout(REQUEST_TIMEOUT, self.peer.request(method, params, handler)).await {
-            Ok(result) => result,
-            Err(_) => {
-                self.protocol_usable = false;
-                Err(CodexError::Timeout(method))
-            }
+            Ok(Ok(result)) => Ok(result),
+            Ok(Err(error)) => Err(self.failed_request(error)),
+            Err(_) => Err(self.retire(CodexError::Timeout(method))),
+        }
+    }
+
+    fn failed_request(&mut self, error: CodexError) -> CodexError {
+        if self.peer.awaiting_response {
+            self.retire(error)
+        } else {
+            error
+        }
+    }
+
+    fn retire(&mut self, error: CodexError) -> CodexError {
+        self.protocol_usable = false;
+        match self.child.start_kill() {
+            Ok(()) => error,
+            Err(stop_error) => CodexError::Io(format!(
+                "{error}; could not stop the failed app-server: {stop_error}"
+            )),
         }
     }
 

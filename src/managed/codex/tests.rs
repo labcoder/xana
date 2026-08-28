@@ -4,6 +4,7 @@ use tokio::io::{BufReader, duplex, sink, split};
 use tokio::sync::Notify;
 
 mod lifecycle;
+mod turn_control;
 
 #[derive(Default)]
 struct TestHandler {

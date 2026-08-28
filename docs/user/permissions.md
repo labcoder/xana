@@ -136,6 +136,13 @@ user/organization configuration; Xana will not override managed requirements
 or silently accept broader access. This is not a promise that every inner tool
 needs approval: ordinary sandbox-permitted operations can run without asking.
 
+Interrupting a managed turn also cancels a pending approval answer. Xana will
+not approve callbacks that arrive while interruption is in progress. If the
+protocol fails or a response write is interrupted, Xana stops that app-server
+connection; restart the managed connection instead of retrying on an uncertain
+stream. A vendor-reported rejection received as a complete response does not
+by itself require a restart.
+
 Foreground Codex approval choices remain local to that managed conversation;
 they do not become native Xana grants. A supervised Codex child instead routes
 each callback through that child's existing Xana permission broker, preserving
