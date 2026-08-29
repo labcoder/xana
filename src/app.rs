@@ -117,6 +117,44 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_config_command(args.command, &paths, &mut stdout.lock())
         }
+        Some(Command::Settings(args)) => {
+            ensure_setup(&paths).await?;
+            let input_is_terminal = io::stdin().is_terminal();
+            let output_is_terminal = io::stdout().is_terminal();
+            if input_is_terminal && output_is_terminal {
+                let profile = resolved_presentation(&paths, true, true);
+                let outcome = tui::run_settings(
+                    &paths,
+                    args.section.as_deref(),
+                    args.search.as_deref(),
+                    profile,
+                )?;
+                if outcome.applied_transactions > 0 {
+                    eprintln!(
+                        "xana: applied {} settings transaction{}",
+                        outcome.applied_transactions,
+                        if outcome.applied_transactions == 1 { "" } else { "s" }
+                    );
+                }
+                if outcome.requires_new_conversation {
+                    eprintln!(
+                        "xana: settings applied; active conversations remain unchanged and new conversations use the updated defaults"
+                    );
+                }
+                Ok(())
+            } else {
+                let stdout = io::stdout();
+                run_config_command(
+                    cli::ConfigCommand::List {
+                        section: args.section,
+                        search: args.search,
+                        json: false,
+                    },
+                    &paths,
+                    &mut stdout.lock(),
+                )
+            }
+        }
         Some(Command::Session(args)) => {
             if args.command == SessionCommand::New {
                 ensure_setup(&paths).await?;

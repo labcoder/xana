@@ -67,7 +67,7 @@ fn draft_previews_and_commits_changes_across_both_owners() {
     );
     assert!(preview.entry(APPEARANCE_THEME).expect("theme entry").staged);
 
-    let receipt = manager.commit(draft, false).expect("commit settings");
+    let receipt = manager.commit(&draft, false).expect("commit settings");
 
     assert_eq!(receipt.changes.len(), 2);
     assert!(receipt.requires_new_conversation());
@@ -106,7 +106,7 @@ fn dry_run_returns_an_exact_receipt_without_writing() {
         .set(DIAGNOSTICS_MAX_TOTAL_BYTES, "64 MiB")
         .expect("stage byte value");
 
-    let receipt = manager.commit(draft, true).expect("preview commit");
+    let receipt = manager.commit(&draft, true).expect("preview commit");
 
     assert!(receipt.dry_run);
     assert_eq!(receipt.changes.len(), 1);
@@ -135,7 +135,7 @@ fn commit_rejects_a_concurrent_configuration_change() {
     fs::write(paths.config_file(), &external).expect("write external edit");
 
     let error = manager
-        .commit(draft, false)
+        .commit(&draft, false)
         .expect_err("concurrent edit must fail");
 
     assert!(matches!(
@@ -197,11 +197,11 @@ fn reset_removes_optional_shell_program() {
     draft
         .set(EXECUTION_SHELL_PROGRAM, "C:\\tools\\shell.exe")
         .expect("stage shell program");
-    manager.commit(draft, false).expect("commit shell program");
+    manager.commit(&draft, false).expect("commit shell program");
 
     let mut reset = manager.begin().expect("begin reset draft");
     reset.reset(EXECUTION_SHELL_PROGRAM).expect("stage reset");
-    manager.commit(reset, false).expect("commit reset");
+    manager.commit(&reset, false).expect("commit reset");
 
     let snapshot = manager.snapshot().expect("reload settings");
     assert_eq!(

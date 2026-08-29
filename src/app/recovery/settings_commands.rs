@@ -122,7 +122,7 @@ pub(super) fn set<W: Write>(
     let manager = SettingsManager::new(paths);
     let mut draft = manager.begin()?;
     draft.set(key, value)?;
-    let receipt = manager.commit(draft, dry_run)?;
+    let receipt = manager.commit(&draft, dry_run)?;
     write_receipt(output, &receipt, json)
 }
 
@@ -136,7 +136,7 @@ pub(super) fn reset<W: Write>(
     let manager = SettingsManager::new(paths);
     let mut draft = manager.begin()?;
     draft.reset(key)?;
-    let receipt = manager.commit(draft, dry_run)?;
+    let receipt = manager.commit(&draft, dry_run)?;
     write_receipt(output, &receipt, json)
 }
 

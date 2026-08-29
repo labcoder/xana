@@ -203,50 +203,53 @@ pub(crate) enum Command {
     /// Inspect the active configuration.
     #[command(display_order = 3)]
     Config(ConfigArgs),
+    /// Browse and edit settings in the full-screen terminal workspace.
+    #[command(display_order = 4)]
+    Settings(SettingsArgs),
     /// Clear setup state so Xana can be initialized again.
-    #[command(visible_alias = "clean", display_order = 4)]
+    #[command(visible_alias = "clean", display_order = 5)]
     Reset(ResetArgs),
     /// Inspect or manage model-provider connections.
-    #[command(display_order = 5)]
+    #[command(display_order = 6)]
     Connection(ConnectionArgs),
     /// List, refresh, and select connection-owned models.
-    #[command(display_order = 6)]
+    #[command(display_order = 7)]
     Model(ModelArgs),
     /// List, create, inspect, select, or archive conversations.
-    #[command(display_order = 7)]
+    #[command(display_order = 8)]
     Session(SessionArgs),
     /// Organize conversations with optional local Xana projects.
-    #[command(display_order = 8)]
+    #[command(display_order = 9)]
     Project(ProjectArgs),
     /// Create, inspect, resolve, and freeze named agent profiles.
-    #[command(display_order = 9)]
+    #[command(display_order = 10)]
     Profile(ProfileArgs),
     /// Discover, validate, and explicitly activate Agent Skills.
-    #[command(display_order = 10)]
+    #[command(display_order = 11)]
     Skill(SkillArgs),
     /// Inspect and manage declarative Agent Plugin bundles.
-    #[command(display_order = 11)]
+    #[command(display_order = 12)]
     Plugin(PluginArgs),
     /// Inspect and use profile-allowlisted Model Context Protocol servers.
-    #[command(display_order = 12)]
+    #[command(display_order = 13)]
     Mcp(McpArgs),
     /// Configure, inspect, and explicitly trust remote A2A agents.
-    #[command(name = "external-agent", display_order = 13)]
+    #[command(name = "external-agent", display_order = 14)]
     ExternalAgent(ExternalAgentArgs),
     /// List, inspect, or invoke focused image-generation routes.
-    #[command(display_order = 14)]
+    #[command(display_order = 15)]
     Image(ImageArgs),
     /// List, inspect, or invoke focused vision-analysis routes.
-    #[command(display_order = 15)]
+    #[command(display_order = 16)]
     Vision(VisionArgs),
     /// Open the provider-neutral integration hub or one focused setup path.
-    #[command(display_order = 16)]
+    #[command(display_order = 17)]
     Connect(ConnectArgs),
     /// Inspect local metadata-only logs and crash diagnostics.
-    #[command(display_order = 17)]
+    #[command(display_order = 18)]
     Logs(LogsArgs),
     /// Inspect or revoke saved outbound-data decisions.
-    #[command(display_order = 18)]
+    #[command(display_order = 19)]
     Outbound(OutboundArgs),
     /// Host Xana explicitly for authenticated local frontend attachment.
     #[command(display_order = 20)]
@@ -266,6 +269,17 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct SettingsArgs {
+    /// Open one section by stable name.
+    #[arg(long, value_name = "SECTION")]
+    pub(crate) section: Option<String>,
+
+    /// Start with a live search across setting keys, labels, and descriptions.
+    #[arg(long, value_name = "QUERY")]
+    pub(crate) search: Option<String>,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

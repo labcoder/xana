@@ -14,6 +14,7 @@ mod lifecycle;
 mod rich_text;
 mod runner;
 mod session;
+mod settings;
 mod state;
 mod view;
 
@@ -28,6 +29,7 @@ use std::{io, path::PathBuf};
 
 pub(crate) use intro::play as play_intro;
 pub(crate) use runner::{run_managed, run_native};
+pub(crate) use settings::run as run_settings;
 
 pub(crate) fn restore_terminal_best_effort() {
     lifecycle::restore_process_terminal_best_effort();

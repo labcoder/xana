@@ -442,7 +442,7 @@ impl SettingsManager {
 
     pub(crate) fn commit(
         &self,
-        draft: SettingsDraft,
+        draft: &SettingsDraft,
         dry_run: bool,
     ) -> Result<SettingsReceipt, SettingsError> {
         if draft.paths != self.paths {
@@ -522,6 +522,19 @@ impl SettingsDraft {
             return Err(error);
         }
         Ok(())
+    }
+
+    pub(crate) fn revert(&mut self, key: &str) -> bool {
+        self.changes.remove(key).is_some()
+    }
+
+    pub(crate) fn pending_count(&self) -> Result<usize, SettingsError> {
+        Ok(self.pending_changes()?.len())
+    }
+
+    pub(crate) fn pending_changes(&self) -> Result<Vec<SettingChange>, SettingsError> {
+        let rendered = self.rendered()?;
+        changes_between(&self.paths, &self.base, &rendered, &self.staged_keys())
     }
 
     pub(crate) fn preview(&self) -> Result<SettingsSnapshot, SettingsError> {
@@ -1213,6 +1226,12 @@ fn canonicalize(entry: &SettingEntry, value: &str) -> Result<String, SettingsErr
         return Err(invalid_value(
             entry,
             "value cannot be blank; use reset for an automatic value",
+        ));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(invalid_value(
+            entry,
+            "value cannot contain control characters",
         ));
     }
     let parsed = match entry.kind {
