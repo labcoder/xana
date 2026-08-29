@@ -1,5 +1,7 @@
 //! Recovery and configuration commands at the application edge.
 
+mod settings_commands;
+
 use super::load_config;
 use crate::{
     cli::{self, ConfigCommand, OutputChoice},
@@ -53,6 +55,24 @@ pub(super) fn run_config_command<W: Write>(
                 )?;
             }
             Ok(())
+        }
+        ConfigCommand::List {
+            section,
+            search,
+            json,
+        } => settings_commands::list(paths, section.as_deref(), search.as_deref(), json, output),
+        ConfigCommand::Get { key, json } => settings_commands::get(paths, &key, json, output),
+        ConfigCommand::Explain { key, json } => {
+            settings_commands::explain(paths, &key, json, output)
+        }
+        ConfigCommand::Set {
+            key,
+            value,
+            dry_run,
+            json,
+        } => settings_commands::set(paths, &key, &value, dry_run, json, output),
+        ConfigCommand::Reset { key, dry_run, json } => {
+            settings_commands::reset(paths, &key, dry_run, json, output)
         }
         ConfigCommand::Migrate { apply } => {
             let plan = crate::config_migration::ConfigMigrationPlan::build(paths)?;

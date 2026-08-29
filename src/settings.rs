@@ -328,6 +328,7 @@ pub(crate) struct SettingChange {
     pub(crate) label: String,
     pub(crate) before: SettingValue,
     pub(crate) after: SettingValue,
+    pub(crate) target: SettingTarget,
     pub(crate) effect: SettingEffect,
 }
 
@@ -521,23 +522,6 @@ impl SettingsDraft {
             return Err(error);
         }
         Ok(())
-    }
-
-    pub(crate) fn revert(&mut self, key: &str) -> bool {
-        self.changes.remove(key).is_some()
-    }
-
-    pub(crate) fn discard_all(&mut self) {
-        self.changes.clear();
-    }
-
-    pub(crate) fn pending_count(&self) -> Result<usize, SettingsError> {
-        Ok(self.pending_changes()?.len())
-    }
-
-    pub(crate) fn pending_changes(&self) -> Result<Vec<SettingChange>, SettingsError> {
-        let rendered = self.rendered()?;
-        changes_between(&self.paths, &self.base, &rendered, &self.staged_keys())
     }
 
     pub(crate) fn preview(&self) -> Result<SettingsSnapshot, SettingsError> {
@@ -921,10 +905,10 @@ fn execution_entries(
         || SettingValue::automatic("Automatic"),
         |path| SettingValue::formatted(path.display().to_string(), path.display().to_string()),
     );
-    let route = registry.default_child_route.as_ref().map_or_else(
-        || SettingValue::automatic("None"),
-        |route| SettingValue::scalar(route),
-    );
+    let route = registry
+        .default_child_route
+        .as_ref()
+        .map_or_else(|| SettingValue::automatic("None"), SettingValue::scalar);
     let mut route_choices = vec!["none".to_owned()];
     route_choices.extend(registry.routes.keys().cloned());
     vec![
@@ -1604,6 +1588,7 @@ fn changes_between(
                 label: after.label.clone(),
                 before: before.value.clone(),
                 after: after.value.clone(),
+                target: after.target,
                 effect: after.effect,
             })
         })

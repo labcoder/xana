@@ -1087,6 +1087,58 @@ pub(crate) enum ConfigCommand {
     Path,
     /// Load and validate the active config.toml.
     Check,
+    /// List discoverable settings with effective values and ownership metadata.
+    List {
+        /// Limit results to one settings section.
+        #[arg(long, value_name = "SECTION")]
+        section: Option<String>,
+        /// Match setting keys, labels, descriptions, and displayed values.
+        #[arg(long, value_name = "QUERY")]
+        search: Option<String>,
+        /// Emit a stable, secret-free JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print one setting's effective value.
+    Get {
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Emit the complete secret-free setting record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain one setting's value, default, source, target, and application timing.
+    Explain {
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Emit the complete secret-free setting record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate and atomically set one ordinary scalar setting.
+    Set {
+        #[arg(value_name = "KEY")]
+        key: String,
+        #[arg(value_name = "VALUE", allow_hyphen_values = true)]
+        value: String,
+        /// Validate and print the exact receipt without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the redacted transaction receipt as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore one ordinary scalar setting to its documented default.
+    Reset {
+        #[arg(value_name = "KEY")]
+        key: String,
+        /// Validate and print the exact receipt without writing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit the redacted transaction receipt as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Review or explicitly apply the current configuration/private-state migration.
     Migrate {
         /// Apply the reviewed migration; without this flag the command is read-only.

@@ -56,7 +56,6 @@ fn draft_previews_and_commits_changes_across_both_owners() {
         .set(PERMISSIONS_DEFAULT, "deny")
         .expect("stage permission change");
 
-    assert_eq!(draft.pending_count().expect("count changes"), 2);
     let preview = draft.preview().expect("preview settings");
     assert_eq!(
         preview
@@ -180,20 +179,21 @@ fn complete_config_validation_rejects_incompatible_limits() {
         .expect_err("one file cannot exceed total storage");
 
     assert!(matches!(error, SettingsError::Config(_)));
-    assert_eq!(draft.pending_count().expect("count changes"), 0);
+    assert!(
+        !draft
+            .preview()
+            .expect("preview recovered draft")
+            .entry(DIAGNOSTICS_MAX_FILE_BYTES)
+            .expect("file limit entry")
+            .staged
+    );
 }
 
 #[test]
-fn reset_removes_optional_shell_program_and_revert_discards_a_stage() {
+fn reset_removes_optional_shell_program() {
     let (_directory, paths) = fixture();
     let manager = SettingsManager::new(&paths);
     let mut draft = manager.begin().expect("begin settings draft");
-    draft
-        .set(EXECUTION_SHELL_PROGRAM, "C:\\tools\\shell.exe")
-        .expect("stage shell program");
-    assert!(draft.revert(EXECUTION_SHELL_PROGRAM));
-    assert_eq!(draft.pending_count().expect("count changes"), 0);
-
     draft
         .set(EXECUTION_SHELL_PROGRAM, "C:\\tools\\shell.exe")
         .expect("stage shell program");
