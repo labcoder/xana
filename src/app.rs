@@ -133,7 +133,11 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                     eprintln!(
                         "xana: applied {} settings transaction{}",
                         outcome.applied_transactions,
-                        if outcome.applied_transactions == 1 { "" } else { "s" }
+                        if outcome.applied_transactions == 1 {
+                            ""
+                        } else {
+                            "s"
+                        }
                     );
                 }
                 if outcome.requires_new_conversation {
