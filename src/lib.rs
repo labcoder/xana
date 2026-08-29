@@ -50,6 +50,7 @@ mod provider;
 mod reset;
 mod self_docs;
 mod session;
+mod settings;
 mod setup;
 mod shell;
 mod skill;
