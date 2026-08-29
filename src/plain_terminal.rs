@@ -53,6 +53,7 @@ pub(crate) enum ChatExit {
     Doctor(Option<SessionId>),
     Reset,
     Setup(String),
+    Settings(String),
     ControlCommand { family: String, arguments: String },
 }
 
@@ -65,6 +66,8 @@ enum InputAction<'a> {
     Vision(&'a str),
     Doctor,
     Setup(&'a str),
+    Settings(&'a str),
+    Help,
     Usage,
     ControlCommand { family: &'a str, arguments: &'a str },
     Agents,
@@ -119,6 +122,15 @@ fn classify_input(line: &str) -> InputAction<'_> {
     }
     if trimmed == "/setup" {
         return InputAction::Setup("");
+    }
+    if trimmed == "/settings" {
+        return InputAction::Settings("");
+    }
+    if let Some(section) = trimmed.strip_prefix("/settings ") {
+        return InputAction::Settings(section.trim());
+    }
+    if trimmed == "/help" {
+        return InputAction::Help;
     }
     if trimmed == "/usage" {
         return InputAction::Usage;
@@ -548,6 +560,7 @@ pub(crate) async fn run_chat(
     println!("context plan:\n{}", header.context_report);
     println!("session: {}", header.session_id);
     println!("session file: {}", header.session_path.display());
+    println!("commands: /help | /settings [SECTION] | /setup | /doctor | /quit");
     if header.resumed {
         println!("resumed: yes");
     }
@@ -701,6 +714,31 @@ pub(crate) async fn run_chat(
                     }
                     Err(error) => println!("xana> {error}"),
                 },
+                InputAction::Settings(section) => {
+                    if !section.is_empty()
+                        && crate::settings::SettingsSection::parse(section).is_none()
+                    {
+                        println!(
+                            "xana> {}",
+                            crate::settings::SettingsError::UnknownSection(section.to_owned())
+                        );
+                        continue;
+                    }
+                    runtime.send(RuntimeCommand::Shutdown).await?;
+                    exit = ChatExit::Settings(section.to_owned());
+                    break;
+                }
+                InputAction::Help => {
+                    println!("xana> conversation commands:");
+                    println!("  /settings [SECTION]  browse, stage, review, and apply settings");
+                    println!("  /setup [SECTION]     rerun guided or focused setup");
+                    println!("  /doctor              run read-only diagnostics");
+                    println!("  /model [CONNECTION/MODEL]  inspect or change the next model");
+                    println!("  /attach PATH         stage a bounded image");
+                    println!("  /usage               show observed token usage");
+                    println!("  /clear               clear the current conversation");
+                    println!("  /quit                leave Xana");
+                }
                 InputAction::Usage => renderer.write_usage()?,
                 InputAction::ControlCommand { family, arguments } => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
@@ -1416,12 +1454,22 @@ mod tests {
         assert_eq!(classify_input("/quit"), InputAction::Quit);
         assert_eq!(classify_input("/doctor"), InputAction::Doctor);
         assert_eq!(classify_input("/setup"), InputAction::Setup(""));
+        assert_eq!(classify_input("/settings"), InputAction::Settings(""));
+        assert_eq!(
+            classify_input("/settings appearance"),
+            InputAction::Settings("appearance")
+        );
+        assert_eq!(classify_input("/help"), InputAction::Help);
         assert_eq!(classify_input("/usage"), InputAction::Usage);
         assert_eq!(
             classify_input("/setup appearance"),
             InputAction::Setup("appearance")
         );
         assert_eq!(classify_input("/setupfoo"), InputAction::Send("/setupfoo"));
+        assert_eq!(
+            classify_input("/settingsfoo"),
+            InputAction::Send("/settingsfoo")
+        );
         assert_eq!(classify_input("  /clear  "), InputAction::Clear);
         assert_eq!(classify_input("   "), InputAction::Ignore);
         assert_eq!(

@@ -796,7 +796,7 @@ async fn run_once(
 async fn continue_after_chat_exit(
     paths: &XanaPaths,
     exit: plain_terminal::ChatExit,
-    presentation: presentation::ResolvedPresentation,
+    mut presentation: presentation::ResolvedPresentation,
     restart_tui: bool,
     tui_required: bool,
 ) -> Result<Option<ChatRestart>> {
@@ -816,6 +816,17 @@ async fn continue_after_chat_exit(
         force_new_conversation = run_setup_command(&args, paths)
             .await?
             .requires_new_conversation();
+    }
+    if let plain_terminal::ChatExit::Settings(request) = &exit {
+        let settings_profile = super::resolved_presentation(paths, true, true);
+        let outcome = tui::run_settings(
+            paths,
+            (!request.is_empty()).then_some(request.as_str()),
+            None,
+            settings_profile,
+        )?;
+        force_new_conversation |= outcome.requires_new_conversation;
+        presentation = super::resolved_presentation(paths, true, true);
     }
     let doctor_resume = if let plain_terminal::ChatExit::Doctor(session_id) = &exit {
         run_doctor_command(&cli::DoctorArgs::default(), paths).await?;

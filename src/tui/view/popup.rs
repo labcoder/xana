@@ -206,6 +206,7 @@ pub(super) fn render(
                 Line::raw(
                     "Drag conversation text to select; Ctrl+C copies it; click away clears it.",
                 ),
+                Line::raw("/settings [SECTION] opens staged preferences and returns safely."),
                 Line::raw("Slash commands and palette entries share one registry."),
             ],
         ),

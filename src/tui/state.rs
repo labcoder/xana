@@ -189,6 +189,7 @@ pub(super) enum UpdateEffect {
     Doctor,
     Reset,
     Setup(String),
+    Settings(String),
     ControlCommand {
         family: String,
         arguments: String,

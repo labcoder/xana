@@ -681,6 +681,26 @@ fn project_and_profile_slash_commands_use_the_shared_control_path() {
 }
 
 #[test]
+fn settings_slash_command_validates_section_and_requires_an_idle_owner() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.replace("/settings appearance".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::Settings("appearance".to_owned())
+    );
+
+    state.composer.replace("/settings colours".to_owned());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(state.status.contains("unknown settings section"));
+
+    state.busy = true;
+    state.composer.replace("/settings".to_owned());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(state.status.contains("active turn"));
+}
+
+#[test]
 fn bare_profile_create_opens_a_prefilled_form_and_emits_one_typed_command() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;

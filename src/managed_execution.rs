@@ -157,7 +157,7 @@ pub(crate) async fn run_codex_chat(
         }
     }
     println!(
-        "/model, /reasoning, /reasoning-summary, /activity, /details, and /usage control this managed conversation; /attach adds an image; /doctor pauses for read-only diagnostics; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
+        "/model, /reasoning, /reasoning-summary, /activity, /details, and /usage control this managed conversation; /attach adds an image; /settings opens reviewed preferences; /doctor pauses for read-only diagnostics; /setup reconfigures Xana; /clear starts a new Codex thread; /quit exits"
     );
 
     let mut editor = DefaultEditor::new().context("could not initialize terminal editor")?;
@@ -184,6 +184,21 @@ pub(crate) async fn run_codex_chat(
         }
         if input == "/doctor" {
             exit = ChatExit::Doctor(None);
+            break;
+        }
+        let settings_request = input
+            .strip_prefix("/settings ")
+            .map(str::trim)
+            .or_else(|| (input == "/settings").then_some(""));
+        if let Some(section) = settings_request {
+            if !section.is_empty() && crate::settings::SettingsSection::parse(section).is_none() {
+                println!(
+                    "xana> {}",
+                    crate::settings::SettingsError::UnknownSection(section.to_owned())
+                );
+                continue;
+            }
+            exit = ChatExit::Settings(section.to_owned());
             break;
         }
         let setup_request = input

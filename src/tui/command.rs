@@ -20,6 +20,7 @@ pub(super) enum CommandId {
     Image,
     Vision,
     Setup,
+    Settings,
     Usage,
     Activity,
     Artifact,
@@ -298,6 +299,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         arguments: "",
     },
     CommandSpec {
+        id: CommandId::Settings,
+        name: "settings",
+        mode: "[overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]",
+        summary: "Browse staged settings and preferences",
+        arguments: "",
+    },
+    CommandSpec {
         id: CommandId::Usage,
         name: "usage",
         mode: "",
@@ -414,6 +422,18 @@ mod tests {
             search("/sessions archive")
                 .iter()
                 .any(|command| command.id == CommandId::Sessions)
+        );
+        assert_eq!(
+            parse("/settings diagnostics").unwrap(),
+            ParsedCommand {
+                id: CommandId::Settings,
+                arguments: "diagnostics".to_owned(),
+            }
+        );
+        assert!(
+            search("preferences")
+                .iter()
+                .any(|command| command.id == CommandId::Settings)
         );
     }
 }

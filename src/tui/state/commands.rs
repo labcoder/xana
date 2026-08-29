@@ -830,6 +830,22 @@ impl TuiState {
                     }
                 }
             }
+            CommandId::Settings => {
+                self.composer.take();
+                if self.busy {
+                    self.status =
+                        "Wait for or interrupt the active turn before settings".to_owned();
+                    UpdateEffect::None
+                } else if command.arguments.is_empty()
+                    || crate::settings::SettingsSection::parse(&command.arguments).is_some()
+                {
+                    UpdateEffect::Settings(command.arguments)
+                } else {
+                    self.status = crate::settings::SettingsError::UnknownSection(command.arguments)
+                        .to_string();
+                    UpdateEffect::None
+                }
+            }
             CommandId::Usage => {
                 self.composer.take();
                 let summary = self.managed_usage.map_or_else(
