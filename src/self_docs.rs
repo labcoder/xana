@@ -173,6 +173,14 @@ static TUI_TOPICS: &[&str] = &[
     "composer",
     "accessibility",
 ];
+static SETTINGS_TOPICS: &[&str] = &[
+    "settings",
+    "configuration",
+    "preferences",
+    "cli",
+    "tui",
+    "safety",
+];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
@@ -412,6 +420,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: &["sessions", "resume", "workspace", "tui", "navigation"],
         body: include_str!("../docs/user/sessions.md"),
+    },
+    BundledDoc {
+        id: "user.settings",
+        title: "Settings workspace and configuration editing",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: SETTINGS_TOPICS,
+        body: include_str!("../docs/user/settings.md"),
     },
     BundledDoc {
         id: "user.tui",

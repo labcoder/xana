@@ -857,6 +857,26 @@ transitions return through one iterative application lifecycle; they do not
 recursively await another chat launcher. Path and configuration
 diagnostics do not construct an agent.
 
+The `settings` module is the deep post-setup configuration seam. It owns a
+stable secret-free catalog, effective/default/source/target/effect metadata,
+bounded value parsing, transactional drafts, complete config/presentation
+validation, optimistic revision checks, the shared config lock, exact config
+backup, coordinated atomic replacement, and rollback. CLI and Ratatui settings
+surfaces are adapters over that interface; neither parses nor writes TOML.
+Ordinary scalar preferences are exposed directly. Connections, credentials,
+model selection, profile/project lifecycle, permission-rule collections,
+Skills, Agent Plugins, MCP/A2A, focused routes, and recovery stay in their deep
+task-specific modules and appear only as status plus an exact next action.
+
+`xana settings` enters one persistent Ratatui workspace when both process
+streams are terminals and degrades to the same grouped catalog otherwise.
+`xana config list|get|explain|set|reset` supplies stable scriptable inspection,
+dry-run, and redacted receipt forms. `/settings [SECTION]` first shuts down the
+native or managed foreground owner, restores the terminal, and returns through
+the application restart loop. Machine-local presentation can apply while the
+same conversation resumes; global defaults classified as new-conversation
+state never rewrite an active immutable snapshot.
+
 Full Custom Setup extends that staged transaction across shell, permission
 rules, logical capabilities, exact profiles/routes, orchestration limits, and
 machine-local presentation. Focused connection, permissions/shell, and

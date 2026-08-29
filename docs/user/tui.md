@@ -83,6 +83,7 @@ Palette actions and slash input use that one registry:
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
+- `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
 - `/usage`
 - `/doctor`
 
@@ -109,6 +110,14 @@ slash input or the searchable palette; configuration changes end the current
 foreground owner explicitly and return only after the reviewed setup operation
 completes. Repeated transitions use one application-owned restart loop rather
 than nesting frontend launches.
+
+`/settings [SECTION]` follows the same owner-safe lifecycle and opens the
+persistent settings workspace described in [Settings workspace and
+configuration editing](settings.md). It keeps a section rail/list/detail view
+on wide terminals, adapts through 80x24 and narrow layouts, searches every
+setting, previews appearance, and stages edits until a scope/effect review is
+confirmed. Cancelling returns to the originating surface. Presentation-only
+edits preserve the conversation; changes to frozen defaults start a new one.
 
 `/usage` shows token usage observed during the current Xana process for native
 connections or the latest cumulative thread usage reported by managed Codex.

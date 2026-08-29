@@ -147,6 +147,15 @@ profile, and route changes never mutate the open conversation; start a new
 conversation explicitly to use their new immutable snapshot. Every durable
 section has a flag-driven `--non-interactive ... --yes` form.
 
+After setup, `xana settings` opens a persistent, responsive settings workspace
+with live search, constrained editors, staged appearance preview, and an exact
+scope/effect review before apply. `xana config list|get|explain|set|reset`
+exposes the same secret-free catalog to scripts, including JSON and no-write
+previews. `/settings [SECTION]` safely leaves either chat surface, applies the
+reviewed transaction, and resumes the same conversation unless a changed
+runtime default explicitly requires a new one. See [Settings workspace and
+configuration editing](docs/user/settings.md).
+
 Existing schema 1-3 files remain readable. `xana config migrate` prints a
 redacted, read-only migration plan; `xana config migrate --apply` takes an
 exact backup, initializes Xana's versioned private interoperability records,

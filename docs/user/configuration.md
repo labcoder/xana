@@ -18,6 +18,13 @@ replace boundary. Setup, focused connection edits, MCP changes, profile edits,
 and migration therefore fail closed rather than overwriting a concurrent
 writer; direct human edits remain visible as a changed-input conflict.
 
+After setup, use [`xana settings`](settings.md) for ordinary discovery and
+editing. It combines global scalar defaults and machine-local presentation in
+one staged workspace while preserving their separate durable owners. The same
+catalog is available through `xana config list|get|explain|set|reset`; complex
+connection, credential, profile, rule, integration, and recovery work remains
+in its focused typed manager.
+
 ## Quick Setup
 
 ```bash
@@ -140,6 +147,11 @@ the current foreground owner, restores the terminal, runs the same rich setup
 transaction, and returns to Xana using the installed choice. The application
 lifecycle is iterative, so repeated setup, doctor, model, and new-conversation
 transitions do not nest chat launchers.
+
+Use `/settings [SECTION]` for ordinary post-setup preferences. It also closes
+the foreground owner before opening the staged settings workspace. Immediate
+presentation edits return to the same conversation; global defaults marked for
+new conversations start one explicitly rather than mutating active context.
 
 ## Full Custom and focused sections
 
