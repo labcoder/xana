@@ -101,7 +101,21 @@ flowchart TD
 
 ## 3. Embedded and authenticated loopback topology
 
-Desktop may embed the execution host or attach to an existing compatible host.
+Every separately delivered Desktop artifact includes a matching Rust runtime
+and remains usable when no `xana` CLI executable is installed. Desktop may run
+that runtime as its execution host or attach to an existing compatible host. A
+live compatible owner wins: Desktop must attach instead of starting a competing
+writer, and an incompatible owner produces a typed recovery or update outcome
+instead of silent split brain.
+
+The CLI and Desktop may therefore coexist under one `XANA_HOME`. They share
+runtime-owned Projects, Profiles, Conversations, connection references,
+artifacts, permissions, and durable coordination state, while each surface owns
+only its presentation preferences. They do not depend on, replace, or load each
+other's installed executable. The bounded duplicate compiled runtime code in
+independently usable native artifacts is preferable to a mutable shared runtime
+installation whose removal or partial update could break another surface.
+
 The browser client always uses an authenticated loopback transport. Desktop
 framework choice does not change these domain rules:
 
