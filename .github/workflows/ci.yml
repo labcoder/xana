@@ -22,7 +22,7 @@ jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -79,12 +79,14 @@ jobs:
       - name: Run all-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         env:
+          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '1' || '' }}
           RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
 
       - name: Run no-default-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         env:
+          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '1' || '' }}
           RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
         run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
 
