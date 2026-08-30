@@ -53,9 +53,7 @@ pub(crate) enum EffectClass {
     Read,
     Write,
     Execute,
-    #[allow(dead_code)] // network tools arrive through later extensions
     Network,
-    #[allow(dead_code)] // external-service tools arrive through later extensions
     External,
 }
 

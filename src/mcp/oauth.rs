@@ -103,10 +103,6 @@ pub(crate) struct McpOAuthMetadata {
 }
 
 impl McpOAuthMetadata {
-    pub(crate) fn parse(bytes: &[u8], expected_issuer: &Url) -> Result<Self, McpOAuthError> {
-        Self::parse_with_security(bytes, expected_issuer, McpHttpSecurity::default())
-    }
-
     fn parse_with_security(
         bytes: &[u8],
         expected_issuer: &Url,
@@ -552,10 +548,6 @@ impl McpOAuthFlow {
 
     pub(crate) fn authorization_url(&self) -> &Url {
         &self.authorization_url
-    }
-
-    pub(crate) fn redirect_uri(&self) -> &str {
-        &self.redirect_uri
     }
 
     pub(crate) async fn wait(

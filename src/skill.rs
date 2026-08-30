@@ -47,7 +47,6 @@ pub(crate) struct SkillSource {
 pub(crate) enum SkillSourceKind {
     User,
     Project,
-    #[allow(dead_code)] // Constructed by the M3-08 installed-plugin catalog.
     Plugin,
 }
 
@@ -72,7 +71,6 @@ impl SkillSource {
         }
     }
 
-    #[allow(dead_code)] // Called by the M3-08 installed-plugin catalog.
     pub(crate) fn plugin(plugin: &str, root: PathBuf, mutable: bool) -> Result<Self, SkillError> {
         validate_qualifier(plugin)?;
         Ok(Self {

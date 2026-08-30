@@ -183,7 +183,6 @@ impl ExternalAgentManager {
         })
     }
 
-    #[allow(dead_code)] // Consumed by bounded delegation in M3-17.
     pub(crate) fn trusted_record(
         &self,
         name: &str,

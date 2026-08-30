@@ -333,7 +333,7 @@ async fn saved_decisions_are_exact_to_identity_and_class_and_are_revocable() {
 
     assert!(
         guard
-            .revoke(&original, OutboundDataClass::PromptText)
+            .revoke_digest(&original.identity_digest, OutboundDataClass::PromptText)
             .unwrap()
     );
     guard

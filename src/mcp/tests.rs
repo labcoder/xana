@@ -1,3 +1,4 @@
+use super::protocol::McpCacheHint;
 use super::*;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -324,54 +325,6 @@ fn native_namespaces_cannot_be_shadowed() {
     );
 }
 
-#[test]
-fn readiness_preserves_distinct_failure_states() {
-    let mut config = exposure("server", std::iter::empty());
-    assert_eq!(
-        McpServerReadiness::resolve(&config, None, true),
-        McpServerReadiness::Unavailable
-    );
-    config.enabled = false;
-    assert_eq!(
-        McpServerReadiness::resolve(&config, None, true),
-        McpServerReadiness::Disabled
-    );
-    config.enabled = true;
-    config.profile_selected = false;
-    assert_eq!(
-        McpServerReadiness::resolve(&config, None, true),
-        McpServerReadiness::NotAuthorized
-    );
-    config.profile_selected = true;
-    let incompatible = Err(ProtocolError::UnsupportedVersion {
-        advertised: vec!["old".to_owned()],
-    });
-    assert_eq!(
-        McpServerReadiness::resolve(&config, Some(&incompatible), true),
-        McpServerReadiness::Incompatible
-    );
-    let negotiated = Ok(McpNegotiation {
-        protocol_version: MCP_PROTOCOL_VERSION,
-        capabilities: McpServerCapabilities {
-            tools: None,
-            resources: None,
-            prompts: None,
-            ignored: Vec::new(),
-        },
-        server_name: None,
-        server_version: None,
-        ignored_capabilities: Vec::new(),
-    });
-    assert_eq!(
-        McpServerReadiness::resolve(&config, Some(&negotiated), false),
-        McpServerReadiness::Unhealthy
-    );
-    assert_eq!(
-        McpServerReadiness::resolve(&config, Some(&negotiated), true),
-        McpServerReadiness::Ready
-    );
-}
-
 struct ExactSource {
     expected_server: String,
     wire: Option<McpToolWire>,
@@ -425,9 +378,8 @@ async fn large_catalogs_are_deterministically_bounded_but_exact_lookup_survives(
             )
             .expect("page indexes");
     }
-    assert_eq!(catalog.tool_count(), 128);
+    assert_eq!(catalog.tool_summaries().len(), 128);
     assert!(catalog.tools_truncated);
-    assert!(catalog.model_tool_index(1024).len() <= 1024);
     assert_eq!(catalog.search_tools("tool09999", 10).len(), 0);
 
     let mut source = ExactSource {
@@ -492,9 +444,9 @@ fn hostile_descriptions_are_sanitized_before_model_exposure() {
             },
         )
         .expect("page indexes");
-    let rendered = catalog.model_tool_index(4096);
-    assert_eq!(rendered, "mcp.safe.tool - first�second�third\n");
-    assert!(!rendered.contains('\u{202e}'));
+    let summary = catalog.tool_summaries().pop().unwrap();
+    assert_eq!(summary.description_preview, "first�second�third");
+    assert!(!summary.description_preview.contains('\u{202e}'));
 }
 
 #[test]

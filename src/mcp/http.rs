@@ -63,10 +63,6 @@ impl McpHttpEndpoint {
         self.url.as_str()
     }
 
-    pub(crate) fn origin(&self) -> String {
-        self.url.origin().ascii_serialization()
-    }
-
     pub(crate) fn url(&self) -> &Url {
         &self.url
     }

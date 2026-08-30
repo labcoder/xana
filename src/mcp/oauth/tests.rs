@@ -153,13 +153,21 @@ fn parses_bounded_bearer_challenge_and_metadata() {
         "authorization_response_iss_parameter_supported":true,
         "extension_field":"ignored"
     }"#;
-    let parsed =
-        McpOAuthMetadata::parse(bytes, &Url::parse("https://issuer.example/").unwrap()).unwrap();
+    let parsed = McpOAuthMetadata::parse_with_security(
+        bytes,
+        &Url::parse("https://issuer.example/").unwrap(),
+        McpHttpSecurity::default(),
+    )
+    .unwrap();
     assert!(parsed.code_challenge_s256);
     assert!(parsed.authorization_response_iss_parameter_supported);
 
     assert!(matches!(
-        McpOAuthMetadata::parse(bytes, &Url::parse("https://other.example/").unwrap()),
+        McpOAuthMetadata::parse_with_security(
+            bytes,
+            &Url::parse("https://other.example/").unwrap(),
+            McpHttpSecurity::default(),
+        ),
         Err(McpOAuthError::IssuerMismatch)
     ));
 }
@@ -175,7 +183,7 @@ async fn loopback_flow_uses_pkce_resource_state_and_issuer() {
     .await
     .unwrap();
     let authorization = flow.authorization_url().clone();
-    let redirect = Url::parse(flow.redirect_uri()).unwrap();
+    let redirect = Url::parse(&flow.redirect_uri).unwrap();
     let query = authorization
         .query_pairs()
         .into_owned()
@@ -221,7 +229,7 @@ async fn loopback_flow_rejects_state_and_honors_cancellation() {
     )
     .await
     .unwrap();
-    let redirect = Url::parse(flow.redirect_uri()).unwrap();
+    let redirect = Url::parse(&flow.redirect_uri).unwrap();
     let cancellation = CancellationToken::new();
     let waiter = tokio::spawn(async move { flow.wait(&cancellation).await });
     let mut stream = TcpStream::connect(("127.0.0.1", redirect.port().unwrap()))

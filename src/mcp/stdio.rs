@@ -57,6 +57,7 @@ impl McpArgument {
         }
     }
 
+    #[allow(dead_code)] // Plugin-origin process declarations will mark secret arguments here.
     pub(crate) fn sensitive(value: impl Into<OsString>) -> Self {
         Self {
             value: value.into(),
@@ -290,6 +291,7 @@ pub(crate) struct McpRawResponse {
     pub(crate) bytes: Vec<u8>,
 }
 
+#[allow(dead_code)] // M4 frontends will observe process health and activity from this owner.
 struct ClientInner {
     commands: mpsc::Sender<ActorCommand>,
     health: watch::Receiver<McpProcessHealth>,
@@ -304,6 +306,7 @@ impl Drop for ClientInner {
     }
 }
 
+#[allow(dead_code)] // M4 uses the explicit health, discovery, activity, and shutdown controls.
 impl McpStdioClient {
     pub(crate) async fn spawn(config: McpProcessConfig) -> Result<Self, McpStdioError> {
         config.validate()?;
@@ -448,6 +451,7 @@ impl McpStdioClient {
     }
 }
 
+#[allow(dead_code)] // Explicit discovery and shutdown controls consume the non-request variants.
 enum ActorCommand {
     Request {
         request_id: u64,
@@ -971,6 +975,7 @@ fn add_minimal_environment(command: &mut Command) {
     }
 }
 
+#[allow(dead_code)] // Used by the explicit discovery control retained for M4.
 fn response_id(bytes: &[u8]) -> Result<u64, McpStdioError> {
     let value: Value = serde_json::from_slice(bytes).map_err(|_| McpStdioError::ProtocolShape)?;
     value
@@ -1021,6 +1026,7 @@ pub(crate) enum McpStdioError {
     Input(io::ErrorKind),
     Output(io::ErrorKind),
     ProcessExited,
+    #[allow(dead_code)] // Used by the explicit discovery control retained for M4.
     ProtocolShape,
     Protocol(ProtocolError),
 }

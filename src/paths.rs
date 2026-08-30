@@ -84,17 +84,14 @@ impl XanaPaths {
         &self.config_file
     }
 
-    #[allow(dead_code)]
     pub(crate) fn data_dir(&self) -> &Path {
         &self.data_dir
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }
 
-    #[allow(dead_code)]
     pub(crate) fn runtime_dir(&self) -> &Path {
         &self.runtime_dir
     }

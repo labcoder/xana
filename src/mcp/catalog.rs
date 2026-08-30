@@ -1,8 +1,7 @@
 //! Transport-independent MCP identity, exposure, and progressive catalog policy.
 
 use super::protocol::{
-    McpNegotiation, McpPromptWire, McpResourceTemplateWire, McpResourceWire, McpToolWire, Page,
-    ProtocolError, sanitize_text,
+    McpPromptWire, McpResourceTemplateWire, McpResourceWire, McpToolWire, Page, sanitize_text,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,37 +91,6 @@ impl McpServerExposure {
         validate_server_name(&self.server)?;
         validate_digest(&self.configured_identity_digest)?;
         self.allowlist.validate()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum McpServerReadiness {
-    Disabled,
-    Unavailable,
-    Incompatible,
-    Unhealthy,
-    NotAuthorized,
-    Ready,
-}
-
-impl McpServerReadiness {
-    pub(crate) fn resolve(
-        exposure: &McpServerExposure,
-        negotiation: Option<&Result<McpNegotiation, ProtocolError>>,
-        healthy: bool,
-    ) -> Self {
-        if !exposure.enabled {
-            Self::Disabled
-        } else if !exposure.profile_selected {
-            Self::NotAuthorized
-        } else {
-            match negotiation {
-                None => Self::Unavailable,
-                Some(Err(_)) => Self::Incompatible,
-                Some(Ok(_)) if !healthy => Self::Unhealthy,
-                Some(Ok(_)) => Self::Ready,
-            }
-        }
     }
 }
 
@@ -478,18 +446,6 @@ impl McpCatalog {
         Ok(definition)
     }
 
-    pub(crate) fn model_tool_index(&self, max_bytes: usize) -> String {
-        let mut output = String::new();
-        for tool in self.tools.values() {
-            let line = format!("{} - {}\n", tool.qualified_name, tool.description_preview);
-            if output.len().saturating_add(line.len()) > max_bytes {
-                break;
-            }
-            output.push_str(&line);
-        }
-        output
-    }
-
     pub(crate) fn tool_summaries(&self) -> Vec<McpToolSummary> {
         self.tools.values().cloned().collect()
     }
@@ -516,28 +472,6 @@ impl McpCatalog {
             .get(&(server.to_owned(), name.to_owned()))
             .cloned()
             .ok_or(McpCatalogError::NotAuthorized)
-    }
-
-    pub(crate) fn tool_count(&self) -> usize {
-        self.tools.len()
-    }
-
-    pub(crate) fn resource_count(&self) -> usize {
-        self.resources.len()
-    }
-
-    pub(crate) fn resource_template_count(&self) -> usize {
-        self.resource_templates.len()
-    }
-
-    pub(crate) fn prompt_count(&self) -> usize {
-        self.prompts.len()
-    }
-
-    pub(crate) fn metadata_bytes(&self) -> usize {
-        self.tool_metadata_bytes
-            .saturating_add(self.resource_metadata_bytes)
-            .saturating_add(self.prompt_metadata_bytes)
     }
 
     fn ready_exposure(&self, server: &str) -> Result<&McpServerExposure, McpCatalogError> {

@@ -5,8 +5,6 @@
 //! decision has been resolved. Review and audit values intentionally contain
 //! metadata and content digests, never the selected content itself.
 
-#![allow(dead_code)] // The shared gate is consumed incrementally by later M3 transports.
-
 use crate::{
     config::OutboundDataClass,
     identity::OperationId,
@@ -563,14 +561,6 @@ impl OutboundGuard {
         Ok(Self {
             decisions_file: paths.outbound_decisions_file(),
         })
-    }
-
-    pub(crate) fn revoke(
-        &self,
-        recipient: &RecipientIdentity,
-        class: OutboundDataClass,
-    ) -> Result<bool, OutboundError> {
-        self.revoke_digest(&recipient.identity_digest, class)
     }
 
     pub(crate) fn disposition(
