@@ -72,10 +72,14 @@ jobs:
 
       - name: Run all-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic' || '' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
 
       - name: Run no-default-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        env:
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic' || '' }}
         run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
 
       - name: Stress MCP stdio lifecycle
