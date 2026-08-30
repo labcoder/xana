@@ -8,7 +8,6 @@ use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
-    backtrace::Backtrace,
     collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
@@ -125,7 +124,7 @@ impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
 }
 
 const RECORD_VERSION: u32 = 1;
-const CRASH_VERSION: u32 = 1;
+const CRASH_VERSION: u32 = 2;
 const HEALTH_VERSION: u32 = 1;
 const SUPPORT_BUNDLE_VERSION: u32 = 1;
 const MAX_BREADCRUMBS: usize = 64;
@@ -244,8 +243,10 @@ struct CrashReport {
     location_hash: Option<String>,
     line: Option<u32>,
     column: Option<u32>,
-    backtrace_hash: String,
-    backtrace_lines: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backtrace_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    backtrace_lines: Option<usize>,
     breadcrumbs: Vec<DiagnosticRecord>,
 }
 
@@ -901,7 +902,6 @@ fn write_crash_report(
     kind: EventKind,
     location: Option<&std::panic::Location<'_>>,
 ) {
-    let backtrace = Backtrace::force_capture().to_string();
     let breadcrumbs = active
         .breadcrumbs
         .lock()
@@ -919,8 +919,8 @@ fn write_crash_report(
         location_hash: location.map(|value| hash_label(value.file())),
         line: location.map(std::panic::Location::line),
         column: location.map(std::panic::Location::column),
-        backtrace_hash: hash_label(&backtrace),
-        backtrace_lines: backtrace.lines().count().min(10_000),
+        backtrace_hash: None,
+        backtrace_lines: None,
         breadcrumbs,
     };
     let path = unique_file_path(
