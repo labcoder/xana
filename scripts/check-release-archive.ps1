@@ -10,7 +10,8 @@ param(
         "x86_64-unknown-linux-gnu"
     )]
     [string]$Target,
-    [string]$SummaryOutput
+    [string]$SummaryOutput,
+    [string]$MetricsOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -100,6 +101,25 @@ if (-not [string]::IsNullOrWhiteSpace($SummaryOutput)) {
 This is an observation only; no size budget is enforced.
 "@
     [IO.File]::AppendAllText($SummaryOutput, $summary, [Text.UTF8Encoding]::new($false))
+}
+
+if (-not [string]::IsNullOrWhiteSpace($MetricsOutput)) {
+    $metricsParent = Split-Path -Parent $MetricsOutput
+    if (-not [string]::IsNullOrWhiteSpace($metricsParent)) {
+        [IO.Directory]::CreateDirectory($metricsParent) | Out-Null
+    }
+    $metrics = [ordered]@{
+        schema_version = 1
+        target = $Target
+        xana_version = ($versionOutput -split '\s+', 2)[1]
+        executable_bytes = $binaryBytes
+        archive_bytes = $archiveBytes
+    } | ConvertTo-Json
+    [IO.File]::WriteAllText(
+        $MetricsOutput,
+        "$metrics`n",
+        [Text.UTF8Encoding]::new($false)
+    )
 }
 
 Write-Output "release archive metrics: target=$Target executable_bytes=$binaryBytes archive_bytes=$archiveBytes"

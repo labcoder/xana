@@ -144,6 +144,7 @@ jobs:
           -Archive 'target/distrib/${{ matrix.archive }}'
           -Target '${{ matrix.target }}'
           -SummaryOutput $env:GITHUB_STEP_SUMMARY
+          -MetricsOutput 'target/size-metrics/${{ matrix.target }}.json'
 
       - name: Upload native archive and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -155,6 +156,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+
+      - name: Retain size baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: size-baseline-${{ matrix.target }}
+          path: target/size-metrics/${{ matrix.target }}.json
+          if-no-files-found: error
+          retention-days: 90
 
   assemble:
     name: Assemble exact no-publish bundle
