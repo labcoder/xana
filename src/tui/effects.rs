@@ -5,11 +5,11 @@ use super::{
     state::{ArtifactAction, TuiState, UpdateEffect},
 };
 use crate::{
+    app::{ChatExit, ChatHeader},
     frontend::EmbeddedClient,
     managed::codex::ApprovalDecision,
     managed_execution::ManagedTuiDriver,
     native_runtime::RuntimeCommand,
-    plain_terminal::{ChatExit, ChatHeader},
     presentation::PresentationPreferences,
     vision::{
         DroppedImagePath, ImageAttachment, ImageIngestor, ImageLimits, MAX_IMAGE_BYTES_PER_TURN,

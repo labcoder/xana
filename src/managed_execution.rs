@@ -9,6 +9,7 @@ mod tui_driver;
 pub(crate) use tui_driver::{ManagedTuiDriver, ManagedTuiEvent};
 
 use crate::{
+    app::ChatExit,
     artifact::ArtifactStore,
     frontend::ManagedClientEvent,
     identity::PrincipalId,
@@ -18,7 +19,6 @@ use crate::{
     },
     model_catalog::{ModelDescriptor, ModelManager, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
-    plain_terminal::ChatExit,
     presentation::{ResolvedPresentation, SemanticToken},
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},

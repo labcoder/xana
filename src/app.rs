@@ -5,6 +5,7 @@
 //! inward; it does not put frontend or process-global concerns into `Agent`.
 
 mod chat;
+mod chat_contract;
 mod connect;
 mod connections;
 mod diagnostics_commands;
@@ -24,6 +25,7 @@ mod skills;
 pub(crate) mod vision;
 mod vision_commands;
 
+pub(crate) use chat_contract::{ChatExit, ChatHeader};
 use connections::{
     codex_launch, model_manager, run_auth_command, run_connection_command, run_model_command,
 };

@@ -8,9 +8,9 @@ mod protocol;
 mod transport;
 
 use crate::{
+    app::ChatHeader,
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     native_runtime::RuntimeHandle,
-    plain_terminal::ChatHeader,
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};

@@ -13,12 +13,12 @@ use super::{
     terminal_input_action, view,
 };
 use crate::{
+    app::{ChatExit, ChatHeader},
     frontend::{ClientSnapshotSeed, EmbeddedClient},
     managed::{codex::ApprovalDecision, codex::CodexAppServer},
     managed_execution::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
     model_catalog::ModelManager,
     native_runtime::{AgentEvent, OperationState, RuntimeHandle},
-    plain_terminal::{ChatExit, ChatHeader},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};

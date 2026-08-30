@@ -5,7 +5,8 @@
 //! routing does not need to know their construction order.
 
 use super::{
-    codex_launch, model_manager, run_doctor_command, run_reset_command, run_setup_command,
+    ChatExit, ChatHeader, codex_launch, model_manager, run_doctor_command, run_reset_command,
+    run_setup_command,
 };
 use crate::{
     agent::Agent,
@@ -25,7 +26,7 @@ use crate::{
     },
     paths::XanaPaths,
     permission::PermissionPolicy,
-    plain_terminal::{self, ChatHeader},
+    plain_terminal,
     presentation::{self, BannerMode},
     prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
     session::DurableSession,
@@ -100,7 +101,7 @@ pub(super) async fn run(
 enum ChatRun {
     Complete(Option<OneShotSuccess>),
     Exited {
-        exit: plain_terminal::ChatExit,
+        exit: ChatExit,
         presentation: presentation::ResolvedPresentation,
         restart_tui: bool,
         tui_required: bool,
@@ -413,7 +414,7 @@ async fn run_once(
                             },
                         )
                         .await?;
-                        plain_terminal::ChatExit::Quit
+                        ChatExit::Quit
                     }
                 };
                 Ok(ChatRun::Exited {
@@ -726,7 +727,7 @@ async fn run_once(
                 conversation,
             )
             .await?;
-            plain_terminal::ChatExit::Quit
+            ChatExit::Quit
         }
     };
     Ok(ChatRun::Exited {
@@ -739,29 +740,29 @@ async fn run_once(
 
 async fn continue_after_chat_exit(
     paths: &XanaPaths,
-    exit: plain_terminal::ChatExit,
+    exit: ChatExit,
     mut presentation: presentation::ResolvedPresentation,
     restart_tui: bool,
     tui_required: bool,
 ) -> Result<Option<ChatRestart>> {
-    if exit == plain_terminal::ChatExit::Quit {
+    if exit == ChatExit::Quit {
         return Ok(None);
     }
-    let mut force_new_conversation = exit == plain_terminal::ChatExit::NewConversation;
-    if let plain_terminal::ChatExit::ControlCommand { family, arguments } = &exit
+    let mut force_new_conversation = exit == ChatExit::NewConversation;
+    if let ChatExit::ControlCommand { family, arguments } = &exit
         && let Err(error) =
             run_chat_control_command(paths, family, arguments, &mut std::io::stdout().lock()).await
     {
         eprintln!("xana: {error:#}");
     }
-    if let plain_terminal::ChatExit::Setup(request) = &exit {
+    if let ChatExit::Setup(request) = &exit {
         let mut args = crate::setup::args_for_request(request)?;
         args.plain = !restart_tui;
         force_new_conversation = run_setup_command(&args, paths)
             .await?
             .requires_new_conversation();
     }
-    if let plain_terminal::ChatExit::Settings(request) = &exit {
+    if let ChatExit::Settings(request) = &exit {
         let settings_profile = super::resolved_presentation(paths, true, true);
         let outcome = tui::run_settings(
             paths,
@@ -772,13 +773,13 @@ async fn continue_after_chat_exit(
         force_new_conversation |= outcome.requires_new_conversation;
         presentation = super::resolved_presentation(paths, true, true);
     }
-    let doctor_resume = if let plain_terminal::ChatExit::Doctor(session_id) = &exit {
+    let doctor_resume = if let ChatExit::Doctor(session_id) = &exit {
         run_doctor_command(&cli::DoctorArgs::default(), paths).await?;
         *session_id
     } else {
         None
     };
-    if exit == plain_terminal::ChatExit::Reset {
+    if exit == ChatExit::Reset {
         run_reset_command(&cli::ResetArgs::default(), paths)?;
         if XanaConfig::load_from(paths.config_file()).is_err() {
             return Ok(None);
