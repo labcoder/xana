@@ -69,6 +69,31 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+      - name: Probe Linux panic reporting
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: >-
+          cargo test --locked --lib --all-features
+          diagnostics::tests::caught_process_panic_writes_a_sanitized_report_and_clean_drop_removes_marker --
+          --exact --nocapture
+
+      - name: Probe Linux MCP process-tree cleanup
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: >-
+          cargo test --locked --lib --all-features
+          mcp::stdio::tests::forced_shutdown_reaps_the_owned_descendant_process_tree --
+          --exact --nocapture
+
+      - name: Probe Linux managed Codex lifecycle
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: cargo test --locked --lib --all-features managed::codex::tests -- --test-threads=1
+
+      - name: Probe Linux plugin process deadline
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: >-
+          cargo test --locked --lib --all-features
+          plugin::source::tests::child_deadline_kills_the_owned_process --
+          --exact --nocapture
+
       - name: Run all-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
