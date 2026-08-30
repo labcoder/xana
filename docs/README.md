@@ -115,23 +115,6 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   records the historical bounded-child, exact-route, report, budget,
   native/managed owner, and orchestration-plan decision. Architecture and User
   Documentation now own the shipped contract.
-- [Code organization](development/code-organization.md) defines the repository
-  policy for modules, tests, comments, formatting, and tooling.
-- [M3 to M4 interface handoff](development/m3-to-m4-interface-handoff.md)
-  records the code-evidenced Xana 0.6.0 capabilities, schema versions,
-  compatibility aliases, proposal states, and explicit deferrals that local
-  interface work must preserve.
-- [Xana 0.5.0 architecture closure evidence](development/architecture-closure-evidence-0.5.0.md)
-  records the one-package boundary audit, canonical module vocabulary, local
-  verification, and deliberately deferred public extraction.
-- [Release Preview development](development/release-preview.md) documents the
-  pinned native plan, verified installers, local audits, and draft-only release
-  workflow without implying publication.
-- [Release Preview draft review](development/release-review-checklist.md) is the
-  owner checklist for an exact complete unpublished bundle.
-- [Xana 0.5.0 Release Preview evidence](development/release-preview-evidence-0.5.0.md)
-  separates passed local candidate gates from still-unexecuted remote,
-  provenance, draft, and publication evidence.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
 - [Xana 0.6.0 release notes](releases/0.6.0.md) describe the Interoperable

@@ -1689,9 +1689,6 @@ Initialization separates pure planning from create-new filesystem writes.
 Large private test suites live in child modules; package-level executable smoke
 tests live under `tests/`.
 
-See [Code organization](../development/code-organization.md) for the policy
-that maintains these boundaries.
-
 ## Deliberate absences
 
 Xana has no Xana-owned sandbox, background runtime, durable event replay,

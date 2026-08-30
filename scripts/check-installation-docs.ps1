@@ -3,7 +3,6 @@ Set-StrictMode -Version Latest
 
 $readme = Get-Content -Raw -LiteralPath "README.md"
 $installation = Get-Content -Raw -LiteralPath "docs/user/installation.md"
-$development = Get-Content -Raw -LiteralPath "docs/development/release-preview.md"
 $workspaceManifest = Get-Content -Raw -LiteralPath "Cargo.toml"
 $versionMatch = [regex]::Match(
     $workspaceManifest,
@@ -12,7 +11,7 @@ $versionMatch = [regex]::Match(
 if (-not $versionMatch.Success) { throw "could not read workspace version" }
 $version = $versionMatch.Groups["version"].Value
 $releaseNotes = Get-Content -Raw -LiteralPath "docs/releases/$version.md"
-$combined = $readme + $installation + $development + $releaseNotes
+$combined = $readme + $installation + $releaseNotes
 
 $required = @(
     "xana-installer.sh",
