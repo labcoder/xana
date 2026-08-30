@@ -1,5 +1,6 @@
 /target
 /.experiments/
+/docs/development/
 
 # Local secrets and machine-specific environment
 .env
