@@ -3,9 +3,7 @@
 use super::{MCP_PROTOCOL_VERSION, ProtocolError, decode_notification};
 use crate::{
     credential::SecretString,
-    outbound::{
-        OutboundItem, OutboundTransport, OutboundTransportFailure, RecipientIdentity, RecipientKind,
-    },
+    outbound::{RecipientIdentity, RecipientKind},
     sse::{SseDecoder, SseError},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -16,9 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fmt,
-    future::Future,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    pin::Pin,
     time::Duration,
 };
 use tokio_util::sync::CancellationToken;
@@ -32,8 +28,6 @@ const MAX_TOOL_HEADERS: usize = 32;
 const MAX_SCHEMA_WALK_DEPTH: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct McpHttpSecurity {
@@ -242,70 +236,6 @@ impl McpHttpToolHeaders {
             }
         }
         Ok(Self { headers })
-    }
-}
-
-#[derive(Debug)]
-pub(crate) struct McpHttpOutboundTransport {
-    client: McpHttpClient,
-    recipient_digest: String,
-    bearer: Option<SecretString>,
-    headers: McpHttpToolHeaders,
-    cancellation: CancellationToken,
-}
-
-impl McpHttpOutboundTransport {
-    pub(crate) fn new(
-        client: McpHttpClient,
-        recipient: &RecipientIdentity,
-        bearer: Option<SecretString>,
-        headers: McpHttpToolHeaders,
-        cancellation: CancellationToken,
-    ) -> Self {
-        Self {
-            client,
-            recipient_digest: recipient.identity_digest.clone(),
-            bearer,
-            headers,
-            cancellation,
-        }
-    }
-}
-
-impl OutboundTransport for McpHttpOutboundTransport {
-    type Receipt = McpHttpResponse;
-
-    fn send<'a>(
-        &'a mut self,
-        recipient: &'a RecipientIdentity,
-        items: &'a [OutboundItem],
-    ) -> BoxFuture<'a, Result<Self::Receipt, OutboundTransportFailure>> {
-        Box::pin(async move {
-            if recipient.identity_digest != self.recipient_digest || items.len() != 1 {
-                return Err(OutboundTransportFailure::Rejected);
-            }
-            self.client
-                .request(
-                    items[0].bytes(),
-                    self.bearer.as_ref(),
-                    &self.headers,
-                    &self.cancellation,
-                )
-                .await
-                .map_err(|error| match error {
-                    McpHttpError::Cancelled => OutboundTransportFailure::Cancelled,
-                    McpHttpError::Timeout => OutboundTransportFailure::TimedOut,
-                    McpHttpError::Unauthorized(_)
-                    | McpHttpError::InsufficientScope
-                    | McpHttpError::RateLimited
-                    | McpHttpError::RedirectRejected
-                    | McpHttpError::Http(_) => OutboundTransportFailure::Rejected,
-                    McpHttpError::Dns | McpHttpError::Connect | McpHttpError::AddressPolicy => {
-                        OutboundTransportFailure::Unavailable
-                    }
-                    _ => OutboundTransportFailure::Protocol,
-                })
-        })
     }
 }
 

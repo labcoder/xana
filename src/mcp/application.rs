@@ -5,13 +5,14 @@
 //! resources, and explicitly invoked prompt templates.
 
 use super::{
-    CatalogLimits, McpCatalog, McpCatalogError, McpCatalogSource, McpHttpClient, McpHttpError,
-    McpHttpToolHeaders, McpNotification, McpPromptResult, McpPromptRole, McpPromptSummary,
-    McpRawResponse, McpRequestId, McpResourceSummary, McpServerExposure, McpStdioClient,
-    McpToolCallResult, McpToolDefinition, McpToolSummary, McpToolWire, ProtocolError,
-    decode_discover_response, decode_prompt_page, decode_prompt_result, decode_resource_page,
-    decode_resource_read_result, decode_resource_template_page, decode_tool_call_result,
-    decode_tool_definition_result, decode_tool_page, encode_request, negotiate,
+    CatalogLimits, IndexReport, McpCatalog, McpCatalogError, McpCatalogSource, McpHttpClient,
+    McpHttpError, McpHttpToolHeaders, McpNotification, McpPaginationGuard, McpPromptResult,
+    McpPromptRole, McpPromptSummary, McpRawResponse, McpRequestId, McpResourceSummary,
+    McpServerExposure, McpStdioClient, McpToolCallResult, McpToolDefinition, McpToolSummary,
+    McpToolWire, Page, ProtocolError, decode_discover_response, decode_prompt_page,
+    decode_prompt_result, decode_resource_page, decode_resource_read_result,
+    decode_resource_template_page, decode_tool_call_result, decode_tool_definition_result,
+    decode_tool_page, encode_request, negotiate,
 };
 use crate::{
     config::OutboundDataClass,
@@ -47,7 +48,6 @@ use tokio_util::sync::CancellationToken;
 
 const MAX_ARGUMENT_BYTES: usize = 64 * 1024;
 const MAX_RENDERED_RESULT_BYTES: usize = 1024 * 1024;
-const MAX_PAGES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct McpTransportResponse {
@@ -637,26 +637,15 @@ impl McpApplication {
         runtime: &McpServerRuntime,
         cancellation: &CancellationToken,
     ) -> Result<(), McpApplicationError> {
-        let mut cursor = None;
-        for _ in 0..MAX_PAGES {
-            let response = runtime
-                .transport
-                .request(
-                    "tools/list",
-                    cursor_params(cursor.as_deref()),
-                    None,
-                    OperationId::new(),
-                    cancellation,
-                )
-                .await?;
-            let page = decode_tool_page(&response.bytes, response.request_id)?;
-            cursor = page.next_cursor.clone();
-            self.catalog.write().await.index_tool_page(server, page)?;
-            if cursor.is_none() {
-                return Ok(());
-            }
-        }
-        Err(McpApplicationError::PageLimit)
+        self.refresh_pages(
+            server,
+            runtime,
+            cancellation,
+            "tools/list",
+            decode_tool_page,
+            McpCatalog::index_tool_page,
+        )
+        .await
     }
 
     async fn refresh_resources(
@@ -665,29 +654,15 @@ impl McpApplication {
         runtime: &McpServerRuntime,
         cancellation: &CancellationToken,
     ) -> Result<(), McpApplicationError> {
-        let mut cursor = None;
-        for _ in 0..MAX_PAGES {
-            let response = runtime
-                .transport
-                .request(
-                    "resources/list",
-                    cursor_params(cursor.as_deref()),
-                    None,
-                    OperationId::new(),
-                    cancellation,
-                )
-                .await?;
-            let page = decode_resource_page(&response.bytes, response.request_id)?;
-            cursor = page.next_cursor.clone();
-            self.catalog
-                .write()
-                .await
-                .index_resource_page(server, page)?;
-            if cursor.is_none() {
-                return Ok(());
-            }
-        }
-        Err(McpApplicationError::PageLimit)
+        self.refresh_pages(
+            server,
+            runtime,
+            cancellation,
+            "resources/list",
+            decode_resource_page,
+            McpCatalog::index_resource_page,
+        )
+        .await
     }
 
     async fn refresh_resource_templates(
@@ -696,29 +671,15 @@ impl McpApplication {
         runtime: &McpServerRuntime,
         cancellation: &CancellationToken,
     ) -> Result<(), McpApplicationError> {
-        let mut cursor = None;
-        for _ in 0..MAX_PAGES {
-            let response = runtime
-                .transport
-                .request(
-                    "resources/templates/list",
-                    cursor_params(cursor.as_deref()),
-                    None,
-                    OperationId::new(),
-                    cancellation,
-                )
-                .await?;
-            let page = decode_resource_template_page(&response.bytes, response.request_id)?;
-            cursor = page.next_cursor.clone();
-            self.catalog
-                .write()
-                .await
-                .index_resource_template_page(server, page)?;
-            if cursor.is_none() {
-                return Ok(());
-            }
-        }
-        Err(McpApplicationError::PageLimit)
+        self.refresh_pages(
+            server,
+            runtime,
+            cancellation,
+            "resources/templates/list",
+            decode_resource_template_page,
+            McpCatalog::index_resource_template_page,
+        )
+        .await
     }
 
     async fn refresh_prompts(
@@ -727,26 +688,48 @@ impl McpApplication {
         runtime: &McpServerRuntime,
         cancellation: &CancellationToken,
     ) -> Result<(), McpApplicationError> {
+        self.refresh_pages(
+            server,
+            runtime,
+            cancellation,
+            "prompts/list",
+            decode_prompt_page,
+            McpCatalog::index_prompt_page,
+        )
+        .await
+    }
+
+    async fn refresh_pages<T>(
+        &self,
+        server: &str,
+        runtime: &McpServerRuntime,
+        cancellation: &CancellationToken,
+        method: &str,
+        decode: fn(&[u8], McpRequestId) -> Result<Page<T>, ProtocolError>,
+        index: fn(&mut McpCatalog, &str, Page<T>) -> Result<IndexReport, McpCatalogError>,
+    ) -> Result<(), McpApplicationError> {
         let mut cursor = None;
-        for _ in 0..MAX_PAGES {
+        let mut guard = McpPaginationGuard::default();
+        loop {
+            guard.accept(cursor.as_deref())?;
             let response = runtime
                 .transport
                 .request(
-                    "prompts/list",
+                    method,
                     cursor_params(cursor.as_deref()),
                     None,
                     OperationId::new(),
                     cancellation,
                 )
                 .await?;
-            let page = decode_prompt_page(&response.bytes, response.request_id)?;
+            let page = decode(&response.bytes, response.request_id)?;
             cursor = page.next_cursor.clone();
-            self.catalog.write().await.index_prompt_page(server, page)?;
+            let mut catalog = self.catalog.write().await;
+            index(&mut catalog, server, page)?;
             if cursor.is_none() {
                 return Ok(());
             }
         }
-        Err(McpApplicationError::PageLimit)
     }
 }
 
@@ -938,7 +921,6 @@ pub(crate) enum McpApplicationError {
     UnknownServer(String),
     DuplicateServer,
     InvalidArguments,
-    PageLimit,
     Transport(String),
     Protocol(ProtocolError),
     Catalog(McpCatalogError),
@@ -953,7 +935,6 @@ impl fmt::Display for McpApplicationError {
             Self::UnknownServer(server) => write!(formatter, "unknown MCP server {server:?}"),
             Self::DuplicateServer => formatter.write_str("MCP server is already registered"),
             Self::InvalidArguments => formatter.write_str("MCP arguments are invalid"),
-            Self::PageLimit => formatter.write_str("MCP catalog exceeded its page limit"),
             Self::Transport(reason) => write!(formatter, "MCP transport failed: {reason}"),
             Self::Protocol(error) => write!(formatter, "MCP protocol failed: {error}"),
             Self::Catalog(error) => write!(formatter, "MCP catalog failed: {error}"),

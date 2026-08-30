@@ -29,8 +29,8 @@ pub(crate) use catalog::{
 };
 #[allow(unused_imports)] // Application integration arrives in M3-14.
 pub(crate) use http::{
-    McpHttpClient, McpHttpEndpoint, McpHttpError, McpHttpOutboundTransport, McpHttpResponse,
-    McpHttpSecurity, McpHttpToolHeaders, mcp_http_recipient, pinned_client,
+    McpHttpClient, McpHttpEndpoint, McpHttpError, McpHttpResponse, McpHttpSecurity,
+    McpHttpToolHeaders, mcp_http_recipient, pinned_client,
 };
 #[allow(unused_imports)] // Setup and command consumers arrive in M3-14/M3-23.
 pub(crate) use oauth::{
