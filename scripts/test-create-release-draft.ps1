@@ -20,7 +20,6 @@ $assetNames = @(
     "xana-installer.ps1",
     "xana-installer.sh",
     "xana-release-manifest.txt",
-    "xana-release-review-checklist.md",
     "xana-x86_64-apple-darwin.tar.gz",
     "xana-x86_64-apple-darwin.tar.gz.sha256",
     "xana-x86_64-pc-windows-msvc.zip",
@@ -117,7 +116,7 @@ function gh {
 
 try {
     & "$PSScriptRoot/create-release-draft.ps1" -ArtifactDirectory $testRoot *> $null
-    if ($global:XanaDraftTestUploads.Count -ne 15) { throw "draft helper did not upload the exact asset inventory" }
+    if ($global:XanaDraftTestUploads.Count -ne 14) { throw "draft helper did not upload the exact asset inventory" }
     if ($global:XanaDraftTestTitle -ne "Xana $version Developer Preview") {
         throw "verified draft did not receive its clean public title"
     }
@@ -128,7 +127,7 @@ try {
 
     $global:XanaDraftTestViewCount = 0
     & "$PSScriptRoot/create-release-draft.ps1" -ArtifactDirectory $testRoot *> $null
-    if ($global:XanaDraftTestViewCount -ne 2 -or $global:XanaDraftTestUploads.Count -ne 15 -or
+    if ($global:XanaDraftTestViewCount -ne 2 -or $global:XanaDraftTestUploads.Count -ne 14 -or
         $global:XanaDraftTestTitle -ne "Xana $version Developer Preview") {
         throw "draft reconciliation is not idempotent"
     }

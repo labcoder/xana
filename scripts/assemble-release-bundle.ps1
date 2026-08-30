@@ -66,7 +66,6 @@ $copies = @{
     (Join-Path $repository "install\install.sh") = "xana-installer.sh"
     (Join-Path $repository "install\install.ps1") = "xana-installer.ps1"
     $releaseNotesSource = "xana-$Version-release-notes.md"
-    (Join-Path $repository "docs\development\release-review-checklist.md") = "xana-release-review-checklist.md"
 }
 foreach ($source in $copies.Keys) {
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
@@ -96,12 +95,11 @@ $expectedFinal = @($initial) + @(
     "xana-installer.sh",
     "xana-installer.ps1",
     "xana-$Version-release-notes.md",
-    "xana-release-review-checklist.md",
     "sha256.sum"
 )
 $actualFinal = @(Get-ChildItem -File -LiteralPath $root | ForEach-Object Name | Sort-Object)
 $difference = @(Compare-Object ($expectedFinal | Sort-Object) $actualFinal)
 if ($difference.Count -ne 0) {
-    throw "final release bundle differs from the exact fifteen-asset inventory"
+    throw "final release bundle differs from the exact fourteen-asset inventory"
 }
-Write-Output "release bundle verified: Xana $Version, fifteen assets, exact four-target checksums"
+Write-Output "release bundle verified: Xana $Version, fourteen assets, exact four-target checksums"

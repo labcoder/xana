@@ -14,7 +14,7 @@ if ($env:RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or
 
 $root = (Resolve-Path -LiteralPath $ArtifactDirectory).Path
 $assets = @(Get-ChildItem -File -LiteralPath $root | Sort-Object Name)
-if ($assets.Count -ne 15) { throw "draft requires the complete fifteen-asset bundle" }
+if ($assets.Count -ne 14) { throw "draft requires the complete fourteen-asset bundle" }
 $expectedNames = @($assets | ForEach-Object Name)
 $notesPath = Join-Path $root "xana-$($env:RELEASE_VERSION)-release-notes.md"
 

@@ -1600,7 +1600,7 @@ The dedicated Release Preview workflow first requires a successful ordinary
 CI push run for the exact commit being released, then binds the exact tag/input
 to Cargo and the pinned dist plan. It rebuilds all four native archives from
 that source rather than consuming CI binaries or mutable prebuilt artifacts. A
-read-only assembly job refuses anything other than the exact fifteen-asset
+read-only assembly job refuses anything other than the exact fourteen-asset
 bundle. A separate least-privilege job attests that bundle; only an exact
 tag-push job receives `contents: write`. That job creates or reconciles an
 explicitly `INCOMPLETE` draft, verifies the tag commit and remote inventory,

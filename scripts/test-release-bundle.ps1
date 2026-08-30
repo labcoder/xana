@@ -50,7 +50,7 @@ try {
         -Version $version `
         -Tag $tag *> $null
     $files = @(Get-ChildItem -File -LiteralPath $testRoot)
-    if ($files.Count -ne 15 -or
+    if ($files.Count -ne 14 -or
         -not (Test-Path -LiteralPath (Join-Path $testRoot "sha256.sum")) -or
         -not (Test-Path -LiteralPath (Join-Path $testRoot "xana-installer.sh")) -or
         -not (Test-Path -LiteralPath (Join-Path $testRoot "xana-installer.ps1"))) {
