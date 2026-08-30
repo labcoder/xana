@@ -15,6 +15,7 @@ use std::{
     error::Error,
     fmt,
     sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -156,6 +157,38 @@ pub(crate) struct FocusedServiceProvenance {
     pub(crate) operation: ServiceOperation,
     pub(crate) options: BTreeMap<String, String>,
     pub(crate) created_unix_ms: u64,
+}
+
+impl FocusedServiceProvenance {
+    fn from_route(
+        operation_id: OperationId,
+        route: ResolvedServiceRoute,
+    ) -> Result<Self, FocusedServiceError> {
+        let created_unix_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| FocusedServiceError::Transport)?
+            .as_millis()
+            .try_into()
+            .map_err(|_| FocusedServiceError::Transport)?;
+        Ok(Self {
+            operation_id,
+            route: route.name,
+            connection: route.connection,
+            adapter: route.adapter,
+            model: route.model,
+            operation: route.operation,
+            options: route.options,
+            created_unix_ms,
+        })
+    }
+}
+
+fn classify_transport(error: reqwest::Error) -> FocusedServiceError {
+    if error.is_timeout() {
+        FocusedServiceError::Timeout
+    } else {
+        FocusedServiceError::Transport
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]

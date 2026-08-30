@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use reqwest::{StatusCode, header};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const ADAPTER_ID: &str = "openai.images";
 const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
@@ -215,16 +215,10 @@ impl FocusedServiceAdapter for OpenAiImageAdapter {
             let usage = response.usage.unwrap_or_default();
             let usage_available = usage.input_tokens.is_some() || usage.output_tokens.is_some();
             Ok(FocusedServiceResult {
-                provenance: FocusedServiceProvenance {
-                    operation_id: request.operation_id,
-                    route: request.route.name,
-                    connection: request.route.connection,
-                    adapter: request.route.adapter,
-                    model: request.route.model,
-                    operation: request.route.operation,
-                    options: request.route.options,
-                    created_unix_ms: now_unix_ms()?,
-                },
+                provenance: FocusedServiceProvenance::from_route(
+                    request.operation_id,
+                    request.route,
+                )?,
                 artifacts: vec![artifact],
                 derived_text: None,
                 usage: FocusedServiceUsage {
@@ -302,14 +296,6 @@ fn valid_size(value: &str) -> bool {
         && height <= width.saturating_mul(3)
 }
 
-fn classify_transport(error: reqwest::Error) -> FocusedServiceError {
-    if error.is_timeout() {
-        FocusedServiceError::Timeout
-    } else {
-        FocusedServiceError::Transport
-    }
-}
-
 fn classify_error(status: StatusCode, body: &[u8]) -> FocusedServiceError {
     if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
         return FocusedServiceError::Authentication;
@@ -330,14 +316,6 @@ fn classify_error(status: StatusCode, body: &[u8]) -> FocusedServiceError {
         _ if status == StatusCode::TOO_MANY_REQUESTS => FocusedServiceError::RateLimited,
         _ => FocusedServiceError::Transport,
     }
-}
-
-fn now_unix_ms() -> Result<u64, FocusedServiceError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| FocusedServiceError::Transport)?
-        .as_millis();
-    u64::try_from(millis).map_err(|_| FocusedServiceError::Transport)
 }
 
 #[cfg(test)]

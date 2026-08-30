@@ -14,10 +14,7 @@ use crate::{
     provider::{ConversationalProvider, DeltaSink, ProviderErrorKind, ProviderUsage},
     vision::{ImageRef, MediaResolver},
 };
-use std::{
-    sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::Mutex;
 
 const OPENAI_ADAPTER_ID: &str = "openai.vision";
 const OPENROUTER_ADAPTER_ID: &str = "openrouter.vision";
@@ -149,16 +146,10 @@ impl FocusedServiceAdapter for OpenAiVisionAdapter {
             }
             let observed = usage.take();
             Ok(FocusedServiceResult {
-                provenance: FocusedServiceProvenance {
-                    operation_id: request.operation_id,
-                    route: request.route.name,
-                    connection: request.route.connection,
-                    adapter: request.route.adapter,
-                    model: request.route.model,
-                    operation: request.route.operation,
-                    options: request.route.options,
-                    created_unix_ms: now_unix_ms()?,
-                },
+                provenance: FocusedServiceProvenance::from_route(
+                    request.operation_id,
+                    request.route,
+                )?,
                 artifacts: Vec::new(),
                 derived_text: Some(derived_text),
                 usage: FocusedServiceUsage {
@@ -233,14 +224,6 @@ fn map_provider_error(error: crate::provider::ProviderError) -> FocusedServiceEr
             FocusedServiceError::Transport
         }
     }
-}
-
-fn now_unix_ms() -> Result<u64, FocusedServiceError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| FocusedServiceError::Transport)?
-        .as_millis();
-    u64::try_from(millis).map_err(|_| FocusedServiceError::Transport)
 }
 
 #[cfg(test)]
