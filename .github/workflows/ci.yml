@@ -50,6 +50,12 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Install low-memory Linux linker
+        if: ${{ runner.os == 'Linux' && steps.rust.outcome == 'success' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends lld
+
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -73,13 +79,13 @@ jobs:
       - name: Run all-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         env:
-          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic' || '' }}
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
 
       - name: Run no-default-feature workspace tests
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         env:
-          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic' || '' }}
+          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
         run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
 
       - name: Stress MCP stdio lifecycle
