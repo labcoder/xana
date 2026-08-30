@@ -21,7 +21,7 @@ pub(crate) use execution::{
     ChildExecution, ChildExecutionContext, ChildExecutionFactory, ChildExecutionOutcome,
     ChildExecutionOutput, PreparedChild,
 };
-pub(crate) use execution_owner::ChildExecutionOwnerFactory;
+pub(crate) use execution_owner::{ChildExecutionOwnerFactory, compose_native_provider};
 #[cfg(test)]
 pub(crate) use managed_codex::{
     ManagedCodexChildExecution, ManagedCodexChildSpec, ManagedCodexRunner, child_policy,

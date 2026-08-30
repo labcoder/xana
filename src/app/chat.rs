@@ -13,7 +13,6 @@ use crate::{
     cli,
     config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
-    credential::CredentialResolver,
     managed::codex::CodexAppServer,
     managed_execution::{
         ManagedChatConfig, ManagedOneShotRequest, run_codex_chat, run_codex_one_shot,
@@ -22,18 +21,17 @@ use crate::{
     oneshot::OneShotSuccess,
     orchestration::{
         ChildExecutionOwnerFactory, ChildSupervisor, OrchestrationBudget, ParentExecution,
+        compose_native_provider,
     },
     paths::XanaPaths,
     permission::PermissionPolicy,
     plain_terminal::{self, ChatHeader},
     presentation::{self, BannerMode},
     prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
-    provider::{anthropic::AnthropicClient, openai_compat::OpenAiCompatClient},
     session::DurableSession,
     shell::Shell,
     tool::ToolRegistry,
     tui,
-    vision::MediaResolver,
     workspace_host::{ConversationRef, WorkspaceHost, WorkspaceHostError},
 };
 use anyhow::{Context, Result};
@@ -428,63 +426,9 @@ async fn run_once(
         };
     }
 
-    let base_url = selected_connection
-        .base_url
-        .clone()
-        .context("selected native connection has no endpoint")?;
-
-    let media = MediaResolver::new(artifact_store.clone(), crate::artifact::MAX_ARTIFACT_BYTES);
-    let credentials = CredentialResolver::default();
-    let (provider, endpoint): (Box<dyn crate::provider::ConversationalProvider>, String) =
-        match provider_kind {
-            ProviderKind::OpenAiCompat | ProviderKind::Ollama => {
-                let client = match selected_connection.credential.as_ref() {
-                    Some(reference) => {
-                        let secret = credentials.resolve(reference)?;
-                        OpenAiCompatClient::with_bearer_and_attribution(
-                            base_url,
-                            model.clone(),
-                            secret,
-                            None,
-                            None,
-                        )
-                    }
-                    None => OpenAiCompatClient::new(base_url, model.clone()),
-                }
-                .with_media_resolver(media);
-                let endpoint = client.endpoint().to_owned();
-                (Box::new(client), endpoint)
-            }
-            ProviderKind::OpenAi | ProviderKind::OpenRouter => {
-                let reference = selected_connection
-                    .credential
-                    .as_ref()
-                    .context("selected API connection has no credential reference")?;
-                let secret = credentials.resolve(reference)?;
-                let client = OpenAiCompatClient::with_bearer_and_attribution(
-                    base_url,
-                    model.clone(),
-                    secret,
-                    None,
-                    (provider_kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
-                )
-                .with_media_resolver(media);
-                let endpoint = client.endpoint().to_owned();
-                (Box::new(client), endpoint)
-            }
-            ProviderKind::Anthropic => {
-                let reference = selected_connection
-                    .credential
-                    .as_ref()
-                    .context("selected Anthropic connection has no credential reference")?;
-                let secret = credentials.resolve(reference)?;
-                let client = AnthropicClient::new(base_url, secret, model.clone())
-                    .with_media_resolver(media);
-                let endpoint = client.endpoint().to_owned();
-                (Box::new(client), endpoint)
-            }
-            ProviderKind::Codex => unreachable!("managed Codex was composed above"),
-        };
+    let (provider, endpoint) =
+        compose_native_provider(&selected_connection, &model, artifact_store.clone(), false)
+            .map_err(anyhow::Error::msg)?;
     let mut tools =
         ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
     let (profile_mcp_servers, profile_mcp_allowlists, profile_egress) =

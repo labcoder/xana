@@ -143,8 +143,12 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             );
             return Ok(PreparedChild::new(resolved, policy, Box::new(execution)));
         }
-        let provider =
-            compose_native_provider(connection, &resolved.model.id, self.artifact_store.clone())?;
+        let (provider, _) = compose_native_provider(
+            connection,
+            &resolved.model.id,
+            self.artifact_store.clone(),
+            true,
+        )?;
         let tools = ToolRegistry::builtins_for_snapshot(self.shell.clone(), &resolved.capabilities)
             .map_err(|error| error.to_string())?;
         let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
@@ -294,11 +298,12 @@ where
     selected
 }
 
-fn compose_native_provider(
+pub(crate) fn compose_native_provider(
     connection: &ConnectionConfig,
     model: &str,
     artifact_store: ArtifactStore,
-) -> Result<Box<dyn ConversationalProvider>, String> {
+    capture_usage: bool,
+) -> Result<(Box<dyn ConversationalProvider>, String), String> {
     let base_url = connection
         .base_url
         .clone()
@@ -323,7 +328,8 @@ fn compose_native_provider(
                 None => OpenAiCompatClient::new(base_url, model.to_owned()),
             }
             .with_media_resolver(media);
-            Ok(Box::new(client))
+            let endpoint = client.endpoint().to_owned();
+            Ok((Box::new(client), endpoint))
         }
         ProviderKind::OpenAi | ProviderKind::OpenRouter => {
             let reference = connection.credential.as_ref().ok_or_else(|| {
@@ -332,17 +338,21 @@ fn compose_native_provider(
             let secret = credentials
                 .resolve(reference)
                 .map_err(|error| error.to_string())?;
-            Ok(Box::new(
-                OpenAiCompatClient::with_bearer_and_attribution(
-                    base_url,
-                    model.to_owned(),
-                    secret,
-                    None,
-                    (connection.kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
-                )
-                .with_usage()
-                .with_media_resolver(media),
-            ))
+            let client = OpenAiCompatClient::with_bearer_and_attribution(
+                base_url,
+                model.to_owned(),
+                secret,
+                None,
+                (connection.kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
+            );
+            let client = if capture_usage {
+                client.with_usage()
+            } else {
+                client
+            }
+            .with_media_resolver(media);
+            let endpoint = client.endpoint().to_owned();
+            Ok((Box::new(client), endpoint))
         }
         ProviderKind::Anthropic => {
             let reference = connection.credential.as_ref().ok_or_else(|| {
@@ -351,9 +361,10 @@ fn compose_native_provider(
             let secret = credentials
                 .resolve(reference)
                 .map_err(|error| error.to_string())?;
-            Ok(Box::new(
-                AnthropicClient::new(base_url, secret, model.to_owned()).with_media_resolver(media),
-            ))
+            let client =
+                AnthropicClient::new(base_url, secret, model.to_owned()).with_media_resolver(media);
+            let endpoint = client.endpoint().to_owned();
+            Ok((Box::new(client), endpoint))
         }
         ProviderKind::Codex => Err("managed Codex is not a native provider".to_owned()),
     }
