@@ -28,7 +28,7 @@ jobs:
         include:
           - name: Linux / Ubuntu 24.04
             runner: ubuntu-24.04
-            test_args: ""
+            test_args: "-- --test-threads=1"
           - name: macOS / 15 ARM64
             runner: macos-15
             test_args: ""
