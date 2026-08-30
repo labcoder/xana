@@ -7,7 +7,10 @@
 use super::{ConfigDocument, ConfigError, CredentialReference, valid_name, valid_stable_id};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 const MAX_GUIDANCE_BYTES: usize = 16 * 1024;
 const MAX_DECLARATIONS: usize = 256;
@@ -50,6 +53,16 @@ pub(crate) struct PluginDeclaration {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct McpOAuthDeclaration {
+    pub(crate) credential_id: String,
+    pub(crate) issuer: String,
+    pub(crate) client_id: String,
+    #[serde(default)]
+    pub(crate) scopes: BTreeSet<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum McpServerDeclaration {
     Stdio {
@@ -69,6 +82,8 @@ pub(crate) enum McpServerDeclaration {
         url: String,
         #[serde(default)]
         credential: Option<CredentialReference>,
+        #[serde(default)]
+        oauth: Option<McpOAuthDeclaration>,
         #[serde(default)]
         enabled: bool,
         #[serde(default)]
@@ -245,11 +260,24 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
                 }
             }
             McpServerDeclaration::StreamableHttp {
-                url, credential, ..
+                url,
+                credential,
+                oauth,
+                ..
             } => {
                 validate_https_url("MCP server", name, url)?;
+                if credential.is_some() && oauth.is_some() {
+                    return invalid(
+                        "MCP server",
+                        name,
+                        "static credentials and OAuth are mutually exclusive",
+                    );
+                }
                 if let Some(reference) = credential {
                     super::validate_credential(name, reference)?;
+                }
+                if let Some(oauth) = oauth {
+                    validate_oauth(name, oauth)?;
                 }
             }
         }
@@ -421,6 +449,39 @@ pub(super) fn validate(document: &ConfigDocument) -> Result<(), ConfigError> {
     }
 
     Ok(())
+}
+
+fn validate_oauth(name: &str, oauth: &McpOAuthDeclaration) -> Result<(), ConfigError> {
+    if !valid_name(&oauth.credential_id) || !valid_oauth_client_id(&oauth.client_id) {
+        return invalid(
+            "MCP server",
+            name,
+            "OAuth credential and client ids must use stable identifier syntax",
+        );
+    }
+    validate_https_url("MCP OAuth issuer", name, &oauth.issuer)?;
+    if oauth.scopes.len() > MAX_OPTIONS
+        || oauth.scopes.iter().any(|scope| {
+            scope.is_empty()
+                || scope.len() > 256
+                || scope.chars().any(|character| character.is_whitespace())
+        })
+    {
+        return invalid(
+            "MCP server",
+            name,
+            "OAuth scopes are invalid or exceed bounds",
+        );
+    }
+    Ok(())
+}
+
+fn valid_oauth_client_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn validate_mcp_selection(

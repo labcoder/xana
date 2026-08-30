@@ -3,16 +3,18 @@
 use crate::{
     cli::McpCommand,
     config::{
-        ConnectionRegistry, CredentialReference, McpPrimitiveSelection, McpServerDeclaration,
-        NewMcpServer, OutboundDataClass, XanaConfig,
+        ConnectionRegistry, CredentialReference, McpOAuthDeclaration, McpPrimitiveSelection,
+        McpServerDeclaration, NewMcpServer, OutboundDataClass, XanaConfig,
     },
-    credential::CredentialResolver,
+    credential::{CredentialResolver, OsSecretStore},
     identity::OperationId,
     mcp::{
         McpApplication, McpApplicationError, McpArgument, McpEnvironmentValue, McpGuardedTransport,
-        McpHttpClient, McpHttpConnection, McpHttpEndpoint, McpHttpSecurity, McpLocalServer,
-        McpPrimitiveAllowlist, McpPrimitiveTransport, McpProcessConfig, McpServerExposure,
-        McpStdioClient, McpTransportResponse, mcp_http_recipient,
+        McpHttpClient, McpHttpConnection, McpHttpEndpoint, McpHttpError, McpHttpSecurity,
+        McpHttpToolHeaders, McpLocalServer, McpOAuthClient, McpOAuthFlow, McpOAuthReference,
+        McpOAuthStore, McpPrimitiveAllowlist, McpPrimitiveTransport, McpProcessConfig,
+        McpRequestId, McpServerExposure, McpStdioClient, McpTransportResponse, encode_request,
+        mcp_http_recipient,
     },
     outbound::{OutboundGuard, OutboundPolicyLayers, RecipientIdentity, RecipientKind},
     paths::XanaPaths,
@@ -35,6 +37,8 @@ enum DeferredMcpTransportSpec {
     Http {
         endpoint: McpHttpEndpoint,
         credential: Option<CredentialReference>,
+        oauth: Option<McpOAuthReference>,
+        oauth_lock: PathBuf,
     },
 }
 
@@ -65,6 +69,8 @@ impl DeferredMcpTransport {
             DeferredMcpTransportSpec::Http {
                 endpoint,
                 credential,
+                oauth,
+                oauth_lock,
             } => {
                 let bearer = credential
                     .as_ref()
@@ -74,7 +80,13 @@ impl DeferredMcpTransport {
                 let client = McpHttpClient::connect(endpoint.clone())
                     .await
                     .map_err(|error| McpApplicationError::Transport(error.to_string()))?;
-                Arc::new(McpHttpConnection::new(client, bearer))
+                Arc::new(match oauth {
+                    Some(reference) => {
+                        McpHttpConnection::new_oauth(client, reference.clone(), oauth_lock.clone())
+                            .map_err(|error| McpApplicationError::Transport(error.to_string()))?
+                    }
+                    None => McpHttpConnection::new(client, bearer),
+                })
             }
         };
         *active = Some(Arc::clone(&transport));
@@ -166,6 +178,10 @@ pub(super) async fn run(
             server,
             url,
             credential_env,
+            oauth_credential_id,
+            oauth_issuer,
+            oauth_client_id,
+            oauth_scopes,
             profile,
             tools,
             resources,
@@ -178,6 +194,19 @@ pub(super) async fn run(
                 )
             }
             let profile = profile.unwrap_or_else(|| registry.default_profile.clone());
+            let oauth = match (oauth_credential_id, oauth_issuer, oauth_client_id) {
+                (None, None, None) if oauth_scopes.is_empty() => None,
+                (Some(credential_id), Some(issuer), Some(client_id)) => Some(McpOAuthDeclaration {
+                    credential_id,
+                    issuer,
+                    client_id,
+                    scopes: oauth_scopes.into_iter().collect(),
+                }),
+                _ => anyhow::bail!(
+                    "MCP OAuth requires --oauth-credential-id, --oauth-issuer, and --oauth-client-id together"
+                ),
+            };
+            let uses_oauth = oauth.is_some();
             XanaConfig::add_mcp_server(
                 paths.config_file(),
                 NewMcpServer {
@@ -186,6 +215,7 @@ pub(super) async fn run(
                         url,
                         credential: credential_env
                             .map(|variable| CredentialReference::Environment { variable }),
+                        oauth,
                         enabled: true,
                         egress_policy: None,
                     },
@@ -207,7 +237,11 @@ pub(super) async fn run(
                 "Backup: {}",
                 paths.config_file().with_extension("toml.bak").display()
             )?;
-            writeln!(output, "Next: xana mcp refresh {server}")?;
+            writeln!(
+                output,
+                "Next: xana mcp {} {server}",
+                if uses_oauth { "login" } else { "refresh" }
+            )?;
             return Ok(());
         }
         McpCommand::Remove { server, yes } => {
@@ -225,6 +259,29 @@ pub(super) async fn run(
                 output,
                 "Backup: {}",
                 paths.config_file().with_extension("toml.bak").display()
+            )?;
+            return Ok(());
+        }
+        McpCommand::Login { server } => {
+            return login_oauth(&registry, paths, &server, output).await;
+        }
+        McpCommand::Logout { server, yes } => {
+            if !yes {
+                anyhow::bail!(
+                    "MCP OAuth logout requires --yes and removes only Xana's stored token"
+                )
+            }
+            let (oauth, endpoint) = configured_oauth(&registry, &server)?;
+            let removed = McpOAuthStore::new(OsSecretStore, mcp_oauth_lock(paths))
+                .logout(&oauth_reference(oauth, &endpoint))?;
+            writeln!(
+                output,
+                "MCP OAuth token for {server:?} {}.",
+                if removed {
+                    "removed"
+                } else {
+                    "was already absent"
+                }
             )?;
             return Ok(());
         }
@@ -337,7 +394,9 @@ pub(super) async fn run(
         McpCommand::List
         | McpCommand::AddStdio { .. }
         | McpCommand::AddHttp { .. }
-        | McpCommand::Remove { .. } => unreachable!("handled before refresh"),
+        | McpCommand::Remove { .. }
+        | McpCommand::Login { .. }
+        | McpCommand::Logout { .. } => unreachable!("handled before refresh"),
     }
     Ok(())
 }
@@ -533,7 +592,10 @@ async fn build_application(
                 (transport, recipient)
             }
             McpServerDeclaration::StreamableHttp {
-                url, credential, ..
+                url,
+                credential,
+                oauth,
+                ..
             } => {
                 let endpoint = McpHttpEndpoint::parse(
                     url,
@@ -541,11 +603,21 @@ async fn build_application(
                         allow_loopback_http: true,
                     },
                 )?;
-                let recipient = mcp_http_recipient(server, &endpoint, None, None)?;
+                let oauth = oauth
+                    .as_ref()
+                    .map(|oauth| oauth_reference(oauth, &endpoint));
+                let recipient = mcp_http_recipient(
+                    server,
+                    &endpoint,
+                    oauth.as_ref().map(|oauth| oauth.issuer.as_str()),
+                    oauth.as_ref().map(|oauth| oauth.client_id.as_str()),
+                )?;
                 (
                     Arc::new(DeferredMcpTransport::new(DeferredMcpTransportSpec::Http {
                         endpoint,
                         credential: credential.clone(),
+                        oauth,
+                        oauth_lock: mcp_oauth_lock(paths),
                     })) as Arc<_>,
                     recipient,
                 )
@@ -628,8 +700,102 @@ fn command_server(command: &McpCommand) -> Option<&str> {
         | McpCommand::Serve { .. }
         | McpCommand::AddStdio { .. }
         | McpCommand::AddHttp { .. }
+        | McpCommand::Login { .. }
+        | McpCommand::Logout { .. }
         | McpCommand::Remove { .. } => None,
     }
+}
+
+async fn login_oauth(
+    registry: &ConnectionRegistry,
+    paths: &XanaPaths,
+    server: &str,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let (oauth, endpoint) = configured_oauth(registry, server)?;
+    let reference = oauth_reference(oauth, &endpoint);
+    let cancellation = CancellationToken::new();
+    let client = McpHttpClient::connect(endpoint.clone()).await?;
+    let request = encode_request(
+        McpRequestId::new(1)?,
+        "server/discover",
+        serde_json::json!({}),
+    )?;
+    let challenge = match client
+        .request(
+            &request,
+            None,
+            &McpHttpToolHeaders::default(),
+            &cancellation,
+        )
+        .await
+    {
+        Err(McpHttpError::Unauthorized(Some(challenge))) => challenge,
+        Err(McpHttpError::Unauthorized(None)) => {
+            anyhow::bail!("MCP server returned an invalid or missing OAuth challenge")
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => anyhow::bail!("MCP server did not request OAuth authorization"),
+    };
+    let oauth_client = McpOAuthClient::new();
+    let issuer = reqwest::Url::parse(&oauth.issuer).context("MCP OAuth issuer is invalid")?;
+    let discovery = oauth_client
+        .discover(&challenge, endpoint.url(), Some(&issuer), &cancellation)
+        .await?;
+    let flow = McpOAuthFlow::begin(
+        &discovery.authorization_server,
+        &oauth.client_id,
+        endpoint.canonical(),
+        &oauth.scopes,
+    )
+    .await?;
+    writeln!(output, "Open this URL to authorize MCP server {server:?}:")?;
+    writeln!(output, "{}", flow.authorization_url())?;
+    output.flush()?;
+    let callback = flow.wait(&cancellation).await?;
+    let token = oauth_client
+        .exchange(&discovery.authorization_server, &reference, callback, None)
+        .await?;
+    McpOAuthStore::new(OsSecretStore, mcp_oauth_lock(paths)).save(&reference, &token)?;
+    writeln!(
+        output,
+        "MCP OAuth token for {server:?} stored in the operating-system credential store."
+    )?;
+    Ok(())
+}
+
+fn configured_oauth<'a>(
+    registry: &'a ConnectionRegistry,
+    server: &str,
+) -> Result<(&'a McpOAuthDeclaration, McpHttpEndpoint)> {
+    let declaration = registry
+        .mcp_servers
+        .get(server)
+        .with_context(|| format!("unknown MCP server {server:?}"))?;
+    let McpServerDeclaration::StreamableHttp { url, oauth, .. } = declaration else {
+        anyhow::bail!("MCP server {server:?} does not use Streamable HTTP")
+    };
+    let oauth = oauth
+        .as_ref()
+        .with_context(|| format!("MCP server {server:?} does not declare OAuth"))?;
+    Ok((
+        oauth,
+        McpHttpEndpoint::parse(url, McpHttpSecurity::default())?,
+    ))
+}
+
+fn oauth_reference(oauth: &McpOAuthDeclaration, endpoint: &McpHttpEndpoint) -> McpOAuthReference {
+    McpOAuthReference {
+        credential_id: oauth.credential_id.clone(),
+        issuer: oauth.issuer.clone(),
+        client_id: oauth.client_id.clone(),
+        resource: endpoint.canonical().to_owned(),
+        scopes: oauth.scopes.clone(),
+    }
+}
+
+fn mcp_oauth_lock(paths: &XanaPaths) -> PathBuf {
+    paths.runtime_dir().join("mcp-oauth-refresh.lock")
 }
 
 fn parse_arguments(arguments: Vec<String>) -> Result<BTreeMap<String, String>> {

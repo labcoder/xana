@@ -25,9 +25,9 @@ use std::{
 mod interoperable;
 
 pub(crate) use interoperable::{
-    EgressPolicyDeclaration, ExternalAgentDeclaration, McpPrimitiveSelection, McpServerDeclaration,
-    OutboundDataClass, PluginDeclaration, ProfileUse, ServiceConnectionDeclaration,
-    ServiceRouteDeclaration,
+    EgressPolicyDeclaration, ExternalAgentDeclaration, McpOAuthDeclaration, McpPrimitiveSelection,
+    McpServerDeclaration, OutboundDataClass, PluginDeclaration, ProfileUse,
+    ServiceConnectionDeclaration, ServiceRouteDeclaration,
 };
 
 pub(crate) const CONFIG_VERSION: u32 = 4;
@@ -1365,6 +1365,7 @@ impl XanaConfig {
             McpServerDeclaration::StreamableHttp {
                 url,
                 credential,
+                oauth,
                 enabled,
                 ..
             } => {
@@ -1372,6 +1373,21 @@ impl XanaConfig {
                 server["url"] = toml_edit::value(url);
                 if let Some(credential) = credential {
                     server["credential"] = credential_item(credential);
+                }
+                if let Some(oauth) = oauth {
+                    let mut value = toml_edit::InlineTable::new();
+                    value.insert("credential_id", oauth.credential_id.into());
+                    value.insert("issuer", oauth.issuer.into());
+                    value.insert("client_id", oauth.client_id.into());
+                    if !oauth.scopes.is_empty() {
+                        value.insert(
+                            "scopes",
+                            toml_edit::Value::Array(toml_owned_string_array(
+                                oauth.scopes.into_iter().collect(),
+                            )),
+                        );
+                    }
+                    server["oauth"] = toml_edit::Item::Value(toml_edit::Value::InlineTable(value));
                 }
                 server["enabled"] = toml_edit::value(enabled);
             }

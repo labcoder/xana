@@ -572,6 +572,14 @@ pub(crate) enum McpCommand {
         url: String,
         #[arg(long)]
         credential_env: Option<String>,
+        #[arg(long, conflicts_with = "credential_env")]
+        oauth_credential_id: Option<String>,
+        #[arg(long, conflicts_with = "credential_env")]
+        oauth_issuer: Option<String>,
+        #[arg(long, conflicts_with = "credential_env")]
+        oauth_client_id: Option<String>,
+        #[arg(long = "oauth-scope", conflicts_with = "credential_env")]
+        oauth_scopes: Vec<String>,
         #[arg(long)]
         profile: Option<String>,
         #[arg(long = "allow-tool")]
@@ -585,6 +593,14 @@ pub(crate) enum McpCommand {
     },
     /// Remove one configured server and its profile references.
     Remove {
+        server: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Complete local PKCE login for one configured OAuth HTTP server.
+    Login { server: String },
+    /// Remove one configured MCP OAuth token from the operating-system store.
+    Logout {
         server: String,
         #[arg(long)]
         yes: bool,

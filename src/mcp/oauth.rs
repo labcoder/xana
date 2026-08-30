@@ -1,7 +1,7 @@
 //! MCP OAuth 2.1 discovery, local PKCE completion, and secure token rotation.
 
 use super::http::{McpHttpError, McpHttpSecurity, pinned_client};
-use crate::credential::{CredentialError, SecretStore, SecretString};
+use crate::credential::{CredentialError, OsSecretStore, SecretStore, SecretString};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use fs2::FileExt;
 use futures::StreamExt;
@@ -315,6 +315,54 @@ pub(crate) struct McpOAuthStore<S> {
     local: Mutex<()>,
 }
 
+pub(crate) struct McpOAuthSession {
+    client: McpOAuthClient,
+    store: McpOAuthStore<OsSecretStore>,
+    reference: McpOAuthReference,
+}
+
+impl fmt::Debug for McpOAuthSession {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("McpOAuthSession")
+            .field("issuer", &self.reference.issuer)
+            .field("client_id", &self.reference.client_id)
+            .field("resource", &self.reference.resource)
+            .finish_non_exhaustive()
+    }
+}
+
+impl McpOAuthSession {
+    pub(crate) fn new(
+        reference: McpOAuthReference,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self, McpOAuthError> {
+        reference.validate()?;
+        Ok(Self {
+            client: McpOAuthClient::new(),
+            store: McpOAuthStore::new(OsSecretStore, lock_path),
+            reference,
+        })
+    }
+    pub(crate) async fn access(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<SecretString, McpOAuthError> {
+        let issuer = parse_exact_url(&self.reference.issuer)?;
+        self.store
+            .access_or_refresh(&self.reference, unix_now()?, |refresh_token| async move {
+                let metadata = self
+                    .client
+                    .authorization_server(&issuer, cancellation)
+                    .await?;
+                self.client
+                    .refresh(&metadata, &self.reference, refresh_token, None)
+                    .await
+            })
+            .await
+    }
+}
+
 impl<S: SecretStore> McpOAuthStore<S> {
     pub(crate) fn new(store: S, lock_path: impl Into<PathBuf>) -> Self {
         Self {
@@ -618,10 +666,10 @@ pub(crate) struct McpOAuthClient {
 }
 
 impl McpOAuthClient {
-    pub(crate) fn new() -> Result<Self, McpOAuthError> {
-        Ok(Self {
+    pub(crate) fn new() -> Self {
+        Self {
             security: McpHttpSecurity::default(),
-        })
+        }
     }
 
     #[cfg(test)]
@@ -671,14 +719,21 @@ impl McpOAuthClient {
         {
             return Err(McpOAuthError::InsufficientScope);
         }
-        let metadata_url = oauth_metadata_url(&issuer)?;
-        let authorization_bytes = self.get_json(&metadata_url, cancellation).await?;
-        let authorization_server =
-            McpOAuthMetadata::parse_with_security(&authorization_bytes, &issuer, self.security)?;
+        let authorization_server = self.authorization_server(&issuer, cancellation).await?;
         Ok(McpOAuthDiscovery {
             protected_resource,
             authorization_server,
         })
+    }
+
+    pub(crate) async fn authorization_server(
+        &self,
+        issuer: &Url,
+        cancellation: &CancellationToken,
+    ) -> Result<McpOAuthMetadata, McpOAuthError> {
+        let metadata_url = oauth_metadata_url(issuer)?;
+        let bytes = self.get_json(&metadata_url, cancellation).await?;
+        McpOAuthMetadata::parse_with_security(&bytes, issuer, self.security)
     }
 
     async fn get_json(

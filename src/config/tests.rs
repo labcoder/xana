@@ -405,6 +405,49 @@ fn mcp_edit_adds_and_removes_profile_allowlist_without_hand_editing_toml() {
 }
 
 #[test]
+fn mcp_oauth_declaration_round_trips_without_secret_material() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("config.toml");
+    fs::write(&path, MINIMAL).unwrap();
+
+    XanaConfig::add_mcp_server(
+        &path,
+        NewMcpServer {
+            id: "remote-docs".into(),
+            declaration: McpServerDeclaration::StreamableHttp {
+                url: "https://mcp.example.test/rpc".into(),
+                credential: None,
+                oauth: Some(McpOAuthDeclaration {
+                    credential_id: "mcp-remote-docs".into(),
+                    issuer: "https://issuer.example.test/".into(),
+                    client_id: "xana-local".into(),
+                    scopes: ["tools.read".into()].into_iter().collect(),
+                }),
+                enabled: true,
+                egress_policy: None,
+            },
+            profile: "default".into(),
+            selection: McpPrimitiveSelection::default(),
+        },
+    )
+    .unwrap();
+
+    let registry = XanaConfig::load_registry_from(&path).unwrap();
+    let McpServerDeclaration::StreamableHttp {
+        credential, oauth, ..
+    } = &registry.mcp_servers["remote-docs"]
+    else {
+        panic!("expected HTTP declaration")
+    };
+    assert!(credential.is_none());
+    assert_eq!(oauth.as_ref().unwrap().client_id, "xana-local");
+    let rendered = fs::read_to_string(path).unwrap();
+    assert!(rendered.contains("credential_id = \"mcp-remote-docs\""));
+    assert!(!rendered.contains("access_token"));
+    assert!(!rendered.contains("refresh_token"));
+}
+
+#[test]
 fn focused_setup_does_not_broaden_a_policy_shared_by_other_profiles() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("config.toml");

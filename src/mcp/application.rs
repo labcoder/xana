@@ -6,13 +6,13 @@
 
 use super::{
     CatalogLimits, IndexReport, McpCatalog, McpCatalogError, McpCatalogSource, McpHttpClient,
-    McpHttpError, McpHttpToolHeaders, McpNotification, McpPaginationGuard, McpPromptResult,
-    McpPromptRole, McpPromptSummary, McpRawResponse, McpRequestId, McpResourceSummary,
-    McpServerExposure, McpStdioClient, McpToolCallResult, McpToolDefinition, McpToolSummary,
-    McpToolWire, Page, ProtocolError, decode_discover_response, decode_prompt_page,
-    decode_prompt_result, decode_resource_page, decode_resource_read_result,
-    decode_resource_template_page, decode_tool_call_result, decode_tool_definition_result,
-    decode_tool_page, encode_request, negotiate,
+    McpHttpError, McpHttpToolHeaders, McpNotification, McpOAuthError, McpOAuthReference,
+    McpOAuthSession, McpPaginationGuard, McpPromptResult, McpPromptRole, McpPromptSummary,
+    McpRawResponse, McpRequestId, McpResourceSummary, McpServerExposure, McpStdioClient,
+    McpToolCallResult, McpToolDefinition, McpToolSummary, McpToolWire, Page, ProtocolError,
+    decode_discover_response, decode_prompt_page, decode_prompt_result, decode_resource_page,
+    decode_resource_read_result, decode_resource_template_page, decode_tool_call_result,
+    decode_tool_definition_result, decode_tool_page, encode_request, negotiate,
 };
 use crate::{
     config::OutboundDataClass,
@@ -121,17 +121,37 @@ impl McpPrimitiveTransport for McpStdioClient {
 
 pub(crate) struct McpHttpConnection {
     client: McpHttpClient,
-    bearer: Option<Arc<SecretString>>,
+    authentication: McpHttpAuthentication,
     next_request_id: AtomicU64,
+}
+
+#[derive(Debug)]
+enum McpHttpAuthentication {
+    Static(Option<SecretString>),
+    OAuth(McpOAuthSession),
 }
 
 impl McpHttpConnection {
     pub(crate) fn new(client: McpHttpClient, bearer: Option<SecretString>) -> Self {
         Self {
             client,
-            bearer: bearer.map(Arc::new),
+            authentication: McpHttpAuthentication::Static(bearer),
             next_request_id: AtomicU64::new(1),
         }
+    }
+
+    pub(crate) fn new_oauth(
+        client: McpHttpClient,
+        reference: McpOAuthReference,
+        lock_path: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, McpOAuthError> {
+        Ok(Self {
+            client,
+            authentication: McpHttpAuthentication::OAuth(McpOAuthSession::new(
+                reference, lock_path,
+            )?),
+            next_request_id: AtomicU64::new(1),
+        })
     }
 }
 
@@ -140,7 +160,7 @@ impl fmt::Debug for McpHttpConnection {
         formatter
             .debug_struct("McpHttpConnection")
             .field("endpoint", &self.client.endpoint().canonical())
-            .field("bearer", &self.bearer.as_ref().map(|_| "REDACTED"))
+            .field("authentication", &self.authentication)
             .finish_non_exhaustive()
     }
 }
@@ -165,10 +185,19 @@ impl McpPrimitiveTransport for McpHttpConnection {
                 None => McpHttpToolHeaders::default(),
             };
             let body = encode_request(request_id, method, params)?;
-            let response = self
-                .client
-                .request(&body, self.bearer.as_deref(), &headers, cancellation)
-                .await?;
+            let response = match &self.authentication {
+                McpHttpAuthentication::Static(bearer) => {
+                    self.client
+                        .request(&body, bearer.as_ref(), &headers, cancellation)
+                        .await?
+                }
+                McpHttpAuthentication::OAuth(session) => {
+                    let bearer = session.access(cancellation).await?;
+                    self.client
+                        .request(&body, Some(&bearer), &headers, cancellation)
+                        .await?
+                }
+            };
             Ok(McpTransportResponse {
                 request_id,
                 bytes: response.final_response,
@@ -926,6 +955,7 @@ pub(crate) enum McpApplicationError {
     Catalog(McpCatalogError),
     Registry(RegistryError),
     Http(McpHttpError),
+    OAuth(McpOAuthError),
     Egress(String),
 }
 
@@ -940,6 +970,7 @@ impl fmt::Display for McpApplicationError {
             Self::Catalog(error) => write!(formatter, "MCP catalog failed: {error}"),
             Self::Registry(error) => write!(formatter, "MCP capability activation failed: {error}"),
             Self::Http(error) => write!(formatter, "MCP HTTP failed: {error}"),
+            Self::OAuth(error) => write!(formatter, "MCP OAuth failed: {error}"),
             Self::Egress(reason) => write!(formatter, "MCP egress was denied: {reason}"),
         }
     }
@@ -968,6 +999,12 @@ impl From<RegistryError> for McpApplicationError {
 impl From<McpHttpError> for McpApplicationError {
     fn from(value: McpHttpError) -> Self {
         Self::Http(value)
+    }
+}
+
+impl From<McpOAuthError> for McpApplicationError {
+    fn from(value: McpOAuthError) -> Self {
+        Self::OAuth(value)
     }
 }
 

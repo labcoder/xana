@@ -35,7 +35,7 @@ pub(crate) use http::{
 #[allow(unused_imports)] // Setup and command consumers arrive in M3-14/M3-23.
 pub(crate) use oauth::{
     McpAuthChallenge, McpOAuthClient, McpOAuthDiscovery, McpOAuthError, McpOAuthFlow,
-    McpOAuthMetadata, McpOAuthReference, McpOAuthStore, McpOAuthToken,
+    McpOAuthMetadata, McpOAuthReference, McpOAuthSession, McpOAuthStore, McpOAuthToken,
     McpProtectedResourceMetadata, OAuthCallback,
 };
 #[allow(unused_imports)] // Shared facade grows transport consumers in M3-12 through M3-15.

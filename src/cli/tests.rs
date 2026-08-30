@@ -869,6 +869,50 @@ fn parses_exact_mcp_configuration_commands() {
             command: McpCommand::AddHttp { server, yes: true, .. }
         })) if server == "remote"
     ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "mcp",
+            "add-http",
+            "oauth",
+            "--url",
+            "https://mcp.example.test/rpc",
+            "--oauth-credential-id",
+            "mcp-oauth",
+            "--oauth-issuer",
+            "https://issuer.example.test/",
+            "--oauth-client-id",
+            "xana-local",
+            "--oauth-scope",
+            "tools.read",
+            "--yes",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::AddHttp {
+                oauth_client_id: Some(client_id),
+                oauth_scopes,
+                ..
+            }
+        })) if client_id == "xana-local" && oauth_scopes == ["tools.read"]
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "mcp", "login", "oauth"])
+            .unwrap()
+            .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::Login { server }
+        })) if server == "oauth"
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "mcp", "logout", "oauth", "--yes"])
+            .unwrap()
+            .command,
+        Some(Command::Mcp(McpArgs {
+            command: McpCommand::Logout { server, yes: true }
+        })) if server == "oauth"
+    ));
 }
 
 #[test]

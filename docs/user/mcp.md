@@ -106,22 +106,32 @@ xana mcp add-stdio docs --command docs-mcp-server --arg=--stdio \
   --profile default --allow-tool search --allow-resource docs://guide --yes
 xana mcp add-http remote-docs --url https://mcp.example.test/rpc \
   --credential-env DOCS_MCP_TOKEN --profile default --allow-tool search --yes
+xana mcp add-http oauth-docs --url https://mcp.example.test/rpc \
+  --oauth-credential-id mcp-oauth-docs \
+  --oauth-issuer https://issuer.example.test/ \
+  --oauth-client-id xana-local --oauth-scope tools.read \
+  --profile default --allow-tool search --yes
+xana mcp login oauth-docs
 xana mcp refresh docs
 xana mcp tools docs
 xana mcp resources docs
 xana mcp read docs docs://guide
 xana mcp prompts docs
 xana mcp prompt docs review --arg text="review this"
+xana mcp logout oauth-docs --yes
 xana mcp remove docs --yes
 ```
 
 `add-stdio` stores an exact executable and argument vector; it never constructs
-a shell command. `add-http` stores an exact endpoint and optional environment
-credential reference, never the credential value. Both enable the declaration,
-select it in exactly one profile, and grant only the repeated primitive names
-listed on the command. An empty allowlist grants nothing. They validate and
-atomically replace the complete configuration, retain `config.toml.bak`, and
-do not start a process or request until a later explicit refresh or use.
+a shell command. `add-http` stores an exact endpoint plus either an optional
+environment credential reference or a pre-registered OAuth client declaration,
+never credential values. The OAuth declaration contains only a stable OS-store
+id, exact issuer, client id, and requested scopes. Both commands enable the
+declaration, select it in exactly one profile, and grant only the repeated
+primitive names listed on the command. An empty allowlist grants nothing. They
+validate and atomically replace the complete configuration, retain
+`config.toml.bak`, and do not start a process or request until a later explicit
+login, refresh, or use.
 `remove` deletes only the declaration and its profile references.
 
 `refresh SERVER` prints the exact content-free recipient review, connects only
@@ -214,6 +224,15 @@ backend is required. MCP itself does not define a universal device-code flow,
 so Xana does not invent one. This implementation accepts pre-registered client
 identities; unsupported dynamic registration metadata is reported rather than
 silently changing clients.
+
+Run `xana mcp login SERVER` for an HTTP declaration created with the complete
+`--oauth-*` option set. Xana makes one unauthenticated discovery request, prints
+the exact authorization URL, and waits up to five minutes for the local
+callback. This works with a browser on the same machine or by manually opening
+the printed URL. After completion, ordinary MCP requests load the bound access
+token and refresh it when its expiry window is reached. Run
+`xana mcp logout SERVER --yes` to remove that exact stored token without changing
+the server declaration or any unrelated credential.
 
 Access and refresh tokens are stored together as one provider-scoped value in
 the operating-system credential store. TOML and portable project files contain
