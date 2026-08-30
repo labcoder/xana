@@ -334,14 +334,42 @@ fn reset_credential_ids(
     let registry = XanaConfig::load_registry_from(paths.config_file()).context(
         "credential reset requires a valid config so Xana can enumerate only referenced stored credentials",
     )?;
-    Ok(registry
+    let mut ids = std::collections::BTreeSet::new();
+    for reference in registry
         .connections
         .values()
-        .filter_map(|connection| match &connection.credential {
-            Some(CredentialReference::Stored { id }) => Some(id.clone()),
-            Some(CredentialReference::Environment { .. }) | None => None,
-        })
-        .collect())
+        .filter_map(|connection| connection.credential.as_ref())
+        .chain(
+            registry
+                .external_agents
+                .values()
+                .filter_map(|agent| agent.credential.as_ref()),
+        )
+        .chain(
+            registry
+                .service_connections
+                .values()
+                .filter_map(|connection| connection.credential.as_ref()),
+        )
+    {
+        if let CredentialReference::Stored { id } = reference {
+            ids.insert(id.clone());
+        }
+    }
+    for declaration in registry.mcp_servers.values() {
+        if let crate::config::McpServerDeclaration::StreamableHttp {
+            credential, oauth, ..
+        } = declaration
+        {
+            if let Some(CredentialReference::Stored { id }) = credential {
+                ids.insert(id.clone());
+            }
+            if let Some(oauth) = oauth {
+                ids.insert(oauth.credential_id.clone());
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
 }
 
 fn write_reset_preservation<W: Write>(output: &mut W, plan: &ResetPlan) -> Result<()> {

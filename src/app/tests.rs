@@ -1,5 +1,8 @@
 use super::*;
-use crate::config::{InitialConfig, InitialConnection, ProviderKind};
+use crate::config::{
+    InitialConfig, InitialConnection, McpOAuthDeclaration, McpPrimitiveSelection,
+    McpServerDeclaration, NewMcpServer, ProviderKind,
+};
 use std::{fs, io::Cursor};
 use tempfile::tempdir;
 
@@ -57,6 +60,27 @@ fn credential_reset_dry_run_never_opens_the_secret_store() {
     .unwrap();
     fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
     fs::write(paths.config_file(), rendered).unwrap();
+    XanaConfig::add_mcp_server(
+        paths.config_file(),
+        NewMcpServer {
+            id: "oauth-docs".into(),
+            declaration: McpServerDeclaration::StreamableHttp {
+                url: "https://mcp.example.test/rpc".into(),
+                credential: None,
+                oauth: Some(McpOAuthDeclaration {
+                    credential_id: "mcp-oauth-docs".into(),
+                    issuer: "https://issuer.example.test/".into(),
+                    client_id: "xana-local".into(),
+                    scopes: Default::default(),
+                }),
+                enabled: true,
+                egress_policy: None,
+            },
+            profile: "default".into(),
+            selection: McpPrimitiveSelection::default(),
+        },
+    )
+    .unwrap();
     let mut input = Cursor::new(Vec::<u8>::new());
     let mut output = Vec::new();
 
@@ -76,6 +100,7 @@ fn credential_reset_dry_run_never_opens_the_secret_store() {
     assert!(paths.config_file().is_file());
     let output = String::from_utf8(output).unwrap();
     assert!(output.contains("referenced OS credential: remote-key"));
+    assert!(output.contains("referenced OS credential: mcp-oauth-docs"));
     assert!(output.contains("Dry run only"));
 }
 
