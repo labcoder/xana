@@ -36,6 +36,7 @@ $required = @(
     "check-release-ci-evidence.ps1",
     "install-cargo-dist.sh",
     "check-release-plan.ps1",
+    "-SummaryOutput `$env:GITHUB_STEP_SUMMARY",
     "assemble-release-bundle.ps1",
     "timeout-minutes: 45",
     "retention-days: 1",

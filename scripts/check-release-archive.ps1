@@ -9,7 +9,8 @@ param(
         "x86_64-pc-windows-msvc",
         "x86_64-unknown-linux-gnu"
     )]
-    [string]$Target
+    [string]$Target,
+    [string]$SummaryOutput
 )
 
 $ErrorActionPreference = "Stop"
@@ -18,6 +19,7 @@ Set-StrictMode -Version Latest
 . "$PSScriptRoot/release-archive-contract.ps1"
 
 $archivePath = (Resolve-Path -LiteralPath $Archive).Path
+$archiveBytes = (Get-Item -LiteralPath $archivePath).Length
 $checksumPath = "$archivePath.sha256"
 if (-not (Test-Path -LiteralPath $checksumPath -PathType Leaf)) {
     throw "missing checksum sidecar for $archivePath"
@@ -48,6 +50,7 @@ $executable = if ($Target -eq "x86_64-pc-windows-msvc") { "xana.exe" } else { "x
 $layout = Resolve-ReleaseArchiveLayout -Entries $entries -Target $Target
 
 $staging = Join-Path ([System.IO.Path]::GetTempPath()) ("xana-archive-audit-" + [Guid]::NewGuid().ToString("N"))
+$binaryBytes = 0L
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
     if ($archivePath.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCase)) {
@@ -65,6 +68,7 @@ try {
         Join-Path $staging $layout.PayloadRoot
     }
     $binary = Join-Path $payloadDirectory $executable
+    $binaryBytes = (Get-Item -LiteralPath $binary).Length
     $versionOutput = (& $binary --version 2>&1 | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^xana 0\.\d+\.\d+') {
         throw "staged Xana version smoke failed: $versionOutput"
@@ -83,4 +87,20 @@ try {
     Remove-Item -Recurse -Force -LiteralPath $resolvedStaging
 }
 
+if (-not [string]::IsNullOrWhiteSpace($SummaryOutput)) {
+    $archiveMiB = [Math]::Round($archiveBytes / 1MB, 2)
+    $binaryMiB = [Math]::Round($binaryBytes / 1MB, 2)
+    $summary = @"
+### Xana release size
+
+| Target | Executable | Archive |
+| --- | ---: | ---: |
+| ``$Target`` | $binaryMiB MiB ($binaryBytes bytes) | $archiveMiB MiB ($archiveBytes bytes) |
+
+This is an observation only; no size budget is enforced.
+"@
+    [IO.File]::AppendAllText($SummaryOutput, $summary, [Text.UTF8Encoding]::new($false))
+}
+
+Write-Output "release archive metrics: target=$Target executable_bytes=$binaryBytes archive_bytes=$archiveBytes"
 Write-Output "release archive verified: $Target, SHA-256, bounded contents, version/help smoke"

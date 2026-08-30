@@ -143,6 +143,7 @@ jobs:
           ./scripts/check-release-archive.ps1
           -Archive 'target/distrib/${{ matrix.archive }}'
           -Target '${{ matrix.target }}'
+          -SummaryOutput $env:GITHUB_STEP_SUMMARY
 
       - name: Upload native archive and checksum
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
