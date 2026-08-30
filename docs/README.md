@@ -73,6 +73,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 
 ## Engineering Xana
 
+- [Code organization](contributing/code-organization.md) defines the repository
+  policy for modules, tests, comments, formatting, and tooling.
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
 - [Connections, models, and managed runtimes](architecture/models-and-managed-runtimes.md)
@@ -141,7 +143,7 @@ contract; an ADR explains why a consequential contract exists.
 | Accepted Proposal | Contributors and coding agents | Prescriptive: an approved but unimplemented change |
 | Other Proposal states | Contributors and coding agents | None; historical or exploratory |
 | User Documentation | People installing, configuring, or using Xana | Shipped behavior only |
-| Development Documentation | Contributors and coding agents | Repository policy |
+| Contributing Documentation | Contributors and coding agents | Repository policy |
 
 Code and tests are evidence of what Xana does. If Architecture or User
 Documentation disagrees with that evidence, the documentation is defective;

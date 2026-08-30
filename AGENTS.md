@@ -45,8 +45,9 @@ cargo test --all-targets --all-features
 
 ## Code organization
 
-Split at responsibility, ownership, and I/O boundaries rather than a hard line
-count; keep items private by default and expose the smallest useful facade.
+Follow [Code organization](docs/contributing/code-organization.md). Split at
+responsibility, ownership, and I/O boundaries rather than a hard line count;
+keep items private by default and expose the smallest useful facade.
 
 ## Documentation impact
 
