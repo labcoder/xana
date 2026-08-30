@@ -1081,11 +1081,8 @@ impl XanaConfig {
                 profile: format!("provider {} model", input.id),
             });
         }
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         let providers = document
             .get_mut("providers")
             .and_then(toml_edit::Item::as_table_mut)
@@ -1123,16 +1120,12 @@ impl XanaConfig {
         models[&input.model] = toml_edit::Item::Table(toml_edit::Table::new());
         connection["models"] = toml_edit::Item::Table(models);
         providers[&input.id] = toml_edit::Item::Table(connection);
-        migrate_profile_connection_keys(&mut document)?;
-        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-        let rendered = document.to_string();
-        Self::parse(&rendered)?;
-        atomic_config_write(path, rendered.as_bytes())
+        transaction.commit(false)
     }
 
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let registry = Self::load_registry_from(path)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let (registry, document) = transaction.parts();
         if !registry.connections.contains_key(id) {
             return Err(ConfigError::UnknownProvider {
                 profile: "connection remove".into(),
@@ -1151,20 +1144,12 @@ impl XanaConfig {
                 profiles,
             });
         }
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
         document
             .get_mut("providers")
             .and_then(toml_edit::Item::as_table_mut)
             .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?
             .remove(id);
-        migrate_profile_connection_keys(&mut document)?;
-        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-        let rendered = document.to_string();
-        Self::parse(&rendered)?;
-        atomic_config_write(path, rendered.as_bytes())
+        transaction.commit(false)
     }
 
     pub(crate) fn add_external_agent(
@@ -1172,11 +1157,8 @@ impl XanaConfig {
         input: NewExternalAgent,
     ) -> Result<(), ConfigError> {
         validate_name("external agent", &input.id)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         if document.get("external_agents").is_none() {
             document["external_agents"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
@@ -1211,15 +1193,12 @@ impl XanaConfig {
             agent["egress_policy"] = toml_edit::value(policy);
         }
         agents[&input.id] = toml_edit::Item::Table(agent);
-        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write(path, rendered.as_bytes())
+        transaction.commit(false)
     }
 
     pub(crate) fn remove_external_agent(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let registry = Self::load_registry_from(path)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let (registry, document) = transaction.parts();
         if !registry.external_agents.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown external agent {id:?}")));
         }
@@ -1235,18 +1214,12 @@ impl XanaConfig {
                 profiles.join(", ")
             )));
         }
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
         document
             .get_mut("external_agents")
             .and_then(toml_edit::Item::as_table_mut)
             .ok_or_else(|| ConfigError::Edit("external_agents must be a table".into()))?
             .remove(id);
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write(path, rendered.as_bytes())
+        transaction.commit(false)
     }
 
     pub(crate) fn add_service_route(
@@ -1256,13 +1229,8 @@ impl XanaConfig {
         validate_name("service route", &input.route)?;
         validate_name("service connection", &input.connection)?;
         validate_name("profile", &input.profile)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        migrate_profile_connection_keys(&mut document)?;
-
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         if !document
             .get("profiles")
             .and_then(toml_edit::Item::as_table)
@@ -1273,7 +1241,7 @@ impl XanaConfig {
                 input.profile
             )));
         }
-        ensure_table(&mut document, "service_connections")?;
+        ensure_table(document, "service_connections")?;
         let service_connections = document["service_connections"]
             .as_table_mut()
             .ok_or_else(|| ConfigError::Edit("service_connections must be a table".into()))?;
@@ -1291,15 +1259,15 @@ impl XanaConfig {
         connection["credential"] = credential_item(input.credential);
         service_connections[&input.connection] = toml_edit::Item::Table(connection);
 
-        ensure_table(&mut document, "egress_policies")?;
+        ensure_table(document, "egress_policies")?;
         let required = ["prompt_text", "selected_artifacts"];
         let route_policy = insert_exact_egress_policy(
-            &mut document,
+            document,
             &format!("service-route-{}", input.route),
             &required,
         )?;
         let profile_policy = profile_egress_policy_with(
-            &mut document,
+            document,
             &input.profile,
             &format!("profile-{}-service-{}", input.profile, input.route),
             &required,
@@ -1310,7 +1278,7 @@ impl XanaConfig {
         profile["egress_policy"] = toml_edit::value(profile_policy);
         merge_string_array(profile, "service_routes", &[&input.route])?;
 
-        ensure_table(&mut document, "service_routes")?;
+        ensure_table(document, "service_routes")?;
         let service_routes = document["service_routes"]
             .as_table_mut()
             .ok_or_else(|| ConfigError::Edit("service_routes must be a table".into()))?;
@@ -1340,22 +1308,14 @@ impl XanaConfig {
         route["default"] = toml_edit::value(input.make_default);
         route["egress_policy"] = toml_edit::value(route_policy);
         service_routes[&input.route] = toml_edit::Item::Table(route);
-
-        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write_with_backup(path, rendered.as_bytes())
+        transaction.commit(true)
     }
 
     pub(crate) fn add_mcp_server(path: &Path, input: NewMcpServer) -> Result<(), ConfigError> {
         validate_name("MCP server", &input.id)?;
         validate_name("profile", &input.profile)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        migrate_profile_connection_keys(&mut document)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         if !document
             .get("profiles")
             .and_then(toml_edit::Item::as_table)
@@ -1366,7 +1326,7 @@ impl XanaConfig {
                 input.profile
             )));
         }
-        ensure_table(&mut document, "mcp_servers")?;
+        ensure_table(document, "mcp_servers")?;
         if document["mcp_servers"]
             .as_table()
             .is_some_and(|servers| servers.contains_key(&input.id))
@@ -1417,15 +1377,12 @@ impl XanaConfig {
             }
         }
 
-        ensure_table(&mut document, "egress_policies")?;
+        ensure_table(document, "egress_policies")?;
         let required = ["prompt_text", "workspace_metadata"];
-        let server_policy = insert_exact_egress_policy(
-            &mut document,
-            &format!("mcp-server-{}", input.id),
-            &required,
-        )?;
+        let server_policy =
+            insert_exact_egress_policy(document, &format!("mcp-server-{}", input.id), &required)?;
         let profile_policy = profile_egress_policy_with(
-            &mut document,
+            document,
             &input.profile,
             &format!("profile-{}-mcp-{}", input.profile, input.id),
             &required,
@@ -1455,23 +1412,15 @@ impl XanaConfig {
             toml_edit::value(toml_owned_string_array(input.selection.resource_templates));
         allowlist["prompts"] = toml_edit::value(toml_owned_string_array(input.selection.prompts));
         allowlists[&input.id] = toml_edit::Item::Table(allowlist);
-
-        document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write_with_backup(path, rendered.as_bytes())
+        transaction.commit(true)
     }
 
     pub(crate) fn remove_mcp_server(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let registry = Self::load_registry_from(path)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let (registry, document) = transaction.parts();
         if !registry.mcp_servers.contains_key(id) {
             return Err(ConfigError::Edit(format!("unknown MCP server {id:?}")));
         }
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
         document
             .get_mut("mcp_servers")
             .and_then(toml_edit::Item::as_table_mut)
@@ -1493,23 +1442,17 @@ impl XanaConfig {
                 }
             }
         }
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write_with_backup(path, rendered.as_bytes())
+        transaction.commit(true)
     }
 
     pub(crate) fn remove_service_route(path: &Path, route: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let registry = Self::load_registry_from(path)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let (registry, document) = transaction.parts();
         let declaration = registry
             .service_routes
             .get(route)
             .ok_or_else(|| ConfigError::Edit(format!("unknown service route {route:?}")))?;
         let connection = declaration.connection.clone();
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
         document
             .get_mut("service_routes")
             .and_then(toml_edit::Item::as_table_mut)
@@ -1543,19 +1486,14 @@ impl XanaConfig {
         {
             connections.remove(&connection);
         }
-        let rendered = document.to_string();
-        Self::parse_registry(&rendered)?;
-        atomic_config_write_with_backup(path, rendered.as_bytes())
+        transaction.commit(true)
     }
 
     pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
         validate_name("profile", &input.id)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        let profiles = profiles_table_mut(&mut document)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
+        let profiles = profiles_table_mut(document)?;
         if profiles.contains_key(&input.id) {
             return Err(ConfigError::Edit(format!(
                 "profile {:?} already exists",
@@ -1567,7 +1505,7 @@ impl XanaConfig {
         profile["connection"] = toml_edit::value(input.connection);
         profile["model"] = toml_edit::value(input.model);
         profiles[&input.id] = toml_edit::Item::Table(profile);
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn update_profile(
@@ -1575,12 +1513,9 @@ impl XanaConfig {
         id: &str,
         update: ProfileUpdate,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        let profile = profile_table_mut(&mut document, id)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
+        let profile = profile_table_mut(document, id)?;
         if let Some(value) = update.connection {
             profile["connection"] = toml_edit::value(value);
         }
@@ -1601,7 +1536,7 @@ impl XanaConfig {
         if let Some(value) = update.max_tool_rounds {
             profile["max_tool_rounds"] = toml_edit::value(value as i64);
         }
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn set_profile_skill(
@@ -1629,12 +1564,9 @@ impl XanaConfig {
         value: &str,
         enabled: bool,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        let profile = profile_table_mut(&mut document, id)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
+        let profile = profile_table_mut(document, id)?;
         let mut values = profile
             .get(key)
             .and_then(toml_edit::Item::as_array)
@@ -1659,7 +1591,7 @@ impl XanaConfig {
             array.push(value);
         }
         profile[key] = toml_edit::value(array);
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn duplicate_profile(
@@ -1668,12 +1600,9 @@ impl XanaConfig {
         id: &str,
     ) -> Result<(), ConfigError> {
         validate_name("profile", id)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        let profiles = profiles_table_mut(&mut document)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
+        let profiles = profiles_table_mut(document)?;
         if profiles.contains_key(id) {
             return Err(ConfigError::Edit(format!("profile {id:?} already exists")));
         }
@@ -1687,18 +1616,15 @@ impl XanaConfig {
         table["profile_id"] = toml_edit::value(uuid::Uuid::new_v4().to_string());
         table.remove("archived");
         profiles.insert(id, duplicate);
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
         validate_name("profile", new)?;
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         {
-            let profiles = profiles_table_mut(&mut document)?;
+            let profiles = profiles_table_mut(document)?;
             if profiles.contains_key(new) {
                 return Err(ConfigError::Edit(format!("profile {new:?} already exists")));
             }
@@ -1726,7 +1652,7 @@ impl XanaConfig {
                 }
             }
         }
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn set_profile_archived(
@@ -1734,11 +1660,8 @@ impl XanaConfig {
         id: &str,
         archived: bool,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let document = transaction.document_mut();
         if archived
             && document
                 .get("default_profile")
@@ -1749,18 +1672,18 @@ impl XanaConfig {
                 "the default profile cannot be archived".into(),
             ));
         }
-        let profile = profile_table_mut(&mut document, id)?;
+        let profile = profile_table_mut(document, id)?;
         if archived {
             profile["archived"] = toml_edit::value(true);
         } else {
             profile.remove("archived");
         }
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 
     pub(crate) fn delete_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let _lock = ConfigTransactionLock::acquire(path)?;
-        let registry = Self::load_registry_from(path)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let (registry, document) = transaction.parts();
         if registry.default_profile == id {
             return Err(ConfigError::Edit(
                 "the default profile cannot be deleted".into(),
@@ -1778,14 +1701,10 @@ impl XanaConfig {
                 routes.join(", ")
             )));
         }
-        let source = read_config(path)?;
-        let mut document = source
-            .parse::<toml_edit::DocumentMut>()
-            .map_err(|error| ConfigError::Edit(error.to_string()))?;
-        if profiles_table_mut(&mut document)?.remove(id).is_none() {
+        if profiles_table_mut(document)?.remove(id).is_none() {
             return Err(ConfigError::Edit(format!("unknown profile {id:?}")));
         }
-        validate_and_write_profile_edit(path, document)
+        transaction.commit(false)
     }
 }
 
@@ -2083,15 +2002,48 @@ fn remove_string_array_value(
     Ok(())
 }
 
-fn validate_and_write_profile_edit(
-    path: &Path,
-    mut document: toml_edit::DocumentMut,
-) -> Result<(), ConfigError> {
-    migrate_profile_connection_keys(&mut document)?;
-    document["version"] = toml_edit::value(CONFIG_VERSION as i64);
-    let rendered = document.to_string();
-    XanaConfig::parse_registry(&rendered)?;
-    atomic_config_write(path, rendered.as_bytes())
+struct ConfigEditTransaction<'a> {
+    path: &'a Path,
+    _lock: ConfigTransactionLock,
+    registry: ConnectionRegistry,
+    document: toml_edit::DocumentMut,
+}
+
+impl<'a> ConfigEditTransaction<'a> {
+    fn begin(path: &'a Path) -> Result<Self, ConfigError> {
+        let lock = ConfigTransactionLock::acquire(path)?;
+        let source = read_config(path)?;
+        let registry = XanaConfig::parse_registry(&source)?;
+        let document = source
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        Ok(Self {
+            path,
+            _lock: lock,
+            registry,
+            document,
+        })
+    }
+
+    fn document_mut(&mut self) -> &mut toml_edit::DocumentMut {
+        &mut self.document
+    }
+
+    fn parts(&mut self) -> (&ConnectionRegistry, &mut toml_edit::DocumentMut) {
+        (&self.registry, &mut self.document)
+    }
+
+    fn commit(mut self, with_backup: bool) -> Result<(), ConfigError> {
+        migrate_profile_connection_keys(&mut self.document)?;
+        self.document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        let rendered = self.document.to_string();
+        XanaConfig::parse_registry(&rendered)?;
+        if with_backup {
+            atomic_config_write_with_backup(self.path, rendered.as_bytes())
+        } else {
+            atomic_config_write(self.path, rendered.as_bytes())
+        }
+    }
 }
 
 fn migrate_profile_connection_keys(
