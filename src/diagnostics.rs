@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::{
+    backtrace::Backtrace,
     collections::VecDeque,
     fs::{self, File, OpenOptions},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
@@ -124,7 +125,7 @@ impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
 }
 
 const RECORD_VERSION: u32 = 1;
-const CRASH_VERSION: u32 = 2;
+const CRASH_VERSION: u32 = 1;
 const HEALTH_VERSION: u32 = 1;
 const SUPPORT_BUNDLE_VERSION: u32 = 1;
 const MAX_BREADCRUMBS: usize = 64;
@@ -135,7 +136,6 @@ const MAX_SUPPORT_BYTES: usize = 8 * 1024 * 1024;
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(750);
 
 static ACTIVE: OnceLock<RwLock<Option<Weak<ActiveDiagnostics>>>> = OnceLock::new();
-#[cfg(not(test))]
 static PANIC_HOOK: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,10 +244,8 @@ struct CrashReport {
     location_hash: Option<String>,
     line: Option<u32>,
     column: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    backtrace_hash: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    backtrace_lines: Option<usize>,
+    backtrace_hash: String,
+    backtrace_lines: usize,
     breadcrumbs: Vec<DiagnosticRecord>,
 }
 
@@ -377,7 +375,6 @@ impl DiagnosticRuntime {
             breadcrumbs: Mutex::new(VecDeque::with_capacity(MAX_BREADCRUMBS)),
         });
         *active_slot().write().expect("diagnostics slot poisoned") = Some(Arc::downgrade(&active));
-        #[cfg(not(test))]
         install_panic_hook();
         Ok(Some(Self {
             active,
@@ -861,7 +858,7 @@ fn active_slot() -> &'static RwLock<Option<Weak<ActiveDiagnostics>>> {
 
 fn current_active() -> Option<Arc<ActiveDiagnostics>> {
     active_slot()
-        .try_read()
+        .read()
         .ok()
         .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
 }
@@ -876,16 +873,15 @@ fn retain_breadcrumb(active: &ActiveDiagnostics, record: DiagnosticRecord) {
     breadcrumbs.push_back(record);
 }
 
-#[cfg(not(test))]
 fn install_panic_hook() {
-    use std::io::IsTerminal as _;
-
     PANIC_HOOK.get_or_init(|| {
-        drop(std::panic::take_hook());
-        std::panic::set_hook(Box::new(|information| {
-            if io::stdout().is_terminal() {
-                crate::tui::restore_terminal_best_effort();
-            }
+        let previous = std::panic::take_hook();
+        #[cfg(not(test))]
+        drop(previous);
+        std::panic::set_hook(Box::new(move |information| {
+            #[cfg(test)]
+            previous(information);
+            crate::tui::restore_terminal_best_effort();
             if let Some(active) = current_active() {
                 write_crash_report(
                     &active,
@@ -905,9 +901,10 @@ fn write_crash_report(
     kind: EventKind,
     location: Option<&std::panic::Location<'_>>,
 ) {
+    let backtrace = Backtrace::force_capture().to_string();
     let breadcrumbs = active
         .breadcrumbs
-        .try_lock()
+        .lock()
         .map(|values| values.iter().cloned().collect())
         .unwrap_or_default();
     let report = CrashReport {
@@ -922,8 +919,8 @@ fn write_crash_report(
         location_hash: location.map(|value| hash_label(value.file())),
         line: location.map(std::panic::Location::line),
         column: location.map(std::panic::Location::column),
-        backtrace_hash: None,
-        backtrace_lines: None,
+        backtrace_hash: hash_label(&backtrace),
+        backtrace_lines: backtrace.lines().count().min(10_000),
         breadcrumbs,
     };
     let path = unique_file_path(
@@ -937,6 +934,7 @@ fn write_crash_report(
         && serde_json::to_writer_pretty(&mut file, &report).is_ok()
     {
         let _ = file.flush();
+        let _ = file.sync_data();
     }
 }
 

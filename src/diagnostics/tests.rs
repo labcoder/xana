@@ -123,12 +123,13 @@ fn stale_locked_markers_and_crash_reports_are_distinct() {
 }
 
 #[test]
-fn process_crash_report_is_readable_and_clean_drop_removes_marker() {
+fn caught_process_panic_writes_a_sanitized_report_and_clean_drop_removes_marker() {
     let _guard = test_guard();
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     let marker = runtime.marker_path.clone();
-    write_crash_report(&runtime.active, EventKind::ApplicationFailed, None);
+    let result = std::panic::catch_unwind(|| panic!("sk-private panic body"));
+    assert!(result.is_err());
     let crash = list(&paths)
         .unwrap()
         .into_iter()
@@ -136,6 +137,7 @@ fn process_crash_report_is_readable_and_clean_drop_removes_marker() {
         .unwrap();
     let report = read_records(&paths, &crash.name, 1).unwrap().join("\n");
     assert!(report.contains("application_failed"));
+    assert!(!report.contains("private panic body"));
     drop(runtime);
     assert!(!marker.exists());
 }
