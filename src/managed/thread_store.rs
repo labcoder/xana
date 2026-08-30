@@ -97,7 +97,7 @@ pub(crate) struct ManagedThreadStore {
     thread_id: Option<String>,
     identity_version: Option<String>,
     threads: Vec<ManagedThreadEntry>,
-    _writer_lock: fs::File,
+    writer_lock: fs::File,
 }
 
 impl ManagedThreadStore {
@@ -175,7 +175,7 @@ impl ManagedThreadStore {
             thread_id,
             identity_version,
             threads,
-            _writer_lock: writer_lock,
+            writer_lock,
         })
     }
 
@@ -341,6 +341,14 @@ impl ManagedThreadStore {
         });
         handles.truncate(MAX_THREADS);
         Ok(handles)
+    }
+}
+
+impl Drop for ManagedThreadStore {
+    fn drop(&mut self) {
+        // Make deliberate close-and-reopen behavior identical across platform
+        // lock APIs instead of relying on implicit descriptor cleanup.
+        let _ = self.writer_lock.unlock();
     }
 }
 
