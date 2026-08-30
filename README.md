@@ -2,42 +2,46 @@
 
 # Xana
 
-Xana is a small, extensible personal AI agent harness written in Rust. It can
-chat, inspect and edit a workspace, run commands with explicit permission,
-read text and CSV documents, answer questions about its own bundled
-documentation, and send local image attachments to capable models.
+[![CI](https://github.com/labcoder/xana/actions/workflows/ci.yml/badge.svg)](https://github.com/labcoder/xana/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Xana currently supports:
+Xana is a terminal-first personal AI agent for work in local repositories. It
+can chat, edit files, run commands with permission, read documents, use images,
+and coordinate bounded child tasks.
 
-- local Ollama and custom OpenAI-compatible servers;
-- the OpenAI API and OpenRouter with API keys;
-- Anthropic Messages with an API key; and
-- ChatGPT Plus/Pro through a locally installed Codex app-server, with Codex
-  owning login, token refresh, inference, tools, sandbox, and inner history.
+Use Xana's native agent loop with Ollama, OpenAI-compatible servers, OpenAI,
+OpenRouter, or Anthropic. You can also connect a ChatGPT Plus or Pro account
+through a local Codex app-server, which keeps ownership of its login, tools,
+sandbox, and conversation history.
 
-Interactive terminal surfaces use one semantic presentation language with
-dark, light, monochrome, Unicode/ASCII, narrow-width, and reduced-motion
-fallbacks. Redirected output and `NO_COLOR` remain plain and control-free. See
-[Terminal presentation](docs/user/presentation.md) for automatic detection and
-the separate machine-local preference file. Wide full-screen launches use a
-skippable, bounded TachyonFX transition over Xana's canonical portrait; setup
-keeps its forms, palette swatches, reviews, and cancellation inside one stable
-Ratatui screen.
+> [!IMPORTANT]
+> Xana is a developer preview. The current release is a terminal application,
+> and its configuration and runtime contracts may change between previews.
 
-Native connections run Xana's own agent loop. Codex is a managed runtime: Xana
-provides the CLI and process/event/approval bridge but does not wrap the turn
-in a second model call or copy Codex credentials. When Xana creates a managed
-thread, it supplies its canonical built-in identity as a developer instruction,
-so the assistant presents itself as Xana while Codex retains ownership of its
-base instructions and inner loop.
+## What Xana includes
 
-## Install a developer preview
+| Area | Support |
+| --- | --- |
+| Interfaces | Adaptive full-screen TUI, append-only terminal, and JSON/text one-shot output |
+| Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
+| Workspace tools | Bounded file reads and edits, directory listings, shell commands, text/CSV extraction, and bundled Xana docs |
+| State | Durable native sessions, Codex thread handles, immutable artifacts, projects, and named profiles |
+| Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
+| Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
 
-Published previews use verified per-user installers and require no Rust, Node,
-Python, elevation, or checkout. A draft or tag alone is not a public release;
-if the latest URL is unavailable, use the locked source path below.
+Xana keeps its native engine separate from terminal presentation and provider
+wire formats. The same application policy drives interactive chat, automation,
+and attached local clients.
 
-macOS or x64 glibc Linux:
+## Install
+
+Published previews provide native builds for macOS ARM64 and Intel, x64 glibc
+Linux, and x64 Windows. The installers verify the release manifest and SHA-256
+digest before replacing the per-user executable. You do not need Rust for
+these installs. A Git tag or draft is not a public release; the installers use
+the latest published release.
+
+### macOS or x64 glibc Linux
 
 ```bash
 curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
@@ -45,7 +49,7 @@ curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
   | bash
 ```
 
-Windows x64 PowerShell:
+### Windows x64 PowerShell
 
 ```powershell
 $source = Invoke-RestMethod `
@@ -53,625 +57,139 @@ $source = Invoke-RestMethod `
 & ([scriptblock]::Create($source))
 ```
 
-The installers verify one exact release manifest and SHA-256 before activation,
-then hand readiness to `xana setup --if-needed`. Preview binaries are unsigned:
-macOS is not notarized and Windows is not Authenticode-signed. Verify GitHub
-attestations when provenance matters; do not weaken host security controls.
+Preview binaries are unsigned. macOS builds lack notarization, and Windows
+builds lack Authenticode signatures. Use the source install if unsigned
+binaries do not fit your trust policy.
 
-The locked Git source alternative requires the pinned Rust toolchain:
+### Install from Git
+
+Xana is not published to crates.io. A Git install requires Rust 1.97.1 and the
+checked-in lockfile:
 
 ```bash
 cargo install --git https://github.com/labcoder/xana.git --locked
-xana --version
+```
+
+See the [installation guide](docs/user/installation.md) for exact-version
+installs, archive and attestation checks, custom directories, updates,
+troubleshooting, and removal.
+
+## Quick start
+
+Run guided setup, then start a conversation:
+
+```bash
 xana setup
-xana config check
 xana
 ```
 
-Use `--tag v0.6.5` or `--rev COMMIT_SHA` for an exact build. Xana is not
-published to crates.io and has no automatic updater. Re-run an installer or
-locked Cargo command to update. See [Installation, updates, verification, and
-removal](docs/user/installation.md) for exact versions, manual archive and
-attestation checks, custom directories, PATH consent, source checkout, and
-state-preserving removal.
+Setup fetches the chosen connection's live model catalog before it saves a
+selection. API-key connections can use the operating-system credential store
+or one named environment variable. If you choose managed Codex, install and
+sign in to a compatible Codex CLI first.
 
-Development from a checkout remains supported:
+Run one noninteractive turn with `-p`:
+
+```bash
+xana -p "Summarize this repository"
+xana --json -p "List the main risks in this change"
+```
+
+One-shot mode writes the final result to stdout and sends activity to stderr.
+Requests that need an approval fail closed when no interactive controller is
+present.
+
+## Native and managed execution
+
+| Mode | Owner | Use it with |
+| --- | --- | --- |
+| Native | Xana owns the agent loop, tools, permissions, and durable session | Ollama, OpenAI-compatible servers, OpenAI, OpenRouter, Anthropic |
+| Managed Codex | Codex app-server owns inference, tools, sandbox, approvals, login, and inner history | ChatGPT Plus or Pro through an installed Codex CLI |
+
+Switching execution owners starts a new conversation. Xana does not translate
+history between its native loop and Codex. Read
+[Connections, models, and managed runtimes](docs/architecture/models-and-managed-runtimes.md)
+for the ownership boundaries.
+
+## Common commands
+
+| Command | Purpose |
+| --- | --- |
+| `xana setup` | Add or update a connection and choose a model |
+| `xana settings` | Browse and edit settings in the terminal workspace |
+| `xana connect` | Open the provider-neutral integration hub |
+| `xana model` | Inspect the active model and available catalog |
+| `xana session list` | List conversations for the current workspace |
+| `xana --continue` | Continue the latest compatible conversation |
+| `xana doctor` | Inspect configuration, credentials, paths, and runtime readiness |
+| `xana logs list` | Inspect local metadata-only diagnostics |
+| `xana --help` | Show the complete CLI command surface |
+
+Inside chat, use `/help` or the TUI command palette to discover conversation
+commands.
+
+## Safety and data ownership
+
+Xana applies its permission policy before native tools read, write, or run a
+command. An allowed native tool retains the Xana process's host access; Xana
+does not provide a native sandbox. Managed Codex turns use Codex's sandbox and
+approval system.
+
+Xana stores static API keys in the operating-system credential service or
+reads one configured environment variable. Codex retains its own credentials.
+MCP, A2A, and focused-service requests pass selected data through Xana's
+recipient and data-class approval boundary.
+
+Read [Permissions](docs/user/permissions.md) and
+[Outbound data approvals and privacy](docs/user/outbound-data.md) before
+granting broad tool or integration access.
+
+## Documentation
+
+The [documentation index](docs/README.md) separates user guides from
+engineering contracts. Useful starting points include:
+
+- [Configuration and provider setup](docs/user/configuration.md)
+- [Full-screen terminal UI](docs/user/tui.md)
+- [Plain mode and automation](docs/user/automation.md)
+- [Sessions and recovery](docs/user/sessions.md)
+- [Agent Skills](docs/user/skills.md) and [Agent Plugins](docs/user/plugins.md)
+- [MCP integrations](docs/user/mcp.md)
+
+Contributors should start with the [architecture](docs/architecture/README.md)
+and [design principles](docs/principles.md).
+
+## Development
+
+The repository pins Rust 1.97.1.
 
 ```bash
 git clone https://github.com/labcoder/xana.git
 cd xana
-cargo install --path . --locked
+cargo build --locked
+cargo run -- setup
 ```
 
-## Choose a first connection
-
-`xana setup` is the canonical first-run and rerunnable guided entry point. On
-an interactive terminal it uses arrow-key selection, paging, live filtering,
-and a compact Xana waterline mark; `xana setup --plain` keeps append-only,
-bounded prompts. It asks for Quick Setup, Full Setup, or a focused section;
-`xana setup --quick`
-selects Quick directly. Xana does not preselect or recommend a provider. It
-first establishes the chosen local,
-API-key, or managed Codex connection and fetches its live catalog; only then
-does it offer model and reasoning choices. Large catalogs are never dumped:
-the rich selector filters and pages, while plain setup accepts `/FILTER`,
-next/previous, or an exact id. Known capabilities, limits, output modalities,
-and provider-published pricing appear with each model. Ordinary configuration remains in
-memory until the redacted review is confirmed, then the credential reference
-and valid config are committed atomically. Cancelling preserves the previous
-installation. A minimal Ollama document is:
-
-Installers and automation can ask Xana to own the readiness decision:
+Run the required checks before submitting a change:
 
 ```bash
-xana setup --if-needed
-```
-
-Healthy configuration returns success without mutation or provider traffic.
-When setup or repair is needed, an interactive terminal enters the same
-canonical flow; redirected/noninteractive use returns exit code `10` with a
-versioned `XANA_SETUP_RESULT` receipt and exact `xana setup`/`xana doctor`
-next steps. Shell wrappers never parse or repair `config.toml` themselves.
-
-```toml
-version = 4
-default_profile = "default"
-default_child_route = "default"
-permission_mode = "ask"
-
-[shell]
-kind = "platform"
-
-[providers.ollama]
-kind = "ollama"
-
-[providers.ollama.models."qwen3:1.7b"]
-input_modalities = ["text"]
-tools = true
-
-[profiles.default]
-connection = "ollama"
-model = "qwen3:1.7b"
-max_tool_rounds = 8
-
-[routes.default]
-profile = "default"
-```
-
-Use `xana setup --full` for the guided advanced path. Focused reruns use
-`--section connection|permissions-shell|profiles-routes|appearance`; the same
-entries are available as `/setup SECTION` in plain chat and the TUI command
-palette. Appearance applies immediately. Managed model/reasoning changes apply
-to subsequent turns when compatible. Connection owner, shell, permission,
-profile, and route changes never mutate the open conversation; start a new
-conversation explicitly to use their new immutable snapshot. Every durable
-section has a flag-driven `--non-interactive ... --yes` form.
-
-After setup, `xana settings` opens a persistent, responsive settings workspace
-with live search, constrained editors, staged appearance preview, and an exact
-scope/effect review before apply. `xana config list|get|explain|set|reset`
-exposes the same secret-free catalog to scripts, including JSON and no-write
-previews. `/settings [SECTION]` safely leaves either chat surface, applies the
-reviewed transaction, and resumes the same conversation unless a changed
-runtime default explicitly requires a new one. See [Settings workspace and
-configuration editing](docs/user/settings.md).
-
-Existing schema 1-3 files remain readable. `xana config migrate` prints a
-redacted, read-only migration plan; `xana config migrate --apply` takes an
-exact backup, initializes Xana's versioned private interoperability records,
-and commits schema 4 atomically. A retry is safe and byte-stable when no work
-remains. Older homes may continue to launch when an unused plugin record is
-absent; `xana doctor` reports the missing records and this exact migration
-remedy instead of misreporting an empty plugin installation.
-
-Optional projects organize conversations without owning workspaces. Start with
-`xana project create NAME`, inspect them with `xana project list`, and use
-`xana project assign` or `xana project ungroup` to change only the private
-membership relation. See [Projects](docs/user/projects.md) for lifecycle and
-cross-workspace continuation rules.
-
-Portable sharing stays opt-in: `xana project share PROJECT_ID` creates the
-strict non-secret `.agents/xana/project.toml`; another installation can run
-`xana project inspect-portable` before choosing `xana project register`.
-
-Named profiles are first-class rather than fixed roles. `xana profile create`,
-`list`, `edit`, `duplicate`, `resolve`, and lifecycle commands work globally or
-with `--project PROJECT_ID`. Resolution shows exact effective values,
-provenance, and readiness; each conversation can freeze an immutable snapshot,
-and changing profiles creates a linked continuation. See
-[Profiles](docs/user/profiles.md).
-
-Inside plain chat or the TUI, the same operations are available as `/project
-...` and `/profile ...`; the TUI restores ordinary terminal mode for the typed
-operation and then reopens. Session rows label their optional project or
-`Ungrouped`. `xana project continue ...` previews by default and `--apply`
-commits same-workspace assignment or a fresh owner-correct continuation with a
-frozen profile snapshot—never workspace deletion or silent transcript copying.
-Logical connection/service requirements are resolved through redacted private
-bindings and never copy local credentials or authority into the repository.
-
-Agent Skills use the standard `.agents/skills/NAME/SKILL.md` layout. `xana
-skill list` indexes bounded metadata, `inspect` and `validate` review exact
-sources, and `activate` loads only one selected body plus necessary contained
-references. `enable`/`disable` connect qualified skills to global or project
-profiles for future prompt snapshots. Same-name collisions require
-qualification (`user/NAME`, `project/NAME`, or `plugin:PLUGIN/NAME`), and skill
-prose—including experimental `allowed-tools` metadata—never grants tools,
-permissions, credentials, egress, or execution authority. See [Agent
-Skills](docs/user/skills.md).
-
-Agent Plugins use the Agent Plugins 1.0.0 declarative package boundary.
-`xana plugin review PATH` reviews a local package without installing it;
-`xana plugin install PATH --yes` copies the exact reviewed tree into Xana's
-private content-addressed store while leaving every skill and MCP declaration
-disabled. Exact Git installs require `--git --revision COMMIT`. Explicit
-`--linked` development installs stay visibly mutable. `plugin enable` binds an
-exact installed revision to user/project/profile scope; `update-check` plus
-explicit `update` preserves approval only for an unchanged capability set, and
-`rollback`, `disable`, `remove`, and `gc` are reversible or guarded lifecycle
-operations. Enabled plugin skills enter qualified skill discovery; plugin MCP
-declarations remain inert until the supervised MCP phase. See [Agent
-Plugins](docs/user/plugins.md).
-
-Configured MCP servers can now contribute only explicitly allowlisted
-primitives. `xana mcp list` is side-effect free; `refresh`, `tools`,
-`resources`, `read`, `prompts`, and `prompt` perform explicit bounded actions.
-Native conversations expose qualified `mcp.SERVER.TOOL` capabilities through
-the ordinary permission broker and outbound-data gate. Resource content and
-prompt templates remain attributed untrusted data and never become ambient
-system instructions. The same typed commands are available as `/mcp ...` in
-plain chat and the TUI. See [MCP](docs/user/mcp.md).
-`xana mcp refresh SERVER` is also the explicit, reviewed action that saves the
-exact discovery-metadata grant; normal chat startup skips unapproved MCP peers
-without spawning or connecting to them.
-
-For local composition, `xana mcp serve --workspace PATH --profile PROFILE
---allow xana_docs` exposes an isolated, stdio-only, noninteractive MCP process.
-It has no ambient Xana conversation or frontend authority and opens no network
-listener. The [MCP guide](docs/user/mcp.md#local-xana-mcp-server) documents its
-exact policy and shutdown boundary.
-
-Data leaving Xana for an external integration passes one typed outbound gate.
-Connection, user, profile, and conversation policy can only narrow the allowed
-classes; concrete messages, files, artifacts, and metadata still require exact
-selection. New recipient/class combinations require approval, unresolved
-noninteractive requests fail closed, and audits retain counts and digests
-rather than selected content. MCP application calls already implement that
-exact dispatch seam. A2A delegation uses it for explicitly selected messages,
-files, artifacts, and workspace metadata; image-generation and specialist-
-vision requests use the same seam before credential or network setup. Use
-`xana outbound list` and `xana outbound revoke IDENTITY_DIGEST CLASS --yes` to
-inspect or remove saved recipient/class decisions. See [Outbound
-data approvals and privacy](docs/user/outbound-data.md).
-
-Xana also has a bounded client-side protocol and progressive catalog foundation
-for MCP `2026-07-28`. It pins the exact modern discovery contract, qualifies
-tool identity as `mcp.<server>.<tool>`, separates tools/resources/prompts, and
-indexes only exact profile-allowlisted primitives under deterministic memory
-limits. Its owned stdio process adapter has bounded I/O, cancellation, health,
-minimal environment, and process-tree cleanup. Its stateless Streamable HTTP
-adapter adds pinned endpoint/DNS identity, no redirects or inherited proxy,
-bounded JSON/request-scoped SSE, local PKCE OAuth completion, OS-store token
-rotation, and exact outbound authorization. Both transports are explicitly
-configurable and expose only per-profile allowlisted primitives. See [MCP
-catalog and compatibility](docs/user/mcp.md).
-
-Remote A2A agents can be declared, explicitly refreshed, inspected, trusted,
-untrusted, and removed with `xana external-agent ...`. Xana pins an A2A 1.0
-JSONRPC/text compatibility subset, caches sanitized Agent Card metadata in
-private state, and invalidates trust whenever meaningful identity changes.
-Profile-selected trusted agents expose a bounded qualified delegation tool;
-Xana gates exact selected data, streams attributed activity, ingests immutable
-artifacts, tracks task state, and supports explicit or best-effort cancellation.
-Startup never discovers endpoints implicitly, and trust alone sends no task or
-local data. See [External A2A agents](docs/user/external-agents.md).
-
-Focused service routes are independent from the conversational model.
-`openai.images` and `openrouter.images` generate one bounded artifact through
-an exact selected provider with route/model/option provenance, usage visibility,
-typed failures, cancellation, and no silent retries or fallback. See [Focused
-image services](docs/user/focused-services.md).
-Use `xana image list`, `xana image inspect ROUTE`, or the explicitly approved
-`xana image generate PROMPT --route ROUTE --yes`; equivalent `/image ...`
-commands work in plain and TUI conversations, and exposed routes add the
-permission-gated `generate_image` tool to native agents.
-Image-capable conversational models accept bounded PNG/JPEG/GIF artifacts from
-`/attach PATH`, the explicit `/attach --clipboard` action, a local image
-dragged into the TUI, or image-looking local paths in ordinary message text.
-Multiple paths in one message are preserved in order. External paths are
-listed together in an exact allow-once prompt before Xana reads them. Xana
-fully decodes and content-addresses each approved copy before
-provider use; clipboard access is never ambient.
-Text-only conversational models can use an exact profile-exposed
-`vision.analyze` route through `openai.vision` or `openrouter.vision`. Xana
-prefers native image input when the selected model supports it; `/vision ROUTE`
-is an explicit one-turn override and `/vision auto` restores native-first
-routing. Specialist output is visibly labeled untrusted and attributed to its
-route, connection, model, and immutable source artifact IDs. Inspect or invoke
-routes with `xana vision list`, `xana vision inspect ROUTE`, and `xana vision
-analyze IMAGE... --question QUESTION --route ROUTE --yes`.
-
-## Diagnose and recover an installation
-
-`xana connect` is the provider-neutral integration inventory. It performs no
-discovery or mutation by itself; `xana connect provider` and `xana connect
-profile` enter the existing atomic guided setup sections, while the hub points
-to exact plugin, MCP, external-agent, and focused-service commands. `xana
-connect image` and `xana connect vision` guide one reviewed API-key route edit;
-the noninteractive form requires exact provider, model, credential reference,
-route, and `--yes`. `xana mcp add-stdio` and `xana mcp add-http` add one enabled,
-profile-allowlisted declaration without starting it; `xana mcp remove` removes
-only that declaration and its profile references. Every edit validates the
-complete config, installs atomically, and retains `config.toml.bak`.
-
-`xana doctor` performs bounded read-only checks of configuration, credential
-references, selected connections/models, Xana-owned paths, presentation
-preferences, terminal mode, and the current workspace's host descriptor. It
-also inventories profiles, plugins, MCP servers, external agents, and focused
-routes without starting a process or network discovery. Add
-`--probe-connections` to run bounded live native-catalog and Codex
-executable/app-server/account/catalog/rate-limit probes. Each stable finding includes its
-evidence source and an exact next command. `--output json` emits the versioned
-redacted report. `xana doctor --fix` separately previews and confirms only
-deterministic owner-permission repairs on Unix and unlocked stale-descriptor
-removal; it never logs in, selects a provider/model, weakens permissions,
-kills a process, or deletes conversations.
-
-Normal Xana execution writes bounded structured metadata—not transcripts—to
-the resolved `data/logs` directory, with seven-day retention by default and a
-nonblocking loss-counted writer. Panics and monitored runtime-task loss produce
-best-effort redacted reports under `data/crashes`; clean shutdown removes its
-locked run marker, while a stale marker remains visible after an unclean exit.
-Use `xana logs path|list|show|export`; exports are bounded local JSON files and
-are never uploaded. Doctor and log-inspection commands remain read-only. See
-[Logs and crash diagnostics](docs/user/diagnostics.md).
-
-Use `xana config edit` for a manual edit through a bounded temporary copy. The
-live file is replaced only after full schema validation and a concurrent-change
-check, with the exact prior file retained as `config.toml.bak`. Invalid or
-failed edits preserve both the live file and the draft for correction.
-
-`xana reset --dry-run --scope SCOPE` previews `setup`, `sessions`, `caches`,
-`credentials`, or `all`. Filesystem removal and referenced OS credentials have
-separate confirmations; every scope preserves Codex-owned authentication and
-conversations. The TUI exposes reset only as a guarded command-palette
-lifecycle action. The legacy hidden `xana init` command remains a deprecated
-compatibility path during the 0.5.x preview; `xana setup` is canonical.
-
-## Add a remote API provider
-
-Keys can be stored in the OS credential manager or referenced through one
-named environment variable. Plaintext keys never belong in `config.toml`.
-
-```bash
-xana connection add openrouter --kind openrouter --model openai/gpt-4.1
-xana connection set-key openrouter
-xana model refresh openrouter
-xana model use openrouter/openai/gpt-4.1
-xana
-```
-
-Use `--kind openai` for the OpenAI API or `--kind anthropic` for Anthropic.
-Anthropic is API-key-only; Xana does not offer Claude subscription OAuth.
-
-## Use a ChatGPT subscription through Codex
-
-On a fresh installation, install and log into a compatible Codex CLI, then
-choose Codex in `xana setup`. Quick Setup probes the executable and app-server,
-checks the Codex-owned account, fetches the live catalog, and refuses stale or
-unadvertised model ids before writing configuration.
-
-To add Codex to an existing Xana configuration instead:
-
-```bash
-xana connection add codex --kind codex --model ADVERTISED_MODEL_ID
-xana connection status codex
-xana connection login codex
-xana model refresh codex
-xana model
-xana model use codex/ADVERTISED_MODEL_ID --effort high --summary auto
-xana
-```
-
-The exact model names come from `codex app-server` and can change with account
-access; replace `ADVERTISED_MODEL_ID` with one shown by `xana model list
---connection codex`. No static model example is authoritative. Login also
-supports `--device-code`. Xana delegates the local OAuth completion to Codex;
-it needs no hosted callback server and never reads Codex's auth file.
-
-Xana launches the configured Codex CLI, not the Codex desktop process. The
-desktop app and CLI binaries update separately even when they share account
-state. Use `codex --version` and `xana connection status codex` to confirm the
-runtime Xana is actually supervising; update or rebuild both sides when the
-experimental app-server protocol changes.
-
-The managed assistant identifies itself as Xana. Xana sends its canonical
-built-in identity when it creates the Codex thread, but does not replace
-Codex's base instructions, tools, sandbox, approvals, or project context
-discovery. This is part of the same managed request, not an additional model
-call. Codex fixes the effective identity when it creates a thread; it cannot
-retrofit Xana's identity onto an older thread during resume. Xana detects
-legacy local handles and tells you to enter `/clear` before the first prompt.
-That starts a new Xana-identified thread without deleting the old Codex-owned
-thread.
-
-During a managed turn Xana projects the activity that Codex app-server emits:
-reasoning summaries, plans, command and tool progress, file changes, context
-compaction, Codex-owned subagent activity, model reroutes, and approval
-requests. The full-screen TUI uses `/activity view auto|hide|show` to persist an
-automatic, pinned, or hidden activity pane. It shows correlated approval cards
-even when hidden and labels Codex-owned work separately from Xana-native
-children. The plain renderer keeps `/activity quiet|normal|verbose` for
-append-only detail and `/details` for the last retained turn. `verbose` can show raw reasoning text only when Codex
-actually emits it; Xana cannot expose private hidden chain-of-thought.
-
-Native providers use the same owner-aware presentation boundary. Provider-
-exposed reasoning is retained separately from assistant prose, and committed
-tool requests and results appear live in the conversation and activity panes.
-Provider connection, response-start, and stream-idle waits are bounded; safe
-typed failures retain the useful wire cause instead of becoming an opaque
-“invalid stream” message.
-
-## Models and connections
-
-The normal model UX is intentionally shallow:
-
-```text
-xana model
-xana model list --connection CONNECTION
-xana model refresh CONNECTION
-xana model use CONNECTION/MODEL
-xana model use codex/MODEL --effort auto|EFFORT --summary auto|concise|detailed|off
-```
-
-Inside chat, `/model` lists models with known input/output, tool, reasoning,
-context, and pricing facts, and `/model CONNECTION/MODEL` selects one. The CLI also
-distinguishes the effective selection from the configured profile default.
-Switching between Xana's native loop and a managed runtime starts a new
-conversation rather than silently translating history. Within managed Codex
-chat, `/model codex/MODEL`, `/reasoning EFFORT`, and `/reasoning-summary MODE`
-apply to subsequent turns without starting a new Codex thread or discarding
-its context. `/reasoning auto` restores the selected model's advertised
-default.
-
-`/usage` reports provider-observed tokens for the current Xana process (or the
-latest cumulative managed-thread observation). It labels partial/unknown data
-and does not invent provider quota, reset, or wallet balances when unavailable.
-
-Use `xana connection list|add|status|set-key|delete-key|login|logout|refresh|remove`
-for advanced connection and credential control. See
-[Configuration](docs/user/configuration.md) for exact commands, provider kinds,
-catalogs, OS credential storage, and `XANA_HOME`.
-
-Named child task routes are separate from the interactive model selection.
-Inspect their exact local resolution without starting a provider or managed
-process:
-
-```text
-xana route list
-xana route check default
-```
-
-During a native conversation, Xana exposes `spawn_agent`, atomic `spawn_many`,
-`await_agent`, bounded `collect_agents`, `cancel_agent`, and the efficient `delegate_agent` composition
-when at least one child route is configured. The model can give one task or a
-fixed independent batch to exact routes (or the explicit default), while Xana
-prints each child id, route, connection/model, lifecycle, activity, and
-terminal status. Routes can mix Ollama, OpenAI-compatible, OpenAI API,
-OpenRouter, Anthropic, and managed Codex routes in one batch. A native child gets
-a fresh bounded prompt; a managed Codex child gets a fresh ephemeral Codex
-thread. Both receive only the explicit task and selected bounded handoff data,
-not the parent transcript, cannot delegate again, and return a bounded report
-directly to the root turn. Native provider requests and managed Codex turn
-usage retain exact child attribution. Batches reserve their complete budget
-before becoming visible, run in input order up to the root profile's concurrency
-limit, and fail atomically when any member or aggregate bound is invalid. Use `/agents`,
-`/agent AGENT_ID`, and `/cancel-agent AGENT_ID` for active-process inspection
-and cooperative cancellation; `xana session inspect SESSION_ID` is read-only
-after restart. Typed summary/JSON reports overflow to immutable artifacts, and
-multi-result collection preserves caller order, partial failures, and explicit
-timeout/cancellation policy without loading artifact bodies. Closed versioned
-plans validate fixed spawn/await/collect/cancel graphs before admission. See
-[Child orchestration](docs/user/orchestration.md).
-
-Managed Codex child routes support effective `ask` and `allow` modes. An
-effective `deny` route is rejected because the current app-server contract
-cannot prove that every Codex-owned inner tool effect is disabled. Child
-activity is bounded before it reaches the root event stream, while permission
-requests use a separate fail-closed control lane.
-
-Descendant and aggregate tool/context/report/artifact budgets are cumulative
-for the session; completed children release concurrency capacity but do not
-replenish those totals. A cancellation request also does not overwrite the
-owner's observed terminal outcome: completion can win the race, while a Codex
-interrupt rejection remains a failed child with its remote error.
-
-## Start first-run setup again
-
-`xana reset` (alias: `xana clean`) previews the narrow setup state it will
-remove and asks for confirmation. Use `--yes` for an explicit noninteractive
-reset:
-
-```bash
-xana reset --yes
-xana setup
-```
-
-From this source checkout, use `cargo run -- reset --yes` followed by `cargo
-run -- setup`. Reset removes configuration, model selection/catalog caches, and
-managed-thread handles. It preserves native sessions, artifacts, stored API
-keys, Codex authentication, and Codex-owned conversations. `/clear` is
-different: it clears only the current conversation.
-
-## Chat, tools, and images
-
-Bare `xana` starts the adaptive full-screen TUI when stdin and stdout are
-interactive; redirected launches remain control-free plain output. Use
-`xana --plain` for the permanent append-only interface or `xana --tui` to
-require full-screen initialization. The native TUI has a bounded multiline
-composer, confirmed paste, ordered follow-ups, exact interruption, a shared
-slash-command/command palette, model picker, image staging, streamed turns,
-bounded Markdown/code/diff rendering, explicit artifact actions, paged native
-history, an expandable identity/status header, a one-to-six-row scrolling
-composer, and adaptive wide/medium/narrow layouts. Shift+drag uses native
-terminal text selection. An ordinary drag inside the conversation retains a
-visible selection; Ctrl+C copies it and otherwise interrupts the active turn.
-Other ordinary mouse events remain available for Xana's mouse-down clicks and
-scrolling; queued drag motion samples the newest pointer position instead of
-replaying stale coordinates. Ctrl+Q exits. Bracketed and detected key-stream
-pastes are coalesced into one bounded confirmation, so pasted newlines do not
-submit separate messages.
-`/mcp list` renders in a scrollable in-TUI result, while bare `/profile create`
-opens a prefilled form and commits through the ordinary typed profile command.
-An active turn also places a low-rate animated `Xana is working...` marker at
-the conversation tail. This local indicator is static under reduced-motion
-preferences and never enters the transcript or model context.
-Managed Codex uses the same full-screen shell while Codex retains
-ownership of its inner loop and history; Xana displays app-server activity and
-routes exact approval decisions without a second model call. An implicit initialization
-failure restores the terminal, warns, and falls back to plain, while explicit
-`--tui` exits nonzero. See [Full-screen terminal UI](docs/user/tui.md).
-Rich content, link safety, paging, and artifact actions are documented in
-[Rich terminal content and artifacts](docs/user/rich-content.md).
-
-Run `xana serve` to start an explicit loopback-only foreground host for the
-canonical current workspace, then run `xana attach` from that workspace to
-observe it. `xana attach --control` explicitly acquires the single controller
-lease; `--prompt TEXT` submits one correlated turn and `--takeover` is the only
-way to displace an existing controller. A dropped controller has a three-second
-authenticated reconnect grace, after which pending approvals fail closed and
-the active root is interrupted. Native and managed Codex execution use the
-same observer/controller envelope. The capability is discovered through a
-user-scoped runtime descriptor and never appears in argv, URLs, or shell
-history. From a source checkout, use `cargo run -- serve` and `cargo run --
-attach --control`. See [Local foreground host](docs/user/local-host.md).
-Visible immutable artifacts can be retrieved as a verified 64 KiB preview with
-`xana attach --artifact ARTIFACT_ID`; arbitrary paths are never accepted. The
-host caps clients, frame rate, frame size, event queues, and socket-write time,
-and owns a two-second graceful/five-second hard shutdown lifecycle.
-
-Native
-conversations use the latest compatible inactive session or create a new one;
-`--continue` selects the latest
-compatible conversation in the canonical workspace, while
-`--resume SESSION_ID` selects one exact native session. `/clear` moves to a new
-empty native history or a new Codex thread. In plain mode, `/quit`, Ctrl-C, and
-EOF shut down the foreground runtime and print a compact native resume receipt.
-
-`xana session list` shows the bounded native and managed conversation catalog
-for the canonical current workspace, including active ownership. A single
-OS-backed workspace gate permits only one root turn across local Xana
-processes; another plain client may open a new inactive conversation for
-drafting but cannot submit competing work. Exact resume fails with controlling
-terminal/attach guidance. Xana does not lock the workspace filesystem: use
-separate worktrees when parallel conversations might edit the same files.
-`xana session new` starts an interactive fresh native session or managed Codex
-thread with the current configuration. Retained Codex handles can be selected
-with `xana session select CONNECTION THREAD_ID` and removed locally with
-`xana session archive CONNECTION THREAD_ID`. Archiving never deletes
-the vendor-owned thread.
-In the full-screen client, `/sessions` opens the same bounded workspace catalog
-for searchable read-only history navigation. Wide terminals also show a
-session rail; `/sessions view show` or `/sessions view hide` persists only that
-workspace-local layout preference, and hidden reserves no columns. Click the
-panel title to hide it. `/sessions archive` removes the viewed inactive managed
-handle, while `/sessions archive ID` selects an exact retained managed ID.
-`/sessions new` restarts an idle frontend into a fresh native session or managed
-Codex thread using the current resolved configuration while retaining the old
-session. It refuses to compete with an active workspace root.
-Viewing another transcript never transfers
-the active root or submits its local draft.
-
-Run exactly one turn with `xana -p "PROMPT"` or pipe one prompt into
-`xana --print`. Final text is the only stdout payload; activity and diagnostics
-use stderr. `--json` or `--output json` returns one versioned result envelope.
-One-shot approvals fail closed instead of waiting for terminal input. From a
-checkout, place CLI arguments after `--`, for example
-`cargo run -- --json -p "summarize this repository"`. See
-[Plain and one-shot modes](docs/user/automation.md) for pipelines, process
-statuses, continuation, and the output contract.
-
-For Codex, Xana retains a bounded catalog of opaque thread ids keyed by the
-connection and canonical workspace. The next Xana process resumes the selected
-Codex-owned thread on its first turn. It does not copy the conversation, tool
-state, or credentials; `/clear` starts a new selected Codex thread while the
-old opaque handle remains available for explicit selection.
-
-The capability-resolved native tool snapshot contains:
-
-- `read_file`: bounded UTF-8 file/range reads;
-- `list_files`: bounded sorted non-recursive listings;
-- `edit_file`: one exact replacement in an existing bounded UTF-8 file;
-- `run_command`: configured-shell execution with independently bounded stdout
-  and stderr;
-- `read_document`: bounded UTF-8 or CSV-to-Markdown extraction; and
-- `xana_docs`: bounded reads from Xana's curated, version-matched docs. Its
-  immutable in-binary resource scope does not prompt under an otherwise
-  unmatched `ask` default; explicit matching rules and `deny` still apply.
-
-Every effect crosses Xana's permission broker. Permission is not containment:
-allowed native tools use the process's ordinary host access. Codex-managed
-turns use Codex's own tools/sandbox and Xana projects command/file approval
-requests into the terminal.
-
-Use `/attach WORKSPACE_RELATIVE_IMAGE`, `/attach --clipboard`, drag a PNG,
-JPEG, or GIF into the TUI, or include one or more image-looking local paths in
-an ordinary message to stage image input.
-Xana keeps immutable artifact references, enforces file/pixel/count/aggregate
-budgets, preserves attachment order, and fails closed unless the selected
-model advertises image input. A path inside the launch workspace follows
-ordinary workspace policy. An existing image outside it requires an exact
-interactive allow-once decision before Xana imports a bounded immutable copy;
-all external paths in one turn are reviewed together, and denial or validation
-failure never sends a partial message. OpenAI-compatible and Anthropic bytes are
-resolved only at the provider wire edge; Codex receives the verified Xana
-artifact path rather than the original external source.
-
-## Prompt, context, and recovery
-
-Each native root turn freezes one `xana-prompt-v2` system-prompt snapshot
-containing Xana's built-in identity/guidelines, the actual tool catalog,
-active connection/model runtime context,
-a concise reference to `xana_docs`, a bounded durable root `AGENTS.md` view when
-present, and exact explicitly activated Agent Skills from user, project, or
-enabled-plugin scope. Xana does not discover `XANA.md` or nested `AGENTS.md`.
-Inactive skill bodies/resources do not enter the prompt, and plugins remain
-disabled until their separate lifecycle explicitly enables them.
-
-Native tool intents and results are durably bracketed. Session resume performs
-no automatic recovery; use `xana operation plan` and explicit `xana operation
-resume` for eligible safe reads. See [Project context](docs/user/project-context.md),
-[Permissions](docs/user/permissions.md), [Sessions](docs/user/sessions.md), and
-[Operation recovery](docs/user/operations.md). Native child behavior and its
-current limits are in [Child orchestration](docs/user/orchestration.md).
-
-## Documentation and development
-
-- [Documentation index](docs/README.md)
-- [Architecture](docs/architecture/README.md)
-- [Connections, models, and managed runtimes](docs/architecture/models-and-managed-runtimes.md)
-- [Design principles](docs/principles.md)
-
-Required checks:
-
-```text
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-targets --all-features
 cargo test --workspace --all-targets --no-default-features
 ```
 
-On Windows, the CI-parity runner uses an isolated target directory, the same
-four-thread test pressure as GitHub's public Windows runner, the hermetic MCP
-stdio stress regression, and the installer/package contract suites:
+Windows contributors can run the full installer, release-contract, and package
+suite with:
 
 ```powershell
-./scripts/ci-local.ps1
+./scripts/ci-local.ps1 -RequireClean
 ```
 
-Pass `-RequireClean` to enforce Cargo's clean-worktree packaging check, or
-`-IncludeReleasePlan` when pinned `cargo-dist` 0.32.0 is already installed.
+Read [Code organization](docs/contributing/code-organization.md) before moving
+module boundaries or adding public interfaces. Xana builds one application
+package; its Rust library surface is not a stable SDK.
 
 ## License
 
-MIT - see [LICENSE](./LICENSE).
+Xana is available under the [MIT License](./LICENSE).
