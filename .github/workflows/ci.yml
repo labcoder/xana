@@ -22,7 +22,7 @@ jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -50,12 +50,6 @@ jobs:
         with:
           components: rustfmt, clippy
 
-      - name: Install low-memory Linux linker
-        if: ${{ runner.os == 'Linux' && steps.rust.outcome == 'success' }}
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends lld
-
       - name: Restore Rust dependency cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
@@ -77,18 +71,24 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Run all-feature workspace tests
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
-        env:
-          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '1' || '' }}
-          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
+        if: ${{ !cancelled() && runner.os != 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
 
       - name: Run no-default-feature workspace tests
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
-        env:
-          CARGO_BUILD_JOBS: ${{ runner.os == 'Linux' && '1' || '' }}
-          RUSTFLAGS: ${{ runner.os == 'Linux' && '-C prefer-dynamic -C linker=clang -C link-arg=-fuse-ld=lld' || '' }}
+        if: ${{ !cancelled() && runner.os != 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
+
+      - name: Check Linux workspace test targets
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: |
+          cargo check --locked --workspace --all-targets --all-features
+          cargo check --locked --workspace --all-targets --no-default-features
+
+      - name: Run Linux integration tests
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        run: |
+          cargo test --locked --test cli --test settings_cli --all-features
+          cargo test --locked --test cli --test settings_cli --no-default-features
 
       - name: Stress MCP stdio lifecycle
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
