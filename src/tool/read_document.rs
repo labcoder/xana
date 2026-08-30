@@ -1,7 +1,7 @@
 use super::workspace_path::{WorkspacePathError, resolve_existing};
 use super::{EffectClass, PlannedToolInvocation, ReplaySafety, Tool, ToolDefinition};
 use crate::{
-    documents::{BuiltinDocumentExtractor, DocumentExtractor, DocumentInput},
+    documents::{BuiltinDocumentExtractor, DocumentInput},
     permission::PermissionScope,
 };
 use futures::future::BoxFuture;

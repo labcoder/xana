@@ -76,10 +76,6 @@ impl fmt::Display for DocumentErrorKind {
     }
 }
 
-pub trait DocumentExtractor: Send + Sync {
-    fn extract(&self, input: DocumentInput) -> Result<ExtractedDocument, DocumentError>;
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct BuiltinDocumentExtractor {
     pub max_input_bytes: usize,
@@ -97,8 +93,8 @@ impl Default for BuiltinDocumentExtractor {
     }
 }
 
-impl DocumentExtractor for BuiltinDocumentExtractor {
-    fn extract(&self, input: DocumentInput) -> Result<ExtractedDocument, DocumentError> {
+impl BuiltinDocumentExtractor {
+    pub(crate) fn extract(&self, input: DocumentInput) -> Result<ExtractedDocument, DocumentError> {
         if input.bytes.len() > self.max_input_bytes {
             return Err(DocumentError::new(
                 DocumentErrorKind::InputLimit,
