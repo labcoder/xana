@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, RwLock, Weak,
@@ -859,7 +859,7 @@ fn active_slot() -> &'static RwLock<Option<Weak<ActiveDiagnostics>>> {
 
 fn current_active() -> Option<Arc<ActiveDiagnostics>> {
     active_slot()
-        .read()
+        .try_read()
         .ok()
         .and_then(|slot| slot.as_ref().and_then(Weak::upgrade))
 }
@@ -882,7 +882,9 @@ fn install_panic_hook() {
         std::panic::set_hook(Box::new(move |information| {
             #[cfg(test)]
             previous(information);
-            crate::tui::restore_terminal_best_effort();
+            if io::stdout().is_terminal() {
+                crate::tui::restore_terminal_best_effort();
+            }
             if let Some(active) = current_active() {
                 write_crash_report(
                     &active,
@@ -904,7 +906,7 @@ fn write_crash_report(
 ) {
     let breadcrumbs = active
         .breadcrumbs
-        .lock()
+        .try_lock()
         .map(|values| values.iter().cloned().collect())
         .unwrap_or_default();
     let report = CrashReport {
@@ -934,7 +936,6 @@ fn write_crash_report(
         && serde_json::to_writer_pretty(&mut file, &report).is_ok()
     {
         let _ = file.flush();
-        let _ = file.sync_data();
     }
 }
 
