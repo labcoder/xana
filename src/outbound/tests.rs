@@ -528,24 +528,26 @@ async fn saved_deny_fails_closed_without_reprompting() {
     assert_eq!(transport.calls, 0);
 }
 
-#[test]
-fn saved_decisions_are_listable_and_revocable_by_redacted_identity() {
+#[tokio::test]
+async fn saved_decisions_are_listable_and_revocable_by_redacted_identity() {
     let (_directory, guard) = guard();
     let recipient = recipient(b"identity-one");
     let mut controller = Controller::with([OutboundApprovalDecision::SaveDeny]);
     let mut transport = FakeTransport::default();
     let mut audit = Vec::new();
-    futures::executor::block_on(guard.dispatch(
-        request(
-            recipient.clone(),
-            vec![item(OutboundDataClass::PromptText, b"protected")],
-        ),
-        &policy(all_classes()),
-        Some(&mut controller),
-        &mut transport,
-        &mut audit,
-    ))
-    .unwrap_err();
+    guard
+        .dispatch(
+            request(
+                recipient.clone(),
+                vec![item(OutboundDataClass::PromptText, b"protected")],
+            ),
+            &policy(all_classes()),
+            Some(&mut controller),
+            &mut transport,
+            &mut audit,
+        )
+        .await
+        .unwrap_err();
 
     let decisions = guard.list_decisions().unwrap();
     assert_eq!(decisions.len(), 1);
