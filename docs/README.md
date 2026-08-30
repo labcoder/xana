@@ -119,6 +119,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   Documentation now own the shipped contract.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
+- [Xana 0.6.5 release notes](releases/0.6.5.md) describe the MCP OAuth
+  lifecycle hardening and evidence-backed code simplification release.
 - [Xana 0.6.0 release notes](releases/0.6.0.md) describe the Interoperable
   milestone and its project, extension, integration, multimodal, and diagnostic
   capabilities.
