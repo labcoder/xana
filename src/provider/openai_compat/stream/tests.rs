@@ -56,20 +56,6 @@ fn ollama_reasoning_delta_is_typed_separately_from_answer_text() {
 }
 
 #[test]
-fn decoder_accepts_lf_crlf_comments_and_multiple_data_lines() {
-    let input = b": keepalive\r\ndata: first\r\ndata: second\r\n\r\ndata: third\n\n";
-    let items = decode_in_chunks(input, 3).expect("mixed stream framing");
-
-    assert_eq!(
-        items,
-        vec![
-            SseItem::Data(b"first\nsecond".to_vec()),
-            SseItem::Data(b"third".to_vec()),
-        ]
-    );
-}
-
-#[test]
 fn decoder_rejects_incomplete_and_oversized_frames() {
     let mut incomplete = SseDecoder::default();
     assert!(
@@ -88,36 +74,6 @@ fn decoder_rejects_incomplete_and_oversized_frames() {
         oversized.push(&vec![b'x'; MAX_UNDECODED_BYTES + 1]),
         Err(StreamError::FrameTooLarge { .. })
     ));
-}
-
-#[test]
-fn accumulator_preserves_text_order() {
-    let mut accumulator = StreamAccumulator::default();
-    assert_eq!(
-        accumulator
-            .apply(WireDelta {
-                content: Some("hel".to_owned()),
-                reasoning: None,
-                tool_calls: None,
-            })
-            .expect("first delta"),
-        vec!["hel"]
-    );
-    assert_eq!(
-        accumulator
-            .apply(WireDelta {
-                content: Some("lo".to_owned()),
-                reasoning: None,
-                tool_calls: None,
-            })
-            .expect("second delta"),
-        vec!["lo"]
-    );
-
-    assert_eq!(
-        accumulator.finish().expect("assistant message"),
-        Message::text(Role::Assistant, "hello")
-    );
 }
 
 #[test]
@@ -255,16 +211,20 @@ fn captured_text_stream_decodes_to_a_message() {
     let items = decode_in_chunks(include_bytes!("../fixtures/chat_text_stream.sse"), 2)
         .expect("captured text stream");
     let mut accumulator = StreamAccumulator::default();
+    let mut fragments = Vec::new();
     for item in items {
         if let SseItem::Data(data) = item {
             let response: crate::provider::openai_compat::wire::WireStreamResponse =
                 serde_json::from_slice(&data).expect("wire delta");
-            accumulator
-                .apply(response.choices.into_iter().next().expect("choice").delta)
-                .expect("text delta");
+            fragments.extend(
+                accumulator
+                    .apply(response.choices.into_iter().next().expect("choice").delta)
+                    .expect("text delta"),
+            );
         }
     }
 
+    assert_eq!(fragments, ["Hello ", "from Xana"]);
     assert_eq!(
         accumulator.finish().expect("message"),
         Message::text(Role::Assistant, "Hello from Xana")

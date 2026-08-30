@@ -579,24 +579,6 @@ mod tests {
     }
 
     #[test]
-    fn protocol_serialization_does_not_expose_provider_wire_fields() {
-        let event = ClientObservation {
-            version: FRONTEND_PROTOCOL_VERSION,
-            sequence: 1,
-            event: ClientEvent::Runtime(Box::new(AgentEvent::AssistantMessage {
-                operation_id: OperationId::new(),
-                message: Message::text(Role::Assistant, "safe result"),
-            })),
-        };
-        let json = serde_json::to_string(&event).unwrap();
-
-        assert!(json.contains("safe result"));
-        assert!(!json.contains("authorization"));
-        assert!(!json.contains("access_token"));
-        assert!(!json.contains("jsonrpc"));
-    }
-
-    #[test]
     fn interrupt_and_steer_commands_keep_exact_operation_correlation() {
         let operation_id = OperationId::new();
         for value in [

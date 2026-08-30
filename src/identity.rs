@@ -86,18 +86,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_id_types_remain_distinct() {
-        fn takes_operation(_id: OperationId) {}
-
-        let operation = OperationId::new();
-        let step = StepId::new();
-        let invocation = ToolInvocationId::new();
-
-        takes_operation(operation);
-        assert_ne!(step.to_string(), invocation.to_string());
-    }
-
-    #[test]
     fn durable_session_has_one_stable_root_agent_identity() {
         let session = SessionId::new();
 

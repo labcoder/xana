@@ -705,10 +705,4 @@ mod tests {
         assert!(host.snapshot().unwrap().active.is_none());
         assert!(host.acquire_root(ConversationRef::NewNative).is_ok());
     }
-
-    #[test]
-    fn state_vocabulary_keeps_observation_and_unavailability_distinct() {
-        assert_ne!(ConversationState::Observable, ConversationState::Controlled);
-        assert_ne!(ConversationState::Unavailable, ConversationState::Inactive);
-    }
 }

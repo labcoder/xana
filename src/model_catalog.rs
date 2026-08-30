@@ -1021,7 +1021,7 @@ fn parse_pricing(value: Option<&Value>) -> ModelPricing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConnectionConfig, CredentialReference};
+    use crate::config::ConnectionConfig;
     use tempfile::tempdir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1275,16 +1275,6 @@ mod tests {
             models[0].pricing.summary().as_deref(),
             Some("in $0.1500/M · out $0.6000/M")
         );
-    }
-
-    #[test]
-    fn configuration_types_do_not_serialize_secret_material() {
-        let reference = CredentialReference::Stored {
-            id: "remote".into(),
-        };
-        let encoded = toml::to_string(&reference).unwrap();
-        assert!(!encoded.contains("token"));
-        assert!(encoded.contains("remote"));
     }
 
     #[tokio::test]

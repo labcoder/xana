@@ -532,13 +532,4 @@ mod tests {
             b"replacement with different identity\n"
         );
     }
-
-    #[test]
-    fn definition_declares_write_and_never() {
-        let definition = EditFile.definition();
-
-        assert_eq!(definition.name, "edit_file");
-        assert_eq!(definition.effect_class, EffectClass::Write);
-        assert_eq!(definition.replay_safety, ReplaySafety::Never);
-    }
 }

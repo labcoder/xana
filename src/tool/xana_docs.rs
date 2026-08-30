@@ -103,16 +103,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn definition_is_bounded_and_product_specific() {
-        let definition = XanaDocs.definition();
-        assert_eq!(definition.name, "xana_docs");
-        assert_eq!(
-            definition.parameters["properties"]["max_bytes"]["maximum"],
-            32768
-        );
-    }
-
-    #[test]
     fn plan_uses_an_immutable_built_in_scope_and_omits_absent_range_fields() {
         let planned = XanaDocs
             .plan(

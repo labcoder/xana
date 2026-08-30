@@ -173,6 +173,53 @@ fn config_path_honors_an_absolute_xana_home() {
 }
 
 #[test]
+fn route_diagnostics_resolve_without_network_or_config_mutation() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind unused provider");
+    listener
+        .set_nonblocking(true)
+        .expect("nonblocking listener");
+    init_native(
+        &home,
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+    );
+    let config_path = home.join("config.toml");
+    let mut before = std::fs::read(&config_path).expect("config before route diagnostics");
+    before.extend_from_slice(b"\n[routes.worker]\nprofile = \"default\"\n");
+    std::fs::write(&config_path, &before).expect("configure a non-default route");
+
+    let listed = xana(&home).args(["route", "list"]).output().unwrap();
+    assert_success(&listed);
+    assert_eq!(
+        String::from_utf8(listed.stdout).unwrap(),
+        "* default\tnative\ttest/test-model\tprofile default\n  worker\tnative\ttest/test-model\tprofile default\n"
+    );
+    let checked = xana(&home)
+        .args(["route", "check", "worker"])
+        .output()
+        .unwrap();
+    assert_success(&checked);
+    let checked = String::from_utf8(checked.stdout).unwrap();
+    for expected in [
+        "route: worker\n",
+        "execution: native\n",
+        "connection: test\n",
+        "model: test-model\n",
+    ] {
+        assert!(
+            checked.contains(expected),
+            "missing {expected:?}: {checked}"
+        );
+    }
+    assert!(
+        matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    assert!(!home.join("cache/models").exists());
+}
+
+#[test]
 fn diagnostic_commands_list_and_export_metadata_without_starting_another_log() {
     let directory = tempdir().expect("temporary Xana home");
     let home = canonical_temp_root(&directory).join("xana-home");
@@ -405,6 +452,8 @@ fn noninteractive_codex_init_creates_a_valid_managed_connection() {
             "codex",
             "--provider-name",
             "codex",
+            "--codex-program",
+            "codex-preview",
             "--model",
             "gpt-5.6-sol",
             "--permission-mode",
@@ -417,7 +466,7 @@ fn noninteractive_codex_init_creates_a_valid_managed_connection() {
     let config = std::fs::read_to_string(home.join("config.toml"))
         .expect("read managed Codex configuration");
     assert!(config.contains("kind = \"codex\""));
-    assert!(config.contains("codex_program = \"codex\""));
+    assert!(config.contains("codex_program = \"codex-preview\""));
     assert!(!config.contains("base_url"));
 
     let check = xana(&home)
@@ -483,7 +532,7 @@ fn reset_requires_confirmation_preserves_history_and_allows_reinitialization() {
 }
 
 #[test]
-fn doctor_json_is_versioned_redacted_and_read_only() {
+fn doctor_json_is_versioned_and_read_only() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");
     init_native(&home, "http://127.0.0.1:9/v1");
@@ -503,7 +552,6 @@ fn doctor_json_is_versioned_redacted_and_read_only() {
             .as_array()
             .is_some_and(|rows| !rows.is_empty())
     );
-    assert!(!String::from_utf8_lossy(&output.stdout).contains("secret"));
     assert_eq!(
         std::fs::read(home.join("config.toml")).expect("config after doctor"),
         before

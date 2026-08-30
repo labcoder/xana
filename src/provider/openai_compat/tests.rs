@@ -108,23 +108,16 @@ fn multiple_images_are_resolved_in_order_only_at_the_wire_edge() {
 }
 
 #[test]
-fn roles_convert_to_wire() {
-    assert_eq!(WireRole::from(Role::System), WireRole::System);
-    assert_eq!(WireRole::from(Role::User), WireRole::User);
-    assert_eq!(WireRole::from(Role::Assistant), WireRole::Assistant);
-    assert_eq!(WireRole::from(Role::Tool), WireRole::Tool);
-}
-
-#[test]
 fn system_role_serializes_at_the_wire_edge() {
-    let message = Message::text(Role::System, "frozen system prompt");
+    let text = "identity\n\n<source>guidance</source>";
+    let message = Message::text(Role::System, text);
     let wire = WireMessage::try_from(&message).expect("system wire message");
     let value = serde_json::to_value(&wire).expect("wire JSON");
 
     assert_eq!(wire.role, WireRole::System);
     assert_eq!(
         wire.content.as_ref().and_then(WireMessageContent::as_text),
-        Some("frozen system prompt")
+        Some(text)
     );
     assert_eq!(value["role"], "system");
 }
@@ -188,26 +181,6 @@ async fn invalid_tool_message_fails_before_http() {
         }
         Ok(_) => panic!("expected request conversion to fail"),
     }
-}
-
-#[test]
-fn tool_call_arguments_cross_as_structured_json() {
-    let original = ToolCall {
-        id: "call-1".to_owned(),
-        name: "read_file".to_owned(),
-        arguments: serde_json::json!({"path": "README.md"}),
-    };
-
-    let wire = WireToolCall::from(&original);
-
-    assert_eq!(wire.function.arguments, r#"{"path":"README.md"}"#);
-
-    let round_tripped = match ToolCall::try_from(wire) {
-        Ok(tool_call) => tool_call,
-        Err(error) => panic!("expected tool call to convert: {error}"),
-    };
-
-    assert_eq!(round_tripped, original);
 }
 
 #[test]

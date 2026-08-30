@@ -32,7 +32,7 @@ use recovery::run_reset_with_io;
 use recovery::{run_config_command, run_doctor_command, run_reset_command};
 
 #[cfg(test)]
-use crate::{cli::ConfigCommand, config::CredentialReference};
+use crate::config::CredentialReference;
 use crate::{
     cli::{self, Cli, Command, OutputChoice, SessionCommand},
     config::XanaConfig,

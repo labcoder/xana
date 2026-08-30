@@ -17,22 +17,6 @@ fn tool() -> RunCommand {
 }
 
 #[test]
-fn definition_declares_execute_and_never() {
-    let definition = tool().definition();
-
-    assert_eq!(definition.name, "run_command");
-    assert_eq!(definition.effect_class, EffectClass::Execute);
-    assert_eq!(definition.replay_safety, ReplaySafety::Never);
-    assert_eq!(definition.parameters["additionalProperties"], false);
-    assert!(
-        definition.parameters["properties"]["cwd"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("cwd='.'")
-    );
-}
-
-#[test]
 fn unknown_fields_fail_before_workspace_io() {
     let unavailable_workspace = tempdir().expect("temporary parent").path().join("missing");
     let result = tool().plan_inner(

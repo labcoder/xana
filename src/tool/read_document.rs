@@ -158,10 +158,4 @@ mod tests {
                 .is_err()
         );
     }
-
-    #[test]
-    fn definition_claims_only_the_formats_compiled_into_this_build() {
-        let description = ReadDocument::default().definition().description;
-        assert_eq!(description.contains("CSV"), cfg!(feature = "documents-csv"));
-    }
 }

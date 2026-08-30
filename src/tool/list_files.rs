@@ -383,13 +383,4 @@ mod tests {
             }]
         );
     }
-
-    #[test]
-    fn definition_declares_read_and_safe() {
-        let definition = ListFiles.definition();
-
-        assert_eq!(definition.name, "list_files");
-        assert_eq!(definition.effect_class, EffectClass::Read);
-        assert_eq!(definition.replay_safety, ReplaySafety::Safe);
-    }
 }

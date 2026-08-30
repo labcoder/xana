@@ -249,7 +249,7 @@ fn unknown_tool_returns_correlated_error() {
 }
 
 #[test]
-fn builtins_have_deterministic_order_and_safety_metadata() {
+fn builtins_expose_one_ordered_schema_and_safety_contract() {
     let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
     let definitions = registry.definitions();
 
@@ -279,6 +279,19 @@ fn builtins_have_deterministic_order_and_safety_metadata() {
     assert_eq!(definitions[4].replay_safety, ReplaySafety::Safe);
     assert_eq!(definitions[5].effect_class, EffectClass::Read);
     assert_eq!(definitions[5].replay_safety, ReplaySafety::Safe);
+
+    let read = &registry.definition("read_file").unwrap().parameters;
+    assert_eq!(read["properties"]["start_line"]["minimum"], 1);
+    assert_eq!(read["properties"]["end_line"]["minimum"], 1);
+    let command = &registry.definition("run_command").unwrap().parameters;
+    assert_eq!(command["additionalProperties"], false);
+    let document = registry.definition("read_document").unwrap();
+    assert_eq!(
+        document.description.contains("CSV"),
+        cfg!(feature = "documents-csv")
+    );
+    let docs = &registry.definition("xana_docs").unwrap().parameters;
+    assert_eq!(docs["properties"]["max_bytes"]["maximum"], 32768);
 }
 
 #[test]

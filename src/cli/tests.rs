@@ -2,15 +2,6 @@ use super::*;
 use clap::error::ErrorKind;
 
 #[test]
-fn no_subcommand_means_normal_chat() {
-    let cli = Cli::try_parse_from(["xana"]).expect("bare invocation");
-
-    assert!(!cli.no_banner);
-    assert_eq!(cli.resume, None);
-    assert_eq!(cli.command, None);
-}
-
-#[test]
 fn parses_plain_tui_and_one_shot_surface_contracts() {
     let plain = Cli::try_parse_from(["xana", "--plain"]).expect("plain surface");
     assert!(plain.plain);
@@ -120,28 +111,6 @@ fn parses_connection_and_model_control_plane() {
                 effort: Some("xhigh".into()),
                 summary: Some("detailed".into()),
             })
-        }))
-    );
-}
-
-#[test]
-fn parses_read_only_route_diagnostics() {
-    assert_eq!(
-        Cli::try_parse_from(["xana", "route", "list"])
-            .expect("route list")
-            .command,
-        Some(Command::Route(RouteArgs {
-            command: RouteCommand::List,
-        }))
-    );
-    assert_eq!(
-        Cli::try_parse_from(["xana", "route", "check", "worker"])
-            .expect("route check")
-            .command,
-        Some(Command::Route(RouteArgs {
-            command: RouteCommand::Check {
-                route: "worker".into(),
-            },
         }))
     );
 }
@@ -405,19 +374,6 @@ fn canonical_cli_values_are_human_spelled_and_legacy_values_remain_compatible() 
 }
 
 #[test]
-fn parses_installer_owned_setup_readiness_handoff() {
-    let cli = Cli::try_parse_from(["xana", "setup", "--if-needed"])
-        .expect("parse setup readiness handoff");
-    assert!(matches!(
-        cli.command,
-        Some(Command::Setup(args)) if *args == SetupArgs {
-            if_needed: true,
-            ..SetupArgs::default()
-        }
-    ));
-}
-
-#[test]
 fn parses_explicit_quick_setup_without_the_path_menu() {
     assert!(matches!(
         Cli::try_parse_from(["xana", "setup", "--quick"])
@@ -425,23 +381,6 @@ fn parses_explicit_quick_setup_without_the_path_menu() {
             .command,
         Some(Command::Setup(args)) if args.quick
     ));
-}
-
-#[test]
-fn setup_readiness_handoff_rejects_setup_choices() {
-    let cli = Cli::try_parse_from(["xana", "setup", "--if-needed", "--model", "llama3.2"])
-        .expect("parse before application validation");
-    let Some(Command::Setup(args)) = cli.command else {
-        panic!("expected setup command");
-    };
-    assert!(args.if_needed);
-    assert_ne!(
-        *args,
-        SetupArgs {
-            if_needed: true,
-            ..SetupArgs::default()
-        }
-    );
 }
 
 #[test]
@@ -503,56 +442,12 @@ fn parses_exact_sectional_setup_operations() {
 }
 
 #[test]
-fn parses_managed_codex_init() {
-    let cli = Cli::try_parse_from([
-        "xana",
-        "init",
-        "--non-interactive",
-        "--kind",
-        "codex",
-        "--provider-name",
-        "codex",
-        "--codex-program",
-        "codex-preview",
-        "--model",
-        "gpt-5.6-sol",
-        "--permission-mode",
-        "ask",
-    ])
-    .expect("managed Codex initialization");
-
-    assert!(matches!(
-        cli.command,
-        Some(Command::Init(InitArgs {
-            kind: Some(InitConnectionKindChoice::Codex),
-            codex_program: Some(program),
-            base_url: None,
-            ..
-        })) if program == "codex-preview"
-    ));
-}
-
-#[test]
-fn parses_config_path_check_and_edit() {
-    let path = Cli::try_parse_from(["xana", "config", "path"]).expect("config path command");
-    let check = Cli::try_parse_from(["xana", "config", "check"]).expect("config check command");
+fn parses_config_edit_and_migrate() {
     let edit = Cli::try_parse_from(["xana", "config", "edit", "--editor", "code"])
         .expect("config edit command");
     let migrate = Cli::try_parse_from(["xana", "config", "migrate", "--apply"])
         .expect("config migrate command");
 
-    assert_eq!(
-        path.command,
-        Some(Command::Config(ConfigArgs {
-            command: ConfigCommand::Path,
-        }))
-    );
-    assert_eq!(
-        check.command,
-        Some(Command::Config(ConfigArgs {
-            command: ConfigCommand::Check,
-        }))
-    );
     assert_eq!(
         edit.command,
         Some(Command::Config(ConfigArgs {

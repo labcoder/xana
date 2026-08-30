@@ -708,23 +708,6 @@ async fn failures_always_end_with_a_terminal_failed_state() {
     );
 }
 
-#[test]
-fn events_are_passive_observations_not_commands() {
-    fn observe(_event: AgentEvent) {}
-    fn command(_command: RuntimeCommand) {}
-
-    observe(AgentEvent::CommandRejected {
-        reason: "observation only".to_owned(),
-    });
-    command(RuntimeCommand::ClearConversation);
-
-    let result = Message::tool_result(ToolResult::error("call", "failed"));
-    assert!(matches!(
-        result.content.as_slice(),
-        [ContentBlock::ToolResult(_)]
-    ));
-}
-
 struct RuntimeCrashObserver {
     target: CrashSite,
     path: std::path::PathBuf,

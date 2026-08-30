@@ -168,37 +168,6 @@ async fn provider_failures_use_the_injected_runtime_telemetry_seam() {
     );
 }
 
-#[test]
-fn requested_tools_preserve_model_order_and_values() {
-    let message = Message {
-        role: Role::Assistant,
-        content: vec![
-            ContentBlock::Text("I'll inspect both.".to_owned()),
-            ContentBlock::ToolCall(ToolCall {
-                id: "call-a".to_owned(),
-                name: "read_file".to_owned(),
-                arguments: serde_json::json!({"path": "a.txt"}),
-            }),
-            ContentBlock::ToolCall(ToolCall {
-                id: "call-b".to_owned(),
-                name: "list_files".to_owned(),
-                arguments: serde_json::json!({"path": "src"}),
-            }),
-        ],
-    };
-
-    let calls = requested_tools(&message);
-
-    assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0].id, "call-a");
-    assert_eq!(calls[1].id, "call-b");
-}
-
-#[test]
-fn requested_tools_are_empty_for_final_text() {
-    assert!(requested_tools(&Message::text(Role::Assistant, "Finished.")).is_empty());
-}
-
 #[tokio::test]
 async fn scripted_text_turn_emits_deltas_then_final_message() {
     let workspace = tempdir().expect("temporary workspace");
@@ -243,18 +212,28 @@ async fn scripted_text_turn_emits_deltas_then_final_message() {
 }
 
 #[tokio::test]
-async fn scripted_tool_turn_preserves_step_and_invocation_identity() {
+async fn scripted_tool_turn_executes_in_model_order_with_correlated_results() {
     let workspace = tempdir().expect("temporary workspace");
     fs::write(workspace.path().join("note.txt"), "contents").expect("fixture");
+    fs::write(workspace.path().join("other.txt"), "other contents").expect("second fixture");
     let tool_response = ScriptedResponse {
         deltas: Vec::new(),
         message: Message {
             role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: "provider-call".to_owned(),
-                name: "read_file".to_owned(),
-                arguments: serde_json::json!({"path": "note.txt"}),
-            })],
+            content: vec![
+                ContentBlock::Text("I'll inspect both.".to_owned()),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-b".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: serde_json::json!({"path": "other.txt"}),
+                }),
+                ContentBlock::Text("Then the note.".to_owned()),
+                ContentBlock::ToolCall(ToolCall {
+                    id: "call-a".to_owned(),
+                    name: "read_file".to_owned(),
+                    arguments: serde_json::json!({"path": "note.txt"}),
+                }),
+            ],
         },
         usage: None,
     };
@@ -263,7 +242,7 @@ async fn scripted_tool_turn_preserves_step_and_invocation_identity() {
         message: Message::text(Role::Assistant, "done"),
         usage: None,
     };
-    let (provider, _) = ScriptedChatTransport::new(vec![tool_response, final_response]);
+    let (provider, requests) = ScriptedChatTransport::new(vec![tool_response, final_response]);
     let agent = make_agent(provider, workspace.path(), 3);
     let (operation_id, permissions, events, mut receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "read note")];
@@ -272,34 +251,57 @@ async fn scripted_tool_turn_preserves_step_and_invocation_identity() {
         .run_turn(operation_id, &mut history, permissions, events)
         .await
         .expect("scripted tool turn");
-    let audit_event = receiver.recv().await.expect("permission audit");
-    let tool_event = receiver.recv().await.expect("tool completion");
-    let delta_event = receiver.recv().await.expect("final delta");
-
     assert_eq!(result, Message::text(Role::Assistant, "done"));
-    assert!(matches!(audit_event, AgentEvent::PermissionAudited { .. }));
-    match tool_event {
-        AgentEvent::ToolFinished {
+    let mut invocation_ids = Vec::new();
+    for (call_id, output) in [("call-b", "other contents"), ("call-a", "contents")] {
+        let audit_event = receiver.recv().await.expect("permission audit");
+        let AgentEvent::ToolFinished {
             operation_id: actual_operation,
             invocation_id,
             result,
-        } => {
-            assert_eq!(actual_operation, operation_id);
-            assert!(!invocation_id.to_string().is_empty());
-            assert!(matches!(
-                result.content.as_slice(),
-                [ContentBlock::ToolResult(tool_result)]
-                    if tool_result.call_id == "provider-call"
-                        && tool_result.status == ToolResultStatus::Success
-            ));
-        }
-        other => panic!("unexpected tool event: {other:?}"),
+        } = receiver.recv().await.expect("tool completion")
+        else {
+            panic!("expected tool completion after its permission audit");
+        };
+        assert_eq!(actual_operation, operation_id);
+        assert!(matches!(
+            audit_event,
+            AgentEvent::PermissionAudited { fact }
+                if fact.request.operation_id == operation_id
+                    && fact.request.invocation_id == invocation_id
+        ));
+        assert!(matches!(
+            (result.role, result.content.as_slice()),
+            (Role::Tool, [ContentBlock::ToolResult(tool_result)])
+                if tool_result.call_id == call_id
+                    && tool_result.output == output
+                    && tool_result.status == ToolResultStatus::Success
+        ));
+        invocation_ids.push(invocation_id);
     }
+    assert_ne!(invocation_ids[0], invocation_ids[1]);
+    let delta_event = receiver.recv().await.expect("final delta");
     assert!(matches!(
         delta_event,
         AgentEvent::AssistantTextDelta { operation_id: actual, text, .. }
             if actual == operation_id && text == "done"
     ));
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    let outputs = requests[1]
+        .iter()
+        .filter_map(|message| match (message.role, message.content.as_slice()) {
+            (Role::Tool, [ContentBlock::ToolResult(result)]) => {
+                Some((result.call_id.as_str(), result.output.as_str()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        outputs,
+        [("call-b", "other contents"), ("call-a", "contents")]
+    );
 }
 
 #[tokio::test]

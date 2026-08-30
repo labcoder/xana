@@ -530,21 +530,4 @@ mod tests {
 
         assert_eq!(output, "selected\n");
     }
-
-    #[test]
-    fn definition_declares_read_safe_and_line_ranges() {
-        let definition = ReadFile.definition();
-
-        assert_eq!(definition.name, "read_file");
-        assert_eq!(definition.effect_class, EffectClass::Read);
-        assert_eq!(definition.replay_safety, ReplaySafety::Safe);
-        assert_eq!(
-            definition.parameters["properties"]["start_line"]["minimum"],
-            1
-        );
-        assert_eq!(
-            definition.parameters["properties"]["end_line"]["minimum"],
-            1
-        );
-    }
 }

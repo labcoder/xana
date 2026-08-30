@@ -941,17 +941,6 @@ max_tool_rounds = 4
 }
 
 #[test]
-fn load_from_reads_config_toml() {
-    let directory = tempdir().expect("temporary config directory");
-    let path = directory.path().join("config.toml");
-    fs::write(&path, MINIMAL).expect("write config");
-
-    let config = XanaConfig::load_from(&path).expect("load config");
-
-    assert_eq!(config.provider_name, "local");
-}
-
-#[test]
 fn legacy_file_is_detected_only_when_toml_is_missing() {
     let directory = tempdir().expect("temporary config directory");
     let config_path = directory.path().join("config.toml");
