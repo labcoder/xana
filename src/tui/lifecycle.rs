@@ -24,6 +24,7 @@ trait TerminalControl {
 
 struct CrosstermControl;
 
+#[cfg(not(test))]
 pub(super) fn restore_process_terminal_best_effort() {
     let _ = execute!(
         io::stdout(),

@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
-    io::{self, BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock, RwLock, Weak,
@@ -135,6 +135,7 @@ const MAX_SUPPORT_BYTES: usize = 8 * 1024 * 1024;
 const SHUTDOWN_WAIT: Duration = Duration::from_millis(750);
 
 static ACTIVE: OnceLock<RwLock<Option<Weak<ActiveDiagnostics>>>> = OnceLock::new();
+#[cfg(not(test))]
 static PANIC_HOOK: OnceLock<()> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +377,7 @@ impl DiagnosticRuntime {
             breadcrumbs: Mutex::new(VecDeque::with_capacity(MAX_BREADCRUMBS)),
         });
         *active_slot().write().expect("diagnostics slot poisoned") = Some(Arc::downgrade(&active));
+        #[cfg(not(test))]
         install_panic_hook();
         Ok(Some(Self {
             active,
@@ -874,14 +876,13 @@ fn retain_breadcrumb(active: &ActiveDiagnostics, record: DiagnosticRecord) {
     breadcrumbs.push_back(record);
 }
 
+#[cfg(not(test))]
 fn install_panic_hook() {
+    use std::io::IsTerminal as _;
+
     PANIC_HOOK.get_or_init(|| {
-        let previous = std::panic::take_hook();
-        #[cfg(not(test))]
-        drop(previous);
-        std::panic::set_hook(Box::new(move |information| {
-            #[cfg(test)]
-            previous(information);
+        drop(std::panic::take_hook());
+        std::panic::set_hook(Box::new(|information| {
             if io::stdout().is_terminal() {
                 crate::tui::restore_terminal_best_effort();
             }

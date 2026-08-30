@@ -31,6 +31,7 @@ pub(crate) use intro::play as play_intro;
 pub(crate) use runner::{run_managed, run_native};
 pub(crate) use settings::run as run_settings;
 
+#[cfg(not(test))]
 pub(crate) fn restore_terminal_best_effort() {
     lifecycle::restore_process_terminal_best_effort();
 }
