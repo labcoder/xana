@@ -23,7 +23,7 @@ impl OpenRouterImageAdapter {
     pub(crate) fn new(secret: SecretString) -> Result<Self, FocusedServiceError> {
         Ok(Self {
             secret,
-            client: reqwest::Client::builder()
+            client: crate::http_client::builder()
                 .no_proxy()
                 .redirect(reqwest::redirect::Policy::none())
                 .timeout(Duration::from_secs(120))

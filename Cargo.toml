@@ -49,7 +49,10 @@ futures = { version = "0.3.31", default-features = false, features = ["std"] }
 fs2 = "0.4.3"
 keyring = "4.1.6"
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png"] }
-reqwest = { version = "0.13.4", default-features = false, features = ["form", "http2", "json", "rustls", "stream", "system-proxy"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["form", "http2", "json", "rustls-no-provider", "stream", "system-proxy"] }
+# Xana does not require AWS-LC's FIPS or post-quantum extensions, so select
+# Rustls's smaller built-in provider without its CMake-based build dependency.
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 rpassword = "7.5.4"
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm"] }
 tachyonfx = { version = "0.25.1", default-features = false, features = ["std"] }

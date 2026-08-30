@@ -22,6 +22,7 @@ mod doctor;
 mod documents;
 mod focused_service;
 mod frontend;
+mod http_client;
 mod identity;
 mod init;
 mod local_host;

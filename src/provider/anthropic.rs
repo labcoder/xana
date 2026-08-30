@@ -246,7 +246,7 @@ impl AnthropicClient {
         model: impl Into<String>,
     ) -> Self {
         Self {
-            client: Client::new(),
+            client: crate::http_client::client(),
             endpoint: format!("{}/v1/messages", base_url.into().trim_end_matches('/')),
             api_key,
             default_model: model.into(),

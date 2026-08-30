@@ -22,7 +22,7 @@ pub(crate) struct OpenAiImageAdapter {
 
 impl OpenAiImageAdapter {
     pub(crate) fn new(secret: SecretString) -> Result<Self, FocusedServiceError> {
-        let client = reqwest::Client::builder()
+        let client = crate::http_client::builder()
             .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(REQUEST_TIMEOUT)

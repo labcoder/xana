@@ -170,7 +170,7 @@ impl OpenAiCompatClient {
         let endpoint = chat_endpoint(&base_url);
 
         Self {
-            client: Client::builder()
+            client: crate::http_client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .redirect(redirect_policy)
                 .build()

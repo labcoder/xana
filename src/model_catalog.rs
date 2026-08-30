@@ -292,7 +292,7 @@ impl ModelManager {
             registry,
             cache_root,
             selection_path,
-            client: Client::builder()
+            client: crate::http_client::builder()
                 .connect_timeout(Duration::from_secs(5))
                 .timeout(Duration::from_secs(20))
                 .build()

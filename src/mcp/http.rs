@@ -190,7 +190,7 @@ pub(crate) async fn pinned_client(
     {
         return Err(McpHttpError::AddressPolicy);
     }
-    Client::builder()
+    crate::http_client::builder()
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(CONNECT_TIMEOUT)

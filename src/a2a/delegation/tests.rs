@@ -215,7 +215,7 @@ async fn dropped_remote_task_lease_is_drained_by_the_owned_cleanup_scope() {
     let (endpoint, request, respond) = cancellation_server().await;
     let cleanup = DeferredCleanup::default();
     let cancellation = RemoteCancellation::new(
-        reqwest::Client::new(),
+        crate::http_client::client(),
         endpoint,
         None,
         "research".into(),
@@ -258,7 +258,7 @@ async fn failed_cancellation_intent_persistence_sends_no_remote_request() {
     let cleanup = DeferredCleanup::default();
     let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
     let cancellation = RemoteCancellation::new(
-        reqwest::Client::new(),
+        crate::http_client::client(),
         endpoint,
         None,
         "research".into(),
@@ -302,7 +302,7 @@ async fn unavailable_cleanup_capacity_is_recorded_without_network_work() {
     let cleanup = DeferredCleanup::default();
     cleanup.drain().await;
     let cancellation = RemoteCancellation::new(
-        reqwest::Client::new(),
+        crate::http_client::client(),
         reqwest::Url::parse("http://127.0.0.1:9/a2a").unwrap(),
         None,
         "research".into(),
