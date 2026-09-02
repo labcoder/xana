@@ -120,8 +120,9 @@ for the ownership boundaries.
 | `xana connect` | Open the provider-neutral integration hub |
 | `xana model` | Inspect the active model and available catalog |
 | `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
-| `xana session list` | List conversations for the current workspace |
-| `xana session branch ID --at POINT` | Preserve a source and create an explicit continuation |
+| `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |
+| `xana conversation list` | List conversations for the current workspace (`session` remains an alias) |
+| `xana conversation branch ID --at POINT` | Preserve a source and create an explicit continuation |
 | `xana --continue` | Continue the latest compatible conversation |
 | `xana doctor` | Inspect configuration, credentials, paths, and runtime readiness |
 | `xana logs list` | Inspect local metadata-only diagnostics |
@@ -155,7 +156,7 @@ engineering contracts. Useful starting points include:
 - [Usage, limits, and model facts](docs/user/usage.md)
 - [Full-screen terminal UI](docs/user/tui.md)
 - [Plain mode and automation](docs/user/automation.md)
-- [Sessions and recovery](docs/user/sessions.md)
+- [Conversations and recovery](docs/user/sessions.md)
 - [Workspace file, search, and command tools](docs/user/workspace-tools.md)
 - [Native bounded web fetch](docs/user/web-fetch.md)
 - [Agent Skills](docs/user/skills.md) and [Agent Plugins](docs/user/plugins.md)

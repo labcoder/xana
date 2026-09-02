@@ -1,6 +1,11 @@
-# Sessions
+# Conversations
 
-> Audience: People using, resuming, inspecting, or backing up Xana sessions.
+> Audience: People using, resuming, inspecting, or backing up Xana Conversations.
+
+`Conversation` is the canonical user-facing term. The older `xana session`,
+`/session`, and `/sessions` spellings remain compatibility aliases; examples in
+this document use `conversation`. On disk, native Conversation journals remain
+stored beneath the historical `sessions/` directory.
 
 Xana persists every native-provider chat as one append-only session. Bare
 `xana` and `xana --plain` select the latest compatible inactive session or
@@ -30,26 +35,26 @@ resumes that saved handle; managed
 one-shot starts a new thread unless `--continue` requests the saved compatible
 handle. `/clear` deselects the current handle and starts a new thread while
 retaining the old opaque id; model or reasoning changes retain the selection.
-`xana session archive` instead removes exactly one inactive local handle from
+`xana conversation archive` instead removes exactly one inactive local handle from
 Xana's catalog. It never deletes the vendor-owned thread or Codex history and
 refuses an active or locked handle.
 
 ## Workspace host ownership
 
 ```text
-xana session list
-xana session new
-xana session branch CONVERSATION_ID --at ENTRY_ID
-xana session branch CONVERSATION_ID --at current
-xana session select codex THREAD_ID
-xana session archive codex THREAD_ID
+xana conversation list
+xana conversation new
+xana conversation branch CONVERSATION_ID --at ENTRY_ID
+xana conversation branch CONVERSATION_ID --at current
+xana conversation select codex THREAD_ID
+xana conversation archive codex THREAD_ID
 ```
 
-`xana session new` starts the adaptive interactive frontend with a fresh
+`xana conversation new` starts the adaptive interactive frontend with a fresh
 conversation using the current connection, model, profile, permissions, and
 workspace. It preserves every prior session. Native Xana creates the durable
 session during launch; managed Codex creates its vendor-owned thread on the
-first turn. Use `/sessions new` for the same lifecycle while the full-screen
+first turn. Use `/conversation new` for the same lifecycle while the full-screen
 frontend is already open.
 
 The process-owned workspace host uses one opened filesystem identity and can
@@ -80,8 +85,8 @@ Conversation with the same frozen Profile and optional Project membership. To
 branch a native Conversation, first inspect its bounded metadata:
 
 ```text
-xana session inspect SESSION_ID
-xana session branch CONVERSATION_ID --at ENTRY_ID
+xana conversation inspect SESSION_ID
+xana conversation branch CONVERSATION_ID --at ENTRY_ID
 ```
 
 For native Conversations, `CONVERSATION_ID` currently has the same UUID text as
@@ -93,10 +98,10 @@ source head and records unchanged. The receipt prints the new Conversation id
 and exact resume command.
 
 Managed history stays owned by its provider. Use the stable Xana Conversation
-id shown by `xana session list` and the explicit current owner boundary:
+id shown by `xana conversation list` and the explicit current owner boundary:
 
 ```text
-xana session branch CONVERSATION_ID --at current
+xana conversation branch CONVERSATION_ID --at current
 ```
 
 If a managed adapter proves a native fork operation, Xana retains the returned
@@ -117,7 +122,7 @@ collision domains for the same opened directory.
 ## TUI navigation
 
 The wide TUI projects the bounded host snapshot into a session rail. Use
-`/sessions` or the command palette to open the searchable conversation picker
+`/conversation` or the command palette to open the searchable Conversation picker
 at any width. Every row includes text—not color alone—for active, controlled,
 inactive, unread, error, observable, or unavailable state. Native rows show a
 bounded title derived from retained user text after inspection, execution
@@ -141,7 +146,7 @@ edited while viewing another transcript, but submission is refused and the
 draft retained until the runtime conversation is selected or the user exits
 and uses exact `--resume SESSION_ID`.
 
-`/sessions view show` and `/sessions view hide` persist the default wide rail
+`/conversation view show` and `/conversation view hide` persist the default wide rail
 state in a version-1 workspace/frontend preference beneath
 `data/frontend/workspaces/`. The file stores only the Boolean layout choice;
 active work, selection, unread/error state, transcript data, and controller
@@ -149,10 +154,10 @@ ownership are always recomputed from runtime/host truth. Medium and narrow
 layouts use the picker overlay regardless of the saved rail choice.
 Hidden means zero width: the panel reserves no placeholder columns. Clicking
 the visible panel title hides it. View an inactive managed row and run
-`/sessions archive`, or pass its exact ID with `/sessions archive ID`, to remove
+`/conversation archive`, or pass its exact ID with `/conversation archive ID`, to remove
 the same local handle from inside the TUI.
 
-`/sessions new` is a separate idle lifecycle action. It exits the current TUI
+`/conversation new` is a separate idle lifecycle action. It exits the current TUI
 owner and composes a fresh native session or managed Codex thread with the
 current resolved configuration; it does not erase or translate the previous
 history. An active root must finish or be interrupted first. Managed Codex
@@ -217,7 +222,7 @@ trust, ownership, authorization, or safety.
 The optional stretch command is implemented:
 
 ```text
-xana session inspect SESSION_ID
+xana conversation inspect SESSION_ID
 ```
 
 It reads without modifying the session and prints ids, path, record count,

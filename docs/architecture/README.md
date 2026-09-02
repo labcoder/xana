@@ -859,10 +859,13 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 4
-retains version 3's exact round-budget, interrupt, and capability-gated steer
-commands while adding the shared semantic snapshot/event layer and one common
-sequence watermark. The native TUI maps keyboard,
+staged images, and an ordered follow-up queue. Frontend protocol version 5
+retains version 4's shared semantic snapshot/event layer and adds a stable
+semantic identifier to each typed command. One application-owned catalog now
+projects command names, aliases, argument shapes, authority, availability,
+confirmation, and outcome codes into CLI, plain, TUI, and Desktop without
+moving validation or effects out of their runtime/domain handlers. The native
+TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
 registry. Native runtime and managed Codex are two private adapters to one TUI

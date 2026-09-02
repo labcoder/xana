@@ -78,7 +78,7 @@ Ctrl+P opens the searchable command palette. It renders the typed registry as
 a table with fixed Command, Mode or Parameters, and Description headings. The
 selected row stays in view while Up/Down or the mouse wheel moves through the
 scrollable body. Filtering matches command names, modes, parameters, and
-descriptions; both `ses` and `/ses` find `/sessions`.
+descriptions; both `con` and `/ses` find the canonical `/conversation` family.
 
 Palette actions and slash input use that one registry:
 
@@ -88,12 +88,13 @@ Palette actions and slash input use that one registry:
 - `/activity view auto|hide|show`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/compact`, `/composer submit|newline`
-- `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
+- `/conversation`, `/conversation new`, `/conversation preview ID`,
+  `/conversation archive [ID]`, `/conversation view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
-- `/usage`
+- `/usage`, `/capabilities`
 - `/doctor`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
@@ -175,16 +176,16 @@ application. See [Rich terminal content and artifacts](rich-content.md).
 
 ## Conversation navigation
 
-`/sessions` opens a searchable, keyboard-complete picker backed by the bounded
+`/conversation` opens a searchable, keyboard-complete picker backed by the bounded
 workspace-host snapshot and displays each exact session or managed-thread ID.
-On wide terminals `/sessions view show` and `/sessions view hide` persist the
+On wide terminals `/conversation view show` and `/conversation view hide` persist the
 panel state for this workspace; clicking the visible panel title also hides
 it. A hidden panel returns all of its columns to the conversation. After
-viewing an inactive managed session, `/sessions archive` removes only Xana's
-local retained handle; `/sessions archive ID` targets an exact retained
+viewing an inactive managed session, `/conversation archive` removes only Xana's
+local retained handle; `/conversation archive ID` targets an exact retained
 managed ID. Neither form deletes the Codex-owned thread. The active runtime
 session and native journals cannot be archived through this command.
-`/sessions new` stops the idle frontend owner and restarts through Xana's normal
+`/conversation new` stops the idle frontend owner and restarts through Xana's normal
 composition boundary with the current resolved connection, model, permissions,
 workspace, and profile. The previous session remains retained. Native Xana
 creates a new durable session; managed Codex creates its vendor-owned thread on
@@ -192,6 +193,13 @@ the first turn. An active turn must finish or be interrupted first so this
 command cannot create a competing workspace root. `/clear` remains different:
 it clears the active owner's context rather than creating and navigating to a
 separate session.
+
+`/session` and `/sessions` remain compatibility aliases. New help and
+documentation use Conversation; Run is reserved for one execution attempt.
+`/conversation preview ID` is read-only and does not acquire control. The
+separate attach/resume semantic action remains disabled until same-surface
+controller switching is implemented, so preview cannot silently become an
+ownership transition.
 
 Session rows show the optional local project name or `Ungrouped`. Project,
 profile, skill, and plugin commands are deliberately executed outside

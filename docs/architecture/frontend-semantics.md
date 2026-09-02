@@ -5,7 +5,8 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 4 adds a surface-neutral semantic layer for content,
+facts. Protocol version 5 adds stable command-semantic identifiers to version
+4's surface-neutral semantic layer for content,
 resources, activity, attention, usage, approvals, execution facts,
 capabilities, disclosures, and completion evidence.
 
@@ -174,6 +175,33 @@ renderer may omit optional richness only when it supplies the safe fallback.
 Rendering cannot fetch remote content, disclose an attachment, grant a
 capability, or acknowledge attention as a side effect.
 
+## Typed command catalog
+
+`command_catalog` is the application-owned inventory of user intent shared by
+CLI, plain terminal, TUI, and Desktop projections. Each entry has a stable,
+versioned semantic ID plus its argument shape, authority requirement,
+interaction and confirmation rules, effect class, supported surfaces, and
+result/error codes. The catalog describes and discovers actions; it does not
+grant permission or replace runtime validation.
+
+Availability, current selection, authorization, runtime permission,
+containment, and presentation support remain separate facts. An observer never
+receives a mutating action as enabled, and an interactive-only action fails
+closed when projected into deterministic automation. Safely discoverable but
+unfinished actions remain disabled with an exact reason.
+
+`Conversation` is canonical product vocabulary. Existing `session`,
+`/session`, and `/sessions` spellings remain compatibility aliases. Clear,
+new-Conversation, read-only preview, and controller attach/resume are distinct
+semantic actions; a client must not infer one from another. Unknown future IDs
+are inert and visible only through a bounded unsupported fallback.
+
+`xana capabilities [--json]` is an offline, deterministic projection of local
+platform/host, workspace policy, selected Profile/connection/model,
+extensions, containment claims, presentation profiles, command availability,
+and missing setup. It does not resolve credentials, probe a provider, or imply
+that an available capability is selected or authorized.
+
 ## Localization and future voice seam
 
 Errors, attention, approvals, recovery, capability, and receipt outcomes use a
@@ -198,6 +226,8 @@ and consume authoritative content/activity through the same boundary.
 - `frontend::semantic::usage` owns observations and deterministic accounting.
 - `frontend::semantic::event` owns event envelopes and unknown decoding.
 - `frontend::semantic::state` owns snapshots and ordered replication.
+- `command_catalog` owns typed user intent and safe per-surface discovery; it
+  does not own domain validation or effects.
 - `frontend::protocol` owns transport bounds, sequence assignment, and the
   bounded transition from legacy observations to semantic projections.
 

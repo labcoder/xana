@@ -27,7 +27,7 @@ make that limitation decision evidence; it cannot replace the target silently.
 
 ## Implementation progress
 
-The repository-private frontend protocol now implements version 4's inert
+The repository-private frontend protocol now implements version 5's inert
 semantic vocabulary and deterministic snapshot/delta reducer. It includes
 artifact-backed resource references, configurable bounded resource policy,
 content/fallback types, attachments and disclosure receipts, usage accounting,
@@ -38,9 +38,13 @@ Native and managed usage producers now preserve detailed token, context,
 resource-byte, cost, and redacted request-affinity facts. Explicit bounded
 Codex and OpenRouter account adapters normalize rate-limit, quota, and credit
 observations with a non-secret stale-capable cache; unsupported and
-management-credential-gated providers stay explicit. The unified command
-registry and specialized terminal/Desktop projections remain future M4 work,
-so this proposal remains Accepted rather than Implemented.
+management-credential-gated providers stay explicit. One typed command catalog
+now projects stable semantic IDs, arguments, authority, availability,
+confirmation, and outcomes into CLI, plain, TUI, and Desktop. Deterministic
+offline capability reporting and explicit presentation-capability profiles
+keep availability, selection, permission, containment, and rendering support
+separate. Specialized rich-content and Workbench projections remain future M4
+work, so this proposal remains Accepted rather than Implemented.
 
 ## 1. Official local surfaces and authority
 

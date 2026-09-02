@@ -49,9 +49,12 @@ engineering contracts used to change it.
 - [M4 provider-usage observation evidence](development/m4-provider-usage-observation-evidence.md)
   records native and managed normalization, account adapters, credential
   boundaries, cache/retry/cancellation behavior, and provider fixtures.
+- [M4 typed command and presentation-capability evidence](development/m4-command-catalog-evidence.md)
+  records stable command IDs, authority-filtered cross-surface projections,
+  deterministic capability reporting, and presentation fallbacks.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
-- [Sessions](user/sessions.md) explains durable history, explicit resume,
+- [Conversations](user/sessions.md) explains durable history, explicit resume,
   bounded compaction, immutable artifacts, inspection, corruption handling,
   and backup limits.
 - [Projects](user/projects.md) explains optional local project identity,
@@ -81,6 +84,9 @@ engineering contracts used to change it.
 - [Terminal presentation](user/presentation.md) explains semantic styling,
   terminal fallbacks, `NO_COLOR`, reduced motion, and machine-local
   preferences.
+- [Commands and capability discovery](user/commands.md) explains the shared
+  command catalog, `xana capabilities`, canonical Conversation wording,
+  compatibility aliases, authority, and presentation fallbacks.
 - [Full-screen terminal UI](user/tui.md) explains composer presets, portable
   keys, safe paste, follow-ups, command/model controls, and owner-specific
   limitations.
