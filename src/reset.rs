@@ -117,6 +117,10 @@ impl ResetPlan {
                     path: paths.presentation_file(),
                 },
                 ResetTarget {
+                    label: "blank setup state",
+                    path: paths.setup_state_file(),
+                },
+                ResetTarget {
                     label: "configuration backup",
                     path: paths.config_file().with_extension("toml.bak"),
                 },
@@ -334,6 +338,7 @@ mod tests {
             paths.data_dir().join("artifacts/content.bin"),
             paths.data_dir().join("workspace-hosts/workspace.json"),
             paths.presentation_file(),
+            paths.setup_state_file(),
             paths.cache_dir().join("unrelated.cache"),
         ] {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -351,6 +356,7 @@ mod tests {
 
         assert_eq!(removed.last().unwrap().label, "configuration");
         assert!(!paths.config_file().exists());
+        assert!(!paths.setup_state_file().exists());
         assert!(!paths.cache_dir().join("models").exists());
         assert!(!paths.data_dir().join("managed-threads").exists());
         assert!(paths.data_dir().join("sessions/session.jsonl").is_file());

@@ -100,6 +100,10 @@ impl XanaPaths {
         self.data_dir.join("frontend").join("presentation.toml")
     }
 
+    pub(crate) fn setup_state_file(&self) -> PathBuf {
+        self.data_dir.join("setup").join("state.json")
+    }
+
     pub(crate) fn logs_dir(&self) -> PathBuf {
         self.data_dir.join("logs")
     }
@@ -178,6 +182,7 @@ mod tests {
             paths.presentation_file(),
             root.join("data/frontend/presentation.toml")
         );
+        assert_eq!(paths.setup_state_file(), root.join("data/setup/state.json"));
         assert_eq!(paths.logs_dir(), root.join("data/logs"));
         assert_eq!(paths.crashes_dir(), root.join("data/crashes"));
         assert_eq!(

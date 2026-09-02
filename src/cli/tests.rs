@@ -442,6 +442,17 @@ fn parses_explicit_quick_setup_without_the_path_menu() {
 }
 
 #[test]
+fn parses_explicit_blank_setup_without_provider_fiction() {
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "setup", "--blank", "--non-interactive", "--yes"])
+            .unwrap()
+            .command,
+        Some(Command::Setup(args)) if args.blank && args.non_interactive && args.yes
+    ));
+    assert!(Cli::try_parse_from(["xana", "setup", "--blank", "--quick"]).is_err());
+}
+
+#[test]
 fn parses_exact_sectional_setup_operations() {
     let appearance = Cli::try_parse_from([
         "xana",

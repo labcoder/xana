@@ -7,9 +7,11 @@
 
 mod custom;
 mod readiness;
+mod state;
 mod ui;
 
 pub(crate) use readiness::{SetupPending, run as run_if_needed};
+pub(crate) use state::{SetupInstallation, inspect as inspect_installation};
 
 use crate::{
     cli::SetupArgs,
@@ -62,6 +64,7 @@ impl Error for SetupBack {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SetupOutcome {
     Unchanged,
+    Blank,
     Committed { requires_new_conversation: bool },
 }
 
@@ -86,6 +89,7 @@ pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
         "" => {}
         "quick" => args.quick = true,
         "full" => args.full = true,
+        "blank" => args.blank = true,
         "connection" => args.section = Some(crate::cli::SetupSectionChoice::Connection),
         "permissions-shell" => {
             args.section = Some(crate::cli::SetupSectionChoice::PermissionsShell);
@@ -95,7 +99,7 @@ pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
         }
         "appearance" => args.section = Some(crate::cli::SetupSectionChoice::Appearance),
         value => bail!(
-            "unknown setup section {value:?}; use quick, full, connection, permissions-shell, profiles-routes, or appearance"
+            "unknown setup section {value:?}; use quick, full, blank, connection, permissions-shell, profiles-routes, or appearance"
         ),
     }
     Ok(args)
@@ -199,8 +203,14 @@ pub(crate) async fn run(
                 Ok(SetupOutcome::Unchanged)
             }
             Ok(outcome) => {
-                if matches!(outcome, SetupOutcome::Committed { .. }) {
-                    write_completion_receipt(output, paths, profile)?;
+                match outcome {
+                    SetupOutcome::Committed { .. } => {
+                        write_completion_receipt(output, paths, profile)?;
+                    }
+                    SetupOutcome::Blank => {
+                        ui::write_blank_completion_receipt(output, paths, profile)?
+                    }
+                    SetupOutcome::Unchanged => {}
                 }
                 Ok(outcome)
             }
@@ -242,11 +252,17 @@ pub(crate) async fn run(
             Ok(SetupOutcome::Unchanged)
         }
         Ok(outcome) => {
-            if matches!(outcome, SetupOutcome::Committed { .. }) {
-                let refreshed = crate::app::resolved_presentation(paths, true, true);
-                write_completion_receipt(output, paths, refreshed)?;
-            } else {
-                writeln!(output, "Setup finished without changes.")?;
+            match outcome {
+                SetupOutcome::Committed { .. } => {
+                    let refreshed = crate::app::resolved_presentation(paths, true, true);
+                    write_completion_receipt(output, paths, refreshed)?;
+                }
+                SetupOutcome::Blank => {
+                    ui::write_blank_completion_receipt(output, paths, profile)?;
+                }
+                SetupOutcome::Unchanged => {
+                    writeln!(output, "Setup finished without changes.")?;
+                }
             }
             Ok(outcome)
         }
@@ -281,10 +297,15 @@ async fn run_once(
         profile,
         rich: input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive,
     };
-    let Some(args) = choose_setup_path(args, input, output, setup_ui)? else {
+    let blank_available = crate::config::ConfigReadiness::inspect(paths.config_file())
+        == crate::config::ConfigReadiness::Missing;
+    let Some(args) = choose_setup_path(args, input, output, setup_ui, blank_available)? else {
         return Err(SetupCancelled.into());
     };
     let args = &args;
+    if args.blank {
+        return run_blank_setup(args, paths, input, output, setup_ui);
+    }
     if args
         .section
         .is_some_and(|section| section != crate::cli::SetupSectionChoice::Connection)
@@ -457,9 +478,70 @@ async fn run_once(
     .context("configuration installed, but the discovered model catalog could not be cached")?;
     crate::private_state::ensure_interoperable_records(paths)
         .context("configuration installed, but private interoperable records need recovery; run `xana config migrate --apply`")?;
+    state::clear_blank(paths)
+        .context("configuration installed, but obsolete blank setup state could not be removed")?;
     Ok(SetupOutcome::Committed {
         requires_new_conversation: true,
     })
+}
+
+fn run_blank_setup(
+    args: &SetupArgs,
+    paths: &XanaPaths,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+    ui: SetupUi,
+) -> Result<SetupOutcome> {
+    let allowed = SetupArgs {
+        blank: true,
+        non_interactive: args.non_interactive,
+        plain: args.plain,
+        yes: args.yes,
+        dry_run: args.dry_run,
+        ..SetupArgs::default()
+    };
+    if *args != allowed {
+        bail!(
+            "Blank setup accepts only --blank plus --plain, --non-interactive, --yes, or --dry-run; it cannot configure another domain"
+        );
+    }
+    if crate::config::ConfigReadiness::inspect(paths.config_file())
+        != crate::config::ConfigReadiness::Missing
+    {
+        bail!(
+            "Blank is available only before a configuration exists; use `xana reset setup` before intentionally starting over"
+        );
+    }
+    let review = [
+        "Connection   none".to_owned(),
+        "Model        none".to_owned(),
+        "Configuration not created".to_owned(),
+        format!("Setup state  {}", paths.setup_state_file().display()),
+    ];
+    if !ui.rich {
+        writeln!(output)?;
+        writeln!(
+            output,
+            "{}",
+            ui.profile.paint(SemanticToken::Accent, "Review")
+        )?;
+        for line in &review {
+            writeln!(output, "  {line}")?;
+        }
+    }
+    if args.dry_run {
+        writeln!(
+            output,
+            "Validated blank setup preview; no durable state changed."
+        )?;
+        return Ok(SetupOutcome::Unchanged);
+    }
+    if !args.yes && !ui::confirm_review(input, output, ui, "Start blank", &review)? {
+        writeln!(output, "No changes made.")?;
+        return Ok(SetupOutcome::Unchanged);
+    }
+    state::commit_blank(paths)?;
+    Ok(SetupOutcome::Blank)
 }
 
 fn choose_existing_connection(
@@ -584,6 +666,8 @@ async fn configure_existing_connection(
     manager
         .select_with_options(connection_id, &model, reasoning, None)
         .context("could not persist the selected connection and model")?;
+    state::clear_blank(paths)
+        .context("configuration selected, but obsolete blank setup state could not be removed")?;
     Ok(SetupOutcome::Committed {
         requires_new_conversation: true,
     })
@@ -1596,15 +1680,50 @@ mod tests {
         let mut input = io::Cursor::new("\n");
         let mut output = Vec::new();
 
-        let selected = choose_setup_path(&args, &mut input, &mut output, plain_ui())
+        let selected = choose_setup_path(&args, &mut input, &mut output, plain_ui(), true)
             .unwrap()
             .unwrap();
 
         assert!(selected.quick);
         let transcript = String::from_utf8(output).unwrap();
         assert!(transcript.contains("Choose a guided path"));
-        assert!(transcript.contains("Quick Setup"));
+        assert!(transcript.contains("Start with one connection"));
+        assert!(transcript.contains("Blank"));
         assert!(transcript.contains("Appearance"));
+    }
+
+    #[tokio::test]
+    async fn blank_setup_is_explicit_and_creates_no_configuration() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        let args = SetupArgs {
+            blank: true,
+            non_interactive: true,
+            yes: true,
+            ..SetupArgs::default()
+        };
+        let mut input = io::Cursor::new(Vec::<u8>::new());
+        let mut output = Vec::new();
+
+        let outcome = run(
+            &args,
+            &paths,
+            false,
+            false,
+            &mut input,
+            &mut output,
+            ResolvedPresentation::plain(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(outcome, SetupOutcome::Blank);
+        assert!(!paths.config_file().exists());
+        assert_eq!(state::inspect(&paths).unwrap(), SetupInstallation::Blank);
+        let transcript = String::from_utf8(output).unwrap();
+        assert!(transcript.contains("Blank Start Ready"));
+        assert!(!transcript.contains("default model"));
     }
 
     #[test]

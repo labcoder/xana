@@ -728,6 +728,14 @@ pub(crate) struct SetupArgs {
     )]
     pub(crate) quick: bool,
 
+    /// Complete setup intentionally without creating a provider, connection, or model.
+    #[arg(
+        long,
+        conflicts_with_all = ["quick", "full", "section", "kind", "connection", "model"],
+        help_heading = "Setup mode"
+    )]
+    pub(crate) blank: bool,
+
     /// Select a provider or managed-runtime kind.
     #[arg(long, value_enum, value_name = "KIND", help_heading = "Connection")]
     pub(crate) kind: Option<ConnectionKindChoice>,

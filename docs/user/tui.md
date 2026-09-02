@@ -113,7 +113,7 @@ Palette actions and slash input use that one registry:
 - `/connection [SUBCOMMAND ...]`, `/connect [provider|profile|image|vision]`
 - `/logs [path|list|show|export ...]`, `/outbound [list|revoke ...]`
 - `/operation [plan|resume ...]`, `/route [list|check ...]`
-- `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
+- `/setup [quick|full|blank|connection|permissions-shell|profiles-routes|appearance]`
 - `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
 - `/usage [compact|details]`, `/capabilities`
 - `/espejo [global|project]`

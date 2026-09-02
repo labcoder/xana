@@ -83,8 +83,10 @@ xana setup
 xana
 ```
 
-Setup fetches the chosen connection's live model catalog before it saves a
-selection. API-key connections can use the operating-system credential store
+Choose Start with one connection, Full customize, or Blank. Blank records no
+provider or model and leaves `xana connect provider` as the next action. A
+connection setup fetches the chosen connection's live model catalog before it
+saves a selection. API-key connections can use the operating-system credential store
 or one named environment variable. If you choose managed Codex, install and
 sign in to a compatible Codex CLI first.
 

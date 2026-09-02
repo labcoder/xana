@@ -25,7 +25,7 @@ catalog is available through `xana config list|get|explain|set|reset`; complex
 connection, credential, profile, rule, integration, and recovery work remains
 in its focused typed manager.
 
-## Quick Setup
+## Start and Quick Setup
 
 ```bash
 xana setup
@@ -69,8 +69,10 @@ skip the effect. Use
 catalogs are paged and accept `/FILTER`, next/previous, or an exact model id.
 Both surfaces run the same transaction and validation.
 
-Setup first asks whether to run Quick Setup, Full Setup, or one focused
-section. Quick Setup is the setup-path default, but it still offers
+Setup first asks whether to **Start with one connection**, **Full customize**,
+choose **Blank**, or open one focused section. Start with one connection is
+the user-facing name for the compatible Quick Setup path and remains the
+default, but it still offers
 every supported connection kind without recommending or preselecting a
 provider. Use `xana setup --quick` to bypass the path menu. It validates the
 endpoint or executable first, then the credential or Codex-owned account, then
@@ -80,6 +82,16 @@ limits, and provider-published token/request/image pricing. Missing facts remain
 unknown; Xana does not infer capabilities or prices from model names. The platform
 shell and bounded native defaults are used; full profile, route, and shell
 editing remains an advanced configuration task.
+
+Blank is available before a configuration exists. It writes only a small
+versioned acknowledgement beneath `data/setup/state.json`; it creates no
+provider, connection, model, Profile, credential, or fake readiness. Bare
+`xana` then shows the exact `xana connect provider` recovery action instead of
+starting setup again. `xana doctor` reports the state as intentional and
+`xana capabilities` reports the missing connection/model without probing the
+network. Use `xana setup --blank --non-interactive --yes` for the exact
+headless form. A later successful connection setup removes the marker, while
+`xana reset setup` removes either setup form.
 
 `xana setup` is safe to rerun. Quick, full, and focused connection setup merge
 the newly established connection into a valid existing document, retaining

@@ -1110,8 +1110,9 @@ the Codex thread. Activity level is process-local presentation of typed
 runtime events and never changes model effort.
 
 Provider-neutral guided setup is the canonical first-run and rerunnable entry.
-Bare interactive `setup` first chooses Quick, Full, or a focused setup path;
-Quick is the setup-path default and `--quick` selects it directly. This default
+Bare interactive `setup` first chooses Start with one connection (the retained
+Quick path), Full customize, Blank, or a focused setup path; Quick is the
+setup-path default and `--quick` selects it directly. This default
 does not recommend or preselect a provider. The Quick connection flow stages a
 typed native or managed connection without filesystem effects,
 establishes the endpoint/executable and credential/account, and performs a
@@ -1139,6 +1140,12 @@ command remains create-new compatibility only. Chat/setup/doctor/control
 transitions return through one iterative application lifecycle; they do not
 recursively await another chat launcher. Path and configuration
 diagnostics do not construct an agent.
+
+Blank setup is a distinct versioned acknowledgement at
+`data/setup/state.json`, not a degenerate `config.toml`. It creates no provider,
+connection, model, Profile, or credential. Readiness, Doctor, capabilities, and
+bare startup preserve that distinction and point to Connect; a successful
+configuration transaction clears the marker, and setup reset owns its removal.
 
 The `settings` module is the deep post-setup configuration seam. It owns a
 stable secret-free catalog, effective/default/source/target/effect metadata,

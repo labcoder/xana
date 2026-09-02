@@ -125,8 +125,10 @@ pub(super) fn choose_setup_path(
     input: &mut impl BufRead,
     output: &mut impl Write,
     ui: SetupUi,
+    blank_available: bool,
 ) -> Result<Option<SetupArgs>> {
     let has_explicit_path = args.quick
+        || args.blank
         || args.full
         || args.section.is_some()
         || args.non_interactive
@@ -138,12 +140,24 @@ pub(super) fn choose_setup_path(
     }
 
     if ui.rich {
-        let options = [
+        let mut options = vec![
             SelectOption::new(
-                "Quick Setup",
+                "Start with one connection",
                 "connection, model, permissions, and optional appearance",
             ),
-            SelectOption::new("Full Setup", "Quick Setup plus every advanced section"),
+            SelectOption::new(
+                "Full customize",
+                "one connection plus every advanced section",
+            ),
+        ];
+        if blank_available {
+            options.push(SelectOption::new(
+                "Blank",
+                "initialize Xana without inventing a provider, connection, or model",
+            ));
+        }
+        let focused_start = options.len();
+        options.extend([
             SelectOption::new(
                 "Connection and model",
                 "replace or repair the active provider/runtime",
@@ -158,20 +172,26 @@ pub(super) fn choose_setup_path(
                 "theme, glyphs, motion, composer, and activity",
             ),
             SelectOption::new("Cancel", "leave durable state unchanged"),
-        ];
+        ]);
         let Some(choice) = select(output, ui, "Choose a setup path", &options, 0)? else {
             return Ok(None);
         };
         let mut selected = args.clone();
-        match choice {
-            0 => selected.quick = true,
-            1 => selected.full = true,
-            2 => selected.section = Some(crate::cli::SetupSectionChoice::Connection),
-            3 => selected.section = Some(crate::cli::SetupSectionChoice::PermissionsShell),
-            4 => selected.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes),
-            5 => selected.section = Some(crate::cli::SetupSectionChoice::Appearance),
-            6 => return Ok(None),
-            _ => unreachable!("selector returned an unknown setup path"),
+        if choice == 0 {
+            selected.quick = true;
+        } else if choice == 1 {
+            selected.full = true;
+        } else if blank_available && choice == 2 {
+            selected.blank = true;
+        } else {
+            match choice - focused_start {
+                0 => selected.section = Some(crate::cli::SetupSectionChoice::Connection),
+                1 => selected.section = Some(crate::cli::SetupSectionChoice::PermissionsShell),
+                2 => selected.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes),
+                3 => selected.section = Some(crate::cli::SetupSectionChoice::Appearance),
+                4 => return Ok(None),
+                _ => unreachable!("selector returned an unknown setup path"),
+            }
         }
         return Ok(Some(selected));
     }
@@ -182,74 +202,93 @@ pub(super) fn choose_setup_path(
         "{}",
         ui.profile.paint(
             SemanticToken::Muted,
-            "Choose a guided path. Quick Setup is the default and can be rerun safely."
+            "Choose a guided path. Start with one connection is the default and can be rerun safely."
         )
     )?;
     for (number, label, detail, default) in [
         (
             1,
-            "Quick Setup",
+            "Start with one connection",
             "connection, model, permissions, and optional appearance",
             true,
         ),
         (
             2,
-            "Full Setup",
-            "Quick Setup plus every advanced section",
-            false,
-        ),
-        (
-            3,
-            "Connection and model",
-            "replace or repair the active provider/runtime",
-            false,
-        ),
-        (
-            4,
-            "Permissions and shell",
-            "change effect policy and command execution",
-            false,
-        ),
-        (
-            5,
-            "Profiles and routes",
-            "configure child-task execution",
-            false,
-        ),
-        (
-            6,
-            "Appearance",
-            "theme, glyphs, motion, composer, and activity",
+            "Full customize",
+            "one connection plus every advanced section",
             false,
         ),
     ] {
         write_setup_choice(output, ui.profile, number, label, detail, default)?;
     }
+    let mut next = 3;
+    if blank_available {
+        write_setup_choice(
+            output,
+            ui.profile,
+            next,
+            "Blank",
+            "initialize without a provider, connection, or model",
+            false,
+        )?;
+        next += 1;
+    }
+    for (label, detail) in [
+        (
+            "Connection and model",
+            "replace or repair the active provider/runtime",
+        ),
+        (
+            "Permissions and shell",
+            "change effect policy and command execution",
+        ),
+        ("Profiles and routes", "configure child-task execution"),
+        (
+            "Appearance",
+            "theme, glyphs, motion, composer, and activity",
+        ),
+    ] {
+        write_setup_choice(output, ui.profile, next, label, detail, false)?;
+        next += 1;
+    }
     writeln!(
         output,
         "  {}  {}",
-        ui.profile.paint(SemanticToken::Muted, "7."),
+        ui.profile.paint(SemanticToken::Muted, &format!("{next}.")),
         ui.profile.paint(SemanticToken::Muted, "Cancel")
     )?;
     let choice = prompt_default(input, output, "Choice", "1")?;
     let mut selected = args.clone();
-    match choice.trim() {
+    let normalized = choice.trim();
+    match normalized {
         "" | "1" | "quick" => selected.quick = true,
         "2" | "full" => selected.full = true,
-        "3" | "connection" => {
+        "blank" if blank_available => selected.blank = true,
+        value if blank_available && value == "3" => selected.blank = true,
+        value
+            if value == (3 + usize::from(blank_available)).to_string() || value == "connection" =>
+        {
             selected.section = Some(crate::cli::SetupSectionChoice::Connection);
         }
-        "4" | "permissions-shell" => {
+        value
+            if value == (4 + usize::from(blank_available)).to_string()
+                || value == "permissions-shell" =>
+        {
             selected.section = Some(crate::cli::SetupSectionChoice::PermissionsShell);
         }
-        "5" | "profiles-routes" => {
+        value
+            if value == (5 + usize::from(blank_available)).to_string()
+                || value == "profiles-routes" =>
+        {
             selected.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes);
         }
-        "6" | "appearance" => {
+        value
+            if value == (6 + usize::from(blank_available)).to_string() || value == "appearance" =>
+        {
             selected.section = Some(crate::cli::SetupSectionChoice::Appearance);
         }
-        "7" | "cancel" => return Ok(None),
-        _ => bail!("unknown setup path; use 1 through 7"),
+        value if value == next.to_string() || value == "cancel" => return Ok(None),
+        _ => bail!("unknown setup path; use 1 through {next}"),
     }
     Ok(Some(selected))
 }
@@ -933,6 +972,58 @@ pub(super) fn write_completion_receipt(
     writeln!(
         output,
         "From a source checkout, prefix commands with `cargo run --`, for example `cargo run -- doctor`."
+    )
+}
+
+pub(super) fn write_blank_completion_receipt(
+    output: &mut impl Write,
+    paths: &XanaPaths,
+    profile: ResolvedPresentation,
+) -> io::Result<()> {
+    writeln!(output)?;
+    writeln!(
+        output,
+        "+---------------------------------------------------------+"
+    )?;
+    writeln!(
+        output,
+        "{}",
+        profile.paint(
+            SemanticToken::Success,
+            &format!("|{:^57}|", "[OK] Blank Start Ready")
+        )
+    )?;
+    writeln!(
+        output,
+        "+---------------------------------------------------------+"
+    )?;
+    writeln!(output)?;
+    writeln!(
+        output,
+        "Xana is initialized without a provider, connection, model, or credential."
+    )?;
+    writeln!(
+        output,
+        "  Setup state: {}",
+        paths.setup_state_file().display()
+    )?;
+    writeln!(output, "  Data:        {}", paths.data_dir().display())?;
+    writeln!(output)?;
+    writeln!(output, "Next:")?;
+    writeln!(
+        output,
+        "  xana connect provider  Add and test one connection"
+    )?;
+    writeln!(output, "  xana setup             Reopen guided setup")?;
+    writeln!(
+        output,
+        "  xana capabilities      Inspect what works before setup"
+    )?;
+    writeln!(output, "  xana doctor            Check this installation")?;
+    writeln!(output)?;
+    writeln!(
+        output,
+        "From a source checkout, prefix commands with `cargo run --`."
     )
 }
 

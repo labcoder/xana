@@ -653,13 +653,31 @@ fn inspect_configuration(paths: &XanaPaths, report: &mut DoctorReport) {
             paths.config_file().display().to_string(),
             None,
         )),
-        Err(error) if error.is_missing_config() => report.push(Finding::new(
-            "config.missing",
-            Severity::Error,
-            "Xana has no installed configuration",
-            paths.config_file().display().to_string(),
-            Some("xana setup".into()),
-        )),
+        Err(error) if error.is_missing_config() => {
+            match crate::setup::inspect_installation(paths) {
+                Ok(crate::setup::SetupInstallation::Blank) => report.push(Finding::new(
+                    "config.blank",
+                    Severity::Info,
+                    "Xana was intentionally initialized without a connection",
+                    paths.setup_state_file().display().to_string(),
+                    Some("xana connect provider".into()),
+                )),
+                Ok(crate::setup::SetupInstallation::Uninitialized) => report.push(Finding::new(
+                    "config.missing",
+                    Severity::Error,
+                    "Xana has no installed configuration",
+                    paths.config_file().display().to_string(),
+                    Some("xana setup".into()),
+                )),
+                Err(state_error) => report.push(Finding::new(
+                    "config.setup_state_invalid",
+                    Severity::Error,
+                    "Xana's blank setup state is unreadable or incompatible",
+                    state_error.to_string(),
+                    Some("xana reset setup".into()),
+                )),
+            }
+        }
         Err(_) => report.push(Finding::new(
             "config.invalid",
             Severity::Error,
@@ -694,6 +712,12 @@ fn inspect_owned_paths(paths: &XanaPaths, report: &mut DoctorReport) {
             "path.config",
             "configuration file",
             paths.config_file(),
+            false,
+        ),
+        (
+            "path.setup_state",
+            "setup state",
+            &paths.setup_state_file(),
             false,
         ),
     ] {

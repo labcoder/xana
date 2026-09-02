@@ -80,6 +80,13 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 )
                 .await;
             }
+            if crate::config::ConfigReadiness::inspect(paths.config_file())
+                == crate::config::ConfigReadiness::Missing
+                && crate::setup::inspect_installation(&paths)?
+                    == crate::setup::SetupInstallation::Blank
+            {
+                return write_blank_home(&paths, &mut io::stdout().lock());
+            }
             ensure_setup(&paths).await?;
             let surface = prepare_default_chat_surface(&paths, cli.plain, cli.tui, no_banner)?;
             chat::run(
@@ -352,6 +359,14 @@ async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
     match XanaConfig::load_from(paths.config_file()) {
         Ok(_) => Ok(()),
         Err(error) => {
+            if error.is_missing_config()
+                && crate::setup::inspect_installation(paths)?
+                    == crate::setup::SetupInstallation::Blank
+            {
+                anyhow::bail!(
+                    "Xana was intentionally initialized without a connection; run `xana connect provider` or `xana setup` before starting a Conversation"
+                );
+            }
             if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
                 anyhow::bail!(
                     "Xana configuration is absent or invalid at {}: {error}\nrun `xana setup --non-interactive --kind KIND --connection NAME --model MODEL --permission-mode MODE --yes`",
@@ -366,6 +381,24 @@ async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn write_blank_home(paths: &XanaPaths, output: &mut impl Write) -> Result<()> {
+    writeln!(output, "Xana is ready, with no connection selected.")?;
+    writeln!(
+        output,
+        "Blank setup created no provider, connection, model, or credential."
+    )?;
+    writeln!(
+        output,
+        "  Setup state: {}",
+        paths.setup_state_file().display()
+    )?;
+    writeln!(output, "  Next:        xana connect provider")?;
+    writeln!(output, "  Configure:   xana setup")?;
+    writeln!(output, "  Inspect:     xana capabilities")?;
+    writeln!(output, "Source checkout: cargo run -- connect provider")?;
+    Ok(())
 }
 
 fn prepare_default_chat_surface(

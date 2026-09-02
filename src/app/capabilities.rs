@@ -98,10 +98,13 @@ struct CommandFact {
 
 pub(super) fn run(args: CapabilitiesArgs, paths: &XanaPaths, output: &mut dyn Write) -> Result<()> {
     let registry = XanaConfig::load_registry_from(paths.config_file()).ok();
+    let blank = registry.is_none()
+        && crate::setup::inspect_installation(paths).ok()
+            == Some(crate::setup::SetupInstallation::Blank);
     let workspace = std::env::current_dir()
         .ok()
         .unwrap_or_else(|| Path::new(".").to_path_buf());
-    let report = build_report(registry.as_ref(), &workspace);
+    let report = build_report(registry.as_ref(), &workspace, blank);
     if args.json {
         serde_json::to_writer_pretty(&mut *output, &report)?;
         writeln!(output)?;
@@ -111,11 +114,17 @@ pub(super) fn run(args: CapabilitiesArgs, paths: &XanaPaths, output: &mut dyn Wr
     Ok(())
 }
 
-fn build_report(registry: Option<&ConnectionRegistry>, workspace: &Path) -> CapabilityReport {
+fn build_report(
+    registry: Option<&ConnectionRegistry>,
+    workspace: &Path,
+    blank: bool,
+) -> CapabilityReport {
     let configured = registry.is_some();
     let mut selection = SelectionFacts {
         configuration: if configured {
             "valid"
+        } else if blank {
+            "blank"
         } else {
             "missing_or_invalid"
         },
@@ -201,6 +210,8 @@ fn build_report(registry: Option<&ConnectionRegistry>, workspace: &Path) -> Capa
             .collect(),
         missing_setup: if configured {
             Vec::new()
+        } else if blank {
+            vec!["connection", "model"]
         } else {
             vec!["configuration"]
         },
@@ -270,6 +281,11 @@ fn write_text(report: &CapabilityReport, output: &mut dyn Write) -> std::io::Res
             output,
             "  Readiness:    configuration is valid; credentials and network were not probed"
         )?;
+    } else if report.selection.configuration == "blank" {
+        writeln!(
+            output,
+            "  Readiness:    intentionally blank; run `xana connect provider` when ready"
+        )?;
     } else {
         writeln!(output, "  Readiness:    run `xana setup`")?;
     }
@@ -308,7 +324,7 @@ mod tests {
 
     #[test]
     fn missing_setup_is_reported_without_network_or_failure() {
-        let report = build_report(None, Path::new("workspace"));
+        let report = build_report(None, Path::new("workspace"), false);
         assert_eq!(report.selection.configuration, "missing_or_invalid");
         assert_eq!(report.missing_setup, ["configuration"]);
         assert!(report.commands.iter().any(|command| {
@@ -317,9 +333,17 @@ mod tests {
     }
 
     #[test]
+    fn blank_setup_is_distinct_from_missing_configuration() {
+        let report = build_report(None, Path::new("workspace"), true);
+        assert_eq!(report.selection.configuration, "blank");
+        assert_eq!(report.missing_setup, ["connection", "model"]);
+        assert_eq!(report.integrations.configured_connections, 0);
+    }
+
+    #[test]
     fn configured_report_keeps_selection_and_availability_separate() {
         let registry = configured_registry();
-        let report = build_report(Some(&registry), Path::new("workspace"));
+        let report = build_report(Some(&registry), Path::new("workspace"), false);
         assert_eq!(report.selection.connection.as_deref(), Some("local"));
         assert_eq!(report.selection.model.as_deref(), Some("qwen"));
         assert_eq!(report.workspace.permission, Some("ask"));
@@ -328,7 +352,7 @@ mod tests {
 
     #[test]
     fn report_json_is_stable_and_contains_no_credentials() {
-        let report = build_report(Some(&configured_registry()), Path::new("workspace"));
+        let report = build_report(Some(&configured_registry()), Path::new("workspace"), false);
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"version\":1"));
         assert!(json.contains("\"credential_readiness\":\"not_probed\""));

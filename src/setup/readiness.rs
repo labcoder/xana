@@ -1,6 +1,6 @@
 //! Installer-facing setup readiness without duplicating configuration policy.
 
-use super::{SetupArgs, SetupCancelled, SetupOutcome};
+use super::{SetupArgs, SetupCancelled, SetupInstallation, SetupOutcome};
 use crate::{config::ConfigReadiness, paths::XanaPaths};
 use anyhow::{Result, bail};
 use serde::Serialize;
@@ -49,7 +49,17 @@ pub(crate) async fn run(
             output,
             "Xana setup is ready; existing configuration was preserved."
         )?;
-        return write_receipt(output, "ready", readiness, None);
+        return write_receipt(output, "ready", readiness.as_str(), None);
+    }
+    if readiness == ConfigReadiness::Missing
+        && super::state::inspect(paths)? == SetupInstallation::Blank
+    {
+        writeln!(
+            output,
+            "Xana setup is intentionally blank; no provider, connection, or model was created."
+        )?;
+        writeln!(output, "Next: xana connect provider")?;
+        return write_receipt(output, "blank", "intentionally_blank", None);
     }
     if readiness == ConfigReadiness::Indeterminate {
         bail!(
@@ -66,7 +76,7 @@ pub(crate) async fn run(
         )?;
         writeln!(output, "Next: xana setup")?;
         writeln!(output, "Diagnose: xana doctor")?;
-        write_receipt(output, "pending", readiness, Some("xana setup"))?;
+        write_receipt(output, "pending", readiness.as_str(), Some("xana setup"))?;
         return Err(SetupPending.into());
     }
 
@@ -97,15 +107,18 @@ pub(crate) async fn run(
     )
     .await
     {
-        Ok(SetupOutcome::Committed { .. }) => write_receipt(output, "configured", readiness, None),
+        Ok(SetupOutcome::Committed { .. }) => {
+            write_receipt(output, "configured", readiness.as_str(), None)
+        }
+        Ok(SetupOutcome::Blank) => write_receipt(output, "blank", "intentionally_blank", None),
         Ok(SetupOutcome::Unchanged) => {
             writeln!(output, "Xana setup remains pending; no changes were made.")?;
-            write_receipt(output, "pending", readiness, Some("xana setup"))?;
+            write_receipt(output, "pending", readiness.as_str(), Some("xana setup"))?;
             Err(SetupPending.into())
         }
         Err(error) if error.downcast_ref::<SetupCancelled>().is_some() => {
             writeln!(output, "Xana setup remains pending; no changes were made.")?;
-            write_receipt(output, "pending", readiness, Some("xana setup"))?;
+            write_receipt(output, "pending", readiness.as_str(), Some("xana setup"))?;
             Err(SetupPending.into())
         }
         Err(error) => Err(error),
@@ -115,13 +128,13 @@ pub(crate) async fn run(
 fn write_receipt(
     output: &mut impl Write,
     status: &'static str,
-    readiness: ConfigReadiness,
+    reason: &'static str,
     next: Option<&'static str>,
 ) -> Result<()> {
     let receipt = ReadinessReceipt {
         version: 1,
         status,
-        reason: readiness.as_str(),
+        reason,
         next,
         diagnose: next.map(|_| "xana doctor"),
     };
@@ -171,5 +184,29 @@ mod tests {
             assert!(output.contains(&format!(r#""reason":"{reason}""#)));
             assert!(!paths.config_file().with_extension("toml.bak").exists());
         }
+    }
+
+    #[tokio::test]
+    async fn intentionally_blank_setup_is_ready_without_starting_a_wizard() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        super::super::state::commit_blank(&paths).unwrap();
+        let mut output = Vec::new();
+
+        run(
+            &paths,
+            false,
+            false,
+            &mut Cursor::new(Vec::<u8>::new()),
+            &mut output,
+        )
+        .await
+        .unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(r#""status":"blank""#));
+        assert!(output.contains("xana connect provider"));
+        assert!(!paths.config_file().exists());
     }
 }
