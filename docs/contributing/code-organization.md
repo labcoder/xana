@@ -4,14 +4,15 @@
 >
 > Authority: Repository policy
 
-Xana is one Cargo application package named `xana`. Its capability module owns
-validated capability/tool identifiers and immutable snapshots; process entry,
-the headless agent loop, application policy, and frontends remain separate
-modules rather than speculative crates. Future frontend reuse starts at the
-repository-private typed frontend command/event/snapshot seam, not by exposing
-every internal Rust type. Extract a crate only after a second real consumer
-proves the smallest shared contract. Modules continue to separate
-responsibility, ownership, and I/O boundaries.
+Xana is one Cargo workspace with two application packages: the root `xana`
+package owns the runtime plus CLI/TUI binaries, while `crates/xana-desktop`
+owns native GPUI process and presentation composition. The Desktop crate is
+the second real frontend consumer that justified a narrow repository-private
+typed command/event/snapshot seam. It depends on the root package, never the
+reverse; it does not turn Xana's internals into a stable SDK. The capability
+module continues to own validated capability/tool identifiers and immutable
+snapshots, and modules continue to separate responsibility, ownership, and I/O
+boundaries.
 
 ## Module boundaries
 
@@ -23,6 +24,12 @@ responsibility, ownership, and I/O boundaries.
   introduce new `mod.rs` files.
 - Keep items private by default. Expose the smallest useful `pub(crate)`
   surface from each facade.
+- Keep graphical dependencies in `xana-desktop`. Ordinary `xana` CLI/TUI
+  dependency resolution, startup, and packaging must not include GPUI.
+- The root package exposes `xana::desktop` only because a sibling workspace
+  package cannot consume `pub(crate)` items. Treat it as repository-private:
+  export bounded projections and typed intent, never providers, credentials,
+  arbitrary paths, shell handles, or runtime ownership.
 - Keep `main.rs` thin. Application routing belongs in `app`; Xana-owned native
   execution belongs in `native_runtime`, append-only interaction in
   `plain_terminal`, and vendor-loop adaptation in `managed_execution`.

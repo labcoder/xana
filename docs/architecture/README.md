@@ -9,11 +9,15 @@ constraints and philosophies belong in [Design Principles](../principles.md).
 
 ## System overview
 
-Xana is a terminal-first agent application running on Tokio's multi-thread
+Xana is a local-first agent application running on Tokio's multi-thread
 runtime. Native connections use one in-process foreground runtime; the Codex
-connection supervises a vendor-owned app-server process. One Cargo application
-package named `xana` owns the installed `xana` executable, process composition,
-headless agent, application policy, provider adapters, and current frontends.
+connection supervises a vendor-owned app-server process. The root Cargo
+application package named `xana` owns the installed `xana` executable, process
+composition, headless agent, application policy, provider adapters, and
+terminal frontends. The same Cargo workspace also contains `xana-desktop`, a
+native GPUI application that embeds the matching root-package runtime through
+a narrow repository-private boundary and carries graphical dependencies only
+in the Desktop package.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. Process startup gives that application
 owner one named 4 MiB stack before it enters Tokio; this bounds the one extra
@@ -38,6 +42,8 @@ flowchart TB
     APP --> CATALOG["model_catalog<br/>connection-owned discovery and selection"]
     APP --> PLAIN["plain_terminal<br/>append-only client"]
     APP --> TUI["tui<br/>Ratatui/Crossterm client"]
+    DESKTOP["xana-desktop<br/>native GPUI client"] <-->|"bounded commands + snapshots + observations"| DESKTOP_API["desktop<br/>repository-private facade"]
+    DESKTOP_API --> APP
     APP --> LOCAL["local_host<br/>authenticated loopback projection"]
     APP --> NATIVE["native_runtime<br/>Xana-owned foreground execution"]
     APP --> MANAGED_EXEC["managed_execution<br/>Xana-facing foreign-loop adapter"]
@@ -96,12 +102,15 @@ portrait after terminal entry and before ordinary first paint. It is bounded to
 1.5 seconds, consumes no runtime/provider state, is skippable, and is omitted by
 resolved reduced-motion, ASCII, width, height, and noninteractive fallbacks.
 
-All of these boundaries currently live in the one `xana` application package.
-Their Rust visibility is private or `pub(crate)` except for the executable
-entry required by `main`. They are not a promised SDK. A public engine or
-frontend crate should be extracted only after a second real frontend proves
-the smallest reusable contract; desktop, web, or mobile intent alone is not an
-extraction trigger.
+Runtime and domain boundaries remain in the root `xana` application package.
+The second real frontend now lives in `crates/xana-desktop`; it proved only the
+smallest repository-private `desktop` facade, not a public engine SDK. That
+facade is `pub` solely for sibling-package visibility and exports bounded
+projection values plus typed intent. It does not export provider objects,
+credentials, arbitrary filesystem authority, shell handles, or runtime
+ownership. Further crate extraction still requires a demonstrated ownership or
+build boundary rather than desktop, web, or mobile intent alone. See
+[Desktop architecture](desktop.md).
 
 The embedded client captures an initial snapshot before it begins forwarding
 live events. The snapshot carries the native conversation, connection, model,

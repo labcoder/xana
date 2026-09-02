@@ -170,6 +170,18 @@ cargo build --locked
 cargo run -- setup
 ```
 
+The native Desktop is developed in the same Cargo workspace and embeds the
+matching Xana runtime; it never discovers or launches a `xana` executable from
+`PATH`:
+
+```bash
+cargo run --locked -p xana-desktop
+```
+
+Desktop currently provides the M4 native-provider walking skeleton. Complete
+`xana setup` first. Managed-runtime presentation and the complete Workbench are
+added by later M4 tickets. See [Desktop development](docs/contributing/desktop-development.md).
+
 Run the required checks before submitting a change:
 
 ```bash
@@ -187,8 +199,9 @@ suite with:
 ```
 
 Read [Code organization](docs/contributing/code-organization.md) before moving
-module boundaries or adding public interfaces. Xana builds one application
-package; its Rust library surface is not a stable SDK.
+module boundaries or adding public interfaces. Xana's Cargo workspace contains
+the `xana` application/runtime package and the native `xana-desktop` binary;
+their repository-private Rust seam is not a stable SDK.
 
 ## License
 

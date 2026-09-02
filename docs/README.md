@@ -75,8 +75,14 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 
 - [Code organization](contributing/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
+- [Desktop development](contributing/desktop-development.md) explains the
+  native GPUI package, exact dependency boundary, source launch, checks, and
+  troubleshooting for the M4 walking skeleton.
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
+- [Desktop architecture](architecture/desktop.md) describes the embedded
+  runtime lifecycle, typed authority boundary, backpressure, security posture,
+  and CLI/TUI dependency isolation.
 - [Connections, models, and managed runtimes](architecture/models-and-managed-runtimes.md)
   describes native providers, Codex delegation, catalogs, model/reasoning
   selection, typed activity, opaque managed-thread resumption, and credential

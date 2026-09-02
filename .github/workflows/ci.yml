@@ -70,6 +70,11 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+      - name: Verify Desktop dependency boundary
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        shell: pwsh
+        run: ./scripts/check-desktop-dependencies.ps1
+
       - name: Run all-feature workspace tests
         if: ${{ !cancelled() && runner.os != 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: cargo test --locked --workspace --all-targets --all-features ${{ matrix.test_args }}
@@ -147,3 +152,31 @@ jobs:
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' && steps.dist.outcome == 'success' }}
         shell: pwsh
         run: ./scripts/check-release-plan.ps1
+
+  desktop-macos-intel:
+    name: Desktop / macOS 15 Intel
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          components: clippy
+
+      - name: Restore Rust dependency cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: desktop-macos-intel
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Build and test Desktop source target
+        run: |
+          cargo build --locked -p xana-desktop
+          cargo test --locked -p xana-desktop
