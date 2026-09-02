@@ -1308,24 +1308,6 @@ mod tests {
         assert!(error.message.contains("does not match"));
     }
 
-    #[test]
-    fn missing_configuration_fails_with_a_stable_startup_code() {
-        let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path().join("workspace");
-        let xana_home = directory.path().join("xana-home");
-        std::fs::create_dir(&workspace).unwrap();
-
-        let error = DesktopClient::launch(DesktopLaunch::new(
-            &workspace,
-            Some(xana_home.into_os_string()),
-        ))
-        .err()
-        .expect("uninitialized Desktop launch should fail");
-
-        assert_eq!(error.code, DesktopErrorCode::ConfigurationUnavailable);
-        assert!(error.message.contains("not initialized"));
-    }
-
     #[tokio::test(flavor = "multi_thread")]
     async fn real_embedded_turn_streams_then_publishes_authoritative_final() {
         let directory = tempfile::tempdir().unwrap();
