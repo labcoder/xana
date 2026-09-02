@@ -527,6 +527,7 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
     for row in &state.sessions {
         let focused = row.conversation == state.viewed_conversation;
         let marker = popup::session_marker(row.state, row.unread, row.error);
+        let display_state = row.display_state(&state.runtime_conversation).label();
         lines.push(Line::styled(
             format!("{} {marker} {}", if focused { ">" } else { " " }, row.title),
             if focused {
@@ -537,11 +538,16 @@ fn session_rail(state: &TuiState, profile: ResolvedPresentation) -> Paragraph<'s
         ));
         lines.push(Line::styled(
             format!(
-                "  {} · {}/{} · {} · {}",
+                "  {} · {}/{} · {}{} · {}",
                 row.execution_owner,
                 row.connection,
                 row.model,
-                row.state,
+                display_state,
+                if row.is_previewed(&state.runtime_conversation, &state.viewed_conversation) {
+                    " (read-only)"
+                } else {
+                    ""
+                },
                 row.project.as_deref().unwrap_or("Ungrouped")
             ),
             semantic_style(profile, SemanticToken::Muted),

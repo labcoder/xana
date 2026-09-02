@@ -236,10 +236,16 @@ pub(super) fn render(
                 .iter()
                 .filter(|row| session_row_matches(row, query))
                 .collect::<Vec<_>>();
-            let mut lines = vec![Line::from(vec![
-                Span::styled("> ", semantic_style(profile, SemanticToken::Focus)),
-                Span::raw(query.clone()),
-            ])];
+            let mut lines = vec![
+                Line::styled(
+                    "Enter attach/resume · Space preview read-only · Esc close",
+                    semantic_style(profile, SemanticToken::Muted),
+                ),
+                Line::from(vec![
+                    Span::styled("> ", semantic_style(profile, SemanticToken::Focus)),
+                    Span::raw(query.clone()),
+                ]),
+            ];
             lines.extend(filtered.into_iter().enumerate().map(|(index, row)| {
                 let marker = if index == *selected { ">" } else { " " };
                 let identifier = match &row.conversation {
@@ -260,14 +266,14 @@ pub(super) fn render(
                     || "recency unknown".to_owned(),
                     |value| format!("updated {value}"),
                 );
+                let display_state = row.display_state(&state.runtime_conversation).label();
                 Line::styled(
                     format!(
-                        "{marker} {} · {identifier} [{} · {}/{} · {} · {recency}{}]",
+                        "{marker} {} · {identifier} [{display_state} · {} · {}/{} · {recency}{}]",
                         row.title,
                         row.execution_owner,
                         row.connection,
                         row.model,
-                        row.state,
                         row.record_count
                             .map_or_else(String::new, |count| format!(" · {count} records")),
                     ),

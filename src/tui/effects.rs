@@ -338,6 +338,9 @@ pub(super) async fn dispatch_managed_effect(
             state.open_reasoning_picker(choices);
         }
         UpdateEffect::OpenSessionPicker => state.open_session_picker(),
+        UpdateEffect::SwitchConversation(conversation) => {
+            return Ok(Some(ChatExit::SwitchConversation(conversation)));
+        }
         UpdateEffect::ViewSession(conversation) => {
             match workspace_host.conversation_history_page(&conversation, None, 128) {
                 Ok(page) => state.view_session_page(conversation, page),
@@ -896,6 +899,9 @@ pub(super) async fn dispatch_effect(
             state.open_reasoning_picker(choices);
         }
         UpdateEffect::OpenSessionPicker => state.open_session_picker(),
+        UpdateEffect::SwitchConversation(conversation) => {
+            return Ok(Some(ChatExit::SwitchConversation(conversation)));
+        }
         UpdateEffect::ViewSession(conversation) => {
             match workspace_host.conversation_history_page(&conversation, None, 128) {
                 Ok(page) => state.view_session_page(conversation, page),

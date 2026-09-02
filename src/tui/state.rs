@@ -22,7 +22,7 @@ use crate::{
     vision::{ImageAttachment, MAX_IMAGE_BYTES_PER_TURN, MAX_IMAGES_PER_TURN, image_paths_in_text},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 
 const MAX_VISIBLE_MESSAGES: usize = 512;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -152,6 +152,7 @@ pub(super) enum InputAction {
     OpenPalette,
     PaletteUp,
     PaletteDown,
+    PreviewSelected,
     Confirm,
     Cancel,
     CopyOrInterrupt,
@@ -242,6 +243,7 @@ pub(super) enum UpdateEffect {
     OpenReasoningPicker,
     OpenSessionPicker,
     ViewSession(ConversationRef),
+    SwitchConversation(ConversationRef),
     LoadOlder(ConversationRef),
     PersistRail(bool),
     ArchiveConversation(ConversationRef),
@@ -279,6 +281,33 @@ pub(super) struct QueuedTurn {
     pub(super) input: String,
     images: Vec<ImageAttachment>,
     vision_route: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConversationDraft {
+    composer: Composer,
+    images: Vec<ImageAttachment>,
+    vision_route: Option<String>,
+}
+
+impl Default for ConversationDraft {
+    fn default() -> Self {
+        Self {
+            composer: Composer::new(),
+            images: Vec::new(),
+            vision_route: None,
+        }
+    }
+}
+
+/// Frontend-local state carried across an in-process TUI Conversation switch.
+///
+/// This is deliberately not canonical Conversation data. It keeps unsent input
+/// associated with its exact Conversation while the execution owner is rebuilt.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct TuiContinuation {
+    drafts: BTreeMap<ConversationRef, ConversationDraft>,
+    queued: BTreeMap<ConversationRef, VecDeque<QueuedTurn>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -374,12 +403,18 @@ pub(super) struct TuiState {
     capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
     pending_vision_route: Option<String>,
+    drafts: BTreeMap<ConversationRef, ConversationDraft>,
+    queued: BTreeMap<ConversationRef, VecDeque<QueuedTurn>>,
     background_messages: Option<VecDeque<VisibleMessage>>,
     history_start: usize,
     history_has_older: bool,
 }
 
 impl TuiState {
+    pub(super) fn session_picker_open(&self) -> bool {
+        matches!(self.overlay, Some(Overlay::SessionPicker { .. }))
+    }
+
     pub(super) fn show_command_result(&mut self, title: String, content: String) {
         self.status = format!("{title} completed");
         self.overlay = Some(Overlay::CommandResult {
@@ -435,6 +470,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             pending_vision_route: None,
+            drafts: BTreeMap::new(),
+            queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -483,6 +520,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             pending_vision_route: None,
+            drafts: BTreeMap::new(),
+            queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -530,6 +569,8 @@ impl TuiState {
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
             pending_vision_route: None,
+            drafts: BTreeMap::new(),
+            queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
             history_has_older: false,
@@ -890,6 +931,10 @@ impl TuiState {
         conversation: ConversationRef,
         page: Option<crate::session::ConversationPage>,
     ) {
+        if conversation != self.viewed_conversation {
+            self.save_viewed_draft();
+            self.restore_draft(&conversation);
+        }
         let history = page.as_ref().map(|page| page.messages.as_slice());
         if conversation == self.runtime_conversation {
             if self.viewed_conversation != self.runtime_conversation
@@ -976,6 +1021,50 @@ impl TuiState {
         self.history_has_older.then_some(self.history_start)
     }
 
+    pub(super) fn attach_conversation(&mut self, conversation: ConversationRef) -> UpdateEffect {
+        if conversation == self.runtime_conversation {
+            if conversation == self.viewed_conversation {
+                self.status = "This TUI is already attached to that Conversation".to_owned();
+                return UpdateEffect::None;
+            }
+            return UpdateEffect::ViewSession(conversation);
+        }
+        if self.busy || self.active_operation.is_some() || !self.followups.is_empty() {
+            self.status = "Finish or interrupt the attached Run and drain its queued input before switching Conversations".to_owned();
+            return UpdateEffect::None;
+        }
+        let Some(row) = self
+            .sessions
+            .iter()
+            .find(|row| row.conversation == conversation)
+        else {
+            self.status = "That Conversation is no longer available in this workspace".to_owned();
+            return UpdateEffect::None;
+        };
+        match row.state {
+            crate::workspace_host::ConversationState::Inactive => {
+                self.status = format!("Attaching to {}…", row.title);
+                UpdateEffect::SwitchConversation(conversation)
+            }
+            crate::workspace_host::ConversationState::Active
+            | crate::workspace_host::ConversationState::Controlled
+            | crate::workspace_host::ConversationState::Observable => {
+                self.status = format!(
+                    "{} is controlled by another active root; preview remains available until that Run stops",
+                    row.title
+                );
+                UpdateEffect::None
+            }
+            crate::workspace_host::ConversationState::Unavailable => {
+                self.status = format!(
+                    "{} is unavailable; refresh the Conversation list or inspect Diagnostics",
+                    row.title
+                );
+                UpdateEffect::None
+            }
+        }
+    }
+
     fn conversation_row_estimate(&self) -> usize {
         self.messages
             .iter()
@@ -1017,6 +1106,45 @@ impl TuiState {
             .iter()
             .map(|turn| turn.input.len().saturating_add(image_bytes(&turn.images)))
             .sum()
+    }
+
+    fn save_viewed_draft(&mut self) {
+        let draft = ConversationDraft {
+            composer: std::mem::replace(&mut self.composer, Composer::new()),
+            images: std::mem::take(&mut self.pending_images),
+            vision_route: self.pending_vision_route.take(),
+        };
+        self.drafts.insert(self.viewed_conversation.clone(), draft);
+    }
+
+    fn restore_draft(&mut self, conversation: &ConversationRef) {
+        let draft = self.drafts.remove(conversation).unwrap_or_default();
+        self.composer = draft.composer;
+        self.pending_images = draft.images;
+        self.pending_vision_route = draft.vision_route;
+    }
+
+    pub(crate) fn restore_continuation(&mut self, continuation: TuiContinuation) {
+        self.drafts = continuation.drafts;
+        self.queued = continuation.queued;
+        let viewed = self.viewed_conversation.clone();
+        self.restore_draft(&viewed);
+        self.followups = self
+            .queued
+            .remove(&self.runtime_conversation)
+            .unwrap_or_default();
+    }
+
+    pub(crate) fn into_continuation(mut self) -> TuiContinuation {
+        self.save_viewed_draft();
+        if !self.followups.is_empty() {
+            self.queued
+                .insert(self.runtime_conversation.clone(), self.followups);
+        }
+        TuiContinuation {
+            drafts: self.drafts,
+            queued: self.queued,
+        }
     }
 }
 

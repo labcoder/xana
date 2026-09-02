@@ -30,6 +30,7 @@ use std::{io, path::PathBuf};
 pub(crate) use intro::play as play_intro;
 pub(crate) use runner::{run_managed, run_native};
 pub(crate) use settings::run as run_settings;
+pub(crate) use state::TuiContinuation;
 
 pub(crate) fn restore_terminal_best_effort() {
     lifecycle::restore_process_terminal_best_effort();
@@ -42,12 +43,23 @@ pub(crate) struct PreparedTui {
     preferences_path: PathBuf,
     paths: Box<crate::paths::XanaPaths>,
     clipboard: clipboard::Clipboard,
+    continuation: Option<TuiContinuation>,
 }
 
 impl PreparedTui {
     pub(crate) const fn profile(&self) -> ResolvedPresentation {
         self.profile
     }
+
+    pub(crate) fn with_continuation(mut self, continuation: Option<TuiContinuation>) -> Self {
+        self.continuation = continuation;
+        self
+    }
+}
+
+pub(crate) struct TuiRunOutcome {
+    pub(crate) exit: crate::app::ChatExit,
+    pub(crate) continuation: TuiContinuation,
 }
 
 pub(crate) fn prepare(
@@ -69,6 +81,7 @@ pub(crate) fn prepare(
         preferences_path,
         paths: Box::new(paths),
         clipboard: clipboard::Clipboard::default(),
+        continuation: None,
     })
 }
 
@@ -204,6 +217,16 @@ fn input_action(
             kind: KeyEventKind::Press | KeyEventKind::Repeat,
             ..
         }) => Some(InputAction::Delete),
+        Event::Key(KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) if state.session_picker_open()
+            && !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            Some(InputAction::PreviewSelected)
+        }
         Event::Key(KeyEvent {
             code: KeyCode::Char(character),
             modifiers,

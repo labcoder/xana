@@ -940,3 +940,127 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
     state.view_session(runtime, None);
     assert_eq!(state.messages.back().unwrap().text, "background result");
 }
+
+#[test]
+fn conversation_picker_attaches_with_enter_and_previews_with_space() {
+    let runtime = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let idle = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.runtime_conversation = runtime.clone();
+    state.viewed_conversation = runtime.clone();
+    state.refresh_sessions(WorkspaceSnapshot {
+        workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
+        conversations: vec![
+            ConversationProjection {
+                conversation: runtime,
+                state: ConversationState::Controlled,
+                record_count: Some(1),
+                modified: None,
+                selected: true,
+                project: None,
+            },
+            ConversationProjection {
+                conversation: idle.clone(),
+                state: ConversationState::Inactive,
+                record_count: Some(1),
+                modified: None,
+                selected: false,
+                project: None,
+            },
+        ],
+        active: None,
+    });
+
+    state.open_session_picker();
+    state.update_input(InputAction::PaletteDown);
+    assert_eq!(
+        state.update_input(InputAction::PreviewSelected),
+        UpdateEffect::ViewSession(idle.clone())
+    );
+
+    state.open_session_picker();
+    state.update_input(InputAction::PaletteDown);
+    assert_eq!(
+        state.update_input(InputAction::Confirm),
+        UpdateEffect::SwitchConversation(idle)
+    );
+}
+
+#[test]
+fn conversation_switch_refuses_an_active_target_and_an_active_source_run() {
+    let runtime = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let other = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.runtime_conversation = runtime.clone();
+    state.viewed_conversation = runtime;
+    state.refresh_sessions(WorkspaceSnapshot {
+        workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
+        conversations: vec![ConversationProjection {
+            conversation: other.clone(),
+            state: ConversationState::Active,
+            record_count: Some(1),
+            modified: None,
+            selected: false,
+            project: None,
+        }],
+        active: None,
+    });
+
+    assert_eq!(state.attach_conversation(other.clone()), UpdateEffect::None);
+    assert!(state.status.contains("another active root"));
+
+    state.sessions[0].state = ConversationState::Inactive;
+    state.busy = true;
+    assert_eq!(state.attach_conversation(other), UpdateEffect::None);
+    assert!(state.status.contains("Finish or interrupt"));
+}
+
+#[test]
+fn conversation_drafts_keep_text_cursor_selection_and_queues_isolated() {
+    let runtime = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let other = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.runtime_conversation = runtime.clone();
+    state.viewed_conversation = runtime.clone();
+    state.composer.insert("runtime draft").unwrap();
+    state.composer.move_cursor(MoveDirection::Left, true);
+    state.followups.push_back(QueuedTurn {
+        input: "runtime queue".to_owned(),
+        images: Vec::new(),
+        vision_route: None,
+    });
+
+    state.view_session(other.clone(), Some(Vec::new()));
+    assert!(state.composer.text.is_empty());
+    state.composer.insert("other draft").unwrap();
+    state.view_session(runtime.clone(), None);
+    assert_eq!(state.composer.text, "runtime draft");
+    assert!(state.composer.selection().is_some());
+    assert_eq!(state.followups.front().unwrap().input, "runtime queue");
+
+    let continuation = state.into_continuation();
+    let mut restored = TuiState::starting(ComposerPreset::Submit);
+    restored.busy = false;
+    restored.runtime_conversation = other.clone();
+    restored.viewed_conversation = other;
+    restored.restore_continuation(continuation);
+    assert_eq!(restored.composer.text, "other draft");
+    assert!(restored.followups.is_empty());
+}

@@ -10,6 +10,7 @@ use crate::{
     orchestration::ChildInspection,
     presentation::ResolvedPresentation,
     resource::ResourcePolicyV1,
+    workspace_host::ConversationRef,
 };
 use std::path::PathBuf;
 
@@ -42,6 +43,7 @@ pub(crate) enum ChatExit {
     Quit,
     Restart,
     NewConversation,
+    SwitchConversation(ConversationRef),
     Doctor(Option<SessionId>),
     Reset,
     Setup(String),

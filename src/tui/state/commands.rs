@@ -180,6 +180,7 @@ impl TuiState {
             InputAction::Quit => UpdateEffect::Quit,
             InputAction::PaletteUp
             | InputAction::PaletteDown
+            | InputAction::PreviewSelected
             | InputAction::Confirm
             | InputAction::ChooseOverlay(_)
             | InputAction::BeginActivitySelection(_)
@@ -281,6 +282,7 @@ impl TuiState {
                 }
                 UpdateEffect::None
             }
+            InputAction::PreviewSelected => self.preview_selected_session(),
             InputAction::Scroll(delta) => {
                 if let Some(Overlay::ActivityDetail {
                     scroll, selection, ..
@@ -377,6 +379,24 @@ impl TuiState {
             InputAction::Quit => UpdateEffect::Quit,
             _ => UpdateEffect::None,
         }
+    }
+
+    fn preview_selected_session(&mut self) -> UpdateEffect {
+        let Some(Overlay::SessionPicker {
+            query,
+            choices,
+            selected,
+        }) = self.overlay.take()
+        else {
+            return UpdateEffect::None;
+        };
+        choices
+            .into_iter()
+            .filter(|row| session_matches(row, &query))
+            .nth(selected)
+            .map_or(UpdateEffect::None, |row| {
+                UpdateEffect::ViewSession(row.conversation)
+            })
     }
 
     fn select_overlay(&mut self, index: usize) -> bool {
@@ -490,7 +510,7 @@ impl TuiState {
                 .filter(|row| session_matches(row, &query))
                 .nth(selected)
                 .map_or(UpdateEffect::None, |row| {
-                    UpdateEffect::ViewSession(row.conversation)
+                    self.attach_conversation(row.conversation)
                 }),
             Overlay::Approval { prompt, selected } => self.confirm_approval(*prompt, selected),
             Overlay::ExternalImageApproval {
@@ -801,9 +821,14 @@ impl TuiState {
                             }
                         }
                     }
-                    (Some("attach"), Some(_), None) => {
-                        self.status = "Conversation attach/resume is not available in this TUI yet; preview is read-only and M4-10 adds explicit controller attachment".to_owned();
-                        UpdateEffect::None
+                    (Some("attach"), Some(selector), None) => {
+                        match self.resolve_conversation(selector) {
+                            Ok(conversation) => self.attach_conversation(conversation),
+                            Err(reason) => {
+                                self.status = reason;
+                                UpdateEffect::None
+                            }
+                        }
                     }
                     (Some("new"), None, None) => {
                         if self.busy {

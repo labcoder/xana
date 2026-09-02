@@ -5,7 +5,7 @@
 //! effects without leaking provider-specific state into the view model.
 
 use super::{
-    PreparedTui, clipboard,
+    PreparedTui, TuiRunOutcome, clipboard,
     effects::{dispatch_effect, dispatch_managed_effect},
     input::TerminalInput,
     session,
@@ -58,7 +58,7 @@ async fn run<Owner: ExecutionOwner>(
     mut state: TuiState,
     mut owner: Owner,
     mut session_preferences: session::SessionPreferenceStore,
-) -> Result<ChatExit> {
+) -> Result<TuiRunOutcome> {
     let outcome = drive(
         &mut prepared,
         &mut state,
@@ -69,7 +69,10 @@ async fn run<Owner: ExecutionOwner>(
     let shutdown = owner.shutdown(&state).await;
 
     match (outcome, shutdown) {
-        (Ok(exit), Ok(())) => Ok(exit),
+        (Ok(exit), Ok(())) => Ok(TuiRunOutcome {
+            exit,
+            continuation: state.into_continuation(),
+        }),
         (Err(error), Ok(())) => Err(error),
         (Ok(_), Err(error)) => Err(error.context("could not shut down TUI execution owner")),
         (Err(error), Err(shutdown_error)) => Err(error.context(format!(
@@ -621,12 +624,12 @@ impl ExecutionOwner for ManagedOwner {
 }
 
 pub(crate) async fn run_native(
-    prepared: PreparedTui,
+    mut prepared: PreparedTui,
     runtime: RuntimeHandle,
     header: &ChatHeader,
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
-) -> Result<ChatExit> {
+) -> Result<TuiRunOutcome> {
     let seed = ClientSnapshotSeed {
         session_id: header.session_id,
         connection: header.provider_name.clone(),
@@ -643,6 +646,9 @@ pub(crate) async fn run_native(
         prepared.preferences.activity.into(),
         conversation.clone(),
     );
+    if let Some(continuation) = prepared.continuation.take() {
+        state.restore_continuation(continuation);
+    }
     let frontend_dir = prepared
         .preferences_path
         .parent()
@@ -673,13 +679,13 @@ pub(crate) async fn run_native(
 }
 
 pub(crate) async fn run_managed(
-    prepared: PreparedTui,
+    mut prepared: PreparedTui,
     server: CodexAppServer,
     models: ModelManager,
     config: ManagedChatConfig,
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
-) -> Result<ChatExit> {
+) -> Result<TuiRunOutcome> {
     let connection = config.connection.clone();
     let workspace = config.workspace.clone();
     let artifact_store = config.artifact_store.clone();
@@ -706,6 +712,9 @@ pub(crate) async fn run_managed(
         prepared.preferences.activity.into(),
         conversation,
     );
+    if let Some(continuation) = prepared.continuation.take() {
+        state.restore_continuation(continuation);
+    }
     state.set_status(format!("Managed Codex app-server {} ready", driver.version));
     let frontend_dir = prepared
         .preferences_path

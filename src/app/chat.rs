@@ -87,23 +87,42 @@ pub(super) async fn run(
     mut force_new: bool,
     mut one_shot: Option<String>,
 ) -> Result<Option<OneShotSuccess>> {
+    let mut conversation_target = None;
     loop {
-        match run_once(paths, surface, resume, continue_chat, force_new, one_shot).await? {
+        match run_once(
+            paths,
+            surface,
+            resume,
+            conversation_target.clone(),
+            continue_chat,
+            force_new,
+            one_shot,
+        )
+        .await?
+        {
             ChatRun::Complete(result) => return Ok(result),
             ChatRun::Exited {
                 exit,
                 presentation,
                 restart_tui,
                 tui_required,
+                tui_continuation,
             } => {
-                let Some(restart) =
-                    continue_after_chat_exit(paths, exit, presentation, restart_tui, tui_required)
-                        .await?
+                let Some(restart) = continue_after_chat_exit(
+                    paths,
+                    exit,
+                    presentation,
+                    restart_tui,
+                    tui_required,
+                    tui_continuation,
+                )
+                .await?
                 else {
                     return Ok(None);
                 };
                 surface = restart.surface;
                 resume = restart.resume;
+                conversation_target = restart.conversation_target;
                 continue_chat = false;
                 force_new = restart.force_new;
                 one_shot = None;
@@ -119,12 +138,14 @@ enum ChatRun {
         presentation: presentation::ResolvedPresentation,
         restart_tui: bool,
         tui_required: bool,
+        tui_continuation: Option<tui::TuiContinuation>,
     },
 }
 
 struct ChatRestart {
     surface: ChatSurface,
     resume: Option<crate::identity::SessionId>,
+    conversation_target: Option<ConversationRef>,
     force_new: bool,
 }
 
@@ -132,6 +153,7 @@ async fn run_once(
     paths: &XanaPaths,
     surface: ChatSurface,
     resume: Option<crate::identity::SessionId>,
+    conversation_target: Option<ConversationRef>,
     continue_chat: bool,
     force_new: bool,
     one_shot: Option<String>,
@@ -185,10 +207,16 @@ async fn run_once(
     let child_registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load child route registry")?;
     let notification_policy = child_registry.notifications.clone();
-    let frozen_profile = resume
-        .map(|session_id| {
+    let profile_key = conversation_target
+        .as_ref()
+        .and_then(ConversationRef::conversation_id)
+        .map(|conversation_id| conversation_id.to_string())
+        .or_else(|| resume.map(|session_id| session_id.to_string()));
+    let frozen_profile = profile_key
+        .as_deref()
+        .map(|key| {
             crate::profile::ProfileStore::open(paths)
-                .snapshot(&session_id.to_string())
+                .snapshot(key)
                 .map_err(anyhow::Error::new)
         })
         .transpose()?
@@ -199,6 +227,13 @@ async fn run_once(
         })
         .transpose()?;
     let selected = manager.selected()?;
+    if matches!(conversation_target, Some(ConversationRef::Managed { .. }))
+        && frozen_profile.is_none()
+    {
+        anyhow::bail!(
+            "the selected managed Conversation has no frozen Profile and cannot be attached safely"
+        );
+    }
     let launch_profile = if frozen_profile.is_none() {
         Some(
             crate::profile::ProfileStore::open(paths)
@@ -325,6 +360,39 @@ async fn run_once(
     let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
     debug_assert_eq!(workspace_host.workspace(), workspace_root);
     let host_snapshot = workspace_host.snapshot()?;
+    if let Some(target) = &conversation_target {
+        let owner_matches = match target {
+            ConversationRef::Native { .. } => provider_kind != ProviderKind::Codex,
+            ConversationRef::Managed { connection, .. } => {
+                provider_kind == ProviderKind::Codex && connection == &provider_name
+            }
+            ConversationRef::NewNative | ConversationRef::NewManaged { .. } => false,
+        };
+        if !owner_matches {
+            anyhow::bail!(
+                "Conversation {target} does not match the execution owner in its frozen Profile"
+            );
+        }
+        let state = host_snapshot
+            .conversations
+            .iter()
+            .find(|projection| projection.conversation == *target)
+            .map(|projection| projection.state);
+        match state {
+            Some(crate::workspace_host::ConversationState::Inactive) => {}
+            Some(state) => anyhow::bail!(
+                "Conversation {target} became {state} before control could be acquired; preview it or retry after its active Run stops"
+            ),
+            None => anyhow::bail!("Conversation {target} is no longer retained in this workspace"),
+        }
+    }
+    let resume = conversation_target
+        .as_ref()
+        .and_then(|target| match target {
+            ConversationRef::Native { session_id } => Some(*session_id),
+            _ => None,
+        })
+        .or(resume);
     let resume = if provider_kind != ProviderKind::Codex {
         if (resume.is_some() || continue_chat) && host_snapshot.active.is_some() {
             return Err(anyhow::Error::new(WorkspaceHostError::Busy(
@@ -355,26 +423,27 @@ async fn run_once(
     } else {
         resume
     };
-    let conversation = if provider_kind == ProviderKind::Codex {
+    let conversation = if let Some(target) = conversation_target {
+        target
+    } else if provider_kind == ProviderKind::Codex {
         let current = (resume.is_none() && !force_new && (one_shot.is_none() || continue_chat))
             .then(|| {
-                host_snapshot
-                    .conversations
-                    .into_iter()
-                    .find_map(|projection| match projection.conversation {
+                host_snapshot.conversations.iter().find_map(|projection| {
+                    match &projection.conversation {
                         ConversationRef::Managed {
                             conversation_id,
                             connection,
                             thread_id,
-                        } if connection == provider_name && projection.selected => {
+                        } if connection == &provider_name && projection.selected => {
                             Some(ConversationRef::Managed {
-                                conversation_id,
-                                connection,
-                                thread_id,
+                                conversation_id: *conversation_id,
+                                connection: connection.clone(),
+                                thread_id: thread_id.clone(),
                             })
                         }
                         _ => None,
-                    })
+                    }
+                })
             })
             .flatten();
         current.unwrap_or_else(|| ConversationRef::NewManaged {
@@ -453,19 +522,20 @@ async fn run_once(
             None => {
                 let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
                 let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
-                let exit = match surface {
+                let (exit, tui_continuation) = match surface {
                     ChatSurface::Plain(_) => {
-                        run_codex_chat(
+                        let exit = run_codex_chat(
                             server,
                             manager,
                             managed_config,
                             workspace_host,
                             conversation,
                         )
-                        .await?
+                        .await?;
+                        (exit, None)
                     }
                     ChatSurface::Tui { prepared, .. } => {
-                        tui::run_managed(
+                        let outcome = tui::run_managed(
                             prepared,
                             server,
                             manager,
@@ -473,7 +543,8 @@ async fn run_once(
                             workspace_host,
                             conversation,
                         )
-                        .await?
+                        .await?;
+                        (outcome.exit, Some(outcome.continuation))
                     }
                     ChatSurface::Hosted { bind, port, .. } => {
                         crate::local_host::run_managed_host(
@@ -489,7 +560,7 @@ async fn run_once(
                             },
                         )
                         .await?;
-                        ChatExit::Quit
+                        (ChatExit::Quit, None)
                     }
                     ChatSurface::Desktop { .. } => unreachable!(
                         "managed Desktop execution is rejected before the Codex server starts"
@@ -500,6 +571,7 @@ async fn run_once(
                     presentation,
                     restart_tui,
                     tui_required,
+                    tui_continuation,
                 })
             }
         };
@@ -824,12 +896,16 @@ async fn run_once(
 
     let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
     let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
-    let exit = match surface {
+    let (exit, tui_continuation) = match surface {
         ChatSurface::Plain(_) => {
-            plain_terminal::run_chat(runtime, header, workspace_host, conversation).await?
+            let exit =
+                plain_terminal::run_chat(runtime, header, workspace_host, conversation).await?;
+            (exit, None)
         }
         ChatSurface::Tui { prepared, .. } => {
-            tui::run_native(prepared, runtime, &header, workspace_host, conversation).await?
+            let outcome =
+                tui::run_native(prepared, runtime, &header, workspace_host, conversation).await?;
+            (outcome.exit, Some(outcome.continuation))
         }
         ChatSurface::Hosted { bind, port, .. } => {
             crate::local_host::run_native_host(
@@ -842,11 +918,13 @@ async fn run_once(
                 conversation,
             )
             .await?;
-            ChatExit::Quit
+            (ChatExit::Quit, None)
         }
         ChatSurface::Desktop { bridge, .. } => {
-            crate::desktop::run_native(runtime, &header, workspace_host, conversation, bridge)
-                .await?
+            let exit =
+                crate::desktop::run_native(runtime, &header, workspace_host, conversation, bridge)
+                    .await?;
+            (exit, None)
         }
     };
     Ok(ChatRun::Exited {
@@ -854,6 +932,7 @@ async fn run_once(
         presentation,
         restart_tui,
         tui_required,
+        tui_continuation,
     })
 }
 
@@ -863,11 +942,16 @@ async fn continue_after_chat_exit(
     mut presentation: presentation::ResolvedPresentation,
     restart_tui: bool,
     tui_required: bool,
+    tui_continuation: Option<tui::TuiContinuation>,
 ) -> Result<Option<ChatRestart>> {
     if exit == ChatExit::Quit {
         return Ok(None);
     }
     let mut force_new_conversation = exit == ChatExit::NewConversation;
+    let conversation_target = match &exit {
+        ChatExit::SwitchConversation(conversation) => Some(conversation.clone()),
+        _ => None,
+    };
     if let ChatExit::ControlCommand { family, arguments } = &exit {
         if matches!(family.as_str(), "conversation" | "session" | "sessions")
             && arguments.trim() == "new"
@@ -920,7 +1004,7 @@ async fn continue_after_chat_exit(
             paths.clone(),
         ) {
             Ok(prepared) => ChatSurface::Tui {
-                prepared,
+                prepared: prepared.with_continuation(tui_continuation),
                 required: tui_required,
             },
             Err(error) if !tui_required => {
@@ -939,6 +1023,7 @@ async fn continue_after_chat_exit(
     Ok(Some(ChatRestart {
         surface: restart_surface,
         resume: doctor_resume,
+        conversation_target,
         force_new: force_new_conversation,
     }))
 }

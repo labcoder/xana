@@ -2,6 +2,7 @@
 
 use crate::{
     bounded_file,
+    command_catalog::ConversationDisplayState,
     message::{ContentBlock, Message, Role},
     workspace_host::{
         ConversationProjection, ConversationRef, ConversationState, WorkspaceSnapshot,
@@ -37,6 +38,28 @@ pub(super) struct SessionRow {
 }
 
 impl SessionRow {
+    pub(super) fn display_state(&self, runtime: &ConversationRef) -> ConversationDisplayState {
+        if &self.conversation == runtime {
+            ConversationDisplayState::AttachedHere
+        } else if self.error || self.unread {
+            ConversationDisplayState::NeedsInput
+        } else {
+            match self.state {
+                ConversationState::Inactive => ConversationDisplayState::Idle,
+                ConversationState::Active | ConversationState::Controlled => {
+                    ConversationDisplayState::Running
+                }
+                ConversationState::Observable | ConversationState::Unavailable => {
+                    ConversationDisplayState::PreviewOnly
+                }
+            }
+        }
+    }
+
+    pub(super) fn is_previewed(&self, runtime: &ConversationRef, viewed: &ConversationRef) -> bool {
+        &self.conversation == viewed && &self.conversation != runtime
+    }
+
     fn from_projection(
         projection: ConversationProjection,
         runtime: &ConversationRef,
