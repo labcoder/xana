@@ -1,5 +1,7 @@
 [workspace]
 resolver = "3"
+members = ["crates/xana-desktop"]
+default-members = ["."]
 
 [workspace.package]
 version = "0.6.5"
@@ -7,6 +9,18 @@ edition = "2024"
 rust-version = "1.97.1"
 license = "MIT"
 repository = "https://github.com/labcoder/xana"
+
+[workspace.dependencies]
+gpui = { git = "https://github.com/zed-industries/zed" }
+gpui-ai = { git = "https://github.com/labcoder/gpui-ai", rev = "40ec5cf4e8b28f94b8fbbb4cb2f90d177c946039" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "5cb094628d27acbd557a1c22fd830417a702f0e5" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "5cb094628d27acbd557a1c22fd830417a702f0e5" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "runtime_shaders",
+    "wayland",
+    "x11",
+] }
 
 [package]
 name = "xana"

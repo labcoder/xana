@@ -1,0 +1,25 @@
+[package]
+name = "xana-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Native GPUI desktop client for Xana"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "xana-desktop"
+path = "src/main.rs"
+
+[dependencies]
+gpui.workspace = true
+gpui-ai.workspace = true
+gpui-component.workspace = true
+gpui-component-assets.workspace = true
+gpui_platform.workspace = true
+
+[lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "deny"
