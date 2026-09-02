@@ -58,6 +58,7 @@ side effects, and durable state. The catalog cannot authorize an operation.
 xana conversation list
 xana conversation new
 xana conversation inspect SESSION_ID
+xana conversation search QUERY [--conversation ID] [--limit N] [--json]
 ```
 
 The existing `xana session ...` CLI spelling and `/session` and `/sessions`
@@ -67,6 +68,13 @@ terminal spellings remain compatibility aliases. New documentation uses
 `clear` and `new` remain different operations. Clear resets visible/model
 context under the attached owner. New creates and navigates to a different
 Conversation while retaining the prior one.
+
+Search reads canonical retained native history in bounded pages and returns
+literal matches without changing the Conversation or contacting a provider.
+When no exact `--conversation` is supplied, Xana uses the selected or newest
+retained Conversation. Managed runtimes own their transcripts, so Xana reports
+search as unavailable for those Conversations instead of presenting a partial
+local reconstruction. JSON output uses the same typed match report as text.
 
 Preview and attach are also distinct. Preview reads bounded retained history
 without acquiring control. Attach/resume acquires controller authority for the

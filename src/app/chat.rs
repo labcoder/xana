@@ -944,7 +944,8 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let (exit, tui_continuation) = match surface {
         ChatSurface::Plain(_) => {
             let exit =
-                plain_terminal::run_chat(runtime, header, workspace_host, conversation).await?;
+                plain_terminal::run_chat(runtime, header, workspace_host, conversation, paths)
+                    .await?;
             (exit, None)
         }
         ChatSurface::Tui { prepared, .. } => {

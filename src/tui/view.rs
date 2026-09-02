@@ -388,6 +388,16 @@ fn overlay_choice_at(
         super::state::Overlay::SessionPicker { .. } => 2,
         super::state::Overlay::ModelPicker { .. }
         | super::state::Overlay::ReasoningPicker { .. } => 0,
+        super::state::Overlay::FileCompletion {
+            choices, selected, ..
+        } => {
+            let visible = usize::from(content_height.saturating_sub(2));
+            let start = palette_window_start(*selected, choices.len(), visible);
+            return usize::from(content_row)
+                .checked_sub(2)
+                .map(|row| start.saturating_add(row))
+                .filter(|index| *index < choices.len());
+        }
         super::state::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),
         super::state::Overlay::ExternalImageApproval { external_paths, .. } => {
             3 + external_paths.len()

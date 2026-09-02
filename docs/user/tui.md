@@ -25,6 +25,23 @@ Delete edit the draft. Draft text and staged images are not added to model
 context until a turn is accepted. The border states the active Enter behavior
 instead of referring to an unnamed preset.
 
+Submitted drafts are retained in a bounded, machine-local history for the
+canonical workspace. Ctrl+Up and Ctrl+Down move through it; Up and Down do the
+same when the composer is empty or already recalling history. Editing exits
+recall, and moving past the newest item restores the draft that was present
+before recall. Xana keeps at most 128 entries and 1 MiB, replaces secret-shaped
+entries as a whole, and treats an unavailable or invalid history file as a
+non-fatal frontend warning. This convenience history is not Conversation
+authority and is never injected into model context on its own.
+
+Type `@` followed by any part of a workspace-relative path and press Ctrl+Space
+to open fuzzy file completion. Candidates come from the same bounded,
+gitignore-aware workspace discovery used by native tools. The scan runs off the
+render path, is cancelable and bounded to 32 visible results. Inserting a name
+grants no read or disclosure authority; normal tool and outbound policy still
+applies when Xana later uses the reference. Plain mode exposes the same
+completion through Tab.
+
 Two machine-local presets decide the unmodified Enter key:
 
 | Preset | Enter | Ctrl+J | Modified Enter |
@@ -90,7 +107,7 @@ Palette actions and slash input use that one registry:
 - `/clear`, `/compact`, `/composer submit|newline`
 - `/conversation`, `/conversation new`, `/conversation preview ID`,
   `/conversation attach ID`, `/conversation archive [ID]`,
-  `/conversation view hide|show`
+  `/conversation search QUERY`, `/conversation view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/connection [SUBCOMMAND ...]`, `/connect [provider|profile|image|vision]`

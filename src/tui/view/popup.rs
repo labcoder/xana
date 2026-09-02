@@ -51,6 +51,16 @@ pub(super) fn render(
         render_command_result(frame, popup, title, content, *scroll, profile);
         return;
     }
+    if let Overlay::FileCompletion {
+        query,
+        choices,
+        selected,
+        ..
+    } = overlay
+    {
+        render_file_completion(frame, popup, query, choices, *selected, profile);
+        return;
+    }
     let (title, lines) = match overlay {
         Overlay::Palette { .. } => unreachable!("palette is rendered as a stateful table"),
         Overlay::ActivityDetail { .. } => {
@@ -58,6 +68,9 @@ pub(super) fn render(
         }
         Overlay::CommandResult { .. } => {
             unreachable!("command result is rendered as a scrollable document")
+        }
+        Overlay::FileCompletion { .. } => {
+            unreachable!("file completion is rendered as a stateful table")
         }
         Overlay::ProfileCreate {
             fields,
@@ -230,6 +243,9 @@ pub(super) fn render(
                     "Ctrl+P commands   Ctrl+Q quit   Ctrl+C copies a selection or interrupts",
                 ),
                 Line::raw("Enter primary     Ctrl+J alternate     Shift+Enter newline"),
+                Line::raw(
+                    "Up/Down recall an empty draft; Ctrl+Up/Down always recall; Ctrl+Space completes @files",
+                ),
                 Line::raw("Ctrl+Enter submit   arrows move/select   mouse wheel scrolls"),
                 Line::raw(
                     "Drag conversation text to select; Ctrl+C copies it; click away clears it.",
@@ -435,6 +451,51 @@ pub(super) fn render(
         );
         frame.render_widget(ratatui_image::Image::new(protocol), image_area);
     }
+}
+
+fn render_file_completion(
+    frame: &mut Frame<'_>,
+    popup: Rect,
+    query: &str,
+    choices: &[String],
+    selected: usize,
+    profile: ResolvedPresentation,
+) {
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" Workspace files ")
+        .border_style(semantic_style(profile, SemanticToken::Focus))
+        .style(surface_style(profile, true))
+        .borders(Borders::ALL);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let sections = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "@{query} · Enter inserts a reference · discovery grants no read authority"
+        ))
+        .style(semantic_style(profile, SemanticToken::Muted)),
+        sections[0],
+    );
+    let visible = usize::from(sections[1].height.saturating_sub(1));
+    let offset = palette_window_start(selected, choices.len(), visible);
+    let rows = choices
+        .iter()
+        .map(|path| Row::new(vec![Cell::from(path.clone())]));
+    let mut table_state = TableState::new()
+        .with_offset(offset)
+        .with_selected((!choices.is_empty()).then_some(selected));
+    let table = Table::new(rows, [Constraint::Min(1)])
+        .header(
+            Row::new(vec!["WORKSPACE-RELATIVE PATH"])
+                .style(semantic_style(profile, SemanticToken::Accent).add_modifier(Modifier::BOLD)),
+        )
+        .row_highlight_style(
+            semantic_style(profile, SemanticToken::Focus).add_modifier(Modifier::BOLD),
+        )
+        .highlight_symbol("> ")
+        .highlight_spacing(HighlightSpacing::Always);
+    frame.render_stateful_widget(table, sections[1], &mut table_state);
 }
 
 fn render_command_result(

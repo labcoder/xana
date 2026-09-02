@@ -44,6 +44,7 @@ refuses an active or locked handle.
 ```text
 xana conversation list
 xana conversation new
+xana conversation search QUERY [--conversation ID] [--limit N] [--json]
 xana conversation branch CONVERSATION_ID --at ENTRY_ID
 xana conversation branch CONVERSATION_ID --at current
 xana conversation select codex THREAD_ID
@@ -56,6 +57,14 @@ workspace. It preserves every prior session. Native Xana creates the durable
 session during launch; managed Codex creates its vendor-owned thread on the
 first turn. Use `/conversation new` for the same lifecycle while the full-screen
 frontend is already open.
+
+`xana conversation search` scans canonical retained native history in bounded
+pages. It searches user text, assistant text, and committed tool-result output,
+returns bounded excerpts, and performs no provider or tool call. Use an exact
+Conversation id when more than one is retained; `/conversation search QUERY`
+automatically scopes the command to the Conversation attached to the terminal.
+Managed history remains owned by its runtime and is reported unavailable rather
+than copied into a weaker Xana transcript.
 
 The process-owned workspace host uses one opened filesystem identity and can
 list multiple native sessions and retained managed handles. It permits one

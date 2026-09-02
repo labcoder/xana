@@ -23,7 +23,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use futures::FutureExt;
-use std::{panic::AssertUnwindSafe, path::Path, sync::Arc, time::Duration};
+use std::{ops::Range, panic::AssertUnwindSafe, path::Path, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
@@ -60,12 +60,14 @@ async fn run<Owner: ExecutionOwner>(
     mut state: TuiState,
     mut owner: Owner,
     mut session_preferences: session::SessionPreferenceStore,
+    mut composer_history: crate::terminal_productivity::ComposerHistoryStore,
 ) -> Result<TuiRunOutcome> {
     let outcome = drive(
         &mut prepared,
         &mut state,
         &mut owner,
         &mut session_preferences,
+        &mut composer_history,
     )
     .await;
     let shutdown = owner.shutdown(&state).await;
@@ -88,6 +90,7 @@ async fn drive<Owner: ExecutionOwner>(
     state: &mut TuiState,
     owner: &mut Owner,
     session_preferences: &mut session::SessionPreferenceStore,
+    composer_history: &mut crate::terminal_productivity::ComposerHistoryStore,
 ) -> Result<ChatExit> {
     let mut input = TerminalInput::new();
     let mut terminal_area = prepared.terminal.terminal_mut().size()?;
@@ -101,6 +104,10 @@ async fn drive<Owner: ExecutionOwner>(
     let mut inline_image_poll = tokio::time::interval(FRAME_INTERVAL);
     inline_image_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dirty = true;
+    let (completion_sender, mut completion_receiver) = mpsc::channel(1);
+    let mut completion_generation = 0_u64;
+    let mut completion_cancellation: Option<CancellationToken> = None;
+    let mut completion_task: Option<JoinHandle<()>> = None;
 
     let exit = loop {
         if let Some(effect) = state.next_followup() {
@@ -149,6 +156,42 @@ async fn drive<Owner: ExecutionOwner>(
                 let terminal_event = terminal_event.context("terminal input failed")?;
                 if let Some(action) = terminal_input_action(terminal_event, state, terminal_area.into()) {
                     let effect = state.update_input(action);
+                    while let Some(entry) = state.take_pending_history_entry() {
+                        if let Err(error) = composer_history.record(&entry) {
+                            state.push_activity(format!("composer history was not saved: {error:#}"));
+                        }
+                    }
+                    if let UpdateEffect::CompleteFile { query, replacement } = effect {
+                        if let Some(cancellation) = completion_cancellation.take() {
+                            cancellation.cancel();
+                        }
+                        if let Some(task) = completion_task.take() {
+                            task.abort();
+                        }
+                        completion_generation = completion_generation.saturating_add(1);
+                        let generation = completion_generation;
+                        let workspace = state.workspace.clone();
+                        let cancellation = CancellationToken::new();
+                        completion_cancellation = Some(cancellation.clone());
+                        let sender = completion_sender.clone();
+                        completion_task = Some(tokio::task::spawn_blocking(move || {
+                            let result = crate::terminal_productivity::complete_workspace_paths(
+                                &workspace,
+                                &query,
+                                crate::terminal_productivity::MAX_FILE_COMPLETIONS,
+                                &cancellation,
+                            )
+                            .map_err(|error| format!("{error:#}"));
+                            let _ = sender.blocking_send(FileCompletionFinished {
+                                generation,
+                                query,
+                                replacement,
+                                result,
+                            });
+                        }));
+                        dirty = true;
+                        continue;
+                    }
                     if let UpdateEffect::ControlCommand { family, arguments } = &effect
                         && inline_control_command(family, arguments)
                     {
@@ -205,10 +248,45 @@ async fn drive<Owner: ExecutionOwner>(
                     dirty = true;
                 }
             }
+            completion = completion_receiver.recv() => {
+                let Some(completion) = completion else {
+                    continue;
+                };
+                if completion.generation != completion_generation {
+                    continue;
+                }
+                completion_cancellation = None;
+                if let Some(task) = completion_task.take() {
+                    let _ = task.await;
+                }
+                match completion.result {
+                    Ok(choices) => state.show_file_completions(
+                        completion.query,
+                        completion.replacement,
+                        choices,
+                    ),
+                    Err(reason) => state.fail_file_completion(reason),
+                }
+                dirty = true;
+            }
         }
     };
 
+    if let Some(cancellation) = completion_cancellation {
+        cancellation.cancel();
+    }
+    if let Some(task) = completion_task {
+        let _ = task.await;
+    }
+
     Ok(exit)
+}
+
+struct FileCompletionFinished {
+    generation: u64,
+    query: String,
+    replacement: Range<usize>,
+    result: std::result::Result<Vec<String>, String>,
 }
 
 fn previewed_artifact(state: &TuiState) -> Option<&crate::artifact::ArtifactRecord> {
@@ -228,7 +306,10 @@ fn current_artifact_id(state: &TuiState) -> Option<crate::identity::ArtifactId> 
 
 fn inline_control_command(family: &str, arguments: &str) -> bool {
     let action = arguments.split_whitespace().next().unwrap_or("list");
-    matches!((family, action), ("mcp", "list") | ("profile", "create"))
+    matches!(
+        (family, action),
+        ("mcp", "list") | ("profile", "create") | ("conversation", "search")
+    )
 }
 
 struct NativeOwner<'a> {
@@ -700,6 +781,11 @@ pub(crate) async fn run_native(
         session::SessionPreferenceStore::load(frontend_dir, &header.workspace_root);
     state.set_rail_expanded(session_preferences.rail_expanded());
     state.refresh_sessions(workspace_host.snapshot()?);
+    let (composer_history, history) = crate::terminal_productivity::ComposerHistoryStore::open(
+        &prepared.paths,
+        &header.workspace_root,
+    )?;
+    state.install_composer_history(history.entries, history.warning);
 
     let (vision_sender, vision_events) = mpsc::channel(1);
     run(
@@ -717,6 +803,7 @@ pub(crate) async fn run_native(
             vision_task: None,
         },
         session_preferences,
+        composer_history,
     )
     .await
 }
@@ -767,6 +854,9 @@ pub(crate) async fn run_managed(
     let session_preferences = session::SessionPreferenceStore::load(frontend_dir, &workspace);
     state.set_rail_expanded(session_preferences.rail_expanded());
     state.refresh_sessions(workspace_host.snapshot()?);
+    let (composer_history, history) =
+        crate::terminal_productivity::ComposerHistoryStore::open(&prepared.paths, &workspace)?;
+    state.install_composer_history(history.entries, history.warning);
 
     run(
         prepared,
@@ -781,6 +871,7 @@ pub(crate) async fn run_managed(
             pending_approval: None,
         },
         session_preferences,
+        composer_history,
     )
     .await
 }

@@ -31,6 +31,7 @@ pub(super) struct DiscoveryPlan {
 pub(super) struct DiscoveryEntry {
     pub(super) workspace_relative: String,
     pub(super) depth: usize,
+    pub(super) is_file: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, serde::Serialize)]
@@ -200,6 +201,7 @@ pub(super) fn visit(
         let control = visitor(DiscoveryEntry {
             workspace_relative: portable_path(workspace_relative),
             depth,
+            is_file: entry.file_type().is_some_and(|kind| kind.is_file()),
         });
         if control == VisitControl::Stop {
             break;

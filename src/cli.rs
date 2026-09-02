@@ -1228,6 +1228,20 @@ pub(crate) struct SessionArgs {
 pub(crate) enum SessionCommand {
     /// List bounded conversations for the canonical current workspace.
     List,
+    /// Search bounded retained transcript text for one exact Conversation.
+    Search {
+        /// Literal text to find in user, assistant, and tool-result content.
+        query: String,
+        /// Exact Conversation, native session, or managed thread identifier.
+        #[arg(long)]
+        conversation: Option<String>,
+        /// Maximum number of matches to return.
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Emit a stable JSON report.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start Xana in a fresh native session or managed thread.
     New,
     /// Print bounded metadata without conversation content.

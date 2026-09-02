@@ -16,6 +16,7 @@ use crate::{
     },
     oneshot::{ExitCategory, OneShotFailure, OneShotReporter, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
+    paths::XanaPaths,
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     presentation::{ResolvedPresentation, SemanticToken},
     vision::{
@@ -25,7 +26,7 @@ use crate::{
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result, bail};
-use rustyline::{DefaultEditor, error::ReadlineError};
+use rustyline::{Editor, error::ReadlineError, history::DefaultHistory};
 use std::io::{self, BufRead, Write};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -625,6 +626,7 @@ pub(crate) async fn run_chat(
     header: ChatHeader,
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
+    paths: &XanaPaths,
 ) -> Result<ChatExit> {
     let mut runtime = embedded_client(runtime, &header);
     debug_assert_eq!(runtime.snapshot().session_id, header.session_id);
@@ -677,7 +679,22 @@ pub(crate) async fn run_chat(
         drop(root_lease);
         result?;
     }
-    let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
+    let (mut composer_history, history_load) =
+        crate::terminal_productivity::ComposerHistoryStore::open(paths, &header.workspace_root)?;
+    if let Some(warning) = history_load.warning {
+        println!("xana> warning: {warning}");
+    }
+    let mut editor =
+        Editor::<crate::terminal_productivity::WorkspaceCompleter, DefaultHistory>::new()
+            .context("could not initialize line editor")?;
+    editor.set_helper(Some(crate::terminal_productivity::WorkspaceCompleter::new(
+        header.workspace_root.clone(),
+    )));
+    for entry in history_load.entries {
+        editor
+            .add_history_entry(entry)
+            .context("could not restore composer history")?;
+    }
     let mut pending_images = PendingImages::default();
     let mut pending_vision_route: Option<String> = None;
     let mut exit = ChatExit::Quit;
@@ -836,9 +853,20 @@ pub(crate) async fn run_chat(
                 }
                 InputAction::ControlCommand { family, arguments } => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
+                    let arguments = if matches!(family, "conversation" | "session" | "sessions")
+                        && (arguments == "search" || arguments.starts_with("search "))
+                    {
+                        let conversation = conversation.to_string();
+                        let selector = shlex::try_quote(&conversation)
+                            .map(|value| value.into_owned())
+                            .unwrap_or(conversation);
+                        format!("{arguments} --conversation {selector}")
+                    } else {
+                        arguments.to_owned()
+                    };
                     exit = ChatExit::ControlCommand {
                         family: family.to_owned(),
-                        arguments: arguments.to_owned(),
+                        arguments,
                     };
                     break;
                 }
@@ -879,9 +907,17 @@ pub(crate) async fn run_chat(
                 }
                 InputAction::Ignore => {}
                 InputAction::Send(input) => {
-                    editor
-                        .add_history_entry(input)
-                        .context("could not add input to editor history")?;
+                    match composer_history.record(input) {
+                        Ok(Some(entry)) => {
+                            editor
+                                .add_history_entry(entry)
+                                .context("could not add input to editor history")?;
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            println!("xana> warning: composer history was not saved: {error:#}")
+                        }
+                    }
 
                     let operation_id = OperationId::new();
                     let descriptor = header

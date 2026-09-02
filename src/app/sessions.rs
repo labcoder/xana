@@ -6,6 +6,7 @@ use crate::{
     managed::thread_store::ManagedThreadStore,
     paths::XanaPaths,
     session::DurableSession,
+    terminal_productivity::search_transcript,
     workspace_host::{ConversationRef, ConversationState, WorkspaceHost},
 };
 use anyhow::{Context, Result};
@@ -67,6 +68,43 @@ pub(super) fn run_command<W: Write>(
                     .collect::<Vec<_>>()
                     .join(", ")
             )?;
+            Ok(())
+        }
+        SessionCommand::Search {
+            query,
+            conversation,
+            limit,
+            json,
+        } => {
+            let workspace = std::env::current_dir()
+                .context("could not resolve current workspace")?
+                .canonicalize()
+                .context("could not canonicalize current workspace")?;
+            let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+            let snapshot = host.snapshot()?;
+            let conversation =
+                resolve_conversation(&snapshot.conversations, conversation.as_deref())?;
+            let report = search_transcript(&host, &conversation, &query, limit)?;
+            if json {
+                serde_json::to_writer(&mut *output, &report)?;
+                writeln!(output)?;
+            } else {
+                writeln!(
+                    output,
+                    "conversation: {}\nquery: {:?}\nmatches: {}{}",
+                    report.conversation,
+                    report.query,
+                    report.matches.len(),
+                    if report.truncated { " (truncated)" } else { "" }
+                )?;
+                for entry in report.matches {
+                    writeln!(
+                        output,
+                        "  {} [{}] {}",
+                        entry.index, entry.role, entry.excerpt
+                    )?;
+                }
+            }
             Ok(())
         }
         SessionCommand::Inspect { session_id } => {
@@ -255,5 +293,52 @@ pub(super) fn run_command<W: Write>(
             }
             Ok(())
         }
+    }
+}
+
+fn resolve_conversation(
+    conversations: &[crate::workspace_host::ConversationProjection],
+    selector: Option<&str>,
+) -> Result<ConversationRef> {
+    if selector.is_none() {
+        return conversations
+            .iter()
+            .find(|candidate| candidate.selected)
+            .or_else(|| conversations.first())
+            .map(|candidate| candidate.conversation.clone())
+            .context("no retained Conversation is available to search");
+    }
+    let selector = selector.expect("checked above");
+    let matches = conversations
+        .iter()
+        .filter(|candidate| {
+            candidate.conversation.to_string() == selector
+                || candidate
+                    .conversation
+                    .conversation_id()
+                    .is_some_and(|id| id.to_string() == selector)
+                || matches!(
+                    &candidate.conversation,
+                    ConversationRef::Native { session_id } if session_id.to_string() == selector
+                )
+                || matches!(
+                    &candidate.conversation,
+                    ConversationRef::Managed {
+                        connection,
+                        thread_id,
+                        ..
+                    } if thread_id == selector || format!("{connection}/{thread_id}") == selector
+                )
+        })
+        .map(|candidate| candidate.conversation.clone())
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [conversation] => Ok(conversation.clone()),
+        [] => anyhow::bail!(
+            "no retained Conversation matches {selector:?}; run `xana conversation list`"
+        ),
+        _ => anyhow::bail!(
+            "Conversation selector {selector:?} is ambiguous; use its exact canonical ID"
+        ),
     }
 }

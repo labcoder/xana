@@ -236,6 +236,9 @@ pub(super) async fn dispatch_managed_effect(
 ) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
+        // File completion is frontend-local and is consumed by the event
+        // runner before runtime effects are dispatched.
+        UpdateEffect::CompleteFile { .. } => {}
         UpdateEffect::Quit => return Ok(Some(ChatExit::Quit)),
         UpdateEffect::NewConversation => return Ok(Some(ChatExit::NewConversation)),
         UpdateEffect::Doctor => return Ok(Some(ChatExit::Doctor(None))),
@@ -729,6 +732,9 @@ pub(super) async fn dispatch_effect(
 ) -> Result<Option<ChatExit>> {
     match effect {
         UpdateEffect::None => {}
+        // File completion is frontend-local and is consumed by the event
+        // runner before runtime effects are dispatched.
+        UpdateEffect::CompleteFile { .. } => {}
         UpdateEffect::Quit => {
             let _ = client.send(RuntimeCommand::Shutdown).await;
             return Ok(Some(ChatExit::Quit));

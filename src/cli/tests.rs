@@ -605,6 +605,29 @@ fn parses_explicit_resume_and_session_inspection() {
             command: SessionCommand::New
         }))
     ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "conversation",
+            "search",
+            "needle",
+            "--conversation",
+            &id.to_string(),
+            "--limit",
+            "7",
+            "--json"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::Search {
+                query,
+                conversation: Some(selector),
+                limit: 7,
+                json: true,
+            }
+        })) if query == "needle" && selector == id.to_string()
+    ));
     let conversation = crate::identity::ConversationId::new();
     assert!(matches!(
         Cli::try_parse_from([

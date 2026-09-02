@@ -66,6 +66,7 @@ mod shell;
 mod skill;
 mod sse;
 mod telemetry;
+mod terminal_productivity;
 mod tool;
 mod tui;
 mod usage_observation;

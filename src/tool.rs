@@ -43,6 +43,61 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 const MAX_DEFERRED_CLEANUPS: usize = 16;
 const DEFERRED_CLEANUP_DEADLINE: Duration = Duration::from_secs(6);
 
+/// Returns bounded, gitignore-aware workspace file candidates for presentation
+/// completion. Discovery reveals names only and grants no read authority.
+pub(crate) fn complete_workspace_paths(
+    workspace_root: &Path,
+    query: &str,
+    limit: usize,
+    cancellation: &CancellationToken,
+) -> Result<Vec<String>, String> {
+    if query.len() > discovery::MAX_PATTERN_BYTES {
+        return Err("file completion query exceeds its input bound".to_owned());
+    }
+    let plan = discovery::plan(".".to_owned(), "**/*", 16, workspace_root)
+        .map_err(|error| error.to_string())?;
+    let query = query.to_ascii_lowercase();
+    let mut candidates = Vec::<(usize, String)>::new();
+    discovery::visit(&plan, |entry| {
+        if cancellation.is_cancelled() {
+            return discovery::VisitControl::Stop;
+        }
+        if !entry.is_file {
+            return discovery::VisitControl::Continue;
+        }
+        if let Some(score) = fuzzy_path_score(&entry.workspace_relative, &query) {
+            candidates.push((score, entry.workspace_relative));
+            candidates
+                .sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+            candidates.truncate(limit);
+        }
+        discovery::VisitControl::Continue
+    })
+    .map_err(|error| error.to_string())?;
+    if cancellation.is_cancelled() {
+        return Ok(Vec::new());
+    }
+    Ok(candidates.into_iter().map(|(_, path)| path).collect())
+}
+
+fn fuzzy_path_score(path: &str, query: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let path = path.to_ascii_lowercase();
+    if let Some(index) = path.find(query) {
+        return Some(10_000usize.saturating_sub(index));
+    }
+    let mut score = 1_000usize;
+    let mut position = 0usize;
+    for expected in query.chars() {
+        let relative = path[position..].find(expected)?;
+        score = score.saturating_sub(relative);
+        position = position.saturating_add(relative + expected.len_utf8());
+    }
+    Some(score)
+}
+
 pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "read_file",
     "list_files",

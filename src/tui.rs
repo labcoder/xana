@@ -7,6 +7,7 @@ mod activity;
 mod clipboard;
 mod command;
 mod composer;
+pub(crate) use composer::MAX_INPUT_BYTES as MAX_COMPOSER_INPUT_BYTES;
 mod effects;
 mod espejo;
 mod inline_image;
@@ -137,6 +138,12 @@ fn input_action(
             ComposerPreset::Newline => InputAction::Submit,
         }),
         Event::Key(KeyEvent {
+            code: KeyCode::Char(' '),
+            modifiers,
+            kind: KeyEventKind::Press,
+            ..
+        }) if modifiers.contains(KeyModifiers::CONTROL) => Some(InputAction::CompleteFile),
+        Event::Key(KeyEvent {
             code: KeyCode::Enter,
             modifiers,
             kind: KeyEventKind::Press,
@@ -172,6 +179,11 @@ fn input_action(
             ..
         }) => Some(if state.overlay.is_some() {
             InputAction::PaletteUp
+        } else if modifiers.contains(KeyModifiers::CONTROL)
+            || (modifiers.is_empty()
+                && (state.composer.text.is_empty() || state.composer_history_active()))
+        {
+            InputAction::HistoryPrevious
         } else {
             InputAction::Move {
                 direction: MoveDirection::Up,
@@ -185,6 +197,10 @@ fn input_action(
             ..
         }) => Some(if state.overlay.is_some() {
             InputAction::PaletteDown
+        } else if modifiers.contains(KeyModifiers::CONTROL)
+            || (modifiers.is_empty() && state.composer_history_active())
+        {
+            InputAction::HistoryNext
         } else {
             InputAction::Move {
                 direction: MoveDirection::Down,

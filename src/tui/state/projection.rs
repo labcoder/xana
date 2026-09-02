@@ -454,7 +454,7 @@ impl TuiState {
         trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
     }
 
-    pub(super) fn push_activity(&mut self, text: impl Into<String>) {
+    pub(crate) fn push_activity(&mut self, text: impl Into<String>) {
         self.push_card(ActivityCard::new(
             "Xana",
             format!("event-{}", self.activity.len()),

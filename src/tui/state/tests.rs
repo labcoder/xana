@@ -63,6 +63,86 @@ fn composer_edits_unicode_multiline_and_selection_safely() {
 }
 
 #[test]
+fn composer_history_recall_is_workspace_local_and_restores_the_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.install_composer_history(["first".to_owned(), "second".to_owned()], None);
+    state.composer.insert("current draft").unwrap();
+
+    state.update_input(InputAction::HistoryPrevious);
+    assert_eq!(state.composer.text, "second");
+    state.update_input(InputAction::HistoryPrevious);
+    assert_eq!(state.composer.text, "first");
+    state.update_input(InputAction::HistoryNext);
+    assert_eq!(state.composer.text, "second");
+    state.update_input(InputAction::HistoryNext);
+    assert_eq!(state.composer.text, "current draft");
+    assert!(!state.composer_history_active());
+}
+
+#[test]
+fn submitted_composer_history_is_bounded_and_secret_filtered_before_persistence() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.insert("api_key=never-retain-this").unwrap();
+
+    assert!(matches!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::Submit { .. }
+    ));
+    assert_eq!(
+        state.take_pending_history_entry().as_deref(),
+        Some("[redacted secret-like composer entry]")
+    );
+}
+
+#[test]
+fn file_completion_replaces_only_the_active_at_token() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.insert("inspect @sr after").unwrap();
+    state.composer.move_cursor(MoveDirection::Left, false);
+    state.composer.move_cursor(MoveDirection::Left, false);
+    state.composer.move_cursor(MoveDirection::Left, false);
+    state.composer.move_cursor(MoveDirection::Left, false);
+    state.composer.move_cursor(MoveDirection::Left, false);
+    state.composer.move_cursor(MoveDirection::Left, false);
+
+    let UpdateEffect::CompleteFile { query, replacement } =
+        state.update_input(InputAction::CompleteFile)
+    else {
+        panic!("expected a file-completion request")
+    };
+    assert_eq!(query, "sr");
+    state.show_file_completions(
+        query,
+        replacement,
+        vec!["src/lib.rs".to_owned(), "src/main.rs".to_owned()],
+    );
+    state.update_input(InputAction::PaletteDown);
+    state.update_input(InputAction::Confirm);
+    assert_eq!(state.composer.text, "inspect @src/main.rs after");
+}
+
+#[test]
+fn stale_file_completion_does_not_replace_a_changed_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.composer.insert("@src").unwrap();
+    let UpdateEffect::CompleteFile { query, replacement } =
+        state.update_input(InputAction::CompleteFile)
+    else {
+        panic!("expected a file-completion request")
+    };
+    state.update_input(InputAction::Insert("x".to_owned()));
+    state.show_file_completions(query, replacement, vec!["src/lib.rs".to_owned()]);
+    assert!(!matches!(
+        state.overlay,
+        Some(Overlay::FileCompletion { .. })
+    ));
+}
+
+#[test]
 fn paste_is_previewed_sanitized_and_never_executed() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;

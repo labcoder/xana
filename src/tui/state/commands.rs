@@ -15,6 +15,8 @@ impl TuiState {
                 self.header_expanded = false;
                 if let Err(reason) = self.composer.insert(&text) {
                     self.status = reason;
+                } else {
+                    self.reset_composer_history_navigation();
                 }
                 UpdateEffect::None
             }
@@ -34,18 +36,46 @@ impl TuiState {
                 self.composer.move_cursor(direction, select);
                 UpdateEffect::None
             }
+            InputAction::HistoryPrevious => {
+                self.recall_composer_history(true);
+                UpdateEffect::None
+            }
+            InputAction::HistoryNext => {
+                self.recall_composer_history(false);
+                UpdateEffect::None
+            }
+            InputAction::CompleteFile => {
+                let Some(query) = crate::terminal_productivity::at_file_query(
+                    &self.composer.text,
+                    self.composer.cursor,
+                ) else {
+                    self.status =
+                        "Type @ followed by part of a workspace path, then press Ctrl+Space"
+                            .to_owned();
+                    return UpdateEffect::None;
+                };
+                self.status = format!("Finding workspace files for @{}…", query.query);
+                UpdateEffect::CompleteFile {
+                    query: query.query,
+                    replacement: query.replacement,
+                }
+            }
             InputAction::Backspace => {
                 self.composer.backspace();
+                self.reset_composer_history_navigation();
                 UpdateEffect::None
             }
             InputAction::Delete => {
                 self.composer.delete();
+                self.reset_composer_history_navigation();
                 UpdateEffect::None
             }
             InputAction::Submit => self.submit_composer(),
             InputAction::Newline => {
                 if let Err(reason) = self.composer.insert("\n") {
                     self.status = reason;
+                } else {
+                    self.reset_composer_history_navigation();
                 }
                 UpdateEffect::None
             }
@@ -515,7 +545,8 @@ impl TuiState {
         let len = match &self.overlay {
             Some(Overlay::Palette { query, .. }) => command::search(query).len(),
             Some(Overlay::ModelPicker { choices, .. })
-            | Some(Overlay::ReasoningPicker { choices, .. }) => choices.len(),
+            | Some(Overlay::ReasoningPicker { choices, .. })
+            | Some(Overlay::FileCompletion { choices, .. }) => choices.len(),
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
             Some(
                 Overlay::ExternalImageApproval { .. } | Overlay::ExternalResourceApproval { .. },
@@ -536,6 +567,7 @@ impl TuiState {
             Some(Overlay::Palette { selected, .. })
             | Some(Overlay::ModelPicker { selected, .. })
             | Some(Overlay::ReasoningPicker { selected, .. })
+            | Some(Overlay::FileCompletion { selected, .. })
             | Some(Overlay::Approval { selected, .. })
             | Some(Overlay::ExternalImageApproval { selected, .. })
             | Some(Overlay::ExternalResourceApproval { selected, .. })
@@ -552,7 +584,10 @@ impl TuiState {
         let (selected, len) = match &mut self.overlay {
             Some(Overlay::Palette { query, selected }) => (selected, command::search(query).len()),
             Some(Overlay::ModelPicker { choices, selected })
-            | Some(Overlay::ReasoningPicker { choices, selected }) => (selected, choices.len()),
+            | Some(Overlay::ReasoningPicker { choices, selected })
+            | Some(Overlay::FileCompletion {
+                choices, selected, ..
+            }) => (selected, choices.len()),
             Some(Overlay::Approval { prompt, selected }) => {
                 (selected, approval_choice_count(prompt))
             }
@@ -592,6 +627,7 @@ impl TuiState {
                 if let Err(reason) = self.composer.insert(&text) {
                     self.status = reason;
                 } else {
+                    self.reset_composer_history_navigation();
                     self.status = "Pasted text inserted as untrusted draft data".to_owned();
                 }
                 UpdateEffect::None
@@ -617,6 +653,29 @@ impl TuiState {
                 .get(selected)
                 .cloned()
                 .map_or(UpdateEffect::None, UpdateEffect::SetReasoning),
+            Overlay::FileCompletion {
+                replacement,
+                choices,
+                selected,
+                ..
+            } => {
+                let Some(path) = choices.get(selected) else {
+                    return UpdateEffect::None;
+                };
+                match self
+                    .composer
+                    .replace_range(replacement, &format!("@{path}"))
+                {
+                    Ok(()) => {
+                        self.reset_composer_history_navigation();
+                        self.status = format!(
+                            "Inserted workspace reference @{path}; completion grants no file authority"
+                        );
+                    }
+                    Err(reason) => self.status = reason,
+                }
+                UpdateEffect::None
+            }
             Overlay::SessionPicker {
                 query,
                 choices,
@@ -759,6 +818,7 @@ impl TuiState {
             return UpdateEffect::None;
         }
         if !paths.is_empty() {
+            self.remember_composer_submission(&input);
             return UpdateEffect::AttachAndSubmit {
                 operation_id: OperationId::new(),
                 input,
@@ -940,6 +1000,28 @@ impl TuiState {
             }
             CommandId::Conversation => {
                 self.composer.take();
+                if command.stable_id == "conversation.search.v1"
+                    || command.arguments == "search"
+                    || command.arguments.starts_with("search ")
+                {
+                    let query = command
+                        .arguments
+                        .strip_prefix("search")
+                        .unwrap_or_default()
+                        .trim();
+                    if query.is_empty() {
+                        self.status = command_usage(CommandId::Conversation);
+                        return UpdateEffect::None;
+                    }
+                    let conversation = self.runtime_conversation.to_string();
+                    let selector = shlex::try_quote(&conversation)
+                        .map(|value| value.into_owned())
+                        .unwrap_or(conversation);
+                    return UpdateEffect::ControlCommand {
+                        family: "conversation".to_owned(),
+                        arguments: format!("search {query} --conversation {selector}"),
+                    };
+                }
                 let mut parts = command.arguments.split_whitespace();
                 match (parts.next(), parts.next(), parts.next()) {
                     (None, None, None) => UpdateEffect::OpenSessionPicker,

@@ -28,7 +28,10 @@ use crate::{
     vision::{ImageAttachment, MAX_IMAGE_BYTES_PER_TURN, MAX_IMAGES_PER_TURN, image_paths_in_text},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
-use std::collections::{BTreeMap, VecDeque};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    ops::Range,
+};
 
 const MAX_VISIBLE_MESSAGES: usize = 512;
 const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
@@ -155,6 +158,9 @@ pub(super) enum InputAction {
     Delete,
     Submit,
     Newline,
+    HistoryPrevious,
+    HistoryNext,
+    CompleteFile,
     OpenPalette,
     PaletteUp,
     PaletteDown,
@@ -204,6 +210,10 @@ pub(super) enum UpdateEffect {
     ControlCommand {
         family: String,
         arguments: String,
+    },
+    CompleteFile {
+        query: String,
+        replacement: Range<usize>,
     },
     Submit {
         operation_id: OperationId,
@@ -383,6 +393,12 @@ pub(super) enum Overlay {
         content: String,
         scroll: u16,
     },
+    FileCompletion {
+        query: String,
+        replacement: Range<usize>,
+        choices: Vec<String>,
+        selected: usize,
+    },
     ProfileCreate {
         fields: [String; 3],
         selected: usize,
@@ -396,6 +412,10 @@ pub(super) struct TuiState {
     pub(super) session: String,
     pub(super) status: String,
     pub(super) composer: Composer,
+    composer_history: VecDeque<String>,
+    composer_history_cursor: Option<usize>,
+    composer_history_scratch: String,
+    pending_history_entries: VecDeque<String>,
     pub(super) messages: VecDeque<VisibleMessage>,
     pub(super) activity: VecDeque<ActivityCard>,
     pub(super) busy: bool,
@@ -458,6 +478,109 @@ impl TuiState {
         });
     }
 
+    pub(super) fn install_composer_history(
+        &mut self,
+        entries: impl IntoIterator<Item = String>,
+        warning: Option<String>,
+    ) {
+        self.composer_history.clear();
+        for entry in entries {
+            crate::terminal_productivity::append_history_entry(&mut self.composer_history, &entry);
+        }
+        self.composer_history_cursor = None;
+        self.composer_history_scratch.clear();
+        if let Some(warning) = warning {
+            self.push_activity(warning);
+        }
+    }
+
+    pub(super) fn take_pending_history_entry(&mut self) -> Option<String> {
+        self.pending_history_entries.pop_front()
+    }
+
+    pub(super) fn composer_history_active(&self) -> bool {
+        self.composer_history_cursor.is_some()
+    }
+
+    fn remember_composer_submission(&mut self, input: &str) {
+        if let Some(entry) =
+            crate::terminal_productivity::append_history_entry(&mut self.composer_history, input)
+        {
+            self.pending_history_entries.push_back(entry);
+        }
+        self.reset_composer_history_navigation();
+    }
+
+    fn recall_composer_history(&mut self, previous: bool) {
+        if self.composer_history.is_empty() {
+            self.status = "No composer history is retained for this workspace".to_owned();
+            return;
+        }
+        let index = if previous {
+            match self.composer_history_cursor {
+                Some(index) => index.saturating_sub(1),
+                None => {
+                    self.composer_history_scratch = self.composer.text.clone();
+                    self.composer_history.len() - 1
+                }
+            }
+        } else {
+            let Some(index) = self.composer_history_cursor else {
+                return;
+            };
+            if index + 1 == self.composer_history.len() {
+                self.composer_history_cursor = None;
+                self.composer
+                    .replace(std::mem::take(&mut self.composer_history_scratch));
+                self.status = "Restored current draft".to_owned();
+                return;
+            }
+            index + 1
+        };
+        self.composer_history_cursor = Some(index);
+        self.composer.replace(self.composer_history[index].clone());
+        self.status = format!(
+            "Composer history {} of {}",
+            index + 1,
+            self.composer_history.len()
+        );
+    }
+
+    fn reset_composer_history_navigation(&mut self) {
+        self.composer_history_cursor = None;
+        self.composer_history_scratch.clear();
+    }
+
+    pub(super) fn show_file_completions(
+        &mut self,
+        query: String,
+        replacement: Range<usize>,
+        choices: Vec<String>,
+    ) {
+        let current = self
+            .composer
+            .text
+            .get(replacement.clone())
+            .unwrap_or_default();
+        if self.composer.cursor != replacement.end || current != format!("@{query}") {
+            return;
+        }
+        if choices.is_empty() {
+            self.status = format!("No workspace files match @{query}");
+            return;
+        }
+        self.overlay = Some(Overlay::FileCompletion {
+            query,
+            replacement,
+            choices,
+            selected: 0,
+        });
+    }
+
+    pub(super) fn fail_file_completion(&mut self, reason: String) {
+        self.status = format!("Workspace file completion failed: {reason}");
+    }
+
     pub(super) fn starting(composer_preset: ComposerPreset) -> Self {
         Self {
             connection: "loading".to_owned(),
@@ -465,6 +588,10 @@ impl TuiState {
             session: "not opened".to_owned(),
             status: "Starting Xana locally…".to_owned(),
             composer: Composer::new(),
+            composer_history: VecDeque::new(),
+            composer_history_cursor: None,
+            composer_history_scratch: String::new(),
+            pending_history_entries: VecDeque::new(),
             messages: VecDeque::new(),
             activity: VecDeque::from([ActivityCard::new(
                 "Xana",
@@ -531,6 +658,10 @@ impl TuiState {
             session: snapshot.session_id.to_string(),
             status: "Ready".to_owned(),
             composer: Composer::new(),
+            composer_history: VecDeque::new(),
+            composer_history_cursor: None,
+            composer_history_scratch: String::new(),
+            pending_history_entries: VecDeque::new(),
             messages,
             activity: VecDeque::new(),
             busy: snapshot.active_operation.is_some(),
@@ -590,6 +721,10 @@ impl TuiState {
             session,
             status: "Ready".to_owned(),
             composer: Composer::new(),
+            composer_history: VecDeque::new(),
+            composer_history_cursor: None,
+            composer_history_scratch: String::new(),
+            pending_history_entries: VecDeque::new(),
             messages: VecDeque::new(),
             activity: VecDeque::new(),
             busy: false,
@@ -674,6 +809,7 @@ impl TuiState {
             self.status = format!("Turn {} is awaiting /continue or /stop", operation_id);
             return UpdateEffect::None;
         }
+        self.remember_composer_submission(&input);
         if self.busy {
             if self.followups.len() >= MAX_FOLLOWUPS
                 || self

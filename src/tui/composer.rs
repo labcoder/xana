@@ -3,7 +3,7 @@
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
-pub(super) const MAX_INPUT_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_INPUT_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MoveDirection {
@@ -173,6 +173,30 @@ impl Composer {
         self.text = sanitize_input(&value);
         self.cursor = self.text.len();
         self.anchor = None;
+    }
+
+    pub(super) fn replace_range(&mut self, range: Range<usize>, value: &str) -> Result<(), String> {
+        if range.start > range.end
+            || range.end > self.text.len()
+            || !self.text.is_char_boundary(range.start)
+            || !self.text.is_char_boundary(range.end)
+        {
+            return Err("composer replacement range is no longer valid".to_owned());
+        }
+        let value = sanitize_input(value);
+        if self
+            .text
+            .len()
+            .saturating_sub(range.len())
+            .saturating_add(value.len())
+            > MAX_INPUT_BYTES
+        {
+            return Err("composer input reached the 1 MiB limit".to_owned());
+        }
+        self.text.replace_range(range.clone(), &value);
+        self.cursor = range.start.saturating_add(value.len());
+        self.anchor = None;
+        Ok(())
     }
 }
 
@@ -383,5 +407,16 @@ mod tests {
         composer.place_visual_cursor(0, 2, 5, 1, false);
 
         assert_eq!(&composer.text[..composer.cursor], "abcdefg");
+    }
+
+    #[test]
+    fn bounded_range_replacement_keeps_cursor_at_inserted_reference_end() {
+        let mut composer = Composer::new();
+        composer.replace("read @src/ma please".to_owned());
+
+        composer.replace_range(5..12, "@src/main.rs").unwrap();
+
+        assert_eq!(composer.text, "read @src/main.rs please");
+        assert_eq!(composer.cursor, 17);
     }
 }
