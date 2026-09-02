@@ -53,6 +53,8 @@ pub(crate) enum HostedConversationState {
     Suspended,
     Completed,
     Failed,
+    Declined,
+    Interrupted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +104,7 @@ pub(crate) struct HostedConversationSnapshot {
     pub(crate) pending_approvals: usize,
     pub(crate) activity_count: usize,
     pub(crate) last_error: Option<String>,
+    pub(crate) last_outcome: Option<OperationOutcome>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,6 +280,7 @@ struct ConversationSlot {
     pending_approvals: usize,
     activity_count: usize,
     last_error: Option<String>,
+    last_outcome: Option<OperationOutcome>,
 }
 
 struct RunState {
@@ -352,6 +356,7 @@ impl ExecutionHost {
                 pending_approvals: 0,
                 activity_count: 0,
                 last_error: None,
+                last_outcome: None,
             },
         );
         state.events.push(HostEvent::ConversationRegistered {
@@ -420,6 +425,7 @@ impl ExecutionHost {
             access,
         });
         slot.last_error = None;
+        slot.last_outcome = None;
         state.active_runs += 1;
         state.events.push(HostEvent::RunStarted {
             conversation: conversation.clone(),
@@ -499,18 +505,38 @@ impl ExecutionHost {
         }) {
             return Err(ExecutionHostError::StaleRun);
         }
-        let (terminal, error) = match outcome {
-            Ok(OperationOutcome::Completed) => (HostedConversationState::Completed, None),
-            Ok(
-                OperationOutcome::Failed
-                | OperationOutcome::Declined
-                | OperationOutcome::Interrupted,
-            ) => (HostedConversationState::Failed, None),
-            Err(error) => (HostedConversationState::Failed, Some(bounded_label(error))),
+        let runtime_error = slot.last_error.clone();
+        let (terminal, recorded_outcome, error) = match outcome {
+            Ok(OperationOutcome::Completed) => (
+                HostedConversationState::Completed,
+                Some(OperationOutcome::Completed),
+                None,
+            ),
+            Ok(OperationOutcome::Failed) => (
+                HostedConversationState::Failed,
+                Some(OperationOutcome::Failed),
+                runtime_error,
+            ),
+            Ok(OperationOutcome::Declined) => (
+                HostedConversationState::Declined,
+                Some(OperationOutcome::Declined),
+                None,
+            ),
+            Ok(OperationOutcome::Interrupted) => (
+                HostedConversationState::Interrupted,
+                Some(OperationOutcome::Interrupted),
+                None,
+            ),
+            Err(error) => (
+                HostedConversationState::Failed,
+                None,
+                Some(bounded_label(error)),
+            ),
         };
         slot.state = terminal;
         slot.active_run = None;
         slot.last_error = error.clone();
+        slot.last_outcome = recorded_outcome;
         let workspace = state
             .workspaces
             .get_mut(&workspace_id)
@@ -695,6 +721,7 @@ fn snapshot_from_state(state: &HostState) -> ExecutionHostSnapshot {
             pending_approvals: slot.pending_approvals,
             activity_count: slot.activity_count,
             last_error: slot.last_error.clone(),
+            last_outcome: slot.last_outcome,
         })
         .collect();
     ExecutionHostSnapshot {

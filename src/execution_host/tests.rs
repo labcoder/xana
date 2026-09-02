@@ -1,10 +1,14 @@
 use super::*;
 use crate::{
     frontend::{ClientEvent, ClientObservation},
+    identity::ToolInvocationId,
     managed::thread_store::ManagedThreadStore,
     native_runtime::AgentEvent,
+    permission::{PermissionAuditFact, PermissionRequest, PermissionScope, PolicyDecision},
     session::DurableSession,
+    tool::EffectClass,
 };
+use serde_json::Value;
 use std::{fs, path::Path};
 use tempfile::TempDir;
 
@@ -366,4 +370,161 @@ fn restart_reconstructs_idle_conversations_without_replaying_runs() {
     restarted
         .finish_run(run, Ok(OperationOutcome::Completed))
         .unwrap();
+}
+
+#[test]
+fn terminal_outcomes_remain_exact_and_conversation_scoped() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = ExecutionHost::new();
+    let outcomes = [
+        (
+            OperationOutcome::Completed,
+            HostedConversationState::Completed,
+        ),
+        (OperationOutcome::Failed, HostedConversationState::Failed),
+        (
+            OperationOutcome::Declined,
+            HostedConversationState::Declined,
+        ),
+        (
+            OperationOutcome::Interrupted,
+            HostedConversationState::Interrupted,
+        ),
+    ];
+    let mut conversations = Vec::new();
+    for (index, (outcome, expected)) in outcomes.into_iter().enumerate() {
+        let workspace = directory.path().join(format!("terminal-{index}"));
+        fs::create_dir(&workspace).unwrap();
+        let conversation = register_native(&host, &directory, &workspace);
+        let run = host
+            .begin_run(
+                &conversation,
+                OperationId::new(),
+                RunAccess::WorkspaceWrite,
+                WriteCollisionDecision::Reject,
+            )
+            .unwrap();
+        host.finish_run(run, Ok(outcome)).unwrap();
+        conversations.push((conversation, outcome, expected));
+    }
+
+    let snapshot = host.snapshot().unwrap();
+    for (conversation, outcome, expected) in conversations {
+        let projected = snapshot
+            .conversations
+            .iter()
+            .find(|candidate| candidate.conversation == conversation)
+            .unwrap();
+        assert_eq!(projected.state, expected);
+        assert_eq!(projected.last_outcome, Some(outcome));
+        assert_eq!(projected.last_error, None);
+    }
+}
+
+#[test]
+fn approvals_failures_and_interruptions_never_cross_conversation_boundaries() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace_a = directory.path().join("workspace-a");
+    let workspace_b = directory.path().join("workspace-b");
+    fs::create_dir(&workspace_a).unwrap();
+    fs::create_dir(&workspace_b).unwrap();
+    let host = ExecutionHost::new();
+    let first = register_native(&host, &directory, &workspace_a);
+    let second = register_native(&host, &directory, &workspace_b);
+    let first_operation = OperationId::new();
+    let second_operation = OperationId::new();
+    let first_run = host
+        .begin_run(
+            &first,
+            first_operation,
+            RunAccess::WorkspaceWrite,
+            WriteCollisionDecision::Reject,
+        )
+        .unwrap();
+    let second_run = host
+        .begin_run(
+            &second,
+            second_operation,
+            RunAccess::WorkspaceWrite,
+            WriteCollisionDecision::Reject,
+        )
+        .unwrap();
+    let request = PermissionRequest {
+        operation_id: first_operation,
+        invocation_id: ToolInvocationId::new(),
+        tool_name: "write_file".to_owned(),
+        effect_class: EffectClass::Write,
+        final_arguments: Value::Null,
+        scope: PermissionScope::WorkspacePath {
+            canonical_path: workspace_a.canonicalize().unwrap(),
+        },
+        outbound_review: None,
+    };
+    host.record_runtime_observation(
+        &first,
+        &ClientObservation {
+            version: crate::frontend::FRONTEND_PROTOCOL_VERSION,
+            sequence: 1,
+            event: ClientEvent::Runtime(Box::new(AgentEvent::PermissionRequested {
+                request: request.clone(),
+            })),
+        },
+    )
+    .unwrap();
+    host.record_runtime_observation(
+        &second,
+        &ClientObservation {
+            version: crate::frontend::FRONTEND_PROTOCOL_VERSION,
+            sequence: 1,
+            event: ClientEvent::Runtime(Box::new(AgentEvent::OperationFailed {
+                operation_id: second_operation,
+                reason: "second-only failure".to_owned(),
+            })),
+        },
+    )
+    .unwrap();
+    host.record_runtime_observation(
+        &first,
+        &ClientObservation {
+            version: crate::frontend::FRONTEND_PROTOCOL_VERSION,
+            sequence: 2,
+            event: ClientEvent::Runtime(Box::new(AgentEvent::PermissionAudited {
+                fact: PermissionAuditFact {
+                    request,
+                    policy_evaluation: PolicyDecision::Ask,
+                    controller_decision: None,
+                    effective: PolicyDecision::Deny,
+                },
+            })),
+        },
+    )
+    .unwrap();
+    host.finish_run(first_run, Ok(OperationOutcome::Interrupted))
+        .unwrap();
+    host.finish_run(second_run, Ok(OperationOutcome::Failed))
+        .unwrap();
+
+    let snapshot = host.snapshot().unwrap();
+    let first_snapshot = snapshot
+        .conversations
+        .iter()
+        .find(|candidate| candidate.conversation == first)
+        .unwrap();
+    let second_snapshot = snapshot
+        .conversations
+        .iter()
+        .find(|candidate| candidate.conversation == second)
+        .unwrap();
+    assert_eq!(first_snapshot.pending_approvals, 0);
+    assert_eq!(first_snapshot.last_error, None);
+    assert_eq!(
+        first_snapshot.last_outcome,
+        Some(OperationOutcome::Interrupted)
+    );
+    assert_eq!(second_snapshot.pending_approvals, 0);
+    assert_eq!(
+        second_snapshot.last_error.as_deref(),
+        Some("second-only failure")
+    );
+    assert_eq!(second_snapshot.last_outcome, Some(OperationOutcome::Failed));
 }

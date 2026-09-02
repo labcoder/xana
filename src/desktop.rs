@@ -281,6 +281,8 @@ pub enum DesktopConversationState {
     Suspended,
     Completed,
     Failed,
+    Declined,
+    Interrupted,
 }
 
 /// Stable host-routing facts, separate from one Conversation's runtime events.
@@ -1299,6 +1301,12 @@ fn project_host_observation(
                 }
                 crate::execution_host::HostedConversationState::Failed => {
                     DesktopConversationState::Failed
+                }
+                crate::execution_host::HostedConversationState::Declined => {
+                    DesktopConversationState::Declined
+                }
+                crate::execution_host::HostedConversationState::Interrupted => {
+                    DesktopConversationState::Interrupted
                 }
             },
             error,
