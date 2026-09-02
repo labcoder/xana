@@ -269,6 +269,8 @@ impl AnthropicClient {
         step_id: StepId,
         deltas: &dyn DeltaSink,
     ) -> Result<Message, AnthropicError> {
+        let prompt_bytes = encoded_len(&request.messages);
+        let tool_schema_bytes = encoded_len(&request.tools);
         let response = self
             .client
             .post(&self.endpoint)
@@ -280,9 +282,15 @@ impl AnthropicClient {
             .map_err(AnthropicError::Transport)?
             .error_for_status()
             .map_err(AnthropicError::Http)?;
+        let request_affinity = request_affinity(&response);
         let mut stream = response.bytes_stream();
         let mut decoder = SseDecoder::default();
-        let mut accumulator = AnthropicAccumulator::default();
+        let mut accumulator = AnthropicAccumulator {
+            prompt_bytes,
+            tool_schema_bytes,
+            request_affinity,
+            ..AnthropicAccumulator::default()
+        };
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(AnthropicError::Transport)?;
             for event in decoder
@@ -344,7 +352,12 @@ struct AnthropicAccumulator {
     streamed_text_bytes: usize,
     streamed_tool_bytes: usize,
     input_tokens: Option<u64>,
+    cached_input_tokens: Option<u64>,
+    cache_write_input_tokens: Option<u64>,
     output_tokens: Option<u64>,
+    prompt_bytes: Option<u64>,
+    tool_schema_bytes: Option<u64>,
+    request_affinity: Option<[u8; 16]>,
 }
 
 #[derive(Debug)]
@@ -379,6 +392,12 @@ impl AnthropicAccumulator {
                 self.message_started = true;
                 self.input_tokens = event
                     .pointer("/message/usage/input_tokens")
+                    .and_then(Value::as_u64);
+                self.cached_input_tokens = event
+                    .pointer("/message/usage/cache_read_input_tokens")
+                    .and_then(Value::as_u64);
+                self.cache_write_input_tokens = event
+                    .pointer("/message/usage/cache_creation_input_tokens")
                     .and_then(Value::as_u64);
             }
             "content_block_start" => {
@@ -531,8 +550,16 @@ impl AnthropicAccumulator {
                 if self.input_tokens.is_some() || self.output_tokens.is_some() {
                     deltas.usage(ProviderUsage {
                         input_tokens: self.input_tokens,
+                        cached_input_tokens: self.cached_input_tokens,
+                        cache_write_input_tokens: self.cache_write_input_tokens,
                         output_tokens: self.output_tokens,
+                        reasoning_tokens: None,
+                        tool_tokens: None,
                         total_tokens: None,
+                        cost_microunits: None,
+                        prompt_bytes: self.prompt_bytes,
+                        tool_schema_bytes: self.tool_schema_bytes,
+                        request_affinity: self.request_affinity,
                     });
                 }
             }
@@ -578,6 +605,26 @@ impl AnthropicAccumulator {
             content,
         })
     }
+}
+
+fn encoded_len(value: &impl Serialize) -> Option<u64> {
+    serde_json::to_vec(value)
+        .ok()
+        .and_then(|encoded| u64::try_from(encoded.len()).ok())
+}
+
+fn request_affinity(response: &reqwest::Response) -> Option<[u8; 16]> {
+    response
+        .headers()
+        .get("request-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let digest = blake3::hash(value.as_bytes());
+            let mut truncated = [0_u8; 16];
+            truncated.copy_from_slice(&digest.as_bytes()[..16]);
+            truncated
+        })
 }
 
 #[cfg(test)]
@@ -699,7 +746,11 @@ mod tests {
         let mut accumulator = AnthropicAccumulator::default();
         let step = StepId::new();
         for event in [
-            json!({"type":"message_start","message":{"usage":{"input_tokens":21}}}),
+            json!({"type":"message_start","message":{"usage":{
+                "input_tokens":21,
+                "cache_read_input_tokens":8,
+                "cache_creation_input_tokens":3
+            }}}),
             json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":"done"}}),
             json!({"type":"content_block_stop","index":0}),
             json!({"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":4}}),
@@ -709,6 +760,8 @@ mod tests {
         }
         let usage = sink.0.lock().expect("usage lock").expect("usage");
         assert_eq!(usage.input_tokens, Some(21));
+        assert_eq!(usage.cached_input_tokens, Some(8));
+        assert_eq!(usage.cache_write_input_tokens, Some(3));
         assert_eq!(usage.output_tokens, Some(4));
         assert_eq!(usage.total_tokens, None);
     }

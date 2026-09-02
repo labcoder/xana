@@ -109,37 +109,48 @@ pub(crate) enum AgentTurnOutcome {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct AgentTurnUsage {
     pub(crate) input_tokens: Option<u64>,
+    pub(crate) cached_input_tokens: Option<u64>,
+    pub(crate) cache_write_input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
+    pub(crate) reasoning_tokens: Option<u64>,
+    pub(crate) tool_tokens: Option<u64>,
     pub(crate) total_tokens: Option<u64>,
+    pub(crate) cost_microunits: Option<u64>,
+    pub(crate) prompt_bytes: Option<u64>,
+    pub(crate) tool_schema_bytes: Option<u64>,
     pub(crate) requests: u64,
+    pub(crate) request_affinities: Vec<[u8; 16]>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct SessionUsage {
     turns: u64,
     requests: u64,
-    input_tokens: u64,
-    output_tokens: u64,
-    total_tokens: u64,
-    input_complete: bool,
-    output_complete: bool,
-    total_complete: bool,
+    input_tokens: UsageCounter,
+    cached_input_tokens: UsageCounter,
+    cache_write_input_tokens: UsageCounter,
+    output_tokens: UsageCounter,
+    reasoning_tokens: UsageCounter,
+    tool_tokens: UsageCounter,
+    total_tokens: UsageCounter,
+    cost_microunits: UsageCounter,
 }
 
-impl Default for SessionUsage {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UsageCounter {
+    value: u64,
+    complete: bool,
+}
+
+impl Default for UsageCounter {
     fn default() -> Self {
         Self {
-            turns: 0,
-            requests: 0,
-            input_tokens: 0,
-            output_tokens: 0,
-            total_tokens: 0,
-            input_complete: true,
-            output_complete: true,
-            total_complete: true,
+            value: 0,
+            complete: true,
         }
     }
 }
@@ -148,34 +159,47 @@ impl SessionUsage {
     pub(crate) fn observe(&mut self, usage: AgentTurnUsage) {
         self.turns = self.turns.saturating_add(1);
         self.requests = self.requests.saturating_add(usage.requests);
-        accumulate(
-            &mut self.input_tokens,
-            &mut self.input_complete,
-            usage.input_tokens,
-        );
-        accumulate(
-            &mut self.output_tokens,
-            &mut self.output_complete,
-            usage.output_tokens,
-        );
-        accumulate(
-            &mut self.total_tokens,
-            &mut self.total_complete,
-            usage.total_tokens,
-        );
+        self.input_tokens.observe(usage.input_tokens);
+        self.cached_input_tokens.observe(usage.cached_input_tokens);
+        self.cache_write_input_tokens
+            .observe(usage.cache_write_input_tokens);
+        self.output_tokens.observe(usage.output_tokens);
+        self.reasoning_tokens.observe(usage.reasoning_tokens);
+        self.tool_tokens.observe(usage.tool_tokens);
+        self.total_tokens.observe(usage.total_tokens);
+        self.cost_microunits.observe(usage.cost_microunits);
     }
 
     pub(crate) fn render(&self) -> String {
         if self.turns == 0 {
             return "Current process: no completed turns yet; token usage is unknown until a provider reports it. Provider quota, rate-limit reset, and wallet balance are not exposed by this connection.".to_owned();
         }
+        let mut details = vec![
+            format!("input {}", self.input_tokens.render()),
+            format!("output {}", self.output_tokens.render()),
+            format!("total {}", self.total_tokens.render()),
+        ];
+        for (label, counter) in [
+            ("cache read", &self.cached_input_tokens),
+            ("cache write", &self.cache_write_input_tokens),
+            ("reasoning", &self.reasoning_tokens),
+            ("tool", &self.tool_tokens),
+        ] {
+            if counter.value > 0 || !counter.complete {
+                details.push(format!("{label} {}", counter.render()));
+            }
+        }
+        if self.cost_microunits.value > 0 || !self.cost_microunits.complete {
+            details.push(format!(
+                "provider-reported cost {}",
+                self.cost_microunits.render_microunits()
+            ));
+        }
         format!(
-            "Current process: {} turn(s), {} provider request(s) · input {} · output {} · total {}. Provider quota, rate-limit reset, and wallet balance are unavailable unless the active connection exposes them.",
+            "Current process: {} turn(s), {} provider request(s) · {}. Account quota, rate-limit reset, and credit balance are separate observations and may be unavailable.",
             self.turns,
             self.requests,
-            token_count(self.input_tokens, self.input_complete),
-            token_count(self.output_tokens, self.output_complete),
-            token_count(self.total_tokens, self.total_complete),
+            details.join(" · "),
         )
     }
 }
@@ -184,18 +208,37 @@ impl AgentTurnUsage {
     pub(crate) const fn empty() -> Self {
         Self {
             input_tokens: Some(0),
+            cached_input_tokens: Some(0),
+            cache_write_input_tokens: Some(0),
             output_tokens: Some(0),
+            reasoning_tokens: Some(0),
+            tool_tokens: Some(0),
             total_tokens: Some(0),
+            cost_microunits: Some(0),
+            prompt_bytes: Some(0),
+            tool_schema_bytes: Some(0),
             requests: 0,
+            request_affinities: Vec::new(),
         }
     }
 
     pub(crate) fn merge(self, next: Self) -> Self {
         Self {
             input_tokens: merge_count(self.input_tokens, next.input_tokens),
+            cached_input_tokens: merge_count(self.cached_input_tokens, next.cached_input_tokens),
+            cache_write_input_tokens: merge_count(
+                self.cache_write_input_tokens,
+                next.cache_write_input_tokens,
+            ),
             output_tokens: merge_count(self.output_tokens, next.output_tokens),
+            reasoning_tokens: merge_count(self.reasoning_tokens, next.reasoning_tokens),
+            tool_tokens: merge_count(self.tool_tokens, next.tool_tokens),
             total_tokens: merge_count(self.total_tokens, next.total_tokens),
+            cost_microunits: merge_count(self.cost_microunits, next.cost_microunits),
+            prompt_bytes: merge_count(self.prompt_bytes, next.prompt_bytes),
+            tool_schema_bytes: merge_count(self.tool_schema_bytes, next.tool_schema_bytes),
             requests: self.requests.saturating_add(next.requests),
+            request_affinities: merge_affinities(self.request_affinities, next.request_affinities),
         }
     }
 }
@@ -204,20 +247,44 @@ fn merge_count(left: Option<u64>, right: Option<u64>) -> Option<u64> {
     left.and_then(|left| right.and_then(|right| left.checked_add(right)))
 }
 
-fn accumulate(total: &mut u64, complete: &mut bool, observed: Option<u64>) {
-    match observed {
-        Some(value) => *total = total.saturating_add(value),
-        None => *complete = false,
+fn merge_affinities(mut left: Vec<[u8; 16]>, right: Vec<[u8; 16]>) -> Vec<[u8; 16]> {
+    for affinity in right {
+        if left.len() >= 64 {
+            break;
+        }
+        if !left.contains(&affinity) {
+            left.push(affinity);
+        }
     }
+    left
 }
 
-fn token_count(value: u64, complete: bool) -> String {
-    if complete {
-        value.to_string()
-    } else if value == 0 {
-        "unknown".to_owned()
-    } else {
-        format!("at least {value} (partial)")
+impl UsageCounter {
+    fn observe(&mut self, observed: Option<u64>) {
+        match observed {
+            Some(value) => self.value = self.value.saturating_add(value),
+            None => self.complete = false,
+        }
+    }
+
+    fn render(&self) -> String {
+        if self.complete {
+            self.value.to_string()
+        } else if self.value == 0 {
+            "unknown".to_owned()
+        } else {
+            format!("at least {} (partial)", self.value)
+        }
+    }
+
+    fn render_microunits(&self) -> String {
+        if self.complete {
+            format!("${:.6}", self.value as f64 / 1_000_000.0)
+        } else if self.value == 0 {
+            "unknown".to_owned()
+        } else {
+            format!("at least ${:.6} (partial)", self.value as f64 / 1_000_000.0)
+        }
     }
 }
 
@@ -556,9 +623,24 @@ impl EventDeltaSink {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         AgentTurnUsage {
             input_tokens: complete_sum(&usage.requests, |usage| usage.input_tokens),
+            cached_input_tokens: complete_sum(&usage.requests, |usage| usage.cached_input_tokens),
+            cache_write_input_tokens: complete_sum(&usage.requests, |usage| {
+                usage.cache_write_input_tokens
+            }),
             output_tokens: complete_sum(&usage.requests, |usage| usage.output_tokens),
+            reasoning_tokens: complete_sum(&usage.requests, |usage| usage.reasoning_tokens),
+            tool_tokens: complete_sum(&usage.requests, |usage| usage.tool_tokens),
             total_tokens: complete_sum(&usage.requests, |usage| usage.total_tokens),
+            cost_microunits: complete_sum(&usage.requests, |usage| usage.cost_microunits),
+            prompt_bytes: complete_sum(&usage.requests, |usage| usage.prompt_bytes),
+            tool_schema_bytes: complete_sum(&usage.requests, |usage| usage.tool_schema_bytes),
             requests: usage.requests.len() as u64,
+            request_affinities: usage
+                .requests
+                .iter()
+                .filter_map(|usage| usage.and_then(|usage| usage.request_affinity))
+                .take(64)
+                .collect(),
         }
     }
 }

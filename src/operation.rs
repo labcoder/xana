@@ -70,7 +70,7 @@ pub(crate) enum DurableValueRef {
 pub(crate) enum SuspensionReason {
     Permission,
     ProcessInterrupted,
-    RoundBudgetReached(crate::native_runtime::RoundBudgetSuspension),
+    RoundBudgetReached(Box<crate::native_runtime::RoundBudgetSuspension>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

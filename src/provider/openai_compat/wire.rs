@@ -145,6 +145,26 @@ pub(super) struct WireUsage {
     pub(super) completion_tokens: Option<u64>,
     #[serde(default)]
     pub(super) total_tokens: Option<u64>,
+    #[serde(default)]
+    pub(super) prompt_tokens_details: Option<WirePromptTokenDetails>,
+    #[serde(default)]
+    pub(super) completion_tokens_details: Option<WireCompletionTokenDetails>,
+    #[serde(default)]
+    pub(super) cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub(super) struct WirePromptTokenDetails {
+    #[serde(default)]
+    pub(super) cached_tokens: Option<u64>,
+    #[serde(default, alias = "cache_write_tokens")]
+    pub(super) cache_write_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub(super) struct WireCompletionTokenDetails {
+    #[serde(default)]
+    pub(super) reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

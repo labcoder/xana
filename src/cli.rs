@@ -212,8 +212,11 @@ pub(crate) enum Command {
     /// Inspect or manage model-provider connections.
     #[command(display_order = 6)]
     Connection(ConnectionArgs),
-    /// List, refresh, and select connection-owned models.
+    /// Inspect provider-neutral model, request, quota, and credit observations.
     #[command(display_order = 7)]
+    Usage(UsageArgs),
+    /// List, refresh, and select connection-owned models.
+    #[command(display_order = 8)]
     Model(ModelArgs),
     /// List, create, inspect, select, or archive conversations.
     #[command(display_order = 8)]
@@ -938,6 +941,22 @@ impl From<ConnectionKindChoice> for crate::config::ProviderKind {
 pub(crate) struct ConnectionArgs {
     #[command(subcommand)]
     pub(crate) command: ConnectionCommand,
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct UsageArgs {
+    /// Inspect this connection instead of the active selection.
+    #[arg(long, value_name = "CONNECTION")]
+    pub(crate) connection: Option<String>,
+    /// Include facts for one exact model (requires --connection).
+    #[arg(long, value_name = "MODEL", requires = "connection")]
+    pub(crate) model: Option<String>,
+    /// Bypass an expired cache, subject to the bounded refresh interval.
+    #[arg(long)]
+    pub(crate) refresh: bool,
+    /// Emit the stable provider-neutral JSON report.
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]

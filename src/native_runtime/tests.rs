@@ -218,8 +218,12 @@ impl ManagedCodexRunner for SupervisorManagedRunner {
                         thread_id: "thread-fake".to_owned(),
                         turn_id: "turn-fake".to_owned(),
                         input_tokens: 20,
+                        cached_input_tokens: None,
                         output_tokens: 5,
+                        reasoning_tokens: None,
                         total_tokens: 25,
+                        context_input_tokens: None,
+                        context_window_tokens: None,
                     },
                 },
             });

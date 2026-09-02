@@ -125,6 +125,7 @@ fn commands_and_events_round_trip_through_json() {
             output_tokens: Some(2),
             total_tokens: Some(12),
             requests: 8,
+            ..AgentTurnUsage::default()
         },
         allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
     };

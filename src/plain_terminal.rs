@@ -224,7 +224,7 @@ impl<W: Write> EventRenderer<W> {
                     write_assistant(&mut self.output, message, self.presentation)?;
                 }
             }
-            AgentEvent::UsageObserved { usage, .. } => self.usage.observe(*usage),
+            AgentEvent::UsageObserved { usage, .. } => self.usage.observe(usage.clone()),
             AgentEvent::RoundBudgetReached { suspension } => {
                 self.finish_stream()?;
                 writeln!(

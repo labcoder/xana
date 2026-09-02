@@ -351,6 +351,7 @@ async fn tranche_reports_round_budget_without_losing_committed_history_or_usage(
             input_tokens: Some(10),
             output_tokens: Some(2),
             total_tokens: Some(12),
+            ..ProviderUsage::default()
         }),
     };
     let (provider, _) = ScriptedChatTransport::new(vec![response]);
@@ -462,6 +463,7 @@ async fn usage_aggregates_across_tool_rounds_without_filling_missing_fields() {
                 input_tokens: Some(10),
                 output_tokens: Some(2),
                 total_tokens: Some(12),
+                ..ProviderUsage::default()
             }),
         },
         ScriptedResponse {
@@ -471,6 +473,7 @@ async fn usage_aggregates_across_tool_rounds_without_filling_missing_fields() {
                 input_tokens: Some(20),
                 output_tokens: None,
                 total_tokens: None,
+                ..ProviderUsage::default()
             }),
         },
     ];
@@ -514,16 +517,18 @@ fn session_usage_labels_partial_provider_observations() {
         output_tokens: None,
         total_tokens: None,
         requests: 1,
+        ..AgentTurnUsage::default()
     });
     usage.observe(AgentTurnUsage {
         input_tokens: Some(80),
         output_tokens: Some(20),
         total_tokens: Some(100),
         requests: 1,
+        ..AgentTurnUsage::default()
     });
 
     let rendered = usage.render();
     assert!(rendered.contains("input 200"));
     assert!(rendered.contains("output at least 20 (partial)"));
-    assert!(rendered.contains("wallet balance are unavailable"));
+    assert!(rendered.contains("credit balance are separate observations"));
 }

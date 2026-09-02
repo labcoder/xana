@@ -64,6 +64,7 @@ mod sse;
 mod telemetry;
 mod tool;
 mod tui;
+mod usage_observation;
 mod vision;
 mod workspace_host;
 mod workspace_identity;

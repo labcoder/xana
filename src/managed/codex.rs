@@ -96,8 +96,12 @@ pub(crate) struct ManagedTurnResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ManagedTokenUsage {
     pub(crate) input_tokens: u64,
+    pub(crate) cached_input_tokens: Option<u64>,
     pub(crate) output_tokens: u64,
+    pub(crate) reasoning_tokens: Option<u64>,
     pub(crate) total_tokens: u64,
+    pub(crate) context_input_tokens: Option<u64>,
+    pub(crate) context_window_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,8 +223,12 @@ pub(crate) enum ManagedNotification {
         thread_id: String,
         turn_id: String,
         input_tokens: u64,
+        cached_input_tokens: Option<u64>,
         output_tokens: u64,
+        reasoning_tokens: Option<u64>,
         total_tokens: u64,
+        context_input_tokens: Option<u64>,
+        context_window_tokens: Option<u64>,
     },
     Warning(String),
     LoginCompleted {
@@ -1241,13 +1249,21 @@ impl CodexAppServer {
                         thread_id: usage_thread,
                         turn_id: usage_turn,
                         input_tokens,
+                        cached_input_tokens,
                         output_tokens,
+                        reasoning_tokens,
                         total_tokens,
+                        context_input_tokens,
+                        context_window_tokens,
                     } if usage_thread == thread_id && usage_turn == &turn_id => {
                         usage = Some(ManagedTokenUsage {
                             input_tokens: *input_tokens,
+                            cached_input_tokens: *cached_input_tokens,
                             output_tokens: *output_tokens,
+                            reasoning_tokens: *reasoning_tokens,
                             total_tokens: *total_tokens,
+                            context_input_tokens: *context_input_tokens,
+                            context_window_tokens: *context_window_tokens,
                         });
                         Ok(false)
                     }

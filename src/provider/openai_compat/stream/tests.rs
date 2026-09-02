@@ -33,7 +33,13 @@ fn usage_only_stream_chunk_keeps_optional_token_fields_typed() {
         "usage": {
             "prompt_tokens": 12,
             "completion_tokens": 3,
-            "total_tokens": 15
+            "total_tokens": 15,
+            "prompt_tokens_details": {
+                "cached_tokens": 4,
+                "cache_write_tokens": 2
+            },
+            "completion_tokens_details": {"reasoning_tokens": 1},
+            "cost": 0.000015
         }
     }))
     .expect("usage response");
@@ -41,6 +47,16 @@ fn usage_only_stream_chunk_keeps_optional_token_fields_typed() {
     assert_eq!(usage.prompt_tokens, Some(12));
     assert_eq!(usage.completion_tokens, Some(3));
     assert_eq!(usage.total_tokens, Some(15));
+    assert_eq!(usage.prompt_tokens_details.unwrap().cached_tokens, Some(4));
+    assert_eq!(
+        usage.prompt_tokens_details.unwrap().cache_write_tokens,
+        Some(2)
+    );
+    assert_eq!(
+        usage.completion_tokens_details.unwrap().reasoning_tokens,
+        Some(1)
+    );
+    assert_eq!(usage.cost, Some(0.000015));
 }
 
 #[test]

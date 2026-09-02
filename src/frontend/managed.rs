@@ -54,8 +54,12 @@ pub(crate) enum ManagedClientEvent {
     },
     TokenUsageUpdated {
         input_tokens: u64,
+        cached_input_tokens: Option<u64>,
         output_tokens: u64,
+        reasoning_tokens: Option<u64>,
         total_tokens: u64,
+        context_input_tokens: Option<u64>,
+        context_window_tokens: Option<u64>,
     },
     Warning(String),
 }
@@ -125,13 +129,21 @@ impl ManagedClientEvent {
             },
             ManagedNotification::TokenUsageUpdated {
                 input_tokens,
+                cached_input_tokens,
                 output_tokens,
+                reasoning_tokens,
                 total_tokens,
+                context_input_tokens,
+                context_window_tokens,
                 ..
             } => Self::TokenUsageUpdated {
                 input_tokens,
+                cached_input_tokens,
                 output_tokens,
+                reasoning_tokens,
                 total_tokens,
+                context_input_tokens,
+                context_window_tokens,
             },
             ManagedNotification::Warning(message) => {
                 Self::Warning(bounded_text(message, MAX_DELTA_BYTES))

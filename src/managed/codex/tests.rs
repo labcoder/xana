@@ -482,6 +482,7 @@ fn thread_and_usage_notifications_keep_managed_correlation() {
                 "turnId":"turn-1",
                 "tokenUsage":{
                     "total":{"inputTokens":30,"outputTokens":7,"totalTokens":37},
+                    "modelContextWindow":200000,
                     "last":{"inputTokens":10,"outputTokens":2,"totalTokens":12}
                 }
             }),
@@ -491,8 +492,12 @@ fn thread_and_usage_notifications_keep_managed_correlation() {
             thread_id: "thread-1".into(),
             turn_id: "turn-1".into(),
             input_tokens: 30,
+            cached_input_tokens: None,
             output_tokens: 7,
+            reasoning_tokens: None,
             total_tokens: 37,
+            context_input_tokens: Some(10),
+            context_window_tokens: Some(200000),
         }
     );
 

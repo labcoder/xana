@@ -266,6 +266,7 @@ fn round_budget_requires_the_exact_visible_continue_or_stop_decision() {
             output_tokens: Some(2),
             total_tokens: Some(12),
             requests: 8,
+            ..crate::agent::AgentTurnUsage::default()
         },
         allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
     };

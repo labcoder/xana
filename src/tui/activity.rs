@@ -433,6 +433,7 @@ pub(super) fn from_managed(event: &ManagedClientEvent) -> Option<ActivityCard> {
             input_tokens,
             output_tokens,
             total_tokens,
+            ..
         } => ActivityCard::new(
             "Codex",
             "usage",

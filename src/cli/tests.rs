@@ -116,6 +116,30 @@ fn parses_connection_and_model_control_plane() {
 }
 
 #[test]
+fn parses_provider_neutral_usage_query() {
+    assert_eq!(
+        Cli::try_parse_from([
+            "xana",
+            "usage",
+            "--connection",
+            "openrouter",
+            "--model",
+            "openai/gpt-5",
+            "--refresh",
+            "--json",
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Usage(UsageArgs {
+            connection: Some("openrouter".into()),
+            model: Some("openai/gpt-5".into()),
+            refresh: true,
+            json: true,
+        }))
+    );
+}
+
+#[test]
 fn parses_interactive_init() {
     let cli =
         Cli::try_parse_from(["xana", "init", "--dry-run"]).expect("interactive initialization");

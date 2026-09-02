@@ -22,6 +22,7 @@ mod projects;
 mod recovery;
 mod sessions;
 mod skills;
+mod usage_commands;
 pub(crate) mod vision;
 mod vision_commands;
 
@@ -265,6 +266,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Connection(args)) => {
             let stdout = io::stdout();
             run_connection_command(args.command, &paths, &mut stdout.lock()).await
+        }
+        Some(Command::Usage(args)) => {
+            let stdout = io::stdout();
+            usage_commands::run(args, &paths, &mut stdout.lock()).await
         }
         Some(Command::Model(args)) => {
             let stdout = io::stdout();

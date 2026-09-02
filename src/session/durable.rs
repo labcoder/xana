@@ -557,7 +557,7 @@ impl DurableSession {
                     .round_budget_decisions
                     .iter()
                     .any(|decision| decision.suspension_id == suspension.id))
-                .then(|| suspension.clone())
+                .then(|| (**suspension).clone())
             })
     }
 

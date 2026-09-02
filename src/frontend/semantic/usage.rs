@@ -17,6 +17,7 @@ pub(crate) enum UsageScopeV1 {
     Run { run_id: OperationId },
     Conversation { conversation_id: ConversationId },
     Connection { connection: String },
+    Model { connection: String, model: String },
     Account { connection: String, account: String },
     RateLimitBucket { connection: String, bucket: String },
 }
@@ -26,6 +27,10 @@ impl UsageScopeV1 {
         match self {
             Self::Connection { connection } => {
                 validate_text("usage connection", connection, 256)?;
+            }
+            Self::Model { connection, model } => {
+                validate_text("usage connection", connection, 256)?;
+                validate_text("usage model", model, 256)?;
             }
             Self::Account {
                 connection,
@@ -49,9 +54,13 @@ impl UsageScopeV1 {
 pub(crate) struct UsageAmountsV1 {
     pub(crate) input_tokens: Option<u64>,
     pub(crate) cached_input_tokens: Option<u64>,
+    pub(crate) cache_write_input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
     pub(crate) reasoning_tokens: Option<u64>,
     pub(crate) tool_tokens: Option<u64>,
+    pub(crate) request_count: Option<u64>,
+    pub(crate) prompt_bytes: Option<u64>,
+    pub(crate) tool_schema_bytes: Option<u64>,
     pub(crate) cost_microunits: Option<u64>,
 }
 
@@ -59,9 +68,13 @@ impl UsageAmountsV1 {
     fn is_complete(&self) -> bool {
         self.input_tokens.is_some()
             && self.cached_input_tokens.is_some()
+            && self.cache_write_input_tokens.is_some()
             && self.output_tokens.is_some()
             && self.reasoning_tokens.is_some()
             && self.tool_tokens.is_some()
+            && self.request_count.is_some()
+            && self.prompt_bytes.is_some()
+            && self.tool_schema_bytes.is_some()
             && self.cost_microunits.is_some()
     }
 }
@@ -79,9 +92,21 @@ pub(crate) struct ContextOccupancyV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LimitObservationV1 {
+    /// Provider-reported percentage used, in basis points (10_000 = 100%).
+    pub(crate) used_percent_basis_points: Option<u16>,
     pub(crate) remaining: Option<u64>,
     pub(crate) limit: Option<u64>,
+    pub(crate) window_millis: Option<u64>,
     pub(crate) reset_at_unix_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CreditBalanceV1 {
+    pub(crate) currency: String,
+    pub(crate) purchased_microunits: Option<u64>,
+    pub(crate) used_microunits: Option<u64>,
+    pub(crate) remaining_microunits: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,7 +128,9 @@ pub(crate) struct UsageObservationV1 {
     pub(crate) context: Option<ContextOccupancyV1>,
     pub(crate) rate_limit: Option<LimitObservationV1>,
     pub(crate) quota: Option<LimitObservationV1>,
-    pub(crate) credits_microunits: Option<u64>,
+    pub(crate) credits: Option<CreditBalanceV1>,
+    /// Redacted stable digest for provider request/session affinity, never a raw ID.
+    pub(crate) request_affinity_digest: Option<String>,
     pub(crate) availability: AvailabilityV1,
     pub(crate) source: FactSourceV1,
     pub(crate) authority: FactAuthorityV1,
@@ -133,6 +160,23 @@ impl UsageObservationV1 {
                     reason: "remaining must not exceed limit",
                 });
             }
+            if let Some(limit) = limit {
+                if limit
+                    .used_percent_basis_points
+                    .is_some_and(|value| value > 10_000)
+                {
+                    return Err(SemanticError::InvalidStructure {
+                        field,
+                        reason: "used percentage must not exceed 100 percent",
+                    });
+                }
+                if limit.window_millis == Some(0) {
+                    return Err(SemanticError::InvalidStructure {
+                        field,
+                        reason: "window must be positive when known",
+                    });
+                }
+            }
         }
         if let Some(context) = &self.context
             && context
@@ -143,6 +187,12 @@ impl UsageObservationV1 {
                 field: "context occupancy",
                 reason: "input tokens must not exceed a known capacity",
             });
+        }
+        if let Some(credits) = &self.credits {
+            validate_code("credit currency", &credits.currency, 16)?;
+        }
+        if let Some(digest) = &self.request_affinity_digest {
+            validate_code("request affinity digest", digest, 128)?;
         }
         Ok(())
     }
@@ -276,9 +326,13 @@ fn add_amounts(target: &mut UsageAmountsV1, value: &UsageAmountsV1) -> Result<()
     }
     add!(input_tokens);
     add!(cached_input_tokens);
+    add!(cache_write_input_tokens);
     add!(output_tokens);
     add!(reasoning_tokens);
     add!(tool_tokens);
+    add!(request_count);
+    add!(prompt_bytes);
+    add!(tool_schema_bytes);
     add!(cost_microunits);
     Ok(())
 }

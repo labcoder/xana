@@ -93,6 +93,7 @@ impl RetainedActivity {
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                ..
             } => Some((*input_tokens, *output_tokens, *total_tokens)),
             _ => None,
         })

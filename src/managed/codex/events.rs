@@ -135,8 +135,21 @@ pub(super) fn normalize_notification(
             thread_id: required_string(&params, "threadId")?,
             turn_id: required_string(&params, "turnId")?,
             input_tokens: required_u64(&params, "/tokenUsage/total/inputTokens")?,
+            cached_input_tokens: params
+                .pointer("/tokenUsage/total/cachedInputTokens")
+                .and_then(Value::as_u64),
             output_tokens: required_u64(&params, "/tokenUsage/total/outputTokens")?,
+            reasoning_tokens: params
+                .pointer("/tokenUsage/total/reasoningOutputTokens")
+                .or_else(|| params.pointer("/tokenUsage/total/reasoningTokens"))
+                .and_then(Value::as_u64),
             total_tokens: required_u64(&params, "/tokenUsage/total/totalTokens")?,
+            context_input_tokens: params
+                .pointer("/tokenUsage/last/inputTokens")
+                .and_then(Value::as_u64),
+            context_window_tokens: params
+                .pointer("/tokenUsage/modelContextWindow")
+                .and_then(Value::as_u64),
         },
         "warning" | "error" => ManagedNotification::Warning(bounded_text(
             params

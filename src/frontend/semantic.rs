@@ -19,7 +19,10 @@ pub(crate) use content::{
 };
 pub(crate) use event::SemanticEventEnvelopeV1;
 pub(crate) use state::{SemanticDeltaV1, SemanticReplicaV1, SemanticSnapshotV1};
-pub(crate) use usage::{UsageAggregateV1, UsageLedgerV1, UsageObservationV1};
+pub(crate) use usage::{
+    ContextOccupancyV1, CreditBalanceV1, LimitObservationV1, UsageAccountingV1, UsageAggregateV1,
+    UsageAmountsV1, UsageLedgerV1, UsageObservationV1, UsageScopeV1,
+};
 
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, error::Error, fmt};

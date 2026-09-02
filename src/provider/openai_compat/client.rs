@@ -279,6 +279,8 @@ impl OpenAiCompatClient {
                 .map(|definition| WireToolDefinition::from(*definition))
                 .collect(),
         };
+        let prompt_bytes = encoded_len(&request.messages);
+        let tool_schema_bytes = encoded_len(&request.tools);
 
         let mut builder = self.client.post(&self.endpoint);
         if let Some(token) = &self.bearer_token {
@@ -297,6 +299,7 @@ impl OpenAiCompatClient {
             .map_err(|source| {
                 OpenAiCompatError::http(OpenAiCompatErrorKind::HttpStatus, &self.endpoint, source)
             })?;
+        let request_affinity = request_affinity(&response);
 
         let mut bytes = response.bytes_stream();
         let mut decoder = SseDecoder::default();
@@ -329,10 +332,21 @@ impl OpenAiCompatClient {
                             })?;
                         let has_usage = response.usage.is_some();
                         if let Some(usage) = response.usage {
+                            let prompt_details = usage.prompt_tokens_details.unwrap_or_default();
+                            let completion_details =
+                                usage.completion_tokens_details.unwrap_or_default();
                             deltas.usage(ProviderUsage {
                                 input_tokens: usage.prompt_tokens,
+                                cached_input_tokens: prompt_details.cached_tokens,
+                                cache_write_input_tokens: prompt_details.cache_write_tokens,
                                 output_tokens: usage.completion_tokens,
+                                reasoning_tokens: completion_details.reasoning_tokens,
+                                tool_tokens: None,
                                 total_tokens: usage.total_tokens,
+                                cost_microunits: usage.cost.and_then(usd_microunits),
+                                prompt_bytes,
+                                tool_schema_bytes,
+                                request_affinity,
                             });
                         }
                         let Some(choice) = response.choices.into_iter().next() else {
@@ -392,6 +406,32 @@ impl OpenAiCompatClient {
         self.stream_message_inner(messages, tools, None, StepId::new(), &IgnoreDeltas)
             .await
     }
+}
+
+fn encoded_len(value: &impl serde::Serialize) -> Option<u64> {
+    serde_json::to_vec(value)
+        .ok()
+        .and_then(|encoded| u64::try_from(encoded.len()).ok())
+}
+
+fn request_affinity(response: &reqwest::Response) -> Option<[u8; 16]> {
+    ["x-request-id", "x-openrouter-generation-id"]
+        .into_iter()
+        .find_map(|name| response.headers().get(name))
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let digest = blake3::hash(value.as_bytes());
+            let mut truncated = [0_u8; 16];
+            truncated.copy_from_slice(&digest.as_bytes()[..16]);
+            truncated
+        })
+}
+
+fn usd_microunits(value: f64) -> Option<u64> {
+    let scaled = value * 1_000_000.0;
+    (scaled.is_finite() && scaled >= 0.0 && scaled <= u64::MAX as f64)
+        .then(|| scaled.round() as u64)
 }
 
 impl ConversationalProvider for OpenAiCompatClient {

@@ -93,7 +93,7 @@ impl TuiState {
                 operation_id,
                 message,
             } => self.finish_assistant(*operation_id, message),
-            AgentEvent::UsageObserved { usage, .. } => self.native_usage.observe(*usage),
+            AgentEvent::UsageObserved { usage, .. } => self.native_usage.observe(usage.clone()),
             AgentEvent::RoundBudgetReached { suspension } => {
                 self.busy = false;
                 self.active_operation = None;
@@ -544,6 +544,7 @@ impl TuiState {
                 input_tokens,
                 output_tokens,
                 total_tokens,
+                ..
             } => {
                 self.managed_usage = Some((*input_tokens, *output_tokens, *total_tokens));
             }

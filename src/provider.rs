@@ -32,11 +32,20 @@ pub(crate) trait DeltaSink: Send + Sync {
     fn usage(&self, _usage: ProviderUsage) {}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ProviderUsage {
     pub(crate) input_tokens: Option<u64>,
+    pub(crate) cached_input_tokens: Option<u64>,
+    pub(crate) cache_write_input_tokens: Option<u64>,
     pub(crate) output_tokens: Option<u64>,
+    pub(crate) reasoning_tokens: Option<u64>,
+    pub(crate) tool_tokens: Option<u64>,
     pub(crate) total_tokens: Option<u64>,
+    pub(crate) cost_microunits: Option<u64>,
+    pub(crate) prompt_bytes: Option<u64>,
+    pub(crate) tool_schema_bytes: Option<u64>,
+    /// A one-way stable digest of an upstream request/session affinity ID.
+    pub(crate) request_affinity: Option<[u8; 16]>,
 }
 
 #[derive(Debug)]

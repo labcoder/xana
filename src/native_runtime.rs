@@ -878,7 +878,7 @@ impl Runtime {
                     };
                     if let Err(error) = session.append_record(SessionRecord::OperationSuspended {
                         operation_id: completion.operation_id,
-                        reason: SuspensionReason::RoundBudgetReached(suspension.clone()),
+                        reason: SuspensionReason::RoundBudgetReached(Box::new(suspension.clone())),
                     }) {
                         self.agent.record_storage_failure(
                             completion.operation_id,
