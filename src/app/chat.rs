@@ -177,6 +177,9 @@ async fn run_once(
             });
         }
     };
+    crate::private_state::ensure_interoperable_records(paths).context(
+        "could not prepare Xana's private state; run `xana config migrate --apply` and retry",
+    )?;
 
     let manager = model_manager(paths)?;
     let child_registry = XanaConfig::load_registry_from(paths.config_file())
