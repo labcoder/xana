@@ -7,6 +7,9 @@ impl TuiState {
         if self.overlay.is_some() {
             return self.update_overlay(action);
         }
+        if self.espejo.is_some() {
+            return self.update_espejo(action);
+        }
         match action {
             InputAction::Insert(text) => {
                 self.header_expanded = false;
@@ -181,12 +184,118 @@ impl TuiState {
             InputAction::PaletteUp
             | InputAction::PaletteDown
             | InputAction::PreviewSelected
+            | InputAction::SelectEspejo(_)
             | InputAction::Confirm
             | InputAction::ChooseOverlay(_)
             | InputAction::BeginActivitySelection(_)
             | InputAction::ExtendActivitySelection(_)
             | InputAction::FinishActivitySelection { .. }
             | InputAction::ClearActivitySelection => UpdateEffect::None,
+        }
+    }
+
+    fn update_espejo(&mut self, action: InputAction) -> UpdateEffect {
+        match action {
+            InputAction::Move {
+                direction: MoveDirection::Up,
+                ..
+            }
+            | InputAction::PaletteUp => {
+                if let Some(espejo) = &mut self.espejo {
+                    espejo.selected = espejo.selected.saturating_sub(1);
+                }
+                UpdateEffect::None
+            }
+            InputAction::Move {
+                direction: MoveDirection::Down,
+                ..
+            }
+            | InputAction::PaletteDown => {
+                let maximum = super::super::espejo::rows(self).len().saturating_sub(1);
+                if let Some(espejo) = &mut self.espejo {
+                    espejo.selected = espejo.selected.saturating_add(1).min(maximum);
+                }
+                UpdateEffect::None
+            }
+            InputAction::Scroll(delta) => {
+                let maximum = super::super::espejo::rows(self).len().saturating_sub(1);
+                let steps = usize::from(delta.unsigned_abs());
+                if let Some(espejo) = &mut self.espejo {
+                    espejo.selected = if delta.is_negative() {
+                        espejo.selected.saturating_sub(steps)
+                    } else {
+                        espejo.selected.saturating_add(steps).min(maximum)
+                    };
+                }
+                UpdateEffect::None
+            }
+            InputAction::SelectEspejo(index) => {
+                let maximum = super::super::espejo::rows(self).len().saturating_sub(1);
+                if let Some(espejo) = &mut self.espejo {
+                    espejo.selected = index.min(maximum);
+                }
+                UpdateEffect::None
+            }
+            InputAction::Submit | InputAction::Confirm => {
+                let target = super::super::espejo::selected_conversation(self);
+                self.espejo = None;
+                target.map_or(UpdateEffect::None, UpdateEffect::ViewSession)
+            }
+            InputAction::Insert(value) if value.eq_ignore_ascii_case("g") => {
+                self.espejo = Some(EspejoViewState::global());
+                self.status = "Espejo scope: global current workspace".to_owned();
+                UpdateEffect::None
+            }
+            InputAction::Insert(value) if value.eq_ignore_ascii_case("p") => {
+                let project = self
+                    .sessions
+                    .iter()
+                    .find(|row| row.conversation == self.viewed_conversation)
+                    .and_then(|row| row.project.clone());
+                self.espejo = Some(EspejoViewState {
+                    scope: EspejoScope::Project(project),
+                    selected: 0,
+                });
+                self.status = "Espejo scope: selected Project".to_owned();
+                UpdateEffect::None
+            }
+            InputAction::Insert(value) if value.eq_ignore_ascii_case("a") => {
+                self.espejo = None;
+                if let Some(card) = self
+                    .activity
+                    .iter()
+                    .rev()
+                    .find(|card| !card.detail.is_empty())
+                {
+                    self.overlay = Some(Overlay::ActivityDetail {
+                        card: Box::new(card.clone()),
+                        scroll: 0,
+                        selection: None,
+                    });
+                } else {
+                    self.status = "No detailed Activity is available yet".to_owned();
+                }
+                UpdateEffect::None
+            }
+            InputAction::Insert(value) if value.eq_ignore_ascii_case("d") => {
+                self.espejo = None;
+                UpdateEffect::Doctor
+            }
+            InputAction::OpenPalette => {
+                self.overlay = Some(Overlay::Palette {
+                    query: String::new(),
+                    selected: 0,
+                });
+                UpdateEffect::None
+            }
+            InputAction::CopyOrInterrupt => self.interrupt(),
+            InputAction::Cancel => {
+                self.espejo = None;
+                self.status = "Returned to Conversation".to_owned();
+                UpdateEffect::None
+            }
+            InputAction::Quit => UpdateEffect::Quit,
+            _ => UpdateEffect::None,
         }
     }
 
@@ -1068,12 +1177,30 @@ impl TuiState {
                 self.status = format!("Composer preset: {preset:?}");
                 UpdateEffect::PersistComposer(preset)
             }
+            CommandId::Espejo => {
+                self.composer.take();
+                let scope = match command.arguments.as_str() {
+                    "" | "global" => EspejoScope::Global,
+                    "project" => EspejoScope::Project(
+                        self.sessions
+                            .iter()
+                            .find(|row| row.conversation == self.viewed_conversation)
+                            .and_then(|row| row.project.clone()),
+                    ),
+                    _ => {
+                        self.status = command_usage(CommandId::Espejo);
+                        return UpdateEffect::None;
+                    }
+                };
+                self.status = format!("Espejo opened: {}", scope.label());
+                self.espejo = Some(EspejoViewState { scope, selected: 0 });
+                UpdateEffect::None
+            }
             CommandId::Quit => UpdateEffect::Quit,
             CommandId::Connection
             | CommandId::Approval
             | CommandId::Child
             | CommandId::Diagnostics
-            | CommandId::Espejo
             | CommandId::Layout
             | CommandId::Outbound
             | CommandId::Route

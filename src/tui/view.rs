@@ -27,6 +27,11 @@ enum ActivityHit {
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
     let area = frame.area();
     frame.render_widget(Block::default().style(surface_style(profile, false)), area);
+    if state.espejo.is_some() {
+        super::espejo::render(frame, area, state, profile);
+        popup::render(frame, area, state, profile);
+        return;
+    }
     match LayoutClass::for_width(area.width) {
         LayoutClass::Wide => render_wide(frame, area, state, profile),
         LayoutClass::Medium => render_medium(frame, area, state, profile),
@@ -83,6 +88,11 @@ pub(super) fn pointer_action(
                     .is_some()
                     .then_some(super::state::InputAction::ClearConversationSelection)
             });
+    }
+
+    if state.espejo.is_some() {
+        return super::espejo::row_at(area, column, row, state)
+            .map(super::state::InputAction::SelectEspejo);
     }
 
     let layout = shell_layout(area, state);
@@ -162,6 +172,9 @@ pub(super) fn pointer_release_action(
             .then(|| popup::activity_detail_selected_text(state, area, selection.start, end))
             .filter(|text| !text.is_empty());
         return Some(super::state::InputAction::FinishActivitySelection { end, text });
+    }
+    if state.espejo.is_some() {
+        return None;
     }
     let selection = state.conversation_selection.as_ref()?;
     let layout = shell_layout(area, state);
@@ -363,7 +376,7 @@ fn overlay_choice_at(
                 .map(|row| start.saturating_add(row))
                 .filter(|index| *index < choices);
         }
-        super::state::Overlay::SessionPicker { .. } => 1,
+        super::state::Overlay::SessionPicker { .. } => 2,
         super::state::Overlay::ModelPicker { .. }
         | super::state::Overlay::ReasoningPicker { .. } => 0,
         super::state::Overlay::Approval { prompt, .. } => 3 + prompt.details.len(),

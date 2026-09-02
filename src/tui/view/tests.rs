@@ -570,6 +570,159 @@ fn composer_expands_then_scrolls_without_rendering_over_the_footer() {
     assert!(rendered.contains("drag conversation to select"));
 }
 
+#[test]
+fn espejo_renders_bounded_attention_execution_and_honest_missing_facts() {
+    let backend = TestBackend::new(130, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let runtime = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let other = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.runtime_conversation = runtime.clone();
+    state.viewed_conversation = runtime.clone();
+    state.refresh_sessions(WorkspaceSnapshot {
+        workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace-test".into(),
+        conversations: vec![
+            ConversationProjection {
+                conversation: runtime,
+                state: ConversationState::Inactive,
+                record_count: Some(4),
+                modified: None,
+                selected: true,
+                project: Some("Xana".to_owned()),
+            },
+            ConversationProjection {
+                conversation: other,
+                state: ConversationState::Inactive,
+                record_count: Some(2),
+                modified: None,
+                selected: false,
+                project: None,
+            },
+        ],
+        active: None,
+    });
+    state.sessions[1].unread = true;
+    state.activity.push_back(ActivityCard::new(
+        "Xana root",
+        "done",
+        ActivityKind::Tool,
+        ActivityState::Complete,
+        "tool finished",
+        "bounded detail",
+    ));
+    state.composer.replace("/espejo".to_owned());
+    assert_eq!(
+        state.update_input(super::super::state::InputAction::Submit),
+        super::super::state::UpdateEffect::None
+    );
+
+    terminal
+        .draw(|frame| render(frame, &state, ResolvedPresentation::test_plain()))
+        .unwrap();
+    let rendered = buffer_text(terminal.backend().buffer());
+    assert!(rendered.contains("Espejo"));
+    assert!(rendered.contains("Global · current local workspace"));
+    assert!(rendered.contains("Needs you 1"));
+    assert!(rendered.contains("Host healthy"));
+    assert!(rendered.contains("Performance: unavailable"));
+    assert!(rendered.contains("Completion receipts: unavailable"));
+    assert!(!rendered.contains("Coming up"));
+}
+
+#[test]
+fn espejo_project_scope_and_pointer_navigation_use_the_same_rows() {
+    let area = Rect::new(0, 0, 130, 30);
+    let runtime = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let other = ConversationRef::Native {
+        session_id: SessionId::new(),
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.runtime_conversation = runtime.clone();
+    state.viewed_conversation = runtime.clone();
+    state.refresh_sessions(WorkspaceSnapshot {
+        workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace-test".into(),
+        conversations: vec![
+            ConversationProjection {
+                conversation: runtime,
+                state: ConversationState::Inactive,
+                record_count: Some(4),
+                modified: None,
+                selected: true,
+                project: Some("Xana".to_owned()),
+            },
+            ConversationProjection {
+                conversation: other,
+                state: ConversationState::Inactive,
+                record_count: Some(2),
+                modified: None,
+                selected: false,
+                project: None,
+            },
+        ],
+        active: None,
+    });
+    state.composer.replace("/espejo project".to_owned());
+    state.update_input(super::super::state::InputAction::Submit);
+    assert_eq!(super::super::espejo::rows(&state).len(), 1);
+
+    assert_eq!(
+        pointer_action(2, 8, false, &state, area),
+        Some(super::super::state::InputAction::SelectEspejo(0))
+    );
+    assert_eq!(
+        state.update_input(super::super::state::InputAction::Confirm),
+        super::super::state::UpdateEffect::ViewSession(state.runtime_conversation.clone())
+    );
+    assert!(state.espejo.is_none());
+}
+
+#[test]
+fn espejo_scrolls_selection_and_pointer_targets_the_visible_window() {
+    let area = Rect::new(0, 0, 130, 30);
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    state.refresh_sessions(WorkspaceSnapshot {
+        workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace-test".into(),
+        conversations: (0..14)
+            .map(|index| ConversationProjection {
+                conversation: ConversationRef::Native {
+                    session_id: SessionId::new(),
+                },
+                state: ConversationState::Inactive,
+                record_count: Some(index),
+                modified: None,
+                selected: false,
+                project: None,
+            })
+            .collect(),
+        active: None,
+    });
+    state.espejo = Some(super::super::espejo::EspejoViewState::global());
+
+    state.update_input(super::super::state::InputAction::Scroll(12));
+    assert_eq!(state.espejo.as_ref().unwrap().selected, 12);
+    let projected = super::super::espejo::rows(&state);
+    let expected = projected[3].conversation.clone();
+    let pointer = pointer_action(2, 8, false, &state, area).unwrap();
+    assert_eq!(pointer, super::super::state::InputAction::SelectEspejo(3));
+    state.update_input(pointer);
+    assert_eq!(
+        state.update_input(super::super::state::InputAction::Confirm),
+        super::super::state::UpdateEffect::ViewSession(expected)
+    );
+}
+
 fn buffer_text(buffer: &ratatui::buffer::Buffer) -> String {
     let area = buffer.area;
     let mut text = String::new();

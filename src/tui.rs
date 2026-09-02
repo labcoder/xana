@@ -8,6 +8,7 @@ mod clipboard;
 mod command;
 mod composer;
 mod effects;
+mod espejo;
 mod input;
 mod intro;
 mod lifecycle;

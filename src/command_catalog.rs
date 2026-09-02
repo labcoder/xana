@@ -150,6 +150,7 @@ const ALL_SURFACES: SurfaceSet = SurfaceSet::new(true, true, true, true);
 const CHAT_SURFACES: SurfaceSet = SurfaceSet::new(false, true, true, true);
 const RICH_CHAT_SURFACES: SurfaceSet = SurfaceSet::new(false, false, true, true);
 const LOCAL_INTERACTIVE: SurfaceSet = SurfaceSet::new(false, false, true, true);
+const TUI_ONLY: SurfaceSet = SurfaceSet::new(false, false, true, false);
 const CLI_AND_CHAT: SurfaceSet = SurfaceSet::new(true, true, true, true);
 const CLI_ONLY: SurfaceSet = SurfaceSet::new(true, false, false, false);
 const DESKTOP_ONLY: SurfaceSet = SurfaceSet::new(false, false, false, true);
@@ -1118,9 +1119,9 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Interactive,
         None,
         Control,
-        LOCAL_INTERACTIVE,
+        TUI_ONLY,
         true,
-        false,
+        true,
         true
     ),
     command!(
@@ -1451,16 +1452,16 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Espejo,
         "espejo",
         &[],
-        "",
+        "[global|project]",
         "Open the bounded work-and-attention perspective",
-        ArgumentSchema::None,
+        ArgumentSchema::Optional("scope"),
         Observer,
         Interactive,
         None,
         Inspect,
-        LOCAL_INTERACTIVE,
-        false,
-        false,
+        TUI_ONLY,
+        true,
+        true,
         true
     ),
 ];
@@ -1727,7 +1728,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_and_preview_are_distinct_and_attach_reports_current_gap() {
+    fn attach_and_preview_are_distinct_and_tui_attach_is_available() {
         let preview = find("conversation.preview.v1").unwrap();
         let attach = find("conversation.attach.v1").unwrap();
         assert_eq!(preview.effect, CommandEffect::Inspect);
@@ -1739,9 +1740,14 @@ mod tests {
             configured: true,
         };
         assert!(preview.availability(context).enabled);
+        assert!(attach.availability(context).enabled);
+        let desktop = CommandContext {
+            surface: CommandSurface::Desktop,
+            ..context
+        };
         assert_eq!(
-            attach.availability(context).code,
-            AvailabilityCode::NotImplemented
+            attach.availability(desktop).code,
+            AvailabilityCode::UnsupportedSurface
         );
     }
 

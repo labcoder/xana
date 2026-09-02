@@ -5,6 +5,7 @@ mod projection;
 
 pub(super) use super::composer::MoveDirection;
 use super::composer::{Composer, MAX_INPUT_BYTES, sanitize_input};
+use super::espejo::{EspejoScope, EspejoViewState};
 use super::session::{self, SessionRow};
 use super::{
     activity::{self, ActivityCard, ActivityKind, ActivityState, ApprovalPrompt, ApprovalTarget},
@@ -153,6 +154,7 @@ pub(super) enum InputAction {
     PaletteUp,
     PaletteDown,
     PreviewSelected,
+    SelectEspejo(usize),
     Confirm,
     Cancel,
     CopyOrInterrupt,
@@ -395,6 +397,7 @@ pub(super) struct TuiState {
     pub(super) sessions: Vec<SessionRow>,
     pub(super) rail_expanded: bool,
     pub(super) header_expanded: bool,
+    pub(super) espejo: Option<EspejoViewState>,
     pub(super) conversation_selection: Option<ConversationSelection>,
     pub(super) runtime_conversation: ConversationRef,
     pub(super) viewed_conversation: ConversationRef,
@@ -408,6 +411,9 @@ pub(super) struct TuiState {
     background_messages: Option<VecDeque<VisibleMessage>>,
     history_start: usize,
     history_has_older: bool,
+    pub(super) workspace: std::path::PathBuf,
+    pub(super) workspace_id: String,
+    pub(super) active_host_root: Option<(ConversationRef, u32)>,
 }
 
 impl TuiState {
@@ -462,6 +468,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            espejo: None,
             conversation_selection: None,
             runtime_conversation: ConversationRef::NewNative,
             viewed_conversation: ConversationRef::NewNative,
@@ -475,6 +482,9 @@ impl TuiState {
             background_messages: None,
             history_start: 0,
             history_has_older: false,
+            workspace: std::path::PathBuf::new(),
+            workspace_id: String::new(),
+            active_host_root: None,
         }
     }
 
@@ -512,6 +522,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            espejo: None,
             conversation_selection: None,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
@@ -525,6 +536,9 @@ impl TuiState {
             background_messages: None,
             history_start: 0,
             history_has_older: false,
+            workspace: std::path::PathBuf::new(),
+            workspace_id: String::new(),
+            active_host_root: None,
         };
         if snapshot.conversation_truncated {
             state.push_activity("older conversation content is outside the bounded snapshot");
@@ -561,6 +575,7 @@ impl TuiState {
             sessions: Vec::new(),
             rail_expanded: true,
             header_expanded: true,
+            espejo: None,
             conversation_selection: None,
             runtime_conversation: conversation.clone(),
             viewed_conversation: conversation,
@@ -574,6 +589,9 @@ impl TuiState {
             background_messages: None,
             history_start: 0,
             history_has_older: false,
+            workspace: std::path::PathBuf::new(),
+            workspace_id: String::new(),
+            active_host_root: None,
         }
     }
 
@@ -881,6 +899,12 @@ impl TuiState {
     }
 
     pub(super) fn refresh_sessions(&mut self, snapshot: WorkspaceSnapshot) {
+        self.workspace = snapshot.workspace.clone();
+        self.workspace_id.clone_from(&snapshot.workspace_id);
+        self.active_host_root = snapshot
+            .active
+            .as_ref()
+            .map(|active| (active.conversation.clone(), active.process_id()));
         let previous = std::mem::take(&mut self.sessions);
         self.sessions = session::project(
             snapshot,
