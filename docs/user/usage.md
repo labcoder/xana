@@ -34,10 +34,14 @@ from the selected connection's configured or cached model catalog. It requires
 `--connection`. Account refresh does not refresh that catalog; use
 `xana model refresh CONNECTION` for model discovery.
 
-Inside an interactive native conversation, `/usage` still summarizes measured
-usage for the current Xana process. It is not an account-balance refresh. The
-shared M4 command registry will project the richer account report into all
-interactive surfaces without changing this distinction.
+Inside an interactive conversation, `/usage` (or `/usage compact`) adds a
+compact scoped card and `/usage details` opens the complete scrollable semantic
+report. The report can contain current-Run, current-Conversation, and
+current-process accounting; context capacity; prompt-plan categories;
+execution facts; completion receipts; and provider-account facts that were
+already observed. It is not an account-balance refresh. Missing facts remain
+explicitly unavailable, and process-local counters are never labeled as
+durable Conversation totals.
 
 ## What Xana can report
 

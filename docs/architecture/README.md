@@ -1050,6 +1050,24 @@ OS reveal, or OS open. Rendering has no side effect. Before an OS action the
 artifact store re-verifies declared size, content location, and digest; raw
 artifact paths and bytes never enter frontend snapshots.
 
+The TUI stages typed local resources through the runtime-owned ingestor rather
+than reading bytes in presentation code. Workspace-relative acquisition uses
+workspace authority; a canonical external path requires an exact allow-once
+decision before I/O. The ingestor applies configured aggregate and compiled
+hard limits, retains only a bounded signature probe while streaming the full
+file into the immutable artifact store, and projects declared type, detected
+type, provenance, and independent capability facts. Only validated PNG, JPEG,
+and GIF resources currently cross an exact image-capable provider route. Other
+recognized resources remain useful as metadata/artifact references but are not
+disclosed to a provider.
+
+The embedded observer advances its own bounded semantic snapshot before each
+observation is delivered. The TUI copies that snapshot after every native
+event, so `/usage` renders the same deduplicated request deltas, cumulative
+managed snapshots, prompt-plan ledgers, execution facts, completion receipts,
+and unavailable states as other frontends. Rendering never polls an account or
+relabels process-local observations as durable Conversation totals.
+
 ```mermaid
 flowchart LR
     NATIVE["Native runtime events"] --> NORMAL["Provider-neutral event projection"]

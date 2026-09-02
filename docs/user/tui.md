@@ -86,7 +86,7 @@ Palette actions and slash input use that one registry:
 - `/interrupt`, `/steer MESSAGE`, `/continue`, `/stop`
 - `/model [CONNECTION/MODEL]`, `/reasoning [EFFORT]`
 - `/activity view auto|hide|show`
-- `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
+- `/attach PATH|--clipboard|list|clear`, `/queue [edit|remove N]`
 - `/clear`, `/compact`, `/composer submit|newline`
 - `/conversation`, `/conversation new`, `/conversation preview ID`,
   `/conversation attach ID`, `/conversation archive [ID]`,
@@ -95,7 +95,7 @@ Palette actions and slash input use that one registry:
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
-- `/usage`, `/capabilities`
+- `/usage [compact|details]`, `/capabilities`
 - `/espejo [global|project]`
 - `/doctor`
 
@@ -138,11 +138,18 @@ setting, previews appearance, and stages edits until a scope/effect review is
 confirmed. Cancelling returns to the originating surface. Presentation-only
 edits preserve the conversation; changes to frozen defaults start a new one.
 
-`/usage` shows token usage observed during the current Xana process for native
-connections or the latest cumulative thread usage reported by managed Codex.
-Partial and unavailable values are labeled rather than treated as zero. Account
-quota, rate-limit reset, and wallet/credit balance remain unavailable when the
-active connection does not expose them through a supported interface.
+`/usage` and `/usage compact` add a compact card to the conversation. They keep
+current-Run facts, current-Conversation facts, and current-process accounting
+visibly separate. `/usage details` opens a scrollable report containing every
+available semantic observation, prompt-plan category, execution fact,
+completion receipt, context-capacity fact, and surface capability. Native
+request observations are deltas; managed Codex observations are cumulative
+snapshots and replace an older observation for the same period instead of
+being added again. Partial, estimated, stale, unsupported, and unavailable
+values are labeled rather than treated as zero. Account quota, rate-limit
+reset, and wallet/credit balance remain unavailable when the active connection
+does not expose them through a supported interface. Neither command performs
+an implicit account refresh.
 
 `/doctor` pauses an idle foreground owner, restores the terminal, runs the
 same redacted read-only report as `xana doctor`, then resumes the selected
@@ -151,25 +158,44 @@ command. The searchable `Reset Xana state…` palette action is available only
 while idle; it stops the owner, restores the terminal, previews an exact scope,
 and requires the same filesystem and credential confirmations as the CLI.
 
-`/attach` accepts a workspace-relative regular image through Xana's existing
-bounded artifact ingestion. It refuses traversal, symlink escape, unsupported
-formats, oversized images, more than eight images, more than 20 MiB per turn,
-or a selected model not declared image-capable.
+`/attach PATH` accepts a bounded local regular file. `/attach --clipboard`
+stages a supported clipboard image, `/attach list` reports the staged set, and
+`/attach clear` removes that set without touching immutable artifacts already
+published. Paths may identify PNG, JPEG, GIF, WebP, SVG, Lottie JSON, WAV, MP3,
+Ogg, WebM, MP4, M4V, or an ordinary JSON document. Xana normalizes quoted,
+`file://`, Windows, and Git Bash paths; rejects traversal, symlink escape,
+non-regular files, inconsistent declared/detected types, and configured or
+compiled-limit violations; then publishes one immutable artifact reference.
 
-Dragging a PNG, JPEG, or GIF into the TUI stages the terminal-pasted path
-through that same ingestion path instead of inserting it into the composer.
+Workspace files use workspace authority. An existing file outside the
+workspace always receives a single exact allow-once review before Xana reads
+its bytes. Denial or Esc restores the draft without importing a partial set.
+The review is acquisition authority only: it does not grant provider
+disclosure, playback, transformation, or external-open authority.
+
+Dragging or pasting a recognized local resource path into the TUI stages the
+terminal-pasted path through that same ingestion path instead of inserting it
+into the composer.
 An ordinary message that contains one or more image-looking local paths is
 recognized the same way, so `/attach` is a discoverable explicit action rather
 than a requirement. Xana preserves path order, reviews all external paths in
 one allow-once prompt, and does not send a partially attached turn if any path
 is denied or invalid.
-Quoted paths, `file://` paths, and Windows paths emitted by Git Bash are
-normalized. A workspace file follows ordinary workspace authority. For an
-existing file outside the workspace, Xana shows an exact allow-once prompt and
-only then imports a bounded immutable artifact copy; denial or Esc restores the
-draft. A non-image-capable model receives ordinary message text unchanged, so
-it can explain the capability limit or request a separately permissioned tool
-instead of Xana falsely claiming vision.
+Current provider routes accept only validated PNG, JPEG, and GIF image inputs
+when the exact model advertises image input. A non-image-capable model receives
+ordinary message text unchanged, so it can explain the capability limit or
+request a separately permissioned tool instead of Xana falsely claiming
+vision. Other typed resources remain staged with an explicit metadata fallback
+and cannot be submitted until an exact provider-input route exists; Xana
+retains the draft and explains the missing capability rather than silently
+disclosing bytes or pretending the model received them.
+
+`appearance.inline_image = "auto"` is the default. It enables a terminal image
+preview only after Xana positively identifies a supported protocol and usable
+terminal dimensions; unproven multiplexers and failed probes use the metadata
+fallback. Set it to `"off"` in `data/frontend/presentation.toml` or through
+Settings to disable terminal image escape sequences unconditionally. This is a
+presentation choice and does not change provider image-input capability.
 
 Assistant Markdown, code, diffs, tables, inert links, images, and immutable
 artifacts use a bounded terminal-native renderer. `/artifact ARTIFACT_ID`

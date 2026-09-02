@@ -742,12 +742,20 @@ The full nested table names are `static_raster`, `animated_raster`, `svg`,
 above (`max_source_bytes`, `max_pixels`, `max_duration_millis`, and so on).
 Run `xana doctor` after hand-editing the file to validate it.
 
-In the current build, the policy is validated and frozen into the shared
-frontend semantic snapshot. Existing image input enforces the static-raster
-defaults. Later M4 resource adapters will apply the general and route-specific
-limits before acquisition, decoding, transformation, or disclosure. Setting a
-limit does not claim that Xana currently supports rendering or sending that
-resource kind.
+The policy is validated and frozen into the shared frontend semantic snapshot.
+Local resource ingestion applies aggregate and compiled source limits before
+artifact I/O, streams and verifies the complete file, and retains only a
+bounded signature probe in memory. Existing image input also enforces the
+static-raster defaults. Route-specific limits may only narrow these values;
+where no compatible provider route exists, disclosure remains unsupported.
+Setting a limit does not claim that Xana currently supports rendering, playing,
+transforming, or sending that resource kind.
+
+`appearance.inline_image` lives in the machine-local frontend presentation
+file at `data/frontend/presentation.toml`, not in `config.toml`. `auto` enables
+bounded TUI image previews only after positive terminal protocol and dimension
+detection; `off` always uses the metadata fallback. The choice affects
+presentation only and grants no provider-input or file authority.
 
 ## Secret storage
 

@@ -114,10 +114,13 @@ policy can only take the minimum of configured and route limits. Turn totals
 use checked `u128` arithmetic before comparison.
 
 The validated configured policy is frozen into the initial semantic snapshot.
-`AttachmentPolicySnapshotV1` may later add an exact route limit and derives the
-effective policy without widening either input. Current image ingestion still
-enforces the established image defaults; general resource acquisition and
-route-specific admission are later M4 adapter work.
+`AttachmentPolicySnapshotV1` may add an exact route limit and derives the
+effective policy without widening either input. Current static-image input
+enforces the established image defaults. The runtime-owned local-resource
+ingestor applies aggregate source and in-memory limits, requires explicit
+approval before reading an external path, publishes an immutable artifact, and
+projects typed capabilities. Route-specific provider disclosure remains denied
+unless the exact route advertises it.
 
 The runtime's resource inspector applies aggregate and compiled source limits
 before artifact I/O, streams and hashes the complete artifact while retaining

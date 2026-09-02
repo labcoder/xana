@@ -41,7 +41,11 @@ adopts this shared projection; equal semantics do not require equal pixels.
 Images and other artifacts remain immutable content-addressed references.
 Conversation snapshots contain bounded metadata, not embedded binary bytes or
 arbitrary paths. An image line reports its artifact id, media type, and byte
-length; it does not claim terminal image-protocol support.
+length. With `appearance.inline_image = "auto"`, the TUI may also render a
+bounded preview after positively detecting a supported terminal protocol and
+dimensions. `"off"`, an unproven multiplexer, an unsupported terminal, or a
+failed decode always uses the metadata fallback. Terminal presentation never
+implies model input support.
 
 Xana's resource vocabulary covers static and animated raster images, SVG,
 Lottie, audio, video, binary, and safe unknown kinds. Bounded signature
@@ -51,6 +55,17 @@ Identification is not permission and does not promise that the active
 interface can render, play, transform, or send the resource. SVG and Lottie
 stay pending for reviewed safe-derivative adapters; unknown binaries are not
 rendered or sent.
+
+The TUI can stage multiple typed local resources with `/attach PATH`, terminal
+paste/file-drop paths, or `/attach --clipboard` for supported clipboard images.
+Use `/attach list` and `/attach clear` to inspect or remove the pending set.
+Files inside the workspace use workspace authority; an external path requires
+an exact allow-once decision before bytes are read. Acquisition validates the
+configured aggregate policy and compiled ceiling, streams the full file into
+the immutable store, and retains only a bounded signature probe in memory.
+Current provider routes send only validated PNG/JPEG/GIF inputs to an exact
+image-capable model. Other resource kinds retain metadata and artifact actions,
+but fail closed before provider disclosure until a compatible route exists.
 
 Use `/artifact ARTIFACT_ID` for an artifact already visible in the bounded
 conversation view. The action card offers:
