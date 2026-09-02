@@ -3,8 +3,9 @@
 > Audience: People configuring or using Xana.
 
 Xana's native agent can retrieve one public HTTPS text document with the
-typed `web_fetch` tool. It is a bounded evidence reader, not a browser or web
-search engine. Managed Codex owns its own network and tool behavior instead.
+typed `web_fetch` tool. The result is also Xana's runtime-owned generic link
+preview record. It is a bounded evidence reader, not a browser or web search
+engine. Managed Codex owns its own network and tool behavior instead.
 
 Typical requests can be phrased normally:
 
@@ -12,7 +13,9 @@ Typical requests can be phrased normally:
 Read https://example.com/guide and summarize the compatibility notes.
 ```
 
-The native model chooses whether to call `web_fetch`. Before the request,
+The native model chooses whether to call `web_fetch` in response to an explicit
+request to read or preview a link. Merely displaying a URL never fetches it.
+Before the request,
 Xana shows the exact URL chain, purpose, `prompt_text` data class, provenance,
 byte estimate, and content digest through the same outbound-data approval used
 by MCP, A2A, and focused services. A broad tool setting of `allow` does not
@@ -54,13 +57,16 @@ subresource loading, iframe loading, form submission, or DOM automation and is
 rendered to bounded plain text. Control characters are made inert. Every
 result reports:
 
-- requested and final URL;
+- requested and final URL plus a bounded site name and title derived from the
+  sanitized result;
 - fetch timestamp and `fresh_not_cached` status;
 - MIME type and encoded response length;
 - BLAKE3 content digest and ordered redirect provenance;
 - bounded extracted text and a truncation fact; and
 - `untrusted: true`.
 
+The complete result is a typed, non-executable generic card; it contains no
+remote DOM, script, stylesheet, cookie, credential, or navigation authority.
 At most 24 KiB of extracted text enters the immediate tool result. When more
 source exists, Xana publishes the complete bounded response bytes into its
 immutable content-addressed artifact store and returns the opaque artifact

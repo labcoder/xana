@@ -23,20 +23,34 @@ messages and adjusts its scroll anchor when an older page is inserted.
 Streaming at the newest edge remains anchored there; scrolling up preserves
 the viewed region while later messages arrive.
 
-## Artifacts and images
+## Shared content and fallback contract
+
+The frontend-neutral boundary recognizes bounded text and Markdown, whole
+fenced code or diff blocks, pipe tables, display-math source, safe HTTP(S)
+links, and immutable Xana resources. Ambiguous or malformed markup stays text
+instead of being guessed into an executable or interactive form. Tool-call
+arguments are not copied into the shared rich-content projection.
+
+Each interface chooses one honest presentation tier: rich, text, metadata, or
+unsupported. Every tier retains a bounded readable fallback. The current TUI
+keeps its established terminal renderer while the remaining M4 interface work
+adopts this shared projection; equal semantics do not require equal pixels.
+
+## Artifacts and media
 
 Images and other artifacts remain immutable content-addressed references.
 Conversation snapshots contain bounded metadata, not embedded binary bytes or
 arbitrary paths. An image line reports its artifact id, media type, and byte
 length; it does not claim terminal image-protocol support.
 
-Xana also has a repository-private semantic resource vocabulary for static and
-animated raster images, SVG, Lottie, audio, video, binary, and safe unknown
-kinds. This is currently a shared validation and frontend contract, not a claim
-that the TUI can render or play every kind. Unsupported content remains an
-inert metadata fallback. General resource acquisition, provider disclosure,
-and specialized renderers arrive through later adapters; existing image input
-keeps the limits below.
+Xana's resource vocabulary covers static and animated raster images, SVG,
+Lottie, audio, video, binary, and safe unknown kinds. Bounded signature
+inspection identifies common PNG/JPEG/GIF/WebP, SVG, Lottie JSON, WAV/MP3/Ogg,
+WebM, and MP4 containers while keeping declared and detected types separate.
+Identification is not permission and does not promise that the active
+interface can render, play, transform, or send the resource. SVG and Lottie
+stay pending for reviewed safe-derivative adapters; unknown binaries are not
+rendered or sent.
 
 Use `/artifact ARTIFACT_ID` for an artifact already visible in the bounded
 conversation view. The action card offers:
@@ -47,15 +61,43 @@ conversation view. The action card offers:
 - explicit open with the OS default application.
 
 Nothing opens automatically during rendering, selection, resize, or preview.
-Before reveal/open Xana re-verifies the content-addressed file and declared
-size inside its artifact store. Missing, corrupt, oversized, inaccessible, or
-non-UTF-8 content produces a bounded error. The current terminal surface does
-not copy artifacts through OSC 52. “Insert reference” keeps artifact operations
-visible and portable. A separate explicit mouse drag over visible conversation
-text retains a bounded rendered-cell selection; Ctrl+C explicitly copies that
-selection to the platform text clipboard.
+Before a bounded range, reveal, or open, Xana re-verifies the complete
+content-addressed file's length and digest and rejects a symlink, non-regular
+file, or replacement. Local-host range requests name an opaque artifact ID and
+offset, never a path, and retain at most 64 KiB. Missing, corrupt, oversized,
+inaccessible, or non-UTF-8 content produces a bounded error.
 
-## Bounds
+The current terminal surface does not copy artifacts through OSC 52. “Insert
+reference” keeps artifact operations visible and portable. A separate explicit
+mouse drag over visible conversation text retains a bounded rendered-cell
+selection; Ctrl+C explicitly copies that selection to the platform text
+clipboard.
+
+## Links and previews
+
+Showing a link does not contact it. Link preview and operating-system open are
+separate explicit actions. Native `web_fetch` is the implemented runtime-owned
+preview boundary: it requires exact outbound review, accepts public HTTPS text,
+checks every address and redirect, and returns a sanitized generic card. See
+[Native web fetch](web-fetch.md) for exact limits and privacy behavior.
+
+Xana does not embed a remote page or execute its HTML, JavaScript, CSS, SVG,
+forms, or subresources. A failed preview leaves the original safe link useful.
+
+## Capabilities and summaries
+
+Acquisition, inline presentation, playback, provider input, focused analysis,
+transformation, and external open are independent resource facts. Exact
+provider/model/route facts retain their source, freshness, effective byte
+limit, and decision reason. An absent fact stays unsupported rather than being
+inferred from a file extension.
+
+Xana can project deterministic summaries from runtime facts and existing
+provider or compaction summaries without another model call. A fresh model
+recap is separate explicit intent naming its connection, model, freshness, and
+usage effect; Xana does not silently spend tokens to summarize every turn.
+
+## Bounds and current limits
 
 - Rich source: 1 MiB per projected message.
 - Rich lines: 4,096, with 16 KiB per line.
@@ -65,10 +107,14 @@ selection to the platform text clipboard.
 - Rendered message window: derived from terminal height, never more than 128.
 - Explicit visible conversation selection: 256 Ki terminal cells, then bounded
   again to the 1 MiB projected-message limit before clipboard delivery.
-- Artifact text preview: 64 KiB; binary content is not embedded.
+- Artifact range: at most 64 KiB retained while the whole source is verified.
 - Current image input: 8 images, 4 MiB per image, 20 MiB total source bytes per
   turn, and 40 million decoded pixels per image.
 
 Truncation is labeled. Durable session records and the artifact store remain
-authoritative; the rich document, viewport window, and page indexes are
-derivative presentation state.
+authoritative; rich documents, viewport windows, page indexes, and resource
+metadata are derivative state. In-app audio/video playback, safe SVG
+rasterization, animated-image presentation, native Lottie rendering, and broad
+provider upload support are not implied by detection. Unsupported content
+retains its safe metadata/text fallback and only the explicit actions the
+active interface actually advertises.

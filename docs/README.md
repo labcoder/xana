@@ -52,6 +52,9 @@ engineering contracts used to change it.
 - [M4 typed command and presentation-capability evidence](development/m4-command-catalog-evidence.md)
   records stable command IDs, authority-filtered cross-surface projections,
   deterministic capability reporting, and presentation fallbacks.
+- [M4 rich-content and disclosure evidence](development/m4-rich-content-and-disclosure-evidence.md)
+  records deterministic normalization, generic link cards, verified artifact
+  ranges, resource inspection, capability separation, and adversarial bounds.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,
@@ -87,6 +90,9 @@ engineering contracts used to change it.
 - [Commands and capability discovery](user/commands.md) explains the shared
   command catalog, `xana capabilities`, canonical Conversation wording,
   compatibility aliases, authority, and presentation fallbacks.
+- [Rich content, resources, and safe fallbacks](user/rich-content.md) explains
+  inert content tiers, explicit link previews and artifact actions, media
+  detection, independent capabilities, and current renderer limits.
 - [Full-screen terminal UI](user/tui.md) explains composer presets, portable
   keys, safe paste, follow-ups, command/model controls, and owner-specific
   limitations.

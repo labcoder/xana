@@ -144,7 +144,7 @@ owner generation on every successful claim. The protected version-2
 descriptor carries that generation, a fresh per-launch capability, and the
 endpoint, while normal logs and attach arguments carry neither. A competing
 claim either owns the lock or returns the compatible lock-backed descriptor to
-the attach path; it cannot become a second owner. The first bounded protocol-2
+the attach path; it cannot become a second owner. The first bounded local-host
 frame must match protocol version, host generation, filesystem identity,
 capability, and requested role before any snapshot is sent. Browser handshakes
 additionally require a loopback Origin.
@@ -175,8 +175,12 @@ Client isolation is structural: at most 32 client tasks exist, each has a
 256-event queue, a 256-frame-per-second inbound budget, and a two-second write
 deadline. Queue overflow or transport failure removes only that subscriber.
 The authenticated artifact adapter indexes at most 512 immutable records found
-in visible frontend messages. Lookup accepts `ArtifactId`, never a path, streams
-full content through digest verification, and retains at most a 64 KiB preview.
+in visible frontend messages and semantic resource/attachment events. Protocol
+3 lookup accepts `ArtifactId` plus a byte offset, never a path, streams the full
+content through digest and file-identity verification, and retains at most one
+64 KiB range. The result reports exact range offset, total length, and whether
+more bytes follow. A symlink, non-regular file, replacement race, length
+mismatch, or digest mismatch fails closed.
 
 Host shutdown cancels intake and controller authority, then gives the exact
 owned execution two seconds to close normally. A shared five-second hard
@@ -676,13 +680,17 @@ record boundaries, not power-loss durability or `fsync`. An append I/O failure
 poisons that writer so later bytes cannot turn a partial tail into interior
 corruption.
 
-Artifact bytes live at `data/artifacts/<blake3-hex>` and are capped at 4 MiB.
+Artifact bytes live at `data/artifacts/<blake3-hex>`. The historical `put`
+entry remains capped at 4 MiB; resource adapters use an explicit narrower
+caller limit beneath the compiled 512 MiB source ceiling.
 Publishing writes and flushes a create-new temporary file, then uses a
 non-overwriting hard link as the final publication step; the temporary name is
 removed afterward. A racing or existing final path is reused only after length
 and digest verification. Reads enforce the caller bound and verify the record's
-length and digest. Logical `ArtifactId`, media type, and owner remain distinct
-from byte equality.
+length, digest, regular-file status, and opened-file identity. A verified range
+streams the complete artifact through BLAKE3 while retaining only the requested
+bytes, so partial presentation never weakens immutable identity. Logical
+`ArtifactId`, media type, and owner remain distinct from byte equality.
 
 The foreground runtime owns the only open `SessionStore`. A companion lock file
 uses the standard library's nonblocking exclusive file lock, so a second
@@ -820,10 +828,13 @@ rejects private and special-use IPv4, IPv6, and IPv4-mapped addresses, pins the
 accepted address set into a no-proxy/no-redirect client, and rejects credentials,
 fragments, downgrade redirects, compressed responses, active content, and
 unsupported MIME or character encodings. A returned redirect not already in
-the reviewed chain stops before the next request. Successful results expose
-source URL, time, MIME, byte count, digest, redirects, truncation, and an
+the reviewed chain stops before the next request. Successful results expose a
+typed generic link-preview card with requested and final URL, bounded site and
+title text, time, MIME, byte count, digest, redirects, truncation, and an
 untrusted marker; immediate text is capped at 24 KiB and complete bounded source
-overflow is content-addressed in the artifact store. The tool does not provide
+overflow is content-addressed in the artifact store. Rendering or retaining the
+original link performs no fetch: preview remains an explicit reviewed action.
+The tool does not provide
 search, cookies, authentication, JavaScript, conditional cache revalidation, or
 browser authority.
 
@@ -949,6 +960,17 @@ use a two-pass journal index: the first bounded scan retains entry ancestry and
 byte offsets, and the second reads only the requested page of at most 128
 messages. The TUI retains at most 512 projected messages and preserves the
 scroll anchor when prepending a page. Durable records remain authoritative.
+
+The shared frontend projection applies the same inert principle before a
+specialized renderer. Whole fenced code/diff, tables, constrained display
+math, and safe links gain typed parts; ambiguous input remains bounded Markdown
+or text. Tool-call arguments are never copied into the projection. Rich, text,
+metadata, and unsupported tiers always include a readable fallback, while link
+preview/open and artifact inspect/copy/save/reveal/open remain separate explicit
+intents. Runtime resource inspection applies aggregate and kind limits before
+I/O, retains only a bounded probe while verifying the whole artifact, keeps
+declared and detected types distinct, and never decodes or executes SVG,
+Lottie, remote markup, or unknown binary content.
 
 Artifacts stay immutable content-addressed records. A visible reference may
 open an explicit action card for bounded preview, draft-reference insertion,
@@ -1873,7 +1895,7 @@ The application modules establish responsibility and I/O boundaries:
   incremental projection, durable context refresh, one writer, and
   resume/inspection summaries.
 - `artifact` owns BLAKE3 content identity, immutable publication, bounded
-  verified reads, and logical artifact metadata.
+  verified ranges with replacement detection, and logical artifact metadata.
 - `agent` and `message` contain the headless loop and internal conversation
   model.
 - `prompt` and `context` own per-turn versioned assembly, transient prompt

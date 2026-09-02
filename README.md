@@ -158,6 +158,7 @@ engineering contracts. Useful starting points include:
 - [Plain mode and automation](docs/user/automation.md)
 - [Conversations and recovery](docs/user/sessions.md)
 - [Workspace file, search, and command tools](docs/user/workspace-tools.md)
+- [Rich content, resources, and safe fallbacks](docs/user/rich-content.md)
 - [Native bounded web fetch](docs/user/web-fetch.md)
 - [Agent Skills](docs/user/skills.md) and [Agent Plugins](docs/user/plugins.md)
 - [MCP integrations](docs/user/mcp.md)

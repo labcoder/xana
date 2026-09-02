@@ -86,6 +86,24 @@ but cannot raise the compiled 512 MiB resource ceiling. Collision verification
 streams fixed-size chunks through BLAKE3 rather than loading a large existing
 artifact into memory.
 
+Runtime messages now enter this layer through a deterministic projection. It
+recognizes only an unambiguous whole fenced-code/diff block, pipe table,
+display-math block, or standalone safe Markdown link. Mixed or malformed input
+remains inert bounded Markdown or text. Terminal controls and bidirectional
+override characters are removed, and tool arguments never enter projected
+content. The retained projection is capped independently by part count,
+encoded content bytes, and authoritative-final bytes.
+
+Each projected part has an explicit rich, text, metadata, or unsupported tier
+derived from the receiving surface's presentation capabilities. Every tier has
+a bounded readable fallback. Links expose separate preview and open intents;
+rendering a link performs neither action. An explicitly reviewed `web_fetch`
+resolution returns a typed generic card containing only sanitized text, a
+bounded title and site name, exact URL/redirect provenance, MIME type, byte
+count, digest, freshness, trust, and optional immutable overflow artifact. It
+never contains or executes remote HTML, CSS, JavaScript, cookies, or browser
+state.
+
 ## Resource admission policy
 
 `ResourcePolicyV1` is defaulted configuration under immutable compiled hard
@@ -100,6 +118,17 @@ The validated configured policy is frozen into the initial semantic snapshot.
 effective policy without widening either input. Current image ingestion still
 enforces the established image defaults; general resource acquisition and
 route-specific admission are later M4 adapter work.
+
+The runtime's resource inspector applies aggregate and compiled source limits
+before artifact I/O, streams and hashes the complete artifact while retaining
+at most a 64 KiB signature/metadata probe, and keeps declared and detected
+media types distinct. It recognizes bounded raster, SVG, Lottie, audio, and
+video signatures without decoding or executing content. SVG and Lottie remain
+pending until reviewed adapters create a safe derivative; unknown binary
+content is rejected for specialized presentation. Every resource projects
+acquisition, presentation, playback, external-open, provider-input, focused-
+analysis, and transform as independent facts. Missing route facts stay
+unsupported rather than being inferred from a MIME type.
 
 ## Activity, attention, and completion
 
@@ -218,7 +247,8 @@ and consume authoritative content/activity through the same boundary.
 ## Source ownership
 
 - `resource` owns artifact-backed resource identity, validation, defaults,
-  immutable ceilings, policy narrowing, and turn admission.
+  immutable ceilings, policy narrowing, turn admission, and bounded signature
+  and metadata inspection.
 - `frontend::semantic::content` owns content, attachments, capabilities, and
   disclosure receipts.
 - `frontend::semantic::activity` owns activity, attention, approvals,
@@ -226,6 +256,9 @@ and consume authoritative content/activity through the same boundary.
 - `frontend::semantic::usage` owns observations and deterministic accounting.
 - `frontend::semantic::event` owns event envelopes and unknown decoding.
 - `frontend::semantic::state` owns snapshots and ordered replication.
+- `frontend::semantic::projection` owns deterministic runtime-content
+  normalization, per-surface fallbacks, link-preview result validation,
+  resource-capability projection, and attributed summary intent.
 - `command_catalog` owns typed user intent and safe per-surface discovery; it
   does not own domain validation or effects.
 - `frontend::protocol` owns transport bounds, sequence assignment, and the

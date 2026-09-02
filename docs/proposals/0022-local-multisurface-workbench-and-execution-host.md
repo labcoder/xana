@@ -43,8 +43,12 @@ now projects stable semantic IDs, arguments, authority, availability,
 confirmation, and outcomes into CLI, plain, TUI, and Desktop. Deterministic
 offline capability reporting and explicit presentation-capability profiles
 keep availability, selection, permission, containment, and rendering support
-separate. Specialized rich-content and Workbench projections remain future M4
-work, so this proposal remains Accepted rather than Implemented.
+separate. Runtime content now gains deterministic bounded rich/text/metadata/
+unsupported projections; generic link previews reuse the reviewed `web_fetch`
+boundary, and local resources use verified range reads plus bounded signature
+inspection with independent operation capabilities. Specialized TUI and
+Desktop renderers and the Workbench remain future M4 work, so this proposal
+remains Accepted rather than Implemented.
 
 ## 1. Official local surfaces and authority
 
