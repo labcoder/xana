@@ -617,7 +617,11 @@ impl TuiState {
     ) {
         let label = format!("{} · {} bytes", record.media_type, record.byte_len);
         self.overlay = Some(Overlay::Artifact {
-            artifact: Box::new(ArtifactView { record, label }),
+            artifact: Box::new(ArtifactView {
+                record,
+                label,
+                details: Vec::new(),
+            }),
             selected: 0,
             preview: Some(bounded(preview, 64 * 1024)),
         });

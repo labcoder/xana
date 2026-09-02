@@ -1,6 +1,10 @@
-//! Bounded terminal-native Markdown and untrusted-text projection.
+//! Bounded terminal-native projection of the shared semantic content model.
 
-use crate::artifact::ArtifactRecord;
+use crate::{
+    artifact::ArtifactRecord,
+    frontend::semantic::ContentPartV1,
+    resource::{AccessibilitySourceV1, ResourceKindV1, ResourceRefV1, ResourceValidationV1},
+};
 
 const MAX_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_LINES: usize = 4096;
@@ -18,6 +22,7 @@ pub(super) enum RichLineKind {
     Code,
     DiffAdd,
     DiffRemove,
+    Math,
     Warning,
 }
 
@@ -39,6 +44,7 @@ pub(super) struct SafeLink {
 pub(super) struct ArtifactView {
     pub(super) record: ArtifactRecord,
     pub(super) label: String,
+    pub(super) details: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +56,89 @@ pub(super) struct RichDocument {
 }
 
 impl RichDocument {
+    /// Project already-normalized frontend semantics into inert terminal rows.
+    ///
+    /// This is deliberately a projection, not another content parser. Markdown
+    /// remains the only variant interpreted by [`Self::parse`]; every other
+    /// variant retains the structure established by the shared protocol.
+    pub(super) fn from_parts(parts: &[ContentPartV1]) -> Self {
+        let mut document = Self::empty();
+        for part in parts {
+            if document.lines.len() >= MAX_LINES {
+                document.truncated = true;
+                break;
+            }
+            match part {
+                ContentPartV1::Text { text } => {
+                    document.extend_plain(text, RichLineKind::Paragraph);
+                }
+                ContentPartV1::Markdown { source } => {
+                    document.extend(Self::parse(source, Vec::new()));
+                }
+                ContentPartV1::Code { language, code } => {
+                    if let Some(language) = language {
+                        document.push_line(RichLineKind::Code, format!("[{language}]"));
+                    }
+                    document.extend_plain(code, RichLineKind::Code);
+                }
+                ContentPartV1::Table { columns, rows } => {
+                    document.push_line(RichLineKind::Table, columns.join(" | "));
+                    document.push_line(
+                        RichLineKind::Table,
+                        columns
+                            .iter()
+                            .map(|_| "---")
+                            .collect::<Vec<_>>()
+                            .join(" | "),
+                    );
+                    for row in rows {
+                        document.push_line(RichLineKind::Table, row.join(" | "));
+                    }
+                }
+                ContentPartV1::Diff { patch } => {
+                    for line in patch.lines() {
+                        let kind = if line.starts_with('+') && !line.starts_with("+++") {
+                            RichLineKind::DiffAdd
+                        } else if line.starts_with('-') && !line.starts_with("---") {
+                            RichLineKind::DiffRemove
+                        } else {
+                            RichLineKind::Code
+                        };
+                        document.push_line(kind, line.to_owned());
+                    }
+                }
+                ContentPartV1::Math { source, display } => {
+                    let prefix = if *display {
+                        "math: "
+                    } else {
+                        "math (inline): "
+                    };
+                    document.push_line(RichLineKind::Math, format!("{prefix}{source}"));
+                }
+                ContentPartV1::Link { label, url } => {
+                    if document.links.len() < MAX_LINKS && safe_link_target(url) {
+                        document.links.push(SafeLink {
+                            label: bounded(sanitize(label), 512),
+                            target: bounded(sanitize(url), 4096),
+                        });
+                        document.push_line(RichLineKind::Paragraph, format!("{label} [link]"));
+                    } else {
+                        document.push_line(
+                            RichLineKind::Warning,
+                            format!("{label} [unsafe link omitted]"),
+                        );
+                    }
+                }
+                ContentPartV1::Resource(resource) => document.push_resource(resource),
+                ContentPartV1::Unknown { version, kind, .. } => document.push_line(
+                    RichLineKind::Warning,
+                    format!("Unsupported content: {kind} (schema version {version})"),
+                ),
+            }
+        }
+        document
+    }
+
     pub(super) fn parse(source: &str, artifacts: Vec<ArtifactView>) -> Self {
         let source = bounded(sanitize(source), MAX_SOURCE_BYTES);
         let mut lines = Vec::new();
@@ -130,6 +219,107 @@ impl RichDocument {
         Self::parse(source, Vec::new())
     }
 
+    fn empty() -> Self {
+        Self {
+            lines: Vec::new(),
+            links: Vec::new(),
+            artifacts: Vec::new(),
+            truncated: false,
+        }
+    }
+
+    fn extend(&mut self, mut other: Self) {
+        append_limited(
+            &mut self.lines,
+            &mut other.lines,
+            MAX_LINES,
+            &mut self.truncated,
+        );
+        append_limited(
+            &mut self.links,
+            &mut other.links,
+            MAX_LINKS,
+            &mut self.truncated,
+        );
+        append_limited(
+            &mut self.artifacts,
+            &mut other.artifacts,
+            MAX_ARTIFACTS,
+            &mut self.truncated,
+        );
+        self.truncated |= other.truncated;
+    }
+
+    fn extend_plain(&mut self, source: &str, kind: RichLineKind) {
+        for line in sanitize(source).lines() {
+            self.push_line(kind, line.to_owned());
+        }
+        if source.is_empty() {
+            self.push_line(kind, String::new());
+        }
+    }
+
+    fn push_line(&mut self, kind: RichLineKind, text: String) {
+        if self.lines.len() >= MAX_LINES {
+            self.truncated = true;
+            return;
+        }
+        self.lines.push(RichLine {
+            kind,
+            text: bounded(sanitize(&text), MAX_LINE_BYTES),
+            emphasized: false,
+            inline_code: false,
+        });
+    }
+
+    fn push_resource(&mut self, resource: &ResourceRefV1) {
+        if self.artifacts.len() >= MAX_ARTIFACTS {
+            self.truncated = true;
+            return;
+        }
+        let declared = resource.media_type.declared.as_deref().unwrap_or("unknown");
+        let detected = resource.media_type.detected.as_deref().unwrap_or("unknown");
+        let mut details = vec![
+            format!("declared {declared} · detected {detected}"),
+            resource_dimensions(resource),
+            validation_label(&resource.validation).to_owned(),
+        ];
+        if let Some(accessibility) = &resource.accessibility {
+            details.push(format!(
+                "accessibility {} · {}",
+                accessibility_source_label(accessibility.source),
+                accessibility.label.as_deref().unwrap_or("no text label")
+            ));
+            if let Some(transcript) = &accessibility.transcript {
+                details.push(format!("transcript artifact {}", transcript.id));
+            }
+        } else {
+            details.push("accessibility metadata unavailable".to_owned());
+        }
+        if let Some(lineage) = &resource.lineage {
+            details.push(format!(
+                "derived from {} via {} {}",
+                lineage.source.id, lineage.transformer, lineage.transformer_version
+            ));
+        } else {
+            details.push("original source (no derivative lineage)".to_owned());
+        }
+        details.retain(|detail| !detail.is_empty());
+        for detail in &mut details {
+            *detail = bounded(sanitize(detail), MAX_LINE_BYTES);
+        }
+        self.artifacts.push(ArtifactView {
+            record: resource.artifact.clone(),
+            label: format!(
+                "{} · {} · {} bytes",
+                resource_kind_label(&resource.kind),
+                detected,
+                resource.artifact.byte_len
+            ),
+            details,
+        });
+    }
+
     pub(super) fn stream_append(&mut self, delta: &str) {
         let delta = sanitize(delta);
         for part in delta.split_inclusive('\n') {
@@ -154,6 +344,66 @@ impl RichDocument {
                 line.text = bounded(format!("{}{}", line.text, part), MAX_LINE_BYTES);
             }
         }
+    }
+}
+
+fn append_limited<T>(target: &mut Vec<T>, source: &mut Vec<T>, limit: usize, truncated: &mut bool) {
+    let remaining = limit.saturating_sub(target.len());
+    if source.len() > remaining {
+        source.truncate(remaining);
+        *truncated = true;
+    }
+    target.append(source);
+}
+
+fn resource_kind_label(kind: &ResourceKindV1) -> &str {
+    match kind {
+        ResourceKindV1::StaticRaster => "image",
+        ResourceKindV1::AnimatedRaster => "animated image",
+        ResourceKindV1::Svg => "SVG",
+        ResourceKindV1::Lottie => "Lottie animation",
+        ResourceKindV1::Audio => "audio",
+        ResourceKindV1::Video => "video",
+        ResourceKindV1::Binary => "binary attachment",
+        ResourceKindV1::Unknown(_) => "unknown attachment",
+    }
+}
+
+fn resource_dimensions(resource: &ResourceRefV1) -> String {
+    let metadata = &resource.metadata;
+    let dimensions = metadata
+        .width
+        .zip(metadata.height)
+        .map(|(width, height)| format!("{width}x{height}"));
+    let duration = metadata
+        .duration_millis
+        .map(|duration| format!("{duration} ms"));
+    let codec = metadata
+        .codec
+        .as_ref()
+        .map(|codec| format!("codec {codec}"));
+    [dimensions, duration, codec]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+fn validation_label(validation: &ResourceValidationV1) -> &str {
+    match validation {
+        ResourceValidationV1::Pending => "validation pending",
+        ResourceValidationV1::Accepted => "validated by Xana",
+        ResourceValidationV1::Rejected { .. } => "rejected by resource policy",
+    }
+}
+
+fn accessibility_source_label(source: AccessibilitySourceV1) -> &'static str {
+    match source {
+        AccessibilitySourceV1::User => "from user",
+        AccessibilitySourceV1::EmbeddedMetadata => "from embedded metadata",
+        AccessibilitySourceV1::Provider => "from provider",
+        AccessibilitySourceV1::Derived => "derived",
+        AccessibilitySourceV1::Unavailable => "unavailable",
     }
 }
 
@@ -276,6 +526,13 @@ fn bounded(mut value: String, limit: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        artifact::{ArtifactRef, ContentHash},
+        identity::{ArtifactId, PrincipalId},
+        resource::{
+            AccessibilityFactsV1, MediaTypeFactsV1, RESOURCE_SCHEMA_VERSION, ResourceMetadataV1,
+        },
+    };
 
     #[test]
     fn markdown_matrix_is_bounded_and_semantic() {
@@ -343,5 +600,116 @@ mod tests {
         assert_eq!(document.links.len(), 1);
         assert_eq!(document.links[0].target, "https://example.com");
         assert!(document.lines[0].text.contains("unsafe link omitted"));
+    }
+
+    #[test]
+    fn shared_semantic_matrix_keeps_structure_and_resource_evidence() {
+        let resource = ResourceRefV1 {
+            version: RESOURCE_SCHEMA_VERSION,
+            artifact: ArtifactRecord {
+                reference: ArtifactRef {
+                    id: ArtifactId::new(),
+                    content_hash: ContentHash::for_bytes(b"image"),
+                },
+                media_type: "image/png".into(),
+                byte_len: 5,
+                owner: PrincipalId::new(),
+            },
+            kind: ResourceKindV1::StaticRaster,
+            media_type: MediaTypeFactsV1 {
+                declared: Some("application/octet-stream".into()),
+                detected: Some("image/png".into()),
+            },
+            metadata: ResourceMetadataV1 {
+                width: Some(12),
+                height: Some(8),
+                ..ResourceMetadataV1::default()
+            },
+            accessibility: Some(AccessibilityFactsV1 {
+                label: Some("a small test image".into()),
+                transcript: None,
+                source: AccessibilitySourceV1::User,
+            }),
+            validation: ResourceValidationV1::Accepted,
+            lineage: None,
+        };
+        let document = RichDocument::from_parts(&[
+            ContentPartV1::Text {
+                text: "plain".into(),
+            },
+            ContentPartV1::Code {
+                language: Some("rust".into()),
+                code: "fn main() {}".into(),
+            },
+            ContentPartV1::Table {
+                columns: vec!["a".into(), "b".into()],
+                rows: vec![vec!["1".into(), "2".into()]],
+            },
+            ContentPartV1::Diff {
+                patch: "+added\n-removed".into(),
+            },
+            ContentPartV1::Math {
+                source: "x^2".into(),
+                display: true,
+            },
+            ContentPartV1::Link {
+                label: "docs".into(),
+                url: "https://example.com".into(),
+            },
+            ContentPartV1::Resource(Box::new(resource)),
+            ContentPartV1::Unknown {
+                version: 2,
+                kind: "future".into(),
+                payload: serde_json::json!({}),
+            },
+        ]);
+
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::Code)
+        );
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::Table)
+        );
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::DiffAdd)
+        );
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::DiffRemove)
+        );
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::Math)
+        );
+        assert_eq!(document.links.len(), 1);
+        assert_eq!(document.artifacts.len(), 1);
+        assert!(document.artifacts[0].details.iter().any(|detail| {
+            detail.contains("declared application/octet-stream · detected image/png")
+        }));
+        assert!(
+            document.artifacts[0]
+                .details
+                .iter()
+                .any(|detail| detail.contains("a small test image"))
+        );
+        assert!(
+            document
+                .lines
+                .iter()
+                .any(|line| line.kind == RichLineKind::Warning)
+        );
     }
 }

@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{
     agent::SessionUsage,
-    frontend::{EmbeddedClient, ManagedClientEvent},
+    frontend::{EmbeddedClient, ManagedClientEvent, semantic::normalize_message},
     identity::{AgentId, OperationId, ToolInvocationId},
     message::{ContentBlock, Message, Role},
     native_runtime::{AgentEvent, OperationState, RoundBudgetAction, RoundBudgetSuspension},
@@ -1277,10 +1277,16 @@ fn message_projection(message: &Message) -> VisibleMessage {
             artifacts.push(ArtifactView {
                 record: image.artifact.clone(),
                 label: format!("image · {} · {} bytes", image.media_type, image.byte_len),
+                details: Vec::new(),
             });
         }
     }
-    let document = RichDocument::parse(&text, artifacts);
+    let parts = normalize_message(message);
+    let document = if parts.is_empty() {
+        RichDocument::parse(&text, artifacts)
+    } else {
+        RichDocument::from_parts(&parts)
+    };
     VisibleMessage {
         kind,
         text,

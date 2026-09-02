@@ -245,6 +245,7 @@ fn conversation_message_lines(
             RichLineKind::Code => ("  ", semantic_style(profile, SemanticToken::Tool)),
             RichLineKind::DiffAdd => ("+ ", semantic_style(profile, SemanticToken::DiffAdd)),
             RichLineKind::DiffRemove => ("- ", semantic_style(profile, SemanticToken::DiffRemove)),
+            RichLineKind::Math => ("  ", semantic_style(profile, SemanticToken::Summary)),
             RichLineKind::Warning => ("! ", semantic_style(profile, SemanticToken::Warning)),
             RichLineKind::Paragraph => ("  ", Style::default()),
         };
@@ -276,6 +277,12 @@ fn conversation_message_lines(
             ),
             semantic_style(profile, SemanticToken::Accent),
         ));
+        for detail in &artifact.details {
+            lines.push(Line::styled(
+                format!("    {detail}"),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+        }
     }
     if message.document.truncated {
         lines.push(Line::styled(
