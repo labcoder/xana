@@ -253,6 +253,42 @@ replays an interrupted Run. The current Desktop bridge consumes this contract
 for one walking-skeleton Conversation; multi-Conversation navigation remains a
 frontend workflow, not missing backend identity or concurrency semantics.
 
+Host lifecycle is an explicit `running → draining → persisting → closing →
+stopped` reducer. Draining closes admission before cancellation and returns the
+exact Conversation/Operation identities that execution owners must settle.
+Every controller lease expires at that boundary. Finalization requires proof
+that durable state was flushed and provably owned execution was cleaned up;
+unproven cleanup leaves shutdown incomplete and emits a redacted host notice.
+Any Run still active after the owner has settled is recorded as interrupted,
+never completed. The idempotent shutdown receipt carries those exact identities
+and cleanup facts.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running
+    Running --> Draining: stop admission + expire controllers
+    Draining --> Draining: cleanup unproven / retry safely
+    Draining --> Persisting: durable flush + owned cleanup proven
+    Persisting --> Closing: mark remaining Runs interrupted
+    Closing --> Stopped: publish bounded receipt
+    Stopped --> [*]
+```
+
+Xana-wide host failures, controller loss, recovery actions, resource pressure,
+and storage failures are typed global notices outside Conversation messages.
+The shared notification planner maps only approval, question, completion,
+failure, controller-loss, and host-failure attention while a client is
+unfocused or minimized. It applies bounded deduplication and fixed lock-screen-
+safe copy; prompts, output, reasoning, paths, tool arguments, and secrets never
+enter a notification. Platform delivery remains a narrow Desktop adapter.
+
+Startup reconciliation extends the existing Diagnostics authority rather than
+creating another log or crash store. A clean launch removes only unlocked,
+regular artifact staging names matching Xana's `.UUID.tmp` grammar. Published
+hash artifacts, symlinks, unrelated files, live locked writers, durable native
+history, and managed thread identities are preserved. Repeated reconciliation
+is bounded and idempotent and never resumes or replays provider/tool work.
+
 Native and managed Conversations have one Xana-owned stable identity distinct
 from their execution owner's handle. For native Conversations the UUID is
 currently identical to the durable session UUID as a compatibility mapping;

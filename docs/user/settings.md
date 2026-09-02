@@ -150,7 +150,13 @@ xana config set execution.shell powershell
 xana config reset execution.shell_program
 xana config set diagnostics.retention_days 30d
 xana config set diagnostics.max_total_bytes "64 MiB" --json
+xana config set notifications.completions false
+xana config set notifications.enabled false --dry-run
 ```
+
+Notification category settings take effect on the next graphical launch. They
+control only fixed redacted attention hints while Xana is unfocused or
+minimized; Activity and Diagnostics remain the authoritative state.
 
 An attempt to mutate a summary row fails and prints its exact focused manager,
 for example `xana connection list`. This is deliberate: connection removal,

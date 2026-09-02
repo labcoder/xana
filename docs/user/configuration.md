@@ -690,6 +690,8 @@ readable.
 | `diagnostics.enabled`, `level`, `targets` | Metadata-only process logging switch, `error`–`trace` threshold, and stable target classes |
 | `diagnostics.directory` | Optional absolute or normalized Xana-data-relative log directory; crash reports remain in Xana's crash directory |
 | `diagnostics.retention_days`, `max_file_bytes`, `max_total_bytes`, `max_files`, `queue_capacity` | Mandatory rolling retention, disk, file-count, and nonblocking memory ceilings |
+| `notifications.enabled` | Master switch for native attention notifications; delivery occurs only while a graphical client is unfocused or minimized |
+| `notifications.approvals`, `questions`, `completions`, `failures`, `controller_lost`, `host_failures` | Per-event switches for fixed, redacted notification candidates; all default to `true`, and routine activity has no notification switch |
 
 Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
 `reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and

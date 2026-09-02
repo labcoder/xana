@@ -55,6 +55,10 @@ engineering contracts used to change it.
 - [M4 rich-content and disclosure evidence](development/m4-rich-content-and-disclosure-evidence.md)
   records deterministic normalization, generic link cards, verified artifact
   ranges, resource inspection, capability separation, and adversarial bounds.
+- [M4 host lifecycle and recovery evidence](development/m4-host-lifecycle-evidence.md)
+  records stop-before-admission, exact shutdown proof and interruption receipts,
+  typed global notices, focus-aware notification policy, and conservative
+  artifact reconciliation.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,

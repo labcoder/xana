@@ -53,7 +53,13 @@ capabilities, exact-generation takeover confirmation, pending-approval
 exclusion, typed stale-controller errors, ordered audit projection, and
 independent controllers across Conversations. The loopback protocol and
 Desktop embedded boundary both use it; Desktop gates every mutating command and
-releases authority on clean shutdown. Specialized TUI and
+expires authority before clean shutdown. The execution host also owns an
+explicit bounded shutdown reducer, typed global notices, exact interruption
+receipts, and fail-closed owned-execution proof. Startup extends the M3
+Diagnostics authority with idempotent cleanup of only unlocked Xana artifact
+staging files. A shared notification policy emits fixed redacted candidates
+only while unfocused/minimized and is configurable by attention kind; native OS
+delivery and last-window presentation remain M4-15. Specialized TUI and
 Desktop renderers and the Workbench remain future M4 work, so this proposal
 remains Accepted rather than Implemented.
 

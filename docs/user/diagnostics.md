@@ -54,6 +54,26 @@ On ordinary shutdown Xana requests a writer drain and waits for its bounded
 acknowledgement before joining the writer; an unresponsive sink is detached at
 the deadline rather than hanging process exit.
 
+Desktop notification preferences are separate from diagnostic retention:
+
+```toml
+[notifications]
+enabled = true
+approvals = true
+questions = true
+completions = true
+failures = true
+controller_lost = true
+host_failures = true
+```
+
+These switches permit only fixed metadata-only attention messages while Xana
+is unfocused or minimized. Notification text never contains prompts, answers,
+reasoning, paths, tool arguments, or secrets. Routine streaming and tool
+activity do not create native notifications. The in-app Conversation, Activity,
+and Diagnostics projections remain authoritative if delivery is suppressed,
+deduplicated, delayed, or unavailable.
+
 ## What is and is not recorded
 
 Records contain a version, timestamp, level, target, typed event/outcome,
@@ -87,6 +107,15 @@ from a stale prior marker and points to `xana logs list` and `xana doctor`.
 An OS kill, power loss, or process abort may leave only the unclean marker; Xana
 does not claim it can always write an in-process report. Raw memory dumps,
 telemetry, automatic uploads, and hosted crash reporting are not supported.
+
+On the next ordinary mutable launch, Xana also performs bounded conservative
+artifact reconciliation. It removes only unlocked regular staging files with
+Xana's exact `.UUID.tmp` name under `data/artifacts`. It preserves active locked
+writers, published content-addressed artifacts, symlinks, and unrelated files.
+This cleanup is idempotent and never resumes an interrupted Run, reuses a stale
+approval/controller, or calls a provider or tool. Failure is logged as a typed
+storage recovery fact and remains visible instead of triggering destructive
+repair.
 
 `xana doctor` inspects configured roots, path safety, portable write-permission
 metadata, owner-only permissions, file/count/byte/age retention compliance,

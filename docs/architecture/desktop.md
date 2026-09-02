@@ -29,9 +29,12 @@ under pressure; finals, failures, approvals, command receipts, and terminal
 operation states receive a five-second delivery grace. A sequence gap causes
 the application projection to request a fresh snapshot instead of guessing.
 
-Closing the application drops the Desktop client, requests runtime shutdown,
-and releases all in-process runtime resources. Explicit test shutdown joins the
-runtime thread with a ten-second bound. Managed Codex presentation is not part
+Closing the application first asks the execution host to stop admission and
+expire controller authority, then requests runtime shutdown. The host records
+any remaining Run as interrupted only after the runtime accepts shutdown and
+publishes an idempotent cleanup receipt. If exact owned-execution cleanup cannot
+be proven, shutdown remains incomplete rather than claiming success. Explicit
+test shutdown joins the runtime thread with a ten-second bound. Managed Codex presentation is not part
 of the initial M4 walking skeleton and is rejected before an app-server child
 can be started; M4-22 owns the final adapter and parity proof.
 
@@ -49,8 +52,14 @@ revalidated against that identity; snapshot requests remain observer-safe.
 Initial snapshots and ordered host observations project only the controller's
 public identity, generation, state, takeover fact, disconnect reason, and
 remaining grace. Reconnect capabilities and client transport identities never
-cross the Desktop presentation boundary. Clean shutdown releases the lease and
-publishes the ordered release before reporting that the backend stopped.
+cross the Desktop presentation boundary. Clean shutdown expires the lease
+before shutdown work and publishes the ordered lifecycle and receipt before
+reporting that the backend stopped.
+
+The facade also projects bounded global notices and the host lifecycle. A pure
+focus-aware notification planner exposes fixed redacted candidates and exact
+Conversation/Operation correlation; native OS delivery belongs to the later
+Desktop lifecycle adapter and cannot become state authority.
 
 ## Authority boundary
 
