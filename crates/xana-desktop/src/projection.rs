@@ -419,6 +419,13 @@ mod tests {
                 source: xana::desktop::DesktopLayoutSource::Recovery,
                 warning: None,
             },
+            settings: xana::desktop::DesktopSettingsSnapshot {
+                version: 1,
+                revision: "fixture".to_owned(),
+                warnings: Vec::new(),
+                entries: Vec::new(),
+                truncated: false,
+            },
         }
     }
 

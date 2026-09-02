@@ -8,6 +8,7 @@
 mod instance;
 mod layout;
 mod navigation;
+mod settings;
 
 pub use instance::{
     DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
@@ -21,6 +22,12 @@ pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
     DesktopNavigationConversationState, DesktopNavigationSnapshot, DesktopProjectNode,
     DesktopSidebarMode, DesktopWorkspaceStatus,
+};
+pub use settings::{
+    DesktopLocalizedText, DesktopSettingChange, DesktopSettingEffect, DesktopSettingEntry,
+    DesktopSettingKind, DesktopSettingSource, DesktopSettingTarget, DesktopSettingValue,
+    DesktopSettingsDraftId, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
+    DesktopSettingsSection, DesktopSettingsSnapshot,
 };
 
 pub use crate::host_lifecycle::{
@@ -88,6 +95,7 @@ struct NativeCommandContext<'a> {
     navigation_store: &'a navigation::DesktopNavigationStore,
     layout: &'a mut DesktopResolvedLayout,
     layout_store: &'a layout::DesktopLayoutStore,
+    settings: &'a mut settings::DesktopSettingsState,
 }
 
 struct NativeFrontendState {
@@ -95,6 +103,7 @@ struct NativeFrontendState {
     navigation_store: navigation::DesktopNavigationStore,
     layout: DesktopResolvedLayout,
     layout_store: layout::DesktopLayoutStore,
+    settings: settings::DesktopSettingsState,
 }
 
 /// Authority held by one Desktop frontend attachment.
@@ -466,6 +475,7 @@ pub struct DesktopSnapshot {
     pub global_notices: Vec<DesktopGlobalNotice>,
     pub navigation: DesktopNavigationSnapshot,
     pub layout: DesktopResolvedLayout,
+    pub settings: DesktopSettingsSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -664,6 +674,9 @@ pub enum DesktopUpdate {
     Snapshot(Box<DesktopSnapshot>),
     Navigation(DesktopNavigationSnapshot),
     Layout(Box<DesktopResolvedLayout>),
+    Settings(DesktopSettingsSnapshot),
+    SettingsDraft(Option<DesktopSettingsDraftSnapshot>),
+    SettingsReceipt(DesktopSettingsReceipt),
     Observation(DesktopObservation),
     HostObservation(DesktopHostObservation),
     CommandResult {
@@ -1057,6 +1070,78 @@ impl DesktopClient {
             })
     }
 
+    /// Opens or returns the one process-local settings draft.
+    pub fn begin_settings(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::BeginSettings)
+    }
+
+    /// Stages one scalar setting through Xana's shared validation contract.
+    pub fn set_setting(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::SetSetting {
+            draft_id,
+            key: key.into(),
+            value: value.into(),
+        })
+    }
+
+    /// Stages one setting's declared default.
+    pub fn reset_setting(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+        key: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::ResetSetting {
+            draft_id,
+            key: key.into(),
+        })
+    }
+
+    /// Removes one staged setting intent.
+    pub fn revert_setting(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+        key: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::RevertSetting {
+            draft_id,
+            key: key.into(),
+        })
+    }
+
+    /// Validates the complete draft without mutating durable owners.
+    pub fn validate_settings(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::ValidateSettings { draft_id })
+    }
+
+    /// Atomically commits the complete draft after optimistic-concurrency checks.
+    pub fn commit_settings(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::CommitSettings { draft_id })
+    }
+
+    /// Discards one process-local draft without writing either durable owner.
+    pub fn discard_settings(
+        &self,
+        draft_id: DesktopSettingsDraftId,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::DiscardSettings { draft_id })
+    }
+
+    /// Reloads settings from their authoritative owners and discards any draft.
+    pub fn reload_settings(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue_control(BridgeCommandValue::ReloadSettings)
+    }
+
     /// Requests shutdown without blocking the GPUI application thread.
     pub fn request_shutdown(&self) -> Result<DesktopCommandReceipt, DesktopError> {
         self.enqueue(BridgeCommandValue::Shutdown)
@@ -1116,6 +1201,16 @@ impl DesktopClient {
                 )
             })?;
         Ok(command_id)
+    }
+
+    fn enqueue_control(
+        &self,
+        value: BridgeCommandValue,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(value).map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
     }
 }
 
@@ -1229,6 +1324,30 @@ enum BridgeCommandValue {
     ResetLayout,
     SaveLayoutAsDefault,
     ClearDefaultLayout,
+    BeginSettings,
+    SetSetting {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+        value: String,
+    },
+    ResetSetting {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+    },
+    RevertSetting {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+    },
+    ValidateSettings {
+        draft_id: DesktopSettingsDraftId,
+    },
+    CommitSettings {
+        draft_id: DesktopSettingsDraftId,
+    },
+    DiscardSettings {
+        draft_id: DesktopSettingsDraftId,
+    },
+    ReloadSettings,
     Shutdown,
 }
 
@@ -1303,6 +1422,8 @@ pub(crate) async fn run_native(
     let _ = navigation_store.record_recent(Some(&conversation.to_string()));
     let layout_store = layout::DesktopLayoutStore::open(paths);
     let layout = layout_store.resolve(&conversation.to_string());
+    let settings =
+        settings::DesktopSettingsState::open(crate::settings::SettingsManager::new(paths))?;
     execution_host.register(
         workspace_host,
         ConversationRegistration::new(
@@ -1325,6 +1446,7 @@ pub(crate) async fn run_native(
                 navigation_store,
                 layout,
                 layout_store,
+                settings,
             },
         )
         .await?;
@@ -1357,6 +1479,7 @@ impl Bridge {
             navigation_store,
             mut layout,
             layout_store,
+            mut settings,
         } = frontend;
         let mut commands = self.commands.lock().await;
         let (owner, mut observer) = client.into_parts();
@@ -1381,6 +1504,7 @@ impl Bridge {
             &self.notification_policy,
             &navigation,
             &layout,
+            settings.snapshot(),
         );
         if !self.startup.ready(initial.clone()) {
             self.publish_critical(DesktopUpdate::Snapshot(Box::new(initial)))
@@ -1428,6 +1552,7 @@ impl Bridge {
                                 navigation_store: &navigation_store,
                                 layout: &mut layout,
                                 layout_store: &layout_store,
+                                settings: &mut settings,
                             },
                         )
                         .await?;
@@ -1437,6 +1562,7 @@ impl Bridge {
                         &mut host_cursor,
                         &navigation,
                         &layout,
+                        settings.snapshot(),
                     ).await?;
                     if let Some((cleanup, requested_exit)) = stop {
                         shutdown_cleanup = cleanup;
@@ -1487,6 +1613,7 @@ impl Bridge {
                         &mut host_cursor,
                         &navigation,
                         &layout,
+                        settings.snapshot(),
                     ).await?;
                     snapshot.apply(&observation.event, observation.sequence);
                     let projected = DesktopObservation {
@@ -1514,6 +1641,7 @@ impl Bridge {
             &mut host_cursor,
             &navigation,
             &layout,
+            settings.snapshot(),
         )
         .await?;
         if exit == ChatExit::Quit {
@@ -1542,6 +1670,7 @@ impl Bridge {
             navigation_store,
             layout,
             layout_store,
+            settings,
         } = context;
         let command_id = command.command_id;
         if !matches!(
@@ -1552,6 +1681,14 @@ impl Bridge {
                 | BridgeCommandValue::ResetLayout
                 | BridgeCommandValue::SaveLayoutAsDefault
                 | BridgeCommandValue::ClearDefaultLayout
+                | BridgeCommandValue::BeginSettings
+                | BridgeCommandValue::SetSetting { .. }
+                | BridgeCommandValue::ResetSetting { .. }
+                | BridgeCommandValue::RevertSetting { .. }
+                | BridgeCommandValue::ValidateSettings { .. }
+                | BridgeCommandValue::CommitSettings { .. }
+                | BridgeCommandValue::DiscardSettings { .. }
+                | BridgeCommandValue::ReloadSettings
         ) && let Err(error) =
             execution_host.require_controller(&controller.conversation, controller.client_id)
         {
@@ -1568,6 +1705,7 @@ impl Bridge {
                     &self.notification_policy,
                     navigation,
                     layout,
+                    settings.snapshot(),
                 ))))
                 .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
@@ -1793,6 +1931,95 @@ impl Bridge {
                 self.publish_command_result(command_id, result).await?;
                 Ok(None)
             }
+            BridgeCommandValue::BeginSettings => {
+                let result = settings.begin();
+                if let Ok(draft) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsDraft(Some(draft.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SetSetting {
+                draft_id,
+                key,
+                value,
+            } => {
+                let result = settings.set(draft_id, &key, &value);
+                if let Ok(draft) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsDraft(Some(draft.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::ResetSetting { draft_id, key } => {
+                let result = settings.reset(draft_id, &key);
+                if let Ok(draft) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsDraft(Some(draft.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::RevertSetting { draft_id, key } => {
+                let result = settings.revert(draft_id, &key);
+                if let Ok(draft) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsDraft(Some(draft.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::ValidateSettings { draft_id } => {
+                let result = settings.validate(draft_id);
+                if let Ok(receipt) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsReceipt(receipt.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::CommitSettings { draft_id } => {
+                let result = settings.commit(draft_id);
+                if let Ok((receipt, snapshot)) = &result {
+                    self.publish_critical(DesktopUpdate::SettingsReceipt(receipt.clone()))
+                        .await?;
+                    self.publish_critical(DesktopUpdate::Settings(snapshot.clone()))
+                        .await?;
+                    self.publish_critical(DesktopUpdate::SettingsDraft(None))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::DiscardSettings { draft_id } => {
+                let result = settings.discard(draft_id);
+                if result.is_ok() {
+                    self.publish_critical(DesktopUpdate::SettingsDraft(None))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::ReloadSettings => {
+                let result = settings.reload();
+                if let Ok(snapshot) = &result {
+                    self.publish_critical(DesktopUpdate::Settings(snapshot.clone()))
+                        .await?;
+                    self.publish_critical(DesktopUpdate::SettingsDraft(None))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
             BridgeCommandValue::Shutdown => {
                 execution_host.request_shutdown().map_err(host_error)?;
                 let result = owner
@@ -2004,6 +2231,7 @@ impl Bridge {
         cursor: &mut u64,
         navigation: &DesktopNavigationSnapshot,
         layout: &DesktopResolvedLayout,
+        settings: &DesktopSettingsSnapshot,
     ) -> Result<(), DesktopError> {
         match host.changes_after(*cursor).map_err(host_error)? {
             HostChanges::Events(events) => {
@@ -2024,6 +2252,7 @@ impl Bridge {
                     &self.notification_policy,
                     navigation,
                     layout,
+                    settings,
                 ))))
                 .await?;
             }
@@ -2128,6 +2357,7 @@ fn project_snapshot(
     notification_policy: &NotificationPolicy,
     navigation: &DesktopNavigationSnapshot,
     layout: &DesktopResolvedLayout,
+    settings: &DesktopSettingsSnapshot,
 ) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
@@ -2161,6 +2391,7 @@ fn project_snapshot(
             .collect(),
         navigation: navigation.clone(),
         layout: layout.clone(),
+        settings: settings.clone(),
     }
 }
 
@@ -2583,11 +2814,13 @@ mod tests {
     use super::*;
     use crate::{
         agent::Agent,
+        config::{InitialConfig, InitialConnection, PermissionMode, XanaConfig},
         context::ContextBudget,
         identity::StepId,
         permission::{PermissionPolicy, PolicyDecision},
         prompt::{PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
         provider::{ConversationalProvider, DeltaSink, ProviderError},
+        shell::ShellConfig,
         tool::{ToolDefinition, ToolRegistry},
     };
     use anyhow::Result;
@@ -2685,6 +2918,24 @@ mod tests {
         )
         .unwrap();
         host
+    }
+
+    fn settings_state(paths: &XanaPaths) -> settings::DesktopSettingsState {
+        let rendered = XanaConfig::render_initial(InitialConfig {
+            connection: InitialConnection::Ollama {
+                name: "ollama".to_owned(),
+                base_url: "http://localhost:11434/v1".to_owned(),
+            },
+            model: "qwen3:1.7b".to_owned(),
+            max_tool_rounds: 8,
+            shell: ShellConfig::default(),
+            permission_mode: PermissionMode::Ask,
+            reasoning_effort: None,
+        })
+        .expect("render settings config");
+        std::fs::write(paths.config_file(), rendered).expect("write settings config");
+        settings::DesktopSettingsState::open(crate::settings::SettingsManager::new(paths))
+            .expect("open Desktop settings")
     }
 
     fn bridge_channels() -> BridgeChannels {
@@ -2804,6 +3055,7 @@ mod tests {
             navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
         let layout_store = layout::DesktopLayoutStore::open(&paths);
         let layout = layout_store.resolve(&conversation.to_string());
+        let settings = settings_state(&paths);
         let runtime = tokio::spawn(bridge.serve_native(
             client,
             host,
@@ -2814,6 +3066,7 @@ mod tests {
                 navigation_store,
                 layout,
                 layout_store,
+                settings,
             },
         ));
 
@@ -2907,6 +3160,151 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn desktop_settings_draft_validates_and_commits_through_the_bridge() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let (client, conversation) = scripted_client(&workspace);
+        let host = execution_host(directory.path(), &workspace, &conversation);
+        let (bridge, commands, mut updates, startup) = bridge_channels();
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let navigation_store =
+            navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        let layout_store = layout::DesktopLayoutStore::open(&paths);
+        let layout = layout_store.resolve(&conversation.to_string());
+        let settings = settings_state(&paths);
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation,
+            NotificationPolicy::default(),
+            NativeFrontendState {
+                navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation_store,
+                layout,
+                layout_store,
+                settings,
+            },
+        ));
+        let initial = startup
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        assert!(
+            initial
+                .settings
+                .entries
+                .iter()
+                .any(|entry| entry.key == "appearance.theme")
+        );
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 10,
+                value: BridgeCommandValue::BeginSettings,
+            })
+            .await
+            .unwrap();
+        let draft_id = loop {
+            match tokio::time::timeout(Duration::from_secs(1), updates.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                DesktopUpdate::SettingsDraft(Some(draft)) => break draft.id,
+                DesktopUpdate::CommandResult {
+                    command_id: 10,
+                    accepted: false,
+                    error,
+                } => panic!("begin rejected: {error:?}"),
+                _ => {}
+            }
+        };
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 11,
+                value: BridgeCommandValue::SetSetting {
+                    draft_id,
+                    key: "appearance.theme".to_owned(),
+                    value: "dark".to_owned(),
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            if let DesktopUpdate::SettingsDraft(Some(draft)) =
+                tokio::time::timeout(Duration::from_secs(1), updates.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                && draft.pending_count == 1
+            {
+                break;
+            }
+        }
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 12,
+                value: BridgeCommandValue::ValidateSettings { draft_id },
+            })
+            .await
+            .unwrap();
+        loop {
+            if let DesktopUpdate::SettingsReceipt(receipt) =
+                tokio::time::timeout(Duration::from_secs(1), updates.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            {
+                assert!(receipt.dry_run);
+                break;
+            }
+        }
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 13,
+                value: BridgeCommandValue::CommitSettings { draft_id },
+            })
+            .await
+            .unwrap();
+        let committed = loop {
+            if let DesktopUpdate::Settings(snapshot) =
+                tokio::time::timeout(Duration::from_secs(1), updates.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            {
+                break snapshot;
+            }
+        };
+        assert_eq!(
+            committed
+                .entries
+                .iter()
+                .find(|entry| entry.key == "appearance.theme")
+                .and_then(|entry| entry.value.raw.as_deref()),
+            Some("dark")
+        );
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 14,
+                value: BridgeCommandValue::Shutdown,
+            })
+            .await
+            .unwrap();
+        runtime.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn mismatched_command_is_rejected_without_stopping_the_runtime() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path().join("workspace");
@@ -2919,6 +3317,7 @@ mod tests {
             navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
         let layout_store = layout::DesktopLayoutStore::open(&paths);
         let layout = layout_store.resolve(&conversation.to_string());
+        let settings = settings_state(&paths);
         let runtime = tokio::spawn(bridge.serve_native(
             client,
             host,
@@ -2929,6 +3328,7 @@ mod tests {
                 navigation_store,
                 layout,
                 layout_store,
+                settings,
             },
         ));
         startup

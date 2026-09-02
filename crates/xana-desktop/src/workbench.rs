@@ -33,10 +33,11 @@ use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopConversationState,
     DesktopDockPlacement, DesktopEvent, DesktopHostEvent, DesktopInstanceLease,
     DesktopLaunchIntent, DesktopLayoutNode, DesktopNativePaths, DesktopNavigationSnapshot,
-    DesktopNavigationTarget, DesktopPanelId, DesktopRoundBudgetSuspension, DesktopSidebarMode,
-    DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout, DesktopWorkspaceStatus,
-    LastWindowChoice, LastWindowEffect, NotificationDestination, NotificationPlanner,
-    last_window_effect,
+    DesktopNavigationTarget, DesktopPanelId, DesktopRoundBudgetSuspension,
+    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSnapshot,
+    DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout,
+    DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect, NotificationDestination,
+    NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -64,6 +65,9 @@ pub(crate) struct Workbench {
     navigation_snapshot: DesktopNavigationSnapshot,
     layout: DesktopWorkbenchLayout,
     layout_save_generation: u64,
+    settings_snapshot: DesktopSettingsSnapshot,
+    settings_draft: Option<DesktopSettingsDraftSnapshot>,
+    settings_receipt: Option<DesktopSettingsReceipt>,
     selected_project: Option<String>,
     sidebar_selection: Option<SidebarSelection>,
     navigation_dialog: Option<NavigationDialog>,
@@ -94,6 +98,7 @@ impl Workbench {
         let projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
         let layout = runtime.initial_snapshot().layout.layout.clone();
+        let settings_snapshot = runtime.initial_snapshot().settings.clone();
         let selected_project = navigation_snapshot
             .selected_conversation
             .as_deref()
@@ -189,6 +194,9 @@ impl Workbench {
             navigation_snapshot,
             layout,
             layout_save_generation: 0,
+            settings_snapshot,
+            settings_draft: None,
+            settings_receipt: None,
             selected_project,
             sidebar_selection,
             navigation_dialog: None,
@@ -607,6 +615,15 @@ impl Workbench {
                     if let Some(warning) = layout.warning {
                         self.projection.set_activity(warning);
                     }
+                }
+                DesktopUpdate::Settings(snapshot) => {
+                    self.settings_snapshot = snapshot;
+                }
+                DesktopUpdate::SettingsDraft(draft) => {
+                    self.settings_draft = draft;
+                }
+                DesktopUpdate::SettingsReceipt(receipt) => {
+                    self.settings_receipt = Some(receipt);
                 }
                 DesktopUpdate::Observation(observation) => {
                     if !self.projection.apply(observation)

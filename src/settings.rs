@@ -495,6 +495,10 @@ pub(crate) struct SettingsDraft {
 }
 
 impl SettingsDraft {
+    pub(crate) fn base_revision(&self) -> String {
+        revision(&self.base)
+    }
+
     pub(crate) fn set(&mut self, key: &str, value: &str) -> Result<(), SettingsError> {
         if value.len() > MAX_SETTING_VALUE_BYTES {
             return Err(SettingsError::InvalidValue {
