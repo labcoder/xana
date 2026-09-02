@@ -554,7 +554,12 @@ impl TuiState {
 
     pub(in crate::tui) fn set_managed_thread(&mut self, connection: &str, thread_id: String) {
         self.session = thread_id.clone();
+        let conversation_id = self
+            .runtime_conversation
+            .conversation_id()
+            .unwrap_or_else(crate::identity::ConversationId::new);
         let conversation = ConversationRef::Managed {
+            conversation_id,
             connection: connection.to_owned(),
             thread_id,
         };
@@ -592,6 +597,7 @@ impl TuiState {
         self.activity.clear();
         self.session = "new".to_owned();
         self.runtime_conversation = ConversationRef::NewManaged {
+            conversation_id: crate::identity::ConversationId::new(),
             connection: connection.to_owned(),
         };
         self.viewed_conversation = self.runtime_conversation.clone();

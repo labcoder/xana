@@ -38,6 +38,7 @@ uuid_id!(OperationId);
 uuid_id!(StepId);
 uuid_id!(ToolInvocationId);
 uuid_id!(SessionId);
+uuid_id!(ConversationId);
 uuid_id!(ThreadId);
 uuid_id!(AgentId);
 uuid_id!(ConversationEntryId);
@@ -69,6 +70,24 @@ impl AgentId {
         Self(Uuid::new_v5(
             &Uuid::NAMESPACE_OID,
             format!("io.github.labcoder.xana/session/{session_id}/root-agent").as_bytes(),
+        ))
+    }
+}
+
+impl ConversationId {
+    pub(crate) fn for_native(session_id: SessionId) -> Self {
+        Self(session_id.0)
+    }
+
+    pub(crate) fn for_legacy_managed_route(route_digest: &[u8]) -> Self {
+        Self(Uuid::new_v5(
+            &Uuid::NAMESPACE_OID,
+            [
+                b"io.github.labcoder.xana/managed-conversation/",
+                route_digest,
+            ]
+            .concat()
+            .as_slice(),
         ))
     }
 }

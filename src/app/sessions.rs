@@ -176,10 +176,26 @@ pub(super) fn run_command<W: Write>(
                 .canonicalize()
                 .context("could not canonicalize current workspace")?;
             let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
-            let conversation = ConversationRef::Managed {
-                connection,
-                thread_id,
-            };
+            let conversation = host
+                .snapshot()?
+                .conversations
+                .into_iter()
+                .map(|projection| projection.conversation)
+                .find(|conversation| {
+                    matches!(
+                        conversation,
+                        ConversationRef::Managed {
+                            connection: candidate_connection,
+                            thread_id: candidate_thread,
+                            ..
+                        } if candidate_connection == &connection && candidate_thread == &thread_id
+                    )
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "managed conversation {connection}/{thread_id} is not retained locally"
+                    )
+                })?;
             if host.archive_managed_conversation(&conversation)? {
                 writeln!(
                     output,

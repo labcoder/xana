@@ -492,6 +492,7 @@ fn fake_codex_transcript_preserves_reasoning_and_managed_ownership() {
         ComposerPreset::Submit,
         ActivityVisibility::Auto,
         ConversationRef::NewManaged {
+            conversation_id: crate::identity::ConversationId::new(),
             connection: "codex".to_owned(),
         },
     );
@@ -568,6 +569,7 @@ fn pointer_actions_preserve_typed_selection_and_activation() {
     );
 
     let conversation = ConversationRef::NewManaged {
+        conversation_id: crate::identity::ConversationId::new(),
         connection: "codex".to_owned(),
     };
     assert_eq!(
@@ -644,6 +646,7 @@ fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids
         session_id: SessionId::new(),
     };
     let archived = ConversationRef::Managed {
+        conversation_id: crate::identity::ConversationId::new(),
         connection: "codex".to_owned(),
         thread_id: "thread-to-archive".to_owned(),
     };

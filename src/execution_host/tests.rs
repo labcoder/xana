@@ -280,13 +280,18 @@ fn attach_restores_native_or_managed_owner_and_failure_preserves_previous() {
     );
 
     let managed = ConversationRef::Managed {
+        conversation_id: crate::identity::ConversationId::new(),
         connection: "codex".to_owned(),
         thread_id: "thread-1".to_owned(),
     };
     {
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         store
-            .set_thread(Some("thread-1".to_owned()), Some("identity-v1"))
+            .set_thread(
+                managed.conversation_id(),
+                Some("thread-1".to_owned()),
+                Some("identity-v1"),
+            )
             .unwrap();
     }
     host.register(
@@ -302,6 +307,7 @@ fn attach_restores_native_or_managed_owner_and_failure_preserves_previous() {
     );
 
     let unavailable = ConversationRef::Managed {
+        conversation_id: crate::identity::ConversationId::new(),
         connection: "codex".to_owned(),
         thread_id: "not-retained".to_owned(),
     };

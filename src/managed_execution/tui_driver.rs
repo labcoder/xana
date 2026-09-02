@@ -3,7 +3,7 @@
 use super::{ManagedChatConfig, ManagedThreadState, ensure_thread_loaded, initial_managed_thread};
 use crate::{
     frontend::ManagedClientEvent,
-    identity::OperationId,
+    identity::{ConversationId, OperationId},
     managed::{
         codex::{
             AccountStatus, ApprovalDecision, ApprovalRequest, CodexAppServer, CodexError,
@@ -311,6 +311,7 @@ async fn run_actor(
                 };
                 send_event(&events, ManagedTuiEvent::ThreadOpened(thread_id.clone())).await?;
                 conversation = ConversationRef::Managed {
+                    conversation_id: thread.conversation_id(),
                     connection: config.connection.clone(),
                     thread_id: thread_id.clone(),
                 };
@@ -354,10 +355,12 @@ async fn run_actor(
             }
             ManagedTuiCommand::Clear => {
                 store
-                    .set_thread(None, None)
+                    .set_thread(None, None, None)
                     .map_err(|error| CodexError::Io(error.to_string()))?;
-                thread = ManagedThreadState::New;
+                let conversation_id = ConversationId::new();
+                thread = ManagedThreadState::New { conversation_id };
                 conversation = ConversationRef::NewManaged {
+                    conversation_id,
                     connection: config.connection.clone(),
                 };
                 send_event(&events, ManagedTuiEvent::Cleared).await?;

@@ -12,7 +12,7 @@ use crate::{
     app::ChatExit,
     artifact::ArtifactStore,
     frontend::ManagedClientEvent,
-    identity::PrincipalId,
+    identity::{ConversationId, PrincipalId},
     managed::{
         codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
         thread_store::ManagedThreadStore,
@@ -50,12 +50,32 @@ pub(crate) struct ManagedOneShotRequest {
 }
 
 enum ManagedThreadState {
-    New,
+    New {
+        conversation_id: ConversationId,
+    },
     NeedsResume {
+        conversation_id: ConversationId,
         thread_id: String,
         identity_is_current: bool,
     },
-    Loaded(String),
+    Loaded {
+        conversation_id: ConversationId,
+        thread_id: String,
+    },
+}
+
+impl ManagedThreadState {
+    fn conversation_id(&self) -> ConversationId {
+        match self {
+            Self::New { conversation_id }
+            | Self::NeedsResume {
+                conversation_id, ..
+            }
+            | Self::Loaded {
+                conversation_id, ..
+            } => *conversation_id,
+        }
+    }
 }
 
 fn initial_managed_thread(
@@ -66,16 +86,25 @@ fn initial_managed_thread(
 ) -> Result<(Option<String>, ManagedThreadState), CodexError> {
     match conversation {
         ConversationRef::NewManaged {
+            conversation_id,
             connection: requested,
-        } if requested == connection => Ok((None, ManagedThreadState::New)),
+        } if requested == connection => Ok((
+            None,
+            ManagedThreadState::New {
+                conversation_id: *conversation_id,
+            },
+        )),
         ConversationRef::Managed {
+            conversation_id,
             connection: requested,
             thread_id,
         } if requested == connection => Ok((
             Some(thread_id.clone()),
             ManagedThreadState::NeedsResume {
+                conversation_id: *conversation_id,
                 thread_id: thread_id.clone(),
-                identity_is_current: store.thread_id() == Some(thread_id.as_str())
+                identity_is_current: store.conversation_id() == Some(*conversation_id)
+                    && store.thread_id() == Some(thread_id.as_str())
                     && store.identity_version() == Some(identity_version),
             },
         )),
@@ -144,6 +173,7 @@ pub(crate) async fn run_codex_chat(
     if let ManagedThreadState::NeedsResume {
         thread_id,
         identity_is_current,
+        ..
     } = &thread
     {
         println!("managed thread: {thread_id} (will resume on the first turn)");
@@ -218,10 +248,12 @@ pub(crate) async fn run_codex_chat(
             }
         }
         if input == "/clear" {
-            thread_store.set_thread(None, None)?;
-            thread = ManagedThreadState::New;
+            thread_store.set_thread(None, None, None)?;
+            let conversation_id = ConversationId::new();
+            thread = ManagedThreadState::New { conversation_id };
             last_activity = RetainedActivity::default();
             conversation = ConversationRef::NewManaged {
+                conversation_id,
                 connection: config.connection.clone(),
             };
             let cleared = pending.clear();
@@ -465,6 +497,7 @@ pub(crate) async fn run_codex_chat(
             Err(error) => println!("xana> managed turn failed: {error}"),
         }
         conversation = ConversationRef::Managed {
+            conversation_id: thread.conversation_id(),
             connection: config.connection.clone(),
             thread_id: loaded_thread_id,
         };
@@ -575,7 +608,11 @@ async fn run_codex_one_shot_inner(
     }
     .map_err(|error| OneShotFailure::new(ExitCategory::Connection, error.to_string()))?;
     store
-        .set_thread(Some(thread_id.clone()), Some(config.identity_version))
+        .set_thread(
+            request.conversation.conversation_id(),
+            Some(thread_id.clone()),
+            Some(config.identity_version),
+        )
         .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
 
     let _root_lease = workspace_host
@@ -735,7 +772,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     handler: &mut H,
 ) -> Result<String, CodexError> {
     let id = match thread {
-        ManagedThreadState::New => {
+        ManagedThreadState::New { conversation_id } => {
             let id = server
                 .start_thread(
                     &config.model,
@@ -745,11 +782,19 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                 )
                 .await?;
             store
-                .set_thread(Some(id.clone()), Some(config.identity_version))
+                .set_thread(
+                    Some(*conversation_id),
+                    Some(id.clone()),
+                    Some(config.identity_version),
+                )
                 .map_err(|error| CodexError::Io(error.to_string()))?;
-            id
+            (*conversation_id, id)
         }
-        ManagedThreadState::NeedsResume { thread_id, .. } => {
+        ManagedThreadState::NeedsResume {
+            conversation_id,
+            thread_id,
+            ..
+        } => {
             server
                 .resume_thread(
                     thread_id,
@@ -758,12 +803,16 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                     &config.developer_instructions,
                     handler,
                 )
-                .await?
+                .await?;
+            (*conversation_id, thread_id.clone())
         }
-        ManagedThreadState::Loaded(id) => return Ok(id.clone()),
+        ManagedThreadState::Loaded { thread_id, .. } => return Ok(thread_id.clone()),
     };
-    *thread = ManagedThreadState::Loaded(id.clone());
-    Ok(id)
+    *thread = ManagedThreadState::Loaded {
+        conversation_id: id.0,
+        thread_id: id.1.clone(),
+    };
+    Ok(id.1)
 }
 
 fn print_models(models: &[crate::model_catalog::ModelDescriptor], selected: &str) {
@@ -877,11 +926,17 @@ mod tests {
         std::fs::create_dir(&workspace).unwrap();
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         store
-            .set_thread(Some("existing-thread".to_owned()), Some("identity-v1"))
+            .set_thread(
+                Some(ConversationId::new()),
+                Some("existing-thread".to_owned()),
+                Some("identity-v1"),
+            )
             .unwrap();
 
+        let conversation_id = ConversationId::new();
         let (initial, state) = initial_managed_thread(
             &ConversationRef::NewManaged {
+                conversation_id,
                 connection: "codex".to_owned(),
             },
             &store,
@@ -891,7 +946,12 @@ mod tests {
         .unwrap();
 
         assert_eq!(initial, None);
-        assert!(matches!(state, ManagedThreadState::New));
+        assert!(matches!(
+            state,
+            ManagedThreadState::New {
+                conversation_id: actual
+            } if actual == conversation_id
+        ));
     }
 
     #[test]

@@ -14,6 +14,7 @@ use crate::{
     cli,
     config::{ProviderKind, XanaConfig},
     context::{ContextBudget, ContextPlanReport},
+    identity::ConversationId,
     managed::codex::CodexAppServer,
     managed_execution::{
         ManagedChatConfig, ManagedOneShotRequest, run_codex_chat, run_codex_one_shot,
@@ -330,10 +331,12 @@ async fn run_once(
                     .into_iter()
                     .find_map(|projection| match projection.conversation {
                         ConversationRef::Managed {
+                            conversation_id,
                             connection,
                             thread_id,
                         } if connection == provider_name && projection.selected => {
                             Some(ConversationRef::Managed {
+                                conversation_id,
                                 connection,
                                 thread_id,
                             })
@@ -343,6 +346,7 @@ async fn run_once(
             })
             .flatten();
         current.unwrap_or_else(|| ConversationRef::NewManaged {
+            conversation_id: resume.map_or_else(ConversationId::new, ConversationId::for_native),
             connection: provider_name.clone(),
         })
     } else {

@@ -364,6 +364,7 @@ pub(super) async fn dispatch_managed_effect(
                 ConversationRef::Managed {
                     connection,
                     thread_id,
+                    ..
                 } if connection == &state.connection => driver
                     .archive(thread_id.clone())
                     .await

@@ -4,7 +4,7 @@
 use crate::message::Message;
 use crate::{
     bounded_file,
-    identity::SessionId,
+    identity::{ConversationId, SessionId},
     managed::thread_store::{ManagedConversationHandle, ManagedThreadStore},
     session::{DurableSession, NativeConversationHandle},
     workspace_identity::{WorkspaceIdentity, next_locked_generation},
@@ -29,11 +29,13 @@ pub(crate) enum ConversationRef {
         session_id: SessionId,
     },
     Managed {
+        conversation_id: ConversationId,
         connection: String,
         thread_id: String,
     },
     NewNative,
     NewManaged {
+        conversation_id: ConversationId,
         connection: String,
     },
 }
@@ -43,11 +45,33 @@ impl fmt::Display for ConversationRef {
         match self {
             Self::Native { session_id } => write!(output, "native/{session_id}"),
             Self::Managed {
+                conversation_id,
                 connection,
                 thread_id,
-            } => write!(output, "managed/{connection}/{thread_id}"),
+            } => write!(
+                output,
+                "managed/{conversation_id} ({connection} thread {thread_id})"
+            ),
             Self::NewNative => output.write_str("native/new"),
-            Self::NewManaged { connection } => write!(output, "managed/{connection}/new"),
+            Self::NewManaged {
+                conversation_id,
+                connection,
+            } => write!(output, "managed/{conversation_id} ({connection}, pending)"),
+        }
+    }
+}
+
+impl ConversationRef {
+    pub(crate) fn conversation_id(&self) -> Option<ConversationId> {
+        match self {
+            Self::Native { session_id } => Some(ConversationId::for_native(*session_id)),
+            Self::Managed {
+                conversation_id, ..
+            }
+            | Self::NewManaged {
+                conversation_id, ..
+            } => Some(*conversation_id),
+            Self::NewNative => None,
         }
     }
 }
@@ -346,6 +370,7 @@ impl WorkspaceHost {
         let ConversationRef::Managed {
             connection,
             thread_id,
+            ..
         } = conversation
         else {
             return Err(WorkspaceHostError::Invalid(
@@ -541,6 +566,7 @@ fn managed_projection(
     controlled: Option<&ConversationRef>,
 ) -> ConversationProjection {
     let conversation = ConversationRef::Managed {
+        conversation_id: entry.conversation_id,
         connection: entry.connection,
         thread_id: entry.thread_id,
     };
@@ -560,9 +586,11 @@ fn conversation_membership_keys(conversation: &ConversationRef) -> Vec<String> {
             vec![session_id.to_string(), conversation.to_string()]
         }
         ConversationRef::Managed {
+            conversation_id,
             connection,
             thread_id,
         } => vec![
+            conversation_id.to_string(),
             thread_id.clone(),
             format!("{connection}/{thread_id}"),
             conversation.to_string(),
@@ -664,10 +692,18 @@ mod tests {
             let mut managed =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             managed
-                .set_thread(Some("thread-a".into()), Some("identity-v1"))
+                .set_thread(
+                    Some(ConversationId::new()),
+                    Some("thread-a".into()),
+                    Some("identity-v1"),
+                )
                 .unwrap();
             managed
-                .set_thread(Some("thread-b".into()), Some("identity-v1"))
+                .set_thread(
+                    Some(ConversationId::new()),
+                    Some("thread-b".into()),
+                    Some("identity-v1"),
+                )
                 .unwrap();
         }
         let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
@@ -684,13 +720,19 @@ mod tests {
         let workspace = directory.path().join("workspace");
         fs::create_dir(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
+        let conversation_id = ConversationId::new();
         let conversation = ConversationRef::Managed {
+            conversation_id,
             connection: "codex".to_owned(),
             thread_id: "thread-active".to_owned(),
         };
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         store
-            .set_thread(Some("thread-active".into()), Some("identity-v1"))
+            .set_thread(
+                Some(conversation_id),
+                Some("thread-active".into()),
+                Some("identity-v1"),
+            )
             .unwrap();
         drop(store);
         let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
@@ -730,6 +772,7 @@ mod tests {
         );
         assert_eq!(
             host.conversation_history(&ConversationRef::Managed {
+                conversation_id: ConversationId::new(),
                 connection: "codex".to_owned(),
                 thread_id: "opaque".to_owned(),
             })

@@ -1,6 +1,6 @@
 //! Durable, non-secret handles for externally owned managed threads.
 
-use crate::bounded_file;
+use crate::{bounded_file, identity::ConversationId};
 use serde::{Deserialize, Serialize};
 use std::{
     error::Error,
@@ -9,7 +9,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const DOCUMENT_VERSION: u32 = 2;
+const DOCUMENT_VERSION: u32 = 3;
 const MAX_DOCUMENT_BYTES: usize = 64 * 1024;
 const MAX_THREAD_ID_BYTES: usize = 4096;
 const MAX_IDENTITY_VERSION_BYTES: usize = 128;
@@ -61,9 +61,29 @@ struct ManagedThreadDocumentV1 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManagedThreadEntry {
+    conversation_id: ConversationId,
     thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedThreadEntryV2 {
+    thread_id: String,
+    #[serde(default)]
+    identity_version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ManagedThreadDocumentV2 {
+    #[serde(rename = "version")]
+    _version: u32,
+    connection: String,
+    workspace: PathBuf,
+    current_thread_id: Option<String>,
+    threads: Vec<ManagedThreadEntryV2>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -78,12 +98,14 @@ struct ManagedThreadDocument {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedConversationHandle {
+    pub(crate) conversation_id: ConversationId,
     pub(crate) connection: String,
     pub(crate) thread_id: String,
     pub(crate) current: bool,
 }
 
 struct DecodedManagedDocument {
+    current_conversation_id: Option<ConversationId>,
     current_thread_id: Option<String>,
     identity_version: Option<String>,
     threads: Vec<ManagedThreadEntry>,
@@ -94,6 +116,7 @@ pub(crate) struct ManagedThreadStore {
     state_path: PathBuf,
     connection: String,
     workspace: PathBuf,
+    conversation_id: Option<ConversationId>,
     thread_id: Option<String>,
     identity_version: Option<String>,
     threads: Vec<ManagedThreadEntry>,
@@ -148,11 +171,12 @@ impl ManagedThreadStore {
             }
         }
 
-        let (thread_id, identity_version, threads) =
+        let (conversation_id, thread_id, identity_version, threads) =
             match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
                 Ok(bytes) => {
                     let decoded = decode_document(&bytes, connection, &workspace)?;
                     (
+                        decoded.current_conversation_id,
                         decoded.current_thread_id,
                         decoded.identity_version,
                         decoded.threads,
@@ -161,7 +185,7 @@ impl ManagedThreadStore {
                 Err(bounded_file::BoundedReadError::Io { source, .. })
                     if source.kind() == io::ErrorKind::NotFound =>
                 {
-                    (None, None, Vec::new())
+                    (None, None, None, Vec::new())
                 }
                 Err(bounded_file::BoundedReadError::Io { path, source }) => {
                     return Err(ManagedThreadStoreError::Io { path, source });
@@ -178,6 +202,7 @@ impl ManagedThreadStore {
             state_path,
             connection: connection.to_owned(),
             workspace,
+            conversation_id,
             thread_id,
             identity_version,
             threads,
@@ -189,21 +214,27 @@ impl ManagedThreadStore {
         self.thread_id.as_deref()
     }
 
+    pub(crate) fn conversation_id(&self) -> Option<ConversationId> {
+        self.conversation_id
+    }
+
     pub(crate) fn identity_version(&self) -> Option<&str> {
         self.identity_version.as_deref()
     }
 
     pub(crate) fn set_thread(
         &mut self,
+        conversation_id: Option<ConversationId>,
         thread_id: Option<String>,
         identity_version: Option<&str>,
     ) -> Result<(), ManagedThreadStoreError> {
-        validate_thread_state(thread_id.as_deref(), identity_version)?;
+        validate_thread_state(conversation_id, thread_id.as_deref(), identity_version)?;
         let identity_version = identity_version.map(str::to_owned);
         let mut threads = self.threads.clone();
         if let Some(id) = thread_id.as_deref() {
             threads.retain(|entry| entry.thread_id != id);
             threads.push(ManagedThreadEntry {
+                conversation_id: conversation_id.expect("validated managed Conversation id"),
                 thread_id: id.to_owned(),
                 identity_version: identity_version.clone(),
             });
@@ -211,14 +242,14 @@ impl ManagedThreadStore {
                 threads.remove(0);
             }
         }
-        self.commit(thread_id, identity_version, threads)
+        self.commit(conversation_id, thread_id, identity_version, threads)
     }
 
     pub(crate) fn archive_thread(
         &mut self,
         thread_id: &str,
     ) -> Result<bool, ManagedThreadStoreError> {
-        validate_thread_state(Some(thread_id), None)?;
+        validate_thread_id(thread_id)?;
         let mut threads = self.threads.clone();
         let original_len = threads.len();
         threads.retain(|entry| entry.thread_id != thread_id);
@@ -228,18 +259,25 @@ impl ManagedThreadStore {
         let current = (self.thread_id.as_deref() != Some(thread_id))
             .then(|| self.thread_id.clone())
             .flatten();
+        let current_conversation = current.as_deref().and_then(|current| {
+            threads
+                .iter()
+                .find(|entry| entry.thread_id == current)
+                .map(|entry| entry.conversation_id)
+        });
         let identity = current.as_deref().and_then(|current| {
             threads
                 .iter()
                 .find(|entry| entry.thread_id == current)
                 .and_then(|entry| entry.identity_version.clone())
         });
-        self.commit(current, identity, threads)?;
+        self.commit(current_conversation, current, identity, threads)?;
         Ok(true)
     }
 
     fn commit(
         &mut self,
+        conversation_id: Option<ConversationId>,
         thread_id: Option<String>,
         identity_version: Option<String>,
         threads: Vec<ManagedThreadEntry>,
@@ -276,6 +314,7 @@ impl ManagedThreadStore {
                 source,
             })?;
         self.thread_id = thread_id;
+        self.conversation_id = conversation_id;
         self.identity_version = identity_version;
         self.threads = threads;
         Ok(())
@@ -290,7 +329,11 @@ impl ManagedThreadStore {
             .ok_or_else(|| {
                 ManagedThreadStoreError::Invalid("unknown managed conversation".to_owned())
             })?;
-        self.set_thread(Some(entry.thread_id), entry.identity_version.as_deref())
+        self.set_thread(
+            Some(entry.conversation_id),
+            Some(entry.thread_id),
+            entry.identity_version.as_deref(),
+        )
     }
 
     pub(crate) fn list_for_workspace(
@@ -341,6 +384,7 @@ impl ManagedThreadStore {
                 ..
             } = decoded;
             handles.extend(threads.into_iter().map(|thread| ManagedConversationHandle {
+                conversation_id: thread.conversation_id,
                 current: current_thread_id.as_deref() == Some(thread.thread_id.as_str()),
                 connection: connection.clone(),
                 thread_id: thread.thread_id,
@@ -393,7 +437,11 @@ fn decode_catalog_document(
                     "route identity does not match its state file".into(),
                 ));
             }
+            let conversation_id = document.thread_id.as_deref().map(|thread_id| {
+                legacy_conversation_id(&document.connection, workspace, thread_id)
+            });
             validate_thread_state(
+                conversation_id,
                 document.thread_id.as_deref(),
                 document.identity_version.as_deref(),
             )?;
@@ -401,17 +449,44 @@ fn decode_catalog_document(
                 .thread_id
                 .as_ref()
                 .map(|thread_id| ManagedThreadEntry {
+                    conversation_id: conversation_id.expect("legacy thread has derived identity"),
                     thread_id: thread_id.clone(),
                     identity_version: document.identity_version.clone(),
                 })
                 .into_iter()
                 .collect();
             Ok(DecodedManagedDocument {
+                current_conversation_id: conversation_id,
                 current_thread_id: document.thread_id,
                 identity_version: document.identity_version,
                 threads,
                 connection: document.connection,
             })
+        }
+        Some(2) => {
+            let document: ManagedThreadDocumentV2 = serde_json::from_value(value)
+                .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
+            if !same_workspace(&document.workspace, workspace)
+                || document.threads.len() > MAX_THREADS
+            {
+                return Err(ManagedThreadStoreError::Invalid(
+                    "route identity or thread bound is invalid".into(),
+                ));
+            }
+            let threads = document
+                .threads
+                .into_iter()
+                .map(|thread| ManagedThreadEntry {
+                    conversation_id: legacy_conversation_id(
+                        &document.connection,
+                        workspace,
+                        &thread.thread_id,
+                    ),
+                    thread_id: thread.thread_id,
+                    identity_version: thread.identity_version,
+                })
+                .collect::<Vec<_>>();
+            decoded_document(document.connection, document.current_thread_id, threads)
         }
         Some(version) if version == u64::from(DOCUMENT_VERSION) => {
             let document: ManagedThreadDocument = serde_json::from_value(value)
@@ -423,31 +498,11 @@ fn decode_catalog_document(
                     "route identity or thread bound is invalid".into(),
                 ));
             }
-            for thread in &document.threads {
-                validate_thread_state(Some(&thread.thread_id), thread.identity_version.as_deref())?;
-            }
-            let current_entry = document
-                .current_thread_id
-                .as_deref()
-                .map(|current| {
-                    document
-                        .threads
-                        .iter()
-                        .find(|thread| thread.thread_id == current)
-                        .ok_or_else(|| {
-                            ManagedThreadStoreError::Invalid(
-                                "current managed thread is not in the conversation catalog"
-                                    .to_owned(),
-                            )
-                        })
-                })
-                .transpose()?;
-            Ok(DecodedManagedDocument {
-                current_thread_id: document.current_thread_id,
-                identity_version: current_entry.and_then(|entry| entry.identity_version.clone()),
-                threads: document.threads,
-                connection: document.connection,
-            })
+            decoded_document(
+                document.connection,
+                document.current_thread_id,
+                document.threads,
+            )
         }
         _ => Err(ManagedThreadStoreError::Invalid(
             "unsupported managed thread document version".to_owned(),
@@ -455,18 +510,76 @@ fn decode_catalog_document(
     }
 }
 
+fn decoded_document(
+    connection: String,
+    current_thread_id: Option<String>,
+    threads: Vec<ManagedThreadEntry>,
+) -> Result<DecodedManagedDocument, ManagedThreadStoreError> {
+    let mut conversation_ids = std::collections::HashSet::new();
+    let mut thread_ids = std::collections::HashSet::new();
+    for thread in &threads {
+        validate_thread_state(
+            Some(thread.conversation_id),
+            Some(&thread.thread_id),
+            thread.identity_version.as_deref(),
+        )?;
+        if !conversation_ids.insert(thread.conversation_id)
+            || !thread_ids.insert(thread.thread_id.as_str())
+        {
+            return Err(ManagedThreadStoreError::Invalid(
+                "managed Conversation and thread identities must be unique".to_owned(),
+            ));
+        }
+    }
+    let current_entry = current_thread_id
+        .as_deref()
+        .map(|current| {
+            threads
+                .iter()
+                .find(|thread| thread.thread_id == current)
+                .ok_or_else(|| {
+                    ManagedThreadStoreError::Invalid(
+                        "current managed thread is not in the conversation catalog".to_owned(),
+                    )
+                })
+        })
+        .transpose()?;
+    Ok(DecodedManagedDocument {
+        current_conversation_id: current_entry.map(|entry| entry.conversation_id),
+        current_thread_id,
+        identity_version: current_entry.and_then(|entry| entry.identity_version.clone()),
+        threads,
+        connection,
+    })
+}
+
+fn legacy_conversation_id(connection: &str, workspace: &Path, thread_id: &str) -> ConversationId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"xana-managed-conversation-legacy-v1");
+    hasher.update(connection.as_bytes());
+    hasher.update(&[0]);
+    hasher.update(workspace.as_os_str().as_encoded_bytes());
+    hasher.update(&[0]);
+    hasher.update(thread_id.as_bytes());
+    ConversationId::for_legacy_managed_route(hasher.finalize().as_bytes())
+}
+
 fn same_workspace(stored: &Path, expected: &Path) -> bool {
     same_file::is_same_file(stored, expected).unwrap_or(false)
 }
 
 fn validate_thread_state(
+    conversation_id: Option<ConversationId>,
     thread_id: Option<&str>,
     identity_version: Option<&str>,
 ) -> Result<(), ManagedThreadStoreError> {
-    if thread_id.is_some_and(|id| id.is_empty() || id.len() > MAX_THREAD_ID_BYTES) {
-        return Err(ManagedThreadStoreError::Invalid(format!(
-            "thread id must contain 1 to {MAX_THREAD_ID_BYTES} bytes"
-        )));
+    if conversation_id.is_some() != thread_id.is_some() {
+        return Err(ManagedThreadStoreError::Invalid(
+            "managed Conversation identity and thread id must be present together".into(),
+        ));
+    }
+    if let Some(thread_id) = thread_id {
+        validate_thread_id(thread_id)?;
     }
     if identity_version.is_some() && thread_id.is_none() {
         return Err(ManagedThreadStoreError::Invalid(
@@ -478,6 +591,15 @@ fn validate_thread_state(
     {
         return Err(ManagedThreadStoreError::Invalid(format!(
             "identity version must contain 1 to {MAX_IDENTITY_VERSION_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_thread_id(thread_id: &str) -> Result<(), ManagedThreadStoreError> {
+    if thread_id.is_empty() || thread_id.len() > MAX_THREAD_ID_BYTES {
+        return Err(ManagedThreadStoreError::Invalid(format!(
+            "thread id must contain 1 to {MAX_THREAD_ID_BYTES} bytes"
         )));
     }
     Ok(())
@@ -498,16 +620,22 @@ mod tests {
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             assert_eq!(store.thread_id(), None);
             assert_eq!(store.identity_version(), None);
+            let conversation_id = ConversationId::new();
             store
-                .set_thread(Some("thr_123".into()), Some("xana-identity-v1"))
+                .set_thread(
+                    Some(conversation_id),
+                    Some("thr_123".into()),
+                    Some("xana-identity-v1"),
+                )
                 .unwrap();
+            assert_eq!(store.conversation_id(), Some(conversation_id));
         }
         {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             assert_eq!(store.thread_id(), Some("thr_123"));
             assert_eq!(store.identity_version(), Some("xana-identity-v1"));
-            store.set_thread(None, None).unwrap();
+            store.set_thread(None, None, None).unwrap();
         }
         let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         assert_eq!(store.thread_id(), None);
@@ -525,10 +653,18 @@ mod tests {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             store
-                .set_thread(Some("thr_first".into()), Some("identity-v1"))
+                .set_thread(
+                    Some(ConversationId::new()),
+                    Some("thr_first".into()),
+                    Some("identity-v1"),
+                )
                 .unwrap();
             store
-                .set_thread(Some("thr_second".into()), Some("identity-v2"))
+                .set_thread(
+                    Some(ConversationId::new()),
+                    Some("thr_second".into()),
+                    Some("identity-v2"),
+                )
                 .unwrap();
             assert_eq!(store.threads[0].thread_id, "thr_first");
             assert_eq!(store.threads[1].thread_id, "thr_second");
@@ -559,10 +695,18 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         store
-            .set_thread(Some("thr_first".into()), Some("identity-v1"))
+            .set_thread(
+                Some(ConversationId::new()),
+                Some("thr_first".into()),
+                Some("identity-v1"),
+            )
             .unwrap();
         store
-            .set_thread(Some("thr_second".into()), Some("identity-v1"))
+            .set_thread(
+                Some(ConversationId::new()),
+                Some("thr_second".into()),
+                Some("identity-v1"),
+            )
             .unwrap();
 
         assert!(store.archive_thread("thr_first").unwrap());
@@ -599,6 +743,70 @@ mod tests {
     }
 
     #[test]
+    fn version_two_handles_receive_stable_xana_conversation_identities() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let state_path = {
+            let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+            store.state_path.clone()
+        };
+        fs::write(
+            &state_path,
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "version": 2,
+                "connection": "codex",
+                "workspace": workspace,
+                "current_thread_id": "thr_legacy",
+                "threads": [{
+                    "thread_id": "thr_legacy",
+                    "identity_version": "xana-identity-v1"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let first = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        let first_id = first.conversation_id().expect("derived Conversation id");
+        drop(first);
+        let second = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+
+        assert_eq!(second.conversation_id(), Some(first_id));
+        assert_eq!(second.thread_id(), Some("thr_legacy"));
+    }
+
+    #[test]
+    fn version_three_round_trip_preserves_xana_and_provider_identities() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let conversation_id = ConversationId::new();
+        {
+            let mut store =
+                ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+            store
+                .set_thread(
+                    Some(conversation_id),
+                    Some("thr_provider_owned".into()),
+                    Some("xana-identity-v1"),
+                )
+                .unwrap();
+        }
+
+        let store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        assert_eq!(store.conversation_id(), Some(conversation_id));
+        assert_eq!(store.thread_id(), Some("thr_provider_owned"));
+        let persisted: serde_json::Value =
+            serde_json::from_slice(&fs::read(&store.state_path).unwrap()).unwrap();
+        assert_eq!(persisted["version"], 3);
+        assert_eq!(
+            persisted["threads"][0]["conversation_id"],
+            conversation_id.to_string()
+        );
+    }
+
+    #[test]
     fn same_route_has_one_writer_but_other_workspaces_are_independent() {
         let directory = tempdir().unwrap();
         let first_workspace = directory.path().join("first");
@@ -621,8 +829,9 @@ mod tests {
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
         assert!(matches!(
             store.set_thread(
+                Some(ConversationId::new()),
                 Some("x".repeat(MAX_THREAD_ID_BYTES + 1)),
-                Some("xana-identity-v1")
+                Some("xana-identity-v1"),
             ),
             Err(ManagedThreadStoreError::Invalid(_))
         ));
@@ -637,14 +846,15 @@ mod tests {
         let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
 
         assert!(matches!(
-            store.set_thread(None, Some("xana-identity-v1")),
+            store.set_thread(None, None, Some("xana-identity-v1")),
             Err(ManagedThreadStoreError::Invalid(reason))
                 if reason.contains("requires a managed thread id")
         ));
         assert!(matches!(
             store.set_thread(
+                Some(ConversationId::new()),
                 Some("thr_123".into()),
-                Some(&"x".repeat(MAX_IDENTITY_VERSION_BYTES + 1))
+                Some(&"x".repeat(MAX_IDENTITY_VERSION_BYTES + 1)),
             ),
             Err(ManagedThreadStoreError::Invalid(reason))
                 if reason.contains("identity version must contain")
@@ -661,7 +871,11 @@ mod tests {
             let mut store =
                 ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
             store
-                .set_thread(Some("thr_123".into()), Some("xana-identity-v1"))
+                .set_thread(
+                    Some(ConversationId::new()),
+                    Some("thr_123".into()),
+                    Some("xana-identity-v1"),
+                )
                 .unwrap();
             store.state_path.clone()
         };

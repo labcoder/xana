@@ -249,9 +249,10 @@ pub(super) fn render(
                     crate::workspace_host::ConversationRef::Managed {
                         connection,
                         thread_id,
+                        ..
                     } => format!("{connection}/{thread_id}"),
                     crate::workspace_host::ConversationRef::NewNative => "new-native".to_owned(),
-                    crate::workspace_host::ConversationRef::NewManaged { connection } => {
+                    crate::workspace_host::ConversationRef::NewManaged { connection, .. } => {
                         format!("{connection}/new")
                     }
                 };

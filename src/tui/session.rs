@@ -57,6 +57,7 @@ impl SessionRow {
             ConversationRef::Managed {
                 connection,
                 thread_id,
+                ..
             } => (
                 format!("{} {}", connection, short(thread_id)),
                 "managed",
@@ -67,7 +68,7 @@ impl SessionRow {
                 "native",
                 current_connection.to_owned(),
             ),
-            ConversationRef::NewManaged { connection } => (
+            ConversationRef::NewManaged { connection, .. } => (
                 format!("New {connection} conversation"),
                 "managed",
                 connection.clone(),

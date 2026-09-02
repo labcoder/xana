@@ -1013,6 +1013,7 @@ impl TuiState {
                     ConversationRef::Managed {
                         connection,
                         thread_id,
+                        ..
                     } if selector == thread_id
                         || selector == format!("{connection}/{thread_id}") =>
                     {
