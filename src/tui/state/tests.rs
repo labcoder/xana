@@ -730,6 +730,64 @@ fn fake_codex_transcript_preserves_reasoning_and_managed_ownership() {
 }
 
 #[test]
+fn managed_turns_publish_deterministic_execution_facts_and_completion_receipts() {
+    let conversation_id = crate::identity::ConversationId::new();
+    let operation_id = OperationId::new();
+    let mut state = TuiState::from_managed(
+        "codex".to_owned(),
+        "gpt-test".to_owned(),
+        "thread-test".to_owned(),
+        ComposerPreset::Submit,
+        ActivityVisibility::Auto,
+        ConversationRef::Managed {
+            conversation_id,
+            connection: "codex".to_owned(),
+            thread_id: "thread-test".to_owned(),
+        },
+    );
+
+    state.mark_submitted(operation_id, "test the workspace".to_owned());
+    state.apply_managed_event(&ManagedClientEvent::TokenUsageUpdated {
+        input_tokens: 20,
+        cached_input_tokens: Some(5),
+        output_tokens: 7,
+        reasoning_tokens: Some(3),
+        total_tokens: 27,
+        context_input_tokens: Some(20),
+        context_window_tokens: Some(100_000),
+    });
+    state.finish_managed_turn(operation_id, None);
+
+    assert_eq!(state.semantic.execution_facts.len(), 1);
+    let facts = &state.semantic.execution_facts[0];
+    assert_eq!(facts.conversation_id, conversation_id);
+    assert_eq!(facts.run_id, operation_id);
+    assert_eq!(facts.owner, ExecutionOwnerV1::Managed);
+    assert_eq!(
+        facts.workspace_authority,
+        WorkspaceAuthorityV1::WorkspaceWrite
+    );
+    assert_eq!(facts.connection.as_deref(), Some("codex"));
+    assert_eq!(facts.model.as_deref(), Some("gpt-test"));
+
+    assert_eq!(state.semantic.completion_receipts.len(), 1);
+    let receipt = &state.semantic.completion_receipts[0];
+    assert_eq!(receipt.status, CompletionStatusV1::Completed);
+    assert_eq!(receipt.usage.amounts.input_tokens, Some(20));
+    assert_eq!(receipt.usage.amounts.output_tokens, Some(7));
+    assert_eq!(receipt.usage.observation_count, 1);
+    let receipt_id = receipt.id;
+    state.semantic.validate().unwrap();
+
+    state.finish_managed_turn(operation_id, None);
+
+    assert_eq!(state.semantic.execution_facts.len(), 1);
+    assert_eq!(state.semantic.completion_receipts.len(), 1);
+    assert_eq!(state.semantic.completion_receipts[0].id, receipt_id);
+    state.semantic.validate().unwrap();
+}
+
+#[test]
 fn pointer_actions_preserve_typed_selection_and_activation() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.composer.text = "one\ntwo".to_owned();

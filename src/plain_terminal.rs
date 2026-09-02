@@ -41,7 +41,7 @@ enum InputAction<'a> {
     Setup(&'a str),
     Settings(&'a str),
     Help,
-    Usage,
+    Usage(&'a str),
     Capabilities,
     ControlCommand { family: &'a str, arguments: &'a str },
     Agents,
@@ -102,7 +102,7 @@ fn classify_input(line: &str) -> InputAction<'_> {
             CommandAction::Setup => return InputAction::Setup(arguments),
             CommandAction::Settings => return InputAction::Settings(arguments),
             CommandAction::Help => return InputAction::Help,
-            CommandAction::Usage => return InputAction::Usage,
+            CommandAction::Usage => return InputAction::Usage(arguments),
             CommandAction::Doctor => return InputAction::Doctor,
             CommandAction::Quit => return InputAction::Quit,
             CommandAction::Clear => return InputAction::Clear,
@@ -157,8 +157,10 @@ fn classify_input(line: &str) -> InputAction<'_> {
     if trimmed == "/help" {
         return InputAction::Help;
     }
-    if trimmed == "/usage" {
-        return InputAction::Usage;
+    if let Some(arguments) = trimmed.strip_prefix("/usage")
+        && (arguments.is_empty() || arguments.starts_with(char::is_whitespace))
+    {
+        return InputAction::Usage(arguments.trim());
     }
     if trimmed == "/doctor" {
         return InputAction::Doctor;
@@ -466,6 +468,69 @@ impl<W: Write> EventRenderer<W> {
         writeln!(self.output, "xana> usage: {}", self.usage.render())
     }
 
+    fn write_usage_details(
+        &mut self,
+        snapshot: &crate::frontend::ClientSnapshot,
+    ) -> io::Result<()> {
+        self.finish_stream()?;
+        writeln!(self.output, "xana> usage: {}", self.usage.render())?;
+        if let Some((run_id, ledger)) = snapshot.prompt_plans.last() {
+            writeln!(
+                self.output,
+                "xana> prompt plan: run {run_id}, ~{} / {} input tokens, {} attachment(s)",
+                ledger.estimated_input_tokens,
+                ledger.budget.input_budget_tokens,
+                ledger.attachment_count,
+            )?;
+        } else {
+            writeln!(self.output, "xana> prompt plan: unavailable")?;
+        }
+        if snapshot.semantic.execution_facts.is_empty() {
+            writeln!(self.output, "xana> execution facts: unavailable")?;
+        } else {
+            for facts in snapshot.semantic.execution_facts.iter().rev().take(8).rev() {
+                writeln!(
+                    self.output,
+                    "xana> execution: run {} · owner {:?} · host {:?} · workspace {:?} · {}/{} · approval {}",
+                    facts.run_id,
+                    facts.owner,
+                    facts.host,
+                    facts.workspace_authority,
+                    facts.connection.as_deref().unwrap_or("unknown"),
+                    facts.model.as_deref().unwrap_or("unknown"),
+                    facts.approval_policy,
+                )?;
+            }
+        }
+        if snapshot.semantic.completion_receipts.is_empty() {
+            writeln!(self.output, "xana> completion receipts: unavailable")?;
+        } else {
+            for receipt in snapshot
+                .semantic
+                .completion_receipts
+                .iter()
+                .rev()
+                .take(8)
+                .rev()
+            {
+                writeln!(
+                    self.output,
+                    "xana> completion: {} · run {} · {:?} · usage observations {}{}",
+                    receipt.id,
+                    receipt.run_id,
+                    receipt.status,
+                    receipt.usage.observation_count,
+                    if receipt.usage.incomplete {
+                        " · incomplete"
+                    } else {
+                        ""
+                    },
+                )?;
+            }
+        }
+        Ok(())
+    }
+
     fn finish_stream(&mut self) -> io::Result<()> {
         if self.streaming_text {
             writeln!(self.output)?;
@@ -615,6 +680,8 @@ fn embedded_client(runtime: RuntimeHandle, header: &ChatHeader) -> EmbeddedClien
         execution_owner: "native".to_owned(),
         model: header.model.clone(),
         reasoning_effort: None,
+        host_location: crate::frontend::semantic::HostLocationV1::Embedded,
+        approval_policy: header.permission_mode.as_str().to_owned(),
         children: header.children.clone(),
         resource_policy: header.resource_policy.clone(),
     };
@@ -842,7 +909,11 @@ pub(crate) async fn run_chat(
                         println!("  {:<38} {}", command.usage(), command.summary);
                     }
                 }
-                InputAction::Usage => renderer.write_usage()?,
+                InputAction::Usage(arguments) => match arguments {
+                    "" | "compact" => renderer.write_usage()?,
+                    "details" => renderer.write_usage_details(runtime.snapshot())?,
+                    _ => println!("xana> usage: /usage [compact|details]"),
+                },
                 InputAction::Capabilities => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
                     exit = ChatExit::ControlCommand {
@@ -1347,6 +1418,11 @@ pub(crate) async fn run_one_shot(
                 operation_id: actual,
                 state: OperationState::Finished(outcome),
             } if actual == operation_id => {
+                reporter
+                    .native_summary(client.snapshot(), operation_id)
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
                 return match outcome {
                     OperationOutcome::Completed => Ok(OneShotSuccess {
                         text: final_text.unwrap_or_default(),
@@ -1716,7 +1792,16 @@ mod tests {
             InputAction::Settings("appearance")
         );
         assert_eq!(classify_input("/help"), InputAction::Help);
-        assert_eq!(classify_input("/usage"), InputAction::Usage);
+        assert_eq!(classify_input("/usage"), InputAction::Usage(""));
+        assert_eq!(
+            classify_input("/usage details"),
+            InputAction::Usage("details")
+        );
+        assert_eq!(
+            classify_input("/usage compact"),
+            InputAction::Usage("compact")
+        );
+        assert_eq!(classify_input("/usagefoo"), InputAction::Send("/usagefoo"));
         assert_eq!(classify_input("/capabilities"), InputAction::Capabilities);
         assert_eq!(
             classify_input("/setup appearance"),

@@ -47,6 +47,8 @@ pub(crate) async fn run_native_host(
             execution_owner: "native".into(),
             model: header.model,
             reasoning_effort: None,
+            host_location: crate::frontend::semantic::HostLocationV1::Loopback,
+            approval_policy: header.permission_mode.as_str().to_owned(),
             children: header.children,
             resource_policy: header.resource_policy,
         },

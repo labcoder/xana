@@ -122,9 +122,12 @@ xana --output stream-json -p "summarize this workspace"
 This mode emits newline-delimited JSON to stdout. Every frame has stream
 `version`, a strictly increasing `sequence`, `type`, `execution_owner`, and,
 once execution has been composed, a stable `conversation_id`. Activity and
-bounded, redacted frontend observations precede exactly one authoritative
-`result` frame. The result payload uses the same version-2 success, error, or
-incomplete envelope described above. Human diagnostics remain on stderr.
+bounded, redacted frontend observations precede one `summary` frame containing
+the current Run's execution facts, prompt ledger, usage observations, and
+completion receipt, then exactly one authoritative `result` frame. Missing
+summary fields remain omitted or unavailable rather than inferred. The result
+payload uses the same version-2 success, error, or incomplete envelope
+described above. Human diagnostics remain on stderr.
 
 Consumers must process unknown frame fields and observation variants
 additively. They may coalesce or drop replaceable text and reasoning deltas

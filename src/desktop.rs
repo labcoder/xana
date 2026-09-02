@@ -992,6 +992,8 @@ pub(crate) async fn run_native(
         execution_owner: "native".to_owned(),
         model: header.model.clone(),
         reasoning_effort,
+        host_location: crate::frontend::semantic::HostLocationV1::Embedded,
+        approval_policy: header.permission_mode.as_str().to_owned(),
         children: header.children.clone(),
         resource_policy: header.resource_policy.clone(),
     };
@@ -2050,6 +2052,8 @@ mod tests {
                 execution_owner: "native".to_owned(),
                 model: "test-model".to_owned(),
                 reasoning_effort: None,
+                host_location: crate::frontend::semantic::HostLocationV1::Embedded,
+                approval_policy: "ask".to_owned(),
                 children: Vec::new(),
                 resource_policy: crate::resource::ResourcePolicyV1::default(),
             },

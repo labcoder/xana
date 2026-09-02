@@ -7,8 +7,10 @@
 
 use super::managed::ManagedClientEvent;
 use super::semantic::{
-    AttachmentPolicySnapshotV1, SemanticCodeV1, SemanticDeltaV1, SemanticEventEnvelopeV1,
-    SemanticReplicaV1, SemanticSnapshotV1, normalize_message,
+    AttachmentPolicySnapshotV1, CompletionReceiptV1, CompletionStatusV1, ExecutionFactsV1,
+    ExecutionOwnerV1, FactAuthorityV1, FactSourceV1, FreshnessV1, HostLocationV1, SemanticCodeV1,
+    SemanticDeltaV1, SemanticEventEnvelopeV1, SemanticReplicaV1, SemanticSnapshotV1,
+    UsageAggregateV1, UsageLedgerV1, UsageScopeV1, WorkspaceAuthorityV1, normalize_message,
 };
 use crate::{
     identity::{AgentId, ConversationId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
@@ -24,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 5;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 6;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -387,6 +389,8 @@ pub(crate) struct ClientSnapshot {
     pub(crate) execution_owner: String,
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<String>,
+    pub(crate) host_location: HostLocationV1,
+    pub(crate) approval_policy: String,
     pub(crate) conversation: Vec<Message>,
     pub(crate) conversation_truncated: bool,
     pub(crate) active_operation: Option<OperationId>,
@@ -411,6 +415,8 @@ pub(crate) struct ClientSnapshotSeed {
     pub(crate) execution_owner: String,
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<String>,
+    pub(crate) host_location: HostLocationV1,
+    pub(crate) approval_policy: String,
     pub(crate) children: Vec<ChildInspection>,
     pub(crate) resource_policy: ResourcePolicyV1,
 }
@@ -434,6 +440,8 @@ impl ClientSnapshot {
             reasoning_effort: seed
                 .reasoning_effort
                 .map(|value| bounded_text(value, MAX_OMISSION_LABEL_BYTES)),
+            host_location: seed.host_location,
+            approval_policy: bounded_text(seed.approval_policy, MAX_OMISSION_LABEL_BYTES),
             conversation,
             conversation_truncated,
             active_operation: None,
@@ -467,15 +475,23 @@ impl ClientSnapshot {
             ClientEvent::Runtime(event) => match event.as_ref() {
                 AgentEvent::OperationStateChanged {
                     operation_id,
-                    state:
-                        crate::native_runtime::OperationState::Running
-                        | crate::native_runtime::OperationState::Suspended,
+                    state: crate::native_runtime::OperationState::Running,
+                } => {
+                    self.active_operation = Some(*operation_id);
+                    self.upsert_execution_facts(*operation_id);
+                }
+                AgentEvent::OperationStateChanged {
+                    operation_id,
+                    state: crate::native_runtime::OperationState::Suspended,
                 } => self.active_operation = Some(*operation_id),
                 AgentEvent::OperationStateChanged {
-                    state: crate::native_runtime::OperationState::Finished(_),
-                    ..
+                    operation_id,
+                    state: crate::native_runtime::OperationState::Finished(outcome),
+                } => {
+                    self.upsert_completion(*operation_id, *outcome);
+                    self.active_operation = None;
                 }
-                | AgentEvent::OperationFailed { .. } => self.active_operation = None,
+                AgentEvent::OperationFailed { .. } => self.active_operation = None,
                 AgentEvent::AssistantMessage {
                     operation_id,
                     message,
@@ -583,6 +599,115 @@ impl ClientSnapshot {
             }
             ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {
                 self.activity_count = self.activity_count.saturating_add(1);
+            }
+        }
+    }
+
+    fn upsert_execution_facts(&mut self, run_id: OperationId) -> ExecutionFactsV1 {
+        if let Some(facts) = self
+            .semantic
+            .execution_facts
+            .iter()
+            .find(|facts| facts.run_id == run_id)
+        {
+            return facts.clone();
+        }
+        let facts = ExecutionFactsV1 {
+            conversation_id: ConversationId::for_native(self.session_id),
+            run_id,
+            owner: match self.execution_owner.as_str() {
+                "managed" => ExecutionOwnerV1::Managed,
+                "external_agent" => ExecutionOwnerV1::ExternalAgent,
+                _ => ExecutionOwnerV1::Native,
+            },
+            host: self.host_location,
+            // The native process is policy-gated but does not claim OS sandboxing.
+            workspace_authority: WorkspaceAuthorityV1::UncontainedFullAccess,
+            tool_authority: crate::tool::BUILTIN_TOOL_NAMES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            connection: Some(self.connection.clone()),
+            model: Some(self.model.clone()),
+            capability_grants: Vec::new(),
+            egress_policy: Some("outbound policy enforced".to_owned()),
+            controller: Some("foreground controller".to_owned()),
+            approval_policy: self.approval_policy.clone(),
+            source: FactSourceV1::Runtime,
+            freshness: FreshnessV1 {
+                observed_at_unix_millis: observed_at_unix_millis(),
+                max_age_millis: None,
+            },
+        };
+        self.semantic.execution_facts.push(facts.clone());
+        while self.semantic.execution_facts.len() > 128 {
+            self.semantic.execution_facts.remove(0);
+        }
+        facts
+    }
+
+    fn upsert_completion(
+        &mut self,
+        run_id: OperationId,
+        outcome: crate::native_runtime::OperationOutcome,
+    ) {
+        let execution = self.upsert_execution_facts(run_id);
+        let scope = UsageScopeV1::Run { run_id };
+        let period = self.session_id.to_string();
+        let mut ledger = UsageLedgerV1::default();
+        for observation in &self.semantic.usage {
+            let _ = ledger.observe(observation.clone());
+        }
+        let usage = ledger
+            .aggregate(&scope, &period)
+            .unwrap_or_else(|_| UsageAggregateV1 {
+                incomplete: true,
+                ..UsageAggregateV1::default()
+            });
+        let status = match outcome {
+            crate::native_runtime::OperationOutcome::Completed => CompletionStatusV1::Completed,
+            crate::native_runtime::OperationOutcome::Failed => CompletionStatusV1::Failed,
+            crate::native_runtime::OperationOutcome::Declined => CompletionStatusV1::Declined,
+            crate::native_runtime::OperationOutcome::Interrupted => CompletionStatusV1::Interrupted,
+        };
+        let warning = match status {
+            CompletionStatusV1::Completed => None,
+            CompletionStatusV1::Failed => Some("run.failed"),
+            CompletionStatusV1::Declined => Some("run.declined"),
+            CompletionStatusV1::Interrupted => Some("run.interrupted"),
+        };
+        let id = Uuid::new_v5(
+            &Uuid::NAMESPACE_URL,
+            format!("xana://completion/{}/{run_id}", execution.conversation_id).as_bytes(),
+        );
+        let receipt = CompletionReceiptV1 {
+            id,
+            conversation_id: execution.conversation_id,
+            run_id,
+            status,
+            execution,
+            artifacts: Vec::new(),
+            checks: Vec::new(),
+            usage,
+            unresolved_warnings: warning.into_iter().map(SemanticCodeV1::new).collect(),
+            source: FactSourceV1::Runtime,
+            authority: FactAuthorityV1::Authoritative,
+            freshness: FreshnessV1 {
+                observed_at_unix_millis: observed_at_unix_millis(),
+                max_age_millis: None,
+            },
+        };
+        if let Some(existing) = self
+            .semantic
+            .completion_receipts
+            .iter_mut()
+            .find(|candidate| candidate.id == receipt.id)
+        {
+            *existing = receipt;
+        } else {
+            self.semantic.completion_receipts.push(receipt);
+            while self.semantic.completion_receipts.len() > 128 {
+                self.semantic.completion_receipts.remove(0);
             }
         }
     }
@@ -945,6 +1070,8 @@ mod tests {
                 execution_owner: "native".into(),
                 model: "test".into(),
                 reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
                 children: Vec::new(),
                 resource_policy: ResourcePolicyV1::default(),
             },
@@ -986,6 +1113,8 @@ mod tests {
                 execution_owner: "native".into(),
                 model: "test".into(),
                 reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
                 children: Vec::new(),
                 resource_policy: resource_policy.clone(),
             },
@@ -1009,6 +1138,8 @@ mod tests {
                 execution_owner: "native".into(),
                 model: "test".into(),
                 reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
                 children: Vec::new(),
                 resource_policy: ResourcePolicyV1::default(),
             },
@@ -1048,6 +1179,8 @@ mod tests {
                 execution_owner: "native".into(),
                 model: "test".into(),
                 reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
                 children: Vec::new(),
                 resource_policy: ResourcePolicyV1::default(),
             },
@@ -1082,5 +1215,89 @@ mod tests {
         assert_eq!(observation.period, session_id.to_string());
         assert_eq!(observation.amounts.input_tokens, Some(12));
         assert_eq!(observation.amounts.output_tokens, Some(4));
+    }
+
+    #[test]
+    fn native_runs_publish_deterministic_execution_facts_and_completion_receipts() {
+        let session_id = SessionId::new();
+        let operation_id = OperationId::new();
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id,
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::OperationStateChanged {
+                operation_id,
+                state: crate::native_runtime::OperationState::Running,
+            }),
+            1,
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::UsageObserved {
+                operation_id,
+                usage: crate::agent::AgentTurnUsage {
+                    input_tokens: Some(12),
+                    output_tokens: Some(4),
+                    total_tokens: Some(16),
+                    requests: 1,
+                    ..crate::agent::AgentTurnUsage::default()
+                },
+            }),
+            2,
+        );
+        let finished = ClientEvent::bounded(AgentEvent::OperationStateChanged {
+            operation_id,
+            state: crate::native_runtime::OperationState::Finished(
+                crate::native_runtime::OperationOutcome::Completed,
+            ),
+        });
+        snapshot.apply(&finished, 3);
+
+        assert_eq!(snapshot.semantic.execution_facts.len(), 1);
+        let facts = &snapshot.semantic.execution_facts[0];
+        assert_eq!(
+            facts.conversation_id,
+            ConversationId::for_native(session_id)
+        );
+        assert_eq!(facts.run_id, operation_id);
+        assert_eq!(facts.owner, ExecutionOwnerV1::Native);
+        assert_eq!(facts.host, HostLocationV1::Embedded);
+        assert_eq!(
+            facts.workspace_authority,
+            WorkspaceAuthorityV1::UncontainedFullAccess
+        );
+        assert_eq!(facts.connection.as_deref(), Some("local"));
+        assert_eq!(facts.model.as_deref(), Some("test"));
+        assert_eq!(facts.approval_policy, "ask");
+
+        assert_eq!(snapshot.semantic.completion_receipts.len(), 1);
+        let receipt = &snapshot.semantic.completion_receipts[0];
+        assert_eq!(receipt.conversation_id, facts.conversation_id);
+        assert_eq!(receipt.run_id, operation_id);
+        assert_eq!(receipt.status, CompletionStatusV1::Completed);
+        assert_eq!(receipt.usage.amounts.input_tokens, Some(12));
+        assert_eq!(receipt.usage.amounts.output_tokens, Some(4));
+        assert_eq!(receipt.usage.observation_count, 1);
+        assert!(receipt.usage.incomplete);
+        let receipt_id = receipt.id;
+        snapshot.semantic.validate().unwrap();
+
+        snapshot.apply(&finished, 4);
+
+        assert_eq!(snapshot.semantic.execution_facts.len(), 1);
+        assert_eq!(snapshot.semantic.completion_receipts.len(), 1);
+        assert_eq!(snapshot.semantic.completion_receipts[0].id, receipt_id);
+        snapshot.semantic.validate().unwrap();
     }
 }

@@ -298,6 +298,8 @@ mod tests {
             execution_owner: "native".to_owned(),
             model: "test-model".to_owned(),
             reasoning_effort: None,
+            host_location: crate::frontend::semantic::HostLocationV1::Embedded,
+            approval_policy: "ask".to_owned(),
             children: Vec::new(),
             resource_policy: crate::resource::ResourcePolicyV1::default(),
         }

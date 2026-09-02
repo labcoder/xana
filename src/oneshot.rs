@@ -1,8 +1,12 @@
 //! Stable one-shot result and process-exit contract.
 
 use crate::{
-    frontend::{ClientObservation, ManagedClientEvent},
-    identity::{ConversationId, SessionId},
+    frontend::{
+        ClientObservation, ClientSnapshot, ManagedClientEvent,
+        semantic::{CompletionReceiptV1, ExecutionFactsV1, UsageObservationV1, UsageScopeV1},
+    },
+    identity::{ConversationId, OperationId, SessionId},
+    prompt::PromptPlanLedger,
 };
 use serde::Serialize;
 use std::{
@@ -160,6 +164,69 @@ impl<'a> OneShotReporter<'a> {
         }
         Ok(())
     }
+
+    pub(crate) fn native_summary(
+        &mut self,
+        snapshot: &ClientSnapshot,
+        run_id: OperationId,
+    ) -> std::io::Result<()> {
+        if let Self::StreamJson {
+            output,
+            sequence,
+            execution_owner,
+            conversation_id,
+        } = self
+        {
+            let execution = snapshot
+                .semantic
+                .execution_facts
+                .iter()
+                .find(|facts| facts.run_id == run_id);
+            let completion = snapshot
+                .semantic
+                .completion_receipts
+                .iter()
+                .find(|receipt| receipt.run_id == run_id);
+            let prompt_plan = snapshot
+                .prompt_plans
+                .iter()
+                .find(|(candidate, _)| *candidate == run_id)
+                .map(|(_, ledger)| ledger);
+            let usage = snapshot
+                .semantic
+                .usage
+                .iter()
+                .filter(|observation| observation.scope == UsageScopeV1::Run { run_id })
+                .collect::<Vec<_>>();
+            write_stream_frame(
+                output,
+                sequence,
+                "summary",
+                execution_owner,
+                Some(*conversation_id),
+                &NativeRunSummary {
+                    run_id,
+                    execution,
+                    completion,
+                    prompt_plan,
+                    usage,
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct NativeRunSummary<'a> {
+    run_id: OperationId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    execution: Option<&'a ExecutionFactsV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    completion: Option<&'a CompletionReceiptV1>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_plan: Option<&'a PromptPlanLedger>,
+    usage: Vec<&'a UsageObservationV1>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

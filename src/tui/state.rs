@@ -16,7 +16,12 @@ use crate::{
     agent::SessionUsage,
     frontend::{
         ClientSnapshot, EmbeddedClient, ManagedClientEvent,
-        semantic::{AttachmentV1, SemanticSnapshotV1, normalize_message},
+        semantic::{
+            AttachmentV1, CompletionReceiptV1, CompletionStatusV1, ExecutionFactsV1,
+            ExecutionOwnerV1, FactAuthorityV1, FactSourceV1, FreshnessV1, HostLocationV1,
+            SemanticCodeV1, SemanticSnapshotV1, UsageAggregateV1, UsageLedgerV1, UsageScopeV1,
+            WorkspaceAuthorityV1, normalize_message,
+        },
     },
     identity::{AgentId, OperationId, ToolInvocationId},
     managed::codex::ManagedTokenUsage,
@@ -442,6 +447,7 @@ pub(super) struct TuiState {
     pub(super) prompt_plans: Vec<(OperationId, PromptPlanLedger)>,
     pub(super) inline_image_capability: String,
     pub(super) capabilities: OwnerCapabilities,
+    execution_owner: ExecutionOwnerV1,
     pending_images: Vec<ImageAttachment>,
     pending_resources: Vec<AttachmentV1>,
     pending_vision_route: Option<String>,
@@ -625,6 +631,7 @@ impl TuiState {
             prompt_plans: Vec::new(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
+            execution_owner: ExecutionOwnerV1::Native,
             pending_images: Vec::new(),
             pending_resources: Vec::new(),
             pending_vision_route: None,
@@ -688,6 +695,7 @@ impl TuiState {
             prompt_plans: snapshot.prompt_plans.clone(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
+            execution_owner: ExecutionOwnerV1::Native,
             pending_images: Vec::new(),
             pending_resources: Vec::new(),
             pending_vision_route: None,
@@ -754,6 +762,7 @@ impl TuiState {
             prompt_plans: Vec::new(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::managed(),
+            execution_owner: ExecutionOwnerV1::Managed,
             pending_images: Vec::new(),
             pending_resources: Vec::new(),
             pending_vision_route: None,
@@ -844,6 +853,9 @@ impl TuiState {
         self.busy = true;
         self.work_indicator_frame = 0;
         self.active_operation = Some(operation_id);
+        if self.execution_owner == ExecutionOwnerV1::Managed {
+            self.upsert_managed_execution_facts(operation_id);
+        }
         self.status = "Working…".to_owned();
         if self.activity_visibility == ActivityVisibility::Auto {
             self.auto_activity_open = false;

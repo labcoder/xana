@@ -13,7 +13,7 @@ mod usage;
 
 pub(crate) use activity::{
     ActivityItemV1, ApprovalV1, AttentionItemV1, AttentionStateV1, CompletionReceiptV1,
-    ExecutionFactsV1,
+    CompletionStatusV1, ExecutionFactsV1, ExecutionOwnerV1, HostLocationV1, WorkspaceAuthorityV1,
 };
 pub(crate) use content::{
     AttachmentPolicySnapshotV1, AttachmentProvenanceV1, AttachmentV1, ContentPartV1,

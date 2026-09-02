@@ -43,6 +43,13 @@ already observed. It is not an account-balance refresh. Missing facts remain
 explicitly unavailable, and process-local counters are never labeled as
 durable Conversation totals.
 
+Plain mode supports the same `/usage compact` and `/usage details` forms. The
+detailed append-only report prints the bounded execution facts, prompt plan,
+and completion receipts already retained by that client. Private
+`--output stream-json` automation emits those same current-Run facts once in a
+`summary` frame before its final result instead of requiring a consumer to
+reconstruct them from incremental observations.
+
 ## What Xana can report
 
 | Source | Current account facts | Credential behavior |

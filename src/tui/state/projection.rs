@@ -548,9 +548,6 @@ impl TuiState {
                 self.push_assistant_delta(operation_id, delta);
             }
             ManagedClientEvent::TurnCompleted { status, error } => {
-                self.busy = false;
-                self.work_indicator_frame = 0;
-                self.active_operation = None;
                 self.status = error.as_ref().map_or_else(
                     || format!("Managed turn {status}"),
                     |error| format!("Managed turn failed: {error}"),
@@ -619,6 +616,7 @@ impl TuiState {
         operation_id: OperationId,
         error: Option<String>,
     ) {
+        self.upsert_managed_completion(operation_id, error.as_deref());
         if self.active_operation == Some(operation_id) {
             self.active_operation = None;
             self.busy = false;
@@ -636,6 +634,108 @@ impl TuiState {
             ));
         } else {
             self.status = "Managed turn completed".to_owned();
+        }
+    }
+
+    pub(super) fn upsert_managed_execution_facts(
+        &mut self,
+        run_id: OperationId,
+    ) -> Option<ExecutionFactsV1> {
+        if let Some(facts) = self
+            .semantic
+            .execution_facts
+            .iter()
+            .find(|facts| facts.run_id == run_id)
+        {
+            return Some(facts.clone());
+        }
+        let conversation_id = self.runtime_conversation.conversation_id()?;
+        let facts = ExecutionFactsV1 {
+            conversation_id,
+            run_id,
+            owner: ExecutionOwnerV1::Managed,
+            host: HostLocationV1::Embedded,
+            workspace_authority: WorkspaceAuthorityV1::WorkspaceWrite,
+            // The managed runtime owns its inner-loop catalog. Xana must not
+            // invent a more precise tool grant than it observes.
+            tool_authority: Vec::new(),
+            connection: Some(self.connection.clone()),
+            model: Some(self.model.clone()),
+            capability_grants: Vec::new(),
+            egress_policy: Some("managed runtime policy".to_owned()),
+            controller: Some("foreground controller".to_owned()),
+            approval_policy: "on request".to_owned(),
+            source: FactSourceV1::ManagedRuntime,
+            freshness: FreshnessV1 {
+                observed_at_unix_millis: observed_at_unix_millis(),
+                max_age_millis: None,
+            },
+        };
+        self.semantic.execution_facts.push(facts.clone());
+        while self.semantic.execution_facts.len() > 128 {
+            self.semantic.execution_facts.remove(0);
+        }
+        Some(facts)
+    }
+
+    fn upsert_managed_completion(&mut self, run_id: OperationId, error: Option<&str>) {
+        let Some(execution) = self.upsert_managed_execution_facts(run_id) else {
+            return;
+        };
+        let scope = UsageScopeV1::Conversation {
+            conversation_id: execution.conversation_id,
+        };
+        let mut ledger = UsageLedgerV1::default();
+        for observation in &self.semantic.usage {
+            let _ = ledger.observe(observation.clone());
+        }
+        let usage = ledger
+            .aggregate(&scope, &self.session)
+            .unwrap_or_else(|_| UsageAggregateV1 {
+                incomplete: true,
+                ..UsageAggregateV1::default()
+            });
+        let status = if error.is_some() {
+            CompletionStatusV1::Failed
+        } else {
+            CompletionStatusV1::Completed
+        };
+        let id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_URL,
+            format!("xana://completion/{}/{run_id}", execution.conversation_id).as_bytes(),
+        );
+        let receipt = CompletionReceiptV1 {
+            id,
+            conversation_id: execution.conversation_id,
+            run_id,
+            status,
+            execution,
+            artifacts: Vec::new(),
+            checks: Vec::new(),
+            usage,
+            unresolved_warnings: error
+                .map(|_| SemanticCodeV1::new("run.failed"))
+                .into_iter()
+                .collect(),
+            source: FactSourceV1::ManagedRuntime,
+            authority: FactAuthorityV1::ProviderReported,
+            freshness: FreshnessV1 {
+                observed_at_unix_millis: observed_at_unix_millis(),
+                max_age_millis: None,
+            },
+        };
+        if let Some(existing) = self
+            .semantic
+            .completion_receipts
+            .iter_mut()
+            .find(|candidate| candidate.id == receipt.id)
+        {
+            *existing = receipt;
+        } else {
+            self.semantic.completion_receipts.push(receipt);
+            while self.semantic.completion_receipts.len() > 128 {
+                self.semantic.completion_receipts.remove(0);
+            }
         }
     }
 
