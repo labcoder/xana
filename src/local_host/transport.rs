@@ -499,8 +499,8 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
                         };
                         send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
                     }
-                    ClientFrame::GetArtifact { request_id, artifact_id, max_preview_bytes } => {
-                        let result = hub.fetch_artifact(request_id, artifact_id, max_preview_bytes);
+                    ClientFrame::GetArtifact { request_id, artifact_id, offset, max_bytes } => {
+                        let result = hub.fetch_artifact(request_id, artifact_id, offset, max_bytes);
                         send_frame(&mut writer, &ServerFrame::ArtifactResult(result)).await?;
                     }
                     ClientFrame::Command(command) => {
@@ -852,11 +852,20 @@ impl AttachedObserver {
         &mut self,
         artifact_id: crate::identity::ArtifactId,
     ) -> Result<super::protocol::ArtifactResult, LocalHostError> {
+        self.get_artifact_range(artifact_id, 0).await
+    }
+
+    pub(crate) async fn get_artifact_range(
+        &mut self,
+        artifact_id: crate::identity::ArtifactId,
+        offset: u64,
+    ) -> Result<super::protocol::ArtifactResult, LocalHostError> {
         let request_id = super::protocol::ArtifactRequestId::new();
         self.send_client_frame(&ClientFrame::GetArtifact {
             request_id,
             artifact_id,
-            max_preview_bytes: super::artifact_access::MAX_ARTIFACT_PREVIEW_BYTES,
+            offset,
+            max_bytes: super::artifact_access::MAX_ARTIFACT_PREVIEW_BYTES,
         })
         .await?;
         loop {

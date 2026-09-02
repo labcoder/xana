@@ -68,6 +68,14 @@ pub(crate) struct ArtifactStore {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedArtifactRange {
+    pub(crate) offset: u64,
+    pub(crate) total_byte_len: u64,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) truncated_after: bool,
+}
+
 impl ArtifactStore {
     pub(crate) fn new(root: PathBuf) -> Self {
         Self { root }
@@ -175,26 +183,51 @@ impl ArtifactStore {
         Ok(bytes)
     }
 
-    pub(crate) fn read_verified_preview(
+    /// Read one bounded range while streaming and verifying the complete
+    /// immutable artifact. Bytes outside the requested range are never kept in
+    /// memory, and a path replacement or content mismatch fails closed.
+    pub(crate) fn read_verified_range(
         &self,
         artifact: &ArtifactRecord,
-        max_preview_bytes: usize,
-    ) -> Result<(Vec<u8>, bool), ArtifactError> {
+        offset: u64,
+        max_range_bytes: usize,
+        max_artifact_bytes: usize,
+    ) -> Result<VerifiedArtifactRange, ArtifactError> {
+        if max_artifact_bytes == 0 || max_artifact_bytes > MAX_RESOURCE_SOURCE_BYTES {
+            return Err(ArtifactError::InvalidLimit {
+                value: max_artifact_bytes,
+                ceiling: MAX_RESOURCE_SOURCE_BYTES,
+            });
+        }
         let declared = usize::try_from(artifact.byte_len).map_err(|_| ArtifactError::TooLarge {
             actual: usize::MAX,
-            limit: MAX_ARTIFACT_BYTES,
+            limit: max_artifact_bytes,
         })?;
-        if declared > MAX_ARTIFACT_BYTES {
+        if declared > max_artifact_bytes {
             return Err(ArtifactError::TooLarge {
                 actual: declared,
-                limit: MAX_ARTIFACT_BYTES,
+                limit: max_artifact_bytes,
+            });
+        }
+        if offset > artifact.byte_len {
+            return Err(ArtifactError::InvalidRange {
+                offset,
+                length: artifact.byte_len,
             });
         }
         let path = self.path_for(&artifact.reference.content_hash);
+        let path_metadata = fs::symlink_metadata(&path).map_err(|source| ArtifactError::Io {
+            path: path.clone(),
+            source,
+        })?;
+        if path_metadata.file_type().is_symlink() || !path_metadata.file_type().is_file() {
+            return Err(ArtifactError::NotRegular { path });
+        }
         let mut file = fs::File::open(&path).map_err(|source| ArtifactError::Io {
             path: path.clone(),
             source,
         })?;
+        let opened_identity = artifact_file_identity(&file, &path)?;
         if file
             .metadata()
             .map_err(|source| ArtifactError::Io {
@@ -206,9 +239,14 @@ impl ArtifactStore {
         {
             return Err(ArtifactError::CorruptContent { path });
         }
-        let mut preview = Vec::with_capacity(declared.min(max_preview_bytes));
+        let range_len = u64::try_from(max_range_bytes).unwrap_or(u64::MAX);
+        let requested_end = offset.saturating_add(range_len).min(artifact.byte_len);
+        let capacity = usize::try_from(requested_end.saturating_sub(offset))
+            .unwrap_or(max_range_bytes)
+            .min(max_range_bytes);
+        let mut range = Vec::with_capacity(capacity);
         let mut hasher = blake3::Hasher::new();
-        let mut actual = 0_usize;
+        let mut actual = 0_u64;
         let mut chunk = [0_u8; 16 * 1024];
         loop {
             let read = file.read(&mut chunk).map_err(|source| ArtifactError::Io {
@@ -218,23 +256,41 @@ impl ArtifactStore {
             if read == 0 {
                 break;
             }
-            actual = actual.saturating_add(read);
-            if actual > MAX_ARTIFACT_BYTES {
+            let chunk_start = actual;
+            actual = actual
+                .checked_add(read as u64)
+                .ok_or(ArtifactError::ArithmeticOverflow("artifact byte count"))?;
+            if actual > max_artifact_bytes as u64 {
                 return Err(ArtifactError::TooLarge {
-                    actual,
-                    limit: MAX_ARTIFACT_BYTES,
+                    actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                    limit: max_artifact_bytes,
                 });
             }
             hasher.update(&chunk[..read]);
-            let remaining = max_preview_bytes.saturating_sub(preview.len());
-            preview.extend_from_slice(&chunk[..read.min(remaining)]);
+            let copy_start = chunk_start.max(offset);
+            let copy_end = actual.min(requested_end);
+            if copy_start < copy_end {
+                let start = usize::try_from(copy_start - chunk_start)
+                    .map_err(|_| ArtifactError::ArithmeticOverflow("artifact range start"))?;
+                let end = usize::try_from(copy_end - chunk_start)
+                    .map_err(|_| ArtifactError::ArithmeticOverflow("artifact range end"))?;
+                range.extend_from_slice(&chunk[start..end]);
+            }
         }
-        if actual != declared
+        if actual != artifact.byte_len
             || hasher.finalize().to_hex().as_str() != artifact.reference.content_hash.as_str()
         {
             return Err(ArtifactError::CorruptContent { path });
         }
-        Ok((preview, actual > max_preview_bytes))
+        if artifact_path_identity(&path)? != opened_identity {
+            return Err(ArtifactError::ChangedDuringRead { path });
+        }
+        Ok(VerifiedArtifactRange {
+            offset,
+            total_byte_len: artifact.byte_len,
+            bytes: range,
+            truncated_after: requested_end < artifact.byte_len,
+        })
     }
 
     pub(crate) fn verify_reference(
@@ -413,6 +469,10 @@ pub(crate) enum ArtifactError {
     InvalidMediaType,
     InvalidLimit { value: usize, ceiling: usize },
     TooLarge { actual: usize, limit: usize },
+    InvalidRange { offset: u64, length: u64 },
+    NotRegular { path: PathBuf },
+    ChangedDuringRead { path: PathBuf },
+    ArithmeticOverflow(&'static str),
     CorruptContent { path: PathBuf },
     Io { path: PathBuf, source: io::Error },
 }
@@ -429,6 +489,23 @@ impl fmt::Display for ArtifactError {
                 formatter,
                 "artifact contains {actual} bytes, exceeding the {limit}-byte limit"
             ),
+            Self::InvalidRange { offset, length } => write!(
+                formatter,
+                "artifact range starts at {offset}, beyond its {length}-byte length"
+            ),
+            Self::NotRegular { path } => write!(
+                formatter,
+                "artifact content at {} is not a regular immutable file",
+                path.display()
+            ),
+            Self::ChangedDuringRead { path } => write!(
+                formatter,
+                "artifact content at {} changed while it was being verified",
+                path.display()
+            ),
+            Self::ArithmeticOverflow(operation) => {
+                write!(formatter, "artifact {operation} overflowed")
+            }
             Self::CorruptContent { path } => write!(
                 formatter,
                 "artifact content at {} does not match its immutable identity",
@@ -452,9 +529,56 @@ impl Error for ArtifactError {
             Self::InvalidMediaType
             | Self::InvalidLimit { .. }
             | Self::TooLarge { .. }
+            | Self::InvalidRange { .. }
+            | Self::NotRegular { .. }
+            | Self::ChangedDuringRead { .. }
+            | Self::ArithmeticOverflow(_)
             | Self::CorruptContent { .. } => None,
         }
     }
+}
+
+#[cfg(any(unix, windows))]
+fn artifact_file_identity(
+    file: &fs::File,
+    path: &Path,
+) -> Result<same_file::Handle, ArtifactError> {
+    let cloned = file.try_clone().map_err(|source| ArtifactError::Io {
+        path: path.to_owned(),
+        source,
+    })?;
+    same_file::Handle::from_file(cloned).map_err(|source| ArtifactError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn artifact_file_identity(file: &fs::File, path: &Path) -> Result<u64, ArtifactError> {
+    file.metadata()
+        .map(|metadata| metadata.len())
+        .map_err(|source| ArtifactError::Io {
+            path: path.to_owned(),
+            source,
+        })
+}
+
+#[cfg(any(unix, windows))]
+fn artifact_path_identity(path: &Path) -> Result<same_file::Handle, ArtifactError> {
+    same_file::Handle::from_path(path).map_err(|source| ArtifactError::Io {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn artifact_path_identity(path: &Path) -> Result<u64, ArtifactError> {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .map_err(|source| ArtifactError::Io {
+            path: path.to_owned(),
+            source,
+        })
 }
 
 #[cfg(test)]

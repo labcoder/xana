@@ -5,6 +5,8 @@
 //! decoder handles, or frontend callbacks. User-configurable limits may only
 //! narrow the immutable compiled ceiling defined here.
 
+#[allow(dead_code)] // M4-11 and M4-21 consume this shared runtime service.
+pub(crate) mod inspection;
 mod policy;
 mod reference;
 

@@ -111,7 +111,8 @@ impl ObservationHub {
         &self,
         request_id: super::protocol::ArtifactRequestId,
         artifact_id: crate::identity::ArtifactId,
-        max_preview_bytes: usize,
+        offset: u64,
+        max_bytes: usize,
     ) -> super::protocol::ArtifactResult {
         self.artifacts.as_ref().map_or_else(
             || {
@@ -120,7 +121,7 @@ impl ObservationHub {
                     "this host has no authorized artifact catalog",
                 )
             },
-            |artifacts| artifacts.fetch(request_id, artifact_id, max_preview_bytes),
+            |artifacts| artifacts.fetch(request_id, artifact_id, offset, max_bytes),
         )
     }
 

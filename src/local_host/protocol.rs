@@ -9,7 +9,7 @@ use std::fmt;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 2;
+pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 3;
 pub(crate) const MAX_WIRE_BYTES: usize = 1024 * 1024;
 const MAX_CONVERSATIONS: usize = 512;
 const MAX_LABEL_BYTES: usize = 256;
@@ -84,7 +84,8 @@ pub(crate) enum ClientFrame {
     GetArtifact {
         request_id: ArtifactRequestId,
         artifact_id: ArtifactId,
-        max_preview_bytes: usize,
+        offset: u64,
+        max_bytes: usize,
     },
     Command(ClientCommand),
     Ping,
@@ -117,6 +118,8 @@ pub(crate) struct ArtifactResult {
     pub(crate) request_id: ArtifactRequestId,
     pub(crate) accepted: bool,
     pub(crate) record: Option<ArtifactRecord>,
+    pub(crate) range_offset: u64,
+    pub(crate) total_bytes: Option<u64>,
     pub(crate) preview: Vec<u8>,
     pub(crate) preview_truncated: bool,
     pub(crate) reason: Option<String>,
@@ -126,13 +129,17 @@ impl ArtifactResult {
     pub(crate) fn accepted(
         request_id: ArtifactRequestId,
         record: ArtifactRecord,
+        range_offset: u64,
         preview: Vec<u8>,
         preview_truncated: bool,
     ) -> Self {
+        let total_bytes = record.byte_len;
         Self {
             request_id,
             accepted: true,
             record: Some(record),
+            range_offset,
+            total_bytes: Some(total_bytes),
             preview,
             preview_truncated,
             reason: None,
@@ -144,6 +151,8 @@ impl ArtifactResult {
             request_id,
             accepted: false,
             record: None,
+            range_offset: 0,
+            total_bytes: None,
             preview: Vec::new(),
             preview_truncated: false,
             reason: Some(bounded_label(reason.into())),

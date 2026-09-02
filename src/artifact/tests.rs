@@ -112,3 +112,64 @@ fn resource_publication_accepts_only_explicit_limits_below_the_ceiling() {
         Err(ArtifactError::InvalidLimit { .. })
     ));
 }
+
+#[test]
+fn verified_ranges_are_bounded_and_hash_the_complete_artifact() {
+    let directory = tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().to_owned());
+    let bytes = b"0123456789";
+    let (artifact, _) = store
+        .put(bytes, "application/octet-stream", PrincipalId::new())
+        .unwrap();
+
+    let range = store
+        .read_verified_range(&artifact, 3, 4, MAX_ARTIFACT_BYTES)
+        .unwrap();
+    assert_eq!(range.offset, 3);
+    assert_eq!(range.total_byte_len, 10);
+    assert_eq!(range.bytes, b"3456");
+    assert!(range.truncated_after);
+    assert!(matches!(
+        store.read_verified_range(&artifact, 11, 1, MAX_ARTIFACT_BYTES),
+        Err(ArtifactError::InvalidRange { .. })
+    ));
+
+    fs::write(
+        store.path_for(&artifact.reference.content_hash),
+        b"0123tamper",
+    )
+    .unwrap();
+    assert!(matches!(
+        store.read_verified_range(&artifact, 0, 2, MAX_ARTIFACT_BYTES),
+        Err(ArtifactError::CorruptContent { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn verified_ranges_reject_symlinked_artifact_entries() {
+    use std::os::unix::fs::symlink;
+
+    let directory = tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().join("store"));
+    let bytes = b"outside";
+    let hash = ContentHash::for_bytes(bytes);
+    fs::create_dir_all(&store.root).unwrap();
+    let outside = directory.path().join("outside");
+    fs::write(&outside, bytes).unwrap();
+    symlink(&outside, store.path_for(&hash)).unwrap();
+    let artifact = ArtifactRecord {
+        reference: ArtifactRef {
+            id: ArtifactId::new(),
+            content_hash: hash,
+        },
+        media_type: "application/octet-stream".into(),
+        byte_len: bytes.len() as u64,
+        owner: PrincipalId::new(),
+    };
+
+    assert!(matches!(
+        store.read_verified_range(&artifact, 0, 4, MAX_ARTIFACT_BYTES),
+        Err(ArtifactError::NotRegular { .. })
+    ));
+}

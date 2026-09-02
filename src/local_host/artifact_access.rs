@@ -3,10 +3,14 @@
 use super::protocol::ArtifactResult;
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore},
-    frontend::{ClientEvent, ClientSnapshot},
+    frontend::{
+        ClientEvent, ClientSnapshot,
+        semantic::{ContentPartV1, DecodedSemanticEventV1, SemanticEventV1, SemanticSnapshotV1},
+    },
     identity::ArtifactId,
     message::{ContentBlock, Message},
     native_runtime::AgentEvent,
+    resource::MAX_RESOURCE_SOURCE_BYTES,
 };
 use std::{
     collections::HashMap,
@@ -30,15 +34,35 @@ impl ArtifactAccess {
         };
         if let Some(snapshot) = snapshot {
             access.observe_messages(&snapshot.conversation);
+            access.observe_semantic_snapshot(&snapshot.semantic);
         }
         access
     }
 
     pub(crate) fn observe(&self, event: &ClientEvent) {
-        if let ClientEvent::Runtime(event) = event
-            && let AgentEvent::AssistantMessage { message, .. } = event.as_ref()
-        {
-            self.observe_messages(std::slice::from_ref(message));
+        match event {
+            ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::AssistantMessage { message, .. }
+                | AgentEvent::ToolFinished {
+                    result: message, ..
+                } => self.observe_messages(std::slice::from_ref(message)),
+                _ => {}
+            },
+            ClientEvent::Semantic(envelope) => {
+                if let Ok(DecodedSemanticEventV1::Known(event)) = envelope.decode() {
+                    match *event {
+                        SemanticEventV1::ContentAppended { ref parts, .. }
+                        | SemanticEventV1::FinalContent { ref parts, .. } => {
+                            self.observe_content(parts);
+                        }
+                        SemanticEventV1::AttachmentUpserted { ref attachment } => {
+                            self.observe_records(std::iter::once(&attachment.resource.artifact));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {}
         }
     }
 
@@ -46,9 +70,10 @@ impl ArtifactAccess {
         &self,
         request_id: super::protocol::ArtifactRequestId,
         artifact_id: ArtifactId,
-        requested_preview_bytes: usize,
+        offset: u64,
+        requested_bytes: usize,
     ) -> ArtifactResult {
-        let preview_limit = requested_preview_bytes.min(MAX_ARTIFACT_PREVIEW_BYTES);
+        let preview_limit = requested_bytes.min(MAX_ARTIFACT_PREVIEW_BYTES);
         let record = self
             .records
             .lock()
@@ -60,10 +85,19 @@ impl ArtifactAccess {
                 "artifact is missing, expired, or not authorized for this host",
             );
         };
-        match self.store.read_verified_preview(&record, preview_limit) {
-            Ok((preview, truncated)) => {
-                ArtifactResult::accepted(request_id, record, preview, truncated)
-            }
+        match self.store.read_verified_range(
+            &record,
+            offset,
+            preview_limit,
+            MAX_RESOURCE_SOURCE_BYTES,
+        ) {
+            Ok(range) => ArtifactResult::accepted(
+                request_id,
+                record,
+                range.offset,
+                range.bytes,
+                range.truncated_after,
+            ),
             Err(error) => ArtifactResult::rejected(
                 request_id,
                 format!("artifact could not be verified: {error}"),
@@ -72,23 +106,48 @@ impl ArtifactAccess {
     }
 
     fn observe_messages(&self, messages: &[Message]) {
+        self.observe_records(
+            messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .filter_map(|content| match content {
+                    ContentBlock::Image(image) => Some(&image.artifact),
+                    _ => None,
+                }),
+        );
+    }
+
+    fn observe_semantic_snapshot(&self, snapshot: &SemanticSnapshotV1) {
+        self.observe_content(&snapshot.content);
+        for parts in snapshot.authoritative_finals.values() {
+            self.observe_content(parts);
+        }
+        self.observe_records(
+            snapshot
+                .attachments
+                .iter()
+                .map(|attachment| &attachment.resource.artifact),
+        );
+    }
+
+    fn observe_content(&self, parts: &[ContentPartV1]) {
+        self.observe_records(parts.iter().filter_map(|part| match part {
+            ContentPartV1::Resource(resource) => Some(&resource.artifact),
+            _ => None,
+        }));
+    }
+
+    fn observe_records<'a>(&self, values: impl IntoIterator<Item = &'a ArtifactRecord>) {
         let Ok(mut records) = self.records.lock() else {
             return;
         };
-        for image in messages
-            .iter()
-            .flat_map(|message| &message.content)
-            .filter_map(|content| match content {
-                ContentBlock::Image(image) => Some(image),
-                _ => None,
-            })
-        {
+        for record in values {
             if records.len() >= MAX_AUTHORIZED_ARTIFACTS
-                && !records.contains_key(&image.artifact.reference.id)
+                && !records.contains_key(&record.reference.id)
             {
                 break;
             }
-            records.insert(image.artifact.reference.id, image.artifact.clone());
+            records.insert(record.reference.id, record.clone());
         }
     }
 }
@@ -117,6 +176,7 @@ mod tests {
         let missing = access.fetch(
             super::super::protocol::ArtifactRequestId::new(),
             record.reference.id,
+            0,
             MAX_ARTIFACT_PREVIEW_BYTES,
         );
         assert!(!missing.accepted);
@@ -137,6 +197,7 @@ mod tests {
         let result = access.fetch(
             super::super::protocol::ArtifactRequestId::new(),
             record.reference.id,
+            0,
             usize::MAX,
         );
         assert!(result.accepted);
