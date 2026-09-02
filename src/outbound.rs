@@ -51,6 +51,7 @@ pub(crate) enum RecipientKind {
     McpHttp,
     ExternalAgent,
     FocusedService,
+    WebFetch,
 }
 
 impl RecipientKind {
@@ -60,6 +61,7 @@ impl RecipientKind {
             Self::McpHttp => "mcp_http",
             Self::ExternalAgent => "external_agent",
             Self::FocusedService => "focused_service",
+            Self::WebFetch => "web_fetch",
         }
     }
 }

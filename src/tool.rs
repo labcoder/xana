@@ -15,6 +15,7 @@ mod orchestration_plan;
 mod read_document;
 mod read_file;
 mod run_command;
+mod web_fetch;
 mod workspace_path;
 mod write_file;
 mod xana_docs;
@@ -50,6 +51,7 @@ pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "write_file",
     "edit_file",
     "run_command",
+    "web_fetch",
     "read_document",
     "xana_docs",
 ];
@@ -640,6 +642,9 @@ impl ToolRegistry {
         }
         if exposed.contains("run_command") {
             registry.register(run_command::RunCommand::new(shell))?;
+        }
+        if exposed.contains("web_fetch") {
+            registry.register(web_fetch::WebFetch::default())?;
         }
         if exposed.contains("read_document") {
             registry.register(read_document::ReadDocument::default())?;

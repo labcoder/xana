@@ -266,6 +266,7 @@ fn builtins_expose_one_ordered_schema_and_safety_contract() {
             "write_file",
             "edit_file",
             "run_command",
+            "web_fetch",
             "read_document",
             "xana_docs",
         ]
@@ -283,6 +284,7 @@ fn builtins_expose_one_ordered_schema_and_safety_contract() {
             (EffectClass::Write, ReplaySafety::Never),
             (EffectClass::Write, ReplaySafety::Never),
             (EffectClass::Execute, ReplaySafety::Never),
+            (EffectClass::Network, ReplaySafety::Safe),
             (EffectClass::Read, ReplaySafety::Safe),
             (EffectClass::Read, ReplaySafety::Safe),
         ]
@@ -302,6 +304,10 @@ fn builtins_expose_one_ordered_schema_and_safety_contract() {
     let command = &registry.definition("run_command").unwrap().parameters;
     assert_eq!(command["additionalProperties"], false);
     assert_eq!(command["properties"]["timeout_ms"]["maximum"], 120000);
+    let web = registry.definition("web_fetch").unwrap();
+    assert_eq!(web.effect_class, EffectClass::Network);
+    assert_eq!(web.replay_safety, ReplaySafety::Safe);
+    assert_eq!(web.parameters["properties"]["redirects"]["maxItems"], 3);
     let document = registry.definition("read_document").unwrap();
     assert_eq!(
         document.description.contains("CSV"),

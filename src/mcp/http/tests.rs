@@ -254,6 +254,22 @@ async fn address_policy_blocks_local_network_by_default() {
 }
 
 #[test]
+fn address_policy_rejects_ipv4_mapped_private_ipv6_addresses() {
+    assert!(!is_permitted_address(
+        "::ffff:127.0.0.1".parse().unwrap(),
+        false
+    ));
+    assert!(!is_permitted_address(
+        "::ffff:169.254.169.254".parse().unwrap(),
+        false
+    ));
+    assert!(is_permitted_address(
+        "::ffff:8.8.8.8".parse().unwrap(),
+        false
+    ));
+}
+
+#[test]
 fn tool_header_schema_is_bounded_and_null_is_omitted() {
     let schema = json!({
         "type": "object",

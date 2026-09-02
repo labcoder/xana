@@ -499,7 +499,7 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
     let value = serde_json::to_value(&request).expect("request JSON");
     let tools = value["tools"].as_array().expect("tool array");
 
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 10);
     assert_eq!(
         tools
             .iter()
@@ -513,6 +513,7 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
             "write_file",
             "edit_file",
             "run_command",
+            "web_fetch",
             "read_document",
             "xana_docs",
         ]

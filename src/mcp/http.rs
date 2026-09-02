@@ -579,6 +579,7 @@ fn is_permitted_address(address: IpAddr, allow_loopback: bool) -> bool {
 fn permitted_ipv4(address: Ipv4Addr) -> bool {
     let octets = address.octets();
     !(address.is_unspecified()
+        || address.is_loopback()
         || address.is_private()
         || address.is_link_local()
         || address.is_broadcast()
@@ -591,6 +592,9 @@ fn permitted_ipv4(address: Ipv4Addr) -> bool {
 }
 
 fn permitted_ipv6(address: Ipv6Addr) -> bool {
+    if let Some(mapped) = address.to_ipv4_mapped() {
+        return permitted_ipv4(mapped);
+    }
     let segments = address.segments();
     !(address.is_unspecified()
         || address.is_multicast()

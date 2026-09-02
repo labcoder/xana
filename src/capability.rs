@@ -81,6 +81,7 @@ const BUILTIN_CAPABILITIES: &[(&str, &str)] = &[
     ("fs.create", "write_file"),
     ("fs.write", "edit_file"),
     ("process.execute", "run_command"),
+    ("network.fetch", "web_fetch"),
     ("document.extract", "read_document"),
     ("xana.docs.read", "xana_docs"),
 ];

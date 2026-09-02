@@ -62,6 +62,7 @@ directories = "6.0.0"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 fs2 = "0.4.3"
 globset = "0.4.20"
+html2text = { version = "0.17.1", default-features = false }
 ignore = "0.4.33"
 keyring = "4.1.6"
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png"] }
