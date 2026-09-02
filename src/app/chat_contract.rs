@@ -8,6 +8,7 @@ use crate::{
     native_runtime::{OperationState, RoundBudgetSuspension},
     orchestration::ChildInspection,
     presentation::ResolvedPresentation,
+    resource::ResourcePolicyV1,
 };
 use std::path::PathBuf;
 
@@ -30,6 +31,7 @@ pub(crate) struct ChatHeader {
     pub(crate) owner: PrincipalId,
     pub(crate) models: ModelManager,
     pub(crate) presentation: ResolvedPresentation,
+    pub(crate) resource_policy: ResourcePolicyV1,
     pub(crate) vision: super::vision::VisionTurnService,
 }
 

@@ -92,6 +92,7 @@ fn scripted_client(provider: Box<dyn ConversationalProvider>) -> EmbeddedClient 
             model: "test-model".to_owned(),
             reasoning_effort: None,
             children: Vec::new(),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
         },
     )
 }

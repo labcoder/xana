@@ -48,6 +48,7 @@ pub(crate) async fn run_native_host(
             model: header.model,
             reasoning_effort: None,
             children: header.children,
+            resource_policy: header.resource_policy,
         },
     );
     let snapshot = frontend.snapshot().clone();

@@ -91,6 +91,10 @@ impl EmbeddedClient {
             ClientEvent::Managed(_) => AgentEvent::CommandRejected {
                 reason: "managed observation reached a native runtime client".to_owned(),
             },
+            ClientEvent::Semantic(_) => AgentEvent::CommandRejected {
+                reason: "semantic observation cannot be reduced to a legacy runtime event"
+                    .to_owned(),
+            },
             ClientEvent::PayloadOmitted {
                 kind,
                 encoded_bytes,

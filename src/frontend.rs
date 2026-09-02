@@ -8,6 +8,8 @@
 mod embedded;
 mod managed;
 mod protocol;
+#[allow(dead_code)] // Producers and projections land incrementally across M4-05 through M4-11.
+pub(crate) mod semantic;
 
 pub(crate) use embedded::{EmbeddedClient, EmbeddedObserver, EmbeddedOwner};
 pub(crate) use managed::{ManagedClientEvent, ManagedClientItem};

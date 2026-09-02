@@ -229,6 +229,7 @@ async fn run_once(
         shell,
         mut max_tool_rounds,
         context: prompt_budget_policy,
+        resources: resource_policy,
         ..
     } = config;
     if let Some(profile) = &frozen_profile {
@@ -800,6 +801,7 @@ async fn run_once(
         owner: artifact_owner,
         models: manager,
         presentation,
+        resource_policy,
         vision,
     };
 

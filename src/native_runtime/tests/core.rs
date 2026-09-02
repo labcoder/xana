@@ -349,6 +349,7 @@ async fn embedded_client_snapshots_then_sequences_a_complete_native_turn() {
             model: "test-model".to_owned(),
             reasoning_effort: None,
             children: Vec::new(),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
         },
     );
 
@@ -417,6 +418,7 @@ async fn dropping_embedded_observer_does_not_cancel_owner() {
             model: "test-model".to_owned(),
             reasoning_effort: None,
             children: Vec::new(),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
         },
     );
     let (owner, observer) = client.into_parts();
@@ -457,6 +459,7 @@ async fn dropping_embedded_owner_interrupts_its_active_native_turn() {
             model: "test-model".to_owned(),
             reasoning_effort: None,
             children: Vec::new(),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
         },
     );
     let (owner, mut observer) = client.into_parts();

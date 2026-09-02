@@ -563,6 +563,7 @@ fn embedded_client(runtime: RuntimeHandle, header: &ChatHeader) -> EmbeddedClien
         model: header.model.clone(),
         reasoning_effort: None,
         children: header.children.clone(),
+        resource_policy: header.resource_policy.clone(),
     };
     EmbeddedClient::from_runtime(runtime, seed)
 }

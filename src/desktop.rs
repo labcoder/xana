@@ -758,6 +758,7 @@ pub(crate) async fn run_native(
         model: header.model.clone(),
         reasoning_effort,
         children: header.children.clone(),
+        resource_policy: header.resource_policy.clone(),
     };
     let execution_host = ExecutionHost::new();
     execution_host.register(
@@ -1222,7 +1223,9 @@ fn observation_outcome(
             AgentEvent::OperationFailed { reason, .. } => Some(Err(reason.clone())),
             _ => None,
         },
-        ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => None,
+        ClientEvent::Managed(_) | ClientEvent::Semantic(_) | ClientEvent::PayloadOmitted { .. } => {
+            None
+        }
     }
 }
 
@@ -1518,6 +1521,9 @@ fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -
             DesktopErrorCode::UnsupportedExecutionOwner,
             "managed event reached the native Desktop adapter",
         )),
+        ClientEvent::Semantic(_) => DesktopEvent::Activity {
+            label: "Semantic frontend state updated".to_owned(),
+        },
         ClientEvent::PayloadOmitted {
             kind,
             encoded_bytes,
@@ -1684,6 +1690,7 @@ mod tests {
                 model: "test-model".to_owned(),
                 reasoning_effort: None,
                 children: Vec::new(),
+                resource_policy: crate::resource::ResourcePolicyV1::default(),
             },
         );
         (client, conversation)

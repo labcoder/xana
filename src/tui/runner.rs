@@ -634,6 +634,7 @@ pub(crate) async fn run_native(
         model: header.model.clone(),
         reasoning_effort: None,
         children: header.children.clone(),
+        resource_policy: header.resource_policy.clone(),
     };
     let client = EmbeddedClient::from_runtime(runtime, seed);
     let mut state = TuiState::from_client(

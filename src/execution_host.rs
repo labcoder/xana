@@ -688,7 +688,7 @@ fn apply_client_event(slot: &mut ConversationSlot, event: &ClientEvent) {
             }
             _ => slot.activity_count = slot.activity_count.saturating_add(1),
         },
-        ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {
+        ClientEvent::Managed(_) | ClientEvent::Semantic(_) | ClientEvent::PayloadOmitted { .. } => {
             slot.activity_count = slot.activity_count.saturating_add(1);
         }
     }

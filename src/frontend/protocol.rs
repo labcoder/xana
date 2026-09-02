@@ -6,18 +6,23 @@
 //! projections must preserve these semantics rather than invent another API.
 
 use super::managed::ManagedClientEvent;
+use super::semantic::{
+    AttachmentPolicySnapshotV1, SemanticDeltaV1, SemanticEventEnvelopeV1, SemanticReplicaV1,
+    SemanticSnapshotV1,
+};
 use crate::{
     identity::{AgentId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
     message::Message,
     native_runtime::{AgentEvent, RoundBudgetAction, RuntimeCommand},
     orchestration::{ChildInspection, ChildLifecycle},
     permission::ControllerDecision,
+    resource::ResourcePolicyV1,
     vision::ImageRef,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 3;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 4;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -350,6 +355,10 @@ pub(crate) struct ClientSnapshot {
     pub(crate) pending_approval_count: usize,
     pub(crate) activity_count: usize,
     pub(crate) artifact_count: usize,
+    /// Frontend-neutral M4 semantics. Legacy provider-neutral messages remain
+    /// available during the bounded migration to semantic projections.
+    #[serde(default)]
+    pub(crate) semantic: SemanticSnapshotV1,
 }
 
 #[derive(Debug, Clone)]
@@ -360,6 +369,7 @@ pub(crate) struct ClientSnapshotSeed {
     pub(crate) model: String,
     pub(crate) reasoning_effort: Option<String>,
     pub(crate) children: Vec<ChildInspection>,
+    pub(crate) resource_policy: ResourcePolicyV1,
 }
 
 impl ClientSnapshot {
@@ -392,11 +402,21 @@ impl ClientSnapshot {
             pending_approval_count: 0,
             activity_count: 0,
             artifact_count,
+            semantic: SemanticSnapshotV1 {
+                attachment_policy: AttachmentPolicySnapshotV1 {
+                    configured: seed.resource_policy,
+                    ..AttachmentPolicySnapshotV1::default()
+                },
+                ..SemanticSnapshotV1::default()
+            },
         }
     }
 
     pub(crate) fn apply(&mut self, event: &ClientEvent, sequence: u64) {
         self.sequence = sequence;
+        if !matches!(event, ClientEvent::Semantic(_)) {
+            self.semantic.sequence = sequence;
+        }
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
                 AgentEvent::OperationStateChanged {
@@ -440,6 +460,22 @@ impl ClientSnapshot {
                 }
                 _ => self.activity_count = self.activity_count.saturating_add(1),
             },
+            ClientEvent::Semantic(event) => {
+                let original = self.semantic.clone();
+                if let Ok(mut replica) = SemanticReplicaV1::from_snapshot(original.clone())
+                    && replica
+                        .apply(SemanticDeltaV1 {
+                            sequence,
+                            event: (**event).clone(),
+                        })
+                        .is_ok()
+                {
+                    self.semantic = replica.snapshot().clone();
+                } else {
+                    self.semantic = original;
+                }
+                self.activity_count = self.activity_count.saturating_add(1);
+            }
             ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {
                 self.activity_count = self.activity_count.saturating_add(1);
             }
@@ -451,6 +487,7 @@ impl ClientSnapshot {
 pub(crate) enum ClientEvent {
     Runtime(Box<AgentEvent>),
     Managed(Box<ManagedClientEvent>),
+    Semantic(Box<SemanticEventEnvelopeV1>),
     PayloadOmitted {
         kind: String,
         encoded_bytes: usize,
@@ -712,5 +749,68 @@ mod tests {
             })
             .is_none()
         );
+    }
+
+    #[test]
+    fn semantic_observation_advances_the_shared_snapshot_watermark() {
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::CommandRejected {
+                reason: "legacy event".into(),
+            }),
+            1,
+        );
+        let event = ClientEvent::Semantic(Box::new(SemanticEventEnvelopeV1 {
+            version: crate::frontend::semantic::SEMANTIC_PROTOCOL_VERSION,
+            kind: "content_appended".into(),
+            payload: serde_json::json!({
+                "kind": "content_appended",
+                "parts": [{"kind": "text", "payload": {"text": "hello"}}],
+                "origin": {"kind": "interactive"}
+            }),
+        }));
+
+        snapshot.apply(&event, 2);
+
+        assert_eq!(snapshot.semantic.sequence, 2);
+        assert_eq!(snapshot.semantic.content.len(), 1);
+    }
+
+    #[test]
+    fn initial_snapshot_freezes_the_configured_resource_policy() {
+        let resource_policy = ResourcePolicyV1 {
+            max_resources_per_turn: 9,
+            ..ResourcePolicyV1::default()
+        };
+
+        let snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                children: Vec::new(),
+                resource_policy: resource_policy.clone(),
+            },
+            Vec::new(),
+        );
+
+        assert_eq!(
+            snapshot.semantic.attachment_policy.configured,
+            resource_policy
+        );
+        assert!(snapshot.semantic.attachment_policy.route_limit.is_none());
     }
 }
