@@ -111,7 +111,9 @@ for the one conversation it controls. Observers, stale controllers, duplicate
 answers, and ids from another native child, operation, or managed callback are
 rejected. Disconnect starts a three-second authenticated reconnect grace;
 expiry and explicit release deny/cancel pending requests and interrupt the
-active root. Takeover is explicit and does not widen the underlying policy.
+active root. Takeover confirms the exact observed controller lease, is rejected
+if that observation is stale, and cannot proceed while an approval is pending.
+It does not widen the underlying policy.
 
 One-shot mode is noninteractive: a request that reaches the approval boundary
 is denied and the process exits with the `approval` category instead of

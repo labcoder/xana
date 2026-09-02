@@ -46,7 +46,14 @@ keep availability, selection, permission, containment, and rendering support
 separate. Runtime content now gains deterministic bounded rich/text/metadata/
 unsupported projections; generic link previews reuse the reviewed `web_fetch`
 boundary, and local resources use verified range reads plus bounded signature
-inspection with independent operation capabilities. Specialized TUI and
+inspection with independent operation capabilities. A shared
+Conversation-keyed controller reducer now provides non-secret identity,
+generation, state, monotonic reconnect expiry, rotating in-memory reconnect
+capabilities, exact-generation takeover confirmation, pending-approval
+exclusion, typed stale-controller errors, ordered audit projection, and
+independent controllers across Conversations. The loopback protocol and
+Desktop embedded boundary both use it; Desktop gates every mutating command and
+releases authority on clean shutdown. Specialized TUI and
 Desktop renderers and the Workbench remain future M4 work, so this proposal
 remains Accepted rather than Implemented.
 

@@ -123,6 +123,8 @@ for the ownership boundaries.
 | `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |
 | `xana conversation list` | List conversations for the current workspace (`session` remains an alias) |
 | `xana conversation branch ID --at POINT` | Preserve a source and create an explicit continuation |
+| `xana serve` | Run an explicit loopback-only foreground host for the current workspace |
+| `xana attach [--control] [--takeover]` | Observe that host or request exact Conversation controller authority |
 | `xana --continue` | Continue the latest compatible conversation |
 | `xana doctor` | Inspect configuration, credentials, paths, and runtime readiness |
 | `xana logs list` | Inspect local metadata-only diagnostics |

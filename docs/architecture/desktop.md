@@ -42,6 +42,16 @@ Stop releases it only after the runtime projects the terminal decision. The
 GPUI layer cannot manufacture identities or infer a decision from display
 text.
 
+The Desktop backend acquires one application-host controller identity for its
+Conversation before it publishes the initial snapshot. Every submission,
+clear, interrupt, approval, round-budget decision, and shutdown command is
+revalidated against that identity; snapshot requests remain observer-safe.
+Initial snapshots and ordered host observations project only the controller's
+public identity, generation, state, takeover fact, disconnect reason, and
+remaining grace. Reconnect capabilities and client transport identities never
+cross the Desktop presentation boundary. Clean shutdown releases the lease and
+publishes the ordered release before reporting that the backend stopped.
+
 ## Authority boundary
 
 The GPUI package receives:

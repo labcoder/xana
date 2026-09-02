@@ -78,9 +78,20 @@ or answer correlated native or managed approvals. The role grants no direct
 filesystem, credential, provider-wire, configuration, or host-administration
 access.
 
-The controller receives a per-lease reconnect capability in memory. If its
+Takeover confirms the exact controller identity and generation visible in the
+client's latest authoritative snapshot. If another client wins first, Xana
+rejects the stale confirmation and reports the replacement lease; it never
+applies both requests or chooses the last arrival silently. Takeover is also
+refused while a native or managed approval is pending, so changing controllers
+cannot answer an already-presented effect by accident.
+
+The controller receives a per-lease reconnect capability in memory. Xana
+rotates it after acquisition, periodic renewal, and every successful reconnect;
+it is never printed, logged, saved, or included in an observer snapshot. If its
 socket drops, Xana marks the lease reconnecting for three seconds. A reconnect
-uses a fresh atomic snapshot; it does not trust client-local history. While
+uses a fresh atomic snapshot; it does not trust client-local history. A new
+transport may present the current capability before an old stalled socket's
+close is observed; the old client immediately loses mutation authority. While
 reconnecting, no client can advance an approval. If grace expires, Xana denies
 or cancels every pending native/managed approval and interrupts the active
 root. Observers never inherit authority. Releasing control also fails closed
@@ -96,6 +107,11 @@ Snapshot capture and subscription share one host lock. An event is therefore
 either represented by the snapshot boundary or delivered afterward, never
 lost between the two. Sequence gaps and reconnects require a fresh snapshot;
 the local stream is not durable replay.
+
+Controller snapshots and events show a non-secret controller ID, lease
+generation, connected/reconnecting state, confirmed-takeover state, disconnect
+reason, and remaining reconnect grace. `xana logs` records metadata-only
+authority transitions, never the reconnect or host authentication capability.
 
 ## Artifact previews
 

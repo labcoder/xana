@@ -156,17 +156,36 @@ has no snapshot/live race. A full queue drops that observer rather than
 blocking host execution; reconnect and sequence gaps take a new snapshot
 instead of guessing replay. Observers receive correlated rejections and
 bounded audit events without crossing the runtime command lane. One client may
-explicitly acquire the hosted conversation's controller lease; acquisition,
-release, and takeover update the same snapshot/event sequence. Controller
+explicitly acquire the hosted Conversation's controller lease; acquisition,
+renewal, reconnect, release, expiry, and takeover update the same snapshot/event
+sequence. Protocol 4 snapshots expose the non-secret controller identity,
+lease generation, connected/reconnecting state, takeover state, disconnect
+reason, and remaining reconnect grace. A takeover confirmation binds the exact
+observed controller identity and generation. The first competing confirmation
+advances the generation; every stale contender is rejected with the new
+authoritative lease instead of silently becoming the last writer. Controller
 commands retain their independent command and operation ids and enter the same
 embedded native owner or managed Codex driver used by local frontends.
 
 A disconnected controller enters a three-second reconnect grace identified by
-an in-memory per-lease capability. Reconnect authenticates the same authority
-and begins from a fresh snapshot. Grace expiry or explicit release drains
-pending approvals with deny/cancel and interrupts the exact active operation.
-Observers never inherit control. The workspace host remains the sole root gate,
-so changing clients cannot create a competing native or managed root.
+an in-memory per-lease capability. The bearer is rotated after acquisition,
+renewal, and reconnect, and is omitted from snapshots, events, Debug output,
+diagnostics, and durable state. Reconnect authenticates the same authority and
+begins from a fresh snapshot; it may replace a stalled transport before its
+close notification arrives without leaving both transports authoritative.
+Grace expiry or explicit release drains pending approvals with deny/cancel and
+interrupts the exact active operation. A pending native or managed approval
+blocks takeover, and observers never inherit control. The workspace host
+remains the sole root gate, so changing clients cannot create a competing
+native or managed root.
+
+`controller` is the transport-independent lease reducer shared by the
+loopback host and the application `execution_host`. The latter keys leases by
+Conversation, so different Conversations may have independent controllers;
+every Desktop mutating command is checked against its current controller before
+it reaches the embedded runtime. Controller changes are ordered host events,
+Desktop-safe projections, and metadata-only Diagnostics facts. Restart creates
+no authority from stale client state.
 Host snapshots expose bounded conversation
 metadata and a workspace hash/display name, not the canonical path, provider
 secrets, credential references, or capability. Frames are capped at 1 MiB.
@@ -176,7 +195,7 @@ Client isolation is structural: at most 32 client tasks exist, each has a
 deadline. Queue overflow or transport failure removes only that subscriber.
 The authenticated artifact adapter indexes at most 512 immutable records found
 in visible frontend messages and semantic resource/attachment events. Protocol
-3 lookup accepts `ArtifactId` plus a byte offset, never a path, streams the full
+4 lookup accepts `ArtifactId` plus a byte offset, never a path, streams the full
 content through digest and file-identity verification, and retains at most one
 64 KiB range. The result reports exact range offset, total length, and whether
 more bytes follow. A symlink, non-regular file, replacement race, length
@@ -1872,12 +1891,14 @@ The application modules establish responsibility and I/O boundaries:
   `semantic` content, resource, activity, attention, usage, capability,
   execution-evidence, event, and replica children. `resource` owns immutable
   resource references and configurable admission beneath compiled ceilings.
-  `local_host` owns
-  only its authenticated loopback projection, protected discovery descriptor,
-  atomic host snapshot/sequence boundary, observer fan-out, and one explicit
-  controller/reconnect lease, bounded visible-artifact catalog, and exact
-  foreground shutdown registry. Native and managed hosted execution adapters
-  translate that authority back into their existing owners.
+  `controller` owns the transport-independent, Conversation-keyed lease state
+  machine; `execution_host` owns bounded application-level workspace,
+  Conversation, Run, collision, attachment, controller, and ordered-event
+  coordination. `local_host` owns only its authenticated loopback projection,
+  protected discovery descriptor, atomic host snapshot/sequence boundary,
+  observer fan-out, bounded visible-artifact catalog, and exact foreground
+  shutdown registry. Native and managed hosted execution adapters translate
+  that authority back into their existing owners.
 - `native_runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
 - `orchestration` owns exact route resolution, immutable child configuration,
