@@ -5,6 +5,13 @@
 //! and typed intent; provider adapters, credentials, tools, paths, and runtime
 //! ownership stay in this package.
 
+mod instance;
+
+pub use instance::{
+    DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
+    DesktopNavigationTarget,
+};
+
 pub use crate::host_lifecycle::{
     AttentionKind, AttentionSignal, ClientFocus, GlobalNotice, GlobalNoticeKind, LastWindowChoice,
     LastWindowEffect, NotificationCandidate, NotificationDestination, NotificationPlanner,
@@ -244,6 +251,7 @@ impl DesktopLaunch {
 pub enum DesktopErrorCode {
     WorkspaceUnavailable,
     ConfigurationUnavailable,
+    InstanceUnavailable,
     StateInvalid,
     HostBusy,
     AuthorityRequired,
@@ -261,6 +269,7 @@ impl DesktopErrorCode {
         match self {
             Self::WorkspaceUnavailable => "workspace_unavailable",
             Self::ConfigurationUnavailable => "configuration_unavailable",
+            Self::InstanceUnavailable => "instance_unavailable",
             Self::StateInvalid => "state_invalid",
             Self::HostBusy => "host_busy",
             Self::AuthorityRequired => "authority_required",
@@ -364,6 +373,7 @@ pub struct DesktopSnapshot {
     pub execution_owner: String,
     pub model: String,
     pub reasoning_effort: Option<String>,
+    pub notification_policy: NotificationPolicy,
     pub conversation: Vec<DesktopMessage>,
     pub conversation_truncated: bool,
     pub active_operation: Option<DesktopOperationId>,
@@ -627,6 +637,7 @@ impl DesktopClient {
             commands: command_receiver,
             updates: updates.clone(),
             startup: startup.clone(),
+            notification_policy: NotificationPolicy::default(),
         };
         let failure_updates = updates.clone();
         let backend = thread::Builder::new()
@@ -800,6 +811,15 @@ impl DesktopClient {
             })
     }
 
+    /// Requests shutdown without blocking the GPUI application thread.
+    pub fn request_shutdown(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::Shutdown)
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
     /// Drains one already-delivered update without blocking GPUI's render thread.
     pub fn try_next(&mut self) -> Result<Option<DesktopUpdate>, DesktopError> {
         match self.updates.try_recv() {
@@ -894,6 +914,7 @@ pub(crate) struct Bridge {
     commands: mpsc::Receiver<BridgeCommand>,
     updates: mpsc::Sender<DesktopUpdate>,
     startup: StartupSignal,
+    notification_policy: NotificationPolicy,
 }
 
 #[derive(Debug)]
@@ -991,6 +1012,7 @@ pub(crate) async fn run_native(
             EmbeddedClient::from_runtime(runtime, seed),
             execution_host,
             conversation,
+            header.notification_policy.clone(),
         )
         .await?;
     Ok(ChatExit::Quit)
@@ -1013,7 +1035,9 @@ impl Bridge {
         client: EmbeddedClient,
         execution_host: ExecutionHost,
         conversation: ConversationRef,
+        notification_policy: NotificationPolicy,
     ) -> Result<(), DesktopError> {
+        self.notification_policy = notification_policy;
         let (owner, mut observer) = client.into_parts();
         let mut snapshot = observer.snapshot().clone();
         let controller = DesktopController {
@@ -1030,8 +1054,11 @@ impl Bridge {
             .map_err(host_error)?;
         let host_snapshot = execution_host.snapshot().map_err(host_error)?;
         let mut host_cursor = host_snapshot.sequence;
-        self.startup
-            .ready(project_snapshot(&snapshot, &host_snapshot));
+        self.startup.ready(project_snapshot(
+            &snapshot,
+            &host_snapshot,
+            &self.notification_policy,
+        ));
         let mut active_run: Option<HostedRun> = None;
         let mut shutdown_cleanup = crate::host_lifecycle::OwnedExecutionCleanup::Unresolved;
 
@@ -1174,6 +1201,7 @@ impl Bridge {
                 self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
                     snapshot,
                     &host_snapshot,
+                    &self.notification_policy,
                 )))
                 .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
@@ -1403,7 +1431,9 @@ impl Bridge {
             HostChanges::SnapshotRequired(snapshot) => {
                 *cursor = snapshot.sequence;
                 self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
-                    frontend, &snapshot,
+                    frontend,
+                    &snapshot,
+                    &self.notification_policy,
                 )))
                 .await?;
             }
@@ -1491,6 +1521,7 @@ fn observation_outcome(
 fn project_snapshot(
     snapshot: &ClientSnapshot,
     host: &crate::execution_host::ExecutionHostSnapshot,
+    notification_policy: &NotificationPolicy,
 ) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
@@ -1500,6 +1531,7 @@ fn project_snapshot(
         execution_owner: snapshot.execution_owner.clone(),
         model: snapshot.model.clone(),
         reasoning_effort: snapshot.reasoning_effort.clone(),
+        notification_policy: notification_policy.clone(),
         conversation: project_messages(snapshot.session_id.to_string(), &snapshot.conversation),
         conversation_truncated: snapshot.conversation_truncated,
         active_operation: snapshot.active_operation.map(DesktopOperationId),
@@ -2054,6 +2086,7 @@ mod tests {
                 commands,
                 updates,
                 startup: StartupSignal::new(startup_sender),
+                notification_policy: NotificationPolicy::default(),
             },
             command_sender,
             update_receiver,
@@ -2156,7 +2189,12 @@ mod tests {
         let host = execution_host(directory.path(), &workspace, &conversation);
         let inspection = host.clone();
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation.clone()));
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation.clone(),
+            NotificationPolicy::default(),
+        ));
 
         let initial = startup
             .recv_timeout(Duration::from_secs(1))
@@ -2255,7 +2293,12 @@ mod tests {
         let (client, conversation) = scripted_client(&workspace);
         let host = execution_host(directory.path(), &workspace, &conversation);
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation));
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation,
+            NotificationPolicy::default(),
+        ));
         startup
             .recv_timeout(Duration::from_secs(1))
             .unwrap()

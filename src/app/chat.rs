@@ -184,6 +184,7 @@ async fn run_once(
     let manager = model_manager(paths)?;
     let child_registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load child route registry")?;
+    let notification_policy = child_registry.notifications.clone();
     let frozen_profile = resume
         .map(|session_id| {
             crate::profile::ProfileStore::open(paths)
@@ -802,6 +803,7 @@ async fn run_once(
         models: manager,
         presentation,
         resource_policy,
+        notification_policy,
         vision,
     };
 

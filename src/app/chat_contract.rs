@@ -3,6 +3,7 @@
 use crate::{
     artifact::ArtifactStore,
     config::PermissionMode,
+    host_lifecycle::NotificationPolicy,
     identity::{OperationId, PrincipalId, SessionId},
     model_catalog::ModelManager,
     native_runtime::{OperationState, RoundBudgetSuspension},
@@ -32,6 +33,7 @@ pub(crate) struct ChatHeader {
     pub(crate) models: ModelManager,
     pub(crate) presentation: ResolvedPresentation,
     pub(crate) resource_policy: ResourcePolicyV1,
+    pub(crate) notification_policy: NotificationPolicy,
     pub(crate) vision: super::vision::VisionTurnService,
 }
 

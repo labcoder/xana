@@ -3,8 +3,9 @@
 use gpui_ai::prelude::{ChatMessage, ChatRole, MessageActions, StreamedContent};
 use std::collections::HashMap;
 use xana::desktop::{
-    DesktopContent, DesktopEvent, DesktopMessage, DesktopObservation, DesktopOperationId,
-    DesktopOperationState, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
+    DesktopContent, DesktopEvent, DesktopHostEvent, DesktopHostObservation, DesktopMessage,
+    DesktopObservation, DesktopOperationId, DesktopOperationState, DesktopRole,
+    DesktopRoundBudgetSuspension, DesktopSnapshot, NotificationPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +30,10 @@ pub(crate) struct ConversationProjection {
     sequence: u64,
     active_operation: Option<DesktopOperationId>,
     pending_round_budget: Option<DesktopRoundBudgetSuspension>,
+    notification_policy: NotificationPolicy,
+    pending_approval_count: usize,
+    host_lifecycle: String,
+    global_notice_count: usize,
     latest_activity: String,
     failure: Option<String>,
 }
@@ -41,6 +46,10 @@ impl ConversationProjection {
             sequence: snapshot.sequence,
             active_operation: snapshot.active_operation,
             pending_round_budget: None,
+            notification_policy: snapshot.notification_policy.clone(),
+            pending_approval_count: snapshot.pending_approval_count,
+            host_lifecycle: snapshot.host_lifecycle.clone(),
+            global_notice_count: snapshot.global_notices.len(),
             latest_activity: format!(
                 "{} / {} · session {}",
                 snapshot.connection, snapshot.model, snapshot.session_id
@@ -105,9 +114,11 @@ impl ConversationProjection {
                 message,
             } => self.replace_stream_with_final(operation_id, message),
             DesktopEvent::PermissionRequired { tool, .. } => {
+                self.pending_approval_count = self.pending_approval_count.saturating_add(1);
                 self.latest_activity = format!("Approval required for {tool}");
             }
             DesktopEvent::PermissionResolved { .. } => {
+                self.pending_approval_count = self.pending_approval_count.saturating_sub(1);
                 self.latest_activity = "Approval resolved".to_owned();
             }
             DesktopEvent::RoundBudgetReached(suspension) => {
@@ -164,6 +175,27 @@ impl ConversationProjection {
         self.latest_activity = message;
     }
 
+    pub(crate) fn apply_host(&mut self, observation: &DesktopHostObservation) {
+        match &observation.event {
+            DesktopHostEvent::LifecycleChanged { state } => {
+                self.host_lifecycle.clone_from(state);
+            }
+            DesktopHostEvent::GlobalNotice(_) => {
+                self.global_notice_count = self.global_notice_count.saturating_add(1);
+            }
+            DesktopHostEvent::ControllerChanged { change, .. }
+                if matches!(change.as_str(), "released" | "expired")
+                    || change.starts_with("disconnected:") =>
+            {
+                self.latest_activity = "Conversation controller needs attention".to_owned();
+            }
+            DesktopHostEvent::ShutdownCompleted { .. } => {
+                self.host_lifecycle = "stopped".to_owned();
+            }
+            _ => {}
+        }
+    }
+
     pub(crate) fn messages(&self) -> Vec<ChatMessage> {
         self.messages
             .iter()
@@ -185,12 +217,36 @@ impl ConversationProjection {
         self.active_operation.is_some() && self.pending_round_budget.is_none()
     }
 
+    pub(crate) fn active_operation(&self) -> Option<DesktopOperationId> {
+        self.active_operation
+    }
+
+    pub(crate) fn notification_policy(&self) -> &NotificationPolicy {
+        &self.notification_policy
+    }
+
+    pub(crate) fn pending_approval_count(&self) -> usize {
+        self.pending_approval_count
+    }
+
+    pub(crate) fn host_lifecycle(&self) -> &str {
+        &self.host_lifecycle
+    }
+
+    pub(crate) fn global_notice_count(&self) -> usize {
+        self.global_notice_count
+    }
+
     pub(crate) fn pending_round_budget(&self) -> Option<&DesktopRoundBudgetSuspension> {
         self.pending_round_budget.as_ref()
     }
 
     pub(crate) fn latest_activity(&self) -> &str {
         &self.latest_activity
+    }
+
+    pub(crate) fn set_activity(&mut self, activity: impl Into<String>) {
+        self.latest_activity = activity.into();
     }
 
     pub(crate) fn failure(&self) -> Option<&str> {
@@ -323,6 +379,7 @@ mod tests {
             execution_owner: "native".to_owned(),
             model: "fixture".to_owned(),
             reasoning_effort: None,
+            notification_policy: xana::desktop::NotificationPolicy::default(),
             conversation: Vec::new(),
             conversation_truncated: false,
             active_operation: None,

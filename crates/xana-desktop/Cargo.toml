@@ -20,6 +20,9 @@ gpui-component-assets.workspace = true
 gpui_platform.workspace = true
 xana = { path = "../.." }
 
+[dev-dependencies]
+tempfile = "3.27.0"
+
 [lints.clippy]
 dbg_macro = "deny"
 todo = "deny"

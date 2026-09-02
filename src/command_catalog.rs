@@ -152,6 +152,7 @@ const RICH_CHAT_SURFACES: SurfaceSet = SurfaceSet::new(false, false, true, true)
 const LOCAL_INTERACTIVE: SurfaceSet = SurfaceSet::new(false, false, true, true);
 const CLI_AND_CHAT: SurfaceSet = SurfaceSet::new(true, true, true, true);
 const CLI_ONLY: SurfaceSet = SurfaceSet::new(true, false, false, false);
+const DESKTOP_ONLY: SurfaceSet = SurfaceSet::new(false, false, false, true);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommandSpec {
@@ -664,6 +665,57 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         false
     ),
     command!(
+        "application.command_palette.v1",
+        Help,
+        "command-palette",
+        &["palette"],
+        "",
+        "Search commands available in Xana Desktop",
+        ArgumentSchema::None,
+        Observer,
+        Interactive,
+        None,
+        Inspect,
+        DESKTOP_ONLY,
+        false,
+        true,
+        false
+    ),
+    command!(
+        "help.documentation.open.v1",
+        Help,
+        "documentation",
+        &["docs"],
+        "",
+        "Open Xana's user documentation in the default browser",
+        ArgumentSchema::None,
+        Controller,
+        Interactive,
+        None,
+        External,
+        DESKTOP_ONLY,
+        false,
+        true,
+        false
+    ),
+    command!(
+        "configuration.file.open.v1",
+        Settings,
+        "configuration-file",
+        &[],
+        "",
+        "Open Xana's configuration file with the system default application",
+        ArgumentSchema::None,
+        Owner,
+        Interactive,
+        None,
+        External,
+        DESKTOP_ONLY,
+        false,
+        true,
+        true
+    ),
+    command!(
         "presentation.layout.manage.v1",
         Layout,
         "layout",
@@ -679,6 +731,23 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         false,
         false,
         true
+    ),
+    command!(
+        "application.window.minimize.v1",
+        Layout,
+        "minimize-window",
+        &[],
+        "",
+        "Minimize the active Xana Desktop window",
+        ArgumentSchema::None,
+        Controller,
+        Interactive,
+        None,
+        Configure,
+        DESKTOP_ONLY,
+        false,
+        true,
+        false
     ),
     command!(
         "run.interrupt.v1",
