@@ -64,6 +64,8 @@ pub(crate) enum OutputChoice {
     #[default]
     Text,
     Json,
+    /// Emit repository-private JSON Lines observations followed by one result.
+    StreamJson,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

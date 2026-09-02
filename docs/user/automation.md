@@ -91,7 +91,7 @@ workspace.
 `--output json` and `--json` emit one redacted version-2 envelope to stdout:
 
 ```json
-{"version":2,"status":"success","result":{"text":"...","execution_owner":"native","session_id":"..."}}
+{"version":2,"status":"success","result":{"text":"...","execution_owner":"native","conversation_id":"...","session_id":"..."}}
 ```
 
 Failures use `status: "error"` with an `error.category` and bounded message.
@@ -110,5 +110,23 @@ no terminal control sequences.
 | 7 | `incomplete` | The same native operation is durably suspended at a round boundary and needs an interactive continue/stop decision. |
 | 130 | `interrupted` | The operation was interrupted. |
 
-The envelope is a result contract, not an event stream. Use stderr for human
-diagnostics; future attached clients use Xana's bounded frontend protocol.
+The envelope is a result contract, not an event stream. For a repository-private
+automation stream, use `--output stream-json`:
+
+```text
+xana --output stream-json -p "summarize this workspace"
+```
+
+This mode emits newline-delimited JSON to stdout. Every frame has stream
+`version`, a strictly increasing `sequence`, `type`, `execution_owner`, and,
+once execution has been composed, a stable `conversation_id`. Activity and
+bounded, redacted frontend observations precede exactly one authoritative
+`result` frame. The result payload uses the same version-2 success, error, or
+incomplete envelope described above. Human diagnostics remain on stderr.
+
+Consumers must process unknown frame fields and observation variants
+additively. They may coalesce or drop replaceable text and reasoning deltas
+when rendering slowly, but must retain ordered lifecycle events and the final
+result. This is a private Xana automation contract, not a public SDK, ACP, or
+remote-control protocol; its version may advance as the attached frontend
+protocol matures.

@@ -20,7 +20,7 @@ use crate::{
         ManagedChatConfig, ManagedOneShotRequest, run_codex_chat, run_codex_one_shot,
     },
     native_runtime::RuntimeHandle,
-    oneshot::OneShotSuccess,
+    oneshot::{OneShotReporter, OneShotSuccess, StreamSequence},
     orchestration::{
         ChildExecutionOwnerFactory, ChildSupervisor, OrchestrationBudget, ParentExecution,
         compose_native_provider,
@@ -86,17 +86,21 @@ pub(super) async fn run(
     mut continue_chat: bool,
     mut force_new: bool,
     mut one_shot: Option<String>,
+    stream_sequence: Option<StreamSequence>,
 ) -> Result<Option<OneShotSuccess>> {
     let mut conversation_target = None;
     loop {
         match run_once(
             paths,
             surface,
-            resume,
-            conversation_target.clone(),
-            continue_chat,
-            force_new,
-            one_shot,
+            ChatIntent {
+                resume,
+                conversation_target: conversation_target.clone(),
+                continue_chat,
+                force_new,
+                one_shot,
+                stream_sequence: stream_sequence.clone(),
+            },
         )
         .await?
         {
@@ -149,15 +153,24 @@ struct ChatRestart {
     force_new: bool,
 }
 
-async fn run_once(
-    paths: &XanaPaths,
-    surface: ChatSurface,
+struct ChatIntent {
     resume: Option<crate::identity::SessionId>,
     conversation_target: Option<ConversationRef>,
     continue_chat: bool,
     force_new: bool,
     one_shot: Option<String>,
-) -> Result<ChatRun> {
+    stream_sequence: Option<StreamSequence>,
+}
+
+async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -> Result<ChatRun> {
+    let ChatIntent {
+        resume,
+        conversation_target,
+        continue_chat,
+        force_new,
+        one_shot,
+        stream_sequence,
+    } = intent;
     let presentation = surface.profile();
     match (&surface, one_shot.is_none()) {
         (ChatSurface::Plain(mode), true) => {
@@ -502,7 +515,23 @@ async fn run_once(
         };
         return match one_shot {
             Some(input) => {
-                let mut activity = anstream::stderr().lock();
+                let conversation_id = conversation
+                    .conversation_id()
+                    .expect("composed managed one-shot has a Conversation identity");
+                let mut event_output: Box<dyn Write> = if stream_sequence.is_some() {
+                    Box::new(anstream::stdout())
+                } else {
+                    Box::new(anstream::stderr())
+                };
+                let mut reporter = match stream_sequence {
+                    Some(sequence) => OneShotReporter::stream_json(
+                        event_output.as_mut(),
+                        sequence,
+                        "managed_codex",
+                        conversation_id,
+                    ),
+                    None => OneShotReporter::text(event_output.as_mut()),
+                };
                 run_codex_one_shot(
                     server,
                     manager,
@@ -512,7 +541,7 @@ async fn run_once(
                         continue_thread: continue_chat,
                         conversation,
                     },
-                    &mut activity,
+                    &mut reporter,
                     &workspace_host,
                 )
                 .await
@@ -880,12 +909,28 @@ async fn run_once(
     };
 
     if let Some(input) = one_shot {
-        let mut activity = anstream::stderr().lock();
+        let conversation_id = conversation
+            .conversation_id()
+            .expect("composed native one-shot has a Conversation identity");
+        let mut event_output: Box<dyn Write> = if stream_sequence.is_some() {
+            Box::new(anstream::stdout())
+        } else {
+            Box::new(anstream::stderr())
+        };
+        let mut reporter = match stream_sequence {
+            Some(sequence) => OneShotReporter::stream_json(
+                event_output.as_mut(),
+                sequence,
+                "native",
+                conversation_id,
+            ),
+            None => OneShotReporter::text(event_output.as_mut()),
+        };
         return plain_terminal::run_one_shot(
             runtime,
             &header,
             input,
-            &mut activity,
+            &mut reporter,
             &workspace_host,
             conversation,
         )

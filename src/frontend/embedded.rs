@@ -85,7 +85,7 @@ impl EmbeddedClient {
     }
 
     pub(crate) async fn next_event(&mut self) -> Result<AgentEvent, EmbeddedObservationError> {
-        let observation = self.observer.next().await?;
+        let observation = self.next_observation().await?;
         Ok(match observation.event {
             ClientEvent::Runtime(event) => *event,
             ClientEvent::Managed(_) => AgentEvent::CommandRejected {
@@ -105,6 +105,12 @@ impl EmbeddedClient {
                 ),
             },
         })
+    }
+
+    pub(crate) async fn next_observation(
+        &mut self,
+    ) -> Result<ClientObservation, EmbeddedObservationError> {
+        self.observer.next().await
     }
 }
 

@@ -681,6 +681,39 @@ fn one_shot_json_is_one_versioned_envelope() {
 }
 
 #[test]
+fn one_shot_stream_json_is_ordered_jsonl_ending_in_authoritative_result() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, worker) = fake_chat_server("streamed answer");
+    init_native(&home, &base_url);
+
+    let output = xana(&home)
+        .args(["--output", "stream-json", "-p", "answer"])
+        .output()
+        .expect("run streaming JSON one-shot");
+    worker.join().expect("fake provider worker");
+
+    assert_success(&output);
+    let frames = String::from_utf8(output.stdout)
+        .expect("UTF-8 JSONL")
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).expect("JSON frame"))
+        .collect::<Vec<_>>();
+    assert!(frames.len() >= 2, "observations precede the final result");
+    for (index, frame) in frames.iter().enumerate() {
+        assert_eq!(frame["version"], 1);
+        assert_eq!(frame["sequence"], u64::try_from(index + 1).unwrap());
+        assert_eq!(frame["execution_owner"], "native");
+        assert!(frame["conversation_id"].is_string());
+    }
+    let final_frame = frames.last().expect("result frame");
+    assert_eq!(final_frame["type"], "result");
+    assert_eq!(final_frame["payload"]["status"], "success");
+    assert_eq!(final_frame["payload"]["result"]["text"], "streamed answer");
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("streamed answer"));
+}
+
+#[test]
 fn one_shot_rejects_missing_and_ambiguous_input_before_provider_activation() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("unused-home");

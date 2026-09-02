@@ -24,6 +24,7 @@ pub(super) async fn run_serve(args: &cli::ServeArgs, paths: &XanaPaths) -> Resul
         false,
         false,
         None,
+        None,
     )
     .await
     .map(|_| ())

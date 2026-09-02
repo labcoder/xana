@@ -6,7 +6,7 @@
 use crate::{
     agent::SessionUsage,
     app::{ChatExit, ChatHeader},
-    frontend::{ClientSnapshotSeed, EmbeddedClient},
+    frontend::{ClientEvent, ClientSnapshotSeed, EmbeddedClient},
     identity::{OperationId, ToolInvocationId},
     message::{ContentBlock, Message},
     model_catalog::{ExecutionKind, ModelManager},
@@ -14,7 +14,7 @@ use crate::{
         AgentEvent, OperationOutcome, OperationState, RoundBudgetAction, RoundBudgetSuspension,
         RuntimeCommand, RuntimeHandle,
     },
-    oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
+    oneshot::{ExitCategory, OneShotFailure, OneShotReporter, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     presentation::{ResolvedPresentation, SemanticToken},
@@ -1159,7 +1159,7 @@ pub(crate) async fn run_one_shot(
     runtime: RuntimeHandle,
     header: &ChatHeader,
     input: String,
-    activity: &mut impl Write,
+    reporter: &mut OneShotReporter<'_>,
     workspace_host: &WorkspaceHost,
     conversation: ConversationRef,
 ) -> Result<OneShotSuccess, OneShotFailure> {
@@ -1169,6 +1169,9 @@ pub(crate) async fn run_one_shot(
             suspension,
         ));
     }
+    let conversation_id = conversation
+        .conversation_id()
+        .expect("composed native one-shot has a Conversation identity");
     let mut client = embedded_client(runtime, header);
     let _root_lease = workspace_host
         .acquire_root(conversation)
@@ -1186,16 +1189,42 @@ pub(crate) async fn run_one_shot(
     let mut failure = None;
     let mut approval_required = false;
     loop {
-        let event = client
-            .next_event()
+        let observation = client
+            .next_observation()
             .await
             .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+        reporter
+            .native_observation(&observation)
+            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+        let event = match observation.event {
+            ClientEvent::Runtime(event) => *event,
+            ClientEvent::Managed(_) => AgentEvent::CommandRejected {
+                reason: "managed observation reached a native one-shot".to_owned(),
+            },
+            ClientEvent::Semantic(_) => AgentEvent::CommandRejected {
+                reason: "semantic observation cannot be reduced to a native event".to_owned(),
+            },
+            ClientEvent::PayloadOmitted {
+                kind,
+                encoded_bytes,
+                limit,
+            } => AgentEvent::CommandRejected {
+                reason: format!(
+                    "frontend omitted oversized {kind} observation ({encoded_bytes} bytes; limit {limit})"
+                ),
+            },
+        };
         match event {
             AgentEvent::PermissionRequested { request } if request.operation_id == operation_id => {
                 approval_required = true;
-                writeln!(activity, "approval required for {}", request.tool_name).map_err(
-                    |error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()),
-                )?;
+                reporter
+                    .activity(
+                        "approval.required",
+                        &format!("approval required for {}", request.tool_name),
+                    )
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
                 client
                     .send(RuntimeCommand::DecidePermission {
                         operation_id,
@@ -1212,12 +1241,17 @@ pub(crate) async fn run_one_shot(
                 activity: ChildActivity::PermissionRequested { request },
             } if attribution.parent_operation_id == operation_id => {
                 approval_required = true;
-                writeln!(
-                    activity,
-                    "approval required for child {} tool {}",
-                    attribution.agent_id, request.tool_name
-                )
-                .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+                reporter
+                    .activity(
+                        "approval.child_required",
+                        &format!(
+                            "approval required for child {} tool {}",
+                            attribution.agent_id, request.tool_name
+                        ),
+                    )
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
                 client
                     .send(RuntimeCommand::DecideChildPermission {
                         agent_id: attribution.agent_id,
@@ -1249,12 +1283,17 @@ pub(crate) async fn run_one_shot(
                 attribution,
                 lifecycle,
             } => {
-                writeln!(
-                    activity,
-                    "child {} [{}]: {:?}",
-                    attribution.agent_id, attribution.route, lifecycle
-                )
-                .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+                reporter
+                    .activity(
+                        "child.lifecycle_changed",
+                        &format!(
+                            "child {} [{}]: {:?}",
+                            attribution.agent_id, attribution.route, lifecycle
+                        ),
+                    )
+                    .map_err(|error| {
+                        OneShotFailure::new(ExitCategory::Runtime, error.to_string())
+                    })?;
             }
             AgentEvent::OperationStateChanged {
                 operation_id: actual,
@@ -1264,6 +1303,7 @@ pub(crate) async fn run_one_shot(
                     OperationOutcome::Completed => Ok(OneShotSuccess {
                         text: final_text.unwrap_or_default(),
                         session_id: Some(header.session_id),
+                        conversation_id,
                         execution_owner: "native",
                     }),
                     OperationOutcome::Declined if approval_required => Err(OneShotFailure::new(

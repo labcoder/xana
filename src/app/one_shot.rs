@@ -3,7 +3,10 @@
 use super::{banner_mode, chat};
 use crate::{
     identity::SessionId,
-    oneshot::{ExitCategory, OneShotFailure, OneShotOutput, write_failure, write_success},
+    oneshot::{
+        ExitCategory, OneShotFailure, OneShotOutput, StreamSequence, write_failure_with_sequence,
+        write_success_with_sequence,
+    },
     paths::XanaPaths,
 };
 use anyhow::{Context, Result};
@@ -21,15 +24,25 @@ pub(crate) fn preflight(cli: &mut crate::cli::Cli) -> Result<()> {
             Ok(())
         }
         Err(failure) => {
-            let output = if cli.json || cli.output == Some(crate::cli::OutputChoice::Json) {
+            let output = if cli.json {
                 OneShotOutput::Json
             } else {
-                OneShotOutput::Text
+                match cli.output.unwrap_or_default() {
+                    crate::cli::OutputChoice::Text => OneShotOutput::Text,
+                    crate::cli::OutputChoice::Json => OneShotOutput::Json,
+                    crate::cli::OutputChoice::StreamJson => OneShotOutput::StreamJson,
+                }
             };
             let stdout = io::stdout();
             let stderr = io::stderr();
-            write_failure(output, &failure, &mut stdout.lock(), &mut stderr.lock())
-                .context("could not write one-shot preflight failure")?;
+            write_failure_with_sequence(
+                output,
+                &failure,
+                &mut stdout.lock(),
+                &mut stderr.lock(),
+                None,
+            )
+            .context("could not write one-shot preflight failure")?;
             Err(anyhow::Error::new(failure.rendered()))
         }
     }
@@ -42,6 +55,7 @@ pub(super) async fn run_and_render(
     argument: Option<String>,
     output: OneShotOutput,
 ) -> Result<()> {
+    let stream_sequence = (output == OneShotOutput::StreamJson).then(StreamSequence::default);
     let result = resolve_one_shot_input(argument);
     let result = match result {
         Ok(input) => chat::run(
@@ -51,6 +65,7 @@ pub(super) async fn run_and_render(
             continue_chat,
             false,
             Some(input),
+            stream_sequence.clone(),
         )
         .await
         .and_then(|success| success.context("one-shot launch returned no result"))
@@ -63,10 +78,19 @@ pub(super) async fn run_and_render(
     let mut stdout = stdout.lock();
     let mut stderr = stderr.lock();
     match result {
-        Ok(success) => write_success(output, &success, &mut stdout).map_err(anyhow::Error::new),
+        Ok(success) => {
+            write_success_with_sequence(output, &success, &mut stdout, stream_sequence.as_ref())
+                .map_err(anyhow::Error::new)
+        }
         Err(failure) => {
-            write_failure(output, &failure, &mut stdout, &mut stderr)
-                .context("could not write one-shot failure")?;
+            write_failure_with_sequence(
+                output,
+                &failure,
+                &mut stdout,
+                &mut stderr,
+                stream_sequence.as_ref(),
+            )
+            .context("could not write one-shot failure")?;
             Err(anyhow::Error::new(failure.rendered()))
         }
     }

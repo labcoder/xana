@@ -93,11 +93,14 @@ Run one noninteractive turn with `-p`:
 ```bash
 xana -p "Summarize this repository"
 xana --json -p "List the main risks in this change"
+xana --output stream-json -p "Report progress while checking this workspace"
 ```
 
 One-shot mode writes the final result to stdout and sends activity to stderr.
 Requests that need an approval fail closed when no interactive controller is
-present.
+present. The repository-private `stream-json` form instead writes bounded,
+ordered JSONL observations followed by one authoritative result frame; see
+[Plain mode and automation](docs/user/automation.md).
 
 ## Native and managed execution
 

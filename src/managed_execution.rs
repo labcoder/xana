@@ -18,7 +18,7 @@ use crate::{
         thread_store::ManagedThreadStore,
     },
     model_catalog::{ModelDescriptor, ModelManager, ModelSelection, ReasoningSummary},
-    oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
+    oneshot::{ExitCategory, OneShotFailure, OneShotReporter, OneShotSuccess},
     presentation::{ResolvedPresentation, SemanticToken},
     vision::{ImageIngestor, ImageLimits, PendingImages},
     workspace_host::{ConversationRef, WorkspaceHost},
@@ -27,7 +27,6 @@ use activity::{ActivityLevel, RetainedActivity, TerminalManagedHandler, render_r
 use anyhow::{Context, Result};
 use futures::future::BoxFuture;
 use rustyline::{DefaultEditor, error::ReadlineError};
-use std::io::Write;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -512,7 +511,7 @@ pub(crate) async fn run_codex_one_shot(
     models: ModelManager,
     config: ManagedChatConfig,
     request: ManagedOneShotRequest,
-    activity: &mut impl Write,
+    reporter: &mut OneShotReporter<'_>,
     workspace_host: &WorkspaceHost,
 ) -> Result<OneShotSuccess, OneShotFailure> {
     let result = run_codex_one_shot_inner(
@@ -520,7 +519,7 @@ pub(crate) async fn run_codex_one_shot(
         &models,
         &config,
         request,
-        activity,
+        reporter,
         workspace_host,
     )
     .await;
@@ -540,9 +539,13 @@ async fn run_codex_one_shot_inner(
     models: &ModelManager,
     config: &ManagedChatConfig,
     request: ManagedOneShotRequest,
-    activity: &mut impl Write,
+    reporter: &mut OneShotReporter<'_>,
     workspace_host: &WorkspaceHost,
 ) -> Result<OneShotSuccess, OneShotFailure> {
+    let conversation_id = request
+        .conversation
+        .conversation_id()
+        .expect("composed managed one-shot has a Conversation identity");
     let account = server
         .account_status()
         .await
@@ -573,7 +576,7 @@ async fn run_codex_one_shot_inner(
     let mut store =
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
             .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
-    let mut handler = OneShotManagedHandler::new(activity);
+    let mut handler = OneShotManagedHandler::new(reporter);
     let thread_id = if request.continue_thread {
         match store.thread_id() {
             Some(thread_id) => {
@@ -643,6 +646,7 @@ async fn run_codex_one_shot_inner(
                 result.final_text
             },
             session_id: None,
+            conversation_id,
             execution_owner: "managed_codex",
         }),
         Err(error) if handler.approval_required => Err(OneShotFailure::new(
@@ -656,23 +660,23 @@ async fn run_codex_one_shot_inner(
     }
 }
 
-struct OneShotManagedHandler<'a, W: Write> {
-    activity: &'a mut W,
+struct OneShotManagedHandler<'a, 'output> {
+    reporter: &'a mut OneShotReporter<'output>,
     assistant: String,
     approval_required: bool,
 }
 
-impl<'a, W: Write> OneShotManagedHandler<'a, W> {
-    fn new(activity: &'a mut W) -> Self {
+impl<'a, 'output> OneShotManagedHandler<'a, 'output> {
+    fn new(reporter: &'a mut OneShotReporter<'output>) -> Self {
         Self {
-            activity,
+            reporter,
             assistant: String::new(),
             approval_required: false,
         }
     }
 }
 
-impl<W: Write> crate::managed::codex::ManagedEventHandler for OneShotManagedHandler<'_, W> {
+impl crate::managed::codex::ManagedEventHandler for OneShotManagedHandler<'_, '_> {
     fn notification(
         &mut self,
         notification: crate::managed::codex::ManagedNotification,
@@ -680,18 +684,30 @@ impl<W: Write> crate::managed::codex::ManagedEventHandler for OneShotManagedHand
         let Some(event) = ManagedClientEvent::from_notification(notification) else {
             return Ok(());
         };
+        self.reporter
+            .managed_observation(&event)
+            .map_err(|error| CodexError::Io(error.to_string()))?;
         match event {
             ManagedClientEvent::AssistantDelta(delta) => self.assistant.push_str(&delta),
             ManagedClientEvent::Warning(message) => {
-                writeln!(self.activity, "Codex warning: {message}")
+                self.reporter
+                    .activity("managed.warning", &format!("Codex warning: {message}"))
                     .map_err(|error| CodexError::Io(error.to_string()))?;
             }
             ManagedClientEvent::ItemStarted(item) => {
-                writeln!(self.activity, "Codex started {}", item.label)
+                self.reporter
+                    .activity(
+                        "managed.item_started",
+                        &format!("Codex started {}", item.label),
+                    )
                     .map_err(|error| CodexError::Io(error.to_string()))?;
             }
             ManagedClientEvent::ItemCompleted(item) => {
-                writeln!(self.activity, "Codex finished {}", item.label)
+                self.reporter
+                    .activity(
+                        "managed.item_completed",
+                        &format!("Codex finished {}", item.label),
+                    )
                     .map_err(|error| CodexError::Io(error.to_string()))?;
             }
             ManagedClientEvent::ModelRerouted {
@@ -699,11 +715,12 @@ impl<W: Write> crate::managed::codex::ManagedEventHandler for OneShotManagedHand
                 to_model,
                 reason,
             } => {
-                writeln!(
-                    self.activity,
-                    "Codex rerouted {from_model} to {to_model}: {reason}"
-                )
-                .map_err(|error| CodexError::Io(error.to_string()))?;
+                self.reporter
+                    .activity(
+                        "managed.model_rerouted",
+                        &format!("Codex rerouted {from_model} to {to_model}: {reason}"),
+                    )
+                    .map_err(|error| CodexError::Io(error.to_string()))?;
             }
             _ => {}
         }
@@ -955,18 +972,21 @@ mod tests {
     #[test]
     fn one_shot_managed_projection_collects_output_without_vendor_ids() {
         let mut activity = Vec::new();
-        let mut handler = OneShotManagedHandler::new(&mut activity);
-        handler
-            .notification(ManagedNotification::AssistantDelta {
-                item_id: Some("private-item-id".to_owned()),
-                delta: "hello".to_owned(),
-            })
-            .expect("assistant delta");
-        handler
-            .notification(ManagedNotification::Warning("bounded warning".to_owned()))
-            .expect("warning");
+        {
+            let mut reporter = OneShotReporter::text(&mut activity);
+            let mut handler = OneShotManagedHandler::new(&mut reporter);
+            handler
+                .notification(ManagedNotification::AssistantDelta {
+                    item_id: Some("private-item-id".to_owned()),
+                    delta: "hello".to_owned(),
+                })
+                .expect("assistant delta");
+            handler
+                .notification(ManagedNotification::Warning("bounded warning".to_owned()))
+                .expect("warning");
 
-        assert_eq!(handler.assistant, "hello");
+            assert_eq!(handler.assistant, "hello");
+        }
         let rendered = String::from_utf8(activity).expect("UTF-8 activity");
         assert!(rendered.contains("bounded warning"));
         assert!(!rendered.contains("private-item-id"));
@@ -975,21 +995,24 @@ mod tests {
     #[tokio::test]
     async fn one_shot_managed_approval_fails_closed() {
         let mut activity = Vec::new();
-        let mut handler = OneShotManagedHandler::new(&mut activity);
-        let decision = handler
-            .approve(ApprovalRequest {
-                item_id: Some("private-item-id".to_owned()),
-                method: "item/commandExecution/requestApproval".to_owned(),
-                available_decisions: ["decline".to_owned()].into_iter().collect(),
-                reason: None,
-                command: Some("echo secret".to_owned()),
-                cwd: None,
-            })
-            .await
-            .expect("decline is available");
+        {
+            let mut reporter = OneShotReporter::text(&mut activity);
+            let mut handler = OneShotManagedHandler::new(&mut reporter);
+            let decision = handler
+                .approve(ApprovalRequest {
+                    item_id: Some("private-item-id".to_owned()),
+                    method: "item/commandExecution/requestApproval".to_owned(),
+                    available_decisions: ["decline".to_owned()].into_iter().collect(),
+                    reason: None,
+                    command: Some("echo secret".to_owned()),
+                    cwd: None,
+                })
+                .await
+                .expect("decline is available");
 
-        assert_eq!(decision, crate::managed::codex::ApprovalDecision::Decline);
-        assert!(handler.approval_required);
+            assert_eq!(decision, crate::managed::codex::ApprovalDecision::Decline);
+            assert!(handler.approval_required);
+        }
         assert!(activity.is_empty());
     }
 }

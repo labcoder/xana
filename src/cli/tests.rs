@@ -50,6 +50,10 @@ fn parses_plain_tui_and_one_shot_surface_contracts() {
     assert!(json.json);
     assert_eq!(json.output, None);
 
+    let stream = Cli::try_parse_from(["xana", "--output", "stream-json", "-p", "hello"])
+        .expect("private JSONL stream");
+    assert_eq!(stream.output, Some(OutputChoice::StreamJson));
+
     let continued = Cli::try_parse_from(["xana", "--continue"]).expect("continuation");
     assert!(continued.continue_chat);
     let compatibility =

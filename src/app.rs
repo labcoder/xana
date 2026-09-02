@@ -62,10 +62,14 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     match cli.command {
         None => {
             if let Some(argument) = cli.print {
-                let output = if cli.json || cli.output == Some(OutputChoice::Json) {
+                let output = if cli.json {
                     OneShotOutput::Json
                 } else {
-                    OneShotOutput::Text
+                    match cli.output.unwrap_or_default() {
+                        OutputChoice::Text => OneShotOutput::Text,
+                        OutputChoice::Json => OneShotOutput::Json,
+                        OutputChoice::StreamJson => OneShotOutput::StreamJson,
+                    }
                 };
                 return one_shot::run_and_render(
                     &paths,
@@ -78,9 +82,17 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             }
             ensure_setup(&paths).await?;
             let surface = prepare_default_chat_surface(&paths, cli.plain, cli.tui, no_banner)?;
-            chat::run(&paths, surface, cli.resume, cli.continue_chat, false, None)
-                .await
-                .map(|_| ())
+            chat::run(
+                &paths,
+                surface,
+                cli.resume,
+                cli.continue_chat,
+                false,
+                None,
+                None,
+            )
+            .await
+            .map(|_| ())
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
@@ -100,7 +112,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let outcome = run_setup_command(&args, &paths).await?;
             if outcome.starts_new_conversation(args.start_new) {
                 let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
-                chat::run(&paths, surface, None, false, true, None)
+                chat::run(&paths, surface, None, false, true, None, None)
                     .await
                     .map(|_| ())
             } else {
@@ -167,7 +179,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             if args.command == SessionCommand::New {
                 ensure_setup(&paths).await?;
                 let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
-                chat::run(&paths, surface, None, false, true, None)
+                chat::run(&paths, surface, None, false, true, None, None)
                     .await
                     .map(|_| ())
             } else {
@@ -307,6 +319,7 @@ pub(crate) async fn run_desktop(
         None,
         false,
         false,
+        None,
         None,
     )
     .await
