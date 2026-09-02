@@ -50,12 +50,14 @@ session during launch; managed Codex creates its vendor-owned thread on the
 first turn. Use `/sessions new` for the same lifecycle while the full-screen
 frontend is already open.
 
-The process-owned workspace host uses one canonical workspace identity and can
+The process-owned workspace host uses one opened filesystem identity and can
 list multiple native sessions and retained managed handles. It permits one
 active root turn across Xana processes in that workspace; Phase 4 children
 remain bounded beneath that root. The OS file lock is authoritative. A small
-descriptor records a random host id, PID, and conversation only for diagnosis;
-stale metadata never authorizes Xana to signal or kill that PID.
+descriptor records a random host id, PID, monotonic owner generation, and
+conversation only for diagnosis; stale metadata never authorizes Xana to
+signal or kill that PID. Symlink, junction, path-case, and Windows path-prefix
+aliases share the same collision domain.
 
 When another root is active, a normal plain launch can create an inactive
 native conversation for drafting, but submitting another root is rejected.

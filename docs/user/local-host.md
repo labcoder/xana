@@ -20,8 +20,11 @@ cargo run -- serve
 ```
 
 The host writes a workspace-scoped runtime descriptor beneath Xana's runtime
-directory. It contains the loopback endpoint, a per-launch host identity, and
-a fresh capability. On Unix, Xana sets the directory to `0700` and the
+directory. It contains the loopback endpoint, a per-launch host identity, a
+monotonically increasing owner generation, and a fresh capability. The
+descriptor and lock are keyed by the opened filesystem identity, not path text;
+symlink, junction, path-case, and Windows extended-prefix aliases therefore
+compete for the same authority. On Unix, Xana sets the directory to `0700` and the
 descriptor to `0600`. On Windows, the normal runtime location is beneath the
 current user's application directories and inherits that user's ACL. An
 explicit `XANA_HOME` inherits the ACL of the directory you selected. The
@@ -36,8 +39,8 @@ it in the first bounded WebSocket frame:
 xana attach
 ```
 
-Attachment is workspace-specific. Run the command from the same canonical
-workspace as the host. A stale, malformed, wrong-workspace, wrong-version,
+Attachment is workspace-specific. Run the command from the same filesystem
+workspace as the host. A stale, malformed, wrong-workspace, wrong-generation, wrong-version,
 non-loopback, or unauthorized descriptor fails before snapshot data is sent.
 Browser WebSocket handshakes, when used, must have a loopback `Origin`; the
 native CLI does not send an Origin header.
@@ -131,3 +134,9 @@ process name. The verified descriptor lease is removed when the host exits.
 The protocol is repository-private and versioned for Xana's own frontends. It
 is not a public SDK or compatibility promise. There is no daemon discovery,
 automatic startup, TLS, remote authentication, or LAN binding.
+
+If a competing launch finds the lock held, it may attach only to the exact
+compatible descriptor and generation published by that owner. A stale
+descriptor without its lock is diagnostic only. `xana doctor` reports active,
+stale, incompatible, and invalid descriptor states; it never treats a PID as
+authority or kills a process by name.

@@ -33,6 +33,9 @@ engineering contracts used to change it.
 - [M4 native round-budget evidence](development/m4-native-round-budget-evidence.md)
   records durable suspension, exact continuation/stop correlation, cumulative
   accounting, crash/restart behavior, and cross-surface verification.
+- [M4 state migration and ownership evidence](development/m4-state-migration-and-ownership-evidence.md)
+  records filesystem collision identity, generation-backed attach-or-own
+  claims, private-record v2 transactionality, fault recovery, and verification.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,

@@ -129,12 +129,18 @@ closes the runtime command lane and follows the foreground cancellation path.
 
 `local_host` projects a bounded repository-private host vocabulary over a
 loopback-only WebSocket. `xana serve` is explicit and foreground; it never
-daemonizes or accepts a non-loopback bind. A canonical-workspace hash selects
-one runtime descriptor. The protected descriptor carries a fresh per-launch
-capability and endpoint, while normal logs and attach arguments carry neither.
-The first bounded frame must match protocol version, host generation,
-workspace identity, capability, and requested role before any snapshot
-is sent. Browser handshakes additionally require a loopback Origin.
+daemonizes or accepts a non-loopback bind. An opened filesystem identity—not
+canonical path spelling—selects one runtime descriptor and lock, so symlink,
+junction, case, and Windows prefix aliases cannot create separate collision
+domains for the same directory. The lock file advances a durable monotonic
+owner generation on every successful claim. The protected version-2
+descriptor carries that generation, a fresh per-launch capability, and the
+endpoint, while normal logs and attach arguments carry neither. A competing
+claim either owns the lock or returns the compatible lock-backed descriptor to
+the attach path; it cannot become a second owner. The first bounded protocol-2
+frame must match protocol version, host generation, filesystem identity,
+capability, and requested role before any snapshot is sent. Browser handshakes
+additionally require a loopback Origin.
 
 The host observation hub captures its bounded workspace snapshot and installs
 a 256-entry observer queue while holding one lock. Each later event receives
@@ -179,7 +185,7 @@ bounded command for delivery; semantic runtime outcomes remain ordered
 observations. This contract is repository-private and makes no compatibility
 promise to third-party clients or future network adapters.
 
-`workspace_host` owns canonical local-workspace conversation discovery and the
+`workspace_host` owns local-workspace conversation discovery and the
 single-root admission gate shared by embedded native and managed clients. A
 bounded snapshot combines reducible native session records with retained
 opaque managed handles and native modification metadata. Explicit native
@@ -189,9 +195,11 @@ derives bounded titles only from retained user text, and keeps viewed history,
 the runtime transcript, and unsent draft as separate state. Switching view
 focus cannot transfer control or dispatch work. A versioned workspace/frontend
 file persists only the wide-rail Boolean; runtime selection, activity,
-unread/error state, and ownership are recomputed. An OS file lock, acquired only for an active root
-turn, is the cross-process authority; its bounded host-id/PID/conversation
-descriptor is diagnostic and never authorizes process signalling. A second
+unread/error state, and ownership are recomputed. The same filesystem-backed
+collision identity used by `local_host` keys an OS file lock acquired only for
+an active root turn. Each successful lease advances its durable generation;
+the bounded host-id/PID/generation/conversation descriptor is diagnostic and
+never authorizes process signalling. A second
 plain client may hold an inactive session writer and draft input, but its turn
 cannot cross the root gate. Dropping the active embedded client follows the
 existing runtime cancellation path before its lease is released.
@@ -1095,17 +1103,44 @@ local project bindings, installed-package/lock state, endpoint trust, external
 agent state, outbound decisions, and the bounded metadata-only outbound audit
 journal.
 They are separately bounded, owner-protected where the platform supports it,
-strictly decoded, and atomically replaced under a cross-process record lock.
-They contain references and decisions, never resolved credentials.
+strictly decoded, and atomically replaced. Version 2 preserves the version-1
+domain fields; host/controller generations, transient attention, Run recovery,
+and usage observations remain with their existing runtime/session owners or are
+derived rather than being duplicated speculatively. They contain references
+and decisions, never resolved credentials.
 
 Configuration migration is an explicit plan/review/apply transaction. The
 read-only plan snapshots the exact config bytes, validates semantic equivalence,
-and inspects private record versions. Apply acquires the same configuration
-transaction lock used by setup and structured edits, rejects a
-concurrent config edit, initializes missing private records, writes an exact
-backup, then atomically replaces `config.toml` as the final version marker.
-Corrupt or future private records fail closed and are never overwritten; an
-interrupted retry is idempotent.
+and classifies each private record as healthy, missing, migratable, invalid, or
+unsupported. Apply holds the configuration transaction lock and one global
+private-state mutation lock, rejects any bytes changed since review, writes
+exact source records beneath
+`data/interoperable/migration-backups/<transaction-id>/`, and installs all
+missing or version-1 records behind a bounded versioned recovery journal.
+`config.toml` is then atomically replaced as the final marker. A successful
+commit retains both the config backup and private backup while removing the
+journal.
+
+Every ordinary private-state update takes the same global mutation lock and
+refuses to proceed while a recovery journal exists. On explicit retry, source
+config bytes cause byte-for-byte rollback before migration is retried; target
+config bytes cause forward validation and finalization. A config value matching
+neither side, an altered target, a corrupt/future record, or an unreadable
+journal fails closed with an exact migration/Doctor action. Recovery never
+touches session journals, managed-provider history, artifacts, or Run records
+and never replays work.
+
+```mermaid
+flowchart LR
+    P["Read-only plan<br/>config + seven records"] --> L["Config lock + global private-state lock"]
+    L --> B["Exact retained backups"]
+    B --> J["Prepared recovery journal"]
+    J --> V2["Atomically install private v2 records"]
+    V2 --> C["Atomically commit config"]
+    C --> F["Mark committed; remove journal"]
+    J -. "source config after crash" .-> R["Restore exact source records"]
+    V2 -. "target config after crash" .-> F
+```
 
 ## Optional project registry
 

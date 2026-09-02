@@ -34,6 +34,29 @@ xana config check
 xana config migrate
 ```
 
+`xana config migrate` is a read-only review. It reports the config schema and
+each of Xana's seven private interoperable records as healthy, missing,
+migration required, invalid, or unsupported. Apply only after reviewing it:
+
+```bash
+xana config migrate --apply
+```
+
+Apply serializes all private-state mutation across processes, retains exact
+source copies beneath
+`data/interoperable/migration-backups/<transaction-id>/`, retains the prior
+config as `config.toml.bak`, and commits `config.toml` last. Version-1 private
+records migrate to version 2 without adding or discarding Project membership,
+profile snapshot, predecessor, package, trust, external-agent, or outbound
+policy data. Missing records are initialized in the same transaction.
+
+An interrupted transaction is not silently ignored. Normal mutation stops and
+`xana doctor` points to `xana config migrate --apply`. Retry rolls back when the
+old config is still authoritative or validates and finalizes when the new
+config committed. Xana does not replay Runs or alter native sessions, managed
+provider history, or artifacts during migration. Preserve the journal and
+backup directory if recovery reports changed or corrupt inputs.
+
 Bare `xana setup` opens Xana's keyboard-driven terminal wizard when both input
 and output are terminals. Arrow keys move, Page Up/Page Down page, typing
 filters the current choices, Enter selects, and Escape goes back. The wizard
