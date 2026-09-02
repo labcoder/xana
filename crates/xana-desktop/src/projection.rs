@@ -25,6 +25,9 @@ enum MessageLifecycle {
 
 /// Xana Desktop owns this state; `gpui-ai` receives immutable snapshots.
 pub(crate) struct ConversationProjection {
+    connection: String,
+    model: String,
+    artifact_count: usize,
     messages: Vec<ProjectedMessage>,
     streams: HashMap<DesktopOperationId, String>,
     sequence: u64,
@@ -41,6 +44,9 @@ pub(crate) struct ConversationProjection {
 impl ConversationProjection {
     pub(crate) fn from_snapshot(snapshot: &DesktopSnapshot) -> Self {
         Self {
+            connection: snapshot.connection.clone(),
+            model: snapshot.model.clone(),
+            artifact_count: snapshot.artifact_count,
             messages: snapshot.conversation.iter().map(project_message).collect(),
             streams: HashMap::new(),
             sequence: snapshot.sequence,
@@ -211,6 +217,18 @@ impl ConversationProjection {
                     .actions(MessageActions::for_role(message.role))
             })
             .collect()
+    }
+
+    pub(crate) fn connection(&self) -> &str {
+        &self.connection
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+
+    pub(crate) fn artifact_count(&self) -> usize {
+        self.artifact_count
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -396,6 +414,11 @@ mod tests {
             navigation: xana::desktop::DesktopNavigationSnapshot::empty(
                 xana::desktop::DesktopSidebarMode::Full,
             ),
+            layout: xana::desktop::DesktopResolvedLayout {
+                layout: xana::desktop::DesktopWorkbenchLayout::recovery(),
+                source: xana::desktop::DesktopLayoutSource::Recovery,
+                warning: None,
+            },
         }
     }
 

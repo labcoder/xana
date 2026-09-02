@@ -9,8 +9,8 @@ use crate::{
     projection::ConversationProjection,
 };
 use gpui::{
-    Context, Entity, IntoElement, ParentElement as _, PromptLevel, Render, Role, Subscription,
-    SystemNotification, Task, Window, div, prelude::*, rems,
+    AnyElement, Context, Entity, IntoElement, ParentElement as _, PromptLevel, Render, Role,
+    Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
     Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState, ProgressState,
@@ -20,14 +20,15 @@ use gpui_ai::prelude::{
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName,
     button::{Button, ButtonVariants as _},
-    h_flex, v_flex,
+    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
 };
 use std::{fs, sync::Arc, time::Duration};
 use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopConversationState,
-    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
-    DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopRoundBudgetSuspension,
-    DesktopSidebarMode, DesktopUpdate, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
+    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
+    DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
+    DesktopRoundBudgetSuspension, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
+    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
     NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
@@ -42,6 +43,8 @@ pub(crate) struct Workbench {
     native_paths: DesktopNativePaths,
     projection: ConversationProjection,
     navigation_snapshot: DesktopNavigationSnapshot,
+    layout: DesktopWorkbenchLayout,
+    layout_save_generation: u64,
     selected_project: Option<String>,
     navigation: DesktopNavigationTarget,
     chat: Entity<Chat>,
@@ -68,6 +71,7 @@ impl Workbench {
     ) -> Self {
         let projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
+        let layout = runtime.initial_snapshot().layout.layout.clone();
         let selected_project = navigation_snapshot
             .selected_conversation
             .as_deref()
@@ -156,6 +160,8 @@ impl Workbench {
             native_paths,
             projection,
             navigation_snapshot,
+            layout,
+            layout_save_generation: 0,
             selected_project,
             navigation,
             chat,
@@ -296,6 +302,7 @@ impl Workbench {
             match update {
                 DesktopUpdate::Snapshot(snapshot) => {
                     self.navigation_snapshot = snapshot.navigation.clone();
+                    self.layout = snapshot.layout.layout.clone();
                     self.selected_project = self
                         .navigation_snapshot
                         .selected_conversation
@@ -305,6 +312,12 @@ impl Workbench {
                 }
                 DesktopUpdate::Navigation(navigation) => {
                     self.navigation_snapshot = navigation;
+                }
+                DesktopUpdate::Layout(layout) => {
+                    self.layout = layout.layout.clone();
+                    if let Some(warning) = layout.warning {
+                        self.projection.set_activity(warning);
+                    }
                 }
                 DesktopUpdate::Observation(observation) => {
                     if !self.projection.apply(observation)
@@ -467,6 +480,448 @@ impl Workbench {
         cx.notify();
     }
 
+    fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.layout_save_generation = self.layout_save_generation.wrapping_add(1);
+        let generation = self.layout_save_generation;
+        let layout = self.layout.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(250))
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                if this.layout_save_generation != generation {
+                    return;
+                }
+                if let Err(error) = this.runtime.save_layout(layout) {
+                    this.projection.fail(error.message);
+                    this.sync_components(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn activate_layout_panel(
+        &mut self,
+        panel: DesktopPanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.layout.activate_panel(panel) {
+            self.projection.fail(error.message);
+        } else {
+            self.schedule_layout_save(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn close_layout_panel(
+        &mut self,
+        panel: DesktopPanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.layout.close_panel(panel) {
+            self.projection.fail(error.message);
+        } else {
+            self.schedule_layout_save(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn toggle_layout_maximize(
+        &mut self,
+        panel: DesktopPanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.layout.maximized().is_some() {
+            self.layout.restore();
+            self.schedule_layout_save(window, cx);
+        } else if let Err(error) = self.layout.maximize(panel) {
+            self.projection.fail(error.message);
+        } else {
+            self.schedule_layout_save(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn reopen_layout_panel(
+        &mut self,
+        panel: DesktopPanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.layout.reopen_panel(panel) {
+            self.projection.fail(error.message);
+        } else {
+            self.schedule_layout_save(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runtime.reset_layout() {
+            Ok(_) => self
+                .projection
+                .set_activity("Restoring this Conversation's Workbench layout…"),
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn save_layout_as_default(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runtime.save_layout_as_default() {
+            Ok(_) => self
+                .projection
+                .set_activity("Saved this Workbench layout as the default"),
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn clear_default_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runtime.clear_default_layout() {
+            Ok(_) => self
+                .projection
+                .set_activity("Removed the saved default Workbench layout"),
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn render_panel_library(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let open_panels = self.layout.panels();
+        let optional_panels = [
+            DesktopPanelId::Summary,
+            DesktopPanelId::Artifacts,
+            DesktopPanelId::Usage,
+            DesktopPanelId::WorkingSet,
+        ];
+        h_flex()
+            .w_full()
+            .flex_none()
+            .gap(tokens.spacing.xs)
+            .px(tokens.spacing.sm)
+            .py(tokens.spacing.xs)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(
+                div()
+                    .mr(tokens.spacing.xs)
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Panels"),
+            )
+            .children(
+                optional_panels
+                    .into_iter()
+                    .filter(|panel| !open_panels.contains(panel))
+                    .map(|panel| {
+                        Button::new(format!("reopen-panel-{panel:?}"))
+                            .label(panel.label())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reopen_layout_panel(panel, window, cx);
+                            }))
+                    }),
+            )
+            .child(div().flex_1())
+            .child(
+                Button::new("save-layout-default")
+                    .label("Use as default")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_layout_as_default(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("clear-layout-default")
+                    .label("Clear default")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.clear_default_layout(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("reset-conversation-layout")
+                    .label("Reset")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.reset_layout(window, cx);
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_layout_node(
+        &self,
+        node: &DesktopLayoutNode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match node {
+            DesktopLayoutNode::Split {
+                id,
+                axis,
+                ratio_permille,
+                first,
+                second,
+            } => {
+                let first = self.render_layout_node(first, window, cx);
+                let second = self.render_layout_node(second, window, cx);
+                let split_id = id.clone();
+                let workbench = cx.weak_entity();
+                let group = match axis {
+                    DesktopSplitAxis::Horizontal => h_resizable(id.clone()),
+                    DesktopSplitAxis::Vertical => v_resizable(id.clone()),
+                }
+                .child(
+                    resizable_panel()
+                        .size(px(f32::from(*ratio_permille)))
+                        .child(first),
+                )
+                .child(
+                    resizable_panel()
+                        .size(px(f32::from(1000_u16.saturating_sub(*ratio_permille))))
+                        .child(second),
+                )
+                .on_resize(move |state, window, cx| {
+                    let sizes = state.read(cx).sizes();
+                    let Some((first, second)) = sizes.first().zip(sizes.get(1)) else {
+                        return;
+                    };
+                    let total = *first + *second;
+                    if total <= px(0.) {
+                        return;
+                    }
+                    let ratio = ((*first / total) * 1000.).round().clamp(100., 900.) as u16;
+                    _ = workbench.update(cx, |this, cx| {
+                        if this.layout.resize_split(&split_id, ratio).is_ok() {
+                            this.schedule_layout_save(window, cx);
+                            cx.notify();
+                        }
+                    });
+                });
+                group.into_any_element()
+            }
+            DesktopLayoutNode::Stack { id, panels, active } => {
+                self.render_panel_stack(id, panels, *active, window, cx)
+            }
+        }
+    }
+
+    fn render_panel_stack(
+        &self,
+        id: &str,
+        panels: &[DesktopPanelId],
+        active: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let panel = panels
+            .get(active)
+            .copied()
+            .unwrap_or(DesktopPanelId::Unavailable);
+        let tabs = h_flex()
+            .gap(tokens.spacing.xs)
+            .children(panels.iter().copied().map(|candidate| {
+                let mut button =
+                    Button::new(format!("{id}-tab-{candidate:?}")).label(candidate.label());
+                if candidate == panel {
+                    button = button.primary();
+                }
+                button.on_click(cx.listener(move |this, _, window, cx| {
+                    this.activate_layout_panel(candidate, window, cx);
+                }))
+            }));
+        let can_close = panel != DesktopPanelId::Message;
+        let controls = h_flex()
+            .gap(tokens.spacing.xs)
+            .child(
+                Button::new(format!("{id}-maximize"))
+                    .label(if self.layout.maximized().is_some() {
+                        "Restore"
+                    } else {
+                        "Maximize"
+                    })
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.toggle_layout_maximize(panel, window, cx);
+                    })),
+            )
+            .when(can_close, |controls| {
+                controls.child(Button::new(format!("{id}-close")).label("Close").on_click(
+                    cx.listener(move |this, _, window, cx| {
+                        this.close_layout_panel(panel, window, cx);
+                    }),
+                ))
+            });
+        v_flex()
+            .id(id.to_owned())
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .border_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().background)
+            .child(
+                h_flex()
+                    .w_full()
+                    .flex_none()
+                    .justify_between()
+                    .gap(tokens.spacing.sm)
+                    .p(tokens.spacing.xs)
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .bg(cx.theme().sidebar)
+                    .child(tabs)
+                    .child(controls),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h_0()
+                    .overflow_hidden()
+                    .child(self.render_panel_body(panel, window, cx)),
+            )
+            .into_any_element()
+    }
+
+    fn render_panel_body(
+        &self,
+        panel: DesktopPanelId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        match panel {
+            DesktopPanelId::Conversation => self.chat.clone().into_any_element(),
+            DesktopPanelId::Activity => self.render_activity_panel(window, cx),
+            DesktopPanelId::Message => v_flex()
+                .size_full()
+                .justify_center()
+                .items_center()
+                .p(tokens.spacing.lg)
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("The retained composer remains attached to Conversation until M4-17A.")
+                .into_any_element(),
+            DesktopPanelId::Summary => self.placeholder_panel(
+                "Summary",
+                format!(
+                    "{} · {} · {}",
+                    self.projection.connection(),
+                    self.projection.model(),
+                    self.projection.host_lifecycle()
+                ),
+                cx,
+            ),
+            DesktopPanelId::Artifacts => self.placeholder_panel(
+                "Artifacts",
+                format!("{} retained artifact(s)", self.projection.artifact_count()),
+                cx,
+            ),
+            DesktopPanelId::Usage => self.placeholder_panel(
+                "Usage",
+                "Usage observations remain source-qualified in Activity.",
+                cx,
+            ),
+            DesktopPanelId::WorkingSet => self.placeholder_panel(
+                "Working Set",
+                "Pin trusted items here without changing their lifecycle.",
+                cx,
+            ),
+            DesktopPanelId::Unavailable => self.placeholder_panel(
+                "Unavailable panel",
+                "This imported panel is not part of Xana's trusted catalog.",
+                cx,
+            ),
+        }
+    }
+
+    fn render_activity_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let status = if self.projection.failure().is_some() {
+            StatusBadge::new("activity-runtime-status", "Needs attention")
+                .tone(StatusTone::Danger)
+                .into_any_element()
+        } else if self.projection.is_running() {
+            LoadingState::new()
+                .label(self.projection.latest_activity().to_owned())
+                .into_any_element()
+        } else {
+            StatusBadge::new("activity-runtime-status", "Ready")
+                .tone(StatusTone::Success)
+                .into_any_element()
+        };
+        let round_controls = self
+            .projection
+            .pending_round_budget()
+            .cloned()
+            .map(|suspension| {
+                let continue_suspension = suspension.clone();
+                h_flex()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        Button::new("activity-continue-round-budget")
+                            .primary()
+                            .label("Continue")
+                            .disabled(!suspension.can_continue)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.decide_round_budget(
+                                    continue_suspension.clone(),
+                                    true,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("activity-stop-round-budget")
+                            .label("Stop")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.decide_round_budget(suspension.clone(), false, window, cx);
+                            })),
+                    )
+            });
+        v_flex()
+            .size_full()
+            .gap(tokens.spacing.md)
+            .p(tokens.spacing.lg)
+            .child(status)
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(self.projection.latest_activity().to_owned()),
+            )
+            .when_some(round_controls, |panel, controls| panel.child(controls))
+            .into_any_element()
+    }
+
+    fn placeholder_panel(
+        &self,
+        title: impl Into<gpui::SharedString>,
+        body: impl Into<gpui::SharedString>,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let title = title.into();
+        let body = body.into();
+        v_flex()
+            .size_full()
+            .gap(tokens.spacing.sm)
+            .p(tokens.spacing.lg)
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(body),
+            )
+            .into_any_element()
+    }
+
     fn decide_round_budget(
         &mut self,
         suspension: DesktopRoundBudgetSuspension,
@@ -625,94 +1080,20 @@ impl Workbench {
 }
 
 impl Render for Workbench {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = if self.projection.failure().is_some() {
-            StatusBadge::new("runtime-status", "Needs attention")
-                .tone(StatusTone::Danger)
-                .into_any_element()
-        } else if self.projection.is_running() {
-            LoadingState::new()
-                .label(self.projection.latest_activity().to_owned())
-                .into_any_element()
-        } else {
-            StatusBadge::new("runtime-status", "Ready")
-                .tone(StatusTone::Success)
-                .into_any_element()
-        };
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
-        let round_controls = self
-            .projection
-            .pending_round_budget()
-            .cloned()
-            .map(|suspension| {
-                let continue_suspension = suspension.clone();
-                v_flex()
-                    .gap(tokens.spacing.sm)
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} committed tool result(s). Continue the same operation or stop it.",
-                                suspension.committed_results
-                            )),
-                    )
-                    .child(
-                        h_flex()
-                            .gap(tokens.spacing.sm)
-                            .child(
-                                Button::new("continue-round-budget")
-                                    .primary()
-                                    .label("Continue")
-                                    .disabled(!suspension.can_continue)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.decide_round_budget(
-                                            continue_suspension.clone(),
-                                            true,
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                Button::new("stop-round-budget").label("Stop").on_click(
-                                    cx.listener(move |this, _, window, cx| {
-                                        this.decide_round_budget(
-                                            suspension.clone(),
-                                            false,
-                                            window,
-                                            cx,
-                                        );
-                                    }),
-                                ),
-                            ),
-                    )
-            });
-        let activity = v_flex()
-            .h_full()
-            .w(rems(18.))
-            .flex_none()
-            .gap(tokens.spacing.md)
-            .p(tokens.spacing.lg)
-            .border_l_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().sidebar)
-            .child(
-                div()
-                    .text_sm()
-                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                    .child("Activity"),
-            )
-            .child(status)
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(self.projection.latest_activity().to_owned()),
-            )
-            .when_some(round_controls, |activity, controls| {
-                activity.child(controls)
-            });
+        let layout = self.layout.clone();
+        let canvas = match layout.maximized() {
+            Some(panel) => self.render_panel_stack(
+                "maximized-panel",
+                std::slice::from_ref(&panel),
+                0,
+                window,
+                cx,
+            ),
+            None => self.render_layout_node(layout.root(), window, cx),
+        };
+        let panel_library = self.render_panel_library(cx);
         let sidebar_is_full = self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Full;
         let sidebar_footer = v_flex()
             .w_full()
@@ -784,18 +1165,14 @@ impl Render for Workbench {
                 self.projection.global_notice_count(),
                 self.projection.latest_activity()
             ));
-        let main = h_flex()
-            .size_full()
-            .min_h_0()
-            .child(sidebar)
-            .child(
-                v_flex()
-                    .size_full()
-                    .min_w_0()
-                    .min_h_0()
-                    .child(self.chat.clone()),
-            )
-            .child(activity);
+        let main = h_flex().size_full().min_h_0().child(sidebar).child(
+            v_flex()
+                .size_full()
+                .min_w_0()
+                .min_h_0()
+                .child(div().flex_1().min_h_0().child(canvas))
+                .child(panel_library),
+        );
 
         div()
             .id("xana-workbench")

@@ -6,11 +6,16 @@
 //! ownership stay in this package.
 
 mod instance;
+mod layout;
 mod navigation;
 
 pub use instance::{
     DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
     DesktopNavigationTarget,
+};
+pub use layout::{
+    DesktopDockPlacement, DesktopLayoutNode, DesktopLayoutSource, DesktopPanelId,
+    DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopNavigationConversationState, DesktopNavigationSnapshot,
@@ -80,6 +85,15 @@ struct NativeCommandContext<'a> {
     active_run: &'a mut Option<HostedRun>,
     navigation: &'a mut DesktopNavigationSnapshot,
     navigation_store: &'a navigation::DesktopNavigationStore,
+    layout: &'a mut DesktopResolvedLayout,
+    layout_store: &'a layout::DesktopLayoutStore,
+}
+
+struct NativeFrontendState {
+    navigation: DesktopNavigationSnapshot,
+    navigation_store: navigation::DesktopNavigationStore,
+    layout: DesktopResolvedLayout,
+    layout_store: layout::DesktopLayoutStore,
 }
 
 /// Authority held by one Desktop frontend attachment.
@@ -403,6 +417,7 @@ pub struct DesktopSnapshot {
     pub host_lifecycle: String,
     pub global_notices: Vec<DesktopGlobalNotice>,
     pub navigation: DesktopNavigationSnapshot,
+    pub layout: DesktopResolvedLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -600,6 +615,7 @@ impl DesktopEvent {
 pub enum DesktopUpdate {
     Snapshot(Box<DesktopSnapshot>),
     Navigation(DesktopNavigationSnapshot),
+    Layout(Box<DesktopResolvedLayout>),
     Observation(DesktopObservation),
     HostObservation(DesktopHostObservation),
     CommandResult {
@@ -866,6 +882,45 @@ impl DesktopClient {
             })
     }
 
+    /// Validates and atomically persists one Conversation's Workbench layout.
+    pub fn save_layout(
+        &self,
+        layout: DesktopWorkbenchLayout,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SaveLayout { layout })
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
+    /// Removes one Conversation override and resolves default/recovery layout again.
+    pub fn reset_layout(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::ResetLayout)
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
+    /// Persists the current validated Workbench layout as the one user default.
+    pub fn save_layout_as_default(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SaveLayoutAsDefault)
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
+    /// Removes the user default without changing a valid Conversation override.
+    pub fn clear_default_layout(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::ClearDefaultLayout)
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
     /// Requests shutdown without blocking the GPUI application thread.
     pub fn request_shutdown(&self) -> Result<DesktopCommandReceipt, DesktopError> {
         self.enqueue(BridgeCommandValue::Shutdown)
@@ -1012,6 +1067,12 @@ enum BridgeCommandValue {
     NewConversation {
         project_id: Option<String>,
     },
+    SaveLayout {
+        layout: DesktopWorkbenchLayout,
+    },
+    ResetLayout,
+    SaveLayoutAsDefault,
+    ClearDefaultLayout,
     Shutdown,
 }
 
@@ -1069,6 +1130,8 @@ pub(crate) async fn run_native(
     let navigation_store =
         navigation::DesktopNavigationStore::open(paths, workspace_host.workspace())?;
     let navigation = navigation_store.snapshot(Some(&conversation.to_string()))?;
+    let layout_store = layout::DesktopLayoutStore::open(paths);
+    let layout = layout_store.resolve(&conversation.to_string());
     execution_host.register(
         workspace_host,
         ConversationRegistration::new(
@@ -1086,8 +1149,12 @@ pub(crate) async fn run_native(
             execution_host,
             conversation,
             header.notification_policy.clone(),
-            navigation,
-            navigation_store,
+            NativeFrontendState {
+                navigation,
+                navigation_store,
+                layout,
+                layout_store,
+            },
         )
         .await?;
     Ok(exit)
@@ -1111,10 +1178,15 @@ impl Bridge {
         execution_host: ExecutionHost,
         conversation: ConversationRef,
         notification_policy: NotificationPolicy,
-        mut navigation: DesktopNavigationSnapshot,
-        navigation_store: navigation::DesktopNavigationStore,
+        frontend: NativeFrontendState,
     ) -> Result<ChatExit, DesktopError> {
         self.notification_policy = notification_policy;
+        let NativeFrontendState {
+            mut navigation,
+            navigation_store,
+            mut layout,
+            layout_store,
+        } = frontend;
         let mut commands = self.commands.lock().await;
         let (owner, mut observer) = client.into_parts();
         let mut snapshot = observer.snapshot().clone();
@@ -1137,6 +1209,7 @@ impl Bridge {
             &host_snapshot,
             &self.notification_policy,
             &navigation,
+            &layout,
         );
         if !self.startup.ready(initial.clone()) {
             self.publish_critical(DesktopUpdate::Snapshot(Box::new(initial)))
@@ -1182,6 +1255,8 @@ impl Bridge {
                                 active_run: &mut active_run,
                                 navigation: &mut navigation,
                                 navigation_store: &navigation_store,
+                                layout: &mut layout,
+                                layout_store: &layout_store,
                             },
                         )
                         .await?;
@@ -1190,6 +1265,7 @@ impl Bridge {
                         &snapshot,
                         &mut host_cursor,
                         &navigation,
+                        &layout,
                     ).await?;
                     if let Some((cleanup, requested_exit)) = stop {
                         shutdown_cleanup = cleanup;
@@ -1239,6 +1315,7 @@ impl Bridge {
                         &snapshot,
                         &mut host_cursor,
                         &navigation,
+                        &layout,
                     ).await?;
                     snapshot.apply(&observation.event, observation.sequence);
                     let projected = DesktopObservation {
@@ -1260,8 +1337,14 @@ impl Bridge {
                 owned_execution: shutdown_cleanup,
             })
             .map_err(host_error)?;
-        self.publish_host_changes(&execution_host, &snapshot, &mut host_cursor, &navigation)
-            .await?;
+        self.publish_host_changes(
+            &execution_host,
+            &snapshot,
+            &mut host_cursor,
+            &navigation,
+            &layout,
+        )
+        .await?;
         if exit == ChatExit::Quit {
             self.publish_critical(DesktopUpdate::BackendStopped {
                 expected: true,
@@ -1286,11 +1369,18 @@ impl Bridge {
             active_run,
             navigation,
             navigation_store,
+            layout,
+            layout_store,
         } = context;
         let command_id = command.command_id;
         if !matches!(
             &command.value,
-            BridgeCommandValue::RequestSnapshot | BridgeCommandValue::SetSidebarMode { .. }
+            BridgeCommandValue::RequestSnapshot
+                | BridgeCommandValue::SetSidebarMode { .. }
+                | BridgeCommandValue::SaveLayout { .. }
+                | BridgeCommandValue::ResetLayout
+                | BridgeCommandValue::SaveLayoutAsDefault
+                | BridgeCommandValue::ClearDefaultLayout
         ) && let Err(error) =
             execution_host.require_controller(&controller.conversation, controller.client_id)
         {
@@ -1306,6 +1396,7 @@ impl Bridge {
                     &host_snapshot,
                     &self.notification_policy,
                     navigation,
+                    layout,
                 ))))
                 .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
@@ -1374,6 +1465,47 @@ impl Bridge {
                     cleanup,
                     ChatExit::DesktopNewConversation { workspace },
                 )))
+            }
+            BridgeCommandValue::SaveLayout { layout: candidate } => {
+                let result = candidate.validate().and_then(|()| {
+                    layout_store.save_conversation(&controller.conversation.to_string(), &candidate)
+                });
+                if result.is_ok() {
+                    *layout = DesktopResolvedLayout {
+                        layout: candidate,
+                        source: DesktopLayoutSource::Conversation,
+                        warning: None,
+                    };
+                    self.publish_critical(DesktopUpdate::Layout(Box::new(layout.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::ResetLayout => {
+                let result = layout_store.clear_conversation(&controller.conversation.to_string());
+                if result.is_ok() {
+                    *layout = layout_store.resolve(&controller.conversation.to_string());
+                    self.publish_critical(DesktopUpdate::Layout(Box::new(layout.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SaveLayoutAsDefault => {
+                let result = layout_store.save_default(&layout.layout);
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::ClearDefaultLayout => {
+                let result = layout_store.clear_default();
+                if result.is_ok() {
+                    *layout = layout_store.resolve(&controller.conversation.to_string());
+                    self.publish_critical(DesktopUpdate::Layout(Box::new(layout.clone())))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
             }
             BridgeCommandValue::Shutdown => {
                 execution_host.request_shutdown().map_err(host_error)?;
@@ -1585,6 +1717,7 @@ impl Bridge {
         frontend: &ClientSnapshot,
         cursor: &mut u64,
         navigation: &DesktopNavigationSnapshot,
+        layout: &DesktopResolvedLayout,
     ) -> Result<(), DesktopError> {
         match host.changes_after(*cursor).map_err(host_error)? {
             HostChanges::Events(events) => {
@@ -1604,6 +1737,7 @@ impl Bridge {
                     &snapshot,
                     &self.notification_policy,
                     navigation,
+                    layout,
                 ))))
                 .await?;
             }
@@ -1707,6 +1841,7 @@ fn project_snapshot(
     host: &crate::execution_host::ExecutionHostSnapshot,
     notification_policy: &NotificationPolicy,
     navigation: &DesktopNavigationSnapshot,
+    layout: &DesktopResolvedLayout,
 ) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
@@ -1739,6 +1874,7 @@ fn project_snapshot(
             .map(project_global_notice)
             .collect(),
         navigation: navigation.clone(),
+        layout: layout.clone(),
     }
 }
 
@@ -2377,20 +2513,23 @@ mod tests {
         let host = execution_host(directory.path(), &workspace, &conversation);
         let inspection = host.clone();
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(
-            bridge.serve_native(
-                client,
-                host,
-                conversation.clone(),
-                NotificationPolicy::default(),
-                DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
-                navigation::DesktopNavigationStore::open(
-                    &XanaPaths::resolve(Some(directory.path().into())).unwrap(),
-                    &workspace,
-                )
-                .unwrap(),
-            ),
-        );
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let navigation_store =
+            navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        let layout_store = layout::DesktopLayoutStore::open(&paths);
+        let layout = layout_store.resolve(&conversation.to_string());
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation.clone(),
+            NotificationPolicy::default(),
+            NativeFrontendState {
+                navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation_store,
+                layout,
+                layout_store,
+            },
+        ));
 
         let initial = startup
             .recv_timeout(Duration::from_secs(1))
@@ -2489,20 +2628,23 @@ mod tests {
         let (client, conversation) = scripted_client(&workspace);
         let host = execution_host(directory.path(), &workspace, &conversation);
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(
-            bridge.serve_native(
-                client,
-                host,
-                conversation,
-                NotificationPolicy::default(),
-                DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
-                navigation::DesktopNavigationStore::open(
-                    &XanaPaths::resolve(Some(directory.path().into())).unwrap(),
-                    &workspace,
-                )
-                .unwrap(),
-            ),
-        );
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let navigation_store =
+            navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        let layout_store = layout::DesktopLayoutStore::open(&paths);
+        let layout = layout_store.resolve(&conversation.to_string());
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation,
+            NotificationPolicy::default(),
+            NativeFrontendState {
+                navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation_store,
+                layout,
+                layout_store,
+            },
+        ));
         startup
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
