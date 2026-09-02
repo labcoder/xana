@@ -302,6 +302,35 @@ impl WorkspaceHost {
             crate::private_state::ProjectRegistryDocument,
         >(&self.data_root.join("interoperable/projects.json"))
         {
+            for (conversation_id, branch) in &projects.conversation_branches {
+                let crate::private_state::ConversationBranchContinuation::ManagedFreshContinuation {
+                    connection,
+                    ..
+                } = &branch.continuation
+                else {
+                    continue;
+                };
+                if !same_file::is_same_file(&branch.workspace_root, &self.workspace)
+                    .unwrap_or(false)
+                    || conversations.iter().any(|projection| {
+                        projection.conversation.conversation_id() == Some(*conversation_id)
+                    })
+                {
+                    continue;
+                }
+                let conversation = ConversationRef::NewManaged {
+                    conversation_id: *conversation_id,
+                    connection: connection.clone(),
+                };
+                conversations.push(ConversationProjection {
+                    state: state_for(&conversation, active.as_ref(), controlled.as_ref()),
+                    conversation,
+                    record_count: None,
+                    modified: None,
+                    selected: false,
+                    project: None,
+                });
+            }
             for projection in &mut conversations {
                 let keys = conversation_membership_keys(&projection.conversation);
                 projection.project = keys
@@ -595,9 +624,10 @@ fn conversation_membership_keys(conversation: &ConversationRef) -> Vec<String> {
             format!("{connection}/{thread_id}"),
             conversation.to_string(),
         ],
-        ConversationRef::NewNative | ConversationRef::NewManaged { .. } => {
-            vec![conversation.to_string()]
-        }
+        ConversationRef::NewManaged {
+            conversation_id, ..
+        } => vec![conversation_id.to_string(), conversation.to_string()],
+        ConversationRef::NewNative => vec![conversation.to_string()],
     }
 }
 

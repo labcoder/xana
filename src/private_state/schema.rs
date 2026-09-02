@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, path::PathBuf};
 
 use crate::config::OutboundDataClass;
-use crate::identity::ProjectId;
+use crate::identity::{ConversationEntryId, ConversationId, ProjectId, SessionId};
 
 pub(super) const PRIVATE_RECORD_VERSION: u32 = 2;
 
@@ -38,6 +38,9 @@ pub(crate) struct ProjectRegistryDocument {
     /// Explicit continuation relation; the source conversation is never mutated.
     #[serde(default)]
     pub(crate) conversation_predecessors: BTreeMap<String, String>,
+    /// Immutable branch provenance keyed by the Xana-owned target Conversation id.
+    #[serde(default)]
+    pub(crate) conversation_branches: BTreeMap<ConversationId, ConversationBranchRecord>,
 }
 
 impl Default for ProjectRegistryDocument {
@@ -48,8 +51,37 @@ impl Default for ProjectRegistryDocument {
             conversation_memberships: BTreeMap::new(),
             conversation_profiles: BTreeMap::new(),
             conversation_predecessors: BTreeMap::new(),
+            conversation_branches: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConversationBranchRecord {
+    pub(crate) source_conversation: ConversationId,
+    pub(crate) source_point: String,
+    pub(crate) workspace_root: PathBuf,
+    pub(crate) continuation: ConversationBranchContinuation,
+    pub(crate) shared_entry_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum ConversationBranchContinuation {
+    NativeHistory {
+        source_session_id: SessionId,
+        source_entry_id: ConversationEntryId,
+    },
+    ManagedNativeFork {
+        connection: String,
+        source_thread_id: String,
+        target_thread_id: String,
+    },
+    ManagedFreshContinuation {
+        connection: String,
+        source_thread_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

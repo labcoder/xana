@@ -2,6 +2,7 @@
 
 use crate::{
     cli::SessionCommand,
+    conversation_branch::ConversationBranchService,
     managed::thread_store::ManagedThreadStore,
     paths::XanaPaths,
     session::DurableSession,
@@ -75,6 +76,17 @@ pub(super) fn run_command<W: Write>(
             writeln!(output, "records: {}", summary.record_count)?;
             writeln!(
                 output,
+                "active history entries: {}",
+                summary.active_entry_count
+            )?;
+            if !summary.recent_active_entry_ids.is_empty() {
+                writeln!(output, "branch points (oldest to newest; at most 128):")?;
+                for entry_id in &summary.recent_active_entry_ids {
+                    writeln!(output, "  {entry_id}")?;
+                }
+            }
+            writeln!(
+                output,
                 "unfinished operations: {}",
                 summary.unfinished.len()
             )?;
@@ -142,12 +154,49 @@ pub(super) fn run_command<W: Write>(
                     checkpoint.budget.retained_tail_tokens,
                 )?;
             }
+            if let Some(branch) = summary.branch {
+                writeln!(
+                    output,
+                    "branch: source={} point={} shared_entries={}",
+                    branch.source_session_id, branch.source_entry_id, branch.shared_entry_count
+                )?;
+            } else {
+                writeln!(output, "branch: none")?;
+            }
             match summary.repair_truncate_to {
                 Some(offset) => {
                     writeln!(output, "torn tail: repair would truncate to byte {offset}")?
                 }
                 None => writeln!(output, "torn tail: none")?,
             }
+            Ok(())
+        }
+        SessionCommand::Branch {
+            conversation_id,
+            at,
+        } => {
+            let workspace = std::env::current_dir()
+                .context("could not resolve current workspace")?
+                .canonicalize()
+                .context("could not canonicalize current workspace")?;
+            let receipt =
+                ConversationBranchService::open(paths, &workspace)?.branch(conversation_id, &at)?;
+            writeln!(output, "source Conversation: {}", receipt.source)?;
+            writeln!(output, "source point: {}", receipt.source_point)?;
+            writeln!(output, "new Conversation: {}", receipt.target)?;
+            writeln!(output, "continuation: {}", receipt.kind.as_str())?;
+            writeln!(
+                output,
+                "shared native entries: {}",
+                receipt.shared_entry_count
+            )?;
+            writeln!(output, "owner target: {}", receipt.target_ref)?;
+            writeln!(
+                output,
+                "Continue with: `xana --resume {}` from {}",
+                receipt.target,
+                workspace.display()
+            )?;
             Ok(())
         }
         SessionCommand::SelectManaged {

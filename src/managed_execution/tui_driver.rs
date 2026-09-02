@@ -77,7 +77,7 @@ impl ManagedTuiDriver {
     pub(crate) async fn start(
         mut server: CodexAppServer,
         models: ModelManager,
-        mut config: ManagedChatConfig,
+        config: ManagedChatConfig,
         workspace_host: Arc<WorkspaceHost>,
         conversation: ConversationRef,
     ) -> Result<Self, CodexError> {
@@ -97,10 +97,6 @@ impl ManagedTuiDriver {
                 config.model
             )));
         }
-        let selection = models
-            .selected()
-            .map_err(|error| CodexError::Protocol(error.to_string()))?;
-        config.model = selection.model;
         let selected_model = config.model.clone();
         let store =
             ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
@@ -228,9 +224,7 @@ async fn run_actor(
     events: mpsc::Sender<ManagedTuiEvent>,
     active: Arc<Mutex<Option<ActiveTurn>>>,
 ) -> Result<(), CodexError> {
-    let mut selection = models
-        .selected()
-        .map_err(|error| CodexError::Protocol(error.to_string()))?;
+    let mut selection = config.selection.clone();
     while let Some(command) = commands.recv().await {
         match command {
             ManagedTuiCommand::Submit {

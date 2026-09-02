@@ -95,6 +95,119 @@ impl SessionStore {
         Ok(store)
     }
 
+    pub(super) fn create_batch(
+        sessions_dir: &Path,
+        records: &[RecordEnvelope],
+    ) -> Result<Self, SessionError> {
+        let Some(created) = records.first() else {
+            return Err(SessionError::MissingCreationRecord);
+        };
+        if !matches!(created.record, SessionRecord::SessionCreated { .. }) {
+            return Err(SessionError::InvalidCreationRecord);
+        }
+        if records.len() > MAX_SESSION_RECORDS {
+            return Err(SessionError::TooManyRecords {
+                limit: MAX_SESSION_RECORDS,
+            });
+        }
+        let session_id = created.session_id;
+        let mut record_ids = HashSet::new();
+        let mut encoded = Vec::new();
+        for record in records {
+            if record.version != SESSION_RECORD_VERSION {
+                return Err(SessionError::UnsupportedVersion {
+                    version: record.version,
+                });
+            }
+            if record.session_id != session_id {
+                return Err(SessionError::WrongSessionId);
+            }
+            if !record_ids.insert(record.record_id) {
+                return Err(SessionError::DuplicateRecordId {
+                    record_id: record.record_id.to_string(),
+                });
+            }
+            let line = serde_json::to_vec(record).map_err(SessionError::Encode)?;
+            if line.len() > MAX_RECORD_BYTES {
+                return Err(SessionError::RecordTooLarge {
+                    offset: encoded.len() as u64,
+                    actual: line.len(),
+                    limit: MAX_RECORD_BYTES,
+                });
+            }
+            if encoded.len().saturating_add(line.len()).saturating_add(1) > MAX_SESSION_BYTES {
+                return Err(SessionError::SessionTooLarge {
+                    actual: encoded.len().saturating_add(line.len()).saturating_add(1) as u64,
+                    limit: MAX_SESSION_BYTES,
+                });
+            }
+            encoded.extend_from_slice(&line);
+            encoded.push(b'\n');
+        }
+        fs::create_dir_all(sessions_dir).map_err(|source| SessionError::Io {
+            path: sessions_dir.to_owned(),
+            source,
+        })?;
+        let path = Self::path_for(sessions_dir, session_id);
+        let pending = path.with_extension("jsonl.pending");
+        let mut pending_file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&pending)
+            .map_err(|source| SessionError::Io {
+                path: pending.clone(),
+                source,
+            })?;
+        let staged = pending_file
+            .write_all(&encoded)
+            .and_then(|()| pending_file.sync_all());
+        drop(pending_file);
+        if let Err(source) = staged {
+            let _ = fs::remove_file(&pending);
+            return Err(SessionError::Io {
+                path: pending,
+                source,
+            });
+        }
+        let writer_lock = match acquire_writer_lock(&path) {
+            Ok(lock) => lock,
+            Err(error) => {
+                let _ = fs::remove_file(&pending);
+                return Err(error);
+            }
+        };
+        if let Err(source) = fs::hard_link(&pending, &path) {
+            let _ = fs::remove_file(&pending);
+            return Err(SessionError::Io { path, source });
+        }
+        if let Err(source) = fs::remove_file(&pending) {
+            let _ = fs::remove_file(&path);
+            return Err(SessionError::Io {
+                path: pending,
+                source,
+            });
+        }
+        let file = match fs::OpenOptions::new().read(true).append(true).open(&path) {
+            Ok(file) => file,
+            Err(source) => {
+                let _ = fs::remove_file(&path);
+                return Err(SessionError::Io {
+                    path: path.clone(),
+                    source,
+                });
+            }
+        };
+        Ok(Self {
+            session_id,
+            path,
+            file,
+            _writer_lock: writer_lock,
+            committed_bytes: encoded.len() as u64,
+            committed_records: records.len(),
+            writable: true,
+        })
+    }
+
     pub(crate) fn inspect(path: &Path) -> Result<LoadedSession, SessionError> {
         let bytes = read_session(path)?;
         let inspected_len = bytes.len() as u64;

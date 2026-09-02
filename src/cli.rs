@@ -5,7 +5,7 @@
 
 use crate::{
     config::PermissionMode,
-    identity::{ArtifactId, ProjectId, SessionId},
+    identity::{ArtifactId, ConversationId, ProjectId, SessionId},
     shell::ShellKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -1197,6 +1197,13 @@ pub(crate) enum SessionCommand {
     New,
     /// Print bounded metadata without conversation content.
     Inspect { session_id: SessionId },
+    /// Create a new Conversation from one explicit immutable source point.
+    Branch {
+        conversation_id: ConversationId,
+        /// Native entry id, or `current` for a managed owner's retained thread.
+        #[arg(long)]
+        at: String,
+    },
     /// Select one retained managed conversation for its next resume.
     #[command(name = "select", alias = "select-managed")]
     SelectManaged {

@@ -547,6 +547,25 @@ fn parses_explicit_resume_and_session_inspection() {
             command: SessionCommand::New
         }))
     ));
+    let conversation = crate::identity::ConversationId::new();
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "session",
+            "branch",
+            &conversation.to_string(),
+            "--at",
+            "current"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::Branch {
+                conversation_id,
+                at,
+            }
+        })) if conversation_id == conversation && at == "current"
+    ));
     assert!(matches!(
         Cli::try_parse_from(["xana", "session", "select", "codex", "thread-1"])
             .unwrap()

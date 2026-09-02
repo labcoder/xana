@@ -17,7 +17,7 @@ use crate::{
         codex::{AccountStatus, CodexAppServer, CodexError, ManagedTurnInput, ManagedTurnOptions},
         thread_store::ManagedThreadStore,
     },
-    model_catalog::{ModelDescriptor, ModelManager, ReasoningSummary},
+    model_catalog::{ModelDescriptor, ModelManager, ModelSelection, ReasoningSummary},
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     presentation::{ResolvedPresentation, SemanticToken},
     vision::{ImageIngestor, ImageLimits, PendingImages},
@@ -34,6 +34,7 @@ use std::path::PathBuf;
 pub(crate) struct ManagedChatConfig {
     pub(crate) connection: String,
     pub(crate) model: String,
+    pub(crate) selection: ModelSelection,
     pub(crate) workspace: PathBuf,
     pub(crate) data_root: PathBuf,
     pub(crate) artifact_store: ArtifactStore,
@@ -136,8 +137,7 @@ pub(crate) async fn run_codex_chat(
             &available
         ));
     }
-    let mut selection = models.selected()?;
-    config.model = selection.model.clone();
+    let mut selection = config.selection.clone();
 
     let mut thread_store =
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)?;
@@ -569,9 +569,7 @@ async fn run_codex_one_shot_inner(
             unavailable_model_message(&config.connection, &config.model, &available),
         ));
     }
-    let selection = models
-        .selected()
-        .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    let selection = config.selection.clone();
     let mut store =
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
             .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;

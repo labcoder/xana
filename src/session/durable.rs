@@ -1,8 +1,8 @@
 use super::{
     COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, CompactionError, CompactionReason,
-    CompactionSummary, ConversationEntry, ConversationPage, LoadedSession, PromptContinuation,
-    RecordEnvelope, RestoredSession, SessionRecord, SessionStore, apply_validated, reduce,
-    validate_envelope,
+    CompactionSummary, ConversationEntry, ConversationPage, LoadedSession, NativeBranchLineage,
+    PromptContinuation, RecordEnvelope, RestoredSession, SessionRecord, SessionStore,
+    apply_validated, reduce, validate_envelope,
 };
 use crate::{
     artifact::{ArtifactStore, ContentHash},
@@ -35,6 +35,7 @@ use std::{
 
 const PROJECT_CONTEXT_NAME: &str = "project:AGENTS.md";
 const MAX_INSPECTED_COMPACTIONS: usize = 64;
+const MAX_INSPECTED_ENTRY_IDS: usize = 128;
 const PROJECT_INSTRUCTIONS: &str = crate::context::PROJECT_INSTRUCTIONS;
 const MAX_PROJECT_SOURCE_BYTES: usize = crate::context::MAX_PROJECT_SOURCE_BYTES;
 const PROJECT_VIEW_BUDGET: MaterializationBudget = MaterializationBudget {
@@ -65,6 +66,17 @@ pub(crate) struct SessionSummary {
     pub(crate) children: Vec<ChildInspection>,
     pub(crate) compaction_count: usize,
     pub(crate) compactions: Vec<CompactionCheckpoint>,
+    pub(crate) branch: Option<NativeBranchLineage>,
+    pub(crate) active_entry_count: usize,
+    pub(crate) recent_active_entry_ids: Vec<ConversationEntryId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeBranchReceipt {
+    pub(crate) source_session_id: SessionId,
+    pub(crate) source_entry_id: ConversationEntryId,
+    pub(crate) target_session_id: SessionId,
+    pub(crate) shared_entry_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +111,77 @@ impl DurableSession {
         Self::from_open_store(data_dir, store, vec![created])
     }
 
+    pub(crate) fn branch_at(
+        data_dir: &Path,
+        source_session_id: SessionId,
+        source_entry_id: ConversationEntryId,
+    ) -> Result<(Self, NativeBranchReceipt)> {
+        let (_, source) = Self::inspect_restored(data_dir, source_session_id)
+            .context("could not inspect branch source")?;
+        let source_path = source
+            .conversation_entry_path()
+            .context("could not restore branch source history")?;
+        let source_index = source_path
+            .iter()
+            .position(|entry| entry.id == source_entry_id)
+            .with_context(|| {
+                format!(
+                    "entry {source_entry_id} is not on the active history path of Conversation {source_session_id}"
+                )
+            })?;
+        let shared = source_path[..=source_index]
+            .iter()
+            .map(|entry| (*entry).clone())
+            .collect::<Vec<_>>();
+        let target_session_id = SessionId::new();
+        let lineage = NativeBranchLineage {
+            source_session_id,
+            source_entry_id,
+            shared_entry_count: shared.len(),
+        };
+        let thread_id = ThreadId::new();
+        let mut records = Vec::with_capacity(shared.len() + 3);
+        records.push(RecordEnvelope::new(
+            target_session_id,
+            SessionRecord::SessionCreated {
+                thread_id,
+                workspace_root: source.workspace_root.clone(),
+            },
+        ));
+        records.push(RecordEnvelope::new(
+            target_session_id,
+            SessionRecord::ConversationBranched {
+                lineage: lineage.clone(),
+            },
+        ));
+        records.extend(shared.into_iter().map(|entry| {
+            RecordEnvelope::new(
+                target_session_id,
+                SessionRecord::ConversationEntryAppended { entry },
+            )
+        }));
+        records.push(RecordEnvelope::new(
+            target_session_id,
+            SessionRecord::ThreadHeadMoved {
+                thread_id,
+                head: Some(source_entry_id),
+            },
+        ));
+        reduce(&records).context("could not validate native branch target")?;
+        fs::create_dir_all(data_dir.join("artifacts"))
+            .context("could not create durable artifact directory")?;
+        let store = SessionStore::create_batch(&data_dir.join("sessions"), &records)
+            .context("could not commit native branch target")?;
+        let target = Self::from_open_store(data_dir, store, records)?;
+        let receipt = NativeBranchReceipt {
+            source_session_id,
+            source_entry_id,
+            target_session_id,
+            shared_entry_count: lineage.shared_entry_count,
+        };
+        Ok((target, receipt))
+    }
+
     /// Removes a session that this process has just created but has not started.
     ///
     /// The consuming receiver retains the exclusive writer lock until after the
@@ -111,19 +194,40 @@ impl DurableSession {
         {
             bail!("refusing to discard a session after execution has started");
         }
-        let path = self.store.path().to_owned();
-        let lock_path = path.with_extension("jsonl.lock");
-        drop(self);
-        fs::remove_file(&path)
-            .with_context(|| format!("could not roll back empty session {}", path.display()))?;
-        match fs::remove_file(&lock_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            // A stale, empty lock file carries no session state and can be
-            // reused safely by the next writer, so cleanup is best-effort.
-            Err(_) => {}
+        remove_staged_session(self, "empty session")
+    }
+
+    pub(crate) fn discard_staged_branch(self) -> Result<()> {
+        let valid_creation = matches!(
+            self.records.first().map(|record| &record.record),
+            Some(SessionRecord::SessionCreated { .. })
+        );
+        let valid_lineage = self.records.len() == 1
+            || matches!(
+                self.records.get(1).map(|record| &record.record),
+                Some(SessionRecord::ConversationBranched { .. })
+            );
+        let mut saw_head = false;
+        let valid_tail = self
+            .records
+            .iter()
+            .skip(2)
+            .enumerate()
+            .all(|(index, envelope)| match &envelope.record {
+                SessionRecord::ConversationEntryAppended { .. } if !saw_head => true,
+                SessionRecord::ThreadHeadMoved { .. }
+                    if !saw_head && index + 3 == self.records.len() =>
+                {
+                    saw_head = true;
+                    true
+                }
+                _ => false,
+            });
+        let valid = valid_creation && valid_lineage && valid_tail;
+        if !valid {
+            bail!("refusing to discard a branch target after execution has started");
         }
-        Ok(())
+        remove_staged_session(self, "branch target")
     }
 
     pub(crate) fn resume(data_dir: &Path, session_id: SessionId) -> Result<(Self, SessionSummary)> {
@@ -612,6 +716,19 @@ impl DurableSession {
 
 fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSummary> {
     let restored = reduce(&loaded.records).context("could not reduce inspected session")?;
+    let active_entries = restored
+        .conversation_entry_path()
+        .context("could not restore inspected Conversation history")?;
+    let active_entry_count = active_entries.len();
+    let recent_active_entry_ids = active_entries
+        .iter()
+        .rev()
+        .take(MAX_INSPECTED_ENTRY_IDS)
+        .map(|entry| entry.id)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     let mut context_versions = restored.contexts.keys().copied().collect::<Vec<_>>();
     context_versions.sort();
     let compaction_count = restored.compactions.len();
@@ -645,7 +762,26 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
             .collect(),
         compaction_count,
         compactions,
+        branch: restored.branch,
+        active_entry_count,
+        recent_active_entry_ids,
     })
+}
+
+fn remove_staged_session(session: DurableSession, kind: &str) -> Result<()> {
+    let path = session.store.path().to_owned();
+    let lock_path = path.with_extension("jsonl.lock");
+    drop(session);
+    fs::remove_file(&path)
+        .with_context(|| format!("could not roll back {kind} {}", path.display()))?;
+    match fs::remove_file(&lock_path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        // A stale, empty lock file carries no session state and can be reused
+        // safely by the next writer, so cleanup is best-effort.
+        Err(_) => {}
+    }
+    Ok(())
 }
 
 fn select_text(source: &str, selector: &ViewSelector) -> Result<String> {

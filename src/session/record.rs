@@ -44,6 +44,9 @@ pub(crate) enum SessionRecord {
         thread_id: ThreadId,
         workspace_root: PathBuf,
     },
+    ConversationBranched {
+        lineage: NativeBranchLineage,
+    },
     ConversationEntryAppended {
         entry: ConversationEntry,
     },
@@ -126,6 +129,14 @@ pub(crate) enum SessionRecord {
     ConversationCompacted {
         checkpoint: CompactionCheckpoint,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct NativeBranchLineage {
+    pub(crate) source_session_id: SessionId,
+    pub(crate) source_entry_id: ConversationEntryId,
+    pub(crate) shared_entry_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

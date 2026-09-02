@@ -1,7 +1,9 @@
 use super::compaction::{
     COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, source_digest, validate_summary,
 };
-use super::record::{ConversationEntry, RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord};
+use super::record::{
+    ConversationEntry, NativeBranchLineage, RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord,
+};
 use crate::{
     artifact::ArtifactRecord,
     context::persisted::{ContextRecord, ContextViewRecord},
@@ -30,6 +32,7 @@ pub(crate) struct RestoredSession {
     pub(crate) session_id: SessionId,
     pub(crate) thread_id: ThreadId,
     pub(crate) workspace_root: PathBuf,
+    pub(crate) branch: Option<NativeBranchLineage>,
     pub(crate) head: Option<ConversationEntryId>,
     pub(crate) entries: BTreeMap<ConversationEntryId, ConversationEntry>,
     pub(crate) operations: BTreeMap<OperationId, OperationState>,
@@ -109,6 +112,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         session_id: first.session_id,
         thread_id: *thread_id,
         workspace_root: workspace_root.clone(),
+        branch: None,
         head: None,
         entries: BTreeMap::new(),
         operations: BTreeMap::new(),
@@ -134,6 +138,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
     }
 
     state.validate_conversation_path()?;
+    state.validate_branch_history()?;
     Ok(state)
 }
 
@@ -158,6 +163,18 @@ pub(crate) fn validate_envelope(
 
     match &envelope.record {
         SessionRecord::SessionCreated { .. } => Err(ReductionError::SecondCreation { index }),
+        SessionRecord::ConversationBranched { lineage } => {
+            if index != 1
+                || state.branch.is_some()
+                || !state.entries.is_empty()
+                || lineage.source_session_id == state.session_id
+                || lineage.shared_entry_count == 0
+            {
+                Err(ReductionError::InvalidBranchLineage { index })
+            } else {
+                Ok(())
+            }
+        }
         SessionRecord::ConversationEntryAppended { entry } => {
             if state.entries.contains_key(&entry.id) {
                 Err(ReductionError::DuplicateEntry { entry: entry.id })
@@ -588,6 +605,9 @@ pub(crate) fn validate_envelope(
 pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecord) {
     match record {
         SessionRecord::SessionCreated { .. } => unreachable!("creation is never appended"),
+        SessionRecord::ConversationBranched { lineage } => {
+            state.branch = Some(lineage.clone());
+        }
         SessionRecord::ConversationEntryAppended { entry } => {
             state.entries.insert(entry.id, entry.clone());
         }
@@ -1043,6 +1063,21 @@ impl RestoredSession {
         self.conversation_path().map(|_| ())
     }
 
+    fn validate_branch_history(&self) -> Result<(), ReductionError> {
+        let Some(branch) = &self.branch else {
+            return Ok(());
+        };
+        let path = self.conversation_entry_path()?;
+        if path.len() < branch.shared_entry_count
+            || path
+                .get(branch.shared_entry_count - 1)
+                .is_none_or(|entry| entry.id != branch.source_entry_id)
+        {
+            return Err(ReductionError::InvalidBranchHistory);
+        }
+        Ok(())
+    }
+
     pub(crate) fn unfinished_operations(&self) -> Vec<(OperationId, OperationState)> {
         self.operations
             .iter()
@@ -1077,6 +1112,10 @@ pub(crate) enum ReductionError {
     SecondCreation {
         index: usize,
     },
+    InvalidBranchLineage {
+        index: usize,
+    },
+    InvalidBranchHistory,
     DuplicateEntry {
         entry: ConversationEntryId,
     },

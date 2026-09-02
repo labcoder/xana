@@ -9,18 +9,21 @@ use crate::{
         ConnectionRegistry, McpPrimitiveSelection, OrchestrationLimits, OutboundDataClass,
         PermissionMode, ProfileConfig, ProfileUpdate, ProfileUse, XanaConfig,
     },
-    identity::{ProjectId, SessionId},
+    identity::{ConversationId, ProjectId, SessionId},
+    model_catalog::ModelSelection,
     paths::XanaPaths,
     plugin::{PluginError, PluginManager, PluginScope},
     portable_project::{PortableProjectError, PortableProjectStore},
     private_state::{
-        FrozenProfileSnapshot, PrivateStateError, ProjectLifecycle, ProjectRegistryDocument,
-        UpdateDocumentError, read_document, update_document,
+        ConversationBranchRecord, FrozenProfileSnapshot, PrivateStateError, ProjectLifecycle,
+        ProjectRegistryDocument, UpdateDocumentError, read_document, update_document,
     },
     project::ProjectError,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf};
+
+const MAX_CONVERSATION_BRANCHES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -214,6 +217,25 @@ impl ProfileStore {
             crate::a2a::ExternalAgentManager::open(&self.paths)
                 .readiness(&resolved.external_agents.value, &registry)
                 .unwrap_or_else(|_| vec!["external-agent trust state is unavailable".to_owned()]),
+        );
+        Ok(resolved)
+    }
+
+    pub(crate) fn resolve_global_for_selection(
+        &self,
+        name: &str,
+        selection: &ModelSelection,
+    ) -> Result<ResolvedProfile, ProfileError> {
+        let mut resolved = self.resolve_global(name)?;
+        let provenance = ProfileProvenance::UserPolicy;
+        resolved.connection = field(selection.connection.clone(), provenance.clone());
+        resolved.model = field(selection.model.clone(), provenance.clone());
+        resolved.reasoning_effort = field(selection.reasoning_effort.clone(), provenance.clone());
+        resolved.reasoning_summary = field(
+            selection
+                .reasoning_summary
+                .map(|summary| summary.to_string()),
+            provenance,
         );
         Ok(resolved)
     }
@@ -440,6 +462,67 @@ impl ProfileStore {
                 .conversation_predecessors
                 .remove(conversation),
         )
+    }
+
+    pub(crate) fn commit_branch(
+        &self,
+        target_id: ConversationId,
+        record: ConversationBranchRecord,
+    ) -> Result<(), ProfileError> {
+        let target = target_id.to_string();
+        let source = record.source_conversation.to_string();
+        validate_conversation(&target)?;
+        validate_conversation(&source)?;
+        if target == source {
+            return Err(ProfileError::Invalid(
+                "a Conversation cannot branch into itself".to_owned(),
+            ));
+        }
+        if record.source_point.is_empty()
+            || record.source_point.len() > 4096
+            || record.source_point.chars().any(char::is_control)
+        {
+            return Err(ProfileError::Invalid(
+                "branch source point must contain 1..=4096 bytes without control characters"
+                    .to_owned(),
+            ));
+        }
+        if !record.workspace_root.is_absolute() {
+            return Err(ProfileError::Invalid(
+                "branch workspace must be absolute".to_owned(),
+            ));
+        }
+        self.update_projects(|document| {
+            let snapshot = document
+                .conversation_profiles
+                .get(&source)
+                .cloned()
+                .ok_or_else(|| ProfileError::MissingSnapshot(source.clone()))?;
+            if document.conversation_profiles.contains_key(&target)
+                || document.conversation_predecessors.contains_key(&target)
+                || document.conversation_branches.contains_key(&target_id)
+            {
+                return Err(ProfileError::Immutable(target.clone()));
+            }
+            if document.conversation_branches.len() >= MAX_CONVERSATION_BRANCHES {
+                return Err(ProfileError::Invalid(format!(
+                    "Conversation branch registry exceeds {MAX_CONVERSATION_BRANCHES} records"
+                )));
+            }
+            if let Some(project) = document.conversation_memberships.get(&source).copied() {
+                document
+                    .conversation_memberships
+                    .insert(target.clone(), project);
+            }
+            document
+                .conversation_profiles
+                .insert(target.clone(), snapshot);
+            document
+                .conversation_predecessors
+                .insert(target.clone(), source);
+            document.conversation_branches.insert(target_id, record);
+            Ok(())
+        })
     }
 
     fn registry(&self) -> Result<ConnectionRegistry, ProfileError> {

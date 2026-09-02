@@ -195,6 +195,14 @@ async fn run_once(
         })
         .transpose()?;
     let selected = manager.selected()?;
+    let launch_profile = if frozen_profile.is_none() {
+        Some(
+            crate::profile::ProfileStore::open(paths)
+                .resolve_global_for_selection(&child_registry.default_profile, &selected)?,
+        )
+    } else {
+        None
+    };
     let selected_connection_name = frozen_profile
         .as_ref()
         .map_or(selected.connection.as_str(), |profile| {
@@ -227,6 +235,25 @@ async fn run_once(
     let provider_name = selected_connection_name.to_owned();
     let provider_kind = selected_connection.kind;
     let model = selected_model;
+    let managed_reasoning_summary = match &frozen_profile {
+        Some(profile) => profile
+            .reasoning_summary
+            .value
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .context("frozen Profile reasoning summary is invalid")?,
+        None => selected.reasoning_summary,
+    };
+    let managed_selection = crate::model_catalog::ModelSelection {
+        connection: provider_name.clone(),
+        model: model.clone(),
+        reasoning_effort: frozen_profile.as_ref().map_or_else(
+            || selected.reasoning_effort.clone(),
+            |profile| profile.reasoning_effort.value.clone(),
+        ),
+        reasoning_summary: managed_reasoning_summary,
+    };
     let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
     let configured_shell = shell.prompt_description();
     let workspace_root = surface
@@ -366,6 +393,17 @@ async fn run_once(
                 &provider_name,
             )));
         }
+        if frozen_profile.is_none() {
+            let conversation_id = conversation
+                .conversation_id()
+                .expect("managed conversations always have a Xana identity");
+            crate::profile::ProfileStore::open(paths).freeze(
+                &conversation_id.to_string(),
+                launch_profile
+                    .as_ref()
+                    .expect("fresh launches resolve one Profile"),
+            )?;
+        }
         let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
         let developer_instructions = if managed_skill_instructions.is_empty() {
             crate::prompt::xana_identity().to_owned()
@@ -379,6 +417,7 @@ async fn run_once(
         let managed_config = ManagedChatConfig {
             connection: provider_name,
             model,
+            selection: managed_selection,
             workspace: workspace_root,
             data_root: paths.data_dir().to_owned(),
             artifact_store,
@@ -574,6 +613,21 @@ async fn run_once(
                 )
             }
         };
+    if frozen_profile.is_none()
+        && let Err(error) = crate::profile::ProfileStore::open(paths).freeze(
+            &session.session_id().to_string(),
+            launch_profile
+                .as_ref()
+                .expect("fresh launches resolve one Profile"),
+        )
+    {
+        if !resumed {
+            session.discard_unstarted().with_context(|| {
+                format!("Profile freeze failed ({error}); empty session cleanup also failed")
+            })?;
+        }
+        return Err(error).context("could not freeze the Conversation Profile");
+    }
     let workspace_root = session.workspace_root().to_owned();
     let artifact_owner = session.artifact_owner();
     crate::a2a::activate_profile_delegation_tools(

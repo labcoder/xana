@@ -10,12 +10,12 @@ mod store;
 
 pub(crate) use migration::{PrivateMigrationPlan, private_migration_pending};
 pub(crate) use schema::{
-    ExternalAgentSkillRecord, ExternalAgentStateDocument, ExternalAgentStateRecord,
-    ExternalAgentTaskRecord, FrozenProfileSnapshot, InstalledPackageRecord, LocalBindingRecord,
-    OutboundAuditDocument, OutboundAuditRecord, OutboundDecisionDocument, OutboundDecisionRecord,
-    PackageRevisionRecord, PackageSourceKind, PackageSourceRecord, PackageStateDocument,
-    ProjectBindingsDocument, ProjectLifecycle, ProjectRecord, ProjectRegistryDocument,
-    SavedOutboundDecision,
+    ConversationBranchContinuation, ConversationBranchRecord, ExternalAgentSkillRecord,
+    ExternalAgentStateDocument, ExternalAgentStateRecord, ExternalAgentTaskRecord,
+    FrozenProfileSnapshot, InstalledPackageRecord, LocalBindingRecord, OutboundAuditDocument,
+    OutboundAuditRecord, OutboundDecisionDocument, OutboundDecisionRecord, PackageRevisionRecord,
+    PackageSourceKind, PackageSourceRecord, PackageStateDocument, ProjectBindingsDocument,
+    ProjectLifecycle, ProjectRecord, ProjectRegistryDocument, SavedOutboundDecision,
 };
 pub(crate) use store::{
     PrivateRecordInspection, PrivateRecordStatus, PrivateStateError, UpdateDocumentError,

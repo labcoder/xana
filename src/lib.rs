@@ -16,6 +16,7 @@ mod config;
 mod config_edit;
 mod config_migration;
 mod context;
+mod conversation_branch;
 mod credential;
 #[doc(hidden)]
 pub mod desktop;

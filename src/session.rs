@@ -11,7 +11,7 @@ pub(crate) use compaction::{
     CompactionSummary, PromptContinuation,
 };
 pub(crate) use durable::{DurableSession, NativeConversationHandle};
-pub(crate) use record::{ConversationEntry, RecordEnvelope, SessionRecord};
+pub(crate) use record::{ConversationEntry, NativeBranchLineage, RecordEnvelope, SessionRecord};
 pub(crate) use reduce::{
     RestoredOperation, RestoredSession, apply_validated, reduce, validate_envelope,
 };

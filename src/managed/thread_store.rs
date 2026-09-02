@@ -232,9 +232,11 @@ impl ManagedThreadStore {
         let identity_version = identity_version.map(str::to_owned);
         let mut threads = self.threads.clone();
         if let Some(id) = thread_id.as_deref() {
-            threads.retain(|entry| entry.thread_id != id);
+            let conversation_id = conversation_id.expect("validated managed Conversation id");
+            threads
+                .retain(|entry| entry.thread_id != id && entry.conversation_id != conversation_id);
             threads.push(ManagedThreadEntry {
-                conversation_id: conversation_id.expect("validated managed Conversation id"),
+                conversation_id,
                 thread_id: id.to_owned(),
                 identity_version: identity_version.clone(),
             });
@@ -243,6 +245,40 @@ impl ManagedThreadStore {
             }
         }
         self.commit(conversation_id, thread_id, identity_version, threads)
+    }
+
+    pub(crate) fn retain_thread(
+        &mut self,
+        conversation_id: ConversationId,
+        thread_id: String,
+        identity_version: Option<&str>,
+    ) -> Result<(), ManagedThreadStoreError> {
+        validate_thread_state(Some(conversation_id), Some(&thread_id), identity_version)?;
+        let mut threads = self.threads.clone();
+        threads.retain(|entry| {
+            entry.thread_id != thread_id && entry.conversation_id != conversation_id
+        });
+        threads.push(ManagedThreadEntry {
+            conversation_id,
+            thread_id,
+            identity_version: identity_version.map(str::to_owned),
+        });
+        if threads.len() > MAX_THREADS {
+            threads.remove(0);
+        }
+        self.commit(
+            self.conversation_id,
+            self.thread_id.clone(),
+            self.identity_version.clone(),
+            threads,
+        )
+    }
+
+    pub(crate) fn identity_version_for(&self, thread_id: &str) -> Option<&str> {
+        self.threads
+            .iter()
+            .find(|entry| entry.thread_id == thread_id)
+            .and_then(|entry| entry.identity_version.as_deref())
     }
 
     pub(crate) fn archive_thread(
@@ -686,6 +722,33 @@ mod tests {
                 .iter()
                 .any(|entry| entry.thread_id == "thr_second" && !entry.current)
         );
+    }
+
+    #[test]
+    fn changing_a_provider_thread_for_one_conversation_does_not_duplicate_identity() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let conversation_id = ConversationId::new();
+        let mut store = ManagedThreadStore::open(directory.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(
+                Some(conversation_id),
+                Some("thr_first".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        store
+            .set_thread(
+                Some(conversation_id),
+                Some("thr_replaced".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+
+        assert_eq!(store.threads.len(), 1);
+        assert_eq!(store.thread_id(), Some("thr_replaced"));
+        assert_eq!(store.conversation_id(), Some(conversation_id));
     }
 
     #[test]
