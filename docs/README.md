@@ -24,6 +24,9 @@ engineering contracts used to change it.
 - [M4 native context and compaction evidence](development/m4-native-context-compaction-evidence.md)
   records the redacted budget, prompt-size, checkpoint-size, recovery, and
   managed-runtime baseline used to validate that boundary.
+- [M4 typed file and search tool evidence](development/m4-typed-file-tools-evidence.md)
+  records schema, permission, durability, adversarial, output-bound, timeout,
+  and prompt-resource validation for the native tool baseline.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
