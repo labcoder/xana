@@ -4,6 +4,7 @@ use crate::{
     identity::{ArtifactId, PrincipalId},
     resource::MAX_RESOURCE_SOURCE_BYTES,
 };
+use fs2::FileExt as _;
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{
     error::Error,
@@ -14,6 +15,7 @@ use std::{
 
 pub(crate) const MAX_ARTIFACT_BYTES: usize = 4 * 1024 * 1024;
 const HASH_HEX_LEN: usize = 64;
+const MAX_RECOVERY_ENTRIES: usize = 1_024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
@@ -74,6 +76,14 @@ pub(crate) struct VerifiedArtifactRange {
     pub(crate) total_byte_len: u64,
     pub(crate) bytes: Vec<u8>,
     pub(crate) truncated_after: bool,
+}
+
+/// Bounded result of reconciling abandoned artifact staging files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct ArtifactRecoveryReport {
+    pub(crate) removed: usize,
+    pub(crate) retained_active: usize,
+    pub(crate) ignored: usize,
 }
 
 impl ArtifactStore {
@@ -353,6 +363,77 @@ impl ArtifactStore {
         Ok(self.path_for(&artifact.reference.content_hash))
     }
 
+    /// Removes only unlocked staging files created by [`Self::put_bounded`].
+    ///
+    /// Published artifacts are immutable hash-named files. A process loss can
+    /// leave the UUID-named staging file behind before or after publication;
+    /// it is never an authoritative artifact. The writer holds an exclusive
+    /// lock, so recovery cannot remove another live writer's staging file.
+    pub(crate) fn reconcile_partials(&self) -> Result<ArtifactRecoveryReport, ArtifactError> {
+        let entries = match fs::read_dir(&self.root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                return Ok(ArtifactRecoveryReport::default());
+            }
+            Err(source) => {
+                return Err(ArtifactError::Io {
+                    path: self.root.clone(),
+                    source,
+                });
+            }
+        };
+        let mut report = ArtifactRecoveryReport::default();
+        for (index, entry) in entries.enumerate() {
+            if index >= MAX_RECOVERY_ENTRIES {
+                return Err(ArtifactError::RecoveryLimit {
+                    path: self.root.clone(),
+                    limit: MAX_RECOVERY_ENTRIES,
+                });
+            }
+            let entry = entry.map_err(|source| ArtifactError::Io {
+                path: self.root.clone(),
+                source,
+            })?;
+            let path = entry.path();
+            if !is_staging_path(&path) {
+                report.ignored = report.ignored.saturating_add(1);
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path).map_err(|source| ArtifactError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                report.ignored = report.ignored.saturating_add(1);
+                continue;
+            }
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .map_err(|source| ArtifactError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+            match file.try_lock_exclusive() {
+                Ok(()) => {
+                    let _ = fs2::FileExt::unlock(&file);
+                    drop(file);
+                    match fs::remove_file(&path) {
+                        Ok(()) => report.removed = report.removed.saturating_add(1),
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(source) => return Err(ArtifactError::Io { path, source }),
+                    }
+                }
+                Err(error) if lock_is_held(&error) => {
+                    report.retained_active = report.retained_active.saturating_add(1);
+                }
+                Err(source) => return Err(ArtifactError::Io { path, source }),
+            }
+        }
+        Ok(report)
+    }
+
     fn path_for(&self, content_hash: &ContentHash) -> PathBuf {
         self.root.join(content_hash.as_str())
     }
@@ -370,6 +451,11 @@ impl ArtifactStore {
                 .write(true)
                 .create_new(true)
                 .open(&temp_path)
+                .map_err(|source| ArtifactError::Io {
+                    path: temp_path.clone(),
+                    source,
+                })?;
+            temp.try_lock_exclusive()
                 .map_err(|source| ArtifactError::Io {
                     path: temp_path.clone(),
                     source,
@@ -473,6 +559,7 @@ pub(crate) enum ArtifactError {
     NotRegular { path: PathBuf },
     ChangedDuringRead { path: PathBuf },
     ArithmeticOverflow(&'static str),
+    RecoveryLimit { path: PathBuf, limit: usize },
     CorruptContent { path: PathBuf },
     Io { path: PathBuf, source: io::Error },
 }
@@ -506,6 +593,11 @@ impl fmt::Display for ArtifactError {
             Self::ArithmeticOverflow(operation) => {
                 write!(formatter, "artifact {operation} overflowed")
             }
+            Self::RecoveryLimit { path, limit } => write!(
+                formatter,
+                "artifact recovery at {} exceeds its {limit}-entry bound",
+                path.display()
+            ),
             Self::CorruptContent { path } => write!(
                 formatter,
                 "artifact content at {} does not match its immutable identity",
@@ -533,8 +625,36 @@ impl Error for ArtifactError {
             | Self::NotRegular { .. }
             | Self::ChangedDuringRead { .. }
             | Self::ArithmeticOverflow(_)
+            | Self::RecoveryLimit { .. }
             | Self::CorruptContent { .. } => None,
         }
+    }
+}
+
+fn is_staging_path(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let Some(uuid) = name
+        .strip_prefix('.')
+        .and_then(|value| value.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    uuid::Uuid::parse_str(uuid).is_ok()
+}
+
+fn lock_is_held(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        error.raw_os_error() == Some(33)
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 

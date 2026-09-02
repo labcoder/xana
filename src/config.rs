@@ -6,6 +6,7 @@
 
 use crate::{
     bounded_file,
+    host_lifecycle::NotificationPolicy,
     permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
     prompt::PromptBudgetPolicy,
     resource::ResourcePolicyV1,
@@ -80,6 +81,8 @@ struct ConfigDocument {
     egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
     #[serde(default)]
     diagnostics: DiagnosticsConfig,
+    #[serde(default)]
+    notifications: NotificationPolicy,
     #[serde(default)]
     context: PromptBudgetPolicy,
     #[serde(default)]
@@ -459,6 +462,7 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) service_routes: BTreeMap<String, ServiceRouteDeclaration>,
     pub(crate) egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
     pub(crate) diagnostics: DiagnosticsConfig,
+    pub(crate) notifications: NotificationPolicy,
     pub(crate) context: PromptBudgetPolicy,
     pub(crate) resources: ResourcePolicyV1,
 }
@@ -1059,6 +1063,7 @@ impl XanaConfig {
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
             diagnostics: DiagnosticsConfig::default(),
+            notifications: NotificationPolicy::default(),
             context: PromptBudgetPolicy::default(),
             resources: ResourcePolicyV1::default(),
         };
@@ -2567,6 +2572,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         service_routes: document.service_routes,
         egress_policies: document.egress_policies,
         diagnostics: document.diagnostics,
+        notifications: document.notifications,
         context: document.context,
         resources: document.resources,
     }

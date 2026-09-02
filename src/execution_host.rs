@@ -18,6 +18,10 @@ use crate::{
         ControllerTakeoverConfirmation,
     },
     frontend::{ClientEvent, ClientObservation},
+    host_lifecycle::{
+        GlobalNotice, GlobalNoticeKind, HostLifecycleState, OwnedExecutionCleanup, ShutdownPlan,
+        ShutdownProof, ShutdownReceipt, ShutdownRun, ShutdownRunReceipt,
+    },
     identity::OperationId,
     native_runtime::{OperationOutcome, OperationState},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost, WorkspaceHostError},
@@ -131,6 +135,9 @@ pub(crate) struct ExecutionHostSnapshot {
     pub(crate) conversations: Vec<HostedConversationSnapshot>,
     pub(crate) attached: Option<ConversationRef>,
     pub(crate) active_runs: usize,
+    pub(crate) lifecycle: HostLifecycleState,
+    pub(crate) global_notices: Vec<GlobalNotice>,
+    pub(crate) shutdown_receipt: Option<ShutdownReceipt>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,6 +179,15 @@ pub(crate) enum HostEvent {
         controller: Option<ControllerLeaseSnapshot<ConversationRef>>,
         change: ControllerChangeKind,
     },
+    GlobalNotice {
+        notice: GlobalNotice,
+    },
+    LifecycleChanged {
+        state: HostLifecycleState,
+    },
+    ShutdownCompleted {
+        receipt: ShutdownReceipt,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -209,6 +225,8 @@ pub(crate) enum ExecutionHostError {
         workspace: PathBuf,
     },
     StaleRun,
+    NotAcceptingWork(HostLifecycleState),
+    ShutdownIncomplete(&'static str),
     RuntimeGap {
         expected: u64,
         received: u64,
@@ -237,6 +255,15 @@ impl fmt::Display for ExecutionHostError {
                 workspace.display()
             ),
             Self::StaleRun => output.write_str("Run handle is stale or already terminal"),
+            Self::NotAcceptingWork(state) => {
+                write!(
+                    output,
+                    "execution host is {state:?} and is not accepting work"
+                )
+            }
+            Self::ShutdownIncomplete(reason) => {
+                write!(output, "execution host shutdown is incomplete: {reason}")
+            }
             Self::RuntimeGap { expected, received } => write!(
                 output,
                 "Conversation runtime sequence gap: expected {expected}, received {received}"
@@ -282,6 +309,9 @@ struct HostState {
     active_runs: usize,
     events: EventLog,
     controllers: ControllerLeases<ConversationRef>,
+    lifecycle: HostLifecycleState,
+    global_notices: std::collections::VecDeque<GlobalNotice>,
+    shutdown_receipt: Option<ShutdownReceipt>,
 }
 
 struct WorkspaceSlot {
@@ -321,6 +351,9 @@ impl ExecutionHost {
                 active_runs: 0,
                 events: EventLog::new(),
                 controllers: ControllerLeases::new(),
+                lifecycle: HostLifecycleState::Running,
+                global_notices: std::collections::VecDeque::new(),
+                shutdown_receipt: None,
             })),
         }
     }
@@ -341,6 +374,7 @@ impl ExecutionHost {
         let workspace_id = workspace.workspace_id().to_owned();
         let conversation = registration.conversation.clone();
         let mut state = self.lock()?;
+        require_admission(&state)?;
         if let Some(existing) = state.conversations.get(&conversation) {
             if existing.workspace_id == workspace_id && existing.registration == registration {
                 return Ok(());
@@ -350,6 +384,10 @@ impl ExecutionHost {
             )));
         }
         if state.conversations.len() >= MAX_HOSTED_CONVERSATIONS {
+            record_global_notice(
+                &mut state,
+                GlobalNotice::new(GlobalNoticeKind::ResourcePressure, "conversation_limit"),
+            );
             return Err(ExecutionHostError::Limit {
                 resource: "Conversation",
                 limit: MAX_HOSTED_CONVERSATIONS,
@@ -397,7 +435,14 @@ impl ExecutionHost {
         collision: WriteCollisionDecision,
     ) -> Result<HostedRun, ExecutionHostError> {
         let mut state = self.lock()?;
+        require_admission(&state)?;
         if state.active_runs >= MAX_CONCURRENT_RUNS {
+            record_global_notice(
+                &mut state,
+                GlobalNotice::new(GlobalNoticeKind::ResourcePressure, "concurrent_run_limit")
+                    .conversation(conversation.clone())
+                    .operation(operation_id),
+            );
             return Err(ExecutionHostError::Limit {
                 resource: "concurrent Run",
                 limit: MAX_CONCURRENT_RUNS,
@@ -587,6 +632,7 @@ impl ExecutionHost {
     ) -> Result<AttachReceipt, ExecutionHostError> {
         let (workspace_id, expected_previous, revision) = {
             let state = self.lock()?;
+            require_admission(&state)?;
             let slot = state
                 .conversations
                 .get(conversation)
@@ -602,6 +648,7 @@ impl ExecutionHost {
         };
         let restoration = self.validate_restoration(&workspace_id, conversation)?;
         let mut state = self.lock()?;
+        require_admission(&state)?;
         if state.events.sequence() != revision || state.attached != expected_previous {
             return Err(ExecutionHostError::State(
                 "attachment target changed during validation; retry from a fresh snapshot"
@@ -637,6 +684,7 @@ impl ExecutionHost {
         now: Instant,
     ) -> Result<ControllerGrant<ConversationRef>, ExecutionHostError> {
         let mut state = self.lock()?;
+        require_admission(&state)?;
         let pending = state
             .conversations
             .get(conversation)
@@ -658,6 +706,8 @@ impl ExecutionHost {
         Ok(grant)
     }
 
+    // Multi-client detach will use this independently of whole-host shutdown.
+    #[allow(dead_code)]
     pub(crate) fn release_controller(
         &self,
         conversation: &ConversationRef,
@@ -685,6 +735,129 @@ impl ExecutionHost {
         } else {
             Err(ControllerLeaseError::NotController(conversation.clone()).into())
         }
+    }
+
+    /// Stops admission and returns the exact work that its owners must cancel
+    /// or await before presenting durable shutdown proof.
+    pub(crate) fn request_shutdown(&self) -> Result<ShutdownPlan, ExecutionHostError> {
+        let mut state = self.lock()?;
+        if state.lifecycle == HostLifecycleState::Stopped {
+            return Err(ExecutionHostError::NotAcceptingWork(state.lifecycle));
+        }
+        if state.lifecycle == HostLifecycleState::Running {
+            set_lifecycle(&mut state, HostLifecycleState::Draining);
+        }
+        let active_runs = state
+            .conversations
+            .iter()
+            .filter_map(|(conversation, slot)| {
+                slot.active_run.as_ref().map(|run| ShutdownRun {
+                    conversation: conversation.clone(),
+                    operation_id: run.operation_id,
+                })
+            })
+            .collect();
+        let pending_approval_conversations = state
+            .conversations
+            .iter()
+            .filter(|(_, slot)| slot.pending_approvals > 0)
+            .map(|(conversation, _)| conversation.clone())
+            .collect();
+        for change in state.controllers.expire_all() {
+            let conversation = change.conversation.clone();
+            record_controller_change(&mut state, change);
+            record_global_notice(
+                &mut state,
+                GlobalNotice::new(GlobalNoticeKind::ControllerLost, "host_shutdown")
+                    .conversation(conversation),
+            );
+        }
+        Ok(ShutdownPlan {
+            active_runs,
+            pending_approval_conversations,
+        })
+    }
+
+    /// Finalizes shutdown only after the execution owner reports its durable
+    /// flush and exact owned-process cleanup state. Remaining Runs become
+    /// interrupted; recovery never turns them into successful completion.
+    pub(crate) fn complete_shutdown(
+        &self,
+        proof: ShutdownProof,
+    ) -> Result<ShutdownReceipt, ExecutionHostError> {
+        let mut state = self.lock()?;
+        if let Some(receipt) = &state.shutdown_receipt {
+            return Ok(receipt.clone());
+        }
+        if state.lifecycle != HostLifecycleState::Draining {
+            return Err(ExecutionHostError::ShutdownIncomplete(
+                "request shutdown before completing it",
+            ));
+        }
+        if !proof.durable_state_flushed {
+            return Err(ExecutionHostError::ShutdownIncomplete(
+                "durable state was not flushed",
+            ));
+        }
+        if proof.owned_execution != OwnedExecutionCleanup::Clean {
+            record_global_notice(
+                &mut state,
+                GlobalNotice::new(
+                    GlobalNoticeKind::HostFailure,
+                    "owned_execution_cleanup_unresolved",
+                ),
+            );
+            return Err(ExecutionHostError::ShutdownIncomplete(
+                "owned execution cleanup was not proven",
+            ));
+        }
+        set_lifecycle(&mut state, HostLifecycleState::Persisting);
+        let interrupted = state
+            .conversations
+            .iter_mut()
+            .filter_map(|(conversation, slot)| {
+                slot.pending_approvals = 0;
+                let run = slot.active_run.take()?;
+                slot.state = HostedConversationState::Interrupted;
+                slot.last_error = None;
+                slot.last_outcome = Some(OperationOutcome::Interrupted);
+                Some((conversation.clone(), run.operation_id))
+            })
+            .collect::<Vec<_>>();
+        for workspace in state.workspaces.values_mut() {
+            workspace.active_runs = 0;
+            workspace.active_write_runs = 0;
+            workspace.domain_lease = None;
+        }
+        state.active_runs = 0;
+        for (conversation, operation_id) in &interrupted {
+            state.events.push(HostEvent::RunFinished {
+                conversation: conversation.clone(),
+                operation_id: *operation_id,
+                state: HostedConversationState::Interrupted,
+                error: None,
+            });
+        }
+        set_lifecycle(&mut state, HostLifecycleState::Closing);
+        let receipt = ShutdownReceipt {
+            interrupted_runs: interrupted
+                .into_iter()
+                .map(|(conversation, operation_id)| ShutdownRunReceipt {
+                    conversation,
+                    operation_id,
+                    status: "interrupted".to_owned(),
+                })
+                .collect(),
+            durable_state_flushed: true,
+            owned_execution: proof.owned_execution,
+            unresolved_warnings: Vec::new(),
+        };
+        set_lifecycle(&mut state, HostLifecycleState::Stopped);
+        state.shutdown_receipt = Some(receipt.clone());
+        state.events.push(HostEvent::ShutdownCompleted {
+            receipt: receipt.clone(),
+        });
+        Ok(receipt)
     }
 
     pub(crate) fn snapshot(&self) -> Result<ExecutionHostSnapshot, ExecutionHostError> {
@@ -814,7 +987,69 @@ fn snapshot_from_state(state: &HostState) -> ExecutionHostSnapshot {
         conversations,
         attached: state.attached.clone(),
         active_runs: state.active_runs,
+        lifecycle: state.lifecycle,
+        global_notices: state.global_notices.iter().cloned().collect(),
+        shutdown_receipt: state.shutdown_receipt.clone(),
     }
+}
+
+fn require_admission(state: &HostState) -> Result<(), ExecutionHostError> {
+    if state.lifecycle.accepts_work() {
+        Ok(())
+    } else {
+        Err(ExecutionHostError::NotAcceptingWork(state.lifecycle))
+    }
+}
+
+fn set_lifecycle(state: &mut HostState, lifecycle: HostLifecycleState) {
+    state.lifecycle = lifecycle;
+    state
+        .events
+        .push(HostEvent::LifecycleChanged { state: lifecycle });
+    crate::diagnostics::emit(
+        crate::diagnostics::DiagnosticFact::new(
+            crate::config::DiagnosticLevel::Info,
+            crate::config::DiagnosticTarget::Runtime,
+            crate::diagnostics::EventKind::HostLifecycle,
+            if lifecycle == HostLifecycleState::Stopped {
+                crate::diagnostics::EventOutcome::Completed
+            } else {
+                crate::diagnostics::EventOutcome::Started
+            },
+        )
+        .subject(format!("{lifecycle:?}").to_ascii_lowercase()),
+    );
+}
+
+fn record_global_notice(state: &mut HostState, notice: GlobalNotice) {
+    const MAX_GLOBAL_NOTICES: usize = 64;
+    if state.global_notices.len() == MAX_GLOBAL_NOTICES {
+        state.global_notices.pop_front();
+    }
+    state.global_notices.push_back(notice.clone());
+    let level = match notice.kind {
+        GlobalNoticeKind::HostFailure | GlobalNoticeKind::StorageFailure => {
+            crate::config::DiagnosticLevel::Error
+        }
+        GlobalNoticeKind::ControllerLost
+        | GlobalNoticeKind::RecoveryAction
+        | GlobalNoticeKind::ResourcePressure => crate::config::DiagnosticLevel::Warn,
+    };
+    crate::diagnostics::emit(
+        crate::diagnostics::DiagnosticFact::new(
+            level,
+            crate::config::DiagnosticTarget::Runtime,
+            crate::diagnostics::EventKind::HostLifecycle,
+            crate::diagnostics::EventOutcome::Unavailable,
+        )
+        .subject(&notice.code)
+        .correlation(
+            notice
+                .operation_id
+                .map_or_else(|| "host".to_owned(), |operation| operation.to_string()),
+        ),
+    );
+    state.events.push(HostEvent::GlobalNotice { notice });
 }
 
 fn record_controller_change(state: &mut HostState, change: ControllerChange<ConversationRef>) {

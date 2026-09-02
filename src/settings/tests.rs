@@ -36,10 +36,26 @@ fn snapshot_exposes_stable_keys_without_configuration_secrets() {
 
     assert!(snapshot.entry(APPEARANCE_THEME).is_some());
     assert!(snapshot.entry(PERMISSIONS_DEFAULT).is_some());
+    assert!(snapshot.entry(NOTIFICATIONS_COMPLETIONS).is_some());
     assert!(snapshot.entry("connections.manage").is_some());
     assert!(encoded.contains("qwen3:1.7b"));
     assert!(!encoded.contains("credential"));
     assert_eq!(snapshot.revision.len(), 16);
+}
+
+#[test]
+fn notification_switches_commit_through_the_shared_settings_transaction() {
+    let (_directory, paths) = fixture();
+    let manager = SettingsManager::new(&paths);
+    let mut draft = manager.begin().unwrap();
+    draft.set(NOTIFICATIONS_COMPLETIONS, "false").unwrap();
+
+    let receipt = manager.commit(&draft, false).unwrap();
+
+    assert_eq!(receipt.changes.len(), 1);
+    assert!(!receipt.requires_new_conversation());
+    let registry = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert!(!registry.notifications.completions);
 }
 
 #[test]

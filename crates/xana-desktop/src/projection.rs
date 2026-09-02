@@ -334,6 +334,8 @@ mod tests {
             hosted_conversation_count: 1,
             attached_conversation: Some("native/session".to_owned()),
             controllers: Vec::new(),
+            host_lifecycle: "running".into(),
+            global_notices: Vec::new(),
         }
     }
 

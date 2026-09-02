@@ -439,6 +439,21 @@ where
         })
     }
 
+    /// Expires every in-memory controller authority during host shutdown.
+    /// Controller leases are deliberately not durable across process restarts.
+    pub(crate) fn expire_all(&mut self) -> Vec<ControllerChange<K>> {
+        let conversations = self.leases.keys().cloned().collect::<Vec<_>>();
+        self.leases.clear();
+        conversations
+            .into_iter()
+            .map(|conversation| ControllerChange {
+                conversation,
+                controller: None,
+                change: ControllerChangeKind::Expired,
+            })
+            .collect()
+    }
+
     pub(crate) fn is_controller(&self, conversation: &K, client_id: ControllerClientId) -> bool {
         self.leases.get(conversation).is_some_and(|lease| {
             lease.client_id == client_id && lease.state == ControllerLeaseState::Connected

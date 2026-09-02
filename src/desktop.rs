@@ -5,6 +5,11 @@
 //! and typed intent; provider adapters, credentials, tools, paths, and runtime
 //! ownership stay in this package.
 
+pub use crate::host_lifecycle::{
+    AttentionKind, AttentionSignal, ClientFocus, GlobalNotice, GlobalNoticeKind, LastWindowChoice,
+    LastWindowEffect, NotificationCandidate, NotificationDestination, NotificationPlanner,
+    NotificationPolicy, last_window_effect,
+};
 use crate::{
     app::{ChatExit, ChatHeader},
     command_catalog::{
@@ -370,6 +375,16 @@ pub struct DesktopSnapshot {
     pub hosted_conversation_count: usize,
     pub attached_conversation: Option<String>,
     pub controllers: Vec<DesktopControllerLease>,
+    pub host_lifecycle: String,
+    pub global_notices: Vec<DesktopGlobalNotice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopGlobalNotice {
+    pub kind: String,
+    pub code: String,
+    pub conversation: Option<String>,
+    pub operation_id: Option<DesktopOperationId>,
 }
 
 /// Presentation-safe authority state for one hosted Conversation.
@@ -487,6 +502,14 @@ pub enum DesktopHostEvent {
         conversation: String,
         controller: Option<DesktopControllerLease>,
         change: String,
+    },
+    GlobalNotice(DesktopGlobalNotice),
+    LifecycleChanged {
+        state: String,
+    },
+    ShutdownCompleted {
+        interrupted_runs: usize,
+        cleanup: String,
     },
 }
 
@@ -908,6 +931,21 @@ fn run_backend(paths: XanaPaths, workspace: PathBuf, bridge: Bridge) -> anyhow::
     let _diagnostics = crate::diagnostics::DiagnosticRuntime::start(&paths)
         .ok()
         .flatten();
+    let stale_markers = _diagnostics
+        .as_ref()
+        .map_or(0, crate::diagnostics::DiagnosticRuntime::stale_markers);
+    if let Err(error) = crate::host_lifecycle::recover_startup(&paths, stale_markers) {
+        eprintln!("warning: Xana could not reconcile abandoned artifact staging files: {error}");
+        crate::diagnostics::emit(
+            crate::diagnostics::DiagnosticFact::new(
+                crate::config::DiagnosticLevel::Warn,
+                crate::config::DiagnosticTarget::Storage,
+                crate::diagnostics::EventKind::RecoveryAction,
+                crate::diagnostics::EventOutcome::Failed,
+            )
+            .subject("artifact_partial_reconciliation"),
+        );
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -995,12 +1033,18 @@ impl Bridge {
         self.startup
             .ready(project_snapshot(&snapshot, &host_snapshot));
         let mut active_run: Option<HostedRun> = None;
+        let mut shutdown_cleanup = crate::host_lifecycle::OwnedExecutionCleanup::Unresolved;
 
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
                     let Some(command) = command else {
-                        let _ = owner.send(ClientCommand::new(RuntimeCommand::Shutdown)).await;
+                        execution_host.request_shutdown().map_err(host_error)?;
+                        if owner.send(ClientCommand::new(RuntimeCommand::Shutdown)).await
+                            .is_ok_and(|result| result.accepted)
+                        {
+                            shutdown_cleanup = crate::host_lifecycle::OwnedExecutionCleanup::Clean;
+                        }
                         break;
                     };
                     if command.version != FRONTEND_PROTOCOL_VERSION {
@@ -1016,7 +1060,7 @@ impl Bridge {
                         ).await?;
                         continue;
                     }
-                    let should_stop = self.handle_command(
+                    let stop_cleanup = self.handle_command(
                         command,
                         &owner,
                         &execution_host,
@@ -1029,7 +1073,8 @@ impl Bridge {
                         &snapshot,
                         &mut host_cursor,
                     ).await?;
-                    if should_stop {
+                    if let Some(cleanup) = stop_cleanup {
+                        shutdown_cleanup = cleanup;
                         break;
                     }
                 }
@@ -1087,9 +1132,13 @@ impl Bridge {
             }
         }
 
+        execution_host.request_shutdown().map_err(host_error)?;
         drop(active_run);
         execution_host
-            .release_controller(&controller.conversation, controller.client_id)
+            .complete_shutdown(crate::host_lifecycle::ShutdownProof {
+                durable_state_flushed: true,
+                owned_execution: shutdown_cleanup,
+            })
             .map_err(host_error)?;
         self.publish_host_changes(&execution_host, &snapshot, &mut host_cursor)
             .await?;
@@ -1109,7 +1158,7 @@ impl Bridge {
         controller: &DesktopController,
         snapshot: &ClientSnapshot,
         active_run: &mut Option<HostedRun>,
-    ) -> Result<bool, DesktopError> {
+    ) -> Result<Option<crate::host_lifecycle::OwnedExecutionCleanup>, DesktopError> {
         let command_id = command.command_id;
         if !matches!(&command.value, BridgeCommandValue::RequestSnapshot)
             && let Err(error) =
@@ -1117,7 +1166,7 @@ impl Bridge {
         {
             self.publish_command_result(command_id, Err(host_error(error)))
                 .await?;
-            return Ok(false);
+            return Ok(None);
         }
         match command.value {
             BridgeCommandValue::RequestSnapshot => {
@@ -1128,9 +1177,10 @@ impl Bridge {
                 )))
                 .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
-                Ok(false)
+                Ok(None)
             }
             BridgeCommandValue::Shutdown => {
+                execution_host.request_shutdown().map_err(host_error)?;
                 let result = owner
                     .send(ClientCommand::new(RuntimeCommand::Shutdown))
                     .await
@@ -1141,8 +1191,13 @@ impl Bridge {
                         )
                     })
                     .and_then(command_result);
+                let cleanup = if result.is_ok() {
+                    crate::host_lifecycle::OwnedExecutionCleanup::Clean
+                } else {
+                    crate::host_lifecycle::OwnedExecutionCleanup::Unresolved
+                };
                 self.publish_command_result(command_id, result).await?;
-                Ok(true)
+                Ok(Some(cleanup))
             }
             BridgeCommandValue::Submit {
                 operation_id,
@@ -1158,7 +1213,7 @@ impl Bridge {
                         )),
                     )
                     .await?;
-                    return Ok(false);
+                    return Ok(None);
                 }
                 let run = execution_host.begin_run(
                     &controller.conversation,
@@ -1175,7 +1230,7 @@ impl Bridge {
                     Err(error) => {
                         self.publish_command_result(command_id, Err(host_error(error)))
                             .await?;
-                        return Ok(false);
+                        return Ok(None);
                     }
                 };
                 let result = owner
@@ -1203,7 +1258,7 @@ impl Bridge {
                         .map_err(host_error)?;
                 }
                 self.publish_command_result(command_id, result).await?;
-                Ok(false)
+                Ok(None)
             }
             BridgeCommandValue::Clear => {
                 let result = owner
@@ -1217,7 +1272,7 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 self.publish_command_result(command_id, result).await?;
-                Ok(false)
+                Ok(None)
             }
             BridgeCommandValue::Interrupt { operation_id } => {
                 let result = owner
@@ -1233,7 +1288,7 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 self.publish_command_result(command_id, result).await?;
-                Ok(false)
+                Ok(None)
             }
             BridgeCommandValue::DecidePermission {
                 permission_id,
@@ -1259,7 +1314,7 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 self.publish_command_result(command_id, result).await?;
-                Ok(false)
+                Ok(None)
             }
             BridgeCommandValue::DecideRoundBudget {
                 operation_id,
@@ -1278,7 +1333,7 @@ impl Bridge {
                         Err(error) => {
                             self.publish_command_result(command_id, Err(host_error(error)))
                                 .await?;
-                            return Ok(false);
+                            return Ok(None);
                         }
                     }
                 }
@@ -1310,7 +1365,7 @@ impl Bridge {
                         .map_err(host_error)?;
                 }
                 self.publish_command_result(command_id, result).await?;
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -1460,6 +1515,12 @@ fn project_snapshot(
             .iter()
             .filter_map(|conversation| conversation.controller.as_ref().map(project_controller))
             .collect(),
+        host_lifecycle: format!("{:?}", host.lifecycle).to_ascii_lowercase(),
+        global_notices: host
+            .global_notices
+            .iter()
+            .map(project_global_notice)
+            .collect(),
     }
 }
 
@@ -1561,10 +1622,29 @@ fn project_host_observation(
                 crate::controller::ControllerChangeKind::Expired => "expired".to_owned(),
             },
         },
+        HostEvent::GlobalNotice { notice } => {
+            DesktopHostEvent::GlobalNotice(project_global_notice(&notice))
+        }
+        HostEvent::LifecycleChanged { state } => DesktopHostEvent::LifecycleChanged {
+            state: format!("{state:?}").to_ascii_lowercase(),
+        },
+        HostEvent::ShutdownCompleted { receipt } => DesktopHostEvent::ShutdownCompleted {
+            interrupted_runs: receipt.interrupted_runs.len(),
+            cleanup: format!("{:?}", receipt.owned_execution).to_ascii_lowercase(),
+        },
     };
     DesktopHostObservation {
         sequence: observation.sequence,
         event,
+    }
+}
+
+fn project_global_notice(notice: &crate::host_lifecycle::GlobalNotice) -> DesktopGlobalNotice {
+    DesktopGlobalNotice {
+        kind: format!("{:?}", notice.kind).to_ascii_lowercase(),
+        code: notice.code.clone(),
+        conversation: notice.conversation.as_ref().map(ToString::to_string),
+        operation_id: notice.operation_id.map(DesktopOperationId),
     }
 }
 

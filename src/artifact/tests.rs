@@ -87,6 +87,52 @@ fn publishing_leaves_no_partial_temporary_file() {
 }
 
 #[test]
+fn recovery_removes_only_abandoned_recognized_staging_files() {
+    let directory = tempdir().expect("artifact tempdir");
+    let store = ArtifactStore::new(directory.path().to_owned());
+    fs::create_dir_all(directory.path()).unwrap();
+    let abandoned = directory
+        .path()
+        .join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let unrelated = directory.path().join("notes.tmp");
+    fs::write(&abandoned, b"partial").unwrap();
+    fs::write(&unrelated, b"keep").unwrap();
+
+    let report = store.reconcile_partials().unwrap();
+
+    assert_eq!(report.removed, 1);
+    assert_eq!(report.retained_active, 0);
+    assert_eq!(report.ignored, 1);
+    assert!(!abandoned.exists());
+    assert!(unrelated.exists());
+    assert_eq!(store.reconcile_partials().unwrap().removed, 0);
+}
+
+#[test]
+fn recovery_preserves_a_staging_file_owned_by_a_live_writer() {
+    let directory = tempdir().expect("artifact tempdir");
+    let store = ArtifactStore::new(directory.path().to_owned());
+    fs::create_dir_all(directory.path()).unwrap();
+    let active = directory
+        .path()
+        .join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+    let writer = fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&active)
+        .unwrap();
+    fs2::FileExt::try_lock_exclusive(&writer).unwrap();
+
+    let report = store.reconcile_partials().unwrap();
+
+    assert_eq!(report.removed, 0);
+    assert_eq!(report.retained_active, 1);
+    assert!(active.exists());
+    fs2::FileExt::unlock(&writer).unwrap();
+}
+
+#[test]
 fn content_hash_deserialization_rejects_paths_and_uppercase() {
     for invalid in ["../bad", &"A".repeat(64), &"g".repeat(64)] {
         let json = serde_json::to_string(invalid).expect("hash json");

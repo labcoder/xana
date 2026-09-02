@@ -28,6 +28,7 @@ mod documents;
 mod execution_host;
 mod focused_service;
 mod frontend;
+mod host_lifecycle;
 mod http_client;
 mod identity;
 mod init;
@@ -124,6 +125,42 @@ fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
             diagnostics::EventKind::ApplicationStarted,
             diagnostics::EventOutcome::Started,
         ));
+    }
+    if !diagnostics_read_only {
+        let stale_markers = diagnostic_runtime
+            .as_ref()
+            .map_or(0, diagnostics::DiagnosticRuntime::stale_markers);
+        match host_lifecycle::recover_startup(&paths, stale_markers) {
+            Ok(report) if report.stale_exit_markers > 0 || report.artifacts.removed > 0 => {
+                diagnostics::emit(
+                    diagnostics::DiagnosticFact::new(
+                        config::DiagnosticLevel::Warn,
+                        config::DiagnosticTarget::Storage,
+                        diagnostics::EventKind::RecoveryAction,
+                        diagnostics::EventOutcome::Completed,
+                    )
+                    .subject(format!(
+                        "stale_markers_{}_artifact_partials_{}",
+                        report.stale_exit_markers, report.artifacts.removed
+                    )),
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!(
+                    "warning: Xana could not reconcile abandoned artifact staging files: {error}"
+                );
+                diagnostics::emit(
+                    diagnostics::DiagnosticFact::new(
+                        config::DiagnosticLevel::Warn,
+                        config::DiagnosticTarget::Storage,
+                        diagnostics::EventKind::RecoveryAction,
+                        diagnostics::EventOutcome::Failed,
+                    )
+                    .subject("artifact_partial_reconciliation"),
+                );
+            }
+        }
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

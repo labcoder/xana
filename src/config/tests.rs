@@ -99,6 +99,20 @@ fn diagnostics_defaults_are_bounded_and_invalid_unlimited_values_are_rejected() 
 }
 
 #[test]
+fn notification_defaults_cover_attention_without_exposing_routine_activity() {
+    let registry = XanaConfig::parse_registry(MINIMAL).unwrap();
+    assert_eq!(registry.notifications, NotificationPolicy::default());
+
+    let configured = format!(
+        "{MINIMAL}\n[notifications]\nenabled = true\ncompletions = false\nhost_failures = false\n"
+    );
+    let registry = XanaConfig::parse_registry(&configured).unwrap();
+    assert!(!registry.notifications.completions);
+    assert!(!registry.notifications.host_failures);
+    assert!(registry.notifications.approvals);
+}
+
+#[test]
 fn prompt_context_policy_defaults_are_bounded_and_user_limits_only_narrow() {
     let registry = XanaConfig::parse_registry(MINIMAL).unwrap();
     assert_eq!(registry.context, PromptBudgetPolicy::default());

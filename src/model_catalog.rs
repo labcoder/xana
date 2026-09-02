@@ -1079,6 +1079,7 @@ mod tests {
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
             diagnostics: crate::config::DiagnosticsConfig::default(),
+            notifications: crate::host_lifecycle::NotificationPolicy::default(),
             context: crate::prompt::PromptBudgetPolicy::default(),
             resources: crate::resource::ResourcePolicyV1::default(),
         }
@@ -1144,6 +1145,7 @@ mod tests {
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
             diagnostics: crate::config::DiagnosticsConfig::default(),
+            notifications: crate::host_lifecycle::NotificationPolicy::default(),
             context: crate::prompt::PromptBudgetPolicy::default(),
             resources: crate::resource::ResourcePolicyV1::default(),
         }

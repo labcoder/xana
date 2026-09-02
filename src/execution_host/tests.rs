@@ -632,3 +632,121 @@ fn approvals_failures_and_interruptions_never_cross_conversation_boundaries() {
     );
     assert_eq!(second_snapshot.last_outcome, Some(OperationOutcome::Failed));
 }
+
+#[test]
+fn shutdown_stops_admission_expires_authority_and_names_exact_active_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let host = ExecutionHost::new();
+    let conversation = register_native(&host, &directory, &workspace);
+    let controller = ControllerClientId::new();
+    host.acquire_controller(&conversation, controller, None, Instant::now())
+        .unwrap();
+    let operation_id = OperationId::new();
+    let _run = host
+        .begin_run(
+            &conversation,
+            operation_id,
+            RunAccess::WorkspaceWrite,
+            WriteCollisionDecision::Reject,
+        )
+        .unwrap();
+
+    let plan = host.request_shutdown().unwrap();
+
+    assert_eq!(plan.active_runs.len(), 1);
+    assert_eq!(plan.active_runs[0].conversation, conversation);
+    assert_eq!(plan.active_runs[0].operation_id, operation_id);
+    let snapshot = host.snapshot().unwrap();
+    assert_eq!(snapshot.lifecycle, HostLifecycleState::Draining);
+    assert!(snapshot.conversations[0].controller.is_none());
+    assert!(snapshot.global_notices.iter().any(|notice| {
+        notice.kind == GlobalNoticeKind::ControllerLost
+            && notice.conversation.as_ref() == Some(&conversation)
+    }));
+    assert!(matches!(
+        host.begin_run(
+            &conversation,
+            OperationId::new(),
+            RunAccess::ReadOnly,
+            WriteCollisionDecision::Reject,
+        ),
+        Err(ExecutionHostError::NotAcceptingWork(
+            HostLifecycleState::Draining
+        ))
+    ));
+}
+
+#[test]
+fn shutdown_requires_flush_proof_and_never_recovers_a_run_as_complete() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let host = ExecutionHost::new();
+    let conversation = register_native(&host, &directory, &workspace);
+    let operation_id = OperationId::new();
+    let _run = host
+        .begin_run(
+            &conversation,
+            operation_id,
+            RunAccess::WorkspaceWrite,
+            WriteCollisionDecision::Reject,
+        )
+        .unwrap();
+    host.request_shutdown().unwrap();
+
+    assert!(matches!(
+        host.complete_shutdown(ShutdownProof {
+            durable_state_flushed: false,
+            owned_execution: OwnedExecutionCleanup::Clean,
+        }),
+        Err(ExecutionHostError::ShutdownIncomplete(_))
+    ));
+    let receipt = host
+        .complete_shutdown(ShutdownProof {
+            durable_state_flushed: true,
+            owned_execution: OwnedExecutionCleanup::Clean,
+        })
+        .unwrap();
+
+    assert_eq!(receipt.interrupted_runs.len(), 1);
+    assert_eq!(receipt.interrupted_runs[0].operation_id, operation_id);
+    assert_eq!(receipt.interrupted_runs[0].status, "interrupted");
+    assert_eq!(
+        host.snapshot().unwrap().lifecycle,
+        HostLifecycleState::Stopped
+    );
+    assert_eq!(
+        host.snapshot().unwrap().conversations[0].last_outcome,
+        Some(OperationOutcome::Interrupted)
+    );
+    assert_eq!(
+        host.complete_shutdown(ShutdownProof {
+            durable_state_flushed: true,
+            owned_execution: OwnedExecutionCleanup::Unresolved,
+        })
+        .unwrap(),
+        receipt
+    );
+}
+
+#[test]
+fn shutdown_receipt_reports_unresolved_owned_execution_without_claiming_success() {
+    let host = ExecutionHost::new();
+    host.request_shutdown().unwrap();
+    assert!(matches!(
+        host.complete_shutdown(ShutdownProof {
+            durable_state_flushed: true,
+            owned_execution: OwnedExecutionCleanup::Unresolved,
+        }),
+        Err(ExecutionHostError::ShutdownIncomplete(_))
+    ));
+    let snapshot = host.snapshot().unwrap();
+    assert_eq!(snapshot.lifecycle, HostLifecycleState::Draining);
+    assert!(snapshot.shutdown_receipt.is_none());
+    assert!(snapshot.global_notices.iter().any(|notice| {
+        notice.kind == GlobalNoticeKind::HostFailure
+            && notice.code == "owned_execution_cleanup_unresolved"
+    }));
+}

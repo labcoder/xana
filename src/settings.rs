@@ -45,6 +45,13 @@ const DIAGNOSTICS_MAX_FILE_BYTES: &str = "diagnostics.max_file_bytes";
 const DIAGNOSTICS_MAX_TOTAL_BYTES: &str = "diagnostics.max_total_bytes";
 const DIAGNOSTICS_MAX_FILES: &str = "diagnostics.max_files";
 const DIAGNOSTICS_QUEUE_CAPACITY: &str = "diagnostics.queue_capacity";
+const NOTIFICATIONS_ENABLED: &str = "notifications.enabled";
+const NOTIFICATIONS_APPROVALS: &str = "notifications.approvals";
+const NOTIFICATIONS_QUESTIONS: &str = "notifications.questions";
+const NOTIFICATIONS_COMPLETIONS: &str = "notifications.completions";
+const NOTIFICATIONS_FAILURES: &str = "notifications.failures";
+const NOTIFICATIONS_CONTROLLER_LOST: &str = "notifications.controller_lost";
+const NOTIFICATIONS_HOST_FAILURES: &str = "notifications.host_failures";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -979,7 +986,7 @@ fn diagnostic_entries(
     let diagnostics = &registry.diagnostics;
     let target = SettingTarget::GlobalConfiguration;
     let effect = SettingEffect::NextLaunch;
-    vec![
+    let mut entries = vec![
         SettingEntry::new(
             DIAGNOSTICS_ENABLED,
             SettingsSection::Diagnostics,
@@ -1096,7 +1103,70 @@ fn diagnostic_entries(
             SettingValue::summary("Read-only by default"),
         )
         .action("xana doctor"),
-    ]
+    ];
+    let notifications = &registry.notifications;
+    for (key, title, description, value) in [
+        (
+            NOTIFICATIONS_ENABLED,
+            "Desktop notifications",
+            "Allow redacted attention notifications while Xana is unfocused or minimized.",
+            notifications.enabled,
+        ),
+        (
+            NOTIFICATIONS_APPROVALS,
+            "Approval notifications",
+            "Notify when a Conversation needs an approval.",
+            notifications.approvals,
+        ),
+        (
+            NOTIFICATIONS_QUESTIONS,
+            "Question notifications",
+            "Notify when a Conversation needs a user response.",
+            notifications.questions,
+        ),
+        (
+            NOTIFICATIONS_COMPLETIONS,
+            "Completion notifications",
+            "Notify when a Conversation completes.",
+            notifications.completions,
+        ),
+        (
+            NOTIFICATIONS_FAILURES,
+            "Failure notifications",
+            "Notify when a Conversation fails.",
+            notifications.failures,
+        ),
+        (
+            NOTIFICATIONS_CONTROLLER_LOST,
+            "Controller-loss notifications",
+            "Notify when active work loses its controlling client.",
+            notifications.controller_lost,
+        ),
+        (
+            NOTIFICATIONS_HOST_FAILURES,
+            "Host-failure notifications",
+            "Notify when the local execution host needs attention.",
+            notifications.host_failures,
+        ),
+    ] {
+        entries.push(
+            SettingEntry::new(
+                key,
+                SettingsSection::Diagnostics,
+                title,
+                description,
+                SettingValue::scalar(value.to_string()),
+            )
+            .editable(
+                SettingKind::Boolean,
+                SettingValue::scalar("true"),
+                source_for_nested(document, "notifications", key.rsplit('.').next().unwrap()),
+                target,
+                effect,
+            ),
+        );
+    }
+    entries
 }
 
 fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
@@ -1386,6 +1456,13 @@ fn is_config_key(key: &str) -> bool {
             | DIAGNOSTICS_MAX_TOTAL_BYTES
             | DIAGNOSTICS_MAX_FILES
             | DIAGNOSTICS_QUEUE_CAPACITY
+            | NOTIFICATIONS_ENABLED
+            | NOTIFICATIONS_APPROVALS
+            | NOTIFICATIONS_QUESTIONS
+            | NOTIFICATIONS_COMPLETIONS
+            | NOTIFICATIONS_FAILURES
+            | NOTIFICATIONS_CONTROLLER_LOST
+            | NOTIFICATIONS_HOST_FAILURES
     )
 }
 
@@ -1534,6 +1611,20 @@ fn apply_config_change(
             1024,
             key,
         )?,
+        NOTIFICATIONS_ENABLED
+        | NOTIFICATIONS_APPROVALS
+        | NOTIFICATIONS_QUESTIONS
+        | NOTIFICATIONS_COMPLETIONS
+        | NOTIFICATIONS_FAILURES
+        | NOTIFICATIONS_CONTROLLER_LOST
+        | NOTIFICATIONS_HOST_FAILURES => {
+            let field = key
+                .rsplit('.')
+                .next()
+                .ok_or_else(|| SettingsError::UnknownKey(key.to_owned()))?;
+            ensure_table(document, "notifications")?[field] =
+                toml_edit::value(value.unwrap_or("true") == "true");
+        }
         _ => return Err(SettingsError::UnknownKey(key.to_owned())),
     }
     Ok(())
