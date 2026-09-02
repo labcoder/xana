@@ -124,6 +124,8 @@ for the ownership boundaries.
 | `xana setup` | Add or update a connection and choose a model |
 | `xana settings` | Browse and edit settings in the terminal workspace |
 | `xana connect` | Open the provider-neutral integration hub |
+| `xana connection test ID` | Test one configured connection without changing durable state |
+| `xana connection repair ID` | Re-establish one connection and repair only its derived model catalog |
 | `xana model` | Inspect the active model and available catalog |
 | `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
 | `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |

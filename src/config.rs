@@ -468,17 +468,6 @@ pub(crate) struct ConnectionRegistry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NewConnection {
-    pub(crate) id: String,
-    pub(crate) kind: ProviderKind,
-    pub(crate) base_url: Option<String>,
-    pub(crate) credential: Option<CredentialReference>,
-    pub(crate) model: String,
-    pub(crate) codex_program: Option<String>,
-    pub(crate) codex_home: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NewProfile {
     pub(crate) id: String,
     pub(crate) connection: String,
@@ -635,9 +624,6 @@ pub(crate) enum ConfigError {
         modality: String,
     },
     Edit(String),
-    ConnectionAlreadyExists {
-        name: String,
-    },
     ConnectionReferenced {
         name: String,
         profiles: Vec<String>,
@@ -782,9 +768,6 @@ impl fmt::Display for ConfigError {
                 "provider {provider:?} model {model:?} declares unknown input modality {modality:?}"
             ),
             Self::Edit(reason) => write!(f, "could not edit config.toml: {reason}"),
-            Self::ConnectionAlreadyExists { name } => {
-                write!(f, "provider connection {name:?} already exists")
-            }
             Self::ConnectionReferenced { name, profiles } => write!(
                 f,
                 "provider connection {name:?} is still referenced by profile(s): {}",
@@ -858,7 +841,6 @@ impl Error for ConfigError {
             | Self::InvalidCodexConfiguration { .. }
             | Self::InvalidModelModality { .. }
             | Self::Edit(_)
-            | Self::ConnectionAlreadyExists { .. }
             | Self::ConnectionReferenced { .. }
             | Self::InvalidToolRoundLimit { .. }
             | Self::InvalidProfileOption { .. }
@@ -1089,55 +1071,6 @@ impl XanaConfig {
         let document: ConfigDocument = toml::from_str(input).map_err(ConfigError::Decode)?;
         validate_document(&document)?;
         Ok(registry_from_document(document))
-    }
-
-    pub(crate) fn add_connection(path: &Path, input: NewConnection) -> Result<(), ConfigError> {
-        validate_name("provider", &input.id)?;
-        if input.model.trim().is_empty() {
-            return Err(ConfigError::EmptyModel {
-                profile: format!("provider {} model", input.id),
-            });
-        }
-        let mut transaction = ConfigEditTransaction::begin(path)?;
-        let document = transaction.document_mut();
-        let providers = document
-            .get_mut("providers")
-            .and_then(toml_edit::Item::as_table_mut)
-            .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?;
-        if providers.contains_key(&input.id) {
-            return Err(ConfigError::ConnectionAlreadyExists { name: input.id });
-        }
-        let mut connection = toml_edit::Table::new();
-        connection["kind"] = toml_edit::value(input.kind.as_str());
-        if let Some(base_url) = input.base_url {
-            connection["base_url"] = toml_edit::value(base_url);
-        }
-        if let Some(reference) = input.credential {
-            let mut credential = toml_edit::InlineTable::new();
-            match reference {
-                CredentialReference::Environment { variable } => {
-                    credential.insert("source", "environment".into());
-                    credential.insert("variable", variable.into());
-                }
-                CredentialReference::Stored { id } => {
-                    credential.insert("source", "stored".into());
-                    credential.insert("id", id.into());
-                }
-            }
-            connection["credential"] =
-                toml_edit::Item::Value(toml_edit::Value::InlineTable(credential));
-        }
-        if let Some(program) = input.codex_program {
-            connection["codex_program"] = toml_edit::value(program);
-        }
-        if let Some(home) = input.codex_home {
-            connection["codex_home"] = toml_edit::value(home.to_string_lossy().into_owned());
-        }
-        let mut models = toml_edit::Table::new();
-        models[&input.model] = toml_edit::Item::Table(toml_edit::Table::new());
-        connection["models"] = toml_edit::Item::Table(models);
-        providers[&input.id] = toml_edit::Item::Table(connection);
-        transaction.commit(true)
     }
 
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {

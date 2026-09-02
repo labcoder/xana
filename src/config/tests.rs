@@ -775,68 +775,6 @@ fn api_connections_require_explicit_non_secret_credential_references() {
 }
 
 #[test]
-fn connection_edits_preserve_comments_and_validate_the_complete_document() {
-    let directory = tempdir().unwrap();
-    let path = directory.path().join("config.toml");
-    fs::write(
-        &path,
-        MINIMAL.replace("version = 1", "# keep me\nversion = 1"),
-    )
-    .unwrap();
-
-    XanaConfig::add_connection(
-        &path,
-        NewConnection {
-            id: "codex".into(),
-            kind: ProviderKind::Codex,
-            base_url: None,
-            credential: None,
-            model: "gpt-5.3-codex".into(),
-            codex_program: Some("codex".into()),
-            codex_home: None,
-        },
-    )
-    .unwrap();
-
-    let edited = fs::read_to_string(&path).unwrap();
-    assert!(edited.contains("# keep me"));
-    assert!(edited.contains("version = 4"));
-    let registry = XanaConfig::load_registry_from(&path).unwrap();
-    assert_eq!(registry.connections["codex"].kind, ProviderKind::Codex);
-}
-
-#[test]
-fn structured_writes_migrate_legacy_profile_keys_to_connection() {
-    let directory = tempdir().unwrap();
-    let path = directory.path().join("config.toml");
-    fs::write(
-        &path,
-        MINIMAL.replace("version = 1", "# preserve this\nversion = 2"),
-    )
-    .unwrap();
-
-    XanaConfig::add_connection(
-        &path,
-        NewConnection {
-            id: "codex".into(),
-            kind: ProviderKind::Codex,
-            base_url: None,
-            credential: None,
-            model: "gpt-5.6-sol".into(),
-            codex_program: Some("codex".into()),
-            codex_home: None,
-        },
-    )
-    .unwrap();
-
-    let edited = fs::read_to_string(&path).unwrap();
-    assert!(edited.contains("# preserve this"));
-    assert!(edited.contains("version = 4"));
-    assert!(edited.contains("connection = \"local\""));
-    assert!(!edited.contains("provider = \"local\""));
-}
-
-#[test]
 fn future_version_is_reported_before_future_fields() {
     let input = MINIMAL.replace("version = 1", "version = 9\nfuture_schema_field = true");
 

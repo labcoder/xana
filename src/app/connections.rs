@@ -1,11 +1,12 @@
 //! Connection, credential, catalog, and model command orchestration.
 
 use crate::{
-    cli::{AuthCommand, ConnectionCommand, ModelCommand},
+    cli::{AuthCommand, ConnectionCommand, ModelCommand, PermissionChoice, SetupArgs},
     config::{CredentialReference, ProviderKind, XanaConfig},
     connection_management::{
-        ConnectionDraft, ConnectionEffect, ConnectionManagement, ConnectionReceipt,
-        ConnectionSummaryView, ManagedAccountState,
+        ConnectionEffect, ConnectionManagement, ConnectionProgress, ConnectionProgressStage,
+        ConnectionReceipt, ConnectionSummaryView, ConnectionTestReceipt, CredentialState,
+        ManagedAccountState, ReachabilityState, RecoveryAction,
     },
     credential::{SecretString, delete_secret, store_secret},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
@@ -78,56 +79,105 @@ pub(super) async fn run_connection_command<W: Write>(
             base_url,
             env,
             credential_id,
+            key_from_stdin,
             model,
             codex_program,
             codex_home,
+            yes,
+            dry_run,
         } => {
-            let kind = kind.into();
-            let credential = match (env, credential_id) {
-                (Some(variable), None) => Some(CredentialReference::Environment { variable }),
-                (None, Some(id)) => Some(CredentialReference::Stored { id }),
-                (None, None)
-                    if matches!(
-                        kind,
-                        ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
-                    ) =>
-                {
-                    Some(CredentialReference::Stored { id: id.clone() })
-                }
-                (None, None) => None,
-                (Some(_), Some(_)) => unreachable!("clap rejects conflicting flags"),
-            };
-            let receipt = ConnectionManagement::open(paths)?.add(ConnectionDraft {
-                id: id.clone(),
-                kind,
+            let permission_mode = XanaConfig::load_registry_from(paths.config_file())
+                .map(|registry| permission_choice(registry.permission_mode))
+                .unwrap_or(PermissionChoice::Ask);
+            let setup_args = SetupArgs {
+                non_interactive: true,
+                quick: true,
+                kind: Some(kind),
+                connection: Some(id.clone()),
                 base_url,
-                credential,
-                model: model.clone(),
                 codex_program,
                 codex_home,
-            })?;
+                credential_env: env,
+                credential_id,
+                key_from_stdin,
+                model: Some(model),
+                permission_mode: Some(permission_mode),
+                yes,
+                dry_run,
+                ..SetupArgs::default()
+            };
+            let mut input = io::stdin().lock();
+            let mut transcript = Vec::new();
+            let outcome = crate::setup::run(
+                &setup_args,
+                paths,
+                false,
+                false,
+                &mut input,
+                &mut transcript,
+                crate::presentation::ResolvedPresentation::plain(),
+            )
+            .await?;
+            let effect = if dry_run {
+                ConnectionEffect::Validated
+            } else {
+                ConnectionEffect::Added
+            };
+            let receipt = action_receipt(
+                &id,
+                if dry_run {
+                    "connection.add.validated.v1"
+                } else {
+                    "connection.add.completed.v1"
+                },
+                effect,
+            );
             if json {
                 write_json(output, &receipt)?;
             } else {
-                writeln!(output, "connection added: {id} ({})", kind.as_str())?;
-                writeln!(output, "model declared: {id}/{model}")?;
-                writeln!(
-                    output,
-                    "backup: {}",
-                    receipt
-                        .backup
-                        .as_ref()
-                        .expect("add receipt backup")
-                        .display()
-                )?;
-                if matches!(
-                    kind,
-                    ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
-                ) {
-                    writeln!(output, "next: xana connection set-key {id}")?;
-                } else {
-                    writeln!(output, "next: xana connection status {id}")?;
-                }
+                output.write_all(&transcript)?;
+                writeln!(output, "receipt: {}", receipt.semantic_code)?;
+            }
+            debug_assert!(matches!(
+                outcome,
+                crate::setup::SetupOutcome::Committed { .. }
+                    | crate::setup::SetupOutcome::Unchanged
+            ));
+            Ok(())
+        }
+        ConnectionCommand::Test { id } => {
+            let (receipt, _) = test_connection(paths, &id).await?;
+            write_connection_test(output, &receipt, json)?;
+            if !receipt.usable {
+                anyhow::bail!(
+                    "connection {id:?} is not usable; recovery={}",
+                    wire_name(&receipt.recovery)
+                );
+            }
+            Ok(())
+        }
+        ConnectionCommand::Repair { id } => {
+            let (test, models) = test_connection(paths, &id).await?;
+            if !test.usable {
+                write_connection_test(output, &test, json)?;
+                anyhow::bail!(
+                    "connection {id:?} could not be repaired; recovery={}",
+                    wire_name(&test.recovery)
+                );
+            }
+            let manager = model_manager(paths)?;
+            manager.write_discovered_cache(&id, &models)?;
+            let receipt = action_receipt(
+                &id,
+                "connection.repair.completed.v1",
+                ConnectionEffect::Repaired,
+            );
+            if json {
+                write_json(output, &receipt)?;
+            } else {
+                writeln!(output, "connection repaired: {id}")?;
+                writeln!(output, "cached models: {}", models.len())?;
+                writeln!(output, "receipt: {}", receipt.semantic_code)?;
             }
             Ok(())
         }
@@ -261,7 +311,12 @@ pub(super) async fn run_connection_command<W: Write>(
             }
             Ok(())
         }
-        ConnectionCommand::DeleteKey { id } => {
+        ConnectionCommand::DeleteKey { id, yes } => {
+            if !yes {
+                anyhow::bail!(
+                    "credential deletion is separate from connection removal and requires --yes"
+                )
+            }
             let manager = model_manager(paths)?;
             let connection = manager.connection(&id)?;
             let CredentialReference::Stored { id: credential_id } = connection
@@ -413,6 +468,177 @@ pub(super) async fn run_connection_command<W: Write>(
             Ok(())
         }
     }
+}
+
+fn permission_choice(mode: crate::config::PermissionMode) -> PermissionChoice {
+    match mode {
+        crate::config::PermissionMode::Deny => PermissionChoice::Deny,
+        crate::config::PermissionMode::Ask => PermissionChoice::Ask,
+        crate::config::PermissionMode::Allow => PermissionChoice::Allow,
+    }
+}
+
+async fn test_connection(
+    paths: &XanaPaths,
+    id: &str,
+) -> Result<(
+    ConnectionTestReceipt,
+    Vec<crate::model_catalog::ModelDescriptor>,
+)> {
+    let management = ConnectionManagement::open(paths)?;
+    let summary = management
+        .snapshot()?
+        .connections
+        .into_iter()
+        .find(|connection| connection.id == id)
+        .with_context(|| format!("unknown connection {id:?}"))?;
+    let manager = model_manager(paths)?;
+    let connection = manager.connection(id)?.clone();
+    let mut progress = vec![
+        ConnectionProgress {
+            semantic_code: "connection.test.validating.v1",
+            stage: ConnectionProgressStage::Validating,
+        },
+        ConnectionProgress {
+            semantic_code: "connection.test.authority.v1",
+            stage: ConnectionProgressStage::CheckingAuthority,
+        },
+    ];
+    let mut receipt = ConnectionTestReceipt {
+        version: crate::connection_management::CONNECTION_STATE_VERSION,
+        semantic_code: "connection.test.completed.v1",
+        effect: ConnectionEffect::Tested,
+        connection: id.to_owned(),
+        execution: summary.execution,
+        reachability: ReachabilityState::NotTested,
+        credential: summary.facets.credential,
+        account: summary.facets.account,
+        discovered_model_count: 0,
+        usable: false,
+        recovery: summary.recovery,
+        failure: None,
+        progress: Vec::new(),
+    };
+    if matches!(
+        receipt.credential,
+        CredentialState::Missing | CredentialState::Inaccessible
+    ) {
+        progress.push(ConnectionProgress {
+            semantic_code: "connection.test.completed.v1",
+            stage: ConnectionProgressStage::Complete,
+        });
+        receipt.progress = progress;
+        return Ok((receipt, Vec::new()));
+    }
+    progress.push(ConnectionProgress {
+        semantic_code: "connection.test.catalog.v1",
+        stage: ConnectionProgressStage::DiscoveringCatalog,
+    });
+    let models = if connection.kind == ProviderKind::Codex {
+        match CodexAppServer::spawn(&codex_launch(&connection)).await {
+            Err(error) => {
+                receipt.reachability = ReachabilityState::Unreachable;
+                receipt.recovery = RecoveryAction::Inspect;
+                receipt.failure = Some(bounded_failure(error.to_string()));
+                Vec::new()
+            }
+            Ok(mut server) => {
+                receipt.reachability = ReachabilityState::Reachable;
+                let models = match server.account_status().await {
+                    Err(error) => {
+                        receipt.recovery = RecoveryAction::Inspect;
+                        receipt.failure = Some(bounded_failure(error.to_string()));
+                        Vec::new()
+                    }
+                    Ok(account) => {
+                        receipt.account = managed_account_state(&account);
+                        if matches!(account, AccountStatus::LoggedOut) {
+                            receipt.recovery = RecoveryAction::Login;
+                            Vec::new()
+                        } else {
+                            match server.models().await {
+                                Ok(models) => models,
+                                Err(error) => {
+                                    receipt.recovery = RecoveryAction::RefreshCatalog;
+                                    receipt.failure = Some(bounded_failure(error.to_string()));
+                                    Vec::new()
+                                }
+                            }
+                        }
+                    }
+                };
+                server.shutdown().await?;
+                models
+            }
+        }
+    } else {
+        match manager.probe_native(id, None).await {
+            Ok(models) => {
+                receipt.reachability = ReachabilityState::Reachable;
+                models
+            }
+            Err(error) => {
+                receipt.reachability = ReachabilityState::Unreachable;
+                receipt.recovery = RecoveryAction::Inspect;
+                receipt.failure = Some(bounded_failure(error.to_string()));
+                Vec::new()
+            }
+        }
+    };
+    receipt.discovered_model_count = models.len();
+    receipt.usable = receipt.reachability == ReachabilityState::Reachable
+        && !models.is_empty()
+        && !matches!(receipt.account, ManagedAccountState::LoggedOut);
+    if receipt.usable {
+        receipt.recovery = RecoveryAction::None;
+    } else if receipt.reachability == ReachabilityState::Reachable
+        && receipt.recovery != RecoveryAction::Login
+    {
+        receipt.recovery = RecoveryAction::RefreshCatalog;
+    }
+    progress.push(ConnectionProgress {
+        semantic_code: "connection.test.completed.v1",
+        stage: ConnectionProgressStage::Complete,
+    });
+    receipt.progress = progress;
+    Ok((receipt, models))
+}
+
+fn write_connection_test<W: Write>(
+    output: &mut W,
+    receipt: &ConnectionTestReceipt,
+    json: bool,
+) -> Result<()> {
+    if json {
+        return write_json(output, receipt);
+    }
+    writeln!(output, "connection: {}", receipt.connection)?;
+    writeln!(output, "execution: {}", wire_name(&receipt.execution))?;
+    writeln!(output, "reachability: {}", wire_name(&receipt.reachability))?;
+    writeln!(output, "credential: {}", wire_name(&receipt.credential))?;
+    writeln!(output, "account: {}", wire_name(&receipt.account))?;
+    writeln!(
+        output,
+        "discovered models: {}",
+        receipt.discovered_model_count
+    )?;
+    writeln!(output, "usable: {}", receipt.usable)?;
+    writeln!(output, "recovery: {}", wire_name(&receipt.recovery))?;
+    if let Some(failure) = &receipt.failure {
+        writeln!(output, "failure: {failure}")?;
+    }
+    writeln!(output, "receipt: {}", receipt.semantic_code)?;
+    Ok(())
+}
+
+fn bounded_failure(mut message: String) -> String {
+    const MAX_CHARS: usize = 1_024;
+    if message.chars().count() <= MAX_CHARS {
+        return message;
+    }
+    message = message.chars().take(MAX_CHARS).collect();
+    message.push('…');
+    message
 }
 
 fn write_account_status<W: Write>(output: &mut W, status: &AccountStatus) -> Result<()> {

@@ -397,13 +397,17 @@ Advanced connection commands are:
 ```text
 xana connection list
 xana connection --json list
-xana connection add ID --kind KIND --model MODEL [options]
+xana connection add ID --kind KIND --model MODEL --yes [options]
+xana connection add ID --kind KIND --model MODEL --dry-run [options]
+xana connection test ID
+xana connection repair ID
 xana connection status ID
 xana connection --json status ID
 xana connection set-key ID
-xana connection delete-key ID
+xana connection delete-key ID --yes
 xana connection login ID [--device-code]
 xana connection logout ID --yes
+xana connection refresh ID
 xana connection remove ID --yes
 ```
 
@@ -419,12 +423,27 @@ reported fresh for 24 hours and stale afterward; older version-1 caches remain
 usable with unknown age. A configured model without a live cache is
 `configured_only`, not falsely presented as a tested endpoint.
 
+`connection add` uses the same establish, live-catalog validation, review,
+atomic commit, backup, and rollback transaction as setup. `--dry-run` validates
+without writing; a noninteractive commit requires `--yes`. Supply an existing
+stored credential reference with `--credential-id`, an environment-owned
+reference with `--env`, or pipe one bounded new key through
+`--key-from-stdin`. A failed endpoint, credential, catalog, or model check
+leaves the prior configuration and stored key unchanged.
+
+`connection test` is read-only and reports independent credential/account,
+reachability, catalog, model-count, usability, and recovery facts.
+`connection repair` repeats that probe and replaces only the derived catalog
+cache after success; `connection refresh` is its catalog-oriented compatibility
+path. Plain and `--json` results use the same typed state and never include a
+secret value.
+
 Connection add/remove edits use Xana's atomic, comment-preserving config
 transaction and retain `config.toml.bak`. `remove` rejects the selected
 connection and any connection referenced by a Profile, and its receipt says
 whether a stored credential or managed account remains. Select another model
 and remove Profile references first; credential deletion and managed logout
-remain separate explicit actions.
+remain separate explicit, separately confirmed actions.
 
 ### Child task routes
 
@@ -465,25 +484,22 @@ admits one supervised native or managed child; see
 
 ### API-key providers
 
-Add a connection, store its key in the operating-system credential store, and
-refresh models:
+Establish a connection and validate its exact model before committing it. The
+following examples use environment-owned credentials so no secret enters argv
+or Xana's config:
 
 ```bash
-xana connection add openai --kind openai --model gpt-4.1
-xana connection set-key openai
-xana model refresh openai
+xana connection add openai --kind openai --env OPENAI_API_KEY --model EXACT_MODEL_ID --yes
 
-xana connection add openrouter --kind openrouter --model openai/gpt-4.1
-xana connection set-key openrouter
-xana model refresh openrouter
+xana connection add openrouter --kind openrouter --env OPENROUTER_API_KEY --model EXACT_MODEL_ID --yes
 
-xana connection add anthropic --kind anthropic --model claude-sonnet-4-5
-xana connection set-key anthropic
-xana model refresh anthropic
+xana connection add anthropic --kind anthropic --env ANTHROPIC_API_KEY --model EXACT_MODEL_ID --yes
 ```
 
-Use `--from-stdin` for a bounded noninteractive key read. Avoid putting a key
-directly in a command argument or shell history. Xana tests a staged replacement
+Use `--key-from-stdin` on `connection add` to validate and commit a new
+OS-stored credential in one reviewed transaction. Use `connection set-key
+--from-stdin` to replace the key for an existing stored-credential connection.
+Avoid putting a key directly in a command argument or shell history. Xana tests a staged replacement
 against the connection's bounded model-catalog endpoint before replacing the
 OS-stored key, so an invalid or offline candidate preserves the prior key. A
 successful test also refreshes the non-secret catalog; if only that derived
@@ -512,10 +528,12 @@ environment bearer credential.
 
 ### ChatGPT subscription through Codex
 
-Install the Codex CLI and log it in normally, or let Xana delegate login:
+Install the Codex CLI and authenticate it before adding the first managed
+connection. Once the connection exists, Xana can delegate later login changes:
 
 ```bash
-xana connection add codex --kind codex --model ADVERTISED_MODEL_ID
+codex login
+xana connection add codex --kind codex --model ADVERTISED_MODEL_ID --yes
 xana connection status codex
 xana connection login codex
 # Headless alternative:
@@ -524,6 +542,11 @@ xana model refresh codex
 xana model use codex/ADVERTISED_MODEL_ID
 xana
 ```
+
+The initial `connection add` intentionally refuses to save a managed connection
+until the configured Codex executable, account, catalog, and exact model are
+usable. Run `codex login` first because Xana cannot address `connection login`
+until that named connection exists. Guided `xana setup` follows the same rule.
 
 Replace `ADVERTISED_MODEL_ID` with an exact ID advertised by the installed
 Codex app-server; use `xana model list --connection codex` after refresh. No

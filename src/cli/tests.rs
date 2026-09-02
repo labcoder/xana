@@ -108,12 +108,24 @@ fn parses_connection_and_model_control_plane() {
                 base_url: None,
                 env: None,
                 credential_id: None,
+                key_from_stdin: false,
                 model: "gpt-5.3-codex".into(),
                 codex_program: None,
                 codex_home: None,
+                yes: false,
+                dry_run: false,
             }
         }))
     );
+    for action in ["test", "repair", "refresh"] {
+        assert!(matches!(
+            Cli::try_parse_from(["xana", "connection", action, "codex"])
+                .unwrap()
+                .command,
+            Some(Command::Connection(_))
+        ));
+    }
+    assert!(Cli::try_parse_from(["xana", "connection", "delete-key", "openai"]).is_ok());
     assert_eq!(
         Cli::try_parse_from(["xana", "model", "use", "openrouter/openai/gpt-4.1"])
             .unwrap()

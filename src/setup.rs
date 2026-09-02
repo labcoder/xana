@@ -849,13 +849,16 @@ fn choose_credential(
     ui: SetupUi,
 ) -> Result<(SetupCredential, Option<SecretString>)> {
     if matches!(kind, ProviderKind::Ollama | ProviderKind::Codex) {
-        if args.credential_env.is_some() || args.key_from_stdin {
+        if args.credential_env.is_some() || args.credential_id.is_some() || args.key_from_stdin {
             bail!("the selected connection kind does not accept API-key setup options");
         }
         return Ok((SetupCredential::None, None));
     }
     if let Some(variable) = &args.credential_env {
         return Ok((SetupCredential::Environment(variable.clone()), None));
+    }
+    if let Some(id) = &args.credential_id {
+        return Ok((SetupCredential::Stored { id: id.clone() }, None));
     }
     if args.key_from_stdin {
         let secret = read_bounded_secret(input)?;

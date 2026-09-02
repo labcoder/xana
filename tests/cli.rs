@@ -60,6 +60,26 @@ fn fake_chat_server(final_text: &str) -> (String, thread::JoinHandle<()>) {
     (format!("http://{address}/v1"), worker)
 }
 
+fn fake_catalog_server(requests: usize) -> (String, thread::JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake catalog");
+    let address = listener.local_addr().expect("fake catalog address");
+    let worker = thread::spawn(move || {
+        for _ in 0..requests {
+            let (mut stream, _) = listener.accept().expect("accept catalog request");
+            read_http_request(&mut stream);
+            let body = r#"{"data":[{"id":"test-model"}]}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write catalog response");
+        }
+    });
+    (format!("http://{address}/v1"), worker)
+}
+
 fn blocking_chat_server() -> (
     String,
     mpsc::Receiver<()>,
@@ -198,6 +218,74 @@ fn connection_json_is_typed_secret_free_and_scope_explicit() {
     let rendered = String::from_utf8(output.stdout).unwrap();
     assert!(!rendered.to_ascii_lowercase().contains("api_key"));
     assert!(!rendered.contains("Bearer "));
+}
+
+#[test]
+fn connection_add_test_and_repair_share_validated_catalog_semantics() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, server) = fake_catalog_server(3);
+
+    let added = xana(&home)
+        .args([
+            "connection",
+            "--json",
+            "add",
+            "local",
+            "--kind",
+            "openai-compatible",
+            "--base-url",
+            &base_url,
+            "--model",
+            "test-model",
+            "--yes",
+        ])
+        .output()
+        .expect("add validated connection");
+    assert_success(&added);
+    let added_json: serde_json::Value = serde_json::from_slice(&added.stdout).unwrap();
+    assert_eq!(added_json["semantic_code"], "connection.add.completed.v1");
+    assert!(home.join("config.toml").is_file());
+
+    std::fs::remove_dir_all(home.join("cache/models")).unwrap();
+    let tested = xana(&home)
+        .args(["connection", "--json", "test", "local"])
+        .output()
+        .expect("test connection");
+    assert_success(&tested);
+    let tested_json: serde_json::Value = serde_json::from_slice(&tested.stdout).unwrap();
+    assert_eq!(tested_json["semantic_code"], "connection.test.completed.v1");
+    assert_eq!(tested_json["usable"], true);
+    assert!(!home.join("cache/models/local.json").exists());
+
+    let repaired = xana(&home)
+        .args(["connection", "--json", "repair", "local"])
+        .output()
+        .expect("repair connection");
+    assert_success(&repaired);
+    let repaired_json: serde_json::Value = serde_json::from_slice(&repaired.stdout).unwrap();
+    assert_eq!(
+        repaired_json["semantic_code"],
+        "connection.repair.completed.v1"
+    );
+    assert!(home.join("cache/models/local.json").is_file());
+    server.join().unwrap();
+}
+
+#[test]
+fn credential_deletion_requires_its_own_confirmation() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let output = xana(&home)
+        .args(["connection", "delete-key", "missing"])
+        .output()
+        .expect("reject unconfirmed credential deletion");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("separate from connection removal"));
+    assert!(stderr.contains("requires --yes"));
+    assert!(!home.join("config.toml").exists());
 }
 
 #[test]

@@ -765,8 +765,21 @@ pub(crate) struct SetupArgs {
     )]
     pub(crate) credential_env: Option<String>,
 
+    /// Reuse one existing operating-system credential-store identifier.
+    #[arg(
+        long,
+        value_name = "ID",
+        conflicts_with_all = ["credential_env", "key_from_stdin"],
+        help_heading = "Connection"
+    )]
+    pub(crate) credential_id: Option<String>,
+
     /// Read one API key from stdin; never place secrets in argv.
-    #[arg(long, conflicts_with = "credential_env", help_heading = "Connection")]
+    #[arg(
+        long,
+        conflicts_with_all = ["credential_env", "credential_id"],
+        help_heading = "Connection"
+    )]
     pub(crate) key_from_stdin: bool,
 
     /// Select an exact model from the established live catalog.
@@ -987,24 +1000,37 @@ pub(crate) struct UsageArgs {
 pub(crate) enum ConnectionCommand {
     /// List configured native providers and managed runtimes.
     List,
-    /// Add a connection declaration without storing plaintext credentials.
+    /// Establish, validate, and atomically add or update one connection.
     Add {
         id: String,
         #[arg(long, value_enum)]
         kind: ConnectionKindChoice,
         #[arg(long)]
         base_url: Option<String>,
-        #[arg(long, conflicts_with = "credential_id")]
+        #[arg(long, conflicts_with_all = ["credential_id", "key_from_stdin"])]
         env: Option<String>,
-        #[arg(long, conflicts_with = "env")]
+        #[arg(long, conflicts_with_all = ["env", "key_from_stdin"])]
         credential_id: Option<String>,
+        /// Read a replacement key from stdin, validate it, then store it atomically with config.
+        #[arg(long)]
+        key_from_stdin: bool,
         #[arg(long)]
         model: String,
         #[arg(long)]
         codex_program: Option<String>,
         #[arg(long)]
         codex_home: Option<PathBuf>,
+        /// Confirm the reviewed noninteractive transaction.
+        #[arg(long)]
+        yes: bool,
+        /// Establish and validate without mutating durable state.
+        #[arg(long)]
+        dry_run: bool,
     },
+    /// Establish one configured connection without changing durable state.
+    Test { id: String },
+    /// Re-establish one connection and replace only its derived model catalog.
+    Repair { id: String },
     /// Show credential/account and runtime status for one connection.
     Status { id: String },
     /// Store an API key in the operating-system credential store.
@@ -1028,9 +1054,13 @@ pub(crate) enum ConnectionCommand {
         yes: bool,
     },
     /// Delete an API key from the operating-system credential store.
-    DeleteKey { id: String },
+    DeleteKey {
+        id: String,
+        /// Confirm deletion of the separately owned stored credential.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Refresh and cache non-secret model metadata.
-    #[command(hide = true)]
     Refresh { id: String },
     /// Remove an unreferenced connection declaration.
     Remove {

@@ -1261,10 +1261,15 @@ configuration only: they do not confer runtime authority or imply that a
 package, endpoint, or service is available.
 Model selection (64 KiB maximum) and bounded non-secret catalogs (8 MiB each)
 are stored separately so the control plane does not rewrite a user's normal
-selection into TOML. Structured
-connection add/remove edits preserve comments, migrate legacy profile
-`provider` keys to canonical `connection`, write version 4, and validate the
-complete result. Existing version 1-3 documents remain readable.
+selection into TOML. Structured connection removal preserves comments,
+migrates legacy profile `provider` keys to canonical `connection`, writes
+version 4, and validates the complete result. Connection addition and update
+instead share setup's stronger establish, live-catalog validation, review,
+atomic commit, backup, and rollback transaction. Read-only connection tests
+leave both configuration and catalogs unchanged; repair replaces only the
+derived catalog after a successful probe. Credential deletion and managed
+logout remain distinct confirmed authority changes. Existing version 1-3
+documents remain readable.
 
 The provider-neutral connect hub is a navigation surface, not a discovery
 engine. Focused image/vision setup and MCP add/remove operations are explicit

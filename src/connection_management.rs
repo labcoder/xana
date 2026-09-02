@@ -5,10 +5,7 @@
 //! can be represented by these types.
 
 use crate::{
-    config::{
-        ConnectionConfig, ConnectionRegistry, CredentialReference, NewConnection, ProviderKind,
-        XanaConfig,
-    },
+    config::{ConnectionConfig, ConnectionRegistry, CredentialReference, ProviderKind, XanaConfig},
     credential::CredentialAvailability,
     model_catalog::{
         CatalogCacheState, CatalogMetadata, ExecutionKind, ModelDescriptor, ModelManager,
@@ -170,20 +167,12 @@ pub(crate) struct RemovalPlan {
     pub(crate) retains_managed_account: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ConnectionDraft {
-    pub(crate) id: String,
-    pub(crate) kind: ProviderKind,
-    pub(crate) base_url: Option<String>,
-    pub(crate) credential: Option<CredentialReference>,
-    pub(crate) model: String,
-    pub(crate) codex_program: Option<String>,
-    pub(crate) codex_home: Option<PathBuf>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ConnectionEffect {
+    Validated,
+    Tested,
+    Repaired,
     Added,
     Removed,
     SelectedForNewConversations,
@@ -192,6 +181,38 @@ pub(crate) enum ConnectionEffect {
     ManagedLoginCompleted,
     ManagedLogoutCompleted,
     CatalogRefreshed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConnectionProgressStage {
+    Validating,
+    CheckingAuthority,
+    DiscoveringCatalog,
+    Complete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ConnectionProgress {
+    pub(crate) semantic_code: &'static str,
+    pub(crate) stage: ConnectionProgressStage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ConnectionTestReceipt {
+    pub(crate) version: u16,
+    pub(crate) semantic_code: &'static str,
+    pub(crate) effect: ConnectionEffect,
+    pub(crate) connection: String,
+    pub(crate) execution: ExecutionKind,
+    pub(crate) reachability: ReachabilityState,
+    pub(crate) credential: CredentialState,
+    pub(crate) account: ManagedAccountState,
+    pub(crate) discovered_model_count: usize,
+    pub(crate) usable: bool,
+    pub(crate) recovery: RecoveryAction,
+    pub(crate) failure: Option<String>,
+    pub(crate) progress: Vec<ConnectionProgress>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,35 +292,6 @@ impl<'a> ConnectionManagement<'a> {
         Ok(ConnectionSnapshot {
             version: CONNECTION_STATE_VERSION,
             connections,
-        })
-    }
-
-    pub(crate) fn add(
-        &self,
-        draft: ConnectionDraft,
-    ) -> Result<ConnectionReceipt, ConnectionManagementError> {
-        let id = draft.id.clone();
-        XanaConfig::add_connection(
-            self.paths.config_file(),
-            NewConnection {
-                id: draft.id,
-                kind: draft.kind,
-                base_url: draft.base_url,
-                credential: draft.credential,
-                model: draft.model,
-                codex_program: draft.codex_program,
-                codex_home: draft.codex_home,
-            },
-        )
-        .map_err(|error| mutation_error(&id, error.to_string()))?;
-        Ok(ConnectionReceipt {
-            version: CONNECTION_STATE_VERSION,
-            semantic_code: "connection.add.completed.v1",
-            connection: id,
-            effect: ConnectionEffect::Added,
-            backup: Some(self.paths.config_file().with_extension("toml.bak")),
-            retained_authority: Vec::new(),
-            warnings: Vec::new(),
         })
     }
 
@@ -788,57 +780,5 @@ mod tests {
             ConnectionEffect::SelectedForNewConversations
         );
         assert_eq!(receipt.semantic_code, "connection.selection.completed.v1");
-    }
-
-    #[test]
-    fn add_and_remove_share_backup_receipts_and_keep_authorities_separate() {
-        let directory = tempdir().unwrap();
-        let paths =
-            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
-        std::fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
-        let config = XanaConfig::render_initial(InitialConfig {
-            connection: InitialConnection::Ollama {
-                name: "ollama".to_owned(),
-                base_url: "http://localhost:11434/v1".to_owned(),
-            },
-            model: "qwen".to_owned(),
-            max_tool_rounds: 8,
-            shell: ShellConfig::default(),
-            permission_mode: PermissionMode::Ask,
-            reasoning_effort: None,
-        })
-        .unwrap();
-        std::fs::write(paths.config_file(), config).unwrap();
-
-        let manager = ConnectionManagement::open(&paths).unwrap();
-        let added = manager
-            .add(ConnectionDraft {
-                id: "remote".to_owned(),
-                kind: ProviderKind::OpenAi,
-                base_url: None,
-                credential: Some(CredentialReference::Stored {
-                    id: "remote".to_owned(),
-                }),
-                model: "test-model".to_owned(),
-                codex_program: None,
-                codex_home: None,
-            })
-            .unwrap();
-        let backup = paths.config_file().with_extension("toml.bak");
-        assert_eq!(added.backup.as_deref(), Some(backup.as_path()));
-        assert!(backup.is_file());
-
-        let manager = ConnectionManagement::open(&paths).unwrap();
-        let plan = manager.removal_plan("remote", std::iter::empty()).unwrap();
-        assert!(plan.retains_credential);
-        let removed = manager.remove(&plan).unwrap();
-        assert_eq!(removed.backup.as_deref(), Some(backup.as_path()));
-        assert_eq!(removed.retained_authority, ["stored_credential"]);
-        assert!(
-            !std::fs::read_to_string(paths.config_file())
-                .unwrap()
-                .contains("remote")
-        );
-        assert!(std::fs::read_to_string(backup).unwrap().contains("remote"));
     }
 }
