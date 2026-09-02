@@ -516,7 +516,7 @@ impl TuiState {
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
             Some(Overlay::ExternalImageApproval { .. }) => 2,
             Some(Overlay::VisionApproval { .. }) => 4,
-            Some(Overlay::Artifact { .. }) => 4,
+            Some(Overlay::Artifact { .. }) => 6,
             Some(Overlay::SessionPicker { query, choices, .. }) => choices
                 .iter()
                 .filter(|row| session_matches(row, query))
@@ -552,7 +552,7 @@ impl TuiState {
             }
             Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
             Some(Overlay::VisionApproval { selected, .. }) => (selected, 4),
-            Some(Overlay::Artifact { selected, .. }) => (selected, 4),
+            Some(Overlay::Artifact { selected, .. }) => (selected, 6),
             Some(Overlay::ProfileCreate { selected, .. }) => (selected, 3),
             Some(Overlay::SessionPicker {
                 query,
@@ -670,6 +670,8 @@ impl TuiState {
             } => {
                 let action = [
                     ArtifactAction::Preview,
+                    ArtifactAction::CopyReference,
+                    ArtifactAction::Save,
                     ArtifactAction::InsertReference,
                     ArtifactAction::Reveal,
                     ArtifactAction::Open,

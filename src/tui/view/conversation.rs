@@ -42,7 +42,7 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> 
     let mut selected_rows = 0usize;
     let mut start = state.messages.len();
     for (index, message) in state.messages.iter().enumerate().rev() {
-        let batch = conversation_message_lines(message, profile);
+        let batch = conversation_message_lines(message, profile, &state.inline_image_capability);
         selected_rows = selected_rows.saturating_add(wrapped_height(&batch, width));
         batches.push(batch);
         start = index;
@@ -210,6 +210,7 @@ fn ordered_points(left: ScreenPoint, right: ScreenPoint) -> (ScreenPoint, Screen
 fn conversation_message_lines(
     message: &super::super::state::VisibleMessage,
     profile: ResolvedPresentation,
+    inline_image_capability: &str,
 ) -> Vec<Line<'static>> {
     let (label, token) = match message.kind {
         MessageKind::User => ("you", SemanticToken::User),
@@ -280,6 +281,19 @@ fn conversation_message_lines(
         for detail in &artifact.details {
             lines.push(Line::styled(
                 format!("    {detail}"),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+        }
+        if artifact.record.media_type.starts_with("image/") {
+            lines.push(Line::styled(
+                format!("    presentation: {inline_image_capability}"),
+                semantic_style(profile, SemanticToken::Muted),
+            ));
+            lines.push(Line::styled(
+                format!(
+                    "    /artifact {} opens explicit preview and OS actions",
+                    artifact.record.reference.id
+                ),
                 semantic_style(profile, SemanticToken::Muted),
             ));
         }

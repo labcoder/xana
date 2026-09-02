@@ -9,6 +9,7 @@ mod command;
 mod composer;
 mod effects;
 mod espejo;
+mod inline_image;
 mod input;
 mod intro;
 mod lifecycle;
@@ -45,6 +46,7 @@ pub(crate) struct PreparedTui {
     paths: Box<crate::paths::XanaPaths>,
     clipboard: clipboard::Clipboard,
     continuation: Option<TuiContinuation>,
+    inline_images: Box<inline_image::InlineImageController>,
 }
 
 impl PreparedTui {
@@ -70,6 +72,7 @@ pub(crate) fn prepare(
     paths: crate::paths::XanaPaths,
 ) -> io::Result<PreparedTui> {
     let mut terminal = TerminalSession::enter()?;
+    let inline_images = inline_image::InlineImageController::detect(preferences.inline_image);
     intro::play(terminal.terminal_mut(), profile)?;
     let state = TuiState::starting(preferences.composer);
     terminal
@@ -83,6 +86,7 @@ pub(crate) fn prepare(
         paths: Box::new(paths),
         clipboard: clipboard::Clipboard::default(),
         continuation: None,
+        inline_images: Box::new(inline_images),
     })
 }
 

@@ -23,6 +23,7 @@ pub(super) fn render(
     area: Rect,
     state: &TuiState,
     profile: ResolvedPresentation,
+    inline_preview: Option<&ratatui_image::protocol::Protocol>,
 ) {
     let Some(overlay) = &state.overlay else {
         return;
@@ -206,6 +207,7 @@ pub(super) fn render(
                 Line::raw(
                     "Drag conversation text to select; Ctrl+C copies it; click away clears it.",
                 ),
+                Line::raw(format!("Image previews: {}", state.inline_image_capability)),
                 Line::raw("/settings [SECTION] opens staged preferences and returns safely."),
                 Line::raw("Slash commands and palette entries share one registry."),
             ],
@@ -359,6 +361,8 @@ pub(super) fn render(
             lines.push(Line::raw(""));
             for (index, action) in [
                 "Preview bounded bytes",
+                "Copy immutable reference",
+                "Save a verified copy under xana-artifacts/",
                 "Insert immutable reference into draft",
                 "Reveal in the OS file manager",
                 "Open with the OS default application",
@@ -391,6 +395,19 @@ pub(super) fn render(
             .wrap(Wrap { trim: false }),
         popup,
     );
+    if let Some(protocol) = inline_preview
+        && popup.width >= 80
+        && popup.height >= 16
+        && matches!(overlay, Overlay::Artifact { .. })
+    {
+        let image_area = Rect::new(
+            popup.right().saturating_sub(39),
+            popup.y.saturating_add(4),
+            36,
+            popup.height.saturating_sub(6).min(10),
+        );
+        frame.render_widget(ratatui_image::Image::new(protocol), image_area);
+    }
 }
 
 fn render_command_result(

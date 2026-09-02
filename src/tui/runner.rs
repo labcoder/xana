@@ -51,6 +51,8 @@ trait ExecutionOwner {
     ) -> Result<Option<ChatExit>>;
 
     async fn shutdown(self, state: &TuiState) -> Result<()>;
+
+    fn artifact_store(&self) -> &crate::artifact::ArtifactStore;
 }
 
 async fn run<Owner: ExecutionOwner>(
@@ -96,6 +98,8 @@ async fn drive<Owner: ExecutionOwner>(
         WORK_INDICATOR_INTERVAL,
     );
     work_indicator.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut inline_image_poll = tokio::time::interval(FRAME_INTERVAL);
+    inline_image_poll.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut dirty = true;
 
     let exit = loop {
@@ -118,10 +122,12 @@ async fn drive<Owner: ExecutionOwner>(
         tokio::select! {
             biased;
             _ = frames.tick(), if dirty => {
+                let inline_preview = current_artifact_id(state)
+                    .and_then(|artifact_id| prepared.inline_images.protocol_for(artifact_id));
                 prepared
                     .terminal
                     .terminal_mut()
-                .draw(|frame| view::render(frame, state, prepared.profile))
+                .draw(|frame| view::render_with_inline(frame, state, prepared.profile, inline_preview))
                     .context("could not draw Xana TUI")?;
                 terminal_area = prepared.terminal.terminal_mut().size()?;
                 dirty = false;
@@ -178,6 +184,12 @@ async fn drive<Owner: ExecutionOwner>(
                     {
                         break exit;
                     }
+                    if let Some(status) = prepared.inline_images.reconcile(
+                        previewed_artifact(state),
+                        owner.artifact_store(),
+                    ) {
+                        state.set_inline_preview_status(status);
+                    }
                 }
             }
             owner_event = owner.next_event() => {
@@ -187,10 +199,31 @@ async fn drive<Owner: ExecutionOwner>(
             _ = work_indicator.tick(), if !prepared.profile.reduced_motion && state.busy && state.active_operation.is_some() => {
                 dirty |= state.advance_work_indicator();
             }
+            _ = inline_image_poll.tick(), if prepared.inline_images.is_pending() => {
+                if let Some(outcome) = prepared.inline_images.finish_if_ready().await {
+                    state.finish_inline_preview(outcome.artifact_id, outcome.message);
+                    dirty = true;
+                }
+            }
         }
     };
 
     Ok(exit)
+}
+
+fn previewed_artifact(state: &TuiState) -> Option<&crate::artifact::ArtifactRecord> {
+    match &state.overlay {
+        Some(super::state::Overlay::Artifact {
+            artifact,
+            preview: Some(_),
+            ..
+        }) => Some(&artifact.record),
+        _ => None,
+    }
+}
+
+fn current_artifact_id(state: &TuiState) -> Option<crate::identity::ArtifactId> {
+    previewed_artifact(state).map(|record| record.reference.id)
 }
 
 fn inline_control_command(family: &str, arguments: &str) -> bool {
@@ -442,6 +475,10 @@ impl ExecutionOwner for NativeOwner<'_> {
         }
         Ok(())
     }
+
+    fn artifact_store(&self) -> &crate::artifact::ArtifactStore {
+        &self.header.artifact_store
+    }
 }
 
 impl NativeOwner<'_> {
@@ -621,6 +658,10 @@ impl ExecutionOwner for ManagedOwner {
         }
         self.driver.shutdown().await.map_err(anyhow::Error::new)
     }
+
+    fn artifact_store(&self) -> &crate::artifact::ArtifactStore {
+        &self.artifact_store
+    }
 }
 
 pub(crate) async fn run_native(
@@ -646,6 +687,7 @@ pub(crate) async fn run_native(
         prepared.preferences.activity.into(),
         conversation.clone(),
     );
+    state.set_inline_image_capability(prepared.inline_images.capability_summary());
     if let Some(continuation) = prepared.continuation.take() {
         state.restore_continuation(continuation);
     }
@@ -712,6 +754,7 @@ pub(crate) async fn run_managed(
         prepared.preferences.activity.into(),
         conversation,
     );
+    state.set_inline_image_capability(prepared.inline_images.capability_summary());
     if let Some(continuation) = prepared.continuation.take() {
         state.restore_continuation(continuation);
     }

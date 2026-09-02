@@ -118,6 +118,14 @@ pub(crate) enum ActivityPaneChoice {
     Hidden,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum InlineImageChoice {
+    #[default]
+    Auto,
+    Off,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PresentationPreferences {
@@ -134,6 +142,10 @@ pub(crate) struct PresentationPreferences {
     pub(crate) composer: ComposerPreset,
     #[serde(default)]
     pub(crate) activity: ActivityPaneChoice,
+    /// Terminal graphics are opt-out and still require positive capability
+    /// detection. `Auto` never means force a protocol.
+    #[serde(default)]
+    pub(crate) inline_image: InlineImageChoice,
 }
 
 impl Default for PresentationPreferences {
@@ -146,6 +158,7 @@ impl Default for PresentationPreferences {
             density: DensityChoice::Auto,
             composer: ComposerPreset::Submit,
             activity: ActivityPaneChoice::Auto,
+            inline_image: InlineImageChoice::Auto,
         }
     }
 }

@@ -73,6 +73,7 @@ regex = "1.13.1"
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 rpassword = "7.5.4"
 ratatui = { version = "0.30.0", default-features = false, features = ["crossterm"] }
+ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm"] }
 tachyonfx = { version = "0.25.1", default-features = false, features = ["std"] }
 rustyline = { version = "18.0.1", default-features = false }
 same-file = "1.0.6"

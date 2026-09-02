@@ -10,8 +10,8 @@ use crate::{
     config::{ConfigError, ConfigTransactionLock, ConnectionRegistry, XanaConfig},
     paths::XanaPaths,
     presentation::{
-        ActivityPaneChoice, ComposerPreset, DensityChoice, GlyphChoice, MotionChoice,
-        PresentationPreferences, ThemeChoice,
+        ActivityPaneChoice, ComposerPreset, DensityChoice, GlyphChoice, InlineImageChoice,
+        MotionChoice, PresentationPreferences, ThemeChoice,
     },
 };
 use serde::Serialize;
@@ -33,6 +33,7 @@ const APPEARANCE_MOTION: &str = "appearance.motion";
 const APPEARANCE_DENSITY: &str = "appearance.density";
 const APPEARANCE_COMPOSER: &str = "appearance.composer";
 const APPEARANCE_ACTIVITY: &str = "appearance.activity";
+const APPEARANCE_INLINE_IMAGE: &str = "appearance.inline_image";
 const PROFILES_DEFAULT: &str = "profiles.default";
 const PERMISSIONS_DEFAULT: &str = "permissions.default";
 const EXECUTION_SHELL: &str = "execution.shell";
@@ -807,6 +808,21 @@ fn appearance_entries(
             effect,
         )
         .choices(["auto", "open", "hidden"]),
+        SettingEntry::new(
+            APPEARANCE_INLINE_IMAGE,
+            SettingsSection::Appearance,
+            "Inline images",
+            "Use a positively detected terminal image protocol, or always show metadata.",
+            SettingValue::scalar(inline_image_name(preferences.inline_image)),
+        )
+        .editable(
+            SettingKind::Choice,
+            SettingValue::scalar("auto"),
+            source,
+            target,
+            effect,
+        )
+        .choices(["auto", "off"]),
     ]
 }
 
@@ -1521,6 +1537,13 @@ fn apply_presentation_change(
                 other => return Err(internal_invalid(key, other)),
             };
         }
+        APPEARANCE_INLINE_IMAGE => {
+            preferences.inline_image = match value.unwrap_or("auto") {
+                "auto" => InlineImageChoice::Auto,
+                "off" => InlineImageChoice::Off,
+                other => return Err(internal_invalid(key, other)),
+            };
+        }
         _ => return Err(SettingsError::UnknownKey(key.to_owned())),
     }
     Ok(())
@@ -1872,6 +1895,13 @@ fn activity_name(value: ActivityPaneChoice) -> &'static str {
         ActivityPaneChoice::Auto => "auto",
         ActivityPaneChoice::Open => "open",
         ActivityPaneChoice::Hidden => "hidden",
+    }
+}
+
+fn inline_image_name(value: InlineImageChoice) -> &'static str {
+    match value {
+        InlineImageChoice::Auto => "auto",
+        InlineImageChoice::Off => "off",
     }
 }
 

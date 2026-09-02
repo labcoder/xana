@@ -273,6 +273,8 @@ pub(super) enum UpdateEffect {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ArtifactAction {
     Preview,
+    CopyReference,
+    Save,
     InsertReference,
     Reveal,
     Open,
@@ -403,6 +405,7 @@ pub(super) struct TuiState {
     pub(super) viewed_conversation: ConversationRef,
     pub(super) native_usage: SessionUsage,
     pub(super) managed_usage: Option<(u64, u64, u64)>,
+    pub(super) inline_image_capability: String,
     capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
     pending_vision_route: Option<String>,
@@ -474,6 +477,7 @@ impl TuiState {
             viewed_conversation: ConversationRef::NewNative,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             pending_vision_route: None,
@@ -528,6 +532,7 @@ impl TuiState {
             viewed_conversation: conversation,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
             pending_vision_route: None,
@@ -581,6 +586,7 @@ impl TuiState {
             viewed_conversation: conversation,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
             pending_vision_route: None,
@@ -666,6 +672,10 @@ impl TuiState {
         if self.activity_visibility == ActivityVisibility::Auto {
             self.auto_activity_open = false;
         }
+    }
+
+    pub(super) fn set_inline_image_capability(&mut self, capability: String) {
+        self.inline_image_capability = capability;
     }
 
     pub(super) fn restore_submission(

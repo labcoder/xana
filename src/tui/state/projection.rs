@@ -627,6 +627,28 @@ impl TuiState {
         });
     }
 
+    pub(in crate::tui) fn set_inline_preview_status(&mut self, status: String) {
+        if let Some(Overlay::Artifact { preview, .. }) = &mut self.overlay {
+            *preview = Some(status.clone());
+        }
+        self.status = status;
+    }
+
+    pub(in crate::tui) fn finish_inline_preview(
+        &mut self,
+        artifact_id: crate::identity::ArtifactId,
+        status: String,
+    ) {
+        if let Some(Overlay::Artifact {
+            artifact, preview, ..
+        }) = &mut self.overlay
+            && artifact.record.reference.id == artifact_id
+        {
+            *preview = Some(status.clone());
+        }
+        self.status = status;
+    }
+
     pub(in crate::tui) fn insert_artifact_reference(
         &mut self,
         record: &crate::artifact::ArtifactRecord,

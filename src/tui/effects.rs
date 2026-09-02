@@ -388,7 +388,7 @@ pub(super) async fn dispatch_managed_effect(
         }
         UpdateEffect::CopyText(text) => copy_text(state, clipboard, text),
         UpdateEffect::ArtifactAction { record, action } => {
-            apply_artifact_action(state, artifact_store, record, action)?;
+            apply_artifact_action(state, artifact_store, workspace, clipboard, record, action)?;
         }
         UpdateEffect::DecideManagedApproval(decision) => {
             let Some(reply) = pending_approval.take() else {
@@ -409,6 +409,8 @@ pub(super) async fn dispatch_managed_effect(
 pub(super) fn apply_artifact_action(
     state: &mut TuiState,
     store: &crate::artifact::ArtifactStore,
+    workspace: &std::path::Path,
+    clipboard: &mut clipboard::Clipboard,
     record: crate::artifact::ArtifactRecord,
     action: ArtifactAction,
 ) -> Result<()> {
@@ -433,6 +435,12 @@ pub(super) fn apply_artifact_action(
             };
             state.show_artifact_preview(record, preview);
         }
+        ArtifactAction::CopyReference => {
+            let reference = format!("artifact:{}", record.reference.id);
+            clipboard.set_text(reference).map_err(anyhow::Error::msg)?;
+            state.set_status("Immutable artifact reference copied");
+        }
+        ArtifactAction::Save => save_artifact_copy(state, store, workspace, &record)?,
         ArtifactAction::InsertReference => state.insert_artifact_reference(&record),
         ArtifactAction::Reveal | ArtifactAction::Open => {
             let path = store
@@ -448,6 +456,72 @@ pub(super) fn apply_artifact_action(
         }
     }
     Ok(())
+}
+
+fn save_artifact_copy(
+    state: &mut TuiState,
+    store: &crate::artifact::ArtifactStore,
+    workspace: &std::path::Path,
+    record: &crate::artifact::ArtifactRecord,
+) -> Result<()> {
+    use std::io::{Read as _, Write as _};
+
+    let source = store
+        .verified_path(record, crate::artifact::MAX_ARTIFACT_BYTES)
+        .context("could not verify artifact before saving it")?;
+    let directory = workspace.join("xana-artifacts");
+    std::fs::create_dir_all(&directory).with_context(|| {
+        format!(
+            "could not create artifact export directory {}",
+            directory.display()
+        )
+    })?;
+    let extension = artifact_extension(&record.media_type);
+    let destination = directory.join(format!("{}.{extension}", record.reference.id));
+    let mut output = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .with_context(|| {
+            format!(
+                "could not create {}; existing exports are never overwritten",
+                destination.display()
+            )
+        })?;
+    let mut input = std::fs::File::open(&source)
+        .with_context(|| format!("could not open verified artifact {}", source.display()))?;
+    let mut bounded = (&mut input).take(crate::artifact::MAX_ARTIFACT_BYTES as u64 + 1);
+    let copied = std::io::copy(&mut bounded, &mut output)
+        .context("could not copy verified artifact bytes")?;
+    if copied != record.byte_len {
+        let _ = std::fs::remove_file(&destination);
+        anyhow::bail!(
+            "saved artifact length changed (expected {}, copied {copied})",
+            record.byte_len
+        );
+    }
+    output.flush().context("could not flush artifact export")?;
+    state.set_status(format!(
+        "Saved verified artifact copy to {}",
+        destination.display()
+    ));
+    Ok(())
+}
+
+fn artifact_extension(media_type: &str) -> &'static str {
+    match media_type {
+        "image/png" => "png",
+        "image/jpeg" => "jpg",
+        "image/gif" => "gif",
+        "image/svg+xml" => "svg",
+        "audio/mpeg" => "mp3",
+        "audio/wav" | "audio/x-wav" => "wav",
+        "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "application/json" => "json",
+        "text/plain" => "txt",
+        _ => "bin",
+    }
 }
 
 fn copy_text(state: &mut TuiState, clipboard: &mut clipboard::Clipboard, text: String) {
@@ -938,7 +1012,14 @@ pub(super) async fn dispatch_effect(
         }
         UpdateEffect::CopyText(text) => copy_text(state, clipboard, text),
         UpdateEffect::ArtifactAction { record, action } => {
-            apply_artifact_action(state, &header.artifact_store, record, action)?;
+            apply_artifact_action(
+                state,
+                &header.artifact_store,
+                &header.workspace_root,
+                clipboard,
+                record,
+                action,
+            )?;
         }
         UpdateEffect::DecideNativeApproval {
             operation_id,

@@ -25,11 +25,20 @@ enum ActivityHit {
 }
 
 pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedPresentation) {
+    render_with_inline(frame, state, profile, None);
+}
+
+pub(super) fn render_with_inline(
+    frame: &mut Frame<'_>,
+    state: &TuiState,
+    profile: ResolvedPresentation,
+    inline_preview: Option<&ratatui_image::protocol::Protocol>,
+) {
     let area = frame.area();
     frame.render_widget(Block::default().style(surface_style(profile, false)), area);
     if state.espejo.is_some() {
         super::espejo::render(frame, area, state, profile);
-        popup::render(frame, area, state, profile);
+        popup::render(frame, area, state, profile, inline_preview);
         return;
     }
     match LayoutClass::for_width(area.width) {
@@ -40,7 +49,7 @@ pub(super) fn render(frame: &mut Frame<'_>, state: &TuiState, profile: ResolvedP
     if LayoutClass::for_width(area.width) != LayoutClass::Wide && activity_visible(state) {
         render_activity_drawer(frame, area, state, profile);
     }
-    popup::render(frame, area, state, profile);
+    popup::render(frame, area, state, profile, inline_preview);
 }
 
 pub(super) fn pointer_action(

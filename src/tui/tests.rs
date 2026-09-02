@@ -216,9 +216,17 @@ fn artifact_preview_and_reference_actions_are_explicit_and_bounded() {
         )
         .unwrap();
     let mut state = TuiState::starting(ComposerPreset::Submit);
+    let mut clipboard = clipboard::Clipboard::default();
 
-    effects::apply_artifact_action(&mut state, &store, record.clone(), ArtifactAction::Preview)
-        .unwrap();
+    effects::apply_artifact_action(
+        &mut state,
+        &store,
+        directory.path(),
+        &mut clipboard,
+        record.clone(),
+        ArtifactAction::Preview,
+    )
+    .unwrap();
     assert!(matches!(
         state.overlay,
         Some(state::Overlay::Artifact {
@@ -231,6 +239,8 @@ fn artifact_preview_and_reference_actions_are_explicit_and_bounded() {
     effects::apply_artifact_action(
         &mut state,
         &store,
+        directory.path(),
+        &mut clipboard,
         record.clone(),
         ArtifactAction::InsertReference,
     )
@@ -238,6 +248,26 @@ fn artifact_preview_and_reference_actions_are_explicit_and_bounded() {
     assert_eq!(
         state.composer.text,
         format!("artifact:{}", record.reference.id)
+    );
+
+    effects::apply_artifact_action(
+        &mut state,
+        &store,
+        directory.path(),
+        &mut clipboard,
+        record.clone(),
+        ArtifactAction::Save,
+    )
+    .unwrap();
+    assert_eq!(
+        std::fs::read(
+            directory
+                .path()
+                .join("xana-artifacts")
+                .join(format!("{}.txt", record.reference.id))
+        )
+        .unwrap(),
+        b"bounded artifact preview"
     );
 }
 
