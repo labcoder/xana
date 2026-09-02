@@ -23,7 +23,7 @@ impl TuiState {
                 let text = bounded(sanitize_input(&text), MAX_INPUT_BYTES);
                 if text.is_empty() {
                     self.status = "Paste contained no displayable text".to_owned();
-                } else if let Some(path) = dropped_image_path(&text) {
+                } else if let Some(path) = dropped_resource_path(&text) {
                     return UpdateEffect::AttachDropped(path);
                 } else {
                     self.overlay = Some(Overlay::PastePreview { text });
@@ -305,6 +305,9 @@ impl TuiState {
                 if let Some(Overlay::ExternalImageApproval { input, .. }) = self.overlay.take() {
                     self.composer.replace(input);
                     self.status = "External image was not read; draft restored".to_owned();
+                } else if matches!(self.overlay, Some(Overlay::ExternalResourceApproval { .. })) {
+                    self.overlay = None;
+                    self.status = "External resource was not read".to_owned();
                 } else if let Some(Overlay::VisionApproval {
                     input,
                     images,
@@ -514,7 +517,9 @@ impl TuiState {
             Some(Overlay::ModelPicker { choices, .. })
             | Some(Overlay::ReasoningPicker { choices, .. }) => choices.len(),
             Some(Overlay::Approval { prompt, .. }) => approval_choice_count(prompt),
-            Some(Overlay::ExternalImageApproval { .. }) => 2,
+            Some(
+                Overlay::ExternalImageApproval { .. } | Overlay::ExternalResourceApproval { .. },
+            ) => 2,
             Some(Overlay::VisionApproval { .. }) => 4,
             Some(Overlay::Artifact { .. }) => 6,
             Some(Overlay::SessionPicker { query, choices, .. }) => choices
@@ -533,6 +538,7 @@ impl TuiState {
             | Some(Overlay::ReasoningPicker { selected, .. })
             | Some(Overlay::Approval { selected, .. })
             | Some(Overlay::ExternalImageApproval { selected, .. })
+            | Some(Overlay::ExternalResourceApproval { selected, .. })
             | Some(Overlay::VisionApproval { selected, .. })
             | Some(Overlay::Artifact { selected, .. })
             | Some(Overlay::SessionPicker { selected, .. })
@@ -551,6 +557,7 @@ impl TuiState {
                 (selected, approval_choice_count(prompt))
             }
             Some(Overlay::ExternalImageApproval { selected, .. }) => (selected, 2),
+            Some(Overlay::ExternalResourceApproval { selected, .. }) => (selected, 2),
             Some(Overlay::VisionApproval { selected, .. }) => (selected, 4),
             Some(Overlay::Artifact { selected, .. }) => (selected, 6),
             Some(Overlay::ProfileCreate { selected, .. }) => (selected, 3),
@@ -639,6 +646,14 @@ impl TuiState {
                 } else {
                     self.composer.replace(input);
                     self.status = "External image was not read; draft restored".to_owned();
+                    UpdateEffect::None
+                }
+            }
+            Overlay::ExternalResourceApproval { path, selected } => {
+                if selected == 0 {
+                    UpdateEffect::AttachApproved(path)
+                } else {
+                    self.status = "External resource was not read".to_owned();
                     UpdateEffect::None
                 }
             }
@@ -1111,14 +1126,25 @@ impl TuiState {
                     self.status = command_usage(CommandId::Artifact);
                     return UpdateEffect::None;
                 }
-                let artifact = self.messages.iter().rev().find_map(|message| {
-                    message
-                        .document
-                        .artifacts
-                        .iter()
-                        .find(|artifact| artifact.record.reference.id.to_string() == requested)
-                });
-                if let Some(artifact) = artifact.cloned() {
+                let artifact = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|message| {
+                        message
+                            .document
+                            .artifacts
+                            .iter()
+                            .find(|artifact| artifact.record.reference.id.to_string() == requested)
+                            .cloned()
+                    })
+                    .or_else(|| {
+                        self.pending_resources.iter().find_map(|attachment| {
+                            (attachment.resource.artifact.reference.id.to_string() == requested)
+                                .then(|| ArtifactView::from_resource(&attachment.resource))
+                        })
+                    });
+                if let Some(artifact) = artifact {
                     self.overlay = Some(Overlay::Artifact {
                         artifact: Box::new(artifact),
                         selected: 0,
@@ -1132,13 +1158,25 @@ impl TuiState {
             }
             CommandId::Attach => {
                 self.composer.take();
-                if command.arguments == "--clipboard" {
-                    UpdateEffect::AttachClipboard
-                } else if command.arguments.is_empty() {
-                    self.status = command_usage(CommandId::Attach);
-                    UpdateEffect::None
-                } else {
-                    UpdateEffect::Attach(command.arguments)
+                match command.arguments.as_str() {
+                    "--clipboard" => UpdateEffect::AttachClipboard,
+                    "list" => {
+                        self.show_command_result(
+                            "Staged resources".to_owned(),
+                            self.pending_attachment_summary(),
+                        );
+                        UpdateEffect::None
+                    }
+                    "clear" => {
+                        let count = self.clear_pending_attachments();
+                        self.status = format!("Cleared {count} staged resource(s)");
+                        UpdateEffect::None
+                    }
+                    "" => {
+                        self.status = command_usage(CommandId::Attach);
+                        UpdateEffect::None
+                    }
+                    _ => UpdateEffect::Attach(command.arguments),
                 }
             }
             CommandId::Queue => {
@@ -1311,7 +1349,7 @@ impl TuiState {
     }
 }
 
-fn dropped_image_path(text: &str) -> Option<String> {
+fn dropped_resource_path(text: &str) -> Option<String> {
     let trimmed = text.trim();
     if trimmed.contains(['\r', '\n']) {
         return None;
@@ -1329,7 +1367,21 @@ fn dropped_image_path(text: &str) -> Option<String> {
         .and_then(std::ffi::OsStr::to_str)?;
     matches!(
         extension.to_ascii_lowercase().as_str(),
-        "png" | "jpg" | "jpeg" | "gif"
+        "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "webp"
+            | "svg"
+            | "json"
+            | "lottie"
+            | "wav"
+            | "mp3"
+            | "ogg"
+            | "oga"
+            | "webm"
+            | "mp4"
+            | "m4v"
     )
     .then(|| candidate.to_owned())
 }

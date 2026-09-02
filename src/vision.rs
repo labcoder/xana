@@ -5,9 +5,9 @@ use crate::{
     identity::PrincipalId,
     resource::{
         AccessibilityFactsV1, AccessibilitySourceV1, DEFAULT_STATIC_RASTER_PIXELS,
-        DEFAULT_STATIC_RASTER_TURN_BYTES, DEFAULT_STATIC_RASTERS_PER_TURN, MediaTypeFactsV1,
-        RESOURCE_SCHEMA_VERSION, ResourceKindV1, ResourceMetadataV1, ResourceRefV1,
-        ResourceValidationV1,
+        DEFAULT_STATIC_RASTER_TURN_BYTES, DEFAULT_STATIC_RASTERS_PER_TURN, LocalResourcePath,
+        LocalResourcePathError, MediaTypeFactsV1, RESOURCE_SCHEMA_VERSION, ResourceKindV1,
+        ResourceMetadataV1, ResourceRefV1, ResourceValidationV1, classify_local_path,
     },
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -371,24 +371,13 @@ pub(crate) fn classify_dropped_image_path(
     workspace_root: &Path,
     source_path: &str,
 ) -> Result<DroppedImagePath, ImageError> {
-    let source = normalize_dropped_path(source_path)?;
-    let root = workspace_root.canonicalize().map_err(ImageError::Io)?;
-    let path = if source.is_absolute() {
-        source
-    } else {
-        root.join(source)
-    };
-    let metadata = fs::symlink_metadata(&path)?;
-    if !metadata.file_type().is_file() {
-        return Err(ImageError::NotRegular);
-    }
-    let canonical = path.canonicalize().map_err(ImageError::Io)?;
-    if let Ok(relative) = canonical.strip_prefix(&root) {
-        Ok(DroppedImagePath::Workspace {
-            relative: relative.to_string_lossy().into_owned(),
-        })
-    } else {
-        Ok(DroppedImagePath::External { canonical })
+    match classify_local_path(workspace_root, source_path).map_err(|error| match error {
+        LocalResourcePathError::Invalid => ImageError::InvalidPath,
+        LocalResourcePathError::NotRegular => ImageError::NotRegular,
+        LocalResourcePathError::Io(error) => ImageError::Io(error),
+    })? {
+        LocalResourcePath::Workspace { relative } => Ok(DroppedImagePath::Workspace { relative }),
+        LocalResourcePath::External { canonical } => Ok(DroppedImagePath::External { canonical }),
     }
 }
 
@@ -443,91 +432,6 @@ pub(crate) fn image_paths_in_text(text: &str) -> Vec<String> {
         .filter(|candidate| seen.insert(candidate.clone()))
         .take(MAX_IMAGES_PER_TURN + 1)
         .collect()
-}
-
-fn normalize_dropped_path(source: &str) -> Result<PathBuf, ImageError> {
-    let source = source.trim();
-    if source.is_empty() || source.contains(['\r', '\n']) {
-        return Err(ImageError::InvalidPath);
-    }
-    let source = if source.len() >= 2
-        && ((source.starts_with('"') && source.ends_with('"'))
-            || (source.starts_with('\'') && source.ends_with('\'')))
-    {
-        &source[1..source.len() - 1]
-    } else {
-        source
-    };
-    let source = if let Some(path) = source.strip_prefix("file://") {
-        if !path.starts_with('/') {
-            return Err(ImageError::InvalidPath);
-        }
-        let path = percent_decode_path(path)?;
-        #[cfg(windows)]
-        {
-            let mut path = path;
-            if path.as_bytes().get(1).is_some_and(u8::is_ascii_alphabetic)
-                && path.as_bytes().get(2) == Some(&b':')
-            {
-                path.remove(0);
-            }
-            path
-        }
-        #[cfg(not(windows))]
-        path
-    } else {
-        source.to_owned()
-    };
-    #[cfg(windows)]
-    let source = msys_windows_path(&source);
-    Ok(PathBuf::from(source))
-}
-
-fn percent_decode_path(source: &str) -> Result<String, ImageError> {
-    let bytes = source.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] != b'%' {
-            decoded.push(bytes[index]);
-            index += 1;
-            continue;
-        }
-        let encoded = bytes
-            .get(index + 1..index + 3)
-            .ok_or(ImageError::InvalidPath)?;
-        let high = hex_digit(encoded[0]).ok_or(ImageError::InvalidPath)?;
-        let low = hex_digit(encoded[1]).ok_or(ImageError::InvalidPath)?;
-        decoded.push((high << 4) | low);
-        index += 3;
-    }
-    if decoded.contains(&0) {
-        return Err(ImageError::InvalidPath);
-    }
-    String::from_utf8(decoded).map_err(|_| ImageError::InvalidPath)
-}
-
-const fn hex_digit(value: u8) -> Option<u8> {
-    match value {
-        b'0'..=b'9' => Some(value - b'0'),
-        b'a'..=b'f' => Some(value - b'a' + 10),
-        b'A'..=b'F' => Some(value - b'A' + 10),
-        _ => None,
-    }
-}
-
-#[cfg(windows)]
-fn msys_windows_path(source: &str) -> String {
-    let bytes = source.as_bytes();
-    if bytes.len() >= 3 && bytes[0] == b'/' && bytes[1].is_ascii_alphabetic() && bytes[2] == b'/' {
-        format!(
-            "{}:/{}",
-            (bytes[1] as char).to_ascii_uppercase(),
-            &source[3..]
-        )
-    } else {
-        source.to_owned()
-    }
 }
 
 struct ImageMetadata {

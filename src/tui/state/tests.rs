@@ -5,6 +5,7 @@ use crate::{
     native_runtime::OperationOutcome,
     workspace_host::{ConversationProjection, ConversationState, WorkspaceSnapshot},
 };
+use uuid::Uuid;
 
 #[test]
 fn managed_usage_replaces_cumulative_snapshots_without_double_counting() {
@@ -95,6 +96,67 @@ fn pasted_image_path_is_staged_as_a_drop_without_inserting_text() {
         UpdateEffect::None
     );
     assert!(matches!(state.overlay, Some(Overlay::PastePreview { .. })));
+}
+
+#[test]
+fn pasted_media_path_uses_the_same_typed_drop_path() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+
+    assert_eq!(
+        state.update_input(InputAction::Paste("recordings/meeting.webm".to_owned())),
+        UpdateEffect::AttachDropped("recordings/meeting.webm".to_owned())
+    );
+}
+
+#[test]
+fn unsupported_typed_resource_stays_staged_instead_of_being_silently_disclosed() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    let artifact = crate::artifact::ArtifactRecord {
+        reference: crate::artifact::ArtifactRef {
+            id: crate::identity::ArtifactId::new(),
+            content_hash: crate::artifact::ContentHash::for_bytes(b"ID3fixture"),
+        },
+        media_type: "audio/mpeg".to_owned(),
+        byte_len: 10,
+        owner: crate::identity::PrincipalId::new(),
+    };
+    state.stage_resource(crate::frontend::semantic::AttachmentV1 {
+        id: Uuid::new_v4(),
+        resource: crate::resource::ResourceRefV1 {
+            version: crate::resource::RESOURCE_SCHEMA_VERSION,
+            artifact,
+            kind: crate::resource::ResourceKindV1::Audio,
+            media_type: crate::resource::MediaTypeFactsV1 {
+                declared: Some("audio/mpeg".to_owned()),
+                detected: Some("audio/mpeg".to_owned()),
+            },
+            metadata: crate::resource::ResourceMetadataV1::default(),
+            accessibility: None,
+            validation: crate::resource::ResourceValidationV1::Accepted,
+            lineage: None,
+        },
+        provenance: crate::frontend::semantic::AttachmentProvenanceV1::UserSelected,
+        source_label: Some("meeting.mp3".to_owned()),
+        capabilities: Vec::new(),
+    });
+    state.composer.replace("summarize this".to_owned());
+
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert_eq!(state.composer.text, "summarize this");
+    assert_eq!(state.pending_resource_count(), 1);
+    assert!(state.status.contains("does not advertise provider input"));
+}
+
+#[test]
+fn external_resource_requires_one_explicit_read_decision() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.request_external_resource_approval("C:\\outside\\clip.webm".to_owned());
+
+    assert_eq!(
+        state.update_input(InputAction::Confirm),
+        UpdateEffect::AttachApproved("C:\\outside\\clip.webm".to_owned())
+    );
 }
 
 #[test]

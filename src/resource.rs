@@ -7,9 +7,11 @@
 
 #[allow(dead_code)] // M4-11 and M4-21 consume this shared runtime service.
 pub(crate) mod inspection;
+mod local_path;
 mod policy;
 mod reference;
 
+pub(crate) use local_path::{LocalResourcePath, LocalResourcePathError, classify_local_path};
 pub(crate) use policy::ResourcePolicyV1;
 pub(crate) use reference::{
     AccessibilityFactsV1, AccessibilitySourceV1, MediaTypeFactsV1, ResourceKindV1,

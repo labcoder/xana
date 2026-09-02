@@ -6,11 +6,21 @@ use super::{
 };
 use crate::{
     app::{ChatExit, ChatHeader},
-    frontend::EmbeddedClient,
+    command_catalog::{ColorCapability, PresentationCapabilities},
+    frontend::{
+        EmbeddedClient,
+        semantic::{
+            AttachmentProvenanceV1, AttachmentV1, ResourceCapabilityContextV1,
+            project_resource_capabilities,
+        },
+    },
     managed::codex::ApprovalDecision,
     managed_execution::ManagedTuiDriver,
     native_runtime::RuntimeCommand,
     presentation::PresentationPreferences,
+    resource::{
+        LocalResourcePath, ResourcePolicyV1, classify_local_path, inspection::ResourceIngestor,
+    },
     vision::{
         DroppedImagePath, ImageAttachment, ImageIngestor, ImageLimits, MAX_IMAGE_BYTES_PER_TURN,
         MAX_IMAGES_PER_TURN, classify_dropped_image_path,
@@ -20,10 +30,116 @@ use crate::{
 use anyhow::{Context, Result};
 use std::{collections::HashSet, io};
 use tokio::sync::oneshot;
+use uuid::Uuid;
 
 struct ClassifiedImagePaths {
     paths: Vec<String>,
     external_paths: Vec<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn stage_typed_path(
+    state: &mut TuiState,
+    workspace: &std::path::Path,
+    artifact_store: &crate::artifact::ArtifactStore,
+    owner: crate::identity::PrincipalId,
+    policy: ResourcePolicyV1,
+    presentation: PresentationCapabilities,
+    path: String,
+    approved_external: bool,
+    image_capable: bool,
+    provenance: AttachmentProvenanceV1,
+) {
+    if !approved_external {
+        match classify_local_path(workspace, &path) {
+            Ok(LocalResourcePath::External { .. }) => {
+                state.request_external_resource_approval(path);
+                return;
+            }
+            Ok(LocalResourcePath::Workspace { .. }) => {}
+            Err(error) => {
+                state.set_status(format!("could not resolve resource {path}: {error}"));
+                return;
+            }
+        }
+    }
+
+    if image_capable && is_provider_image_path(&path) {
+        let ingestor = ImageIngestor::new(artifact_store.clone(), ImageLimits::default());
+        let result = if approved_external {
+            ingestor.ingest_approved_dropped_path(workspace, &path, owner)
+        } else {
+            ingestor.ingest_dropped_path(workspace, &path, owner)
+        };
+        match result {
+            Ok(attachment) => state.stage_image(attachment),
+            Err(error) => state.set_status(format!("could not attach image {path}: {error}")),
+        }
+        return;
+    }
+
+    let ingestor = match ResourceIngestor::new(artifact_store.clone(), policy.clone()) {
+        Ok(ingestor) => ingestor,
+        Err(error) => {
+            state.set_status(format!("could not initialize resource validation: {error}"));
+            return;
+        }
+    };
+    let result = if approved_external {
+        ingestor.ingest_approved_path(workspace, &path, owner)
+    } else {
+        ingestor.ingest_path(workspace, &path, owner)
+    };
+    match result {
+        Ok(staged) => {
+            let capabilities = project_resource_capabilities(
+                &staged.resource,
+                &ResourceCapabilityContextV1 {
+                    presentation,
+                    policy,
+                    observed_at_unix_millis: observed_at_unix_millis(),
+                    exact_route_facts: Vec::new(),
+                },
+            );
+            match capabilities {
+                Ok(capabilities) => state.stage_resource(AttachmentV1 {
+                    id: Uuid::new_v4(),
+                    resource: staged.resource,
+                    provenance,
+                    source_label: Some(staged.source_label),
+                    capabilities,
+                }),
+                Err(error) => {
+                    state.set_status(format!("resource capability validation failed: {error}"))
+                }
+            }
+        }
+        Err(error) => state.set_status(format!("could not attach resource {path}: {error}")),
+    }
+}
+
+fn is_provider_image_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif"
+            )
+        })
+}
+
+fn baseline_tui_capabilities() -> PresentationCapabilities {
+    PresentationCapabilities::tui(ColorCapability::None, true, true, true, false)
+}
+
+fn observed_at_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn classify_image_paths(
@@ -184,30 +300,61 @@ pub(super) async fn dispatch_managed_effect(
             "Specialist vision routing is available in native Xana conversations; Codex manages its own image input".to_owned(),
         ),
         UpdateEffect::Attach(path) => {
-            match ImageIngestor::new(artifact_store.clone(), ImageLimits::default())
-                .ingest_path(workspace, &path, owner)
-            {
-                Ok(attachment) => state.stage_image(attachment),
-                Err(error) => state.set_status(format!("could not attach {path}: {error}")),
-            }
+            let image_capable = driver
+                .models
+                .iter()
+                .find(|model| model.id == state.model)
+                .is_some_and(|model| model.input_modalities.contains("image"));
+            stage_typed_path(
+                state,
+                workspace,
+                artifact_store,
+                owner,
+                ResourcePolicyV1::default(),
+                baseline_tui_capabilities(),
+                path,
+                false,
+                image_capable,
+                AttachmentProvenanceV1::UserSelected,
+            );
         }
         UpdateEffect::AttachDropped(path) => {
-            let model = driver.models.iter().find(|model| model.id == state.model);
-            if !model.is_some_and(|model| model.input_modalities.contains("image")) {
-                state.set_status(format!(
-                    "{}/{} is not advertised as image-capable",
-                    state.connection, state.model
-                ));
-            } else {
-                match ImageIngestor::new(artifact_store.clone(), ImageLimits::default())
-                    .ingest_dropped_path(workspace, &path, owner)
-                {
-                    Ok(attachment) => state.stage_image(attachment),
-                    Err(error) => state.set_status(format!(
-                        "could not attach dropped image {path}: {error}; images must be inside the workspace"
-                    )),
-                }
-            }
+            let image_capable = driver
+                .models
+                .iter()
+                .find(|model| model.id == state.model)
+                .is_some_and(|model| model.input_modalities.contains("image"));
+            stage_typed_path(
+                state,
+                workspace,
+                artifact_store,
+                owner,
+                ResourcePolicyV1::default(),
+                baseline_tui_capabilities(),
+                path,
+                false,
+                image_capable,
+                AttachmentProvenanceV1::DragAndDrop,
+            );
+        }
+        UpdateEffect::AttachApproved(path) => {
+            let image_capable = driver
+                .models
+                .iter()
+                .find(|model| model.id == state.model)
+                .is_some_and(|model| model.input_modalities.contains("image"));
+            stage_typed_path(
+                state,
+                workspace,
+                artifact_store,
+                owner,
+                ResourcePolicyV1::default(),
+                baseline_tui_capabilities(),
+                path,
+                true,
+                image_capable,
+                AttachmentProvenanceV1::DragAndDrop,
+            );
         }
         UpdateEffect::AttachAndSubmit {
             operation_id,
@@ -727,40 +874,54 @@ pub(super) async fn dispatch_effect(
                 .models
                 .descriptor(&header.provider_name, &header.model)
                 .context("could not resolve selected model capabilities")?;
-            if !descriptor.input_modalities.contains("image") {
-                state.set_status(format!(
-                    "{}/{} is not declared image-capable",
-                    header.provider_name, header.model
-                ));
-            } else {
-                match ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
-                    .ingest_path(&header.workspace_root, &path, header.owner)
-                {
-                    Ok(attachment) => state.stage_image(attachment),
-                    Err(error) => state.set_status(format!("could not attach {path}: {error}")),
-                }
-            }
+            stage_typed_path(
+                state,
+                &header.workspace_root,
+                &header.artifact_store,
+                header.owner,
+                header.resource_policy.clone(),
+                header.presentation.tui_capabilities(true, true, false),
+                path,
+                false,
+                descriptor.input_modalities.contains("image"),
+                AttachmentProvenanceV1::UserSelected,
+            );
         }
         UpdateEffect::AttachDropped(path) => {
             let descriptor = header
                 .models
                 .descriptor(&header.provider_name, &header.model)
                 .context("could not resolve selected model capabilities")?;
-            if !descriptor.input_modalities.contains("image") {
-                state.set_status(format!(
-                    "{}/{} is not declared image-capable",
-                    header.provider_name, header.model
-                ));
-            } else {
-                match ImageIngestor::new(header.artifact_store.clone(), ImageLimits::default())
-                    .ingest_dropped_path(&header.workspace_root, &path, header.owner)
-                {
-                    Ok(attachment) => state.stage_image(attachment),
-                    Err(error) => state.set_status(format!(
-                        "could not attach dropped image {path}: {error}; images must be inside the workspace"
-                    )),
-                }
-            }
+            stage_typed_path(
+                state,
+                &header.workspace_root,
+                &header.artifact_store,
+                header.owner,
+                header.resource_policy.clone(),
+                header.presentation.tui_capabilities(true, true, false),
+                path,
+                false,
+                descriptor.input_modalities.contains("image"),
+                AttachmentProvenanceV1::DragAndDrop,
+            );
+        }
+        UpdateEffect::AttachApproved(path) => {
+            let descriptor = header
+                .models
+                .descriptor(&header.provider_name, &header.model)
+                .context("could not resolve selected model capabilities")?;
+            stage_typed_path(
+                state,
+                &header.workspace_root,
+                &header.artifact_store,
+                header.owner,
+                header.resource_policy.clone(),
+                header.presentation.tui_capabilities(true, true, false),
+                path,
+                true,
+                descriptor.input_modalities.contains("image"),
+                AttachmentProvenanceV1::DragAndDrop,
+            );
         }
         UpdateEffect::AttachAndSubmit {
             operation_id,

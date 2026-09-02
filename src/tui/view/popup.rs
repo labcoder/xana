@@ -156,6 +156,33 @@ pub(super) fn render(
             ]);
             (" Read external images? ", lines)
         }
+        Overlay::ExternalResourceApproval { path, selected } => (
+            " Read external resource? ",
+            vec![
+                Line::styled(
+                    "This file is outside the launch workspace. Xana imports one immutable bounded copy only if you approve.",
+                    semantic_style(profile, SemanticToken::Warning),
+                ),
+                Line::raw(path.clone()),
+                Line::raw(""),
+                Line::styled(
+                    format!("{} Allow once", if *selected == 0 { ">" } else { " " }),
+                    if *selected == 0 {
+                        semantic_style(profile, SemanticToken::Focus)
+                    } else {
+                        Style::default()
+                    },
+                ),
+                Line::styled(
+                    format!("{} Deny", if *selected == 1 { ">" } else { " " }),
+                    if *selected == 1 {
+                        semantic_style(profile, SemanticToken::Focus)
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ],
+        ),
         Overlay::VisionApproval {
             images,
             plan,

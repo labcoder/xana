@@ -47,6 +47,52 @@ pub(super) struct ArtifactView {
     pub(super) details: Vec<String>,
 }
 
+impl ArtifactView {
+    pub(super) fn from_resource(resource: &ResourceRefV1) -> Self {
+        let declared = resource.media_type.declared.as_deref().unwrap_or("unknown");
+        let detected = resource.media_type.detected.as_deref().unwrap_or("unknown");
+        let mut details = vec![
+            format!("declared {declared} · detected {detected}"),
+            resource_dimensions(resource),
+            validation_label(&resource.validation).to_owned(),
+        ];
+        if let Some(accessibility) = &resource.accessibility {
+            details.push(format!(
+                "accessibility {} · {}",
+                accessibility_source_label(accessibility.source),
+                accessibility.label.as_deref().unwrap_or("no text label")
+            ));
+            if let Some(transcript) = &accessibility.transcript {
+                details.push(format!("transcript artifact {}", transcript.id));
+            }
+        } else {
+            details.push("accessibility metadata unavailable".to_owned());
+        }
+        if let Some(lineage) = &resource.lineage {
+            details.push(format!(
+                "derived from {} via {} {}",
+                lineage.source.id, lineage.transformer, lineage.transformer_version
+            ));
+        } else {
+            details.push("original source (no derivative lineage)".to_owned());
+        }
+        details.retain(|detail| !detail.is_empty());
+        for detail in &mut details {
+            *detail = bounded(sanitize(detail), MAX_LINE_BYTES);
+        }
+        Self {
+            record: resource.artifact.clone(),
+            label: format!(
+                "{} · {} · {} bytes",
+                resource_kind_label(&resource.kind),
+                detected,
+                resource.artifact.byte_len
+            ),
+            details,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct RichDocument {
     pub(super) lines: Vec<RichLine>,
@@ -277,47 +323,7 @@ impl RichDocument {
             self.truncated = true;
             return;
         }
-        let declared = resource.media_type.declared.as_deref().unwrap_or("unknown");
-        let detected = resource.media_type.detected.as_deref().unwrap_or("unknown");
-        let mut details = vec![
-            format!("declared {declared} · detected {detected}"),
-            resource_dimensions(resource),
-            validation_label(&resource.validation).to_owned(),
-        ];
-        if let Some(accessibility) = &resource.accessibility {
-            details.push(format!(
-                "accessibility {} · {}",
-                accessibility_source_label(accessibility.source),
-                accessibility.label.as_deref().unwrap_or("no text label")
-            ));
-            if let Some(transcript) = &accessibility.transcript {
-                details.push(format!("transcript artifact {}", transcript.id));
-            }
-        } else {
-            details.push("accessibility metadata unavailable".to_owned());
-        }
-        if let Some(lineage) = &resource.lineage {
-            details.push(format!(
-                "derived from {} via {} {}",
-                lineage.source.id, lineage.transformer, lineage.transformer_version
-            ));
-        } else {
-            details.push("original source (no derivative lineage)".to_owned());
-        }
-        details.retain(|detail| !detail.is_empty());
-        for detail in &mut details {
-            *detail = bounded(sanitize(detail), MAX_LINE_BYTES);
-        }
-        self.artifacts.push(ArtifactView {
-            record: resource.artifact.clone(),
-            label: format!(
-                "{} · {} · {} bytes",
-                resource_kind_label(&resource.kind),
-                detected,
-                resource.artifact.byte_len
-            ),
-            details,
-        });
+        self.artifacts.push(ArtifactView::from_resource(resource));
     }
 
     pub(super) fn stream_append(&mut self, delta: &str) {

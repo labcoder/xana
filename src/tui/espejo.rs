@@ -131,6 +131,7 @@ pub(super) fn rows(state: &TuiState) -> Vec<EspejoRow> {
                     Some(
                         Overlay::Approval { .. }
                             | Overlay::ExternalImageApproval { .. }
+                            | Overlay::ExternalResourceApproval { .. }
                             | Overlay::VisionApproval { .. }
                     )
                 );

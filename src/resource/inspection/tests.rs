@@ -105,3 +105,56 @@ fn aggregate_preflight_rejects_before_attempting_artifact_io() {
         }
     );
 }
+
+#[test]
+fn ingestor_classifies_non_image_media_and_keeps_only_a_display_basename() {
+    let workspace = tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("clip.webm"),
+        [0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0],
+    )
+    .unwrap();
+    let artifacts = tempdir().unwrap();
+    let ingestor = ResourceIngestor::new(
+        ArtifactStore::new(artifacts.path().to_owned()),
+        ResourcePolicyV1::default(),
+    )
+    .unwrap();
+
+    let staged = ingestor
+        .ingest_path(workspace.path(), "clip.webm", PrincipalId::new())
+        .unwrap();
+
+    assert_eq!(staged.source_path, "clip.webm");
+    assert_eq!(staged.source_label, "clip.webm");
+    assert_eq!(staged.resource.kind, ResourceKindV1::Video);
+    assert_eq!(
+        staged.resource.media_type.detected.as_deref(),
+        Some("video/webm")
+    );
+}
+
+#[test]
+fn external_resource_requires_the_explicit_approved_ingestion_path() {
+    let workspace = tempdir().unwrap();
+    let external = tempdir().unwrap();
+    let path = external.path().join("audio.mp3");
+    std::fs::write(&path, b"ID3safe fixture").unwrap();
+    let artifacts = tempdir().unwrap();
+    let ingestor = ResourceIngestor::new(
+        ArtifactStore::new(artifacts.path().to_owned()),
+        ResourcePolicyV1::default(),
+    )
+    .unwrap();
+    let path = path.to_string_lossy();
+
+    assert!(matches!(
+        ingestor.ingest_path(workspace.path(), &path, PrincipalId::new()),
+        Err(ResourceIngestError::OutsideWorkspace)
+    ));
+    let approved = ingestor
+        .ingest_approved_path(workspace.path(), &path, PrincipalId::new())
+        .unwrap();
+    assert_eq!(approved.resource.kind, ResourceKindV1::Audio);
+    assert_eq!(approved.source_label, "audio.mp3");
+}

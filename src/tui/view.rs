@@ -392,6 +392,7 @@ fn overlay_choice_at(
         super::state::Overlay::ExternalImageApproval { external_paths, .. } => {
             3 + external_paths.len()
         }
+        super::state::Overlay::ExternalResourceApproval { .. } => 3,
         super::state::Overlay::VisionApproval { .. } => 11,
         super::state::Overlay::Artifact { preview, .. } => {
             if preview.is_some() {
@@ -685,6 +686,12 @@ fn render_composer(
     };
     if state.pending_image_count() > 0 {
         title.push_str(&format!("[{} image(s)] ", state.pending_image_count()));
+    }
+    if state.pending_resource_count() > 0 {
+        title.push_str(&format!(
+            "[{} resource(s)] ",
+            state.pending_resource_count()
+        ));
     }
     let width = area.width.saturating_sub(2).max(1);
     let maximum_rows = area.height.saturating_sub(2).clamp(1, 6);

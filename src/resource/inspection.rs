@@ -5,18 +5,211 @@
 //! or declared media type and retains declaration/detection disagreements.
 
 use super::{
-    AccessibilityFactsV1, AccessibilitySourceV1, MAX_RESOURCE_SOURCE_BYTES, MediaTypeFactsV1,
-    RESOURCE_SCHEMA_VERSION, ResourceKindV1, ResourceMetadataV1, ResourcePolicyV1, ResourceRefV1,
-    ResourceValidationV1,
+    AccessibilityFactsV1, AccessibilitySourceV1, LocalResourcePath, LocalResourcePathError,
+    MAX_RESOURCE_SOURCE_BYTES, MediaTypeFactsV1, RESOURCE_SCHEMA_VERSION, ResourceKindV1,
+    ResourceMetadataV1, ResourcePolicyV1, ResourceRefV1, ResourceValidationV1, classify_local_path,
 };
 use crate::artifact::{ArtifactError, ArtifactRecord, ArtifactStore};
-use std::{error::Error, fmt};
+use crate::identity::PrincipalId;
+use std::{
+    error::Error,
+    fmt, fs,
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 const HEADER_PROBE_BYTES: usize = 64 * 1024;
 
 pub(crate) struct ResourceInspector {
     store: ArtifactStore,
     policy: ResourcePolicyV1,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IngestedResource {
+    pub(crate) source_path: String,
+    pub(crate) source_label: String,
+    pub(crate) resource: ResourceRefV1,
+}
+
+pub(crate) struct ResourceIngestor {
+    inspector: ResourceInspector,
+}
+
+impl ResourceIngestor {
+    pub(crate) fn new(
+        store: ArtifactStore,
+        policy: ResourcePolicyV1,
+    ) -> Result<Self, ResourceInspectionError> {
+        Ok(Self {
+            inspector: ResourceInspector::new(store, policy)?,
+        })
+    }
+
+    pub(crate) fn ingest_path(
+        &self,
+        workspace_root: &Path,
+        source_path: &str,
+        owner: PrincipalId,
+    ) -> Result<IngestedResource, ResourceIngestError> {
+        match classify_local_path(workspace_root, source_path)? {
+            LocalResourcePath::Workspace { relative } => {
+                let root = workspace_root.canonicalize()?;
+                let canonical = root.join(&relative).canonicalize()?;
+                if !canonical.starts_with(&root) {
+                    return Err(ResourceIngestError::OutsideWorkspace);
+                }
+                self.ingest_canonical(canonical, relative, owner)
+            }
+            LocalResourcePath::External { .. } => Err(ResourceIngestError::OutsideWorkspace),
+        }
+    }
+
+    pub(crate) fn ingest_approved_path(
+        &self,
+        workspace_root: &Path,
+        source_path: &str,
+        owner: PrincipalId,
+    ) -> Result<IngestedResource, ResourceIngestError> {
+        match classify_local_path(workspace_root, source_path)? {
+            LocalResourcePath::Workspace { relative } => {
+                let root = workspace_root.canonicalize()?;
+                let canonical = root.join(&relative).canonicalize()?;
+                if !canonical.starts_with(&root) {
+                    return Err(ResourceIngestError::OutsideWorkspace);
+                }
+                self.ingest_canonical(canonical, relative, owner)
+            }
+            LocalResourcePath::External { canonical } => {
+                self.ingest_canonical(canonical, source_path.to_owned(), owner)
+            }
+        }
+    }
+
+    fn ingest_canonical(
+        &self,
+        canonical: PathBuf,
+        source_path: String,
+        owner: PrincipalId,
+    ) -> Result<IngestedResource, ResourceIngestError> {
+        let limit = usize::try_from(
+            self.inspector
+                .policy
+                .max_total_source_bytes
+                .min(self.inspector.policy.max_in_memory_buffer_bytes),
+        )
+        .unwrap_or(MAX_RESOURCE_SOURCE_BYTES)
+        .min(MAX_RESOURCE_SOURCE_BYTES);
+        let mut file = fs::File::open(&canonical)?;
+        let mut bytes = Vec::with_capacity(
+            usize::try_from(file.metadata()?.len())
+                .unwrap_or(limit)
+                .min(limit),
+        );
+        file.by_ref()
+            .take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
+            return Err(ResourceIngestError::TooLarge {
+                actual: bytes.len(),
+                limit,
+            });
+        }
+        let declared = declared_media_type(&canonical);
+        let (artifact, _) = self
+            .inspector
+            .store
+            .put_bounded(&bytes, declared, owner, limit)?;
+        let resource = self.inspector.inspect(&artifact)?;
+        let source_label = canonical
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("resource")
+            .to_owned();
+        Ok(IngestedResource {
+            source_path,
+            source_label,
+            resource,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ResourceIngestError {
+    OutsideWorkspace,
+    TooLarge { actual: usize, limit: usize },
+    Path(LocalResourcePathError),
+    Artifact(ArtifactError),
+    Inspection(ResourceInspectionError),
+    Io(std::io::Error),
+}
+
+impl fmt::Display for ResourceIngestError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OutsideWorkspace => {
+                formatter.write_str("resource resolves outside the launch workspace")
+            }
+            Self::TooLarge { actual, limit } => {
+                write!(
+                    formatter,
+                    "resource is {actual} bytes; staging limit is {limit}"
+                )
+            }
+            Self::Path(error) => error.fmt(formatter),
+            Self::Artifact(error) => error.fmt(formatter),
+            Self::Inspection(error) => error.fmt(formatter),
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl Error for ResourceIngestError {}
+
+impl From<LocalResourcePathError> for ResourceIngestError {
+    fn from(error: LocalResourcePathError) -> Self {
+        Self::Path(error)
+    }
+}
+
+impl From<ArtifactError> for ResourceIngestError {
+    fn from(error: ArtifactError) -> Self {
+        Self::Artifact(error)
+    }
+}
+
+impl From<ResourceInspectionError> for ResourceIngestError {
+    fn from(error: ResourceInspectionError) -> Self {
+        Self::Inspection(error)
+    }
+}
+
+impl From<std::io::Error> for ResourceIngestError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+fn declared_media_type(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("json") => "application/json",
+        Some("wav") => "audio/wav",
+        Some("mp3") => "audio/mpeg",
+        Some("ogg" | "oga") => "audio/ogg",
+        Some("webm") => "video/webm",
+        Some("mp4" | "m4v") => "video/mp4",
+        _ => "application/octet-stream",
+    }
 }
 
 impl ResourceInspector {

@@ -16,10 +16,14 @@ pub(crate) use activity::{
     ExecutionFactsV1,
 };
 pub(crate) use content::{
-    AttachmentPolicySnapshotV1, AttachmentV1, ContentPartV1, DisclosureReceiptV1,
+    AttachmentPolicySnapshotV1, AttachmentProvenanceV1, AttachmentV1, ContentPartV1,
+    DisclosureReceiptV1,
 };
 pub(crate) use event::{DecodedSemanticEventV1, SemanticEventEnvelopeV1, SemanticEventV1};
-pub(crate) use projection::{LinkPreviewCacheStatusV1, LinkPreviewCardV1, normalize_message};
+pub(crate) use projection::{
+    LinkPreviewCacheStatusV1, LinkPreviewCardV1, ResourceCapabilityContextV1, normalize_message,
+    project_resource_capabilities,
+};
 pub(crate) use state::{SemanticDeltaV1, SemanticReplicaV1, SemanticSnapshotV1};
 pub(crate) use usage::{
     ContextOccupancyV1, CreditBalanceV1, LimitObservationV1, UsageAccountingV1, UsageAggregateV1,

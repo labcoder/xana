@@ -16,7 +16,7 @@ use crate::{
     agent::SessionUsage,
     frontend::{
         ClientSnapshot, EmbeddedClient, ManagedClientEvent,
-        semantic::{SemanticSnapshotV1, normalize_message},
+        semantic::{AttachmentV1, SemanticSnapshotV1, normalize_message},
     },
     identity::{AgentId, OperationId, ToolInvocationId},
     managed::codex::ManagedTokenUsage,
@@ -227,6 +227,7 @@ pub(super) enum UpdateEffect {
     },
     Attach(String),
     AttachDropped(String),
+    AttachApproved(String),
     AttachAndSubmit {
         operation_id: OperationId,
         input: String,
@@ -296,6 +297,7 @@ pub(super) struct QueuedTurn {
 struct ConversationDraft {
     composer: Composer,
     images: Vec<ImageAttachment>,
+    resources: Vec<AttachmentV1>,
     vision_route: Option<String>,
 }
 
@@ -304,6 +306,7 @@ impl Default for ConversationDraft {
         Self {
             composer: Composer::new(),
             images: Vec::new(),
+            resources: Vec::new(),
             vision_route: None,
         }
     }
@@ -361,6 +364,10 @@ pub(super) enum Overlay {
         prompt: Box<ApprovalPrompt>,
         selected: usize,
     },
+    ExternalResourceApproval {
+        path: String,
+        selected: usize,
+    },
     Artifact {
         artifact: Box<ArtifactView>,
         selected: usize,
@@ -416,6 +423,7 @@ pub(super) struct TuiState {
     pub(super) inline_image_capability: String,
     pub(super) capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
+    pending_resources: Vec<AttachmentV1>,
     pending_vision_route: Option<String>,
     drafts: BTreeMap<ConversationRef, ConversationDraft>,
     queued: BTreeMap<ConversationRef, VecDeque<QueuedTurn>>,
@@ -491,6 +499,7 @@ impl TuiState {
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            pending_resources: Vec::new(),
             pending_vision_route: None,
             drafts: BTreeMap::new(),
             queued: BTreeMap::new(),
@@ -549,6 +558,7 @@ impl TuiState {
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
+            pending_resources: Vec::new(),
             pending_vision_route: None,
             drafts: BTreeMap::new(),
             queued: BTreeMap::new(),
@@ -610,6 +620,7 @@ impl TuiState {
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
+            pending_resources: Vec::new(),
             pending_vision_route: None,
             drafts: BTreeMap::new(),
             queued: BTreeMap::new(),
@@ -631,6 +642,14 @@ impl TuiState {
     fn submit_text(&mut self, input: String) -> UpdateEffect {
         if input.trim().is_empty() {
             self.status = "Message cannot be blank".to_owned();
+            return UpdateEffect::None;
+        }
+        if !self.pending_resources.is_empty() {
+            self.composer.replace(input);
+            self.status = format!(
+                "{} typed resource(s) remain staged; this route does not advertise provider input for them. Use /artifact ID to inspect or /attach clear before sending.",
+                self.pending_resources.len()
+            );
             return UpdateEffect::None;
         }
         let images = self.take_pending_images();
@@ -746,6 +765,41 @@ impl TuiState {
 
     pub(super) fn stage_image(&mut self, attachment: ImageAttachment) {
         let _ = self.try_stage_image(attachment);
+    }
+
+    pub(super) fn stage_resource(&mut self, attachment: AttachmentV1) {
+        let configured_limit = self
+            .semantic
+            .attachment_policy
+            .configured
+            .max_resources_per_turn;
+        if self
+            .pending_images
+            .len()
+            .saturating_add(self.pending_resources.len())
+            >= usize::from(configured_limit)
+        {
+            self.status =
+                format!("At most {configured_limit} resources may be staged for one turn");
+            return;
+        }
+        if self.pending_resources.iter().any(|existing| {
+            existing.resource.artifact.reference.content_hash
+                == attachment.resource.artifact.reference.content_hash
+        }) {
+            self.status = "That resource is already staged".to_owned();
+            return;
+        }
+        let kind = attachment.resource.kind.code().to_owned();
+        let id = attachment.resource.artifact.reference.id;
+        self.pending_resources.push(attachment);
+        self.status =
+            format!("Staged {kind} artifact {id}; provider input is unavailable on this route");
+    }
+
+    pub(super) fn request_external_resource_approval(&mut self, path: String) {
+        self.overlay = Some(Overlay::ExternalResourceApproval { path, selected: 0 });
+        self.status = "Approve reading this resource outside the launch workspace?".to_owned();
     }
 
     fn try_stage_image(&mut self, attachment: ImageAttachment) -> bool {
@@ -903,6 +957,54 @@ impl TuiState {
 
     pub(super) fn pending_image_count(&self) -> usize {
         self.pending_images.len()
+    }
+
+    pub(super) fn pending_resource_count(&self) -> usize {
+        self.pending_resources.len()
+    }
+
+    pub(super) fn clear_pending_attachments(&mut self) -> usize {
+        let count = self.pending_images.len() + self.pending_resources.len();
+        self.pending_images.clear();
+        self.pending_resources.clear();
+        self.pending_vision_route = None;
+        count
+    }
+
+    pub(super) fn pending_attachment_summary(&self) -> String {
+        let mut lines = self
+            .pending_images
+            .iter()
+            .map(|attachment| {
+                format!(
+                    "{} · image · {} · {} bytes · provider input pending validation",
+                    attachment.image.artifact.reference.id,
+                    attachment.image.media_type,
+                    attachment.image.byte_len
+                )
+            })
+            .collect::<Vec<_>>();
+        lines.extend(self.pending_resources.iter().map(|attachment| {
+            let detected = attachment
+                .resource
+                .media_type
+                .detected
+                .as_deref()
+                .unwrap_or("unknown");
+            format!(
+                "{} · {} · {} · {} bytes · {:?}",
+                attachment.resource.artifact.reference.id,
+                attachment.resource.kind.code(),
+                detected,
+                attachment.resource.artifact.byte_len,
+                attachment.resource.validation,
+            )
+        }));
+        if lines.is_empty() {
+            "No resources are staged for the next turn.".to_owned()
+        } else {
+            lines.join("\n")
+        }
     }
 
     pub(super) fn open_model_picker(&mut self, choices: Vec<String>) {
@@ -1167,6 +1269,7 @@ impl TuiState {
         let draft = ConversationDraft {
             composer: std::mem::replace(&mut self.composer, Composer::new()),
             images: std::mem::take(&mut self.pending_images),
+            resources: std::mem::take(&mut self.pending_resources),
             vision_route: self.pending_vision_route.take(),
         };
         self.drafts.insert(self.viewed_conversation.clone(), draft);
@@ -1176,6 +1279,7 @@ impl TuiState {
         let draft = self.drafts.remove(conversation).unwrap_or_default();
         self.composer = draft.composer;
         self.pending_images = draft.images;
+        self.pending_resources = draft.resources;
         self.pending_vision_route = draft.vision_route;
     }
 
