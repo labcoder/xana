@@ -15,7 +15,7 @@ use std::{
     error::Error,
     fmt,
     net::{IpAddr, SocketAddr},
-    path::{Path, PathBuf},
+    path::Path,
     time::Duration,
 };
 use tokio::{
@@ -71,6 +71,7 @@ impl ControlledExecution {
 struct ClientService {
     endpoint: SocketAddr,
     host_id: Uuid,
+    host_generation: u64,
     workspace_id: String,
     capability_hash: [u8; 32],
     hub: ObservationHub,
@@ -115,7 +116,8 @@ pub(crate) struct LocalHostServer {
     listener: TcpListener,
     endpoint: SocketAddr,
     host_id: Uuid,
-    workspace: PathBuf,
+    host_generation: u64,
+    workspace_id: String,
     descriptor: DescriptorLease,
     capability_hash: [u8; 32],
     hub: ObservationHub,
@@ -160,7 +162,9 @@ impl LocalHostServer {
             ));
         }
         let workspace = workspace.canonicalize().map_err(LocalHostError::Io)?;
-        if seed.workspace_id != super::protocol::workspace_identity(&workspace) {
+        let workspace_identity = crate::workspace_identity::WorkspaceIdentity::resolve(&workspace)
+            .map_err(LocalHostError::Io)?;
+        if seed.workspace_id != workspace_identity.collision_key() {
             return Err(LocalHostError::Invalid(
                 "local-host snapshot belongs to another workspace".into(),
             ));
@@ -172,16 +176,18 @@ impl LocalHostServer {
         let host_id = Uuid::new_v4();
         let mut capability = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
         let capability_hash = *blake3::hash(capability.as_bytes()).as_bytes();
-        let descriptor_value =
-            RuntimeDescriptor::new(host_id, workspace.clone(), endpoint, capability.clone());
-        let descriptor = DescriptorLease::create(runtime_root, &descriptor_value)
+        let mut descriptor_value =
+            RuntimeDescriptor::new(host_id, workspace.clone(), endpoint, capability.clone())
+                .map_err(LocalHostError::Invalid)?;
+        let descriptor = DescriptorLease::create(runtime_root, &mut descriptor_value)
             .map_err(LocalHostError::Invalid)?;
+        let host_generation = descriptor.generation();
         capability.zeroize();
         drop(descriptor_value);
         let snapshot = controlled.as_ref().map_or_else(
-            || HostSnapshot::new(host_id, seed.clone()),
+            || HostSnapshot::new(host_id, host_generation, seed.clone()),
             |controlled| {
-                let snapshot = HostSnapshot::new(host_id, seed.clone())
+                let snapshot = HostSnapshot::new(host_id, host_generation, seed.clone())
                     .with_controllable_conversation(controlled.conversation.clone());
                 controlled
                     .frontend
@@ -202,7 +208,8 @@ impl LocalHostServer {
             listener,
             endpoint,
             host_id,
-            workspace,
+            host_generation,
+            workspace_id: workspace_identity.collision_key().to_owned(),
             descriptor,
             capability_hash,
             hub,
@@ -239,7 +246,8 @@ impl LocalHostServer {
                     let service = ClientService {
                         endpoint: self.endpoint,
                         host_id: self.host_id,
-                        workspace_id: super::protocol::workspace_identity(&self.workspace),
+                        host_generation: self.host_generation,
+                        workspace_id: self.workspace_id.clone(),
                         capability_hash: self.capability_hash,
                         hub: self.hub.clone(),
                         execution: self.execution.clone(),
@@ -309,6 +317,7 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
     let ClientService {
         endpoint,
         host_id,
+        host_generation,
         workspace_id,
         capability_hash,
         hub,
@@ -344,7 +353,13 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
             return Ok(());
         }
     };
-    let authentication = validate_hello(&hello, host_id, &workspace_id, &capability_hash);
+    let authentication = validate_hello(
+        &hello,
+        host_id,
+        host_generation,
+        &workspace_id,
+        &capability_hash,
+    );
     let client_id = Uuid::new_v4();
     let requested_role = hello.role;
     let reconnect = hello.controller_reconnect.take();
@@ -559,6 +574,7 @@ impl Drop for SubscriberGuard {
 pub(super) fn validate_hello(
     hello: &ClientHello,
     host_id: Uuid,
+    host_generation: u64,
     workspace_id: &str,
     capability_hash: &[u8; 32],
 ) -> Result<(), String> {
@@ -567,6 +583,9 @@ pub(super) fn validate_hello(
     }
     if hello.host_id != host_id {
         return Err("local-host capability is invalid or expired".into());
+    }
+    if hello.host_generation != host_generation {
+        return Err("local-host capability belongs to an expired owner generation".into());
     }
     if hello.workspace_id != workspace_id {
         return Err("local-host attachment targets another workspace".into());
@@ -1007,6 +1026,7 @@ async fn connect_client(
     let hello = ClientFrame::Hello(ClientHello {
         version: LOCAL_HOST_PROTOCOL_VERSION,
         host_id: descriptor.host_id,
+        host_generation: descriptor.generation,
         workspace_id: descriptor.workspace_id.clone(),
         capability: std::mem::take(&mut descriptor.capability),
         controller_reconnect,
@@ -1039,6 +1059,7 @@ async fn connect_client(
         ServerFrame::Snapshot { snapshot, role }
             if snapshot.version == LOCAL_HOST_PROTOCOL_VERSION
                 && snapshot.host_id == descriptor.host_id
+                && snapshot.host_generation == descriptor.generation
                 && snapshot.workspace_id == descriptor.workspace_id =>
         {
             let expected_sequence = snapshot.sequence.saturating_add(1);

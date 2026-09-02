@@ -5,11 +5,11 @@ use crate::{
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
 use serde::{Deserialize, Serialize};
-use std::{fmt, path::Path};
+use std::fmt;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 1;
+pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 2;
 pub(crate) const MAX_WIRE_BYTES: usize = 1024 * 1024;
 const MAX_CONVERSATIONS: usize = 512;
 const MAX_LABEL_BYTES: usize = 256;
@@ -26,6 +26,7 @@ pub(crate) enum ClientRole {
 pub(crate) struct ClientHello {
     pub(crate) version: u16,
     pub(crate) host_id: Uuid,
+    pub(crate) host_generation: u64,
     pub(crate) workspace_id: String,
     pub(crate) capability: String,
     #[serde(default)]
@@ -253,7 +254,7 @@ impl HostSnapshotSeed {
             })
             .collect();
         Self {
-            workspace_id: workspace_identity(&snapshot.workspace),
+            workspace_id: snapshot.workspace_id.clone(),
             workspace_name: workspace_display_name(&snapshot.workspace),
             conversations,
             conversations_truncated,
@@ -270,6 +271,7 @@ pub(crate) struct HostSnapshot {
     pub(crate) version: u16,
     pub(crate) sequence: u64,
     pub(crate) host_id: Uuid,
+    pub(crate) host_generation: u64,
     pub(crate) workspace_id: String,
     pub(crate) workspace_name: String,
     pub(crate) conversations: Vec<HostConversation>,
@@ -281,11 +283,12 @@ pub(crate) struct HostSnapshot {
 }
 
 impl HostSnapshot {
-    pub(crate) fn new(host_id: Uuid, seed: HostSnapshotSeed) -> Self {
+    pub(crate) fn new(host_id: Uuid, host_generation: u64, seed: HostSnapshotSeed) -> Self {
         Self {
             version: LOCAL_HOST_PROTOCOL_VERSION,
             sequence: 0,
             host_id,
+            host_generation,
             workspace_id: seed.workspace_id,
             workspace_name: seed.workspace_name,
             conversations: seed.conversations,
@@ -394,13 +397,7 @@ pub(crate) struct HostObservation {
     pub(crate) event: HostEvent,
 }
 
-pub(crate) fn workspace_identity(workspace: &Path) -> String {
-    blake3::hash(workspace.as_os_str().as_encoded_bytes())
-        .to_hex()
-        .to_string()
-}
-
-fn workspace_display_name(workspace: &Path) -> String {
+fn workspace_display_name(workspace: &std::path::Path) -> String {
     bounded_label(
         workspace
             .file_name()

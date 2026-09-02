@@ -4,7 +4,6 @@ use super::{
     protocol::{
         ClientFrame, ClientHello, ClientRole, HostEvent, HostSnapshot, HostSnapshotSeed,
         LOCAL_HOST_PROTOCOL_VERSION, ServerFrame, decode_client_frame, decode_server_frame,
-        workspace_identity,
     },
     transport::{
         ControlledExecution, LocalHostServer, constant_time_equal, origin_is_loopback,
@@ -70,7 +69,7 @@ fn snapshot_subscription_and_publication_have_one_atomic_sequence_boundary() {
     let directory = tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
-    let snapshot = HostSnapshot::new(uuid::Uuid::new_v4(), seed(&workspace, directory.path()));
+    let snapshot = HostSnapshot::new(uuid::Uuid::new_v4(), 1, seed(&workspace, directory.path()));
     let hub = ObservationHub::new(snapshot);
     let barrier = Arc::new(Barrier::new(2));
     let publisher = hub.clone();
@@ -123,12 +122,22 @@ fn hello_rejects_wrong_version_workspace_role_and_capability_without_echoing_sec
     let valid = ClientHello {
         version: LOCAL_HOST_PROTOCOL_VERSION,
         host_id: uuid::Uuid::new_v4(),
+        host_generation: 7,
         workspace_id: "workspace".into(),
         capability: "correct".into(),
         controller_reconnect: None,
         role: ClientRole::Observer,
     };
-    assert!(validate_hello(&valid, valid.host_id, "workspace", &capability).is_ok());
+    assert!(
+        validate_hello(
+            &valid,
+            valid.host_id,
+            valid.host_generation,
+            "workspace",
+            &capability
+        )
+        .is_ok()
+    );
 
     let cases = [
         {
@@ -151,9 +160,21 @@ fn hello_rejects_wrong_version_workspace_role_and_capability_without_echoing_sec
             hello.host_id = uuid::Uuid::new_v4();
             hello
         },
+        {
+            let mut hello = valid_for_test(&valid);
+            hello.host_generation += 1;
+            hello
+        },
     ];
     for hello in cases {
-        let error = validate_hello(&hello, valid.host_id, "workspace", &capability).unwrap_err();
+        let error = validate_hello(
+            &hello,
+            valid.host_id,
+            valid.host_generation,
+            "workspace",
+            &capability,
+        )
+        .unwrap_err();
         assert!(!error.contains(&hello.capability));
     }
 }
@@ -162,6 +183,7 @@ fn valid_for_test(hello: &ClientHello) -> ClientHello {
     ClientHello {
         version: hello.version,
         host_id: hello.host_id,
+        host_generation: hello.host_generation,
         workspace_id: hello.workspace_id.clone(),
         capability: hello.capability.clone(),
         controller_reconnect: None,
@@ -196,7 +218,9 @@ async fn real_loopback_observer_discovers_authenticates_and_receives_snapshot() 
     assert_eq!(observer.snapshot().version, LOCAL_HOST_PROTOCOL_VERSION);
     assert_eq!(
         observer.snapshot().workspace_id,
-        workspace_identity(&workspace.canonicalize().unwrap())
+        crate::workspace_identity::WorkspaceIdentity::resolve(&workspace)
+            .unwrap()
+            .collision_key()
     );
     assert!(!observer.snapshot().workspace_name.is_empty());
 
@@ -230,6 +254,7 @@ async fn observer_command_is_rejected_and_audited_without_runtime_mutation() {
     let hello = ClientFrame::Hello(ClientHello {
         version: LOCAL_HOST_PROTOCOL_VERSION,
         host_id: descriptor.host_id,
+        host_generation: descriptor.generation,
         workspace_id: descriptor.workspace_id.clone(),
         capability: descriptor.capability.clone(),
         controller_reconnect: None,
@@ -356,7 +381,7 @@ fn reconnect_capability_restores_only_the_same_controller_during_grace() {
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
     let host_id = uuid::Uuid::new_v4();
-    let snapshot = HostSnapshot::new(host_id, seed(&workspace, directory.path()))
+    let snapshot = HostSnapshot::new(host_id, 1, seed(&workspace, directory.path()))
         .with_controllable_conversation("native/test".into());
     let hub = ObservationHub::new(snapshot);
     let original = uuid::Uuid::new_v4();
@@ -389,6 +414,7 @@ fn a_full_observer_queue_is_evicted_without_blocking_publication() {
     std::fs::create_dir(&workspace).unwrap();
     let hub = ObservationHub::new(HostSnapshot::new(
         uuid::Uuid::new_v4(),
+        1,
         seed(&workspace, directory.path()),
     ));
     let _slow = hub.subscribe().unwrap();

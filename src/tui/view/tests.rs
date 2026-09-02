@@ -102,6 +102,7 @@ fn command_queue_and_model_overlays_have_bounded_readable_snapshots() {
     state.viewed_conversation = conversation.clone();
     state.refresh_sessions(WorkspaceSnapshot {
         workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
         conversations: vec![ConversationProjection {
             conversation,
             state: ConversationState::Controlled,
@@ -375,6 +376,7 @@ fn pointer_hit_testing_activates_sessions_overlays_activity_and_composer() {
     state.activity_visibility = ActivityVisibility::Open;
     state.refresh_sessions(WorkspaceSnapshot {
         workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
         conversations: vec![ConversationProjection {
             conversation: conversation.clone(),
             state: ConversationState::Inactive,
@@ -523,6 +525,7 @@ fn every_fixed_height_session_row_has_the_same_click_target() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.refresh_sessions(WorkspaceSnapshot {
         workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
         conversations,
         active: None,
     });

@@ -63,6 +63,7 @@ mod tool;
 mod tui;
 mod vision;
 mod workspace_host;
+mod workspace_identity;
 
 use anyhow::{Context, Result};
 use clap::Parser;

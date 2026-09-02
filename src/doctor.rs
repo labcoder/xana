@@ -866,11 +866,12 @@ fn inspect_descriptor(paths: &XanaPaths, report: &mut DoctorReport) {
         Ok(DescriptorHealth::Active {
             process_id,
             endpoint,
+            generation,
         }) => report.push(Finding::new(
             "host.descriptor",
             Severity::Ok,
             "a lock-backed foreground-host descriptor is active",
-            format!("process={process_id} endpoint={endpoint}"),
+            format!("process={process_id} generation={generation} endpoint={endpoint}"),
             None,
         )),
         Ok(DescriptorHealth::Stale { path, reason }) => report.push(

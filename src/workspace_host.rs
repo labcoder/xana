@@ -7,6 +7,7 @@ use crate::{
     identity::SessionId,
     managed::thread_store::{ManagedConversationHandle, ManagedThreadStore},
     session::{DurableSession, NativeConversationHandle},
+    workspace_identity::{WorkspaceIdentity, next_locked_generation},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -17,7 +18,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const DESCRIPTOR_VERSION: u16 = 1;
+const DESCRIPTOR_VERSION: u16 = 2;
 const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024;
 const MAX_CONVERSATIONS: usize = 10_000;
 
@@ -98,6 +99,7 @@ pub(crate) struct ConversationProjection {
 #[derive(Debug, Clone)]
 pub(crate) struct WorkspaceSnapshot {
     pub(crate) workspace: PathBuf,
+    pub(crate) workspace_id: String,
     pub(crate) conversations: Vec<ConversationProjection>,
     pub(crate) active: Option<ActiveRootDescriptor>,
 }
@@ -107,7 +109,9 @@ pub(crate) struct WorkspaceSnapshot {
 pub(crate) struct ActiveRootDescriptor {
     version: u16,
     workspace: PathBuf,
+    workspace_id: String,
     host_id: Uuid,
+    generation: u64,
     process_id: u32,
     pub(crate) conversation: ConversationRef,
 }
@@ -120,7 +124,7 @@ impl ActiveRootDescriptor {
 
 #[derive(Debug)]
 pub(crate) enum WorkspaceHostError {
-    Busy(Option<ActiveRootDescriptor>),
+    Busy(Option<Box<ActiveRootDescriptor>>),
     Invalid(String),
     Io { path: PathBuf, source: io::Error },
 }
@@ -130,8 +134,8 @@ impl fmt::Display for WorkspaceHostError {
         match self {
             Self::Busy(Some(owner)) => write!(
                 output,
-                "workspace already has an active Xana root ({}, process {}). Wait or cancel it in its controlling terminal; use `xana attach` when a foreground server is available, or start and draft a new conversation without submitting work",
-                owner.conversation, owner.process_id
+                "workspace already has an active Xana root ({}, process {}, generation {}). Wait or cancel it in its controlling terminal; use `xana attach` when a foreground server is available, or start and draft a new conversation without submitting work",
+                owner.conversation, owner.process_id, owner.generation
             ),
             Self::Busy(None) => output.write_str(
                 "workspace already has an active Xana root. Wait or cancel it in its controlling terminal; use `xana attach` when a foreground server is available, or start and draft a new conversation without submitting work",
@@ -156,6 +160,7 @@ impl Error for WorkspaceHostError {
 pub(crate) struct WorkspaceHost {
     data_root: PathBuf,
     workspace: PathBuf,
+    workspace_id: String,
     host_id: Uuid,
     lock_path: PathBuf,
     descriptor_path: PathBuf,
@@ -164,24 +169,25 @@ pub(crate) struct WorkspaceHost {
 
 impl WorkspaceHost {
     pub(crate) fn open(data_root: &Path, workspace: &Path) -> Result<Self, WorkspaceHostError> {
-        let workspace = workspace
-            .canonicalize()
-            .map_err(|source| WorkspaceHostError::Io {
+        let identity =
+            WorkspaceIdentity::resolve(workspace).map_err(|source| WorkspaceHostError::Io {
                 path: workspace.to_owned(),
                 source,
             })?;
+        let workspace = identity.canonical_path().to_owned();
+        let workspace_id = identity.collision_key().to_owned();
         let directory = data_root.join("workspace-hosts");
         fs::create_dir_all(&directory).map_err(|source| WorkspaceHostError::Io {
             path: directory.clone(),
             source,
         })?;
-        let key = blake3::hash(workspace.as_os_str().as_encoded_bytes()).to_hex();
         Ok(Self {
             data_root: data_root.to_owned(),
             workspace,
+            workspace_id: workspace_id.clone(),
             host_id: Uuid::new_v4(),
-            lock_path: directory.join(format!("{key}.lock")),
-            descriptor_path: directory.join(format!("{key}.json")),
+            lock_path: directory.join(format!("{workspace_id}.lock")),
+            descriptor_path: directory.join(format!("{workspace_id}.json")),
             controlled: Arc::new(Mutex::new(None)),
         })
     }
@@ -209,7 +215,7 @@ impl WorkspaceHost {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => {
                 return Err(WorkspaceHostError::Busy(
-                    self.read_descriptor().ok().flatten(),
+                    self.read_descriptor().ok().flatten().map(Box::new),
                 ));
             }
             Err(fs::TryLockError::Error(source)) => {
@@ -219,10 +225,13 @@ impl WorkspaceHost {
                 });
             }
         }
+        let generation = next_generation(&lock, &self.lock_path)?;
         let descriptor = ActiveRootDescriptor {
             version: DESCRIPTOR_VERSION,
             workspace: self.workspace.clone(),
+            workspace_id: self.workspace_id.clone(),
             host_id: self.host_id,
+            generation,
             process_id: std::process::id(),
             conversation: conversation.clone(),
         };
@@ -277,6 +286,7 @@ impl WorkspaceHost {
         conversations.truncate(MAX_CONVERSATIONS);
         Ok(WorkspaceSnapshot {
             workspace: self.workspace.clone(),
+            workspace_id: self.workspace_id.clone(),
             conversations,
             active,
         })
@@ -391,7 +401,14 @@ impl WorkspaceHost {
         };
         let descriptor: ActiveRootDescriptor = serde_json::from_slice(&bytes)
             .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?;
-        if descriptor.version != DESCRIPTOR_VERSION || descriptor.workspace != self.workspace {
+        let matches_workspace = WorkspaceIdentity::resolve(&self.workspace)
+            .and_then(|identity| identity.matches(&descriptor.workspace))
+            .unwrap_or(false);
+        if descriptor.version != DESCRIPTOR_VERSION
+            || descriptor.workspace_id != self.workspace_id
+            || !matches_workspace
+            || descriptor.generation == 0
+        {
             return Err(WorkspaceHostError::Invalid(
                 "descriptor identity does not match its workspace".to_owned(),
             ));
@@ -435,6 +452,22 @@ fn open_lock(path: &Path) -> Result<fs::File, WorkspaceHostError> {
             path: path.to_owned(),
             source,
         })
+}
+
+fn next_generation(lock: &fs::File, path: &Path) -> Result<u64, WorkspaceHostError> {
+    next_locked_generation(lock).map_err(|source| {
+        if source.kind() == io::ErrorKind::InvalidData {
+            WorkspaceHostError::Invalid(format!(
+                "{} contains an invalid owner generation; run `xana doctor` before retrying",
+                path.display()
+            ))
+        } else {
+            WorkspaceHostError::Io {
+                path: path.to_owned(),
+                source,
+            }
+        }
+    })
 }
 
 fn write_descriptor(
@@ -599,6 +632,23 @@ mod tests {
     }
 
     #[test]
+    fn root_owner_generations_increase_across_leases() {
+        let directory = tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&workspace).unwrap();
+        let first = WorkspaceHost::open(directory.path(), &workspace).unwrap();
+        let first_lease = first.acquire_root(ConversationRef::NewNative).unwrap();
+        let first_generation = first.snapshot().unwrap().active.unwrap().generation;
+        drop(first_lease);
+
+        let second = WorkspaceHost::open(directory.path(), &workspace).unwrap();
+        let _second_lease = second.acquire_root(ConversationRef::NewNative).unwrap();
+        let second_generation = second.snapshot().unwrap().active.unwrap().generation;
+
+        assert!(second_generation > first_generation);
+    }
+
+    #[test]
     fn snapshot_lists_multiple_native_and_managed_conversations() {
         let directory = tempdir().unwrap();
         let workspace = directory.path().join("workspace");
@@ -695,7 +745,9 @@ mod tests {
             &ActiveRootDescriptor {
                 version: DESCRIPTOR_VERSION,
                 workspace: host.workspace.clone(),
+                workspace_id: host.workspace_id.clone(),
                 host_id: Uuid::new_v4(),
+                generation: 1,
                 process_id: u32::MAX,
                 conversation: ConversationRef::NewNative,
             },

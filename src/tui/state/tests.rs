@@ -652,6 +652,7 @@ fn session_and_activity_commands_use_consistent_view_verbs_and_exact_archive_ids
     state.viewed_conversation = runtime.clone();
     state.refresh_sessions(WorkspaceSnapshot {
         workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
         conversations: vec![
             ConversationProjection {
                 conversation: runtime,
@@ -886,6 +887,7 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
     state.viewed_conversation = runtime.clone();
     state.refresh_sessions(WorkspaceSnapshot {
         workspace: std::env::current_dir().unwrap(),
+        workspace_id: "workspace".into(),
         conversations: vec![
             ConversationProjection {
                 conversation: runtime.clone(),

@@ -291,7 +291,7 @@ async fn run_once(
     let resume = if provider_kind != ProviderKind::Codex {
         if (resume.is_some() || continue_chat) && host_snapshot.active.is_some() {
             return Err(anyhow::Error::new(WorkspaceHostError::Busy(
-                host_snapshot.active.clone(),
+                host_snapshot.active.clone().map(Box::new),
             )));
         }
         if !force_new && resume.is_none() && (continue_chat || one_shot.is_none()) {
