@@ -36,6 +36,12 @@ actions!(
         InterruptRun,
         ShowActivity,
         NewConversation,
+        RenameSelectedProject,
+        ArchiveSelectedProject,
+        RestoreSelectedProject,
+        MoveSelectedConversation,
+        UngroupSelectedConversation,
+        BranchSelectedConversation,
     ]
 );
 

@@ -48,9 +48,16 @@ and Settings remain fixed at the bottom; their complete workspaces arrive in
 later M4 slices.
 
 Rename, archive/unarchive, move/ungroup, branch-at-point, and destructive
-confirmation controls are not in this first navigation slice yet. Continue to
-use the root `xana project` and `xana conversation` commands for those actions
-until the graphical controls ship.
+confirmation controls are available from the contextual **Actions** menu or by
+right-clicking the navigation area after selecting a row. Project rename and
+archive/restore change only Xana's local organization. Ungroup preserves the
+Conversation and workspace. A move inside the same workspace reassigns the
+existing Conversation; a move to another Project workspace requires a second
+confirmation and creates a fresh linked Conversation while preserving the
+source and copying no transcript automatically. **Branch** names the exact
+latest committed source point before it creates and opens a new Conversation.
+The same actions remain available through root `xana project` and
+`xana conversation` commands.
 
 ## Workbench layouts
 

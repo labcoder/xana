@@ -2,9 +2,10 @@
 
 use crate::{
     commands::{
-        self, ClearConversation, InterruptRun, MinimizeWindow, OpenConfigurationFile,
-        OpenDocumentation, QuitXana, RevealLogs, ShowActivity, ShowCommandPalette,
-        WorkbenchCommand,
+        self, ArchiveSelectedProject, BranchSelectedConversation, ClearConversation, InterruptRun,
+        MinimizeWindow, MoveSelectedConversation, OpenConfigurationFile, OpenDocumentation,
+        QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
+        ShowCommandPalette, UngroupSelectedConversation, WorkbenchCommand,
     },
     projection::ConversationProjection,
 };
@@ -20,7 +21,12 @@ use gpui_ai::prelude::{
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName,
     button::{Button, ButtonVariants as _},
-    h_flex, h_resizable, resizable_panel, v_flex, v_resizable,
+    h_flex, h_resizable,
+    input::{Input, InputState},
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu},
+    resizable_panel,
+    scroll::ScrollableElement as _,
+    v_flex, v_resizable,
 };
 use std::{fs, sync::Arc, time::Duration};
 use xana::desktop::{
@@ -37,6 +43,18 @@ const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 const MAX_UPDATES_PER_FRAME: usize = 64;
 const DOCUMENTATION_URL: &str = "https://github.com/labcoder/xana#readme";
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SidebarSelection {
+    Project(String),
+    Conversation(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NavigationDialog {
+    RenameProject { project_id: String },
+    MoveConversation { conversation_id: String },
+}
+
 /// Owns retained GPUI entities, Xana's runtime client, and controlled snapshots.
 pub(crate) struct Workbench {
     runtime: DesktopClient,
@@ -47,6 +65,9 @@ pub(crate) struct Workbench {
     layout: DesktopWorkbenchLayout,
     layout_save_generation: u64,
     selected_project: Option<String>,
+    sidebar_selection: Option<SidebarSelection>,
+    navigation_dialog: Option<NavigationDialog>,
+    navigation_input: Entity<InputState>,
     navigation: DesktopNavigationTarget,
     chat: Entity<Chat>,
     sidebar: Entity<SidebarNav>,
@@ -77,6 +98,10 @@ impl Workbench {
             .selected_conversation
             .as_deref()
             .and_then(|id| project_for_conversation(&navigation_snapshot, id));
+        let sidebar_selection = navigation_snapshot
+            .selected_conversation
+            .clone()
+            .map(SidebarSelection::Conversation);
         let navigation = navigation_for_intent(initial_intent);
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
@@ -105,6 +130,7 @@ impl Workbench {
             SidebarNav::new("xana-sidebar", window, cx)
                 .with_presentation(SidebarNavPresentation::Embedded)
         });
+        let navigation_input = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
             if let Some(selected) = navigation_snapshot.selected_conversation.as_deref() {
@@ -164,6 +190,9 @@ impl Workbench {
             layout,
             layout_save_generation: 0,
             selected_project,
+            sidebar_selection,
+            navigation_dialog: None,
+            navigation_input,
             navigation,
             chat,
             sidebar,
@@ -251,6 +280,8 @@ impl Workbench {
             SidebarNavEvent::Selected { item_id, .. } => {
                 let item_id = item_id.as_ref();
                 if let Some(conversation_id) = item_id.strip_prefix("conversation:") {
+                    self.sidebar_selection =
+                        Some(SidebarSelection::Conversation(conversation_id.to_owned()));
                     if self.navigation_snapshot.selected_conversation.as_deref()
                         != Some(conversation_id)
                     {
@@ -265,6 +296,7 @@ impl Workbench {
                         }
                     }
                 } else if let Some(project_id) = item_id.strip_prefix("project:") {
+                    self.sidebar_selection = Some(SidebarSelection::Project(project_id.to_owned()));
                     self.selected_project = Some(project_id.to_owned());
                     self.projection.set_activity(format!(
                         "Project {} selected for the next Conversation",
@@ -281,6 +313,257 @@ impl Workbench {
             SidebarNavEvent::QueryChanged { .. } => {}
         }
         self.sync_components(window, cx);
+    }
+
+    fn open_project_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(SidebarSelection::Project(project_id)) = self.sidebar_selection.clone() else {
+            self.projection
+                .fail("Select a Project before choosing Rename.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let name = project_title(&self.navigation_snapshot, &project_id);
+        self.navigation_input.update(cx, |input, cx| {
+            input.set_value(name, window, cx);
+            input.focus(window, cx);
+        });
+        self.navigation_dialog = Some(NavigationDialog::RenameProject { project_id });
+        cx.notify();
+    }
+
+    fn commit_project_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(NavigationDialog::RenameProject { project_id }) = self.navigation_dialog.clone()
+        else {
+            return;
+        };
+        let name = self.navigation_input.read(cx).value().to_string();
+        match self.runtime.rename_project(project_id, name) {
+            Ok(_) => {
+                self.navigation_dialog = None;
+                self.projection.set_activity("Renaming Project…");
+            }
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn set_selected_project_archived(
+        &mut self,
+        archived: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(SidebarSelection::Project(project_id)) = self.sidebar_selection.clone() else {
+            self.projection
+                .fail("Select a Project before changing its lifecycle.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let project = project_title(&self.navigation_snapshot, &project_id);
+        let title = if archived {
+            "Archive this Project?"
+        } else {
+            "Restore this Project?"
+        };
+        let detail = if archived {
+            format!(
+                "Archive {project}. Its workspace, Conversations, history, and artifacts will be preserved."
+            )
+        } else {
+            format!("Restore {project} to the active Project list.")
+        };
+        let answer = window.prompt(
+            if archived {
+                PromptLevel::Warning
+            } else {
+                PromptLevel::Info
+            },
+            title,
+            Some(&detail),
+            &[if archived { "Archive" } else { "Restore" }, "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this.runtime.set_project_archived(project_id, archived) {
+                    Ok(_) => this.projection.set_activity(if archived {
+                        "Archiving Project; workspace and Conversations remain preserved…"
+                    } else {
+                        "Restoring Project…"
+                    }),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn ungroup_selected_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(SidebarSelection::Conversation(conversation_id)) = self.sidebar_selection.clone()
+        else {
+            self.projection
+                .fail("Select a Conversation before choosing Ungroup.");
+            self.sync_components(window, cx);
+            return;
+        };
+        match self.runtime.ungroup_conversation(conversation_id) {
+            Ok(_) => self
+                .projection
+                .set_activity("Moving Conversation to Ungrouped…"),
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn open_conversation_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(SidebarSelection::Conversation(conversation_id)) = self.sidebar_selection.clone()
+        else {
+            self.projection
+                .fail("Select a Conversation before choosing Move.");
+            self.sync_components(window, cx);
+            return;
+        };
+        self.navigation_dialog = Some(NavigationDialog::MoveConversation { conversation_id });
+        cx.notify();
+    }
+
+    fn move_conversation_to_project(
+        &mut self,
+        project_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(NavigationDialog::MoveConversation { conversation_id }) =
+            self.navigation_dialog.clone()
+        else {
+            return;
+        };
+        let Some(conversation) = self
+            .navigation_snapshot
+            .conversation(&conversation_id)
+            .cloned()
+        else {
+            self.projection
+                .fail("The selected Conversation is no longer available.");
+            self.navigation_dialog = None;
+            self.sync_components(window, cx);
+            return;
+        };
+        let Some(project) = self
+            .navigation_snapshot
+            .projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .cloned()
+        else {
+            self.projection
+                .fail("The selected Project is no longer available.");
+            self.navigation_dialog = None;
+            self.sync_components(window, cx);
+            return;
+        };
+        self.navigation_dialog = None;
+        let crosses_workspace = project.workspace_id.as_deref() != Some(&conversation.workspace_id);
+        if !crosses_workspace {
+            match self
+                .runtime
+                .move_conversation(conversation_id, project_id, false)
+            {
+                Ok(_) => self
+                    .projection
+                    .set_activity("Assigning Conversation to Project…"),
+                Err(error) => self.projection.fail(error.message),
+            }
+            self.sync_components(window, cx);
+            return;
+        }
+
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Continue in another workspace?",
+            Some(&format!(
+                "{} belongs to {}. Continuing in {} creates a fresh linked Conversation, preserves the source, and copies no transcript text automatically.",
+                conversation.title, conversation.workspace_label, project.name
+            )),
+            &["Create continuation", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this
+                    .runtime
+                    .move_conversation(conversation_id, project_id, true)
+                {
+                    Ok(_) => this
+                        .projection
+                        .set_activity("Creating source-preserving Project continuation…"),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn branch_selected_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(SidebarSelection::Conversation(conversation_id)) = self.sidebar_selection.clone()
+        else {
+            self.projection
+                .fail("Select a Conversation before choosing Branch.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let Some(conversation) = self.navigation_snapshot.conversation(&conversation_id) else {
+            self.projection
+                .fail("The selected Conversation is no longer available.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let Some(source_point) = conversation.branch_point.clone() else {
+            self.projection
+                .fail("This Conversation has no committed point that can be branched.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let answer = window.prompt(
+            PromptLevel::Info,
+            "Branch this Conversation?",
+            Some(&format!(
+                "Create a new Conversation at exact committed point {source_point}. The source remains unchanged."
+            )),
+            &["Create branch", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this
+                    .runtime
+                    .branch_conversation(conversation_id, source_point)
+                {
+                    Ok(_) => this
+                        .projection
+                        .set_activity("Creating source-preserving Conversation branch…"),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn dismiss_navigation_dialog(&mut self, cx: &mut Context<Self>) {
+        self.navigation_dialog = None;
+        cx.notify();
     }
 
     /// Returns false once the backend has stopped and there is nothing left to poll.
@@ -309,6 +592,11 @@ impl Workbench {
                         .selected_conversation
                         .as_deref()
                         .and_then(|id| project_for_conversation(&self.navigation_snapshot, id));
+                    self.sidebar_selection = self
+                        .navigation_snapshot
+                        .selected_conversation
+                        .clone()
+                        .map(SidebarSelection::Conversation);
                     self.projection.replace_snapshot(&snapshot);
                 }
                 DesktopUpdate::Navigation(navigation) => {
@@ -1111,6 +1399,148 @@ impl Workbench {
             .into_any_element()
     }
 
+    fn render_navigation_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let dialog = self.navigation_dialog.clone()?;
+        let tokens = cx.theme().semantic_tokens();
+        let body = match dialog {
+            NavigationDialog::RenameProject { project_id } => v_flex()
+                .gap(tokens.spacing.md)
+                .child(
+                    div()
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child("Rename Project"),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "Change only Xana's local Project label for {}. The workspace and Conversations are unchanged.",
+                            project_title(&self.navigation_snapshot, &project_id)
+                        )),
+                )
+                .child(Input::new(&self.navigation_input))
+                .child(
+                    h_flex()
+                        .justify_end()
+                        .gap(tokens.spacing.sm)
+                        .child(
+                            Button::new("cancel-project-rename")
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dismiss_navigation_dialog(cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("commit-project-rename")
+                                .primary()
+                                .label("Rename")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.commit_project_rename(window, cx);
+                                })),
+                        ),
+                )
+                .into_any_element(),
+            NavigationDialog::MoveConversation { conversation_id } => {
+                let current_project =
+                    project_for_conversation(&self.navigation_snapshot, &conversation_id);
+                let targets = self
+                    .navigation_snapshot
+                    .projects
+                    .iter()
+                    .filter(|project| {
+                        !project.archived
+                            && project.workspace_status == DesktopWorkspaceStatus::Available
+                            && current_project.as_deref() != Some(project.id.as_str())
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                v_flex()
+                    .gap(tokens.spacing.md)
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Move or continue in Project"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Same-workspace moves preserve this Conversation. Cross-workspace choices require a second confirmation and create a linked continuation."),
+                    )
+                    .child(
+                        v_flex()
+                            .max_h(rems(24.))
+                            .overflow_y_scrollbar()
+                            .gap(tokens.spacing.xs)
+                            .when(targets.is_empty(), |list| {
+                                list.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("No other active, available Project is configured."),
+                                )
+                            })
+                            .children(targets.into_iter().map(|project| {
+                                let project_id = project.id.clone();
+                                Button::new(format!("move-to-project-{}", project.id))
+                                    .label(format!(
+                                        "{} — {}",
+                                        project.name, project.workspace_label
+                                    ))
+                                    .w_full()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.move_conversation_to_project(
+                                            project_id.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    }))
+                            })),
+                    )
+                    .child(
+                        h_flex().justify_end().child(
+                            Button::new("cancel-conversation-move")
+                                .label("Cancel")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.dismiss_navigation_dialog(cx);
+                                })),
+                        ),
+                    )
+                    .into_any_element()
+            }
+        };
+        Some(
+            div()
+                .id("xana-navigation-dialog-overlay")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .items_center()
+                .p(tokens.spacing.xl)
+                .bg(cx.theme().background.opacity(0.72))
+                .child(
+                    div()
+                        .id("xana-navigation-dialog")
+                        .role(Role::Dialog)
+                        .aria_label("Xana navigation action")
+                        .w_full()
+                        .max_w(rems(36.))
+                        .max_h(rems(34.))
+                        .overflow_hidden()
+                        .rounded(tokens.radius.lg)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .shadow_lg()
+                        .p(tokens.spacing.lg)
+                        .child(body),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn decide_round_budget(
         &mut self,
         suspension: DesktopRoundBudgetSuspension,
@@ -1283,7 +1713,38 @@ impl Render for Workbench {
             None => self.render_layout_node(layout.root(), window, cx),
         };
         let panel_library = self.render_panel_library(cx);
+        let navigation_dialog = self.render_navigation_dialog(cx);
         let sidebar_is_full = self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Full;
+        let sidebar_selection = self.sidebar_selection.clone();
+        let menu_snapshot = self.navigation_snapshot.clone();
+        let context_selection = sidebar_selection.clone();
+        let context_snapshot = menu_snapshot.clone();
+        let sidebar_actions = h_flex()
+            .w_full()
+            .gap(tokens.spacing.xs)
+            .p(tokens.spacing.sm)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("sidebar-new-conversation")
+                    .label(if sidebar_is_full { "New" } else { "+" })
+                    .w_full()
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        match this.runtime.new_conversation(this.selected_project.clone()) {
+                            Ok(_) => this.projection.set_activity("Creating a new Conversation…"),
+                            Err(error) => this.projection.fail(error.message),
+                        }
+                        this.sync_components(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("sidebar-navigation-actions")
+                    .label(if sidebar_is_full { "Actions…" } else { "…" })
+                    .disabled(sidebar_selection.is_none())
+                    .dropdown_menu(move |menu, _, _| {
+                        navigation_menu(menu, sidebar_selection.clone(), &menu_snapshot)
+                    }),
+            );
         let sidebar_footer = v_flex()
             .w_full()
             .flex_none()
@@ -1327,8 +1788,12 @@ impl Render for Workbench {
                     .id("xana-sidebar-navigation")
                     .flex_1()
                     .min_h_0()
-                    .child(self.sidebar.clone()),
+                    .child(self.sidebar.clone())
+                    .context_menu(move |menu, _, _| {
+                        navigation_menu(menu, context_selection.clone(), &context_snapshot)
+                    }),
             )
+            .child(sidebar_actions)
             .child(sidebar_footer);
         let status_bar = h_flex()
             .w_full()
@@ -1402,6 +1867,30 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowActivity, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &RenameSelectedProject, window, cx| {
+                this.open_project_rename(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ArchiveSelectedProject, window, cx| {
+                this.set_selected_project_archived(true, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &RestoreSelectedProject, window, cx| {
+                this.set_selected_project_archived(false, window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &MoveSelectedConversation, window, cx| {
+                    this.open_conversation_move(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &UngroupSelectedConversation, window, cx| {
+                    this.ungroup_selected_conversation(window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &BranchSelectedConversation, window, cx| {
+                    this.branch_selected_conversation(window, cx);
+                }),
+            )
             .child(main)
             .child(status_bar)
             .when(self.palette_open, |root| {
@@ -1435,6 +1924,7 @@ impl Render for Workbench {
                         ),
                 )
             })
+            .when_some(navigation_dialog, |root, dialog| root.child(dialog))
     }
 }
 
@@ -1460,6 +1950,49 @@ fn sidebar_sections(snapshot: &DesktopNavigationSnapshot) -> Vec<SidebarSection>
             .items(snapshot.ungrouped.iter().map(conversation_item)),
     );
     sections
+}
+
+fn navigation_menu(
+    menu: PopupMenu,
+    selection: Option<SidebarSelection>,
+    snapshot: &DesktopNavigationSnapshot,
+) -> PopupMenu {
+    match selection {
+        Some(SidebarSelection::Project(project_id)) => {
+            let project = snapshot
+                .projects
+                .iter()
+                .find(|project| project.id == project_id);
+            let archived = project.is_some_and(|project| project.archived);
+            menu.label(project.map_or("Selected Project", |project| project.name.as_str()))
+                .menu("Rename…", Box::new(RenameSelectedProject))
+                .menu_with_disabled("Archive…", Box::new(ArchiveSelectedProject), archived)
+                .menu_with_disabled("Restore…", Box::new(RestoreSelectedProject), !archived)
+        }
+        Some(SidebarSelection::Conversation(conversation_id)) => {
+            let conversation = snapshot.conversation(&conversation_id);
+            let grouped = project_for_conversation(snapshot, &conversation_id).is_some();
+            let branchable = conversation
+                .and_then(|item| item.branch_point.as_ref())
+                .is_some();
+            menu.label(conversation.map_or("Selected Conversation", |item| item.title.as_str()))
+                .menu(
+                    "Move or continue in Project…",
+                    Box::new(MoveSelectedConversation),
+                )
+                .menu_with_disabled(
+                    "Move to Ungrouped",
+                    Box::new(UngroupSelectedConversation),
+                    !grouped,
+                )
+                .menu_with_disabled(
+                    "Branch at latest committed point…",
+                    Box::new(BranchSelectedConversation),
+                    !branchable,
+                )
+        }
+        None => menu.label("Select a Project or Conversation"),
+    }
 }
 
 fn conversation_item(conversation: &xana::desktop::DesktopConversationNode) -> SidebarNavItem {

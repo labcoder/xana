@@ -204,7 +204,10 @@ menus, a searchable command palette, a bounded shortcut set, redacted
 notifications, safe close handling, and one instance per canonical
 `XANA_HOME`. Its persistent Project/Conversation sidebar and bounded,
 recoverable Workbench support trusted panels, resizable split layouts, one user
-default, and inert layout sharing. Complete `xana setup` first.
+default, and inert layout sharing. Its contextual navigation actions rename and
+archive Projects, move or ungroup Conversations, and create exact
+source-preserving branches or cross-workspace continuations through the shared
+runtime services. Complete `xana setup` first.
 Managed-runtime presentation and the complete graphical Conversation,
 management, Espejo, and rich-content workflows are added by later M4 tickets.
 See [using Xana Desktop](docs/user/desktop.md) and

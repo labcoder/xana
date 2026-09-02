@@ -3,10 +3,14 @@
 use super::{DesktopError, DesktopErrorCode};
 use crate::{
     bounded_file,
+    conversation_branch::ConversationBranchService,
+    identity::ProjectId,
     message::{ContentBlock, Role},
     paths::XanaPaths,
     private_state::ProjectLifecycle,
     project::{Project, ProjectStore, WorkspaceStatus},
+    project_continuation::{ProjectContinuationReceipt, ProjectContinuationService},
+    session::DurableSession,
     workspace_host::{ConversationRef, ConversationState, WorkspaceHost},
 };
 use serde::{Deserialize, Serialize};
@@ -88,6 +92,8 @@ pub struct DesktopConversationNode {
     pub needs_attention: bool,
     pub record_count: Option<usize>,
     pub modified_unix_ms: Option<u64>,
+    /// Exact bounded source point accepted by the shared branch service.
+    pub branch_point: Option<String>,
 }
 
 /// One optional local Project and the Conversations assigned to its workspace.
@@ -96,6 +102,8 @@ pub struct DesktopProjectNode {
     pub id: String,
     pub name: String,
     pub workspace_label: String,
+    /// Opaque canonical-workspace identity used only for continuation review.
+    pub workspace_id: Option<String>,
     pub workspace_status: DesktopWorkspaceStatus,
     pub archived: bool,
     pub conversations: Vec<DesktopConversationNode>,
@@ -163,9 +171,16 @@ pub(super) struct DesktopNavigationStore {
     preference_file: PathBuf,
 }
 
+#[derive(Debug, Clone)]
 pub(super) struct DesktopConversationDestination {
     pub(super) workspace: PathBuf,
     pub(super) conversation: ConversationRef,
+}
+
+struct ProjectConversationProjection {
+    workspace_status: DesktopWorkspaceStatus,
+    workspace_id: Option<String>,
+    conversations: Vec<(DesktopConversationNode, bool)>,
 }
 
 impl DesktopNavigationStore {
@@ -206,8 +221,12 @@ impl DesktopNavigationStore {
         for project in projects.into_iter().take(MAX_PROJECTS) {
             let canonical = project.canonical_workspace.clone();
             seen_workspaces.insert(canonical.clone());
-            let (workspace_status, conversations) =
-                self.project_conversations(&project_store, &project, selected)?;
+            let projected = self.project_conversations(&project_store, &project, selected)?;
+            let ProjectConversationProjection {
+                workspace_status,
+                workspace_id,
+                conversations,
+            } = projected;
             conversation_count = conversation_count.saturating_add(conversations.len());
             let (assigned, loose): (Vec<_>, Vec<_>) = conversations
                 .into_iter()
@@ -217,6 +236,7 @@ impl DesktopNavigationStore {
                 id: project.id.to_string(),
                 name: bounded(project.name),
                 workspace_label: workspace_label(&canonical),
+                workspace_id,
                 workspace_status,
                 archived: project.lifecycle == ProjectLifecycle::Archived,
                 conversations: assigned
@@ -236,7 +256,8 @@ impl DesktopNavigationStore {
             let host = WorkspaceHost::open(self.paths.data_dir(), &self.launch_workspace)
                 .map_err(navigation_error)?;
             let snapshot = host.snapshot().map_err(navigation_error)?;
-            let mut projected = project_workspace_conversations(&host, snapshot, selected)?;
+            let mut projected =
+                project_workspace_conversations(&self.paths, &host, snapshot, selected)?;
             conversation_count = conversation_count.saturating_add(projected.len());
             ungrouped.extend(projected.drain(..).map(|(conversation, _)| conversation));
         }
@@ -327,6 +348,118 @@ impl DesktopNavigationStore {
         })
     }
 
+    pub(super) fn rename_project(&self, id: &str, name: &str) -> Result<(), DesktopError> {
+        let id = parse_project_id(id)?;
+        ProjectStore::open(&self.paths)
+            .and_then(|store| store.rename(id, name))
+            .map(|_| ())
+            .map_err(navigation_error)
+    }
+
+    pub(super) fn set_project_archived(
+        &self,
+        id: &str,
+        archived: bool,
+    ) -> Result<(), DesktopError> {
+        let id = parse_project_id(id)?;
+        ProjectStore::open(&self.paths)
+            .and_then(|store| {
+                if archived {
+                    store.archive(id)
+                } else {
+                    store.unarchive(id)
+                }
+            })
+            .map(|_| ())
+            .map_err(navigation_error)
+    }
+
+    pub(super) fn ungroup_conversation(&self, id: &str) -> Result<(), DesktopError> {
+        let destination = self.require_conversation(id)?;
+        let store = ProjectStore::open(&self.paths).map_err(navigation_error)?;
+        for key in conversation_membership_keys(&destination.conversation) {
+            store.ungroup_conversation(&key).map_err(navigation_error)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn move_conversation(
+        &self,
+        id: &str,
+        project_id: &str,
+        allow_fresh_continuation: bool,
+    ) -> Result<Option<DesktopConversationDestination>, DesktopError> {
+        let destination = self.require_conversation(id)?;
+        let project_id = parse_project_id(project_id)?;
+        let service = ProjectContinuationService::open(&self.paths).map_err(navigation_error)?;
+        let plan = service
+            .plan(
+                &destination.conversation,
+                &destination.workspace,
+                project_id,
+                None,
+            )
+            .map_err(navigation_error)?;
+        let starts_fresh = matches!(
+            plan.continuation.placement,
+            crate::project::ContinuationPlacement::StartFresh { .. }
+        );
+        if starts_fresh && !allow_fresh_continuation {
+            return Err(DesktopError::new(
+                DesktopErrorCode::CommandRejected,
+                format!(
+                    "moving this Conversation to Project {project_id} crosses workspaces; confirm a source-preserving fresh continuation"
+                ),
+            ));
+        }
+        let receipt = service
+            .commit(&destination.conversation, plan)
+            .map_err(navigation_error)?;
+        match receipt {
+            ProjectContinuationReceipt::Reassigned { .. } => Ok(None),
+            ProjectContinuationReceipt::StartedFresh {
+                workspace,
+                conversation,
+            } => Ok(Some(DesktopConversationDestination {
+                workspace,
+                conversation,
+            })),
+        }
+    }
+
+    pub(super) fn branch_conversation(
+        &self,
+        id: &str,
+        source_point: &str,
+    ) -> Result<DesktopConversationDestination, DesktopError> {
+        let destination = self.require_conversation(id)?;
+        let source = destination.conversation.conversation_id().ok_or_else(|| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                "pending Conversation cannot be branched",
+            )
+        })?;
+        let receipt = ConversationBranchService::open(&self.paths, &destination.workspace)
+            .and_then(|service| service.branch(source, source_point))
+            .map_err(navigation_error)?;
+        Ok(DesktopConversationDestination {
+            workspace: destination.workspace,
+            conversation: receipt.target_ref,
+        })
+    }
+
+    fn require_conversation(
+        &self,
+        id: &str,
+    ) -> Result<DesktopConversationDestination, DesktopError> {
+        self.resolve_conversation(id)?.ok_or_else(|| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("Conversation {id} is no longer available"),
+            )
+        })
+    }
+
     fn load_preferences(&self) -> DesktopNavigationPreferences {
         bounded_file::read(&self.preference_file, MAX_PREFERENCE_BYTES)
             .ok()
@@ -342,7 +475,7 @@ impl DesktopNavigationStore {
         store: &ProjectStore,
         project: &Project,
         selected: Option<&str>,
-    ) -> Result<(DesktopWorkspaceStatus, Vec<(DesktopConversationNode, bool)>), DesktopError> {
+    ) -> Result<ProjectConversationProjection, DesktopError> {
         let inspection = store.inspect(project.id).map_err(navigation_error)?;
         let status = match inspection.workspace_status {
             WorkspaceStatus::Available => DesktopWorkspaceStatus::Available,
@@ -350,15 +483,20 @@ impl DesktopNavigationStore {
             WorkspaceStatus::ChangedIdentity => DesktopWorkspaceStatus::ChangedIdentity,
         };
         if status != DesktopWorkspaceStatus::Available {
-            return Ok((status, Vec::new()));
+            return Ok(ProjectConversationProjection {
+                workspace_status: status,
+                workspace_id: None,
+                conversations: Vec::new(),
+            });
         }
         let host = WorkspaceHost::open(self.paths.data_dir(), &project.canonical_workspace)
             .map_err(navigation_error)?;
         let snapshot = host.snapshot().map_err(navigation_error)?;
-        Ok((
-            status,
-            project_workspace_conversations(&host, snapshot, selected)?,
-        ))
+        Ok(ProjectConversationProjection {
+            workspace_status: status,
+            workspace_id: Some(snapshot.workspace_id.clone()),
+            conversations: project_workspace_conversations(&self.paths, &host, snapshot, selected)?,
+        })
     }
 
     fn available_workspaces(&self) -> Result<Vec<PathBuf>, DesktopError> {
@@ -383,6 +521,7 @@ impl DesktopNavigationStore {
 }
 
 fn project_workspace_conversations(
+    paths: &XanaPaths,
     host: &WorkspaceHost,
     snapshot: crate::workspace_host::WorkspaceSnapshot,
     selected: Option<&str>,
@@ -408,6 +547,7 @@ fn project_workspace_conversations(
                 .modified
                 .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
                 .and_then(|value| u64::try_from(value.as_millis()).ok());
+            let branch_point = conversation_branch_point(paths, &projection.conversation);
             Ok((
                 DesktopConversationNode {
                     id: id.clone(),
@@ -424,11 +564,57 @@ fn project_workspace_conversations(
                     ),
                     record_count: projection.record_count,
                     modified_unix_ms,
+                    branch_point,
                 },
                 assigned,
             ))
         })
         .collect()
+}
+
+fn conversation_branch_point(paths: &XanaPaths, conversation: &ConversationRef) -> Option<String> {
+    match conversation {
+        ConversationRef::Native { session_id } => {
+            DurableSession::inspect(paths.data_dir(), *session_id)
+                .ok()?
+                .recent_active_entry_ids
+                .last()
+                .map(ToString::to_string)
+        }
+        ConversationRef::Managed { thread_id, .. } => Some(thread_id.clone()),
+        ConversationRef::NewNative | ConversationRef::NewManaged { .. } => None,
+    }
+}
+
+fn conversation_membership_keys(conversation: &ConversationRef) -> Vec<String> {
+    match conversation {
+        ConversationRef::Native { session_id } => {
+            vec![session_id.to_string(), conversation.to_string()]
+        }
+        ConversationRef::Managed {
+            conversation_id,
+            connection,
+            thread_id,
+        } => vec![
+            conversation_id.to_string(),
+            thread_id.clone(),
+            format!("{connection}/{thread_id}"),
+            conversation.to_string(),
+        ],
+        ConversationRef::NewManaged {
+            conversation_id, ..
+        } => vec![conversation_id.to_string(), conversation.to_string()],
+        ConversationRef::NewNative => vec![conversation.to_string()],
+    }
+}
+
+fn parse_project_id(value: &str) -> Result<ProjectId, DesktopError> {
+    value.parse().map_err(|_| {
+        DesktopError::new(
+            DesktopErrorCode::StateInvalid,
+            format!("Project identity {value:?} is invalid"),
+        )
+    })
 }
 
 fn conversation_title(host: &WorkspaceHost, conversation: &ConversationRef) -> String {
@@ -549,12 +735,37 @@ fn preference_error(error: impl std::fmt::Display) -> DesktopError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{identity::SessionId, session::DurableSession};
-    use std::ffi::OsString;
+    use crate::{
+        config::{InitialConfig, InitialConnection, PermissionMode, XanaConfig},
+        identity::{ConversationId, SessionId},
+        message::Message,
+        profile::ProfileStore,
+        session::DurableSession,
+        shell::ShellConfig,
+    };
+    use std::{ffi::OsString, fs};
 
     fn fixture() -> (tempfile::TempDir, XanaPaths, PathBuf) {
         let directory = tempfile::tempdir().unwrap();
         let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(
+            paths.config_file(),
+            XanaConfig::render_initial(InitialConfig {
+                connection: InitialConnection::Ollama {
+                    name: "local".into(),
+                    base_url: "http://localhost:11434/v1".into(),
+                },
+                model: "qwen".into(),
+                max_tool_rounds: 8,
+                shell: ShellConfig::default(),
+                permission_mode: PermissionMode::Ask,
+                reasoning_effort: None,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        crate::private_state::ensure_interoperable_records(&paths).unwrap();
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         (directory, paths, workspace.canonicalize().unwrap())
@@ -658,5 +869,118 @@ mod tests {
             DesktopWorkspaceStatus::Missing
         );
         assert!(snapshot.projects[0].conversations.is_empty());
+    }
+
+    #[test]
+    fn project_lifecycle_and_ungroup_mutations_refresh_the_shared_store() {
+        let (_directory, paths, workspace) = fixture();
+        let project = ProjectStore::open(&paths)
+            .unwrap()
+            .create("Before", &workspace)
+            .unwrap();
+        let session = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        let conversation = ConversationRef::Native {
+            session_id: session.session_id(),
+        };
+        drop(session);
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        ProjectStore::open(&paths)
+            .unwrap()
+            .place_conversation(
+                &conversation
+                    .conversation_id()
+                    .expect("stable conversation")
+                    .to_string(),
+                &workspace,
+                Some(project.id),
+            )
+            .unwrap();
+
+        store
+            .rename_project(&project.id.to_string(), "After")
+            .unwrap();
+        store
+            .set_project_archived(&project.id.to_string(), true)
+            .unwrap();
+        store
+            .ungroup_conversation(&conversation.to_string())
+            .unwrap();
+
+        let snapshot = store.snapshot(Some(&conversation.to_string())).unwrap();
+        assert_eq!(snapshot.projects[0].name, "After");
+        assert!(snapshot.projects[0].archived);
+        assert!(snapshot.projects[0].conversations.is_empty());
+        assert_eq!(snapshot.ungrouped[0].id, conversation.to_string());
+    }
+
+    #[test]
+    fn cross_workspace_move_requires_confirmation_then_preserves_the_source() {
+        let (directory, paths, source_workspace) = fixture();
+        let target_workspace = directory.path().join("target");
+        fs::create_dir(&target_workspace).unwrap();
+        let target_workspace = target_workspace.canonicalize().unwrap();
+        let project = ProjectStore::open(&paths)
+            .unwrap()
+            .create("Target", &target_workspace)
+            .unwrap();
+        let session = DurableSession::create(paths.data_dir(), source_workspace.clone()).unwrap();
+        let source_session = session.session_id();
+        let source = ConversationRef::Native {
+            session_id: source_session,
+        };
+        drop(session);
+        let store = DesktopNavigationStore::open(&paths, &source_workspace).unwrap();
+
+        assert!(
+            store
+                .move_conversation(&source.to_string(), &project.id.to_string(), false,)
+                .is_err()
+        );
+        let target = store
+            .move_conversation(&source.to_string(), &project.id.to_string(), true)
+            .unwrap()
+            .expect("cross-workspace continuation");
+
+        assert_eq!(target.workspace, target_workspace);
+        assert_ne!(target.conversation, source);
+        assert!(DurableSession::inspect(paths.data_dir(), source_session).is_ok());
+    }
+
+    #[test]
+    fn projected_native_branch_point_creates_a_source_preserving_branch() {
+        let (_directory, paths, workspace) = fixture();
+        let mut source = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        let source_session = source.session_id();
+        let source_id = ConversationId::for_native(source_session);
+        let profile = ProfileStore::open(&paths)
+            .resolve_global("default")
+            .unwrap();
+        ProfileStore::open(&paths)
+            .freeze(&source_id.to_string(), &profile)
+            .unwrap();
+        let source_point = source
+            .append_message(Message::text(Role::User, "branch here"))
+            .unwrap();
+        drop(source);
+        let source_ref = ConversationRef::Native {
+            session_id: source_session,
+        };
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        let snapshot = store.snapshot(Some(&source_ref.to_string())).unwrap();
+        assert_eq!(
+            snapshot
+                .conversation(&source_ref.to_string())
+                .unwrap()
+                .branch_point
+                .as_deref(),
+            Some(source_point.to_string().as_str())
+        );
+
+        let target = store
+            .branch_conversation(&source_ref.to_string(), &source_point.to_string())
+            .unwrap();
+
+        assert_ne!(target.conversation, source_ref);
+        assert!(DurableSession::inspect(paths.data_dir(), source_session).is_ok());
     }
 }

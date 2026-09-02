@@ -882,6 +882,86 @@ impl DesktopClient {
             })
     }
 
+    /// Renames one Xana Project through the shared Project store.
+    pub fn rename_project(
+        &self,
+        project_id: impl Into<String>,
+        name: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::RenameProject {
+            project_id: project_id.into(),
+            name: name.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Archives or restores one Project without touching its workspace or Conversations.
+    pub fn set_project_archived(
+        &self,
+        project_id: impl Into<String>,
+        archived: bool,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SetProjectArchived {
+            project_id: project_id.into(),
+            archived,
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Removes the selected Conversation's optional Project membership.
+    pub fn ungroup_conversation(
+        &self,
+        conversation_id: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::UngroupConversation {
+            conversation_id: conversation_id.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Moves within a workspace or creates an explicitly confirmed continuation across workspaces.
+    pub fn move_conversation(
+        &self,
+        conversation_id: impl Into<String>,
+        project_id: impl Into<String>,
+        allow_fresh_continuation: bool,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::MoveConversation {
+            conversation_id: conversation_id.into(),
+            project_id: project_id.into(),
+            allow_fresh_continuation,
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Branches one retained Conversation at an exact, projected source point.
+    pub fn branch_conversation(
+        &self,
+        conversation_id: impl Into<String>,
+        source_point: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::BranchConversation {
+            conversation_id: conversation_id.into(),
+            source_point: source_point.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
     /// Validates and atomically persists one Conversation's Workbench layout.
     pub fn save_layout(
         &self,
@@ -1066,6 +1146,26 @@ enum BridgeCommandValue {
     },
     NewConversation {
         project_id: Option<String>,
+    },
+    RenameProject {
+        project_id: String,
+        name: String,
+    },
+    SetProjectArchived {
+        project_id: String,
+        archived: bool,
+    },
+    UngroupConversation {
+        conversation_id: String,
+    },
+    MoveConversation {
+        conversation_id: String,
+        project_id: String,
+        allow_fresh_continuation: bool,
+    },
+    BranchConversation {
+        conversation_id: String,
+        source_point: String,
     },
     SaveLayout {
         layout: DesktopWorkbenchLayout,
@@ -1465,6 +1565,121 @@ impl Bridge {
                     cleanup,
                     ChatExit::DesktopNewConversation { workspace },
                 )))
+            }
+            BridgeCommandValue::RenameProject { project_id, name } => {
+                let result = navigation_store.rename_project(&project_id, &name);
+                if result.is_ok() {
+                    *navigation =
+                        navigation_store.snapshot(Some(&controller.conversation.to_string()))?;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SetProjectArchived {
+                project_id,
+                archived,
+            } => {
+                let result = navigation_store.set_project_archived(&project_id, archived);
+                if result.is_ok() {
+                    *navigation =
+                        navigation_store.snapshot(Some(&controller.conversation.to_string()))?;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::UngroupConversation { conversation_id } => {
+                let result = navigation_store.ungroup_conversation(&conversation_id);
+                if result.is_ok() {
+                    *navigation =
+                        navigation_store.snapshot(Some(&controller.conversation.to_string()))?;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::MoveConversation {
+                conversation_id,
+                project_id,
+                allow_fresh_continuation,
+            } => {
+                if active_run.is_some() {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::HostBusy,
+                            "wait for or interrupt the active Run before moving a Conversation",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+                match navigation_store.move_conversation(
+                    &conversation_id,
+                    &project_id,
+                    allow_fresh_continuation,
+                ) {
+                    Ok(Some(destination)) => {
+                        let cleanup = shutdown_owner(owner).await;
+                        self.publish_command_result(command_id, Ok(())).await?;
+                        Ok(Some((
+                            cleanup,
+                            ChatExit::DesktopSwitchConversation {
+                                workspace: destination.workspace,
+                                conversation: destination.conversation,
+                            },
+                        )))
+                    }
+                    Ok(None) => {
+                        *navigation = navigation_store
+                            .snapshot(Some(&controller.conversation.to_string()))?;
+                        self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                            .await?;
+                        self.publish_command_result(command_id, Ok(())).await?;
+                        Ok(None)
+                    }
+                    Err(error) => {
+                        self.publish_command_result(command_id, Err(error)).await?;
+                        Ok(None)
+                    }
+                }
+            }
+            BridgeCommandValue::BranchConversation {
+                conversation_id,
+                source_point,
+            } => {
+                if active_run.is_some() {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::HostBusy,
+                            "wait for or interrupt the active Run before branching a Conversation",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+                match navigation_store.branch_conversation(&conversation_id, &source_point) {
+                    Ok(destination) => {
+                        let cleanup = shutdown_owner(owner).await;
+                        self.publish_command_result(command_id, Ok(())).await?;
+                        Ok(Some((
+                            cleanup,
+                            ChatExit::DesktopSwitchConversation {
+                                workspace: destination.workspace,
+                                conversation: destination.conversation,
+                            },
+                        )))
+                    }
+                    Err(error) => {
+                        self.publish_command_result(command_id, Err(error)).await?;
+                        Ok(None)
+                    }
+                }
             }
             BridgeCommandValue::SaveLayout { layout: candidate } => {
                 let result = candidate.validate().and_then(|()| {

@@ -5,8 +5,9 @@ use crate::{
     paths::XanaPaths,
     portable_project::PortableProjectStore,
     private_state::ProjectLifecycle,
-    profile::{ProfileStore, ResolvedProfile},
+    profile::ProfileStore,
     project::{ContinuationOwner, ContinuationPlacement, Project, ProjectStore, WorkspaceStatus},
+    project_continuation::{resolve_target_profile, validate_owner_profile},
     session::DurableSession,
 };
 use anyhow::{Context, Result, bail};
@@ -309,50 +310,6 @@ pub(super) fn run_command(
         }
     }
     Ok(())
-}
-
-fn resolve_target_profile(
-    paths: &XanaPaths,
-    project: crate::identity::ProjectId,
-    requested: Option<&str>,
-) -> Result<ResolvedProfile> {
-    let store = ProfileStore::open(paths);
-    if let Ok(portable) = PortableProjectStore::open(paths).resolve(paths, project) {
-        let name = requested.or(portable.manifest.default_profile.as_deref());
-        if let Some(name) = name
-            && portable.manifest.profiles.contains_key(name)
-        {
-            return Ok(store.resolve_project(paths, project, name)?);
-        }
-    }
-    let name = requested.map(str::to_owned).unwrap_or_else(|| {
-        crate::config::XanaConfig::load_registry_from(paths.config_file())
-            .map(|registry| registry.default_profile)
-            .unwrap_or_else(|_| "default".to_owned())
-    });
-    Ok(store.resolve_global(&name)?)
-}
-
-fn validate_owner_profile(
-    paths: &XanaPaths,
-    owner: ContinuationOwner,
-    profile: &ResolvedProfile,
-) -> Result<()> {
-    let registry = crate::config::XanaConfig::load_registry_from(paths.config_file())?;
-    let kind = registry
-        .connections
-        .get(&profile.connection.value)
-        .ok_or_else(|| anyhow::anyhow!("resolved connection is no longer configured"))?
-        .kind;
-    match (owner, kind == crate::config::ProviderKind::Codex) {
-        (ContinuationOwner::Native, false) | (ContinuationOwner::ManagedCodex, true) => Ok(()),
-        (ContinuationOwner::Native, true) => {
-            bail!("profile selects managed Codex; use --owner codex")
-        }
-        (ContinuationOwner::ManagedCodex, false) => {
-            bail!("--owner codex requires a profile whose connection kind is Codex")
-        }
-    }
 }
 
 fn workspace_or_current(workspace: Option<PathBuf>) -> Result<PathBuf> {

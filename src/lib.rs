@@ -56,6 +56,7 @@ mod private_state;
 mod process_capture;
 mod profile;
 mod project;
+mod project_continuation;
 mod prompt;
 mod provider;
 mod reset;

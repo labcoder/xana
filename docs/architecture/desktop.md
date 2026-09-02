@@ -43,6 +43,26 @@ Conversation, and the existing GPUI window receives the next authoritative
 snapshot. A navigation change therefore does not create a second agent loop or
 make the sidebar authoritative.
 
+Project rename/archive/restore and Conversation assignment/ungroup operations
+go through the runtime bridge to `ProjectStore`. Cross-workspace moves first
+review and then commit through the shared `ProjectContinuationService`; it owns
+target Profile resolution, fresh Conversation creation, predecessor provenance,
+and rollback. Branch requests carry the exact projected committed entry/thread
+point into `ConversationBranchService`. GPUI supplies neither a filesystem path
+nor a fabricated identity for either operation.
+
+```mermaid
+flowchart LR
+    UI["Sidebar action"] --> B["Typed Desktop bridge command"]
+    B --> P["ProjectStore"]
+    B --> C["ProjectContinuationService"]
+    B --> R["ConversationBranchService"]
+    C --> S["Preserved source + linked target"]
+    R --> S
+    P --> N["Fresh bounded navigation snapshot"]
+    S --> N
+```
+
 The runtime publishes an atomic initial
 snapshot before the window opens. A 32-entry command queue and 256-entry update
 queue bound cross-thread work. Replaceable streaming deltas may be dropped
@@ -139,7 +159,9 @@ Project and Conversation labels are display values; every selection is routed
 by a prefixed stable ID. The sidebar remains full or mini—never secretly
 hidden—and keeps Espejo and Settings as fixed bottom destinations. Filtering,
 disclosure, focus, and scrolling remain component-owned while lifecycle work
-returns to Xana through typed commands.
+returns to Xana through typed commands. A contextual menu and matching keyboard
+actions use the same handlers; destructive Project changes and any operation
+that crosses a workspace require an exact review prompt.
 
 Workbench layout is a separate Xana-owned, versioned domain model. It is a
 bounded binary split tree whose leaves are tab stacks containing only trusted
