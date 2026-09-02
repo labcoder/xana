@@ -101,6 +101,7 @@ fn parses_connection_and_model_control_plane() {
         .unwrap()
         .command,
         Some(Command::Connection(ConnectionArgs {
+            json: false,
             command: ConnectionCommand::Add {
                 id: "codex".into(),
                 kind: ConnectionKindChoice::Codex,

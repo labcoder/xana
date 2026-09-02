@@ -40,8 +40,9 @@ boundaries.
 - Do not move configuration, environment reads, provider wire types, or
   terminal rendering into the headless agent loop.
 - Keep native generation in `provider`, connection-owned catalog/selection in
-  `model_catalog`, static API-key ownership in `credential`, and foreign agent
-  protocols beneath `managed`.
+  `model_catalog`, typed frontend-safe management facts/receipts in
+  `connection_management`, static API-key ownership in `credential`, and
+  foreign agent protocols beneath `managed`.
 - Keep full-screen application state and transitions in `tui/state`; rendering
   and terminal side effects stay in their existing focused TUI modules.
 

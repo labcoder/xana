@@ -951,6 +951,10 @@ impl From<ConnectionKindChoice> for crate::config::ProviderKind {
 
 #[derive(Debug, Args, PartialEq, Eq)]
 pub(crate) struct ConnectionArgs {
+    /// Emit stable, secret-free connection state or receipts as JSON.
+    #[arg(long, global = true)]
+    pub(crate) json: bool,
+
     #[command(subcommand)]
     pub(crate) command: ConnectionCommand,
 }

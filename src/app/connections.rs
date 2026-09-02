@@ -2,13 +2,18 @@
 
 use crate::{
     cli::{AuthCommand, ConnectionCommand, ModelCommand},
-    config::{CredentialReference, NewConnection, ProviderKind, XanaConfig},
+    config::{CredentialReference, ProviderKind, XanaConfig},
+    connection_management::{
+        ConnectionDraft, ConnectionEffect, ConnectionManagement, ConnectionReceipt,
+        ConnectionSummaryView, ManagedAccountState,
+    },
     credential::{SecretString, delete_secret, store_secret},
     managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
     model_catalog::{ExecutionKind, ModelManager},
     paths::XanaPaths,
 };
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::io::{self, IsTerminal, Read, Write};
 
 const MAX_CREDENTIAL_BYTES: usize = 64 * 1024;
@@ -37,7 +42,7 @@ pub(super) async fn run_auth_command<W: Write>(
             yes: false,
         },
     };
-    run_connection_command(translated, paths, output).await
+    run_connection_command(translated, paths, output, false).await
 }
 
 pub(super) fn model_manager(paths: &XanaPaths) -> Result<ModelManager> {
@@ -64,6 +69,7 @@ pub(super) async fn run_connection_command<W: Write>(
     command: ConnectionCommand,
     paths: &XanaPaths,
     output: &mut W,
+    json: bool,
 ) -> Result<()> {
     match command {
         ConnectionCommand::Add {
@@ -91,85 +97,101 @@ pub(super) async fn run_connection_command<W: Write>(
                 (None, None) => None,
                 (Some(_), Some(_)) => unreachable!("clap rejects conflicting flags"),
             };
-            XanaConfig::add_connection(
-                paths.config_file(),
-                NewConnection {
-                    id: id.clone(),
-                    kind,
-                    base_url,
-                    credential,
-                    model: model.clone(),
-                    codex_program,
-                    codex_home,
-                },
-            )?;
-            writeln!(output, "connection added: {id} ({})", kind.as_str())?;
-            writeln!(output, "model declared: {id}/{model}")?;
-            if matches!(
+            let receipt = ConnectionManagement::open(paths)?.add(ConnectionDraft {
+                id: id.clone(),
                 kind,
-                ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
-            ) {
-                writeln!(output, "next: xana connection set-key {id}")?;
-            } else if kind == ProviderKind::Codex {
-                writeln!(output, "next: xana connection status {id}")?;
+                base_url,
+                credential,
+                model: model.clone(),
+                codex_program,
+                codex_home,
+            })?;
+            if json {
+                write_json(output, &receipt)?;
+            } else {
+                writeln!(output, "connection added: {id} ({})", kind.as_str())?;
+                writeln!(output, "model declared: {id}/{model}")?;
+                writeln!(
+                    output,
+                    "backup: {}",
+                    receipt
+                        .backup
+                        .as_ref()
+                        .expect("add receipt backup")
+                        .display()
+                )?;
+                if matches!(
+                    kind,
+                    ProviderKind::OpenAi | ProviderKind::OpenRouter | ProviderKind::Anthropic
+                ) {
+                    writeln!(output, "next: xana connection set-key {id}")?;
+                } else {
+                    writeln!(output, "next: xana connection status {id}")?;
+                }
             }
             Ok(())
         }
         ConnectionCommand::List => {
-            let manager = model_manager(paths)?;
-            let selected = manager.selected()?;
-            for summary in manager.summaries() {
-                let marker = if summary.id == selected.connection {
-                    "*"
-                } else {
-                    " "
-                };
-                writeln!(
-                    output,
-                    "{marker} {}\t{}\t{}\t{} model(s)",
-                    summary.id,
-                    summary.kind.as_str(),
-                    summary.credential,
-                    summary.models.len()
-                )?;
+            let snapshot = ConnectionManagement::open(paths)?.snapshot()?;
+            if json {
+                write_json(output, &snapshot)?;
+            } else {
+                for summary in &snapshot.connections {
+                    write_connection_row(output, summary)?;
+                }
             }
             Ok(())
         }
         ConnectionCommand::Status { id } => {
+            let management = ConnectionManagement::open(paths)?;
+            let mut detail = management
+                .snapshot()?
+                .connections
+                .into_iter()
+                .find(|connection| connection.id == id)
+                .with_context(|| format!("unknown connection {id:?}"))?;
             let manager = model_manager(paths)?;
             let connection = manager.connection(&id)?;
             if connection.kind == ProviderKind::Codex {
                 let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
-                writeln!(output, "connection: {id}")?;
-                writeln!(output, "kind: managed codex app-server")?;
-                writeln!(output, "runtime: {}", server.version)?;
-                writeln!(output, "codex home: {}", server.codex_home.display())?;
                 let account = server.account_status().await?;
-                write_account_status(output, &account)?;
-                if matches!(account, AccountStatus::ChatGpt { .. }) {
+                detail.observe_managed_account(managed_account_state(&account));
+                let rate_limits = if matches!(account, AccountStatus::ChatGpt { .. }) {
                     let limits = server.rate_limits().await?;
-                    for (name, pointer) in [
+                    [
                         ("primary", "/rateLimits/primary/usedPercent"),
                         ("secondary", "/rateLimits/secondary/usedPercent"),
-                    ] {
-                        if let Some(percent) =
-                            limits.pointer(pointer).and_then(serde_json::Value::as_f64)
-                        {
-                            writeln!(output, "{name} usage: {percent:.0}%")?;
-                        }
+                    ]
+                    .into_iter()
+                    .filter_map(|(name, pointer)| {
+                        limits
+                            .pointer(pointer)
+                            .and_then(serde_json::Value::as_f64)
+                            .map(|value| (name, value))
+                    })
+                    .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let version = server.version.clone();
+                let codex_home = server.codex_home.clone();
+                server.shutdown().await?;
+                if json {
+                    write_json(output, &detail)?;
+                } else {
+                    write_connection_detail(output, &detail)?;
+                    writeln!(output, "runtime: {version}")?;
+                    writeln!(output, "managed account home: {}", codex_home.display())?;
+                    for (name, percent) in rate_limits {
+                        writeln!(output, "{name} usage: {percent:.0}%")?;
                     }
                 }
-                server.shutdown().await?;
             } else {
-                let summary = manager
-                    .summaries()
-                    .into_iter()
-                    .find(|summary| summary.id == id)
-                    .expect("connection was resolved");
-                writeln!(output, "connection: {id}")?;
-                writeln!(output, "kind: native {}", summary.kind.as_str())?;
-                writeln!(output, "credential: {}", summary.credential)?;
-                writeln!(output, "cached/configured models: {}", summary.models.len())?;
+                if json {
+                    write_json(output, &detail)?;
+                } else {
+                    write_connection_detail(output, &detail)?;
+                }
             }
             Ok(())
         }
@@ -185,6 +207,7 @@ pub(super) async fn run_connection_command<W: Write>(
                     "connection {id:?} uses an environment credential; set that variable instead"
                 )
             };
+            let credential_id = credential_id.clone();
             let secret = if from_stdin {
                 let mut input = String::new();
                 io::stdin()
@@ -203,11 +226,39 @@ pub(super) async fn run_connection_command<W: Write>(
                 }
                 SecretString::new(rpassword::prompt_password(format!("API key for {id}: "))?)?
             };
-            store_secret(credential_id, &secret)?;
-            writeln!(
-                output,
-                "credential stored in the operating-system credential store for {id}"
-            )?;
+            let models = manager.probe_native(&id, Some(&secret)).await?;
+            if models.is_empty() {
+                anyhow::bail!(
+                    "connection {id:?} returned an empty model catalog; the prior credential was preserved"
+                )
+            }
+            store_secret(&credential_id, &secret)?;
+            let cache_warning = manager
+                .write_discovered_cache(&id, &models)
+                .err()
+                .map(|error| {
+                    format!(
+                        "credential was stored, but the catalog cache was not updated: {error}; run `xana model refresh {id}`"
+                    )
+                });
+            let mut receipt = action_receipt(
+                &id,
+                "connection.credential_replace.completed.v1",
+                ConnectionEffect::CredentialReplaced,
+            );
+            receipt.warnings.extend(cache_warning);
+            if json {
+                write_json(output, &receipt)?;
+            } else {
+                writeln!(
+                    output,
+                    "credential validated against {} model(s) and stored in the operating-system credential store for {id}",
+                    models.len()
+                )?;
+                for warning in &receipt.warnings {
+                    writeln!(output, "warning: {warning}")?;
+                }
+            }
             Ok(())
         }
         ConnectionCommand::DeleteKey { id } => {
@@ -221,15 +272,24 @@ pub(super) async fn run_connection_command<W: Write>(
                 anyhow::bail!("connection {id:?} uses an environment credential")
             };
             let deleted = delete_secret(credential_id)?;
-            writeln!(
-                output,
-                "credential {} for {id}",
-                if deleted {
-                    "deleted"
-                } else {
-                    "was already absent"
-                }
-            )?;
+            let receipt = action_receipt(
+                &id,
+                "connection.credential_delete.completed.v1",
+                ConnectionEffect::CredentialDeleted,
+            );
+            if json {
+                write_json(output, &receipt)?;
+            } else {
+                writeln!(
+                    output,
+                    "credential {} for {id}",
+                    if deleted {
+                        "deleted"
+                    } else {
+                        "was already absent"
+                    }
+                )?;
+            }
             Ok(())
         }
         ConnectionCommand::Login { id, device_code } => {
@@ -240,7 +300,18 @@ pub(super) async fn run_connection_command<W: Write>(
             }
             let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
             if !matches!(server.account_status().await?, AccountStatus::LoggedOut) {
-                writeln!(output, "Codex is already logged in.")?;
+                if json {
+                    write_json(
+                        output,
+                        &action_receipt(
+                            &id,
+                            "connection.managed_login.already_complete.v1",
+                            ConnectionEffect::ManagedLoginCompleted,
+                        ),
+                    )?;
+                } else {
+                    writeln!(output, "Codex is already logged in.")?;
+                }
                 server.shutdown().await?;
                 return Ok(());
             }
@@ -258,7 +329,18 @@ pub(super) async fn run_connection_command<W: Write>(
             }
             writeln!(output, "Waiting for authorization...")?;
             let status = server.wait_for_login(&instructions.login_id).await?;
-            write_account_status(output, &status)?;
+            if json {
+                write_json(
+                    output,
+                    &action_receipt(
+                        &id,
+                        "connection.managed_login.completed.v1",
+                        ConnectionEffect::ManagedLoginCompleted,
+                    ),
+                )?;
+            } else {
+                write_account_status(output, &status)?;
+            }
             server.shutdown().await?;
             Ok(())
         }
@@ -274,28 +356,60 @@ pub(super) async fn run_connection_command<W: Write>(
                 anyhow::bail!("use `xana connection delete-key {id}` for API-key connections")
             }
             let mut server = CodexAppServer::spawn(&codex_launch(connection)).await?;
-            if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
-                writeln!(output, "Codex was already logged out.")?;
+            let already_logged_out =
+                matches!(server.account_status().await?, AccountStatus::LoggedOut);
+            if already_logged_out {
+                if !json {
+                    writeln!(output, "Codex was already logged out.")?;
+                }
             } else {
                 server.logout().await?;
-                writeln!(output, "Codex account logged out for this CODEX_HOME.")?;
+                if !json {
+                    writeln!(output, "Codex account logged out for this CODEX_HOME.")?;
+                }
             }
             server.shutdown().await?;
+            if json {
+                write_json(
+                    output,
+                    &action_receipt(
+                        &id,
+                        "connection.managed_logout.completed.v1",
+                        ConnectionEffect::ManagedLogoutCompleted,
+                    ),
+                )?;
+            }
             Ok(())
         }
-        ConnectionCommand::Refresh { id } => refresh_models(paths, &id, output).await,
+        ConnectionCommand::Refresh { id } => refresh_models(paths, &id, output, json).await,
         ConnectionCommand::Remove { id, yes } => {
             if !yes {
                 anyhow::bail!("connection removal requires --yes")
             }
-            let selected = model_manager(paths)?.selected()?;
-            if selected.connection == id {
-                anyhow::bail!(
-                    "connection {id:?} is selected; select another model before removing it"
-                )
+            let management = ConnectionManagement::open(paths)?;
+            let plan = management.removal_plan(&id, std::iter::empty())?;
+            let receipt = management.remove(&plan)?;
+            if json {
+                write_json(output, &receipt)?;
+            } else {
+                writeln!(output, "connection removed: {id}")?;
+                writeln!(
+                    output,
+                    "backup: {}",
+                    receipt
+                        .backup
+                        .as_ref()
+                        .expect("remove receipt backup")
+                        .display()
+                )?;
+                if !receipt.retained_authority.is_empty() {
+                    writeln!(
+                        output,
+                        "retained authority: {}",
+                        receipt.retained_authority.join(", ")
+                    )?;
+                }
             }
-            XanaConfig::remove_connection(paths.config_file(), &id)?;
-            writeln!(output, "connection removed: {id}")?;
             Ok(())
         }
     }
@@ -311,7 +425,140 @@ fn write_account_status<W: Write>(output: &mut W, status: &AccountStatus) -> Res
     Ok(())
 }
 
-async fn refresh_models<W: Write>(paths: &XanaPaths, id: &str, output: &mut W) -> Result<()> {
+fn managed_account_state(status: &AccountStatus) -> ManagedAccountState {
+    match status {
+        AccountStatus::LoggedOut => ManagedAccountState::LoggedOut,
+        AccountStatus::ApiKey => ManagedAccountState::LoggedIn {
+            kind: "Codex-managed API key".to_owned(),
+        },
+        AccountStatus::ChatGpt { plan } => ManagedAccountState::LoggedIn {
+            kind: format!("ChatGPT ({plan})"),
+        },
+        AccountStatus::Other { kind } => ManagedAccountState::LoggedIn { kind: kind.clone() },
+    }
+}
+
+fn action_receipt(
+    id: &str,
+    semantic_code: &'static str,
+    effect: ConnectionEffect,
+) -> ConnectionReceipt {
+    ConnectionReceipt {
+        version: crate::connection_management::CONNECTION_STATE_VERSION,
+        semantic_code,
+        connection: id.to_owned(),
+        effect,
+        backup: None,
+        retained_authority: Vec::new(),
+        warnings: Vec::new(),
+    }
+}
+
+fn write_json<W: Write, T: Serialize>(output: &mut W, value: &T) -> Result<()> {
+    serde_json::to_writer(&mut *output, value)?;
+    writeln!(output)?;
+    Ok(())
+}
+
+fn write_connection_row<W: Write>(
+    output: &mut W,
+    connection: &ConnectionSummaryView,
+) -> Result<()> {
+    let marker = if connection.selected_for_new_conversations {
+        "*"
+    } else {
+        " "
+    };
+    writeln!(
+        output,
+        "{marker} {}\t{}\t{}\t{} model(s)\trecovery={}",
+        connection.id,
+        connection.provider.as_str(),
+        wire_name(&connection.health),
+        connection.models.len(),
+        wire_name(&connection.recovery)
+    )?;
+    Ok(())
+}
+
+fn write_connection_detail<W: Write>(
+    output: &mut W,
+    connection: &ConnectionSummaryView,
+) -> Result<()> {
+    writeln!(output, "connection: {}", connection.id)?;
+    writeln!(output, "provider: {}", connection.provider.as_str())?;
+    writeln!(output, "execution: {}", wire_name(&connection.execution))?;
+    writeln!(output, "health: {}", wire_name(&connection.health))?;
+    writeln!(
+        output,
+        "selected for new conversations: {}",
+        connection.selected_for_new_conversations
+    )?;
+    writeln!(
+        output,
+        "selected model: {} ({})",
+        connection
+            .selected_model
+            .as_deref()
+            .unwrap_or("not selected"),
+        wire_name(&connection.facets.selected_model)
+    )?;
+    writeln!(
+        output,
+        "credential: {} ({})",
+        wire_name(&connection.credential_source),
+        wire_name(&connection.facets.credential)
+    )?;
+    writeln!(output, "account: {}", wire_name(&connection.facets.account))?;
+    writeln!(
+        output,
+        "reachability: {}",
+        wire_name(&connection.facets.reachability)
+    )?;
+    writeln!(
+        output,
+        "catalog: {} ({} cached, {} available)",
+        wire_name(&connection.facets.catalog.freshness),
+        connection.facets.catalog.cached_model_count,
+        connection.facets.catalog.available_model_count
+    )?;
+    if let Some(fetched_at) = connection.facets.catalog.fetched_at_unix_seconds {
+        writeln!(output, "catalog fetched at: {fetched_at} unix seconds")?;
+    }
+    writeln!(
+        output,
+        "profiles: {}",
+        if connection.profile_references.is_empty() {
+            "none".to_owned()
+        } else {
+            connection.profile_references.join(", ")
+        }
+    )?;
+    writeln!(output, "recovery: {}", wire_name(&connection.recovery))?;
+    Ok(())
+}
+
+fn wire_name<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .map(|value| match value {
+            serde_json::Value::String(value) => value,
+            serde_json::Value::Object(mut value) => value
+                .remove("state")
+                .or_else(|| value.remove("source"))
+                .and_then(|value| value.as_str().map(str::to_owned))
+                .unwrap_or_else(|| "structured".to_owned()),
+            _ => "unknown".to_owned(),
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+async fn refresh_models<W: Write>(
+    paths: &XanaPaths,
+    id: &str,
+    output: &mut W,
+    json: bool,
+) -> Result<()> {
     let manager = model_manager(paths)?;
     let connection = manager.connection(id)?;
     let models = if connection.kind == ProviderKind::Codex {
@@ -323,7 +570,18 @@ async fn refresh_models<W: Write>(paths: &XanaPaths, id: &str, output: &mut W) -
     } else {
         manager.refresh_native(id).await?
     };
-    writeln!(output, "cached {} model(s) for {id}", models.len())?;
+    if json {
+        write_json(
+            output,
+            &action_receipt(
+                id,
+                "connection.catalog_refresh.completed.v1",
+                ConnectionEffect::CatalogRefreshed,
+            ),
+        )?;
+    } else {
+        writeln!(output, "cached {} model(s) for {id}", models.len())?;
+    }
     Ok(())
 }
 
@@ -341,12 +599,12 @@ pub(super) async fn run_model_command<W: Write>(
             let (connection, model) = selection
                 .split_once('/')
                 .context("model selection must be CONNECTION/MODEL")?;
-            let manager = model_manager(paths)?;
             let effort = effort.and_then(|value| (value != "auto").then_some(value));
             let summary = summary
                 .map(|value| value.parse::<crate::model_catalog::ReasoningSummary>())
                 .transpose()?;
-            let selected = manager.select_with_options(connection, model, effort, summary)?;
+            let (selected, receipt) =
+                ConnectionManagement::open(paths)?.select(connection, model, effort, summary)?;
             writeln!(
                 output,
                 "selected {}/{} for the next conversation",
@@ -365,10 +623,11 @@ pub(super) async fn run_model_command<W: Write>(
                         .map_or_else(|| "provider default".into(), |value| value.to_string())
                 )?;
             }
+            writeln!(output, "receipt: {}", receipt.semantic_code)?;
             Ok(())
         }
         Some(ModelCommand::Refresh { connection }) => {
-            refresh_models(paths, &connection, output).await
+            refresh_models(paths, &connection, output, false).await
         }
         Some(ModelCommand::List { connection }) => {
             list_models(paths, connection.as_deref(), output)

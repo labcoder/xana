@@ -384,8 +384,10 @@ Advanced connection commands are:
 
 ```text
 xana connection list
+xana connection --json list
 xana connection add ID --kind KIND --model MODEL [options]
 xana connection status ID
+xana connection --json status ID
 xana connection set-key ID
 xana connection delete-key ID
 xana connection login ID [--device-code]
@@ -393,8 +395,24 @@ xana connection logout ID --yes
 xana connection remove ID --yes
 ```
 
-`remove` rejects the selected connection and any connection referenced by a
-profile. Select another model and remove profile references first.
+Connection list/status use a shared secret-free read model. They keep
+credential availability, managed-account state, reachability, catalog
+freshness, selected-model availability, Profile/default references, aggregate
+health, and the primary recovery action as separate facts. `unknown` and `not
+tested` are never rendered as healthy. JSON output is versioned and contains
+credential references only—never stored or masked secret values.
+
+Successful live catalog writes include a fetch timestamp. A cached catalog is
+reported fresh for 24 hours and stale afterward; older version-1 caches remain
+usable with unknown age. A configured model without a live cache is
+`configured_only`, not falsely presented as a tested endpoint.
+
+Connection add/remove edits use Xana's atomic, comment-preserving config
+transaction and retain `config.toml.bak`. `remove` rejects the selected
+connection and any connection referenced by a Profile, and its receipt says
+whether a stored credential or managed account remains. Select another model
+and remove Profile references first; credential deletion and managed logout
+remain separate explicit actions.
 
 ### Child task routes
 
@@ -453,9 +471,14 @@ xana model refresh anthropic
 ```
 
 Use `--from-stdin` for a bounded noninteractive key read. Avoid putting a key
-directly in a command argument or shell history. To use a named environment
-variable instead of the OS store, add `--env VARIABLE`; Xana resolves exactly
-that source and never falls back to another credential.
+directly in a command argument or shell history. Xana tests a staged replacement
+against the connection's bounded model-catalog endpoint before replacing the
+OS-stored key, so an invalid or offline candidate preserves the prior key. A
+successful test also refreshes the non-secret catalog; if only that derived
+cache write fails, Xana reports the partial success and the exact refresh
+command. To use a named environment variable instead of the OS store, add
+`--env VARIABLE`; Xana resolves exactly that source and never falls back to
+another credential.
 
 OpenAI and OpenRouter use bearer authentication. Anthropic uses `x-api-key`
 and supports API keys only; Xana does not offer Claude subscription OAuth.

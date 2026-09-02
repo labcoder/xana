@@ -228,57 +228,17 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdin = io::stdin();
             vision_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
         }
-        Some(Command::Connect(args)) => match args.integration {
-            Some(cli::ConnectIntegration::Provider) => {
-                let setup = cli::SetupArgs {
-                    section: Some(cli::SetupSectionChoice::Connection),
-                    ..cli::SetupArgs::default()
-                };
-                run_setup_command(&setup, &paths).await.map(|_| ())
-            }
-            Some(cli::ConnectIntegration::Profile) => {
-                let setup = cli::SetupArgs {
-                    section: Some(cli::SetupSectionChoice::ProfilesRoutes),
-                    ..cli::SetupArgs::default()
-                };
-                run_setup_command(&setup, &paths).await.map(|_| ())
-            }
-            Some(cli::ConnectIntegration::Image) => {
-                let stdin = io::stdin();
-                let stdout = io::stdout();
-                connect::run_focused_service(
-                    &args,
-                    connect::FocusedServiceKind::Image,
-                    &paths,
-                    stdin.is_terminal(),
-                    &mut stdin.lock(),
-                    &mut stdout.lock(),
-                )
-            }
-            Some(cli::ConnectIntegration::Vision) => {
-                let stdin = io::stdin();
-                let stdout = io::stdout();
-                connect::run_focused_service(
-                    &args,
-                    connect::FocusedServiceKind::Vision,
-                    &paths,
-                    stdin.is_terminal(),
-                    &mut stdin.lock(),
-                    &mut stdout.lock(),
-                )
-            }
-            integration => {
-                let mut output = io::stdout().lock();
-                connect::write_hub(&args, integration, &paths, &mut output)
-            }
-        },
+        Some(Command::Connect(args)) => {
+            let stdout = io::stdout();
+            run_connect_command(args, &paths, &mut stdout.lock()).await
+        }
         Some(Command::Operation(args)) => {
             let stdout = io::stdout();
             operations::run_operation(args.command, &paths, &mut stdout.lock()).await
         }
         Some(Command::Connection(args)) => {
             let stdout = io::stdout();
-            run_connection_command(args.command, &paths, &mut stdout.lock()).await
+            run_connection_command(args.command, &paths, &mut stdout.lock(), args.json).await
         }
         Some(Command::Usage(args)) => {
             let stdout = io::stdout();
@@ -300,6 +260,52 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             let stdout = io::stdout();
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
         }
+    }
+}
+
+async fn run_connect_command<W: Write>(
+    args: cli::ConnectArgs,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    match args.integration {
+        Some(cli::ConnectIntegration::Provider) => {
+            let setup = cli::SetupArgs {
+                section: Some(cli::SetupSectionChoice::Connection),
+                ..cli::SetupArgs::default()
+            };
+            run_setup_command(&setup, paths).await.map(|_| ())
+        }
+        Some(cli::ConnectIntegration::Profile) => {
+            let setup = cli::SetupArgs {
+                section: Some(cli::SetupSectionChoice::ProfilesRoutes),
+                ..cli::SetupArgs::default()
+            };
+            run_setup_command(&setup, paths).await.map(|_| ())
+        }
+        Some(cli::ConnectIntegration::Image) => {
+            let stdin = io::stdin();
+            connect::run_focused_service(
+                &args,
+                connect::FocusedServiceKind::Image,
+                paths,
+                stdin.is_terminal(),
+                &mut stdin.lock(),
+                output,
+            )
+        }
+        Some(cli::ConnectIntegration::Vision) => {
+            let stdin = io::stdin();
+            connect::run_focused_service(
+                &args,
+                connect::FocusedServiceKind::Vision,
+                paths,
+                stdin.is_terminal(),
+                &mut stdin.lock(),
+                output,
+            )
+        }
+        integration => connect::write_hub(&args, integration, paths, output),
     }
 }
 

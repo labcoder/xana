@@ -173,6 +173,34 @@ fn config_path_honors_an_absolute_xana_home() {
 }
 
 #[test]
+fn connection_json_is_typed_secret_free_and_scope_explicit() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    init_native(&home, "http://127.0.0.1:1/v1");
+
+    let output = xana(&home)
+        .args(["connection", "--json", "list"])
+        .output()
+        .expect("list connection state");
+    assert_success(&output);
+    let snapshot: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("connection JSON");
+    assert_eq!(snapshot["version"], 1);
+    assert_eq!(snapshot["connections"][0]["id"], "test");
+    assert_eq!(
+        snapshot["connections"][0]["selected_for_new_conversations"],
+        true
+    );
+    assert_eq!(
+        snapshot["connections"][0]["facets"]["reachability"],
+        "not_tested"
+    );
+    let rendered = String::from_utf8(output.stdout).unwrap();
+    assert!(!rendered.to_ascii_lowercase().contains("api_key"));
+    assert!(!rendered.contains("Bearer "));
+}
+
+#[test]
 fn route_diagnostics_resolve_without_network_or_config_mutation() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");

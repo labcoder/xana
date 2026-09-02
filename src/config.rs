@@ -1137,7 +1137,7 @@ impl XanaConfig {
         models[&input.model] = toml_edit::Item::Table(toml_edit::Table::new());
         connection["models"] = toml_edit::Item::Table(models);
         providers[&input.id] = toml_edit::Item::Table(connection);
-        transaction.commit(false)
+        transaction.commit(true)
     }
 
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
@@ -1166,7 +1166,7 @@ impl XanaConfig {
             .and_then(toml_edit::Item::as_table_mut)
             .ok_or_else(|| ConfigError::Edit("providers must be a table".into()))?
             .remove(id);
-        transaction.commit(false)
+        transaction.commit(true)
     }
 
     pub(crate) fn add_external_agent(

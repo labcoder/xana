@@ -19,10 +19,10 @@ use std::{
     io::Write as _,
     path::{Path, PathBuf},
     str::FromStr,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-const CATALOG_VERSION: u32 = 1;
+const CATALOG_VERSION: u32 = 2;
 const MAX_CATALOG_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SELECTION_BYTES: usize = 64 * 1024;
 
@@ -212,7 +212,25 @@ struct SelectionDocument {
 struct CatalogDocument {
     version: u32,
     connection: String,
+    #[serde(default)]
+    fetched_at_unix_seconds: Option<u64>,
     models: Vec<ModelDescriptor>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CatalogCacheState {
+    NeverFetched,
+    Cached,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CatalogMetadata {
+    pub(crate) state: CatalogCacheState,
+    pub(crate) fetched_at_unix_seconds: Option<u64>,
+    pub(crate) model_count: usize,
+    pub(crate) error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -622,6 +640,39 @@ impl ModelManager {
         self.write_cache(id, models)
     }
 
+    pub(crate) fn catalog_metadata(&self, id: &str) -> Result<CatalogMetadata, ModelError> {
+        self.connection(id)?;
+        match self.read_cache_document(id) {
+            Ok(document) => Ok(CatalogMetadata {
+                state: CatalogCacheState::Cached,
+                fetched_at_unix_seconds: document.fetched_at_unix_seconds,
+                model_count: document.models.len(),
+                error: None,
+            }),
+            Err(ModelError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+                Ok(CatalogMetadata {
+                    state: CatalogCacheState::NeverFetched,
+                    fetched_at_unix_seconds: None,
+                    model_count: 0,
+                    error: None,
+                })
+            }
+            Err(error) => Ok(CatalogMetadata {
+                state: CatalogCacheState::Unavailable,
+                fetched_at_unix_seconds: None,
+                model_count: 0,
+                error: Some(
+                    match error {
+                        ModelError::StateTooLarge { .. } => "catalog cache exceeds its size limit",
+                        ModelError::Decode(_) => "catalog cache is invalid",
+                        _ => "catalog cache is unavailable",
+                    }
+                    .to_owned(),
+                ),
+            }),
+        }
+    }
+
     fn credential_status(&self, connection: &ConnectionConfig) -> &'static str {
         if connection.kind == ProviderKind::Codex {
             return "managed externally";
@@ -724,6 +775,10 @@ impl ModelManager {
     }
 
     fn read_cache(&self, id: &str) -> Result<Vec<ModelDescriptor>, ModelError> {
+        Ok(self.read_cache_document(id)?.models)
+    }
+
+    fn read_cache_document(&self, id: &str) -> Result<CatalogDocument, ModelError> {
         let path = self.cache_path(id);
         let input =
             bounded_file::read_to_string(&path, MAX_CATALOG_BYTES).map_err(
@@ -742,16 +797,20 @@ impl ModelManager {
             )?;
         let document: CatalogDocument =
             serde_json::from_str(&input).map_err(|error| ModelError::Decode(error.to_string()))?;
-        if document.version != CATALOG_VERSION || document.connection != id {
+        if !matches!(document.version, 1 | CATALOG_VERSION) || document.connection != id {
             return Err(ModelError::Decode("catalog cache identity mismatch".into()));
         }
-        Ok(document.models)
+        Ok(document)
     }
 
     fn write_cache(&self, id: &str, models: &[ModelDescriptor]) -> Result<(), ModelError> {
         let document = CatalogDocument {
             version: CATALOG_VERSION,
             connection: id.to_owned(),
+            fetched_at_unix_seconds: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .ok()
+                .map(|duration| duration.as_secs()),
             models: models.to_vec(),
         };
         let encoded = serde_json::to_vec_pretty(&document)
@@ -1258,6 +1317,44 @@ mod tests {
             manager.select_with_options("codex", "gpt-5.6-sol", Some("ultra".into()), None,),
             Err(ModelError::InvalidOption(_))
         ));
+    }
+
+    #[test]
+    fn catalog_metadata_dates_new_caches_and_keeps_legacy_age_unknown() {
+        let directory = tempdir().unwrap();
+        let cache = directory.path().join("cache");
+        let manager = ModelManager::new(
+            registry(),
+            cache.clone(),
+            directory.path().join("selection.toml"),
+        );
+        manager
+            .write_discovered_cache(
+                "local",
+                &[ModelDescriptor::configured(
+                    "remote".to_owned(),
+                    &ModelOverride::default(),
+                )],
+            )
+            .unwrap();
+        let current = manager.catalog_metadata("local").unwrap();
+        assert_eq!(current.state, CatalogCacheState::Cached);
+        assert!(current.fetched_at_unix_seconds.is_some());
+
+        let path = cache.join("models/local.json");
+        fs::write(
+            &path,
+            serde_json::json!({
+                "version": 1,
+                "connection": "local",
+                "models": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let legacy = manager.catalog_metadata("local").unwrap();
+        assert_eq!(legacy.state, CatalogCacheState::Cached);
+        assert_eq!(legacy.fetched_at_unix_seconds, None);
     }
 
     #[test]

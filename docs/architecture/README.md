@@ -1993,8 +1993,9 @@ The application modules establish responsibility and I/O boundaries:
 - `prompt` and `context` own per-turn versioned assembly, transient prompt
   selection, durable context records, provenance, previewing, and input-budget
   enforcement.
-- `provider`, `model_catalog`, `credential`, and `managed` separate native generation,
-  catalogs/selection, static secret ownership, and foreign runtime control.
+- `provider`, `model_catalog`, `connection_management`, `credential`, and
+  `managed` separate native generation, catalogs/selection, presentation-neutral
+  connection facts and receipts, static secret ownership, and foreign runtime control.
   `managed/codex/events` is the bounded wire-to-domain event normalizer;
   `managed/thread_store` owns only opaque managed thread handles.
 - `process_capture` and `bounded_file` are shared constant-memory ingress

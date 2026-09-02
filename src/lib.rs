@@ -16,6 +16,7 @@ mod command_catalog;
 mod config;
 mod config_edit;
 mod config_migration;
+mod connection_management;
 mod context;
 mod controller;
 mod conversation_branch;

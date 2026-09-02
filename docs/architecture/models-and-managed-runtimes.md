@@ -89,6 +89,11 @@ catalog parsing retains advertised output modalities and per-token/request/image
 prices alongside its input modalities and supported parameters. Providers that
 omit these fields remain explicitly unknown.
 
+Successful cache writes use the version-2 catalog envelope and include a Unix
+fetch timestamp. The shared management read model treats a cache up to 24 hours
+old as fresh and an older cache as stale. Version-1 caches remain readable with
+unknown age rather than being discarded or assigned a fabricated timestamp.
+
 Quick Setup is the one deliberate pre-install discovery path. It constructs a
 staged registry, establishes the endpoint/executable plus credential/account,
 and fetches a live catalog before committing anything. Only an id from that
@@ -101,6 +106,17 @@ the separate foreground selection in the rollback-safe transaction, making
 the installed default connection/model effective for the next conversation
 instead of resuming an older valid or now-orphaned override. This transaction
 does not turn ordinary startup into implicit network discovery.
+
+`connection_management` is the presentation-neutral boundary for ongoing
+connection work. It projects independent credential, managed-account,
+reachability, catalog, selected-model, Profile/default, removal-blocker,
+aggregate-health, and recovery facts; returns typed add/remove/selection
+receipts; and cannot represent a secret value. CLI, plain, TUI, and Desktop use
+this boundary rather than reading config or credential storage from a view.
+Connection declaration add/remove uses the backup-backed configuration
+transaction. Staged API-key replacement is validated before the old OS-stored
+key is replaced; a derived cache-write failure is reported as an explicit
+partial success.
 
 `xana model` lists the unified catalog, distinguishes the effective foreground
 selection from the configured profile default, and exposes known input, tool,
