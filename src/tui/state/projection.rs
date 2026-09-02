@@ -3,6 +3,11 @@
 use super::*;
 
 impl TuiState {
+    pub(in crate::tui) fn sync_client_snapshot(&mut self, snapshot: &ClientSnapshot) {
+        self.semantic = snapshot.semantic.clone();
+        self.prompt_plans = snapshot.prompt_plans.clone();
+    }
+
     pub(in crate::tui) fn apply_runtime(&mut self, event: &AgentEvent) {
         let viewing_background = self.viewed_conversation != self.runtime_conversation;
         if viewing_background {
@@ -157,25 +162,39 @@ impl TuiState {
             AgentEvent::PromptPlanUpdated {
                 operation_id,
                 ledger,
-            } => self.push_card(ActivityCard::new(
-                "Xana context",
-                operation_id.to_string(),
-                ActivityKind::Status,
-                ActivityState::Complete,
-                format!(
-                    "prompt estimate: {} / {} input tokens",
-                    ledger.estimated_input_tokens, ledger.budget.input_budget_tokens
-                ),
-                format!(
-                    "context window: {} ({:?})\noutput reserve: {}\nreasoning reserve: {}\ntool reserve: {}\ncompaction threshold: {}\ncache reads/writes: unavailable",
-                    ledger.budget.context_window_tokens,
-                    ledger.budget.context_window_source,
-                    ledger.budget.output_reserve_tokens,
-                    ledger.budget.reasoning_reserve_tokens,
-                    ledger.budget.tool_reserve_tokens,
-                    ledger.budget.compaction_threshold_tokens,
-                ),
-            )),
+            } => {
+                if let Some(existing) = self
+                    .prompt_plans
+                    .iter_mut()
+                    .find(|(candidate, _)| candidate == operation_id)
+                {
+                    existing.1 = ledger.clone();
+                } else {
+                    self.prompt_plans.push((*operation_id, ledger.clone()));
+                }
+                if self.prompt_plans.len() > 128 {
+                    self.prompt_plans.remove(0);
+                }
+                self.push_card(ActivityCard::new(
+                    "Xana context",
+                    operation_id.to_string(),
+                    ActivityKind::Status,
+                    ActivityState::Complete,
+                    format!(
+                        "prompt estimate: {} / {} input tokens",
+                        ledger.estimated_input_tokens, ledger.budget.input_budget_tokens
+                    ),
+                    format!(
+                        "context window: {} ({:?})\noutput reserve: {}\nreasoning reserve: {}\ntool reserve: {}\ncompaction threshold: {}\ncache reads/writes: unavailable",
+                        ledger.budget.context_window_tokens,
+                        ledger.budget.context_window_source,
+                        ledger.budget.output_reserve_tokens,
+                        ledger.budget.reasoning_reserve_tokens,
+                        ledger.budget.tool_reserve_tokens,
+                        ledger.budget.compaction_threshold_tokens,
+                    ),
+                ));
+            }
             AgentEvent::CompactionStarted {
                 operation_id,
                 reason,
@@ -542,11 +561,38 @@ impl TuiState {
             }
             ManagedClientEvent::TokenUsageUpdated {
                 input_tokens,
+                cached_input_tokens,
                 output_tokens,
+                reasoning_tokens,
                 total_tokens,
-                ..
+                context_input_tokens,
+                context_window_tokens,
             } => {
                 self.managed_usage = Some((*input_tokens, *output_tokens, *total_tokens));
+                self.managed_usage_sequence = self.managed_usage_sequence.saturating_add(1);
+                if let Some(conversation_id) = self.runtime_conversation.conversation_id() {
+                    let observation = crate::usage_observation::managed_usage_observation(
+                        conversation_id,
+                        &self.session,
+                        ManagedTokenUsage {
+                            input_tokens: *input_tokens,
+                            cached_input_tokens: *cached_input_tokens,
+                            output_tokens: *output_tokens,
+                            reasoning_tokens: *reasoning_tokens,
+                            total_tokens: *total_tokens,
+                            context_input_tokens: *context_input_tokens,
+                            context_window_tokens: *context_window_tokens,
+                        },
+                        self.managed_usage_sequence,
+                        observed_at_unix_millis(),
+                    );
+                    self.semantic.usage.retain(|existing| {
+                        existing.scope != observation.scope
+                            || existing.period != observation.period
+                            || existing.source != observation.source
+                    });
+                    self.semantic.usage.push(observation);
+                }
             }
             _ => {}
         }
@@ -667,6 +713,14 @@ impl TuiState {
             self.push_card(card);
         }
     }
+}
+
+fn observed_at_unix_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn external_activity_card(

@@ -1035,16 +1035,22 @@ impl TuiState {
             }
             CommandId::Usage => {
                 self.composer.take();
-                let summary = self.managed_usage.map_or_else(
-                    || self.native_usage.render(),
-                    |(input, output, total)| {
-                        format!(
-                            "Current managed thread: input {input} · output {output} · total {total}. Provider quota, rate-limit reset, and wallet balance are not exposed by this managed runtime."
-                        )
-                    },
-                );
-                self.push_message(MessageKind::System, format!("Usage\n{summary}"));
-                self.status = "Usage shown in the conversation".to_owned();
+                match command.arguments.trim() {
+                    "" | "compact" => {
+                        self.push_message(
+                            MessageKind::System,
+                            format!("Usage\n{}", crate::tui::usage::compact(self)),
+                        );
+                        self.status = "Usage summary shown in the conversation".to_owned();
+                    }
+                    "details" => {
+                        self.show_command_result(
+                            "Usage details".to_owned(),
+                            crate::tui::usage::details(self),
+                        );
+                    }
+                    _ => self.status = command_usage(CommandId::Usage),
+                }
                 UpdateEffect::None
             }
             CommandId::Capabilities => {

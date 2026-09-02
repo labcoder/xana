@@ -18,6 +18,7 @@ mod runner;
 mod session;
 mod settings;
 mod state;
+mod usage;
 mod view;
 
 use crate::presentation::{ComposerPreset, PresentationPreferences, ResolvedPresentation};

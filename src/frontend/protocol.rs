@@ -11,15 +11,17 @@ use super::semantic::{
     SemanticReplicaV1, SemanticSnapshotV1, normalize_message,
 };
 use crate::{
-    identity::{AgentId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
+    identity::{AgentId, ConversationId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
     message::Message,
     native_runtime::{AgentEvent, RoundBudgetAction, RuntimeCommand},
     orchestration::{ChildInspection, ChildLifecycle},
     permission::ControllerDecision,
+    prompt::PromptPlanLedger,
     resource::ResourcePolicyV1,
     vision::ImageRef,
 };
 use serde::{Deserialize, Serialize};
+use std::time::SystemTime;
 use uuid::Uuid;
 
 pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 5;
@@ -31,6 +33,8 @@ const MAX_OMISSION_LABEL_BYTES: usize = 160;
 const MAX_PROJECTED_CONTENT_PARTS: usize = 256;
 const MAX_PROJECTED_CONTENT_BYTES: usize = 1024 * 1024;
 const MAX_PROJECTED_FINAL_BYTES: usize = 512 * 1024;
+const MAX_PROJECTED_USAGE_OBSERVATIONS: usize = 4_096;
+const MAX_PROJECTED_PROMPT_PLANS: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -394,6 +398,10 @@ pub(crate) struct ClientSnapshot {
     /// available during the bounded migration to semantic projections.
     #[serde(default)]
     pub(crate) semantic: SemanticSnapshotV1,
+    /// Bounded native prompt plans retained until the semantic protocol grows
+    /// a dedicated context-budget event family.
+    #[serde(default)]
+    pub(crate) prompt_plans: Vec<(OperationId, PromptPlanLedger)>,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +423,7 @@ impl ClientSnapshot {
             .flat_map(|message| &message.content)
             .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
             .count();
+        let conversation_id = ConversationId::for_native(seed.session_id);
         Self {
             version: FRONTEND_PROTOCOL_VERSION,
             sequence: 0,
@@ -438,12 +447,14 @@ impl ClientSnapshot {
             activity_count: 0,
             artifact_count,
             semantic: SemanticSnapshotV1 {
+                conversation_id: Some(conversation_id),
                 attachment_policy: AttachmentPolicySnapshotV1 {
                     configured: seed.resource_policy,
                     ..AttachmentPolicySnapshotV1::default()
                 },
                 ..SemanticSnapshotV1::default()
             },
+            prompt_plans: Vec::new(),
         }
     }
 
@@ -496,6 +507,10 @@ impl ClientSnapshot {
                     self.artifact_count = 0;
                     self.semantic.content.clear();
                     self.semantic.authoritative_finals.clear();
+                    self.semantic.usage.clear();
+                    self.semantic.execution_facts.clear();
+                    self.semantic.completion_receipts.clear();
+                    self.prompt_plans.clear();
                 }
                 AgentEvent::ToolFinished { result, .. } => {
                     append_semantic_content(&mut self.semantic, normalize_message(result));
@@ -508,6 +523,45 @@ impl ClientSnapshot {
                 }
                 AgentEvent::ChildListSnapshot { children } => {
                     self.children = children.iter().take(64).map(ChildSnapshot::from).collect();
+                }
+                AgentEvent::UsageObserved {
+                    operation_id,
+                    usage,
+                } => {
+                    let context_capacity = self
+                        .prompt_plans
+                        .iter()
+                        .rev()
+                        .find(|(candidate, _)| candidate == operation_id)
+                        .map(|(_, ledger)| ledger)
+                        .map(|ledger| ledger.budget.context_window_tokens as u64);
+                    let observation = crate::usage_observation::native_usage_observation(
+                        *operation_id,
+                        &self.session_id.to_string(),
+                        usage,
+                        context_capacity,
+                        observed_at_unix_millis(),
+                    );
+                    append_semantic_usage(&mut self.semantic, observation);
+                    self.activity_count = self.activity_count.saturating_add(1);
+                }
+                AgentEvent::PromptPlanUpdated {
+                    operation_id,
+                    ledger,
+                } => {
+                    if let Some(existing) = self
+                        .prompt_plans
+                        .iter_mut()
+                        .find(|(candidate, _)| candidate == operation_id)
+                    {
+                        existing.1 = ledger.clone();
+                    } else {
+                        self.prompt_plans.push((*operation_id, ledger.clone()));
+                    }
+                    while self.prompt_plans.len() > MAX_PROJECTED_PROMPT_PLANS {
+                        self.prompt_plans.remove(0);
+                    }
+                    self.activity_count = self.activity_count.saturating_add(1);
                 }
                 _ => self.activity_count = self.activity_count.saturating_add(1),
             },
@@ -532,6 +586,31 @@ impl ClientSnapshot {
             }
         }
     }
+}
+
+fn append_semantic_usage(
+    semantic: &mut SemanticSnapshotV1,
+    observation: super::semantic::UsageObservationV1,
+) {
+    if semantic
+        .usage
+        .iter()
+        .any(|existing| existing.id == observation.id)
+    {
+        return;
+    }
+    if semantic.usage.len() == MAX_PROJECTED_USAGE_OBSERVATIONS {
+        semantic.usage.remove(0);
+    }
+    semantic.usage.push(observation);
+}
+
+fn observed_at_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 fn bound_authoritative_finals(semantic: &mut SemanticSnapshotV1, retained: OperationId) {
@@ -956,5 +1035,52 @@ mod tests {
         snapshot.apply(&ClientEvent::bounded(AgentEvent::ConversationCleared), 2);
         assert!(snapshot.semantic.content.is_empty());
         assert!(snapshot.semantic.authoritative_finals.is_empty());
+    }
+
+    #[test]
+    fn native_usage_is_projected_once_with_explicit_run_and_process_period() {
+        let session_id = SessionId::new();
+        let operation_id = OperationId::new();
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id,
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+        let event = ClientEvent::bounded(AgentEvent::UsageObserved {
+            operation_id,
+            usage: crate::agent::AgentTurnUsage {
+                input_tokens: Some(12),
+                output_tokens: Some(4),
+                total_tokens: Some(16),
+                requests: 1,
+                ..crate::agent::AgentTurnUsage::default()
+            },
+        });
+
+        snapshot.apply(&event, 1);
+        snapshot.apply(&event, 2);
+
+        assert_eq!(
+            snapshot.semantic.conversation_id,
+            Some(ConversationId::for_native(session_id))
+        );
+        assert_eq!(snapshot.semantic.usage.len(), 1);
+        let observation = &snapshot.semantic.usage[0];
+        assert_eq!(
+            observation.scope,
+            crate::frontend::semantic::UsageScopeV1::Run {
+                run_id: operation_id
+            }
+        );
+        assert_eq!(observation.period, session_id.to_string());
+        assert_eq!(observation.amounts.input_tokens, Some(12));
+        assert_eq!(observation.amounts.output_tokens, Some(4));
     }
 }

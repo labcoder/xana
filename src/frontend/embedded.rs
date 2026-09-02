@@ -144,6 +144,8 @@ impl EmbeddedObserver {
 
     pub(crate) async fn next(&mut self) -> Result<ClientObservation, EmbeddedObservationError> {
         if let Some(observation) = self.observations.recv().await {
+            self.snapshot
+                .apply(&observation.event, observation.sequence);
             return Ok(observation);
         }
         let exit = match self.exit {
@@ -282,6 +284,49 @@ mod tests {
         message::{Message, Role},
         native_runtime::{OperationOutcome, OperationState},
     };
+
+    fn snapshot_seed() -> ClientSnapshotSeed {
+        ClientSnapshotSeed {
+            session_id: crate::identity::SessionId::new(),
+            connection: "test".to_owned(),
+            execution_owner: "native".to_owned(),
+            model: "test-model".to_owned(),
+            reasoning_effort: None,
+            children: Vec::new(),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_advances_its_snapshot_before_delivering_an_observation() {
+        let (observations, observation_receiver) = mpsc::channel(1);
+        let operation_id = OperationId::new();
+        observations
+            .send(ClientObservation {
+                version: FRONTEND_PROTOCOL_VERSION,
+                sequence: 1,
+                event: ClientEvent::bounded(AgentEvent::AssistantMessage {
+                    operation_id,
+                    message: Message::text(Role::Assistant, "complete response"),
+                }),
+            })
+            .await
+            .unwrap();
+        drop(observations);
+        let mut observer = EmbeddedObserver {
+            snapshot: ClientSnapshot::initial(snapshot_seed(), Vec::new()),
+            observations: observation_receiver,
+            forwarder: None,
+            exit: None,
+        };
+
+        let delivered = observer.next().await.unwrap();
+
+        assert_eq!(delivered.sequence, 1);
+        assert_eq!(observer.snapshot().sequence, 1);
+        assert_eq!(observer.snapshot().conversation.len(), 1);
+        assert_eq!(observer.snapshot().semantic.content.len(), 1);
+    }
 
     #[tokio::test]
     async fn critical_observations_survive_a_replaceable_delta_burst() {

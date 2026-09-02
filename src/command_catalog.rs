@@ -1197,7 +1197,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Usage,
         "usage",
         &[],
-        "[--connection ID] [--model ID] [--refresh] [--json]",
+        "[compact|details|--connection ID] [--model ID] [--refresh] [--json]",
         "Show provider-neutral usage and account observations",
         ArgumentSchema::Optional("usage_filters"),
         Observer,

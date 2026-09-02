@@ -1,9 +1,51 @@
 use super::*;
 use crate::{
-    identity::{SessionId, StepId},
+    frontend::semantic::{UsageAccountingV1, UsageScopeV1},
+    identity::{ConversationId, SessionId, StepId},
     native_runtime::OperationOutcome,
     workspace_host::{ConversationProjection, ConversationState, WorkspaceSnapshot},
 };
+
+#[test]
+fn managed_usage_replaces_cumulative_snapshots_without_double_counting() {
+    let conversation_id = ConversationId::new();
+    let mut state = TuiState::from_managed(
+        "codex".to_owned(),
+        "model".to_owned(),
+        "thread-1".to_owned(),
+        ComposerPreset::Submit,
+        ActivityVisibility::Auto,
+        ConversationRef::Managed {
+            conversation_id,
+            connection: "codex".to_owned(),
+            thread_id: "thread-1".to_owned(),
+        },
+    );
+    let event = |input_tokens| ManagedClientEvent::TokenUsageUpdated {
+        input_tokens,
+        cached_input_tokens: Some(2),
+        output_tokens: 5,
+        reasoning_tokens: Some(1),
+        total_tokens: input_tokens + 5,
+        context_input_tokens: Some(input_tokens),
+        context_window_tokens: Some(10_000),
+    };
+
+    state.apply_managed_event(&event(10));
+    state.apply_managed_event(&event(20));
+
+    assert_eq!(state.semantic.usage.len(), 1);
+    let observation = &state.semantic.usage[0];
+    assert_eq!(
+        observation.scope,
+        UsageScopeV1::Conversation { conversation_id }
+    );
+    assert_eq!(observation.amounts.input_tokens, Some(20));
+    assert_eq!(
+        observation.accounting,
+        UsageAccountingV1::CumulativeSnapshot { sequence: 2 }
+    );
+}
 
 #[test]
 fn composer_edits_unicode_multiline_and_selection_safely() {

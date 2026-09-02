@@ -335,6 +335,7 @@ impl ExecutionOwner for NativeOwner<'_> {
             } | AgentEvent::OperationFailed { .. }
         );
         state.apply_runtime(&event);
+        state.sync_client_snapshot(self.client.snapshot());
         if terminal {
             self.active_root = None;
         }

@@ -14,12 +14,17 @@ use super::{
 };
 use crate::{
     agent::SessionUsage,
-    frontend::{EmbeddedClient, ManagedClientEvent, semantic::normalize_message},
+    frontend::{
+        ClientSnapshot, EmbeddedClient, ManagedClientEvent,
+        semantic::{SemanticSnapshotV1, normalize_message},
+    },
     identity::{AgentId, OperationId, ToolInvocationId},
+    managed::codex::ManagedTokenUsage,
     message::{ContentBlock, Message, Role},
     native_runtime::{AgentEvent, OperationState, RoundBudgetAction, RoundBudgetSuspension},
     permission::ControllerDecision,
     presentation::{ActivityPaneChoice, ComposerPreset},
+    prompt::PromptPlanLedger,
     vision::{ImageAttachment, MAX_IMAGE_BYTES_PER_TURN, MAX_IMAGES_PER_TURN, image_paths_in_text},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
 };
@@ -405,8 +410,11 @@ pub(super) struct TuiState {
     pub(super) viewed_conversation: ConversationRef,
     pub(super) native_usage: SessionUsage,
     pub(super) managed_usage: Option<(u64, u64, u64)>,
+    pub(super) managed_usage_sequence: u64,
+    pub(super) semantic: SemanticSnapshotV1,
+    pub(super) prompt_plans: Vec<(OperationId, PromptPlanLedger)>,
     pub(super) inline_image_capability: String,
-    capabilities: OwnerCapabilities,
+    pub(super) capabilities: OwnerCapabilities,
     pending_images: Vec<ImageAttachment>,
     pending_vision_route: Option<String>,
     drafts: BTreeMap<ConversationRef, ConversationDraft>,
@@ -477,6 +485,9 @@ impl TuiState {
             viewed_conversation: ConversationRef::NewNative,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            managed_usage_sequence: 0,
+            semantic: SemanticSnapshotV1::default(),
+            prompt_plans: Vec::new(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
@@ -532,6 +543,9 @@ impl TuiState {
             viewed_conversation: conversation,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            managed_usage_sequence: 0,
+            semantic: snapshot.semantic.clone(),
+            prompt_plans: snapshot.prompt_plans.clone(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::native(),
             pending_images: Vec::new(),
@@ -559,6 +573,7 @@ impl TuiState {
         activity_visibility: ActivityVisibility,
         conversation: ConversationRef,
     ) -> Self {
+        let conversation_id = conversation.conversation_id();
         Self {
             connection,
             model,
@@ -586,6 +601,12 @@ impl TuiState {
             viewed_conversation: conversation,
             native_usage: SessionUsage::default(),
             managed_usage: None,
+            managed_usage_sequence: 0,
+            semantic: SemanticSnapshotV1 {
+                conversation_id,
+                ..SemanticSnapshotV1::default()
+            },
+            prompt_plans: Vec::new(),
             inline_image_capability: "terminal image capability has not been observed".to_owned(),
             capabilities: OwnerCapabilities::managed(),
             pending_images: Vec::new(),
