@@ -39,6 +39,10 @@ engineering contracts used to change it.
 - [M4 multiworkspace host evidence](development/m4-multiworkspace-host-evidence.md)
   records bounded multi-Conversation admission, workspace collision policy,
   snapshot/delta behavior, owner-specific branching, and isolation evidence.
+- [M4 shared semantic protocol evidence](development/m4-shared-semantic-protocol-evidence.md)
+  records rich-content/resource bounds, deterministic usage and attention,
+  execution/completion facts, capability distinctions, and snapshot/delta
+  compatibility coverage.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
@@ -108,6 +112,10 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Desktop architecture](architecture/desktop.md) describes the embedded
   runtime lifecycle, typed authority boundary, backpressure, security posture,
   and CLI/TUI dependency isolation.
+- [Frontend semantic protocol](architecture/frontend-semantics.md) describes
+  the versioned rich-content, resource, usage, attention, execution-evidence,
+  capability, snapshot/delta, fallback, and localization boundary shared by
+  official clients.
 - [Connections, models, and managed runtimes](architecture/models-and-managed-runtimes.md)
   describes native providers, Codex delegation, catalogs, model/reasoning
   selection, typed activity, opaque managed-thread resumption, and credential

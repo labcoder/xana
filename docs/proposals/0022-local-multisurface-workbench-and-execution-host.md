@@ -25,6 +25,19 @@ The required native source-build targets remain Windows x64, macOS ARM64,
 macOS Intel, and Linux x64 glibc. A framework that cannot satisfy a target must
 make that limitation decision evidence; it cannot replace the target silently.
 
+## Implementation progress
+
+The repository-private frontend protocol now implements version 4's inert
+semantic vocabulary and deterministic snapshot/delta reducer. It includes
+artifact-backed resource references, configurable bounded resource policy,
+content/fallback types, attachments and disclosure receipts, usage accounting,
+activity and attention, approvals, execution facts, completion receipts,
+capability projection, localization codes, and the narrow future voice seam.
+The validated configured resource policy is present in the initial snapshot.
+Runtime producers, provider/account observation adapters, commands, and
+specialized terminal/Desktop projections remain future M4 work, so this
+proposal remains Accepted rather than Implemented.
+
 ## 1. Official local surfaces and authority
 
 Plain mode and the terminal UI are current official Xana surfaces. Native

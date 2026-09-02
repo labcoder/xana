@@ -618,6 +618,24 @@ compaction_threshold_percent = 80
 retained_tail_tokens = 8192
 summary_max_bytes = 16384
 
+# Resource admission uses these defaults when this table is omitted. Values
+# may be lowered but cannot exceed Xana's compiled ceilings.
+[resources]
+max_resources_per_turn = 8
+max_total_source_bytes = 67108864
+max_active_jobs = 2
+max_active_players = 1
+max_cache_bytes = 134217728
+max_in_memory_buffer_bytes = 8388608
+max_transform_millis = 10000
+
+[resources.static_raster]
+max_source_bytes = 4194304
+max_pixels = 40000000
+max_edge = 16384
+max_per_turn = 8
+max_total_bytes_per_turn = 20971520
+
 [routes.worker]
 profile = "worker"
 ```
@@ -668,6 +686,7 @@ readable.
 | `context.compaction_threshold_percent` | Automatic native compaction watermark, `50..=95`, default 80 |
 | `context.retained_tail_tokens` | Target estimated recent-history tail retained verbatim after compaction; default 8,192 |
 | `context.summary_max_bytes` | Structured compaction-summary bound, `1024..=262144`, default 16 KiB |
+| `resources.*` | Version-1 cross-resource and per-kind soft admission limits; omitted fields use safe defaults, zero/unlimited and values above immutable ceilings are rejected |
 | `diagnostics.enabled`, `level`, `targets` | Metadata-only process logging switch, `error`–`trace` threshold, and stable target classes |
 | `diagnostics.directory` | Optional absolute or normalized Xana-data-relative log directory; crash reports remain in Xana's crash directory |
 | `diagnostics.retention_days`, `max_file_bytes`, `max_total_bytes`, `max_files`, `queue_capacity` | Mandatory rolling retention, disk, file-count, and nonblocking memory ceilings |
@@ -688,6 +707,45 @@ route per operation can declare `default = true`; without that declaration the
 caller must select a route. Missing, unexposed, incompatible, or credentialless
 routes fail before credential resolution or network use, and Xana never changes
 the route/provider/model because another route fails.
+
+## Resource policy
+
+The optional `[resources]` tree configures version-1 resource admission. Every
+field is defaulted, so it is usually best to specify only deliberate
+restrictions. Xana rejects zero, `u64::MAX` as an “unlimited” substitute,
+inconsistent counts, and any value above a compiled ceiling. A route/provider
+policy can only narrow the configured value. Total byte accounting uses checked
+arithmetic.
+
+Cross-resource defaults are 8 resources and 64 MiB source bytes per turn, 2
+active metadata/decoder jobs, 1 active player, a 128 MiB cache, an 8 MiB
+in-memory buffer, and a 10-second transform deadline. The corresponding hard
+ceilings are 32 resources, 512 MiB, 4 jobs, 2 players, a 512 MiB cache, a 64 MiB
+buffer, and 120 seconds.
+
+Per-kind defaults are:
+
+| Kind | Default admission limits |
+|---|---|
+| Static raster | 4 MiB source, 40M pixels, 16,384-pixel edge, 8 per turn, 20 MiB raster bytes per turn |
+| Animated raster | 4 MiB source, 20M canvas pixels, 120 frames, 30 seconds, 80M pixel-frames |
+| SVG | 2 MiB source, 50,000 elements, 250,000 commands, 5-second transform |
+| Lottie | 2 MiB source, depth 64, 100,000 items, 256 layers/assets, 120 seconds |
+| Audio | 25 MiB source, 30 minutes, 96 kHz, 8 channels, 16 metadata entries, 4 MiB cover art |
+| Video | 64 MiB source, 10 minutes, 3840x2160/8.29M pixels, 8 tracks, 60 fps |
+| Unknown | 4 MiB source; no rendering, transformation, execution, or provider disclosure is inferred |
+
+The full nested table names are `static_raster`, `animated_raster`, `svg`,
+`lottie`, `audio`, `video`, and `unknown`; their field names match the labels
+above (`max_source_bytes`, `max_pixels`, `max_duration_millis`, and so on).
+Run `xana doctor` after hand-editing the file to validate it.
+
+In the current build, the policy is validated and frozen into the shared
+frontend semantic snapshot. Existing image input enforces the static-raster
+defaults. Later M4 resource adapters will apply the general and route-specific
+limits before acquisition, decoding, transformation, or disclosure. Setting a
+limit does not claim that Xana currently supports rendering or sending that
+resource kind.
 
 ## Secret storage
 

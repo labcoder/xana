@@ -114,8 +114,15 @@ build boundary rather than desktop, web, or mobile intent alone. See
 
 The embedded client captures an initial snapshot before it begins forwarding
 live events. The snapshot carries the native conversation, connection, model,
-execution owner, child summaries, and artifact-backed image references under
-explicit message-count and encoded-size limits. It then assigns monotonically
+execution owner, child summaries, artifact-backed image references, and a
+versioned semantic snapshot under explicit message-count and encoded-size
+limits. The semantic snapshot freezes the validated configured resource policy
+and provides bounded content, resource, usage, activity, attention, approval,
+execution-fact, capability, disclosure, and completion families. Most runtime
+producers and specialized renderers still use the legacy projection while M4
+migrates them incrementally; an absent semantic fact does not imply a false
+capability or outcome. See [Frontend semantic protocol](frontend-semantics.md).
+The embedded client then assigns monotonically
 increasing sequence numbers to live observations and forwards them through a
 256-entry bounded queue. An oversized observation becomes a bounded omission
 fact. Under queue pressure, only replaceable live streaming deltas may be
@@ -852,9 +859,10 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 3 adds
-exact round-budget decisions to the existing exact interrupt and
-capability-gated steer commands. The native TUI maps keyboard,
+staged images, and an ordered follow-up queue. Frontend protocol version 4
+retains version 3's exact round-budget, interrupt, and capability-gated steer
+commands while adding the shared semantic snapshot/event layer and one common
+sequence watermark. The native TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
 registry. Native runtime and managed Codex are two private adapters to one TUI
@@ -1823,7 +1831,11 @@ The application modules establish responsibility and I/O boundaries:
   view children. Composer editing, input normalization, command reduction,
   native/managed effect interpretation, and execution-owner adapters are
   private focused children of that state/update interface.
-- `frontend` owns the typed embedded application contract; `local_host` owns
+- `frontend` owns the typed embedded application contract and its bounded
+  `semantic` content, resource, activity, attention, usage, capability,
+  execution-evidence, event, and replica children. `resource` owns immutable
+  resource references and configurable admission beneath compiled ceilings.
+  `local_host` owns
   only its authenticated loopback projection, protected discovery descriptor,
   atomic host snapshot/sequence boundary, observer fan-out, and one explicit
   controller/reconnect lease, bounded visible-artifact catalog, and exact

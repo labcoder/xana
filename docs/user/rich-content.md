@@ -30,6 +30,14 @@ Conversation snapshots contain bounded metadata, not embedded binary bytes or
 arbitrary paths. An image line reports its artifact id, media type, and byte
 length; it does not claim terminal image-protocol support.
 
+Xana also has a repository-private semantic resource vocabulary for static and
+animated raster images, SVG, Lottie, audio, video, binary, and safe unknown
+kinds. This is currently a shared validation and frontend contract, not a claim
+that the TUI can render or play every kind. Unsupported content remains an
+inert metadata fallback. General resource acquisition, provider disclosure,
+and specialized renderers arrive through later adapters; existing image input
+keeps the limits below.
+
 Use `/artifact ARTIFACT_ID` for an artifact already visible in the bounded
 conversation view. The action card offers:
 
@@ -58,6 +66,8 @@ selection to the platform text clipboard.
 - Explicit visible conversation selection: 256 Ki terminal cells, then bounded
   again to the 1 MiB projected-message limit before clipboard delivery.
 - Artifact text preview: 64 KiB; binary content is not embedded.
+- Current image input: 8 images, 4 MiB per image, 20 MiB total source bytes per
+  turn, and 40 million decoded pixels per image.
 
 Truncation is labeled. Durable session records and the artifact store remain
 authoritative; the rich document, viewport window, and page indexes are
