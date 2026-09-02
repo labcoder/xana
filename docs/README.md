@@ -99,11 +99,11 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   from conversational providers. Architecture and User Documentation own the
   shipped contract.
 - [Accepted local multi-surface Workbench and execution host](proposals/0022-local-multisurface-workbench-and-execution-host.md)
-  defines the prescriptive local Desktop/browser, execution-host,
+  defines the prescriptive native Desktop, deferred-browser, execution-host,
   controller/observer, typed-content, Workbench, Espejo, lifecycle, and
-  non-split-brain contracts. It deliberately leaves the Desktop framework for
-  an owner decision after equal Tauri-web and native-GPUI prototypes plus an
-  exact-pinned GPUI/WASM viability gate.
+  non-split-brain contracts. The owner selected native GPUI with `gpui-ai` as
+  the AI-native component layer inside Xana's existing repository and Cargo
+  workspace; local web remains deferred.
 - [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
   records the bounded four-target native preview, source-controlled installers,
   Xana-owned readiness handoff, attributable draft assembly, and explicit

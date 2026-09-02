@@ -6,21 +6,20 @@
 
 ## Context
 
-Xana will add two richer local surfaces: a separately delivered Desktop
-application and a local browser client. They must reuse the headless engine and
-repository-private frontend semantics already exercised by the terminal UI and
-local foreground host. A graphical surface is a view and command producer; it
-does not become a second owner of conversations, tools, credentials, policy,
-artifacts, or managed processes.
+Xana will add a separately delivered native Desktop application. It must reuse
+the headless engine and repository-private frontend semantics already exercised
+by the terminal UI and local foreground host. A graphical surface is a view and
+command producer; it does not become a second owner of conversations, tools,
+credentials, policy, artifacts, or managed processes. A local browser client
+remains a deferred possibility rather than a Milestone 4 deliverable.
 
-This proposal accepts the local interface architecture required before those
-surfaces are implemented. It does not select a Desktop framework. Tauri 2 with
-a measured web presentation and native GPUI must first render and operate the
-same disposable fixture, and the owner selects the stack from measured
-evidence. React is a candidate rather than a requirement. GPUI also receives an
-exact-pinned WASM viability gate before Xana prices a separately implemented
-browser peer. Until that decision is recorded, neither prototype is production
-architecture.
+The owner selected native GPUI after equivalent disposable Tauri and GPUI
+slices, a component-corrected follow-up, and a bounded GPUI/WASM viability
+check. Xana Desktop uses `gpui-ai` for AI-native surfaces and
+`gpui-component` for general desktop controls. Raw GPUI remains the rendering,
+entity, input, window, and platform foundation. The experiment remains ignored
+and non-production; production code is reimplemented against Xana's real
+runtime contract rather than copied wholesale.
 
 The required native source-build targets remain Windows x64, macOS ARM64,
 macOS Intel, and Linux x64 glibc. A framework that cannot satisfy a target must
@@ -28,11 +27,13 @@ make that limitation decision evidence; it cannot replace the target silently.
 
 ## 1. Official local surfaces and authority
 
-Plain mode, the terminal UI, local browser, and Desktop are official Xana
-surfaces. They share domain meaning but may use different presentations. The
-local browser and Desktop are private local clients. They are not a public API,
-remote control plane, multi-user service, stable third-party SDK, or promise of
-wire compatibility outside the repository.
+Plain mode and the terminal UI are current official Xana surfaces. Native
+Desktop is the accepted next official surface. A later local browser client may
+join them only through a separate implementation decision. These surfaces share
+domain meaning but may use different presentations. Desktop and any later local
+browser are private local clients, not a public API, remote control plane,
+multi-user service, stable third-party SDK, or promise of wire compatibility
+outside the repository.
 
 The **execution host** is the process domain that owns conversation mutation,
 runs, tools, approvals, policy, credentials, artifacts, provider and managed
@@ -53,7 +54,7 @@ flowchart LR
     PLAIN["Plain CLI"] --> CONTRACT["Private versioned command / snapshot / event contract"]
     TUI["Terminal UI"] --> CONTRACT
     DESKTOP["Desktop client"] --> CONTRACT
-    BROWSER["Local browser client"] --> CONTRACT
+    BROWSER["Deferred local browser client"] -.-> CONTRACT
     CONTRACT --> HOST
     HOST --> STATE["Conversations, Runs, policy, credentials, artifacts"]
     DESKTOP -. "controller or observer" .-> CONTRACT
@@ -116,8 +117,9 @@ other's installed executable. The bounded duplicate compiled runtime code in
 independently usable native artifacts is preferable to a mutable shared runtime
 installation whose removal or partial update could break another surface.
 
-The browser client always uses an authenticated loopback transport. Desktop
-framework choice does not change these domain rules:
+If the deferred browser client is later implemented, it uses an authenticated
+loopback transport. The native Desktop decision does not change these domain
+rules:
 
 - embedded transport uses private in-process channels and no network listener;
 - loopback binds only an operating-system-selected loopback endpoint;
@@ -353,36 +355,58 @@ flowchart LR
     WARNING["No M4 public binding, remote bearer, account, tenant, relay, or cloud authority"] --- M4
 ```
 
-## Framework comparison and owner decision gate
+## Selected Desktop stack and source layout
 
-M4 must build disposable Tauri 2 and native GPUI slices from one versioned
-fixture and interaction checklist. The Tauri slice must use the lightest web
-presentation that proves the workload; React is not mandatory. Before treating
-GPUI as necessarily requiring a second browser implementation, the comparison
-must run one exact-pinned GPUI/WASM viability gate and record whether it is
-runnable, blocked, or unsuitable and why. Both slices must then account for the
-complete Desktop plus local-browser topology rather than comparing only native
-windows. Both report inactive CLI/TUI impact, target availability, startup,
-input/event-to-paint latency, frame behavior, idle CPU/redraw, memory, size,
-build complexity, dependencies/licenses, accessibility, IME, rich content,
-security boundary, testing, and maintenance.
+Xana Desktop uses native GPUI with these dependency and ownership rules:
 
-The comparison cannot connect providers, read credentials, mutate Xana state,
-or execute tools. A disposable standalone mock host may bind an
-operating-system-selected loopback port for the shared fixture only; it uses no
-real secrets, accepts no non-loopback traffic, and is not a product host or
-durable service. The comparison cannot select a winner. At the decision gate,
-the owner may select one stack, reject both, or request one bounded follow-up.
-A selected stack requires a later accepted decision and production security
-boundary before prototype code can be adopted.
+- `gpui-ai` is the application-facing layer for AI-native presentation such as
+  controlled conversations, streaming content, thinking/activity, tool calls,
+  approvals, attachments, message queues, and agent-aware navigation.
+- `gpui-component` supplies ordinary desktop controls, overlays, layout, theme,
+  focus, and accessibility behavior. `gpui-base` is used directly only when a
+  measured presentation need requires its reusable behavior. Raw GPUI is used
+  for framework and platform primitives, not to recreate available controls.
+- Xana owns requests, tools, durable state, clocks, domain identifiers, and
+  lifecycle transitions. Components receive bounded snapshots and emit typed
+  intent; they do not perform runtime work or become a second source of truth.
+- `gpui_ai::init` initializes the component stack once before windows open, and
+  every window uses one `gpui_component::Root` at its first level.
+- The application pins `gpui-ai` to an exact Git revision. It uses the matching
+  `gpui-component` revision selected by that checkout and declares GPUI with the
+  same Git source identity used by `gpui-component`; the committed `Cargo.lock`
+  pins the exact Zed commit. A dependency-graph gate rejects duplicate GPUI type
+  families. Upgrades are isolated changes with source/changelog review and
+  cross-platform, accessibility, input, performance, size, and launch evidence.
+- Xana does not fork or vendor GPUI, GPUI Component, or `gpui-ai` implicitly.
+  A reusable missing AI component is first reduced to a component-library issue
+  or contribution; Xana-specific workflow composition stays in Xana. A
+  Xana-maintained fork requires its own ADR and maintenance budget.
+
+Desktop source lives in this repository and Cargo workspace. The first
+production slice adds one workspace member, `crates/xana-desktop`, which owns
+native process startup, windows, GPUI entities, presentation state, and narrow
+platform adapters. It consumes a repository-private typed seam from the
+existing `xana` library; it does not create a sibling repository, a second
+workspace, or a stable public SDK. Additional Desktop or feature crates are
+created only when actual ownership and independent test/compile boundaries
+justify them.
+
+Tauri is the rejected Desktop alternative. It remains useful comparison
+evidence, but its easier browser path did not outweigh the selected native Rust
+stack, lower measured process footprint, simpler process topology, and owner
+preference. GPUI/WASM is not the accepted browser renderer. Local web is
+deferred; any later browser surface must preserve Rust-owned authority and earn
+its own accessibility, security, bundle, input, and maintenance decision.
 
 ## Implementation sequence
 
 1. Record the exact implemented M3 handoff and accept this proposal.
 2. Build and measure the equal disposable framework slices.
-3. Stop for the owner framework decision.
-4. Only after that decision, extend the private content and host contracts,
-   improve the TUI, and build production local browser/Desktop surfaces.
+3. Record the owner's native GPUI and `gpui-ai` decision in ADR 0003.
+4. Extend the private content and host contracts while building the first
+   in-repository Desktop walking skeleton.
+5. Improve the terminal surfaces and grow Desktop through the shared typed
+   semantics. Keep local web deferred unless separately accepted.
 
 Current Architecture and User Documentation remain unchanged until each part
 exists in production. When this proposal is implemented, its shipped portions
@@ -408,5 +432,9 @@ and recovery work that a single-process TUI did not need. That cost is accepted
 because multiple official clients without one authority contract would create
 split-brain state, duplicated security policy, and UI-specific domain models.
 
-No ADR is created yet. The consequential framework choice remains unresolved;
-the owner comparison is the evidence required before recording that decision.
+The consequential framework and source-layout choice is recorded in
+[ADR 0003](../adr/0003-build-desktop-with-native-gpui-and-gpui-ai.md). Native
+GPUI and its pre-1.0 dependency graph add upgrade and platform-validation cost,
+but they keep Xana Desktop in Rust, avoid a privileged browser renderer, and
+let `gpui-ai` carry reusable AI interaction behavior without transferring
+runtime authority into components.
