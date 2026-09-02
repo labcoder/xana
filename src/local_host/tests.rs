@@ -334,7 +334,7 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
             .await
             .unwrap_err()
             .to_string()
-            .contains("already has a controller")
+            .contains("requires confirmation")
     );
     let accepted = first
         .send_command(crate::native_runtime::RuntimeCommand::ClearConversation)
@@ -377,6 +377,9 @@ async fn controller_is_explicit_exclusive_and_release_fails_closed() {
 
 #[test]
 fn reconnect_capability_restores_only_the_same_controller_during_grace() {
+    use crate::controller::{ControllerClientId, ControllerDisconnectReason};
+    use std::time::Duration;
+
     let directory = tempdir().unwrap();
     let workspace = directory.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -384,27 +387,95 @@ fn reconnect_capability_restores_only_the_same_controller_during_grace() {
     let snapshot = HostSnapshot::new(host_id, 1, seed(&workspace, directory.path()))
         .with_controllable_conversation("native/test".into());
     let hub = ObservationHub::new(snapshot);
-    let original = uuid::Uuid::new_v4();
-    let reconnect = hub
-        .acquire_controller(original, "native/test", false)
+    let original = ControllerClientId::new();
+    let mut grant = hub
+        .acquire_controller(original, "native/test", None)
         .unwrap();
-    let generation = hub.disconnect_controller(original).unwrap();
+    let reconnect = grant.take_reconnect_capability();
+    let expiry = hub
+        .disconnect_controller(
+            original,
+            ControllerDisconnectReason::TransportClosed,
+            Duration::from_secs(5),
+        )
+        .unwrap();
     assert!(
-        hub.reconnect_controller(uuid::Uuid::new_v4(), "wrong")
+        hub.reconnect_controller(ControllerClientId::new(), "wrong")
             .is_err()
     );
-    let replacement = uuid::Uuid::new_v4();
+    let replacement = ControllerClientId::new();
     hub.reconnect_controller(replacement, &reconnect).unwrap();
     assert!(hub.is_controller(replacement));
-    assert!(!hub.expire_controller(generation));
+    assert!(!hub.expire_controller(&expiry));
 
-    let next_generation = hub.disconnect_controller(replacement).unwrap();
-    assert!(hub.expire_controller(next_generation));
+    let next_expiry = hub
+        .disconnect_controller(
+            replacement,
+            ControllerDisconnectReason::TransportClosed,
+            Duration::ZERO,
+        )
+        .unwrap();
+    assert!(hub.expire_controller(&next_expiry));
     assert!(!hub.is_controller(replacement));
     assert!(
-        hub.reconnect_controller(uuid::Uuid::new_v4(), &reconnect)
+        hub.reconnect_controller(ControllerClientId::new(), &reconnect)
             .is_err()
     );
+}
+
+#[test]
+fn simultaneous_exact_takeovers_have_one_visible_winner() {
+    use crate::controller::{ControllerClientId, ControllerTakeoverConfirmation};
+    use std::sync::Barrier;
+
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let snapshot = HostSnapshot::new(uuid::Uuid::new_v4(), 1, seed(&workspace, directory.path()))
+        .with_controllable_conversation("native/test".into());
+    let hub = ObservationHub::new(snapshot);
+    let incumbent = ControllerClientId::new();
+    let grant = hub
+        .acquire_controller(incumbent, "native/test", None)
+        .unwrap();
+    let confirmation = ControllerTakeoverConfirmation::from(&grant.snapshot);
+    let barrier = Arc::new(Barrier::new(3));
+    let attempts = [ControllerClientId::new(), ControllerClientId::new()]
+        .into_iter()
+        .map(|client| {
+            let hub = hub.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                (
+                    client,
+                    hub.acquire_controller(client, "native/test", Some(confirmation)),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let outcomes = attempts
+        .into_iter()
+        .map(|attempt| attempt.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        outcomes.iter().filter(|(_, result)| result.is_ok()).count(),
+        1
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|(_, result)| result.is_err())
+            .count(),
+        1
+    );
+    let winner = outcomes
+        .iter()
+        .find_map(|(client, result)| result.is_ok().then_some(*client))
+        .unwrap();
+    assert!(hub.is_controller(winner));
 }
 
 #[test]

@@ -1,10 +1,12 @@
-use super::protocol::{
-    ControllerSnapshot, ControllerState, HostEvent, HostObservation, HostSnapshot,
-    LOCAL_HOST_PROTOCOL_VERSION,
+use super::protocol::{HostEvent, HostObservation, HostSnapshot, LOCAL_HOST_PROTOCOL_VERSION};
+use crate::controller::{
+    ControllerChange, ControllerClientId, ControllerDisconnectReason, ControllerExpiry,
+    ControllerGrant, ControllerLeaseError, ControllerLeases, ControllerTakeoverConfirmation,
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     sync::{Arc, Mutex},
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -19,16 +21,9 @@ pub(crate) struct ObservationHub {
 
 struct HubState {
     snapshot: HostSnapshot,
-    subscribers: HashMap<Uuid, mpsc::Sender<HostObservation>>,
-    controller: Option<ControllerLease>,
-}
-
-struct ControllerLease {
-    client_id: Uuid,
-    conversation: String,
-    reconnect_hash: [u8; 32],
-    state: ControllerState,
-    generation: u64,
+    subscribers: HashMap<ControllerClientId, mpsc::Sender<HostObservation>>,
+    controllers: ControllerLeases<String>,
+    pending_managed_approvals: BTreeSet<Uuid>,
 }
 
 pub(crate) struct Subscription {
@@ -50,7 +45,8 @@ impl ObservationHub {
             state: Arc::new(Mutex::new(HubState {
                 snapshot,
                 subscribers: HashMap::new(),
-                controller: None,
+                controllers: ControllerLeases::new(),
+                pending_managed_approvals: BTreeSet::new(),
             })),
             artifacts,
         }
@@ -58,16 +54,23 @@ impl ObservationHub {
 
     #[cfg(test)]
     pub(crate) fn subscribe(&self) -> Result<Subscription, String> {
-        self.subscribe_as(Uuid::new_v4())
+        self.subscribe_as(ControllerClientId::new())
     }
 
-    pub(crate) fn subscribe_as(&self, client_id: Uuid) -> Result<Subscription, String> {
+    pub(crate) fn subscribe_as(
+        &self,
+        client_id: ControllerClientId,
+    ) -> Result<Subscription, String> {
         let (sender, observations) = mpsc::channel(OBSERVER_QUEUE_CAPACITY);
         let mut state = self
             .state
             .lock()
             .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
-        let snapshot = state.snapshot.clone();
+        let mut snapshot = state.snapshot.clone();
+        snapshot.controller = snapshot
+            .controllable_conversation
+            .as_ref()
+            .and_then(|conversation| state.controllers.snapshot(conversation, Instant::now()));
         state.subscribers.insert(client_id, sender);
         Ok(Subscription {
             snapshot,
@@ -75,7 +78,7 @@ impl ObservationHub {
         })
     }
 
-    pub(crate) fn unsubscribe(&self, client_id: Uuid) {
+    pub(crate) fn unsubscribe(&self, client_id: ControllerClientId) {
         if let Ok(mut state) = self.state.lock() {
             state.subscribers.remove(&client_id);
         }
@@ -86,6 +89,7 @@ impl ObservationHub {
             .state
             .lock()
             .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
+        update_pending_managed_approvals(&mut state, &event);
         Ok(publish_locked(&mut state, event))
     }
 
@@ -131,169 +135,211 @@ impl ObservationHub {
 
     pub(crate) fn acquire_controller(
         &self,
-        client_id: Uuid,
+        client_id: ControllerClientId,
         conversation: &str,
-        takeover: bool,
-    ) -> Result<String, String> {
+        takeover: Option<ControllerTakeoverConfirmation>,
+    ) -> Result<ControllerGrant<String>, ControllerLeaseError<String>> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
+            .map_err(|_| ControllerLeaseError::NotController(conversation.to_owned()))?;
         if state.snapshot.controllable_conversation.as_deref() != Some(conversation) {
-            return Err("the requested conversation is not controlled by this host".into());
+            return Err(ControllerLeaseError::NotController(conversation.to_owned()));
         }
-        if let Some(controller) = &state.controller
-            && !takeover
-        {
-            return Err(format!(
-                "{} already has a controller; request explicit takeover or wait for release",
-                controller.conversation
-            ));
-        }
-        let reason = if state.controller.is_some() {
-            "explicit takeover"
-        } else {
-            "explicit acquisition"
-        };
-        let reconnect = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
-        let snapshot = ControllerSnapshot {
-            conversation: conversation.to_owned(),
-            state: ControllerState::Connected,
-        };
-        state.controller = Some(ControllerLease {
+        let pending_native = state
+            .snapshot
+            .frontend
+            .as_ref()
+            .is_some_and(|frontend| frontend.pending_approval_count > 0);
+        let pending = pending_native || !state.pending_managed_approvals.is_empty();
+        let grant = state.controllers.acquire(
+            conversation.to_owned(),
             client_id,
-            conversation: conversation.to_owned(),
-            reconnect_hash: *blake3::hash(reconnect.as_bytes()).as_bytes(),
-            state: ControllerState::Connected,
-            generation: state
-                .controller
-                .as_ref()
-                .map_or(1, |controller| controller.generation.saturating_add(1)),
-        });
-        state.snapshot.controller = Some(snapshot.clone());
-        publish_locked(
+            takeover,
+            pending,
+            Instant::now(),
+        )?;
+        apply_controller_change(
             &mut state,
-            HostEvent::ControllerChanged {
-                controller: Some(snapshot),
-                reason: reason.to_owned(),
+            ControllerChange {
+                conversation: conversation.to_owned(),
+                controller: Some(grant.snapshot.clone()),
+                change: grant.change,
             },
         );
-        Ok(reconnect)
+        Ok(grant)
+    }
+
+    pub(crate) fn renew_controller(
+        &self,
+        client_id: ControllerClientId,
+    ) -> Result<ControllerGrant<String>, ControllerLeaseError<String>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ControllerLeaseError::InvalidReconnect)?;
+        let conversation = state
+            .snapshot
+            .controllable_conversation
+            .clone()
+            .ok_or(ControllerLeaseError::InvalidReconnect)?;
+        let grant = state
+            .controllers
+            .renew(&conversation, client_id, Instant::now())?;
+        apply_controller_change(
+            &mut state,
+            ControllerChange {
+                conversation,
+                controller: Some(grant.snapshot.clone()),
+                change: grant.change,
+            },
+        );
+        Ok(grant)
     }
 
     pub(crate) fn reconnect_controller(
         &self,
-        client_id: Uuid,
+        client_id: ControllerClientId,
         reconnect: &str,
-    ) -> Result<(), String> {
+    ) -> Result<ControllerGrant<String>, ControllerLeaseError<String>> {
         let mut state = self
             .state
             .lock()
-            .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
-        let Some(controller) = &mut state.controller else {
-            return Err("controller reconnect capability is invalid or expired".into());
-        };
-        if controller.state != ControllerState::Reconnecting
-            || !constant_time_equal(
-                blake3::hash(reconnect.as_bytes()).as_bytes(),
-                &controller.reconnect_hash,
-            )
-        {
-            return Err("controller reconnect capability is invalid or expired".into());
-        }
-        controller.client_id = client_id;
-        controller.state = ControllerState::Connected;
-        controller.generation = controller.generation.saturating_add(1);
-        let snapshot = ControllerSnapshot {
-            conversation: controller.conversation.clone(),
-            state: ControllerState::Connected,
-        };
-        state.snapshot.controller = Some(snapshot.clone());
-        publish_locked(
+            .map_err(|_| ControllerLeaseError::InvalidReconnect)?;
+        let grant = state
+            .controllers
+            .reconnect(client_id, reconnect, Instant::now())?;
+        let conversation = grant.snapshot.conversation.clone();
+        apply_controller_change(
             &mut state,
-            HostEvent::ControllerChanged {
-                controller: Some(snapshot),
-                reason: "controller reconnected".into(),
+            ControllerChange {
+                conversation,
+                controller: Some(grant.snapshot.clone()),
+                change: grant.change,
             },
         );
-        Ok(())
+        Ok(grant)
     }
 
-    pub(crate) fn is_controller(&self, client_id: Uuid) -> bool {
+    pub(crate) fn is_controller(&self, client_id: ControllerClientId) -> bool {
         self.state.lock().is_ok_and(|state| {
-            state.controller.as_ref().is_some_and(|controller| {
-                controller.client_id == client_id && controller.state == ControllerState::Connected
-            })
+            state
+                .snapshot
+                .controllable_conversation
+                .as_ref()
+                .is_some_and(|conversation| {
+                    state.controllers.is_controller(conversation, client_id)
+                })
         })
     }
 
-    pub(crate) fn disconnect_controller(&self, client_id: Uuid) -> Option<u64> {
+    pub(crate) fn disconnect_controller(
+        &self,
+        client_id: ControllerClientId,
+        reason: ControllerDisconnectReason,
+        grace: Duration,
+    ) -> Option<ControllerExpiry<String>> {
         let mut state = self.state.lock().ok()?;
-        let controller = state.controller.as_mut()?;
-        if controller.client_id != client_id || controller.state != ControllerState::Connected {
-            return None;
-        }
-        controller.state = ControllerState::Reconnecting;
-        controller.generation = controller.generation.saturating_add(1);
-        let generation = controller.generation;
-        let snapshot = ControllerSnapshot {
-            conversation: controller.conversation.clone(),
-            state: ControllerState::Reconnecting,
-        };
-        state.snapshot.controller = Some(snapshot.clone());
-        publish_locked(
-            &mut state,
-            HostEvent::ControllerChanged {
-                controller: Some(snapshot),
-                reason: "controller disconnected; bounded reconnect grace started".into(),
-            },
-        );
-        Some(generation)
+        let (change, expiry) = state
+            .controllers
+            .disconnect_client(client_id, reason, Instant::now(), grace)
+            .pop()?;
+        apply_controller_change(&mut state, change);
+        Some(expiry)
     }
 
-    pub(crate) fn expire_controller(&self, generation: u64) -> bool {
+    pub(crate) fn expire_controller(&self, expiry: &ControllerExpiry<String>) -> bool {
         let Ok(mut state) = self.state.lock() else {
             return false;
         };
-        let expired = state.controller.as_ref().is_some_and(|controller| {
-            controller.state == ControllerState::Reconnecting && controller.generation == generation
-        });
-        if !expired {
+        let Some(change) = state.controllers.expire(expiry, Instant::now()) else {
             return false;
-        }
-        state.controller = None;
-        state.snapshot.controller = None;
-        publish_locked(
-            &mut state,
-            HostEvent::ControllerChanged {
-                controller: None,
-                reason: "controller reconnect grace expired".into(),
-            },
-        );
+        };
+        apply_controller_change(&mut state, change);
         true
     }
 
-    pub(crate) fn release_controller(&self, client_id: Uuid) -> bool {
-        let Ok(mut state) = self.state.lock() else {
-            return false;
-        };
-        if !state
-            .controller
-            .as_ref()
-            .is_some_and(|controller| controller.client_id == client_id)
-        {
-            return false;
+    pub(crate) fn release_controller(
+        &self,
+        client_id: ControllerClientId,
+    ) -> Result<(), ControllerLeaseError<String>> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ControllerLeaseError::InvalidReconnect)?;
+        let conversation = state
+            .snapshot
+            .controllable_conversation
+            .clone()
+            .ok_or(ControllerLeaseError::InvalidReconnect)?;
+        let change = state.controllers.release(&conversation, client_id)?;
+        apply_controller_change(&mut state, change);
+        Ok(())
+    }
+}
+
+fn apply_controller_change(state: &mut HubState, change: ControllerChange<String>) {
+    crate::diagnostics::emit(
+        crate::diagnostics::DiagnosticFact::new(
+            crate::config::DiagnosticLevel::Info,
+            crate::config::DiagnosticTarget::Frontend,
+            crate::diagnostics::EventKind::ControllerAuthorityChanged,
+            controller_diagnostic_outcome(change.change),
+        )
+        .correlation(&change.conversation)
+        .subject(controller_change_reason(change.change)),
+    );
+    state.snapshot.controller = change.controller.clone();
+    let reason = controller_change_reason(change.change);
+    publish_locked(
+        state,
+        HostEvent::ControllerChanged {
+            controller: change.controller,
+            change: change.change,
+            reason: reason.to_owned(),
+        },
+    );
+}
+
+fn controller_diagnostic_outcome(
+    change: crate::controller::ControllerChangeKind,
+) -> crate::diagnostics::EventOutcome {
+    use crate::{controller::ControllerChangeKind, diagnostics::EventOutcome};
+    match change {
+        ControllerChangeKind::Acquired
+        | ControllerChangeKind::Renewed
+        | ControllerChangeKind::Reconnected
+        | ControllerChangeKind::TakenOver { .. } => EventOutcome::Completed,
+        ControllerChangeKind::Disconnected { .. } => EventOutcome::Unavailable,
+        ControllerChangeKind::Released | ControllerChangeKind::Expired => EventOutcome::Cancelled,
+    }
+}
+
+fn controller_change_reason(change: crate::controller::ControllerChangeKind) -> &'static str {
+    use crate::controller::ControllerChangeKind;
+    match change {
+        ControllerChangeKind::Acquired => "controller authority acquired explicitly",
+        ControllerChangeKind::Renewed => "controller lease renewed explicitly",
+        ControllerChangeKind::Reconnected => "controller reconnected within bounded grace",
+        ControllerChangeKind::TakenOver { .. } => "controller takeover confirmed explicitly",
+        ControllerChangeKind::Disconnected { .. } => {
+            "controller disconnected; bounded reconnect grace started"
         }
-        state.controller = None;
-        state.snapshot.controller = None;
-        publish_locked(
-            &mut state,
-            HostEvent::ControllerChanged {
-                controller: None,
-                reason: "controller released authority".into(),
-            },
-        );
-        true
+        ControllerChangeKind::Released => "controller released authority",
+        ControllerChangeKind::Expired => "controller reconnect grace expired",
+    }
+}
+
+fn update_pending_managed_approvals(state: &mut HubState, event: &HostEvent) {
+    match event {
+        HostEvent::ManagedApprovalRequested(approval) => {
+            state.pending_managed_approvals.insert(approval.approval_id);
+        }
+        HostEvent::ManagedApprovalResolved { approval_id, .. } => {
+            state.pending_managed_approvals.remove(approval_id);
+        }
+        HostEvent::ManagedTurnFinished { .. } => state.pending_managed_approvals.clear(),
+        _ => {}
     }
 }
 
@@ -309,11 +355,4 @@ fn publish_locked(state: &mut HubState, event: HostEvent) -> u64 {
         .subscribers
         .retain(|_, subscriber| subscriber.try_send(observation.clone()).is_ok());
     sequence
-}
-
-fn constant_time_equal(left: &[u8; 32], right: &[u8; 32]) -> bool {
-    left.iter()
-        .zip(right)
-        .fold(0_u8, |different, (left, right)| different | (left ^ right))
-        == 0
 }

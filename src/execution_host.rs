@@ -12,6 +12,11 @@ mod event_log;
 mod tests;
 
 use crate::{
+    controller::{
+        ControllerChange, ControllerChangeKind, ControllerClientId, ControllerGrant,
+        ControllerLeaseError, ControllerLeaseSnapshot, ControllerLeases,
+        ControllerTakeoverConfirmation,
+    },
     frontend::{ClientEvent, ClientObservation},
     identity::OperationId,
     native_runtime::{OperationOutcome, OperationState},
@@ -25,6 +30,7 @@ use std::{
     fmt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
+    time::Instant,
 };
 
 pub(crate) const EXECUTION_HOST_PROTOCOL_VERSION: u16 = 1;
@@ -105,6 +111,7 @@ pub(crate) struct HostedConversationSnapshot {
     pub(crate) activity_count: usize,
     pub(crate) last_error: Option<String>,
     pub(crate) last_outcome: Option<OperationOutcome>,
+    pub(crate) controller: Option<ControllerLeaseSnapshot<ConversationRef>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +167,11 @@ pub(crate) enum HostEvent {
         conversation: ConversationRef,
         restoration: OwnerRestoration,
     },
+    ControllerChanged {
+        conversation: ConversationRef,
+        controller: Option<ControllerLeaseSnapshot<ConversationRef>>,
+        change: ControllerChangeKind,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -202,6 +214,7 @@ pub(crate) enum ExecutionHostError {
         received: u64,
     },
     Workspace(WorkspaceHostError),
+    Controller(ControllerLeaseError<ConversationRef>),
     State(String),
 }
 
@@ -229,6 +242,7 @@ impl fmt::Display for ExecutionHostError {
                 "Conversation runtime sequence gap: expected {expected}, received {received}"
             ),
             Self::Workspace(error) => error.fmt(output),
+            Self::Controller(error) => error.fmt(output),
             Self::State(reason) => write!(output, "execution host state is unavailable: {reason}"),
         }
     }
@@ -238,6 +252,7 @@ impl Error for ExecutionHostError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Workspace(error) => Some(error),
+            Self::Controller(error) => Some(error),
             _ => None,
         }
     }
@@ -246,6 +261,12 @@ impl Error for ExecutionHostError {
 impl From<WorkspaceHostError> for ExecutionHostError {
     fn from(value: WorkspaceHostError) -> Self {
         Self::Workspace(value)
+    }
+}
+
+impl From<ControllerLeaseError<ConversationRef>> for ExecutionHostError {
+    fn from(value: ControllerLeaseError<ConversationRef>) -> Self {
+        Self::Controller(value)
     }
 }
 
@@ -260,6 +281,7 @@ struct HostState {
     attached: Option<ConversationRef>,
     active_runs: usize,
     events: EventLog,
+    controllers: ControllerLeases<ConversationRef>,
 }
 
 struct WorkspaceSlot {
@@ -298,6 +320,7 @@ impl ExecutionHost {
                 attached: None,
                 active_runs: 0,
                 events: EventLog::new(),
+                controllers: ControllerLeases::new(),
             })),
         }
     }
@@ -606,6 +629,64 @@ impl ExecutionHost {
         })
     }
 
+    pub(crate) fn acquire_controller(
+        &self,
+        conversation: &ConversationRef,
+        client_id: ControllerClientId,
+        takeover: Option<ControllerTakeoverConfirmation>,
+        now: Instant,
+    ) -> Result<ControllerGrant<ConversationRef>, ExecutionHostError> {
+        let mut state = self.lock()?;
+        let pending = state
+            .conversations
+            .get(conversation)
+            .ok_or_else(|| ExecutionHostError::UnknownConversation(conversation.clone()))?
+            .pending_approvals
+            > 0;
+        let grant =
+            state
+                .controllers
+                .acquire(conversation.clone(), client_id, takeover, pending, now)?;
+        record_controller_change(
+            &mut state,
+            ControllerChange {
+                conversation: conversation.clone(),
+                controller: Some(grant.snapshot.clone()),
+                change: grant.change,
+            },
+        );
+        Ok(grant)
+    }
+
+    pub(crate) fn release_controller(
+        &self,
+        conversation: &ConversationRef,
+        client_id: ControllerClientId,
+    ) -> Result<(), ExecutionHostError> {
+        let mut state = self.lock()?;
+        let change = state.controllers.release(conversation, client_id)?;
+        record_controller_change(&mut state, change);
+        Ok(())
+    }
+
+    pub(crate) fn require_controller(
+        &self,
+        conversation: &ConversationRef,
+        client_id: ControllerClientId,
+    ) -> Result<(), ExecutionHostError> {
+        let state = self.lock()?;
+        if !state.conversations.contains_key(conversation) {
+            return Err(ExecutionHostError::UnknownConversation(
+                conversation.clone(),
+            ));
+        }
+        if state.controllers.is_controller(conversation, client_id) {
+            Ok(())
+        } else {
+            Err(ControllerLeaseError::NotController(conversation.clone()).into())
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> Result<ExecutionHostSnapshot, ExecutionHostError> {
         let state = self.lock()?;
         Ok(snapshot_from_state(&state))
@@ -695,6 +776,7 @@ fn apply_client_event(slot: &mut ConversationSlot, event: &ClientEvent) {
 }
 
 fn snapshot_from_state(state: &HostState) -> ExecutionHostSnapshot {
+    let now = Instant::now();
     let workspaces = state
         .workspaces
         .iter()
@@ -722,6 +804,7 @@ fn snapshot_from_state(state: &HostState) -> ExecutionHostSnapshot {
             activity_count: slot.activity_count,
             last_error: slot.last_error.clone(),
             last_outcome: slot.last_outcome,
+            controller: state.controllers.snapshot(conversation, now),
         })
         .collect();
     ExecutionHostSnapshot {
@@ -731,6 +814,49 @@ fn snapshot_from_state(state: &HostState) -> ExecutionHostSnapshot {
         conversations,
         attached: state.attached.clone(),
         active_runs: state.active_runs,
+    }
+}
+
+fn record_controller_change(state: &mut HostState, change: ControllerChange<ConversationRef>) {
+    crate::diagnostics::emit(
+        crate::diagnostics::DiagnosticFact::new(
+            crate::config::DiagnosticLevel::Info,
+            crate::config::DiagnosticTarget::Frontend,
+            crate::diagnostics::EventKind::ControllerAuthorityChanged,
+            controller_diagnostic_outcome(change.change),
+        )
+        .correlation(change.conversation.to_string())
+        .subject(controller_change_label(change.change)),
+    );
+    state.events.push(HostEvent::ControllerChanged {
+        conversation: change.conversation,
+        controller: change.controller,
+        change: change.change,
+    });
+}
+
+fn controller_change_label(change: ControllerChangeKind) -> &'static str {
+    match change {
+        ControllerChangeKind::Acquired => "acquired",
+        ControllerChangeKind::Renewed => "renewed",
+        ControllerChangeKind::Reconnected => "reconnected",
+        ControllerChangeKind::TakenOver { .. } => "taken_over",
+        ControllerChangeKind::Disconnected { .. } => "disconnected",
+        ControllerChangeKind::Released => "released",
+        ControllerChangeKind::Expired => "expired",
+    }
+}
+
+fn controller_diagnostic_outcome(change: ControllerChangeKind) -> crate::diagnostics::EventOutcome {
+    match change {
+        ControllerChangeKind::Acquired
+        | ControllerChangeKind::Renewed
+        | ControllerChangeKind::Reconnected
+        | ControllerChangeKind::TakenOver { .. } => crate::diagnostics::EventOutcome::Completed,
+        ControllerChangeKind::Disconnected { .. } => crate::diagnostics::EventOutcome::Unavailable,
+        ControllerChangeKind::Released | ControllerChangeKind::Expired => {
+            crate::diagnostics::EventOutcome::Cancelled
+        }
     }
 }
 

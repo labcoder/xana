@@ -17,6 +17,7 @@ mod config;
 mod config_edit;
 mod config_migration;
 mod context;
+mod controller;
 mod conversation_branch;
 mod credential;
 #[doc(hidden)]

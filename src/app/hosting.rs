@@ -80,6 +80,9 @@ pub(super) async fn run_attach(args: &cli::AttachArgs, paths: &XanaPaths) -> Res
                 )
             };
         }
+        let mut renewal = tokio::time::interval(std::time::Duration::from_secs(30));
+        renewal.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        renewal.tick().await;
         loop {
             tokio::select! {
                 signal = tokio::signal::ctrl_c() => {
@@ -108,6 +111,9 @@ pub(super) async fn run_attach(args: &cli::AttachArgs, paths: &XanaPaths) -> Res
                         }
                         Err(error) => return Err(anyhow::Error::new(error)),
                     }
+                }
+                _ = renewal.tick(), if observer.is_controller() => {
+                    observer.renew_control().await?;
                 }
             }
         }

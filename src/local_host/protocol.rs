@@ -1,5 +1,6 @@
 use crate::{
     artifact::ArtifactRecord,
+    controller::{ControllerChangeKind, ControllerLeaseSnapshot, ControllerTakeoverConfirmation},
     frontend::{ClientCommand, ClientCommandResult, ClientEvent, ClientSnapshot},
     identity::{ArtifactId, OperationId},
     workspace_host::{ConversationRef, WorkspaceSnapshot},
@@ -9,7 +10,7 @@ use std::fmt;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 3;
+pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 4;
 pub(crate) const MAX_WIRE_BYTES: usize = 1024 * 1024;
 const MAX_CONVERSATIONS: usize = 512;
 const MAX_LABEL_BYTES: usize = 256;
@@ -71,9 +72,12 @@ pub(crate) enum ClientFrame {
     AcquireControl {
         request_id: ControlRequestId,
         conversation: String,
-        takeover: bool,
+        takeover: Option<ControllerTakeoverConfirmation>,
     },
     ReleaseControl {
+        request_id: ControlRequestId,
+    },
+    RenewControl {
         request_id: ControlRequestId,
     },
     DecideManagedApproval {
@@ -91,12 +95,13 @@ pub(crate) enum ClientFrame {
     Ping,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub(crate) enum ServerFrame {
     Snapshot {
         snapshot: Box<HostSnapshot>,
         role: ClientRole,
+        controller_reconnect: Option<ReconnectCapability>,
     },
     Observation(HostObservation),
     CommandResult(ClientCommandResult),
@@ -160,12 +165,53 @@ impl ArtifactResult {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ControlResult {
     pub(crate) request_id: ControlRequestId,
     pub(crate) accepted: bool,
+    pub(crate) code: ControlResultCode,
     pub(crate) reason: Option<String>,
-    pub(crate) controller_reconnect: Option<String>,
+    pub(crate) controller: Option<ControllerSnapshot>,
+    pub(crate) controller_reconnect: Option<ReconnectCapability>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ControlResultCode {
+    Accepted,
+    Released,
+    TakeoverConfirmationRequired,
+    PendingApproval,
+    NotController,
+    InvalidReconnect,
+    ExpiredReconnect,
+    Unavailable,
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct ReconnectCapability(String);
+
+impl ReconnectCapability {
+    pub(crate) fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub(crate) fn take(&mut self) -> String {
+        std::mem::take(&mut self.0)
+    }
+}
+
+impl fmt::Debug for ReconnectCapability {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        output.write_str("[REDACTED]")
+    }
+}
+
+impl Drop for ReconnectCapability {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
 }
 
 impl fmt::Debug for ControlResult {
@@ -174,30 +220,27 @@ impl fmt::Debug for ControlResult {
             .debug_struct("ControlResult")
             .field("request_id", &self.request_id)
             .field("accepted", &self.accepted)
+            .field("code", &self.code)
             .field("reason", &self.reason)
-            .field(
-                "controller_reconnect",
-                &self.controller_reconnect.as_ref().map(|_| "[REDACTED]"),
-            )
+            .field("controller", &self.controller)
+            .field("controller_reconnect", &self.controller_reconnect)
             .finish()
     }
 }
 
-impl Drop for ControlResult {
-    fn drop(&mut self) {
-        if let Some(reconnect) = &mut self.controller_reconnect {
-            reconnect.zeroize();
-        }
-    }
-}
-
 impl ControlResult {
-    pub(crate) fn accepted(request_id: ControlRequestId, reconnect: String) -> Self {
+    pub(crate) fn accepted(
+        request_id: ControlRequestId,
+        controller: ControllerSnapshot,
+        reconnect: String,
+    ) -> Self {
         Self {
             request_id,
             accepted: true,
+            code: ControlResultCode::Accepted,
             reason: None,
-            controller_reconnect: Some(reconnect),
+            controller: Some(controller),
+            controller_reconnect: Some(ReconnectCapability::new(reconnect)),
         }
     }
 
@@ -205,16 +248,39 @@ impl ControlResult {
         Self {
             request_id,
             accepted: true,
+            code: ControlResultCode::Released,
             reason: None,
+            controller: None,
             controller_reconnect: None,
         }
     }
 
-    pub(crate) fn rejected(request_id: ControlRequestId, reason: impl Into<String>) -> Self {
+    pub(crate) fn rejected(
+        request_id: ControlRequestId,
+        code: ControlResultCode,
+        reason: impl Into<String>,
+    ) -> Self {
         Self {
             request_id,
             accepted: false,
+            code,
             reason: Some(bounded_label(reason.into())),
+            controller: None,
+            controller_reconnect: None,
+        }
+    }
+
+    pub(crate) fn takeover_confirmation_required(
+        request_id: ControlRequestId,
+        controller: ControllerSnapshot,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id,
+            accepted: false,
+            code: ControlResultCode::TakeoverConfirmationRequired,
+            reason: Some(bounded_label(reason.into())),
+            controller: Some(controller),
             controller_reconnect: None,
         }
     }
@@ -320,12 +386,7 @@ impl HostSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ControllerState {
-    Connected,
-    Reconnecting,
-}
+pub(crate) type ControllerSnapshot = ControllerLeaseSnapshot<String>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -371,12 +432,6 @@ impl ManagedApprovalSnapshot {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ControllerSnapshot {
-    pub(crate) conversation: String,
-    pub(crate) state: ControllerState,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub(crate) enum HostEvent {
@@ -386,6 +441,7 @@ pub(crate) enum HostEvent {
     },
     ControllerChanged {
         controller: Option<ControllerSnapshot>,
+        change: ControllerChangeKind,
         reason: String,
     },
     ManagedApprovalRequested(ManagedApprovalSnapshot),

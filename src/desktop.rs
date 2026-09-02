@@ -10,6 +10,7 @@ use crate::{
     command_catalog::{
         self, AuthorityRequirement, CommandContext, CommandSurface, PresentationCapabilities,
     },
+    controller::ControllerClientId,
     execution_host::{
         ConversationRegistration, ExecutionHost, HostChanges, HostEvent, HostedRun, RunAccess,
         WriteCollisionDecision,
@@ -34,7 +35,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, mpsc as std_mpsc},
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::mpsc;
 
@@ -47,6 +48,12 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const CRITICAL_UPDATE_GRACE: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PUBLIC_TEXT_BYTES: usize = 256 * 1024;
+
+#[derive(Debug, Clone)]
+struct DesktopController {
+    conversation: ConversationRef,
+    client_id: ControllerClientId,
+}
 
 /// Authority held by one Desktop frontend attachment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +241,7 @@ pub enum DesktopErrorCode {
     ConfigurationUnavailable,
     StateInvalid,
     HostBusy,
+    AuthorityRequired,
     ProtocolMismatch,
     CommandRejected,
     RuntimeUnavailable,
@@ -250,6 +258,7 @@ impl DesktopErrorCode {
             Self::ConfigurationUnavailable => "configuration_unavailable",
             Self::StateInvalid => "state_invalid",
             Self::HostBusy => "host_busy",
+            Self::AuthorityRequired => "authority_required",
             Self::ProtocolMismatch => "protocol_mismatch",
             Self::CommandRejected => "command_rejected",
             Self::RuntimeUnavailable => "runtime_unavailable",
@@ -360,6 +369,19 @@ pub struct DesktopSnapshot {
     pub hosted_workspace_count: usize,
     pub hosted_conversation_count: usize,
     pub attached_conversation: Option<String>,
+    pub controllers: Vec<DesktopControllerLease>,
+}
+
+/// Presentation-safe authority state for one hosted Conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopControllerLease {
+    pub conversation: String,
+    pub controller_id: String,
+    pub generation: u64,
+    pub state: String,
+    pub takeover_confirmed: bool,
+    pub reconnect_grace_remaining_ms: Option<u64>,
+    pub disconnect_reason: Option<String>,
 }
 
 /// Presentation-safe conversation message.
@@ -460,6 +482,11 @@ pub enum DesktopHostEvent {
         previous: Option<String>,
         conversation: String,
         restoration: String,
+    },
+    ControllerChanged {
+        conversation: String,
+        controller: Option<DesktopControllerLease>,
+        change: String,
     },
 }
 
@@ -951,6 +978,18 @@ impl Bridge {
     ) -> Result<(), DesktopError> {
         let (owner, mut observer) = client.into_parts();
         let mut snapshot = observer.snapshot().clone();
+        let controller = DesktopController {
+            conversation,
+            client_id: ControllerClientId::new(),
+        };
+        let _controller_grant = execution_host
+            .acquire_controller(
+                &controller.conversation,
+                controller.client_id,
+                None,
+                Instant::now(),
+            )
+            .map_err(host_error)?;
         let host_snapshot = execution_host.snapshot().map_err(host_error)?;
         let mut host_cursor = host_snapshot.sequence;
         self.startup
@@ -981,7 +1020,7 @@ impl Bridge {
                         command,
                         &owner,
                         &execution_host,
-                        &conversation,
+                        &controller,
                         &snapshot,
                         &mut active_run,
                     ).await?;
@@ -1015,7 +1054,7 @@ impl Bridge {
                         }).await?;
                     }
                     if let Err(error) = execution_host.record_runtime_observation(
-                        &conversation,
+                        &controller.conversation,
                         &observation,
                     ) {
                         self.publish_critical(DesktopUpdate::ResyncRequired {
@@ -1049,6 +1088,11 @@ impl Bridge {
         }
 
         drop(active_run);
+        execution_host
+            .release_controller(&controller.conversation, controller.client_id)
+            .map_err(host_error)?;
+        self.publish_host_changes(&execution_host, &snapshot, &mut host_cursor)
+            .await?;
         self.publish_critical(DesktopUpdate::BackendStopped {
             expected: true,
             error: None,
@@ -1062,11 +1106,19 @@ impl Bridge {
         command: BridgeCommand,
         owner: &crate::frontend::EmbeddedOwner,
         execution_host: &ExecutionHost,
-        conversation: &ConversationRef,
+        controller: &DesktopController,
         snapshot: &ClientSnapshot,
         active_run: &mut Option<HostedRun>,
     ) -> Result<bool, DesktopError> {
         let command_id = command.command_id;
+        if !matches!(&command.value, BridgeCommandValue::RequestSnapshot)
+            && let Err(error) =
+                execution_host.require_controller(&controller.conversation, controller.client_id)
+        {
+            self.publish_command_result(command_id, Err(host_error(error)))
+                .await?;
+            return Ok(false);
+        }
         match command.value {
             BridgeCommandValue::RequestSnapshot => {
                 let host_snapshot = execution_host.snapshot().map_err(host_error)?;
@@ -1109,7 +1161,7 @@ impl Bridge {
                     return Ok(false);
                 }
                 let run = execution_host.begin_run(
-                    conversation,
+                    &controller.conversation,
                     operation_id.0,
                     RunAccess::WorkspaceWrite,
                     if acknowledge_workspace_write_collision {
@@ -1217,7 +1269,7 @@ impl Bridge {
                 let mut acquired = None;
                 if action == RoundBudgetAction::Continue && active_run.is_none() {
                     match execution_host.begin_run(
-                        conversation,
+                        &controller.conversation,
                         operation_id.0,
                         RunAccess::WorkspaceWrite,
                         WriteCollisionDecision::Reject,
@@ -1355,6 +1407,9 @@ fn host_error(error: crate::execution_host::ExecutionHostError) -> DesktopError 
         crate::execution_host::ExecutionHostError::RuntimeGap { .. } => {
             DesktopErrorCode::ProtocolMismatch
         }
+        crate::execution_host::ExecutionHostError::Controller(
+            crate::controller::ControllerLeaseError::NotController(_),
+        ) => DesktopErrorCode::AuthorityRequired,
         _ => DesktopErrorCode::StateInvalid,
     };
     DesktopError::new(code, error.to_string())
@@ -1400,6 +1455,11 @@ fn project_snapshot(
         hosted_workspace_count: host.workspaces.len(),
         hosted_conversation_count: host.conversations.len(),
         attached_conversation: host.attached.as_ref().map(ToString::to_string),
+        controllers: host
+            .conversations
+            .iter()
+            .filter_map(|conversation| conversation.controller.as_ref().map(project_controller))
+            .collect(),
     }
 }
 
@@ -1480,10 +1540,50 @@ fn project_host_observation(
             }
             .to_owned(),
         },
+        HostEvent::ControllerChanged {
+            conversation,
+            controller,
+            change,
+        } => DesktopHostEvent::ControllerChanged {
+            conversation: conversation.to_string(),
+            controller: controller.as_ref().map(project_controller),
+            change: match change {
+                crate::controller::ControllerChangeKind::Acquired => "acquired".to_owned(),
+                crate::controller::ControllerChangeKind::Renewed => "renewed".to_owned(),
+                crate::controller::ControllerChangeKind::Reconnected => "reconnected".to_owned(),
+                crate::controller::ControllerChangeKind::TakenOver { .. } => {
+                    "taken_over".to_owned()
+                }
+                crate::controller::ControllerChangeKind::Disconnected { reason } => {
+                    format!("disconnected:{reason:?}").to_ascii_lowercase()
+                }
+                crate::controller::ControllerChangeKind::Released => "released".to_owned(),
+                crate::controller::ControllerChangeKind::Expired => "expired".to_owned(),
+            },
+        },
     };
     DesktopHostObservation {
         sequence: observation.sequence,
         event,
+    }
+}
+
+fn project_controller<K: ToString>(
+    controller: &crate::controller::ControllerLeaseSnapshot<K>,
+) -> DesktopControllerLease {
+    DesktopControllerLease {
+        conversation: controller.conversation.to_string(),
+        controller_id: controller.controller_id.to_string(),
+        generation: controller.generation,
+        state: format!("{:?}", controller.state).to_ascii_lowercase(),
+        takeover_confirmed: matches!(
+            controller.takeover,
+            crate::controller::ControllerTakeoverState::Confirmed
+        ),
+        reconnect_grace_remaining_ms: controller.reconnect_grace_remaining_ms,
+        disconnect_reason: controller
+            .disconnect_reason
+            .map(|reason| format!("{reason:?}").to_ascii_lowercase()),
     }
 }
 
@@ -1974,14 +2074,20 @@ mod tests {
         std::fs::create_dir(&workspace).unwrap();
         let (client, conversation) = scripted_client(&workspace);
         let host = execution_host(directory.path(), &workspace, &conversation);
+        let inspection = host.clone();
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation));
+        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation.clone()));
 
         let initial = startup
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
             .unwrap();
         assert_eq!(initial.connection, "scripted");
+        assert_eq!(initial.controllers.len(), 1);
+        assert_eq!(
+            initial.controllers[0].conversation,
+            conversation.to_string()
+        );
 
         let operation_id = DesktopOperationId::new();
         commands
@@ -2051,6 +2157,14 @@ mod tests {
             .await
             .unwrap();
         runtime.await.unwrap().unwrap();
+        assert!(
+            inspection
+                .snapshot()
+                .unwrap()
+                .conversations
+                .iter()
+                .all(|conversation| conversation.controller.is_none())
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -3,12 +3,16 @@ use super::{
     execution::HostedExecutionHandle,
     hub::ObservationHub,
     protocol::{
-        ClientFrame, ClientHello, ClientRole, ControlResult, HostEvent, HostObservation,
-        HostSnapshot, HostSnapshotSeed, LOCAL_HOST_PROTOCOL_VERSION, MAX_WIRE_BYTES, ServerFrame,
-        command_kind, decode_client_frame, decode_server_frame, encode_frame,
+        ClientFrame, ClientHello, ClientRole, ControlResult, ControlResultCode, HostEvent,
+        HostObservation, HostSnapshot, HostSnapshotSeed, LOCAL_HOST_PROTOCOL_VERSION,
+        MAX_WIRE_BYTES, ReconnectCapability, ServerFrame, command_kind, decode_client_frame,
+        decode_server_frame, encode_frame,
     },
 };
-use crate::frontend::ClientCommandResult;
+use crate::{
+    controller::{ControllerClientId, ControllerDisconnectReason, ControllerLeaseError},
+    frontend::ClientCommandResult,
+};
 use futures::{SinkExt, StreamExt};
 use std::{
     collections::VecDeque,
@@ -360,7 +364,7 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
         &workspace_id,
         &capability_hash,
     );
-    let client_id = Uuid::new_v4();
+    let client_id = ControllerClientId::new();
     let requested_role = hello.role;
     let reconnect = hello.controller_reconnect.take();
     hello.capability.zeroize();
@@ -375,13 +379,16 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
         .await?;
         return Ok(());
     }
-    let mut role = match (requested_role, reconnect) {
-        (ClientRole::Observer, None) => ClientRole::Observer,
+    let (mut role, mut controller_reconnect) = match (requested_role, reconnect) {
+        (ClientRole::Observer, None) => (ClientRole::Observer, None),
         (ClientRole::Controller, Some(mut reconnect)) if execution.is_some() => {
             let result = hub.reconnect_controller(client_id, &reconnect);
             reconnect.zeroize();
-            result.map_err(LocalHostError::Invalid)?;
-            ClientRole::Controller
+            let mut grant = result.map_err(|error| LocalHostError::Invalid(error.to_string()))?;
+            (
+                ClientRole::Controller,
+                Some(ReconnectCapability::new(grant.take_reconnect_capability())),
+            )
         }
         (ClientRole::Controller, _) => {
             return Err(LocalHostError::Invalid(
@@ -411,6 +418,7 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
         &ServerFrame::Snapshot {
             snapshot: Box::new(subscription.snapshot.clone()),
             role,
+            controller_reconnect: controller_reconnect.take(),
         },
     )
     .await?;
@@ -457,31 +465,52 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
                         send_frame(&mut writer, &ServerFrame::Snapshot {
                             snapshot: Box::new(subscription.snapshot.clone()),
                             role,
+                            controller_reconnect: None,
                         }).await?;
                     }
                     ClientFrame::AcquireControl { request_id, conversation, takeover } => {
                         let result = if execution.is_none() {
-                            ControlResult::rejected(request_id, "this host has no controllable execution")
+                            ControlResult::rejected(
+                                request_id,
+                                ControlResultCode::Unavailable,
+                                "this host has no controllable execution",
+                            )
                         } else {
                             match hub.acquire_controller(client_id, &conversation, takeover) {
-                                Ok(reconnect) => {
+                                Ok(mut grant) => {
                                     role = ClientRole::Controller;
-                                    ControlResult::accepted(request_id, reconnect)
+                                    ControlResult::accepted(
+                                        request_id,
+                                        grant.snapshot.clone(),
+                                        grant.take_reconnect_capability(),
+                                    )
                                 }
-                                Err(reason) => ControlResult::rejected(request_id, reason),
+                                Err(error) => control_rejection(request_id, error),
                             }
                         };
                         send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
                     }
                     ClientFrame::ReleaseControl { request_id } => {
-                        let result = if hub.release_controller(client_id) {
-                            role = ClientRole::Observer;
-                            if let Some(execution) = &execution {
-                                execution.fail_closed().await;
+                        let result = match hub.release_controller(client_id) {
+                            Ok(()) => {
+                                role = ClientRole::Observer;
+                                if let Some(execution) = &execution {
+                                    execution.fail_closed().await;
+                                }
+                                ControlResult::released(request_id)
                             }
-                            ControlResult::released(request_id)
-                        } else {
-                            ControlResult::rejected(request_id, "this client does not own controller authority")
+                            Err(error) => control_rejection(request_id, error),
+                        };
+                        send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
+                    }
+                    ClientFrame::RenewControl { request_id } => {
+                        let result = match hub.renew_controller(client_id) {
+                            Ok(mut grant) => ControlResult::accepted(
+                                request_id,
+                                grant.snapshot.clone(),
+                                grant.take_reconnect_capability(),
+                            ),
+                            Err(error) => control_rejection(request_id, error),
                         };
                         send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
                     }
@@ -490,12 +519,24 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
                             match &execution {
                                 Some(execution) => match execution.managed_approval(approval_id, decision).await {
                                     Ok(()) => ControlResult::released(request_id),
-                                    Err(reason) => ControlResult::rejected(request_id, reason),
+                                    Err(reason) => ControlResult::rejected(
+                                        request_id,
+                                        ControlResultCode::Unavailable,
+                                        reason,
+                                    ),
                                 },
-                                None => ControlResult::rejected(request_id, "hosted execution is unavailable"),
+                                None => ControlResult::rejected(
+                                    request_id,
+                                    ControlResultCode::Unavailable,
+                                    "hosted execution is unavailable",
+                                ),
                             }
                         } else {
-                            ControlResult::rejected(request_id, "observer clients cannot approve managed work")
+                            ControlResult::rejected(
+                                request_id,
+                                ControlResultCode::NotController,
+                                "observer clients cannot approve managed work",
+                            )
                         };
                         send_frame(&mut writer, &ServerFrame::ControlResult(result)).await?;
                     }
@@ -539,15 +580,21 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
             }
         }
     }
-    if let Some(generation) = hub.disconnect_controller(client_id) {
+    if let Some(expiry) = hub.disconnect_controller(
+        client_id,
+        ControllerDisconnectReason::TransportClosed,
+        CONTROLLER_RECONNECT_GRACE,
+    ) {
         let grace_hub = hub.clone();
         let grace_execution = execution.clone();
         let grace_shutdown = shutdown.clone();
         tokio::spawn(async move {
             tokio::select! {
                 () = grace_shutdown.cancelled() => {}
-                () = tokio::time::sleep(CONTROLLER_RECONNECT_GRACE) => {
-                    if grace_hub.expire_controller(generation)
+                () = tokio::time::sleep(
+                    expiry.deadline.saturating_duration_since(std::time::Instant::now())
+                ) => {
+                    if grace_hub.expire_controller(&expiry)
                         && let Some(execution) = grace_execution
                     {
                         execution.fail_closed().await;
@@ -560,9 +607,32 @@ async fn serve_client(stream: TcpStream, service: ClientService) -> Result<(), L
     Ok(())
 }
 
+fn control_rejection(
+    request_id: super::protocol::ControlRequestId,
+    error: ControllerLeaseError<String>,
+) -> ControlResult {
+    let code = match &error {
+        ControllerLeaseError::TakeoverConfirmationRequired { .. } => {
+            let ControllerLeaseError::TakeoverConfirmationRequired { current } = error else {
+                unreachable!("matched takeover confirmation error")
+            };
+            return ControlResult::takeover_confirmation_required(
+                request_id,
+                current,
+                "controller takeover requires confirmation of the current exact lease",
+            );
+        }
+        ControllerLeaseError::PendingApproval(_) => ControlResultCode::PendingApproval,
+        ControllerLeaseError::NotController(_) => ControlResultCode::NotController,
+        ControllerLeaseError::InvalidReconnect => ControlResultCode::InvalidReconnect,
+        ControllerLeaseError::ExpiredReconnect => ControlResultCode::ExpiredReconnect,
+    };
+    ControlResult::rejected(request_id, code, error.to_string())
+}
+
 struct SubscriberGuard {
     hub: ObservationHub,
-    client_id: Uuid,
+    client_id: ControllerClientId,
 }
 
 impl Drop for SubscriberGuard {
@@ -745,7 +815,7 @@ pub(crate) struct AttachedObserver {
     snapshot: HostSnapshot,
     expected_sequence: u64,
     role: ClientRole,
-    controller_reconnect: Option<String>,
+    controller_reconnect: Option<ReconnectCapability>,
     buffered: VecDeque<HostObservation>,
 }
 
@@ -759,7 +829,9 @@ impl AttachedObserver {
     }
 
     pub(crate) fn take_controller_reconnect(&mut self) -> Option<String> {
-        self.controller_reconnect.take()
+        self.controller_reconnect
+            .take()
+            .map(|mut reconnect| reconnect.take())
     }
 
     pub(crate) async fn acquire_control(
@@ -768,6 +840,9 @@ impl AttachedObserver {
         takeover: bool,
     ) -> Result<(), LocalHostError> {
         let request_id = super::protocol::ControlRequestId::new();
+        let takeover = takeover
+            .then(|| self.snapshot.controller.as_ref().map(Into::into))
+            .flatten();
         self.send_client_frame(&ClientFrame::AcquireControl {
             request_id,
             conversation,
@@ -778,6 +853,9 @@ impl AttachedObserver {
             match self.read_server_frame().await? {
                 ServerFrame::ControlResult(mut result) if result.request_id == request_id => {
                     if !result.accepted {
+                        if let Some(controller) = result.controller.take() {
+                            self.snapshot.controller = Some(controller);
+                        }
                         return Err(LocalHostError::Invalid(
                             result
                                 .reason
@@ -785,6 +863,7 @@ impl AttachedObserver {
                                 .unwrap_or_else(|| "controller acquisition was rejected".into()),
                         ));
                     }
+                    self.snapshot.controller = result.controller.take();
                     self.controller_reconnect = result.controller_reconnect.take();
                     self.role = ClientRole::Controller;
                     return Ok(());
@@ -813,8 +892,38 @@ impl AttachedObserver {
                                 .unwrap_or_else(|| "controller release was rejected".into()),
                         ));
                     }
+                    self.snapshot.controller = None;
                     self.controller_reconnect = None;
                     self.role = ClientRole::Observer;
+                    return Ok(());
+                }
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub(crate) async fn renew_control(&mut self) -> Result<(), LocalHostError> {
+        let request_id = super::protocol::ControlRequestId::new();
+        self.send_client_frame(&ClientFrame::RenewControl { request_id })
+            .await?;
+        loop {
+            match self.read_server_frame().await? {
+                ServerFrame::ControlResult(mut result) if result.request_id == request_id => {
+                    if !result.accepted {
+                        return Err(LocalHostError::Invalid(
+                            result
+                                .reason
+                                .take()
+                                .unwrap_or_else(|| "controller lease renewal was rejected".into()),
+                        ));
+                    }
+                    self.snapshot.controller = result.controller.take();
+                    self.controller_reconnect = result.controller_reconnect.take();
+                    self.role = ClientRole::Controller;
                     return Ok(());
                 }
                 ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
@@ -903,10 +1012,18 @@ impl AttachedObserver {
                     self.expected_sequence = self.expected_sequence.saturating_add(1);
                     return Ok(observation);
                 }
-                ServerFrame::Snapshot { snapshot, role } => {
+                ServerFrame::Snapshot {
+                    snapshot,
+                    role,
+                    mut controller_reconnect,
+                } => {
                     self.expected_sequence = snapshot.sequence.saturating_add(1);
                     self.snapshot = *snapshot;
                     self.role = role;
+                    if let Some(reconnect) = controller_reconnect.as_mut() {
+                        self.controller_reconnect =
+                            Some(ReconnectCapability::new(reconnect.take()));
+                    }
                 }
                 ServerFrame::ProtocolError { message, .. } => {
                     return Err(LocalHostError::Invalid(message));
@@ -922,6 +1039,9 @@ impl AttachedObserver {
 
     fn buffer_observation(&mut self, observation: HostObservation) -> Result<(), LocalHostError> {
         self.validate_observation(&observation)?;
+        if let HostEvent::ControllerChanged { controller, .. } = &observation.event {
+            self.snapshot.controller.clone_from(controller);
+        }
         if self.buffered.len() >= super::hub::OBSERVER_QUEUE_CAPACITY {
             return Err(LocalHostError::SequenceGap {
                 expected: self.expected_sequence,
@@ -1041,10 +1161,6 @@ async fn connect_client(
         controller_reconnect,
         role,
     });
-    let retained_reconnect = match &hello {
-        ClientFrame::Hello(hello) => hello.controller_reconnect.clone(),
-        _ => None,
-    };
     let mut encoded = serde_json::to_string(&hello).map_err(|error| {
         LocalHostError::Invalid(format!("could not encode attach request: {error}"))
     })?;
@@ -1065,11 +1181,14 @@ async fn connect_client(
         ));
     };
     match decode_server_frame(&encoded).map_err(LocalHostError::Invalid)? {
-        ServerFrame::Snapshot { snapshot, role }
-            if snapshot.version == LOCAL_HOST_PROTOCOL_VERSION
-                && snapshot.host_id == descriptor.host_id
-                && snapshot.host_generation == descriptor.generation
-                && snapshot.workspace_id == descriptor.workspace_id =>
+        ServerFrame::Snapshot {
+            snapshot,
+            role,
+            controller_reconnect,
+        } if snapshot.version == LOCAL_HOST_PROTOCOL_VERSION
+            && snapshot.host_id == descriptor.host_id
+            && snapshot.host_generation == descriptor.generation
+            && snapshot.workspace_id == descriptor.workspace_id =>
         {
             let expected_sequence = snapshot.sequence.saturating_add(1);
             Ok(AttachedObserver {
@@ -1077,7 +1196,7 @@ async fn connect_client(
                 snapshot: *snapshot,
                 expected_sequence,
                 role,
-                controller_reconnect: retained_reconnect,
+                controller_reconnect,
                 buffered: VecDeque::new(),
             })
         }
@@ -1085,14 +1204,6 @@ async fn connect_client(
         _ => Err(LocalHostError::Invalid(
             "local-host did not provide a matching initial snapshot".into(),
         )),
-    }
-}
-
-impl Drop for AttachedObserver {
-    fn drop(&mut self) {
-        if let Some(reconnect) = &mut self.controller_reconnect {
-            reconnect.zeroize();
-        }
     }
 }
 

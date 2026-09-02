@@ -149,6 +149,7 @@ pub(crate) enum EventKind {
     ToolDenied,
     ToolFailed,
     FrontendDisconnected,
+    ControllerAuthorityChanged,
     StorageFailed,
     IntegrationFailed,
     OutboundTransfer,

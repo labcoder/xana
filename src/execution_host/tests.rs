@@ -32,6 +32,102 @@ fn registration(conversation: ConversationRef, connection: &str) -> Conversation
     )
 }
 
+#[test]
+fn conversations_hold_independent_controller_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let host = ExecutionHost::new();
+    let workspace_a = directory.path().join("workspace-a");
+    let workspace_b = directory.path().join("workspace-b");
+    fs::create_dir(&workspace_a).unwrap();
+    fs::create_dir(&workspace_b).unwrap();
+    let first = register_native(&host, &directory, &workspace_a);
+    let second = register_native(&host, &directory, &workspace_b);
+    let first_client = ControllerClientId::new();
+    let second_client = ControllerClientId::new();
+
+    let first_grant = host
+        .acquire_controller(&first, first_client, None, Instant::now())
+        .unwrap();
+    let second_grant = host
+        .acquire_controller(&second, second_client, None, Instant::now())
+        .unwrap();
+
+    host.require_controller(&first, first_client).unwrap();
+    host.require_controller(&second, second_client).unwrap();
+    assert!(matches!(
+        host.require_controller(&first, second_client),
+        Err(ExecutionHostError::Controller(
+            ControllerLeaseError::NotController(value)
+        )) if value == first
+    ));
+    let snapshot = host.snapshot().unwrap();
+    assert_eq!(
+        snapshot
+            .conversations
+            .iter()
+            .find(|candidate| candidate.conversation == first)
+            .and_then(|candidate| candidate.controller.as_ref())
+            .map(|controller| controller.controller_id),
+        Some(first_grant.snapshot.controller_id)
+    );
+    assert_eq!(
+        snapshot
+            .conversations
+            .iter()
+            .find(|candidate| candidate.conversation == second)
+            .and_then(|candidate| candidate.controller.as_ref())
+            .map(|controller| controller.controller_id),
+        Some(second_grant.snapshot.controller_id)
+    );
+}
+
+#[test]
+fn pending_approval_blocks_an_exact_controller_takeover() {
+    let directory = tempfile::tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    fs::create_dir(&workspace).unwrap();
+    let host = ExecutionHost::new();
+    let conversation = register_native(&host, &directory, &workspace);
+    let incumbent = ControllerClientId::new();
+    let challenger = ControllerClientId::new();
+    let grant = host
+        .acquire_controller(&conversation, incumbent, None, Instant::now())
+        .unwrap();
+    let request = PermissionRequest {
+        operation_id: OperationId::new(),
+        invocation_id: ToolInvocationId::new(),
+        tool_name: "write_file".to_owned(),
+        effect_class: EffectClass::Write,
+        final_arguments: Value::Null,
+        scope: PermissionScope::WorkspacePath {
+            canonical_path: workspace.canonicalize().unwrap(),
+        },
+        outbound_review: None,
+    };
+    host.record_runtime_observation(
+        &conversation,
+        &ClientObservation {
+            version: crate::frontend::FRONTEND_PROTOCOL_VERSION,
+            sequence: 1,
+            event: ClientEvent::Runtime(Box::new(AgentEvent::PermissionRequested { request })),
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(
+        host.acquire_controller(
+            &conversation,
+            challenger,
+            Some(ControllerTakeoverConfirmation::from(&grant.snapshot)),
+            Instant::now(),
+        ),
+        Err(ExecutionHostError::Controller(
+            ControllerLeaseError::PendingApproval(value)
+        )) if value == conversation
+    ));
+    host.require_controller(&conversation, incumbent).unwrap();
+}
+
 fn register_native(host: &ExecutionHost, directory: &TempDir, workspace: &Path) -> ConversationRef {
     let (conversation, workspace_host) = native_conversation(directory, workspace);
     host.register(workspace_host, registration(conversation.clone(), "native"))
@@ -335,6 +431,13 @@ fn restart_reconstructs_idle_conversations_without_replaying_runs() {
     let conversation = {
         let host = ExecutionHost::new();
         let conversation = register_native(&host, &directory, &workspace);
+        host.acquire_controller(
+            &conversation,
+            ControllerClientId::new(),
+            None,
+            Instant::now(),
+        )
+        .unwrap();
         let _run = host
             .begin_run(
                 &conversation,
@@ -355,6 +458,7 @@ fn restart_reconstructs_idle_conversations_without_replaying_runs() {
         .unwrap();
     let snapshot = restarted.snapshot().unwrap();
     assert_eq!(snapshot.active_runs, 0);
+    assert!(snapshot.conversations[0].controller.is_none());
     assert_eq!(
         snapshot.conversations[0].state,
         HostedConversationState::Idle

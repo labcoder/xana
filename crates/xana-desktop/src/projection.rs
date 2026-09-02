@@ -333,6 +333,7 @@ mod tests {
             hosted_workspace_count: 1,
             hosted_conversation_count: 1,
             attached_conversation: Some("native/session".to_owned()),
+            controllers: Vec::new(),
         }
     }
 
