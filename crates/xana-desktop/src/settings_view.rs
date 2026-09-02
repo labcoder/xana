@@ -18,8 +18,8 @@ use gpui_component::{
 };
 use xana::desktop::{
     DesktopSettingEffect, DesktopSettingEntry, DesktopSettingSource, DesktopSettingTarget,
-    DesktopSettingsDraftId, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
-    DesktopSettingsSection, DesktopSettingsSnapshot,
+    DesktopSettingsBackup, DesktopSettingsDraftId, DesktopSettingsDraftSnapshot,
+    DesktopSettingsOwner, DesktopSettingsReceipt, DesktopSettingsSection, DesktopSettingsSnapshot,
 };
 
 const WIDE_WINDOW_PX: f32 = 1_180.;
@@ -68,6 +68,9 @@ pub(crate) struct SettingsView {
     search: Entity<InputState>,
     value_editor: Entity<InputState>,
     editor_key: Option<String>,
+    review_open: bool,
+    busy_label: Option<String>,
+    error: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -124,6 +127,9 @@ impl SettingsView {
             selected_key,
             search,
             value_editor,
+            review_open: false,
+            busy_label: None,
+            error: None,
             _subscriptions: subscriptions,
         }
     }
@@ -159,6 +165,24 @@ impl SettingsView {
         if draft_ended || self.editor_key != self.selected_key {
             self.sync_editor(window, cx);
         }
+        cx.notify();
+    }
+
+    pub(crate) fn set_busy(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        self.busy_label = label;
+        cx.notify();
+    }
+
+    pub(crate) fn set_error(&mut self, message: String, cx: &mut Context<Self>) {
+        self.busy_label = None;
+        self.error = Some(message);
+        self.review_open = true;
+        cx.notify();
+    }
+
+    pub(crate) fn clear_operation_state(&mut self, cx: &mut Context<Self>) {
+        self.busy_label = None;
+        self.error = None;
         cx.notify();
     }
 
@@ -659,7 +683,8 @@ impl SettingsView {
                     h_flex()
                         .gap(tokens.spacing.sm)
                         .child(Button::new("settings-review").label("Review").on_click(
-                            cx.listener(|_, _, _, cx| {
+                            cx.listener(|this, _, _, cx| {
+                                this.review_open = true;
                                 cx.emit(SettingsViewEvent::Review);
                             }),
                         ))
@@ -672,8 +697,9 @@ impl SettingsView {
                             Button::new("settings-apply")
                                 .primary()
                                 .label("Apply")
-                                .on_click(cx.listener(|_, _, _, cx| {
-                                    cx.emit(SettingsViewEvent::Apply);
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.review_open = true;
+                                    cx.emit(SettingsViewEvent::Review);
                                 })),
                         ),
                 )
@@ -708,12 +734,217 @@ impl SettingsView {
                     }
                 ))
                 .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(receipt_recovery_summary(receipt)),
+                )
+                .child(
                     Button::new("settings-reload")
                         .compact()
                         .label("Refresh")
                         .on_click(cx.listener(|_, _, _, cx| {
                             cx.emit(SettingsViewEvent::Reload);
                         })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    fn render_operation_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tokens = cx.theme().semantic_tokens();
+        if let Some(error) = self.error.as_ref() {
+            return Some(
+                h_flex()
+                    .w_full()
+                    .flex_none()
+                    .justify_between()
+                    .gap(tokens.spacing.md)
+                    .px(tokens.spacing.lg)
+                    .py(tokens.spacing.sm)
+                    .bg(cx.theme().danger.opacity(0.12))
+                    .text_color(cx.theme().danger)
+                    .child(error.clone())
+                    .child(
+                        Button::new("settings-error-reload")
+                            .label("Reload authoritative values")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.error = None;
+                                cx.emit(SettingsViewEvent::Reload);
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        self.busy_label.as_ref().map(|label| {
+            h_flex()
+                .w_full()
+                .flex_none()
+                .gap(tokens.spacing.sm)
+                .px(tokens.spacing.lg)
+                .py(tokens.spacing.sm)
+                .bg(cx.theme().accent.opacity(0.24))
+                .child("Working")
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(label.clone()),
+                )
+                .into_any_element()
+        })
+    }
+
+    fn render_review_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.review_open {
+            return None;
+        }
+        let draft = self.draft.as_ref()?;
+        let tokens = cx.theme().semantic_tokens();
+        let validation = self
+            .receipt
+            .as_ref()
+            .filter(|receipt| receipt.dry_run && receipt.revision_before == draft.base_revision);
+        let validated = validation.is_some() && self.error.is_none();
+        let changes = validation.map_or(draft.changes.as_slice(), |receipt| {
+            receipt.changes.as_slice()
+        });
+        Some(
+            div()
+                .id("settings-review-overlay")
+                .absolute()
+                .inset_0()
+                .flex()
+                .justify_center()
+                .items_center()
+                .p(tokens.spacing.xl)
+                .bg(cx.theme().background.opacity(0.76))
+                .child(
+                    v_flex()
+                        .id("settings-review-dialog")
+                        .role(Role::Dialog)
+                        .aria_label("Review staged Xana settings")
+                        .w_full()
+                        .max_w(rems(48.))
+                        .max_h(rems(38.))
+                        .overflow_hidden()
+                        .rounded(tokens.radius.lg)
+                        .border_1()
+                        .border_color(cx.theme().border)
+                        .bg(cx.theme().popover)
+                        .shadow_lg()
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .flex_none()
+                                .justify_between()
+                                .gap(tokens.spacing.md)
+                                .p(tokens.spacing.lg)
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    v_flex()
+                                        .gap(tokens.spacing.xs)
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child("Review settings changes"),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_sm()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(if validated {
+                                                    "Validated against the current durable settings revision."
+                                                } else {
+                                                    "Validation is required before Apply becomes available."
+                                                }),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(validation.map_or_else(
+                                                    || "Awaiting validation receipt".to_owned(),
+                                                    receipt_recovery_summary,
+                                                )),
+                                        ),
+                                )
+                                .child(
+                                    Button::new("settings-review-close")
+                                        .label("Close")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.review_open = false;
+                                            cx.notify();
+                                        })),
+                                ),
+                        )
+                        .child(
+                            v_flex()
+                                .id("settings-review-changes")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scrollbar()
+                                .p(tokens.spacing.lg)
+                                .gap(tokens.spacing.md)
+                                .children(changes.iter().map(|change| {
+                                    v_flex()
+                                        .w_full()
+                                        .gap(tokens.spacing.xs)
+                                        .p(tokens.spacing.md)
+                                        .rounded(tokens.radius.md)
+                                        .border_1()
+                                        .border_color(cx.theme().border)
+                                        .child(
+                                            div()
+                                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                                .child(change.label.fallback.clone()),
+                                        )
+                                        .child(format!(
+                                            "{}  →  {}",
+                                            change.before.display, change.after.display
+                                        ))
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .child(format!(
+                                                    "{} · {} · {}",
+                                                    change.key,
+                                                    target_label(change.target),
+                                                    effect_label(change.effect)
+                                                )),
+                                        )
+                                })),
+                        )
+                        .child(
+                            h_flex()
+                                .w_full()
+                                .flex_none()
+                                .justify_end()
+                                .gap(tokens.spacing.sm)
+                                .p(tokens.spacing.lg)
+                                .border_t_1()
+                                .border_color(cx.theme().border)
+                                .child(
+                                    Button::new("settings-review-revalidate")
+                                        .label("Validate again")
+                                        .disabled(self.busy_label.is_some())
+                                        .on_click(cx.listener(|_, _, _, cx| {
+                                            cx.emit(SettingsViewEvent::Review);
+                                        })),
+                                )
+                                .child(
+                                    Button::new("settings-review-apply")
+                                        .primary()
+                                        .label("Apply transaction")
+                                        .disabled(!validated || self.busy_label.is_some())
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.error = None;
+                                            cx.emit(SettingsViewEvent::Apply);
+                                        })),
+                                ),
+                        ),
                 )
                 .into_any_element(),
         )
@@ -778,13 +1009,20 @@ impl Render for SettingsView {
             .id("xana-settings")
             .role(Role::Region)
             .aria_label("Xana Settings")
+            .relative()
             .size_full()
             .min_h_0()
             .bg(cx.theme().background)
             .child(self.render_header(cx))
+            .when_some(self.render_operation_notice(cx), |view, notice| {
+                view.child(notice)
+            })
             .when_some(self.render_receipt(cx), |view, receipt| view.child(receipt))
             .child(div().flex_1().min_h_0().child(body))
             .when_some(self.render_draft_bar(cx), |view, bar| view.child(bar))
+            .when_some(self.render_review_dialog(cx), |view, dialog| {
+                view.child(dialog)
+            })
     }
 }
 
@@ -842,6 +1080,28 @@ fn effect_label(effect: DesktopSettingEffect) -> String {
         DesktopSettingEffect::ManagedElsewhere => "Managed in a focused workflow",
     }
     .to_owned()
+}
+
+fn receipt_recovery_summary(receipt: &DesktopSettingsReceipt) -> String {
+    let owners = if receipt.durable_owners.is_empty() {
+        "no durable owners".to_owned()
+    } else {
+        receipt
+            .durable_owners
+            .iter()
+            .map(|owner| match owner {
+                DesktopSettingsOwner::GlobalConfiguration => "global configuration",
+                DesktopSettingsOwner::MachinePresentation => "this-device presentation",
+            })
+            .collect::<Vec<_>>()
+            .join(" + ")
+    };
+    let backup = match receipt.configuration_backup {
+        DesktopSettingsBackup::NotNeeded => "no configuration backup needed",
+        DesktopSettingsBackup::Planned => "configuration backup planned",
+        DesktopSettingsBackup::Created => "configuration backup created",
+    };
+    format!("{owners} · {backup} · atomic rollback on failure")
 }
 
 #[cfg(test)]

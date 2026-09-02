@@ -187,6 +187,22 @@ pub struct DesktopSettingsReceipt {
     pub revision_after: String,
     pub changes: Vec<DesktopSettingChange>,
     pub requires_new_conversation: bool,
+    pub durable_owners: Vec<DesktopSettingsOwner>,
+    pub configuration_backup: DesktopSettingsBackup,
+    pub rollback_on_failure: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopSettingsOwner {
+    GlobalConfiguration,
+    MachinePresentation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopSettingsBackup {
+    NotNeeded,
+    Planned,
+    Created,
 }
 
 struct ActiveDraft {
@@ -378,12 +394,37 @@ fn project_entry(entry: SettingEntry) -> DesktopSettingEntry {
 
 fn project_receipt(receipt: SettingsReceipt) -> DesktopSettingsReceipt {
     let requires_new_conversation = receipt.requires_new_conversation();
+    let configuration_changed = receipt
+        .changes
+        .iter()
+        .any(|change| change.target == SettingTarget::GlobalConfiguration);
+    let presentation_changed = receipt
+        .changes
+        .iter()
+        .any(|change| change.target == SettingTarget::MachinePresentation);
+    let mut durable_owners = Vec::with_capacity(2);
+    if configuration_changed {
+        durable_owners.push(DesktopSettingsOwner::GlobalConfiguration);
+    }
+    if presentation_changed {
+        durable_owners.push(DesktopSettingsOwner::MachinePresentation);
+    }
+    let configuration_backup = if !configuration_changed {
+        DesktopSettingsBackup::NotNeeded
+    } else if receipt.dry_run {
+        DesktopSettingsBackup::Planned
+    } else {
+        DesktopSettingsBackup::Created
+    };
     DesktopSettingsReceipt {
         dry_run: receipt.dry_run,
         revision_before: bounded(receipt.revision_before),
         revision_after: bounded(receipt.revision_after),
         changes: receipt.changes.into_iter().map(project_change).collect(),
         requires_new_conversation,
+        durable_owners,
+        configuration_backup,
+        rollback_on_failure: true,
     }
 }
 
@@ -564,6 +605,14 @@ mod tests {
         assert_eq!(draft.pending_count, 1);
         let validation = state.validate(draft.id).expect("validate");
         assert!(validation.dry_run);
+        assert_eq!(
+            validation.configuration_backup,
+            DesktopSettingsBackup::NotNeeded
+        );
+        assert_eq!(
+            validation.durable_owners,
+            vec![DesktopSettingsOwner::MachinePresentation]
+        );
         let (receipt, snapshot) = state.commit(draft.id).expect("commit");
         assert!(!receipt.dry_run);
         assert_eq!(receipt.changes.len(), 1);
@@ -575,5 +624,39 @@ mod tests {
                 .and_then(|entry| entry.value.raw.as_deref()),
             Some("dark")
         );
+    }
+
+    #[test]
+    fn concurrent_durable_change_rejects_commit_without_losing_the_draft() {
+        let (directory, mut state) = fixture();
+        let draft = state.begin().expect("begin");
+        let draft = state
+            .set(draft.id, "permissions.default", "deny")
+            .expect("stage configuration value");
+        let paths =
+            XanaPaths::resolve(Some(OsString::from(directory.path()))).expect("fixture paths");
+        let mut external = fs::read_to_string(paths.config_file()).expect("read config");
+        external.push_str("\n# external concurrent edit\n");
+        fs::write(paths.config_file(), external).expect("mutate config externally");
+
+        let error = state.commit(draft.id).expect_err("concurrent commit");
+        assert_eq!(error.code, DesktopErrorCode::StateInvalid);
+        assert!(state.draft.is_some(), "rejected commit must preserve draft");
+    }
+
+    #[test]
+    fn committed_configuration_receipt_reports_created_backup_and_rollback() {
+        let (_directory, mut state) = fixture();
+        let draft = state.begin().expect("begin");
+        let draft = state
+            .set(draft.id, "permissions.default", "deny")
+            .expect("stage configuration value");
+        let (receipt, _) = state.commit(draft.id).expect("commit");
+        assert_eq!(
+            receipt.durable_owners,
+            vec![DesktopSettingsOwner::GlobalConfiguration]
+        );
+        assert_eq!(receipt.configuration_backup, DesktopSettingsBackup::Created);
+        assert!(receipt.rollback_on_failure);
     }
 }

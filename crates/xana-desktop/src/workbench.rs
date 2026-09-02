@@ -30,16 +30,16 @@ use gpui_component::{
     scroll::ScrollableElement as _,
     v_flex, v_resizable,
 };
-use std::{fs, sync::Arc, time::Duration};
+use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 use xana::desktop::{
-    AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopConversationState,
-    DesktopDockPlacement, DesktopEvent, DesktopHostEvent, DesktopInstanceLease,
-    DesktopLaunchIntent, DesktopLayoutNode, DesktopNativePaths, DesktopNavigationSnapshot,
-    DesktopNavigationTarget, DesktopPanelId, DesktopRoundBudgetSuspension,
-    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSnapshot,
-    DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout,
-    DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect, NotificationDestination,
-    NotificationPlanner, last_window_effect,
+    AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopCommandReceipt,
+    DesktopConversationState, DesktopDockPlacement, DesktopEvent, DesktopHostEvent,
+    DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode, DesktopNativePaths,
+    DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
+    DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
+    DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
+    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
+    NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -70,6 +70,7 @@ pub(crate) struct Workbench {
     settings_snapshot: DesktopSettingsSnapshot,
     settings_draft: Option<DesktopSettingsDraftSnapshot>,
     settings_receipt: Option<DesktopSettingsReceipt>,
+    pending_settings_commands: HashSet<u64>,
     selected_project: Option<String>,
     sidebar_selection: Option<SidebarSelection>,
     navigation_dialog: Option<NavigationDialog>,
@@ -220,6 +221,7 @@ impl Workbench {
             settings_snapshot,
             settings_draft: None,
             settings_receipt: None,
+            pending_settings_commands: HashSet::new(),
             selected_project,
             sidebar_selection,
             navigation_dialog: None,
@@ -280,24 +282,19 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         match event {
-            SettingsViewEvent::Close => {
-                self.navigation = DesktopNavigationTarget::Conversation;
-                self.projection.set_activity("Conversation opened");
+            SettingsViewEvent::Close => self.request_close_settings(window, cx),
+            SettingsViewEvent::Reload => {
+                let result = self.runtime.reload_settings();
+                self.track_settings_command(result, "Refreshing authoritative settings…", cx);
             }
-            SettingsViewEvent::Reload => match self.runtime.reload_settings() {
-                Ok(_) => self.projection.set_activity("Refreshing settings…"),
-                Err(error) => self.projection.fail(error.message),
-            },
             SettingsViewEvent::Review => {
                 let Some(draft) = self.settings_draft.as_ref() else {
                     self.projection.fail("No settings changes are staged.");
                     self.sync_components(window, cx);
                     return;
                 };
-                match self.runtime.validate_settings(draft.id) {
-                    Ok(_) => self.projection.set_activity("Validating staged settings…"),
-                    Err(error) => self.projection.fail(error.message),
-                }
+                let result = self.runtime.validate_settings(draft.id);
+                self.track_settings_command(result, "Validating staged settings…", cx);
             }
             SettingsViewEvent::Apply => {
                 let Some(draft) = self.settings_draft.as_ref() else {
@@ -305,57 +302,120 @@ impl Workbench {
                     self.sync_components(window, cx);
                     return;
                 };
-                match self.runtime.commit_settings(draft.id) {
-                    Ok(_) => self
-                        .projection
-                        .set_activity("Applying settings transaction…"),
-                    Err(error) => self.projection.fail(error.message),
-                }
+                let result = self.runtime.commit_settings(draft.id);
+                self.track_settings_command(result, "Applying settings transaction…", cx);
             }
-            SettingsViewEvent::Discard => {
-                let Some(draft) = self.settings_draft.as_ref() else {
-                    return;
-                };
-                match self.runtime.discard_settings(draft.id) {
-                    Ok(_) => self.projection.set_activity("Discarding staged settings…"),
-                    Err(error) => self.projection.fail(error.message),
-                }
-            }
+            SettingsViewEvent::Discard => self.request_discard_settings(window, cx),
             SettingsViewEvent::Set {
                 draft_id,
                 key,
                 value,
-            } => match self
-                .runtime
-                .set_setting(*draft_id, key.clone(), value.clone())
-            {
-                Ok(_) => self.projection.set_activity(format!("Staging {key}…")),
-                Err(error) => self.projection.fail(error.message),
-            },
+            } => {
+                self.settings_receipt = None;
+                let result = self
+                    .runtime
+                    .set_setting(*draft_id, key.clone(), value.clone());
+                self.track_settings_command(result, format!("Staging {key}…"), cx);
+            }
             SettingsViewEvent::Reset { draft_id, key } => {
-                match self.runtime.reset_setting(*draft_id, key.clone()) {
-                    Ok(_) => self.projection.set_activity(format!("Resetting {key}…")),
-                    Err(error) => self.projection.fail(error.message),
-                }
+                self.settings_receipt = None;
+                let result = self.runtime.reset_setting(*draft_id, key.clone());
+                self.track_settings_command(result, format!("Resetting {key}…"), cx);
             }
             SettingsViewEvent::Revert { draft_id, key } => {
-                match self.runtime.revert_setting(*draft_id, key.clone()) {
-                    Ok(_) => self
-                        .projection
-                        .set_activity(format!("Reverting staged {key}…")),
-                    Err(error) => self.projection.fail(error.message),
-                }
+                self.settings_receipt = None;
+                let result = self.runtime.revert_setting(*draft_id, key.clone());
+                self.track_settings_command(result, format!("Reverting staged {key}…"), cx);
             }
         }
         self.sync_components(window, cx);
     }
 
+    fn track_settings_command(
+        &mut self,
+        result: Result<DesktopCommandReceipt, xana::desktop::DesktopError>,
+        activity: impl Into<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let activity = activity.into();
+        match result {
+            Ok(receipt) => {
+                self.pending_settings_commands.insert(receipt.command_id);
+                self.projection.set_activity(activity.clone());
+                self.settings_view.update(cx, |settings, cx| {
+                    settings.set_busy(Some(activity), cx);
+                });
+            }
+            Err(error) => {
+                self.projection.fail(error.message.clone());
+                self.settings_view.update(cx, |settings, cx| {
+                    settings.set_error(error.message, cx);
+                });
+            }
+        }
+    }
+
+    fn request_close_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .settings_draft
+            .as_ref()
+            .is_none_or(|draft| draft.pending_count == 0)
+        {
+            self.navigation = DesktopNavigationTarget::Conversation;
+            self.projection.set_activity("Conversation opened");
+            return;
+        }
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Keep staged settings?",
+            Some("Return to the Conversation without applying. Your staged settings stay available until Xana exits or you discard them."),
+            &["Keep draft and leave", "Stay in Settings"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, _window, cx| {
+                this.navigation = DesktopNavigationTarget::Conversation;
+                this.projection
+                    .set_activity("Conversation opened; settings draft retained");
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn request_discard_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(draft) = self.settings_draft.as_ref() else {
+            return;
+        };
+        let draft_id = draft.id;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Discard staged settings?",
+            Some("This removes only the process-local draft. Durable settings remain unchanged and the appearance preview is reverted."),
+            &["Discard draft", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                let result = this.runtime.discard_settings(draft_id);
+                this.track_settings_command(result, "Discarding staged settings…", cx);
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.navigation = DesktopNavigationTarget::Settings;
-        if self.settings_draft.is_none()
-            && let Err(error) = self.runtime.begin_settings()
-        {
-            self.projection.fail(error.message);
+        if self.settings_draft.is_none() {
+            let result = self.runtime.begin_settings();
+            self.track_settings_command(result, "Preparing a settings draft…", cx);
         }
         self.projection.set_activity("Settings opened");
         self.settings_view.update(cx, |settings, cx| {
@@ -738,6 +798,7 @@ impl Workbench {
                 }
                 DesktopUpdate::SettingsDraft(draft) => {
                     if let Some(draft) = draft.as_ref() {
+                        self.settings_receipt = None;
                         self.apply_settings_appearance(&draft.preview, cx);
                     } else {
                         let snapshot = self.settings_snapshot.clone();
@@ -747,6 +808,9 @@ impl Workbench {
                 }
                 DesktopUpdate::SettingsReceipt(receipt) => {
                     self.settings_receipt = Some(receipt);
+                    self.settings_view.update(cx, |settings, cx| {
+                        settings.clear_operation_state(cx);
+                    });
                 }
                 DesktopUpdate::Observation(observation) => {
                     if !self.projection.apply(observation)
@@ -759,15 +823,33 @@ impl Workbench {
                     self.projection.apply_host(&observation);
                 }
                 DesktopUpdate::CommandResult {
-                    accepted: false,
+                    command_id,
+                    accepted,
                     error,
-                    ..
-                } => self.projection.fail(
-                    error
-                        .map(|error| error.message)
-                        .unwrap_or_else(|| "Runtime rejected the Desktop command".to_owned()),
-                ),
-                DesktopUpdate::CommandResult { .. } => {}
+                } => {
+                    let settings_command = self.pending_settings_commands.remove(&command_id);
+                    if settings_command {
+                        if accepted {
+                            self.settings_view.update(cx, |settings, cx| {
+                                settings.clear_operation_state(cx);
+                            });
+                        } else {
+                            let message = error.map(|error| error.message).unwrap_or_else(|| {
+                                "Runtime rejected the settings command".to_owned()
+                            });
+                            self.projection.fail(message.clone());
+                            self.settings_view.update(cx, |settings, cx| {
+                                settings.set_error(message, cx);
+                            });
+                        }
+                    } else if !accepted {
+                        self.projection.fail(
+                            error.map(|error| error.message).unwrap_or_else(|| {
+                                "Runtime rejected the Desktop command".to_owned()
+                            }),
+                        );
+                    }
+                }
                 DesktopUpdate::ResyncRequired { .. } => {
                     if let Err(error) = self.runtime.request_snapshot() {
                         self.projection.fail(error.message);

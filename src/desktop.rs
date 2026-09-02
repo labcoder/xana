@@ -26,8 +26,8 @@ pub use navigation::{
 pub use settings::{
     DesktopLocalizedText, DesktopSettingChange, DesktopSettingEffect, DesktopSettingEntry,
     DesktopSettingKind, DesktopSettingSource, DesktopSettingTarget, DesktopSettingValue,
-    DesktopSettingsDraftId, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
-    DesktopSettingsSection, DesktopSettingsSnapshot,
+    DesktopSettingsBackup, DesktopSettingsDraftId, DesktopSettingsDraftSnapshot,
+    DesktopSettingsOwner, DesktopSettingsReceipt, DesktopSettingsSection, DesktopSettingsSnapshot,
 };
 
 pub use crate::host_lifecycle::{
