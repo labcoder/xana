@@ -862,6 +862,34 @@ fn project_and_profile_slash_commands_use_the_shared_control_path() {
 }
 
 #[test]
+fn management_slash_commands_suspend_through_the_shared_cli_path() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = false;
+    for (input, family, arguments) in [
+        ("/connection", "connection", "list"),
+        ("/logs path", "logs", "path"),
+        ("/outbound", "outbound", "list"),
+        ("/route check review", "route", "check review"),
+        ("/connect", "connect", ""),
+    ] {
+        state.composer.replace(input.to_owned());
+        assert_eq!(
+            state.update_input(InputAction::Submit),
+            UpdateEffect::ControlCommand {
+                family: family.to_owned(),
+                arguments: arguments.to_owned(),
+            },
+            "{input}"
+        );
+    }
+
+    state.busy = true;
+    state.composer.replace("/connection list".to_owned());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(state.status.contains("active turn"));
+}
+
+#[test]
 fn settings_slash_command_validates_section_and_requires_an_idle_owner() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;

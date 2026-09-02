@@ -1073,11 +1073,11 @@ async fn continue_after_chat_exit(
     }))
 }
 
-pub(super) async fn run_chat_control_command(
+pub(super) async fn run_chat_control_command<W: Write>(
     paths: &XanaPaths,
     family: &str,
     arguments: &str,
-    mut output: &mut dyn Write,
+    output: &mut W,
 ) -> Result<()> {
     if arguments.len() > 16 * 1024 {
         anyhow::bail!("control command exceeds the 16 KiB input limit");
@@ -1115,8 +1115,24 @@ pub(super) async fn run_chat_control_command(
             let stdin = std::io::stdin();
             super::image_commands::run(args.command, paths, &mut stdin.lock(), output).await
         }
+        Some(cli::Command::Connection(args)) => {
+            super::run_connection_command(args.command, paths, output, args.json).await
+        }
+        Some(cli::Command::Logs(args)) => {
+            super::diagnostics_commands::run(args.command, paths, output)
+        }
+        Some(cli::Command::Outbound(args)) => {
+            super::outbound_commands::run(args.command, paths, output)
+        }
+        Some(cli::Command::Operation(args)) => {
+            super::operations::run_operation(args.command, paths, output).await
+        }
+        Some(cli::Command::Route(args)) => {
+            super::operations::run_route(args.command, paths, output)
+        }
+        Some(cli::Command::Connect(args)) => super::run_connect_command(args, paths, output).await,
         Some(cli::Command::Session(args)) if args.command != cli::SessionCommand::New => {
-            super::sessions::run_command(args.command, paths, &mut output)
+            super::sessions::run_command(args.command, paths, output)
         }
         Some(cli::Command::Capabilities(args)) => super::capabilities::run(args, paths, output),
         _ => {

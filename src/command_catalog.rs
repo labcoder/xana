@@ -210,7 +210,11 @@ impl CommandSpec {
             | "plugin.manage.v1"
             | "mcp.manage.v1"
             | "external_agent.manage.v1"
-            | "image.manage.v1" => "list",
+            | "image.manage.v1"
+            | "connection.manage.v1"
+            | "diagnostics.logs.v1"
+            | "outbound.manage.v1"
+            | "route.inspect.v1" => "list",
             _ => "",
         }
     }
@@ -1265,15 +1269,15 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Connection,
         "connection",
         &["auth"],
-        "list|add|status|set-key|login|logout|delete-key|refresh|remove ...",
+        "[--json] list|add|status|set-key|login|logout|delete-key|refresh|remove ...",
         "Manage model-provider connections without exposing credentials",
         ArgumentSchema::Variants("connection_action"),
         Owner,
         Any,
         ExactScope,
         Configure,
-        SurfaceSet::new(true, false, false, true),
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         false
     ),
@@ -1306,8 +1310,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Any,
         ExactScope,
         Inspect,
-        SurfaceSet::new(true, false, false, true),
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         false
     ),
@@ -1323,8 +1327,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Any,
         ExactScope,
         Configure,
-        SurfaceSet::new(true, false, false, true),
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         false
     ),
@@ -1374,8 +1378,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Any,
         ExactScope,
         Control,
-        CLI_ONLY,
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         false
     ),
@@ -1391,8 +1395,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Any,
         None,
         Inspect,
-        CLI_ONLY,
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         true
     ),
@@ -1408,8 +1412,8 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Interactive,
         ExactScope,
         Configure,
-        SurfaceSet::new(true, false, false, true),
-        false,
+        CLI_AND_CHAT,
+        true,
         true,
         false
     ),
@@ -1482,6 +1486,20 @@ pub(crate) fn find(stable_id: &str) -> Option<CommandSpec> {
         .iter()
         .copied()
         .find(|command| command.stable_id == stable_id)
+}
+
+/// Commands that temporarily leave an interactive chat surface and run the
+/// same typed application command as the top-level CLI.
+pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &'static str)> {
+    match stable_id {
+        "connection.manage.v1" => Some(("connection", "list")),
+        "diagnostics.logs.v1" => Some(("logs", "list")),
+        "outbound.manage.v1" => Some(("outbound", "list")),
+        "operation.reconcile.v1" => Some(("operation", "")),
+        "route.inspect.v1" => Some(("route", "list")),
+        "integration.connect.v1" => Some(("connect", "")),
+        _ => None,
+    }
 }
 
 pub(crate) fn parse(value: &str, surface: CommandSurface) -> Result<ParsedCommand, String> {
@@ -1785,6 +1803,27 @@ mod tests {
             connect.availability(context).code,
             AvailabilityCode::InteractiveInputRequired
         );
+    }
+
+    #[test]
+    fn terminal_management_commands_have_one_suspended_cli_projection() {
+        for (stable_id, family, default_arguments) in [
+            ("connection.manage.v1", "connection", "list"),
+            ("diagnostics.logs.v1", "logs", "list"),
+            ("outbound.manage.v1", "outbound", "list"),
+            ("operation.reconcile.v1", "operation", ""),
+            ("route.inspect.v1", "route", "list"),
+            ("integration.connect.v1", "connect", ""),
+        ] {
+            let spec = find(stable_id).expect("management command");
+            assert!(spec.surfaces.contains(CommandSurface::Plain));
+            assert!(spec.surfaces.contains(CommandSurface::Tui));
+            assert!(spec.slash);
+            assert_eq!(
+                suspended_chat_control(stable_id),
+                Some((family, default_arguments))
+            );
+        }
     }
 
     #[test]

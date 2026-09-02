@@ -59,6 +59,18 @@ fn classify_input(line: &str) -> InputAction<'_> {
             .trim_start_matches('/')
             .split_once(char::is_whitespace)
             .map_or("", |(_, arguments)| arguments.trim());
+        if let Some((family, default_arguments)) =
+            crate::command_catalog::suspended_chat_control(parsed.stable_id)
+        {
+            return InputAction::ControlCommand {
+                family,
+                arguments: if arguments.is_empty() {
+                    default_arguments
+                } else {
+                    arguments
+                },
+            };
+        }
         use crate::command_catalog::CommandAction;
         match parsed.action {
             CommandAction::Project
@@ -1731,6 +1743,26 @@ mod tests {
                 arguments: "list"
             }
         );
+        for (input, family, arguments) in [
+            ("/connection", "connection", "list"),
+            ("/connection status local", "connection", "status local"),
+            ("/logs", "logs", "list"),
+            ("/outbound", "outbound", "list"),
+            (
+                "/operation plan --session abc",
+                "operation",
+                "plan --session abc",
+            ),
+            ("/route", "route", "list"),
+            ("/connect", "connect", ""),
+            ("/connect provider", "connect", "provider"),
+        ] {
+            assert_eq!(
+                classify_input(input),
+                InputAction::ControlCommand { family, arguments },
+                "{input}"
+            );
+        }
         assert_eq!(classify_input("/agents"), InputAction::Agents);
         assert_eq!(
             classify_input("/agent 018f0000-0000-7000-8000-000000000000"),

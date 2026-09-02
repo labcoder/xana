@@ -785,6 +785,24 @@ impl TuiState {
                 return UpdateEffect::None;
             }
         }
+        if let Some((family, default_arguments)) =
+            crate::command_catalog::suspended_chat_control(command.stable_id)
+        {
+            self.composer.take();
+            if self.busy {
+                self.status =
+                    format!("Wait for or interrupt the active turn before running /{family}");
+                return UpdateEffect::None;
+            }
+            return UpdateEffect::ControlCommand {
+                family: family.to_owned(),
+                arguments: if command.arguments.is_empty() {
+                    default_arguments.to_owned()
+                } else {
+                    command.arguments
+                },
+            };
+        }
         match command.action {
             CommandId::Help => {
                 self.overlay = Some(Overlay::Help);

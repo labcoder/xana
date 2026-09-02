@@ -222,6 +222,12 @@ receives a mutating action as enabled, and an interactive-only action fails
 closed when projected into deterministic automation. Safely discoverable but
 unfinished actions remain disabled with an exact reason.
 
+Terminal management entries for connection/Connect, logs, outbound decisions,
+operation recovery, and route inspection suspend an idle chat client and invoke
+the exact top-level typed application command. The shared catalog supplies the
+family and safe default arguments. Views never duplicate configuration parsing,
+credential access, confirmation policy, or mutation logic.
+
 `Conversation` is canonical product vocabulary. Existing `session`,
 `/session`, and `/sessions` spellings remain compatibility aliases. Clear,
 new-Conversation, read-only preview, and controller attach/resume are distinct

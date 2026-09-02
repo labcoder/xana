@@ -93,6 +93,9 @@ Palette actions and slash input use that one registry:
   `/conversation view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
+- `/connection [SUBCOMMAND ...]`, `/connect [provider|profile|image|vision]`
+- `/logs [path|list|show|export ...]`, `/outbound [list|revoke ...]`
+- `/operation [plan|resume ...]`, `/route [list|check ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
 - `/usage [compact|details]`, `/capabilities`
@@ -120,8 +123,11 @@ scrollable result modal. Bare `/profile create` opens a three-field form with
 the current connection and model prefilled, then creates the profile through
 the same typed command/configuration transaction as the CLI. Errors remain in
 the modal rather than tearing down and flashing the terminal. Other management
-subcommands continue through the explicit foreground-owner transition until
-their terminal-independent presentation contracts are complete.
+subcommands continue through the explicit foreground-owner transition. Xana
+requires an idle Run, restores the terminal, invokes the exact typed top-level
+CLI command (including its confirmations and secure input), and then returns
+to the Conversation. The TUI does not parse configuration or credentials on a
+separate path.
 
 `/setup` restores the chat terminal before opening the same keyboard-driven,
 full-screen selectors as `xana setup`. A focused section is available from

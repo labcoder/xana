@@ -42,9 +42,11 @@ is also durable and is best resumed through the full-screen TUI, whose exact
 `/continue` and `/stop` actions are always discoverable.
 
 Plain chat accepts `/project ...`, `/profile ...`, `/skill ...`, and `/plugin
-...`. Xana stops the current idle execution owner, runs the exact typed command
-used by the matching `xana` subcommand, prints its normal result, and resumes
-plain chat. This includes
+...`. Connection, integration, log, outbound-policy, operation-recovery, and
+route management are likewise available through `/connection`, `/connect`,
+`/logs`, `/outbound`, `/operation`, and `/route`. Xana stops the current idle
+execution owner, runs the exact typed command used by the matching `xana`
+subcommand, prints its normal result, and resumes plain chat. This includes
 quoted arguments, lifecycle operations, readiness, profile resolution, and
 review/apply continuation placement; malformed or oversized control commands
 fail without changing project/profile state.
