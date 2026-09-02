@@ -6,6 +6,7 @@ mod component_inventory;
 mod design_system;
 mod localization;
 mod projection;
+mod settings_view;
 mod shell;
 mod workbench;
 

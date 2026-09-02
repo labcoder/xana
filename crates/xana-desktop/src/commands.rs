@@ -22,6 +22,7 @@ pub(crate) const LOGS_ID: &str = "diagnostics.logs.v1";
 pub(crate) const CLEAR_ID: &str = "conversation.clear.v1";
 pub(crate) const INTERRUPT_ID: &str = "run.interrupt.v1";
 pub(crate) const ACTIVITY_ID: &str = "presentation.activity.show.v1";
+pub(crate) const SETTINGS_ID: &str = "settings.open.v1";
 
 actions!(
     xana_desktop,
@@ -35,6 +36,7 @@ actions!(
         ClearConversation,
         InterruptRun,
         ShowActivity,
+        ShowSettings,
         NewConversation,
         RenameSelectedProject,
         ArchiveSelectedProject,
@@ -56,6 +58,7 @@ pub(crate) enum WorkbenchCommand {
     ClearConversation,
     InterruptRun,
     ShowActivity,
+    ShowSettings,
 }
 
 impl WorkbenchCommand {
@@ -70,6 +73,7 @@ impl WorkbenchCommand {
             Self::ClearConversation => CLEAR_ID,
             Self::InterruptRun => INTERRUPT_ID,
             Self::ShowActivity => ACTIVITY_ID,
+            Self::ShowSettings => SETTINGS_ID,
         }
     }
 
@@ -84,6 +88,7 @@ impl WorkbenchCommand {
             CLEAR_ID => Self::ClearConversation,
             INTERRUPT_ID => Self::InterruptRun,
             ACTIVITY_ID => Self::ShowActivity,
+            SETTINGS_ID => Self::ShowSettings,
             _ => return None,
         })
     }
@@ -103,6 +108,7 @@ pub(crate) fn install(cx: &mut App) {
         ),
         KeyBinding::new("cmd-.", InterruptRun, Some(WORKBENCH_KEY_CONTEXT)),
         KeyBinding::new("cmd-m", MinimizeWindow, Some(WORKBENCH_KEY_CONTEXT)),
+        KeyBinding::new("cmd-,", ShowSettings, Some(WORKBENCH_KEY_CONTEXT)),
         KeyBinding::new("cmd-q", QuitXana, Some(WORKBENCH_KEY_CONTEXT)),
     ]);
     cx.set_menus(native_menus());
@@ -138,6 +144,7 @@ fn native_menus() -> Vec<Menu> {
         Menu::new("View").items([
             MenuItem::action("Command Palette…", ShowCommandPalette),
             MenuItem::action("Activity", ShowActivity),
+            MenuItem::action("Settings…", ShowSettings),
         ]),
         Menu::new("Conversation").items([
             MenuItem::action("New Conversation", NewConversation).disabled(true),
@@ -210,6 +217,7 @@ pub(crate) fn shortcut_for(stable_id: &str) -> Option<&'static str> {
         CLEAR_ID => Some("⌘⇧K"),
         INTERRUPT_ID => Some("⌘."),
         MINIMIZE_ID => Some("⌘M"),
+        SETTINGS_ID => Some("⌘,"),
         QUIT_ID => Some("⌘Q"),
         _ => None,
     }
@@ -247,6 +255,7 @@ mod tests {
             WorkbenchCommand::ClearConversation,
             WorkbenchCommand::InterruptRun,
             WorkbenchCommand::ShowActivity,
+            WorkbenchCommand::ShowSettings,
         ] {
             assert_eq!(
                 WorkbenchCommand::from_stable_id(command.stable_id()),
@@ -262,6 +271,7 @@ mod tests {
             CLEAR_ID,
             INTERRUPT_ID,
             MINIMIZE_ID,
+            SETTINGS_ID,
             QUIT_ID,
         ]
         .into_iter()

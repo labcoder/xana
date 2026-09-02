@@ -5,9 +5,10 @@ use crate::{
         self, ArchiveSelectedProject, BranchSelectedConversation, ClearConversation, InterruptRun,
         MinimizeWindow, MoveSelectedConversation, OpenConfigurationFile, OpenDocumentation,
         QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
-        ShowCommandPalette, UngroupSelectedConversation, WorkbenchCommand,
+        ShowCommandPalette, ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
     },
     projection::ConversationProjection,
+    settings_view::{SettingsView, SettingsViewEvent},
 };
 use gpui::{
     AnyElement, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, PromptLevel,
@@ -76,6 +77,7 @@ pub(crate) struct Workbench {
     chat: Entity<Chat>,
     sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
+    settings_view: Entity<SettingsView>,
     palette_open: bool,
     shutdown_pending: bool,
     close_prompt_open: bool,
@@ -83,6 +85,7 @@ pub(crate) struct Workbench {
     _chat_subscription: Subscription,
     _sidebar_subscription: Subscription,
     _command_subscription: Subscription,
+    _settings_subscription: Subscription,
     _runtime_driver: Task<()>,
 }
 
@@ -95,7 +98,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
+        let mut projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
         let layout = runtime.initial_snapshot().layout.layout.clone();
         let settings_snapshot = runtime.initial_snapshot().settings.clone();
@@ -108,6 +111,11 @@ impl Workbench {
             .clone()
             .map(SidebarSelection::Conversation);
         let navigation = navigation_for_intent(initial_intent);
+        if navigation == DesktopNavigationTarget::Settings
+            && let Err(error) = runtime.begin_settings()
+        {
+            projection.fail(error.message);
+        }
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
             prompt.set_progress(ProgressState::Pending, cx);
@@ -136,6 +144,8 @@ impl Workbench {
                 .with_presentation(SidebarNavPresentation::Embedded)
         });
         let navigation_input = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
+        let settings_view =
+            cx.new(|cx| SettingsView::new(settings_snapshot.clone(), None, None, window, cx));
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
             if let Some(selected) = navigation_snapshot.selected_conversation.as_deref() {
@@ -163,6 +173,13 @@ impl Workbench {
             window,
             |this, _, event: &SidebarNavEvent, window, cx| {
                 this.handle_sidebar_event(event, window, cx);
+            },
+        );
+        let settings_subscription = cx.subscribe_in(
+            &settings_view,
+            window,
+            |this, _, event: &SettingsViewEvent, window, cx| {
+                this.handle_settings_event(event, window, cx);
             },
         );
         let runtime_driver = cx.spawn_in(window, async move |this, cx| {
@@ -205,6 +222,7 @@ impl Workbench {
             chat,
             sidebar,
             command_search,
+            settings_view,
             palette_open: false,
             shutdown_pending: false,
             close_prompt_open: false,
@@ -212,6 +230,7 @@ impl Workbench {
             _chat_subscription: chat_subscription,
             _sidebar_subscription: sidebar_subscription,
             _command_subscription: command_subscription,
+            _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
         }
     }
@@ -246,6 +265,72 @@ impl Workbench {
             }
             _ => {}
         }
+    }
+
+    fn handle_settings_event(
+        &mut self,
+        event: &SettingsViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SettingsViewEvent::Close => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                self.projection.set_activity("Conversation opened");
+            }
+            SettingsViewEvent::Reload => match self.runtime.reload_settings() {
+                Ok(_) => self.projection.set_activity("Refreshing settings…"),
+                Err(error) => self.projection.fail(error.message),
+            },
+            SettingsViewEvent::Review => {
+                let Some(draft) = self.settings_draft.as_ref() else {
+                    self.projection.fail("No settings changes are staged.");
+                    self.sync_components(window, cx);
+                    return;
+                };
+                match self.runtime.validate_settings(draft.id) {
+                    Ok(_) => self.projection.set_activity("Validating staged settings…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+            SettingsViewEvent::Apply => {
+                let Some(draft) = self.settings_draft.as_ref() else {
+                    self.projection.fail("No settings changes are staged.");
+                    self.sync_components(window, cx);
+                    return;
+                };
+                match self.runtime.commit_settings(draft.id) {
+                    Ok(_) => self
+                        .projection
+                        .set_activity("Applying settings transaction…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+            SettingsViewEvent::Discard => {
+                let Some(draft) = self.settings_draft.as_ref() else {
+                    return;
+                };
+                match self.runtime.discard_settings(draft.id) {
+                    Ok(_) => self.projection.set_activity("Discarding staged settings…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigation = DesktopNavigationTarget::Settings;
+        if self.settings_draft.is_none()
+            && let Err(error) = self.runtime.begin_settings()
+        {
+            self.projection.fail(error.message);
+        }
+        self.projection.set_activity("Settings opened");
+        self.settings_view.update(cx, |settings, cx| {
+            settings.focus_search(window, cx);
+        });
+        self.sync_components(window, cx);
     }
 
     fn handle_command_search_event(
@@ -576,7 +661,7 @@ impl Workbench {
 
     /// Returns false once the backend has stopped and there is nothing left to poll.
     fn drain_runtime_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let mut changed = self.drain_launch_intents(window);
+        let mut changed = self.drain_launch_intents(window, cx);
         let mut keep_running = true;
         for _ in 0..MAX_UPDATES_PER_FRAME {
             let update = match self.runtime.try_next() {
@@ -671,7 +756,7 @@ impl Workbench {
         keep_running
     }
 
-    fn drain_launch_intents(&mut self, window: &mut Window) -> bool {
+    fn drain_launch_intents(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
         for _ in 0..MAX_UPDATES_PER_FRAME {
             let Some(intent) = self.instance.try_next() else {
@@ -680,6 +765,16 @@ impl Workbench {
             changed = true;
             window.activate_window();
             self.navigation = navigation_for_intent(intent);
+            if self.navigation == DesktopNavigationTarget::Settings {
+                if self.settings_draft.is_none()
+                    && let Err(error) = self.runtime.begin_settings()
+                {
+                    self.projection.fail(error.message);
+                }
+                self.settings_view.update(cx, |settings, cx| {
+                    settings.focus_search(window, cx);
+                });
+            }
             self.projection.set_activity(format!(
                 "Opened {} from another Xana launch",
                 self.navigation.as_str()
@@ -780,6 +875,14 @@ impl Workbench {
             }
             sidebar.set_collapsed(
                 self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Mini,
+                cx,
+            );
+        });
+        self.settings_view.update(cx, |settings, cx| {
+            settings.set_state(
+                self.settings_snapshot.clone(),
+                self.settings_draft.clone(),
+                self.settings_receipt.clone(),
                 cx,
             );
         });
@@ -1630,6 +1733,7 @@ impl Workbench {
                 self.projection.set_activity("Activity opened");
                 cx.notify();
             }
+            WorkbenchCommand::ShowSettings => self.open_settings(window, cx),
         }
     }
 
@@ -1719,17 +1823,22 @@ impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
         let layout = self.layout.clone();
-        let canvas = match layout.maximized() {
-            Some(panel) => self.render_panel_stack(
-                "maximized-panel",
-                std::slice::from_ref(&panel),
-                0,
-                window,
-                cx,
-            ),
-            None => self.render_layout_node(layout.root(), window, cx),
+        let showing_settings = self.navigation == DesktopNavigationTarget::Settings;
+        let canvas = if showing_settings {
+            self.settings_view.clone().into_any_element()
+        } else {
+            match layout.maximized() {
+                Some(panel) => self.render_panel_stack(
+                    "maximized-panel",
+                    std::slice::from_ref(&panel),
+                    0,
+                    window,
+                    cx,
+                ),
+                None => self.render_layout_node(layout.root(), window, cx),
+            }
         };
-        let panel_library = self.render_panel_library(cx);
+        let panel_library = (!showing_settings).then(|| self.render_panel_library(cx));
         let navigation_dialog = self.render_navigation_dialog(cx);
         let sidebar_is_full = self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Full;
         let sidebar_selection = self.sidebar_selection.clone();
@@ -1783,10 +1892,8 @@ impl Render for Workbench {
                 Button::new("open-settings")
                     .label(if sidebar_is_full { "Settings" } else { "S" })
                     .w_full()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.navigation = DesktopNavigationTarget::Settings;
-                        this.projection.set_activity("Settings opened");
-                        cx.notify();
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_settings(window, cx);
                     })),
             );
         let sidebar = v_flex()
@@ -1842,7 +1949,7 @@ impl Render for Workbench {
                 .min_w_0()
                 .min_h_0()
                 .child(div().flex_1().min_h_0().child(canvas))
-                .child(panel_library),
+                .when_some(panel_library, |main, library| main.child(library)),
         );
 
         div()
@@ -1883,6 +1990,9 @@ impl Render for Workbench {
             })
             .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowActivity, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
+                this.dispatch(WorkbenchCommand::ShowSettings, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RenameSelectedProject, window, cx| {
                 this.open_project_rename(window, cx);
