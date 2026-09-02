@@ -7,6 +7,8 @@ use crate::{
         ChildReport,
     },
     permission::{ControllerDecision, PermissionAuditFact, PermissionRequest},
+    prompt::PromptPlanLedger,
+    session::{CompactionCheckpoint, CompactionReason},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{
@@ -27,6 +29,9 @@ pub(crate) enum RuntimeCommand {
         images: Vec<crate::vision::ImageRef>,
     },
     ClearConversation,
+    CompactConversation {
+        operation_id: OperationId,
+    },
     ResumeOperation {
         session_id: SessionId,
         operation_id: OperationId,
@@ -120,6 +125,21 @@ pub(crate) enum AgentEvent {
         reason: String,
     },
     ConversationCleared,
+    PromptPlanUpdated {
+        operation_id: OperationId,
+        ledger: PromptPlanLedger,
+    },
+    CompactionStarted {
+        operation_id: OperationId,
+        reason: CompactionReason,
+    },
+    ConversationCompacted {
+        checkpoint: CompactionCheckpoint,
+    },
+    CompactionUnavailable {
+        operation_id: OperationId,
+        reason: String,
+    },
     CommandRejected {
         reason: String,
     },

@@ -59,6 +59,9 @@ pub(crate) enum ClientCommandValue {
         images: Vec<ImageRef>,
     },
     ClearConversation,
+    CompactConversation {
+        operation_id: OperationId,
+    },
     ResumeOperation {
         session_id: SessionId,
         operation_id: OperationId,
@@ -112,6 +115,9 @@ impl From<RuntimeCommand> for ClientCommandValue {
                 images,
             },
             RuntimeCommand::ClearConversation => Self::ClearConversation,
+            RuntimeCommand::CompactConversation { operation_id } => {
+                Self::CompactConversation { operation_id }
+            }
             RuntimeCommand::ResumeOperation {
                 session_id,
                 operation_id,
@@ -178,6 +184,9 @@ impl From<ClientCommandValue> for RuntimeCommand {
                 images,
             },
             ClientCommandValue::ClearConversation => Self::ClearConversation,
+            ClientCommandValue::CompactConversation { operation_id } => {
+                Self::CompactConversation { operation_id }
+            }
             ClientCommandValue::ResumeOperation {
                 session_id,
                 operation_id,
@@ -527,6 +536,10 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::UsageObserved { .. } => "usage observation",
         AgentEvent::OperationFailed { .. } => "operation failure",
         AgentEvent::ConversationCleared => "conversation clear",
+        AgentEvent::PromptPlanUpdated { .. } => "prompt plan",
+        AgentEvent::CompactionStarted { .. } => "compaction started",
+        AgentEvent::ConversationCompacted { .. } => "conversation compacted",
+        AgentEvent::CompactionUnavailable { .. } => "compaction unavailable",
         AgentEvent::CommandRejected { .. } => "command rejection",
         AgentEvent::ChildLifecycleChanged { .. } => "child lifecycle",
         AgentEvent::ChildActivity { .. } => "child activity",

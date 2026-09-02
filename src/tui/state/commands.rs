@@ -947,6 +947,23 @@ impl TuiState {
                     UpdateEffect::ClearConversation
                 }
             }
+            CommandId::Compact => {
+                self.composer.take();
+                if self.busy {
+                    self.status =
+                        "Interrupt or finish the active turn before compacting".to_owned();
+                    UpdateEffect::None
+                } else if !self.capabilities.compact {
+                    self.status =
+                        "This managed runtime owns its context; Xana compaction is unavailable"
+                            .to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::CompactConversation {
+                        operation_id: OperationId::new(),
+                    }
+                }
+            }
             CommandId::Composer => {
                 self.composer.take();
                 let preset = match command.arguments.as_str() {

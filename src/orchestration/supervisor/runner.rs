@@ -224,6 +224,10 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::AssistantMessage { .. }
         | AgentEvent::UsageObserved { .. }
         | AgentEvent::ConversationCleared
+        | AgentEvent::PromptPlanUpdated { .. }
+        | AgentEvent::CompactionStarted { .. }
+        | AgentEvent::ConversationCompacted { .. }
+        | AgentEvent::CompactionUnavailable { .. }
         | AgentEvent::CommandRejected { .. }
         | AgentEvent::ChildLifecycleChanged { .. }
         | AgentEvent::ChildReportCommitted { .. }

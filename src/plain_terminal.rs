@@ -29,6 +29,7 @@ use std::io::{self, BufRead, Write};
 enum InputAction<'a> {
     Quit,
     Clear,
+    Compact,
     Attach(&'a str),
     Model(&'a str),
     Vision(&'a str),
@@ -112,6 +113,7 @@ fn classify_input(line: &str) -> InputAction<'_> {
     match trimmed {
         "/quit" => InputAction::Quit,
         "/clear" => InputAction::Clear,
+        "/compact" => InputAction::Compact,
         "" => InputAction::Ignore,
         input => InputAction::Send(input),
     }
@@ -231,6 +233,29 @@ impl<W: Write> EventRenderer<W> {
             }
             AgentEvent::ConversationCleared => {
                 writeln!(self.output, "xana> conversation cleared")?;
+            }
+            AgentEvent::PromptPlanUpdated { ledger, .. } => {
+                writeln!(
+                    self.output,
+                    "xana> prompt estimate: {} / {} input tokens (window {}, cache facts unavailable)",
+                    ledger.estimated_input_tokens,
+                    ledger.budget.input_budget_tokens,
+                    ledger.budget.context_window_tokens,
+                )?;
+            }
+            AgentEvent::CompactionStarted { reason, .. } => {
+                self.finish_stream()?;
+                writeln!(self.output, "xana> compacting older context ({reason:?})…")?;
+            }
+            AgentEvent::ConversationCompacted { checkpoint } => {
+                writeln!(
+                    self.output,
+                    "xana> compacted {} canonical entries; raw history remains unchanged (checkpoint {})",
+                    checkpoint.source_entry_count, checkpoint.id,
+                )?;
+            }
+            AgentEvent::CompactionUnavailable { reason, .. } => {
+                writeln!(self.output, "xana> compaction unavailable: {reason}")?;
             }
             AgentEvent::CommandRejected { reason } => {
                 writeln!(self.output, "xana> command rejected: {reason}")?;
@@ -583,6 +608,13 @@ pub(crate) async fn run_chat(
                     runtime.send(RuntimeCommand::ClearConversation).await?;
                     render_until_clear_result(&mut runtime, &mut renderer).await?;
                 }
+                InputAction::Compact => {
+                    let operation_id = OperationId::new();
+                    runtime
+                        .send(RuntimeCommand::CompactConversation { operation_id })
+                        .await?;
+                    render_until_compaction_result(&mut runtime, &mut renderer).await?;
+                }
                 InputAction::Attach(path) => {
                     if path.is_empty() {
                         println!("xana> usage: /attach WORKSPACE_RELATIVE_IMAGE_PATH|--clipboard");
@@ -705,6 +737,7 @@ pub(crate) async fn run_chat(
                     println!("  /attach PATH         stage a bounded image");
                     println!("  /usage               show observed token usage");
                     println!("  /clear               clear the current conversation");
+                    println!("  /compact             compact older context; keep raw history");
                     println!("  /quit                leave Xana");
                 }
                 InputAction::Usage => renderer.write_usage()?,
@@ -1253,6 +1286,25 @@ async fn render_until_clear_result<W: Write>(
         bail!("foreground runtime returned an unexpected clear response");
     }
     Ok(())
+}
+
+async fn render_until_compaction_result<W: Write>(
+    runtime: &mut EmbeddedClient,
+    renderer: &mut EventRenderer<W>,
+) -> Result<()> {
+    loop {
+        let event = runtime.next_event().await?;
+        let finished = matches!(
+            event,
+            AgentEvent::ConversationCompacted { .. }
+                | AgentEvent::CompactionUnavailable { .. }
+                | AgentEvent::CommandRejected { .. }
+        );
+        renderer.render(&event)?;
+        if finished {
+            return Ok(());
+        }
+    }
 }
 
 async fn render_operation<W: Write>(

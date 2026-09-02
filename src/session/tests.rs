@@ -24,6 +24,24 @@ use crate::{
 use std::{fs, io::Write, path::PathBuf};
 use tempfile::tempdir;
 
+fn compaction_budget(retained_tail_tokens: usize) -> crate::prompt::PromptBudgetPlan {
+    crate::prompt::PromptBudgetPlan::derive(
+        &crate::prompt::PromptBudgetPolicy {
+            retained_tail_tokens,
+            tool_reserve_tokens: 512,
+            ..crate::prompt::PromptBudgetPolicy::default()
+        },
+        crate::prompt::ModelBudgetFacts {
+            connection: "test".into(),
+            model: "small".into(),
+            context_tokens: Some(16_384),
+            max_output_tokens: Some(2_048),
+            reasoning: false,
+        },
+    )
+    .expect("test prompt budget")
+}
+
 fn created(session_id: SessionId, thread_id: ThreadId) -> RecordEnvelope {
     RecordEnvelope::new(
         session_id,
@@ -1248,6 +1266,327 @@ fn reduction_rejects_unknown_heads_and_invalid_operation_transitions() {
         reduce(&invalid),
         Err(reduce::ReductionError::InvalidOperationTransition { .. })
     ));
+}
+
+#[test]
+fn durable_compaction_preserves_raw_history_and_resumes_from_summary_plus_tail() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let mut session = DurableSession::create(directory.path(), workspace_root).expect("session");
+    for (role, text) in [
+        (Role::User, "We must preserve the canonical journal."),
+        (Role::Assistant, "Decision: use an append-only checkpoint."),
+        (Role::User, "Update src/session.rs and keep tests."),
+        (
+            Role::Assistant,
+            "src/session.rs updated; remaining work is restart validation.",
+        ),
+        (Role::User, "Please finish restart validation."),
+        (Role::Assistant, "Restart validation is ready."),
+    ] {
+        session
+            .append_message(Message::text(role, text))
+            .expect("append conversation message");
+    }
+    let canonical = session.conversation().expect("canonical history");
+    let checkpoint = session
+        .compact_conversation(
+            OperationId::new(),
+            CompactionReason::Manual,
+            &compaction_budget(12),
+        )
+        .expect("compact conversation");
+    let continuation = session.prompt_continuation().expect("prompt continuation");
+
+    assert_eq!(session.conversation().expect("raw history"), canonical);
+    assert!(checkpoint.source_entry_count > 0);
+    assert!(continuation.history.len() < canonical.len());
+    assert_eq!(continuation.checkpoint.as_ref(), Some(&checkpoint));
+    assert!(checkpoint.summary.render().contains("canonical journal"));
+    assert!(checkpoint.summary.render().contains("src/session.rs"));
+    let inspected = DurableSession::inspect(directory.path(), session.session_id())
+        .expect("inspect compacted session");
+    assert_eq!(inspected.compaction_count, 1);
+    assert_eq!(inspected.compactions, vec![checkpoint.clone()]);
+
+    let session_id = session.session_id();
+    drop(session);
+    let (resumed, _) = DurableSession::resume(directory.path(), session_id).expect("resume");
+    assert_eq!(
+        resumed.conversation().expect("resumed raw history"),
+        canonical
+    );
+    assert_eq!(
+        resumed.prompt_continuation().expect("resumed continuation"),
+        continuation
+    );
+}
+
+#[test]
+fn repeated_compaction_advances_one_checkpoint_without_resummarizing_old_messages() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let mut session = DurableSession::create(
+        directory.path(),
+        workspace.path().canonicalize().expect("workspace root"),
+    )
+    .expect("session");
+    for index in 0..3 {
+        session
+            .append_message(Message::text(Role::User, format!("goal {index}")))
+            .expect("user");
+        session
+            .append_message(Message::text(
+                Role::Assistant,
+                format!("completed milestone {index}"),
+            ))
+            .expect("assistant");
+    }
+    let first = session
+        .compact_conversation(
+            OperationId::new(),
+            CompactionReason::AutomaticThreshold,
+            &compaction_budget(8),
+        )
+        .expect("first checkpoint");
+    session
+        .append_message(Message::text(Role::User, "goal 3"))
+        .expect("new user");
+    session
+        .append_message(Message::text(Role::Assistant, "completed milestone 3"))
+        .expect("new assistant");
+    let second = session
+        .compact_conversation(
+            OperationId::new(),
+            CompactionReason::AutomaticThreshold,
+            &compaction_budget(8),
+        )
+        .expect("second checkpoint");
+
+    assert!(second.source_entry_count > first.source_entry_count);
+    assert_ne!(second.id, first.id);
+    assert!(second.summary.render().contains("completed milestone 0"));
+    assert!(second.summary.render().contains("completed milestone 2"));
+    assert_eq!(
+        session
+            .prompt_continuation()
+            .expect("latest continuation")
+            .checkpoint
+            .as_ref(),
+        Some(&second)
+    );
+}
+
+#[test]
+fn branch_movement_deactivates_an_unrelated_checkpoint_without_deleting_it() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let mut session = DurableSession::create(
+        directory.path(),
+        workspace.path().canonicalize().expect("workspace root"),
+    )
+    .expect("session");
+    for (role, text) in [
+        (Role::User, "root goal"),
+        (Role::Assistant, "root answer"),
+        (Role::User, "new turn"),
+        (Role::Assistant, "new answer"),
+    ] {
+        session
+            .append_message(Message::text(role, text))
+            .expect("message");
+    }
+    let branch_head = session.restored().conversation_entry_path().unwrap()[1].id;
+    session
+        .compact_conversation(
+            OperationId::new(),
+            CompactionReason::Manual,
+            &compaction_budget(8),
+        )
+        .expect("checkpoint");
+    session
+        .append_record(SessionRecord::ThreadHeadMoved {
+            thread_id: session.thread_id(),
+            head: Some(branch_head),
+        })
+        .expect("move branch head");
+
+    let continuation = session.prompt_continuation().expect("branch continuation");
+    assert!(continuation.checkpoint.is_none());
+    assert_eq!(
+        continuation.history,
+        vec![
+            Message::text(Role::User, "root goal"),
+            Message::text(Role::Assistant, "root answer"),
+        ]
+    );
+    assert_eq!(session.restored().compactions.len(), 1);
+}
+
+#[test]
+fn corrupt_compaction_digest_is_rejected_before_journal_append() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let mut session = DurableSession::create(
+        directory.path(),
+        workspace.path().canonicalize().expect("workspace root"),
+    )
+    .expect("session");
+    for (role, text) in [
+        (Role::User, "old"),
+        (Role::Assistant, "old result"),
+        (Role::User, "recent"),
+        (Role::Assistant, "recent result"),
+    ] {
+        session
+            .append_message(Message::text(role, text))
+            .expect("message");
+    }
+    let budget = compaction_budget(8);
+    let checkpoint = {
+        let path = session
+            .restored()
+            .conversation_entry_path()
+            .expect("conversation path");
+        let retained_start = super::compaction::select_retained_start(
+            &path.iter().map(|entry| &entry.message).collect::<Vec<_>>(),
+            budget.retained_tail_tokens,
+        );
+        CompactionCheckpoint {
+            version: COMPACTION_CHECKPOINT_VERSION,
+            id: CompactionId::new(),
+            operation_id: OperationId::new(),
+            previous_checkpoint: None,
+            reason: CompactionReason::Manual,
+            source_start: path[0].id,
+            source_end: path[retained_start - 1].id,
+            source_entry_count: retained_start,
+            source_digest: "z".repeat(64),
+            retained_tail_start: path[retained_start].id,
+            summary: CompactionSummary::derive(
+                None,
+                path[..retained_start].iter().map(|entry| &entry.message),
+                budget.summary_max_bytes,
+            ),
+            budget,
+        }
+    };
+    let before = fs::read(session.path()).expect("journal before invalid append");
+
+    let error = session
+        .append_record(SessionRecord::ConversationCompacted { checkpoint })
+        .expect_err("corrupt checkpoint must fail");
+
+    assert!(format!("{error:#}").contains("InvalidCompaction"));
+    assert_eq!(
+        fs::read(session.path()).expect("journal after rejection"),
+        before
+    );
+}
+
+#[test]
+fn repeated_operation_identity_cannot_fork_compaction_state() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let mut session = DurableSession::create(
+        directory.path(),
+        workspace.path().canonicalize().expect("workspace root"),
+    )
+    .expect("session");
+    for index in 0..4 {
+        session
+            .append_message(Message::text(Role::User, format!("goal {index}")))
+            .expect("user");
+        session
+            .append_message(Message::text(Role::Assistant, format!("result {index}")))
+            .expect("assistant");
+    }
+    let operation_id = OperationId::new();
+    session
+        .compact_conversation(
+            operation_id,
+            CompactionReason::Manual,
+            &compaction_budget(8),
+        )
+        .expect("first checkpoint");
+    session
+        .append_message(Message::text(Role::User, "another goal"))
+        .expect("new user");
+    session
+        .append_message(Message::text(Role::Assistant, "another result"))
+        .expect("new assistant");
+    let before = fs::read(session.path()).expect("journal before retry");
+
+    let error = session
+        .compact_conversation(
+            operation_id,
+            CompactionReason::Manual,
+            &compaction_budget(8),
+        )
+        .expect_err("reused operation identity must fail");
+
+    assert!(format!("{error:#}").contains("InvalidCompaction"));
+    assert_eq!(
+        fs::read(session.path()).expect("journal after retry"),
+        before
+    );
+}
+
+#[test]
+fn long_history_checkpoint_is_bounded_and_does_not_copy_the_transcript() {
+    let directory = tempdir().expect("session tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let mut session = DurableSession::create(
+        directory.path(),
+        workspace.path().canonicalize().expect("workspace root"),
+    )
+    .expect("session");
+    for index in 0..60 {
+        session
+            .append_message(Message::text(
+                Role::User,
+                format!(
+                    "Goal {index}: must update src/file-{index}.rs {}",
+                    "u".repeat(900)
+                ),
+            ))
+            .expect("user");
+        session
+            .append_message(Message::text(
+                Role::Assistant,
+                format!(
+                    "Completed item {index}; remaining validation uses docs/check-{index}.md {}",
+                    "a".repeat(900)
+                ),
+            ))
+            .expect("assistant");
+    }
+    let raw_bytes = session
+        .conversation()
+        .expect("raw history")
+        .iter()
+        .map(|message| serde_json::to_vec(message).unwrap().len())
+        .sum::<usize>();
+    let checkpoint = session
+        .compact_conversation(
+            OperationId::new(),
+            CompactionReason::AutomaticThreshold,
+            &compaction_budget(1_024),
+        )
+        .expect("checkpoint");
+    let checkpoint_bytes = serde_json::to_vec(&checkpoint).unwrap().len();
+    let summary_bytes = checkpoint.summary.render().len();
+
+    eprintln!(
+        "m4 compaction baseline: raw_message_bytes={raw_bytes} checkpoint_bytes={checkpoint_bytes} summary_bytes={summary_bytes} source_entries={}",
+        checkpoint.source_entry_count
+    );
+    assert!(raw_bytes > 100 * 1_024);
+    assert!(checkpoint_bytes < 32 * 1_024);
+    assert!(checkpoint_bytes * 3 < raw_bytes);
+    assert!(summary_bytes <= checkpoint.budget.summary_max_bytes);
+    assert_eq!(session.conversation().unwrap().len(), 120);
 }
 
 #[test]

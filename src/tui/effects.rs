@@ -310,6 +310,9 @@ pub(super) async fn dispatch_managed_effect(
             }
         }
         UpdateEffect::ClearConversation => driver.clear().await.map_err(anyhow::Error::msg)?,
+        UpdateEffect::CompactConversation { .. } => {
+            state.set_status("This managed runtime owns its context; Xana compaction is unavailable")
+        }
         UpdateEffect::OpenModelPicker => state.open_model_picker(
             driver
                 .models
@@ -808,6 +811,19 @@ pub(super) async fn dispatch_effect(
                     result
                         .reason
                         .unwrap_or_else(|| "clear was rejected".to_owned()),
+                );
+            }
+        }
+        UpdateEffect::CompactConversation { operation_id } => {
+            let result = client
+                .send(RuntimeCommand::CompactConversation { operation_id })
+                .await
+                .context("native TUI runtime stopped while compacting")?;
+            if !result.accepted {
+                state.set_status(
+                    result
+                        .reason
+                        .unwrap_or_else(|| "compaction was rejected".to_owned()),
                 );
             }
         }

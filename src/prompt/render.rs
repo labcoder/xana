@@ -24,7 +24,7 @@ pub(super) fn estimate_tool_schema_tokens(definitions: &[&ToolDefinition]) -> us
         .sum()
 }
 
-pub(super) fn estimate_message_tokens(message: &Message) -> usize {
+pub(crate) fn estimate_message_tokens(message: &Message) -> usize {
     let role = match message.role {
         Role::System => "system",
         Role::User => "user",
@@ -55,7 +55,7 @@ pub(super) fn estimate_message_tokens(message: &Message) -> usize {
     tokens
 }
 
-fn estimate_image_tokens(image: &crate::vision::ImageRef) -> usize {
+pub(super) fn estimate_image_tokens(image: &crate::vision::ImageRef) -> usize {
     // Vision pricing/tokenization is provider-specific. Reserving roughly one
     // token per 750 pixels is deliberately conservative for current native
     // providers and prevents an image from being counted as a tiny filename-
@@ -140,6 +140,7 @@ fn layer_kind_name(kind: PromptLayerKind) -> &'static str {
         PromptLayerKind::Surface => "surface",
         PromptLayerKind::ProjectInstructions => "project_instructions",
         PromptLayerKind::SkillInstructions => "skill_instructions",
+        PromptLayerKind::CompactedHistory => "compacted_history",
     }
 }
 
@@ -161,6 +162,7 @@ fn origin_name(origin: SourceOrigin) -> &'static str {
         SourceOrigin::ProjectFile => "project_file",
         SourceOrigin::Skill => "skill",
         SourceOrigin::ParentHandoff => "parent_handoff",
+        SourceOrigin::CompactionCheckpoint => "compaction_checkpoint",
     }
 }
 

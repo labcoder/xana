@@ -53,6 +53,7 @@ fn commands_and_events_round_trip_through_json() {
             operation_id,
             input: "hello".to_owned(),
         },
+        RuntimeCommand::CompactConversation { operation_id },
         RuntimeCommand::ClearConversation,
         RuntimeCommand::ResumeOperation {
             session_id: crate::identity::SessionId::new(),
@@ -194,6 +195,14 @@ fn commands_and_events_round_trip_through_json() {
             reason: "provider unavailable".to_owned(),
         },
         AgentEvent::ConversationCleared,
+        AgentEvent::CompactionStarted {
+            operation_id,
+            reason: crate::session::CompactionReason::Manual,
+        },
+        AgentEvent::CompactionUnavailable {
+            operation_id,
+            reason: "managed runtime owns context".to_owned(),
+        },
         AgentEvent::CommandRejected {
             reason: "busy".to_owned(),
         },
@@ -488,6 +497,259 @@ async fn persistent_runtime_commits_conversation_before_final_events() {
         }
     }
     assert!(saw_assistant);
+}
+
+#[tokio::test]
+async fn manual_compaction_commits_a_checkpoint_and_preserves_raw_history() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let provider = QueueTransport {
+        responses: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let policy = PromptBudgetPolicy {
+        retained_tail_tokens: 8,
+        ..PromptBudgetPolicy::default()
+    };
+    let (agent, assembler) = persistent_agent_with_budget(
+        Box::new(provider),
+        workspace_root.clone(),
+        policy,
+        Some(8_192),
+    );
+    let mut session = DurableSession::create(data.path(), workspace_root.clone()).expect("session");
+    for (role, text) in [
+        (Role::User, "old goal"),
+        (Role::Assistant, "old progress"),
+        (Role::User, "newer goal"),
+        (Role::Assistant, "newer progress"),
+        (Role::User, "recent goal"),
+        (Role::Assistant, "recent progress"),
+    ] {
+        session
+            .append_message(Message::text(role, text))
+            .expect("seed message");
+    }
+    let canonical = session.conversation().expect("raw history");
+    let path = session.path().to_owned();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::CompactConversation { operation_id })
+        .await
+        .expect("compact command");
+
+    let mut saw_ledger = false;
+    let checkpoint = loop {
+        match runtime.next_event().await.expect("compaction event") {
+            AgentEvent::PromptPlanUpdated {
+                operation_id: actual,
+                ledger,
+            } if actual == operation_id => {
+                saw_ledger = true;
+                assert!(ledger.estimated_input_tokens <= ledger.budget.input_budget_tokens);
+            }
+            AgentEvent::ConversationCompacted { checkpoint } => break checkpoint,
+            AgentEvent::CompactionUnavailable { reason, .. } => {
+                panic!("manual compaction unexpectedly unavailable: {reason}")
+            }
+            _ => {}
+        }
+    };
+
+    assert!(saw_ledger);
+    assert_eq!(checkpoint.operation_id, operation_id);
+    assert_eq!(checkpoint.reason, crate::session::CompactionReason::Manual);
+    let loaded = SessionStore::inspect(&path).expect("inspect compacted journal");
+    let restored = reduce(&loaded.records).expect("reduce compacted journal");
+    assert_eq!(
+        restored.conversation_path().expect("raw history"),
+        canonical
+    );
+    assert_eq!(restored.active_compaction().unwrap(), Some(&checkpoint));
+}
+
+#[tokio::test]
+async fn automatic_compaction_runs_before_provider_rejection_and_keeps_raw_entries() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = QueueTransport {
+        responses: Mutex::new(
+            vec![Ok(Message::text(
+                Role::Assistant,
+                "continued after compaction",
+            ))]
+            .into(),
+        ),
+        requests: Arc::clone(&requests),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let policy = PromptBudgetPolicy {
+        fallback_context_tokens: 8_192,
+        output_reserve_tokens: 2_048,
+        tool_reserve_tokens: 1_500,
+        retained_tail_tokens: 1_600,
+        ..PromptBudgetPolicy::default()
+    };
+    let (agent, assembler) = persistent_agent_with_budget(
+        Box::new(provider),
+        workspace_root.clone(),
+        policy,
+        Some(8_192),
+    );
+    let mut session = DurableSession::create(data.path(), workspace_root.clone()).expect("session");
+    let old_marker = "OLDEST_RAW_MARKER";
+    for (role, text) in [
+        (Role::User, format!("{} {old_marker}", "a".repeat(5_000))),
+        (
+            Role::Assistant,
+            format!("{} {old_marker}", "b".repeat(5_000)),
+        ),
+        (Role::User, "c".repeat(5_000)),
+        (Role::Assistant, "d".repeat(5_000)),
+    ] {
+        session
+            .append_message(Message::text(role, text))
+            .expect("seed message");
+    }
+    let path = session.path().to_owned();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "continue".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+
+    let mut compacted = None;
+    loop {
+        match runtime.next_event().await.expect("runtime event") {
+            AgentEvent::ConversationCompacted { checkpoint } => compacted = Some(checkpoint),
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            AgentEvent::CommandRejected { reason } => {
+                panic!("automatic compaction did not recover the turn: {reason}")
+            }
+            _ => {}
+        }
+    }
+
+    let checkpoint = compacted.expect("automatic compaction checkpoint");
+    assert_eq!(
+        checkpoint.reason,
+        crate::session::CompactionReason::AutomaticThreshold
+    );
+    let request = requests.lock().unwrap().first().cloned().expect("request");
+    assert!(request[0]
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text(text) if text.contains("lossy derived continuation state"))));
+    assert!(!request.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text(text) if text.contains(old_marker)))
+    }));
+    let restored = reduce(
+        &SessionStore::inspect(&path)
+            .expect("inspect journal")
+            .records,
+    )
+    .expect("reduce journal");
+    assert!(restored.conversation_path().unwrap().iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text(text) if text.contains(old_marker)))
+    }));
+}
+
+#[tokio::test]
+async fn transient_or_managed_owned_context_reports_compaction_unavailable() {
+    let mut runtime = spawn_runtime(make_agent(Box::new(QueueTransport {
+        responses: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    })));
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::CompactConversation { operation_id })
+        .await
+        .expect("compact command");
+
+    assert_eq!(
+        runtime.next_event().await,
+        Some(AgentEvent::CompactionStarted {
+            operation_id,
+            reason: crate::session::CompactionReason::Manual,
+        })
+    );
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::CompactionUnavailable {
+            operation_id: actual,
+            reason,
+        }) if actual == operation_id && reason.contains("owns context")
+    ));
+}
+
+#[tokio::test]
+async fn compaction_is_rejected_while_a_turn_is_active_without_mutating_it() {
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut runtime = spawn_runtime(make_agent(Box::new(BlockingTransport {
+        started: Arc::clone(&started),
+        release: Arc::clone(&release),
+    })));
+    let active_operation = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id: active_operation,
+            input: "keep running".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+    started.notified().await;
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::OperationStateChanged {
+            operation_id,
+            state: OperationState::Running,
+        }) if operation_id == active_operation
+    ));
+    runtime
+        .send(RuntimeCommand::CompactConversation {
+            operation_id: OperationId::new(),
+        })
+        .await
+        .expect("compact command");
+
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::CommandRejected { reason }) if reason.contains("operation is active")
+    ));
+    release.notify_one();
+    assert_eq!(
+        receive_finished(&mut runtime, active_operation).await,
+        OperationOutcome::Completed
+    );
 }
 
 #[tokio::test]

@@ -38,6 +38,7 @@ pub(crate) enum SourceOrigin {
     ProjectFile,
     Skill,
     ParentHandoff,
+    CompactionCheckpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

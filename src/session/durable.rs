@@ -1,6 +1,8 @@
 use super::{
-    ConversationEntry, ConversationPage, LoadedSession, RecordEnvelope, RestoredSession,
-    SessionRecord, SessionStore, apply_validated, reduce, validate_envelope,
+    COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, CompactionError, CompactionReason,
+    CompactionSummary, ConversationEntry, ConversationPage, LoadedSession, PromptContinuation,
+    RecordEnvelope, RestoredSession, SessionRecord, SessionStore, apply_validated, reduce,
+    validate_envelope,
 };
 use crate::{
     artifact::{ArtifactStore, ContentHash},
@@ -14,14 +16,15 @@ use crate::{
         read_project_instructions,
     },
     identity::{
-        AgentId, ContextId, ContextViewId, ConversationEntryId, OperationId, PrincipalId,
-        SessionId, ThreadId,
+        AgentId, CompactionId, ContextId, ContextViewId, ConversationEntryId, OperationId,
+        PrincipalId, SessionId, ThreadId,
     },
     message::Message,
     native_runtime::OperationState,
     operation::{DurableValueRef, MAX_INLINE_VALUE_BYTES},
     orchestration::ChildInspection,
     permission::PermissionAuditFact,
+    prompt::PromptBudgetPlan,
 };
 use anyhow::{Context, Result, bail};
 use std::{
@@ -31,6 +34,7 @@ use std::{
 };
 
 const PROJECT_CONTEXT_NAME: &str = "project:AGENTS.md";
+const MAX_INSPECTED_COMPACTIONS: usize = 64;
 const PROJECT_INSTRUCTIONS: &str = crate::context::PROJECT_INSTRUCTIONS;
 const MAX_PROJECT_SOURCE_BYTES: usize = crate::context::MAX_PROJECT_SOURCE_BYTES;
 const PROJECT_VIEW_BUDGET: MaterializationBudget = MaterializationBudget {
@@ -59,6 +63,8 @@ pub(crate) struct SessionSummary {
     pub(crate) artifact_bytes: u64,
     pub(crate) context_versions: Vec<(ContextId, u64)>,
     pub(crate) children: Vec<ChildInspection>,
+    pub(crate) compaction_count: usize,
+    pub(crate) compactions: Vec<CompactionCheckpoint>,
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +296,88 @@ impl DurableSession {
             .context("could not restore conversation path")
     }
 
+    pub(crate) fn prompt_continuation(&self) -> Result<PromptContinuation> {
+        let path = self
+            .restored
+            .conversation_entry_path()
+            .context("could not restore prompt continuation path")?;
+        let checkpoint = self
+            .restored
+            .active_compaction()
+            .context("could not resolve active compaction checkpoint")?
+            .cloned();
+        let start = checkpoint
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.source_entry_count);
+        Ok(PromptContinuation {
+            history: path[start..]
+                .iter()
+                .map(|entry| entry.message.clone())
+                .collect(),
+            checkpoint,
+        })
+    }
+
+    pub(crate) fn compact_conversation(
+        &mut self,
+        operation_id: OperationId,
+        reason: CompactionReason,
+        budget: &PromptBudgetPlan,
+    ) -> Result<CompactionCheckpoint> {
+        let path = self
+            .restored
+            .conversation_entry_path()
+            .context("could not restore compaction source path")?;
+        let messages = path.iter().map(|entry| &entry.message).collect::<Vec<_>>();
+        let retained_start =
+            super::compaction::select_retained_start(&messages, budget.retained_tail_tokens);
+        if retained_start == 0 || retained_start >= path.len() {
+            return Err(CompactionError::NothingToCompact.into());
+        }
+        let previous = self
+            .restored
+            .active_compaction()
+            .context("could not resolve prior compaction checkpoint")?
+            .cloned();
+        let incremental_start = previous
+            .as_ref()
+            .map_or(0, |checkpoint| checkpoint.source_entry_count);
+        if retained_start <= incremental_start {
+            return Err(CompactionError::NothingToCompact.into());
+        }
+        let summary = CompactionSummary::derive(
+            previous.as_ref().map(|checkpoint| &checkpoint.summary),
+            path[incremental_start..retained_start]
+                .iter()
+                .map(|entry| &entry.message),
+            budget.summary_max_bytes,
+        );
+        let checkpoint = CompactionCheckpoint {
+            version: COMPACTION_CHECKPOINT_VERSION,
+            id: CompactionId::new(),
+            operation_id,
+            previous_checkpoint: previous.as_ref().map(|checkpoint| checkpoint.id),
+            reason,
+            source_start: path[0].id,
+            source_end: path[retained_start - 1].id,
+            source_entry_count: retained_start,
+            source_digest: super::compaction::source_digest(
+                path[..retained_start]
+                    .iter()
+                    .map(|entry| (entry.id, &entry.message)),
+            ),
+            retained_tail_start: path[retained_start].id,
+            summary,
+            budget: budget.clone(),
+        };
+        // Release immutable borrows before the append mutates the reducer.
+        let _ = path;
+        self.append(SessionRecord::ConversationCompacted {
+            checkpoint: checkpoint.clone(),
+        })?;
+        Ok(checkpoint)
+    }
+
     #[cfg(test)]
     pub(crate) fn append_operation_state(
         &mut self,
@@ -501,6 +589,17 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
     let restored = reduce(&loaded.records).context("could not reduce inspected session")?;
     let mut context_versions = restored.contexts.keys().copied().collect::<Vec<_>>();
     context_versions.sort();
+    let compaction_count = restored.compactions.len();
+    let compactions = restored
+        .compactions
+        .iter()
+        .rev()
+        .take(MAX_INSPECTED_COMPACTIONS)
+        .cloned()
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     Ok(SessionSummary {
         session_id: restored.session_id,
         path: path.to_owned(),
@@ -519,6 +618,8 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
             .values()
             .map(|child| child.inspection())
             .collect(),
+        compaction_count,
+        compactions,
     })
 }
 

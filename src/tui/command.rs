@@ -27,6 +27,7 @@ pub(super) enum CommandId {
     Attach,
     Queue,
     Clear,
+    Compact,
     Composer,
     Doctor,
     Reset,
@@ -93,6 +94,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "clear",
         mode: "",
         summary: "Clear the current conversation",
+        arguments: "",
+    },
+    CommandSpec {
+        id: CommandId::Compact,
+        name: "compact",
+        mode: "",
+        summary: "Compact older native context without deleting raw history",
         arguments: "",
     },
     CommandSpec {

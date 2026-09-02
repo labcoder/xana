@@ -223,6 +223,27 @@ fn interrupt_and_steer_are_distinct_and_capability_gated() {
 }
 
 #[test]
+fn compact_is_available_only_when_xana_owns_native_context() {
+    let mut native = TuiState::starting(ComposerPreset::Submit);
+    native.busy = false;
+    native.composer.replace("/compact".to_owned());
+    assert!(matches!(
+        native.update_input(InputAction::Submit),
+        UpdateEffect::CompactConversation { .. }
+    ));
+
+    let mut managed =
+        TuiState::starting(ComposerPreset::Submit).with_capabilities(OwnerCapabilities::managed());
+    managed.busy = false;
+    managed.composer.replace("/compact".to_owned());
+    assert_eq!(
+        managed.update_input(InputAction::Submit),
+        UpdateEffect::None
+    );
+    assert!(managed.status.contains("owns its context"));
+}
+
+#[test]
 fn input_and_runtime_events_follow_one_explicit_update_path() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;

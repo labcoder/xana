@@ -99,6 +99,29 @@ fn diagnostics_defaults_are_bounded_and_invalid_unlimited_values_are_rejected() 
 }
 
 #[test]
+fn prompt_context_policy_defaults_are_bounded_and_user_limits_only_narrow() {
+    let registry = XanaConfig::parse_registry(MINIMAL).unwrap();
+    assert_eq!(registry.context, PromptBudgetPolicy::default());
+
+    let configured = format!(
+        "{MINIMAL}\n[context]\nmax_context_tokens = 24000\ncompaction_threshold_percent = 75\nretained_tail_tokens = 4096\n"
+    );
+    let registry = XanaConfig::parse_registry(&configured).unwrap();
+    assert_eq!(registry.context.max_context_tokens, Some(24_000));
+    assert_eq!(registry.context.compaction_threshold_percent, 75);
+    assert_eq!(registry.context.retained_tail_tokens, 4_096);
+
+    let invalid = format!("{MINIMAL}\n[context]\noutput_reserve_tokens = 0\n");
+    assert!(matches!(
+        XanaConfig::parse_registry(&invalid),
+        Err(ConfigError::InvalidInteroperableConfig {
+            section: "context",
+            ..
+        })
+    ));
+}
+
+#[test]
 fn v3_registry_preserves_complete_profiles_and_exact_routes() {
     let input = r#"
 version = 3
@@ -1079,9 +1102,12 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
             permission_rules: Vec::new(),
             shell: crate::shell::ShellConfig::default(),
             max_tool_rounds: 12,
+            context: crate::prompt::PromptBudgetPolicy::default(),
         }
     );
     assert!(rendered.contains("permission_mode = \"ask\""));
+    assert!(rendered.contains("[context]"));
+    assert!(rendered.contains("fallback_context_tokens = 32768"));
     assert!(rendered.contains("version = 4"));
     assert!(rendered.contains("default_child_route = \"default\""));
     assert!(rendered.contains("connection = \"ollama\""));

@@ -20,7 +20,10 @@ use crate::{
         ControllerDecision, PermissionAuditFact, PermissionPolicy, PermissionRequest,
         PermissionScope, PolicyDecision,
     },
-    prompt::{PromptAssembler, PromptEnvironment, PromptInputs, PromptSurface, assemble_snapshot},
+    prompt::{
+        ModelBudgetFacts, PromptAssembler, PromptBudgetPlan, PromptBudgetPolicy, PromptEnvironment,
+        PromptInputs, PromptSurface, assemble_snapshot,
+    },
     provider::{ConversationalProvider, DeltaSink, ProviderError},
     session::{DurableSession, SessionRecord, SessionStore, reduce},
     tool::{ToolDefinition, ToolRegistry},
@@ -665,8 +668,33 @@ fn persistent_agent(
     provider: Box<dyn ConversationalProvider>,
     workspace: std::path::PathBuf,
 ) -> (Agent, PromptAssembler) {
+    persistent_agent_with_budget(
+        provider,
+        workspace,
+        PromptBudgetPolicy::default(),
+        Some(32_768),
+    )
+}
+
+fn persistent_agent_with_budget(
+    provider: Box<dyn ConversationalProvider>,
+    workspace: std::path::PathBuf,
+    policy: PromptBudgetPolicy,
+    context_tokens: Option<usize>,
+) -> (Agent, PromptAssembler) {
     let tools = ToolRegistry::new();
     let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+    let budget = PromptBudgetPlan::derive(
+        &policy,
+        ModelBudgetFacts {
+            connection: "test-connection".to_owned(),
+            model: "test-model".to_owned(),
+            context_tokens,
+            max_output_tokens: Some(2_048),
+            reasoning: false,
+        },
+    )
+    .expect("test prompt budget");
     let assembler = PromptAssembler::new(
         definitions,
         PromptEnvironment {
@@ -679,10 +707,11 @@ fn persistent_agent(
         },
         None,
         ContextBudget {
-            total_tokens: 16_384,
-            conversation_reserve_tokens: 4_096,
+            total_tokens: budget.input_budget_tokens,
+            conversation_reserve_tokens: budget.conversation_reserve_tokens,
         },
-    );
+    )
+    .with_budget_plan(budget);
     let prompt = assembler.assemble(&[]).expect("base prompt");
     (Agent::new(provider, tools, workspace, prompt, 2), assembler)
 }

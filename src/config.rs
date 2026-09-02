@@ -7,6 +7,7 @@
 use crate::{
     bounded_file,
     permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
+    prompt::PromptBudgetPolicy,
     shell::{Shell, ShellConfig, ShellError},
 };
 use fs2::FileExt;
@@ -78,6 +79,8 @@ struct ConfigDocument {
     egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
     #[serde(default)]
     diagnostics: DiagnosticsConfig,
+    #[serde(default)]
+    context: PromptBudgetPolicy,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -392,6 +395,7 @@ pub(crate) struct XanaConfig {
     pub(crate) permission_rules: Vec<PermissionRule>,
     pub(crate) shell: ShellConfig,
     pub(crate) max_tool_rounds: usize,
+    pub(crate) context: PromptBudgetPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,6 +455,7 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) service_routes: BTreeMap<String, ServiceRouteDeclaration>,
     pub(crate) egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
     pub(crate) diagnostics: DiagnosticsConfig,
+    pub(crate) context: PromptBudgetPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1049,6 +1054,7 @@ impl XanaConfig {
             service_routes: BTreeMap::new(),
             egress_policies: BTreeMap::new(),
             diagnostics: DiagnosticsConfig::default(),
+            context: PromptBudgetPolicy::default(),
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -2165,6 +2171,14 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
     PermissionPolicy::validate_rules(&document.permission_rules)
         .map_err(ConfigError::InvalidPermissionPolicy)?;
     validate_diagnostics(&document.diagnostics)?;
+    document
+        .context
+        .validate()
+        .map_err(|error| ConfigError::InvalidInteroperableConfig {
+            section: "context",
+            name: "settings".into(),
+            reason: error.to_string(),
+        })?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
@@ -2448,6 +2462,7 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         permission_rules: document.permission_rules,
         shell: document.shell,
         max_tool_rounds: profile.max_tool_rounds,
+        context: document.context,
     })
 }
 
@@ -2537,6 +2552,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         service_routes: document.service_routes,
         egress_policies: document.egress_policies,
         diagnostics: document.diagnostics,
+        context: document.context,
     }
 }
 

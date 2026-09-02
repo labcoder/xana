@@ -85,6 +85,7 @@ pub(super) struct OwnerCapabilities {
     pub(super) steer: bool,
     pub(super) model: bool,
     pub(super) reasoning: bool,
+    pub(super) compact: bool,
 }
 
 impl OwnerCapabilities {
@@ -94,6 +95,7 @@ impl OwnerCapabilities {
             steer: false,
             model: true,
             reasoning: false,
+            compact: true,
         }
     }
 
@@ -103,6 +105,7 @@ impl OwnerCapabilities {
             steer: false,
             model: true,
             reasoning: true,
+            compact: false,
         }
     }
 }
@@ -227,6 +230,9 @@ pub(super) enum UpdateEffect {
     SetReasoning(String),
     PersistComposer(ComposerPreset),
     ClearConversation,
+    CompactConversation {
+        operation_id: OperationId,
+    },
     NewConversation,
     OpenModelPicker,
     OpenReasoningPicker,

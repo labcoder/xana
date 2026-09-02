@@ -1,3 +1,6 @@
+use super::compaction::{
+    COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, source_digest, validate_summary,
+};
 use super::record::{ConversationEntry, RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord};
 use crate::{
     artifact::ArtifactRecord,
@@ -40,6 +43,7 @@ pub(crate) struct RestoredSession {
     pub(crate) orchestration_plans:
         BTreeMap<OrchestrationPlanId, crate::orchestration::OrchestrationPlanStart>,
     pub(crate) children: BTreeMap<AgentId, RestoredChild>,
+    pub(crate) compactions: Vec<CompactionCheckpoint>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +119,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         named_values: BTreeMap::new(),
         orchestration_plans: BTreeMap::new(),
         children: BTreeMap::new(),
+        compactions: Vec::new(),
     };
     let mut record_ids = HashSet::new();
 
@@ -529,6 +534,9 @@ pub(crate) fn validate_envelope(
                 Ok(())
             }
         }
+        SessionRecord::ConversationCompacted { checkpoint } => {
+            validate_compaction_checkpoint(state, checkpoint)
+        }
     }
 }
 
@@ -699,7 +707,66 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             child.handle.apply_report(report);
             child.report = Some(report.clone());
         }
+        SessionRecord::ConversationCompacted { checkpoint } => {
+            state.compactions.push(checkpoint.clone());
+        }
     }
+}
+
+fn validate_compaction_checkpoint(
+    state: &RestoredSession,
+    checkpoint: &CompactionCheckpoint,
+) -> Result<(), ReductionError> {
+    let previous = state
+        .active_compaction()
+        .map_err(|_| ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        })?;
+    if checkpoint.version != COMPACTION_CHECKPOINT_VERSION
+        || checkpoint.source_entry_count == 0
+        || checkpoint.source_digest.len() != 64
+        || !checkpoint
+            .source_digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !checkpoint.budget.is_valid_checkpoint_plan()
+        || checkpoint.previous_checkpoint != previous.map(|checkpoint| checkpoint.id)
+        || previous
+            .is_some_and(|previous| checkpoint.source_entry_count <= previous.source_entry_count)
+        || state.compactions.iter().any(|existing| {
+            existing.id == checkpoint.id || existing.operation_id == checkpoint.operation_id
+        })
+    {
+        return Err(ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        });
+    }
+    let path = state
+        .conversation_entry_path()
+        .map_err(|_| ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        })?;
+    if checkpoint.source_entry_count >= path.len() {
+        return Err(ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        });
+    }
+    let source = &path[..checkpoint.source_entry_count];
+    let valid = source
+        .first()
+        .is_some_and(|entry| entry.id == checkpoint.source_start)
+        && source
+            .last()
+            .is_some_and(|entry| entry.id == checkpoint.source_end)
+        && path[checkpoint.source_entry_count].id == checkpoint.retained_tail_start
+        && source_digest(source.iter().map(|entry| (entry.id, &entry.message)))
+            == checkpoint.source_digest
+        && validate_summary(&checkpoint.summary, checkpoint.budget.summary_max_bytes);
+    valid
+        .then_some(())
+        .ok_or(ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        })
 }
 
 fn valid_child_transition(previous: ChildLifecycle, next: ChildLifecycle) -> bool {
@@ -848,7 +915,9 @@ fn durable_value_exists(state: &RestoredSession, value: &DurableValueRef) -> boo
 }
 
 impl RestoredSession {
-    pub(crate) fn conversation_path(&self) -> Result<Vec<Message>, ReductionError> {
+    pub(crate) fn conversation_entry_path(
+        &self,
+    ) -> Result<Vec<&ConversationEntry>, ReductionError> {
         let mut path = Vec::new();
         let mut cursor = self.head;
         let mut seen = HashSet::new();
@@ -860,11 +929,37 @@ impl RestoredSession {
                 .entries
                 .get(&id)
                 .ok_or(ReductionError::UnknownHead { head: Some(id) })?;
-            path.push(entry.message.clone());
+            path.push(entry);
             cursor = entry.parent;
         }
         path.reverse();
         Ok(path)
+    }
+
+    pub(crate) fn conversation_path(&self) -> Result<Vec<Message>, ReductionError> {
+        self.conversation_entry_path().map(|path| {
+            path.into_iter()
+                .map(|entry| entry.message.clone())
+                .collect()
+        })
+    }
+
+    pub(crate) fn active_compaction(
+        &self,
+    ) -> Result<Option<&CompactionCheckpoint>, ReductionError> {
+        let path = self.conversation_entry_path()?;
+        Ok(self.compactions.iter().rev().find(|checkpoint| {
+            checkpoint.source_entry_count < path.len()
+                && path
+                    .first()
+                    .is_some_and(|entry| entry.id == checkpoint.source_start)
+                && path
+                    .get(checkpoint.source_entry_count.saturating_sub(1))
+                    .is_some_and(|entry| entry.id == checkpoint.source_end)
+                && path
+                    .get(checkpoint.source_entry_count)
+                    .is_some_and(|entry| entry.id == checkpoint.retained_tail_start)
+        }))
     }
 
     fn validate_conversation_path(&self) -> Result<(), ReductionError> {
@@ -1024,6 +1119,9 @@ pub(crate) enum ReductionError {
     },
     InvalidChildReport {
         agent: AgentId,
+    },
+    InvalidCompaction {
+        compaction: CompactionId,
     },
 }
 

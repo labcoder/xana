@@ -1,10 +1,15 @@
 //! Versioned append-only session records and pure restoration.
 
+mod compaction;
 mod durable;
 mod record;
 mod reduce;
 mod store;
 
+pub(crate) use compaction::{
+    COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, CompactionError, CompactionReason,
+    CompactionSummary, PromptContinuation,
+};
 pub(crate) use durable::{DurableSession, NativeConversationHandle};
 pub(crate) use record::{ConversationEntry, RecordEnvelope, SessionRecord};
 pub(crate) use reduce::{

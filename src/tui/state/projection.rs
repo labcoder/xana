@@ -107,6 +107,69 @@ impl TuiState {
                 self.messages.clear();
                 self.status = "Conversation cleared".to_owned();
             }
+            AgentEvent::PromptPlanUpdated {
+                operation_id,
+                ledger,
+            } => self.push_card(ActivityCard::new(
+                "Xana context",
+                operation_id.to_string(),
+                ActivityKind::Status,
+                ActivityState::Complete,
+                format!(
+                    "prompt estimate: {} / {} input tokens",
+                    ledger.estimated_input_tokens, ledger.budget.input_budget_tokens
+                ),
+                format!(
+                    "context window: {} ({:?})\noutput reserve: {}\nreasoning reserve: {}\ntool reserve: {}\ncompaction threshold: {}\ncache reads/writes: unavailable",
+                    ledger.budget.context_window_tokens,
+                    ledger.budget.context_window_source,
+                    ledger.budget.output_reserve_tokens,
+                    ledger.budget.reasoning_reserve_tokens,
+                    ledger.budget.tool_reserve_tokens,
+                    ledger.budget.compaction_threshold_tokens,
+                ),
+            )),
+            AgentEvent::CompactionStarted {
+                operation_id,
+                reason,
+            } => {
+                self.status = "Compacting older context…".to_owned();
+                self.push_card(ActivityCard::new(
+                    "Xana context",
+                    operation_id.to_string(),
+                    ActivityKind::Status,
+                    ActivityState::Running,
+                    format!("compacting older context ({reason:?})"),
+                    "Canonical session history will not be changed or deleted.",
+                ));
+            }
+            AgentEvent::ConversationCompacted { checkpoint } => {
+                self.status = "Context compacted; raw history retained".to_owned();
+                self.push_card(ActivityCard::new(
+                    "Xana context",
+                    checkpoint.operation_id.to_string(),
+                    ActivityKind::Status,
+                    ActivityState::Complete,
+                    format!("compacted {} older entries", checkpoint.source_entry_count),
+                    format!(
+                        "checkpoint: {}\nsource digest: {}\nretained from: {}\nraw history remains authoritative",
+                        checkpoint.id,
+                        checkpoint.source_digest,
+                        checkpoint.retained_tail_start,
+                    ),
+                ));
+            }
+            AgentEvent::CompactionUnavailable {
+                operation_id,
+                reason,
+            } => self.push_card(ActivityCard::new(
+                "Xana context",
+                operation_id.to_string(),
+                ActivityKind::Warning,
+                ActivityState::Failed,
+                "compaction unavailable",
+                reason.clone(),
+            )),
             AgentEvent::CommandRejected { reason } => {
                 self.status = bounded(format!("Command rejected: {reason}"), MAX_ACTIVITY_BYTES);
             }

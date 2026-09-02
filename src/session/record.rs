@@ -10,6 +10,7 @@ use crate::{
     },
     orchestration::{AgentHandleSnapshot, ChildLifecycle, ChildReport, OrchestrationPlanStart},
     permission::PermissionAuditFact,
+    session::CompactionCheckpoint,
 };
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -118,6 +119,9 @@ pub(crate) enum SessionRecord {
     },
     ChildReportCommitted {
         report: ChildReport,
+    },
+    ConversationCompacted {
+        checkpoint: CompactionCheckpoint,
     },
 }
 

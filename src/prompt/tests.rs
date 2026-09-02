@@ -427,3 +427,89 @@ fn selected_project_sources_fit_the_complete_prompt_budget() {
     );
     assert_eq!(snapshot.context_plan.selected.len(), 1);
 }
+
+#[test]
+fn prompt_plan_ledger_is_bounded_categorical_and_never_copies_prompt_text() {
+    let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
+    let definitions = registry
+        .definitions()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let plan = PromptBudgetPlan::derive(
+        &PromptBudgetPolicy::default(),
+        ModelBudgetFacts {
+            connection: "test-connection".to_owned(),
+            model: "test-model".to_owned(),
+            context_tokens: Some(32_768),
+            max_output_tokens: Some(4_096),
+            reasoning: false,
+        },
+    )
+    .expect("budget plan");
+    let snapshot = PromptAssembler::new(
+        definitions,
+        environment(),
+        None,
+        ContextBudget {
+            total_tokens: plan.input_budget_tokens,
+            conversation_reserve_tokens: plan.conversation_reserve_tokens,
+        },
+    )
+    .with_budget_plan(plan.clone())
+    .assemble(&[])
+    .expect("prompt snapshot");
+    let history = [Message::text(
+        Role::User,
+        "SECRET_PROMPT_CONTENT_MUST_NOT_ENTER_THE_LEDGER",
+    )];
+    let ledger = snapshot.ledger(&history).expect("prompt ledger");
+    let encoded = serde_json::to_string(&ledger).expect("ledger JSON");
+
+    assert_eq!(ledger.version, PROMPT_LEDGER_VERSION);
+    assert_eq!(ledger.budget, plan);
+    assert_eq!(ledger.categories.len(), 5);
+    assert!(ledger.estimated_input_tokens > 0);
+    assert_eq!(ledger.cache_read, CacheObservation::Unavailable);
+    assert_eq!(ledger.cache_write, CacheObservation::Unavailable);
+    assert!(!encoded.contains("SECRET_PROMPT_CONTENT"));
+    assert!(encoded.len() < 8 * 1024);
+}
+
+#[test]
+fn m4_prompt_resource_baseline_remains_bounded() {
+    let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
+    let definitions = registry.definitions();
+    let snapshot = assemble_snapshot(PromptInputs {
+        tool_definitions: &definitions,
+        environment: &environment(),
+        product_documentation: None,
+        project_sources: &[],
+        budget: budget(),
+    })
+    .expect("prompt snapshot");
+    let system_bytes = system_text(&snapshot).len();
+    let tool_schema_bytes = definitions
+        .iter()
+        .map(|definition| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": definition.name,
+                    "description": definition.description,
+                    "parameters": definition.parameters,
+                }
+            })
+            .to_string()
+            .len()
+        })
+        .sum::<usize>();
+
+    eprintln!(
+        "m4 prompt baseline: system_bytes={system_bytes} system_estimated_tokens={} tool_schema_bytes={tool_schema_bytes} tool_schema_estimated_tokens={}",
+        snapshot.system_tokens, snapshot.tool_schema_tokens
+    );
+    assert!(system_bytes < 32 * 1024);
+    assert!(tool_schema_bytes < 128 * 1024);
+    assert!(snapshot.system_tokens + snapshot.tool_schema_tokens < budget().total_tokens);
+}

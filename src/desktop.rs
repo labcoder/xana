@@ -1062,6 +1062,24 @@ fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -
                 format!("operation {operation_id} failed: {reason}"),
             )),
             AgentEvent::ConversationCleared => DesktopEvent::ConversationCleared,
+            AgentEvent::PromptPlanUpdated { ledger, .. } => DesktopEvent::Activity {
+                label: format!(
+                    "Prompt plan: {} / {} estimated input tokens",
+                    ledger.estimated_input_tokens, ledger.budget.input_budget_tokens
+                ),
+            },
+            AgentEvent::CompactionStarted { .. } => DesktopEvent::Activity {
+                label: "Compacting older conversation context".to_owned(),
+            },
+            AgentEvent::ConversationCompacted { checkpoint } => DesktopEvent::Activity {
+                label: format!(
+                    "Compacted {} canonical entries; raw history retained",
+                    checkpoint.source_entry_count
+                ),
+            },
+            AgentEvent::CompactionUnavailable { reason, .. } => DesktopEvent::Activity {
+                label: format!("Compaction unavailable: {reason}"),
+            },
             AgentEvent::CommandRejected { reason } => DesktopEvent::Error(DesktopError::new(
                 DesktopErrorCode::CommandRejected,
                 reason.clone(),

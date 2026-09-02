@@ -24,7 +24,9 @@ use crate::{
     },
     permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
     prompt::{PromptAssembler, PromptSnapshot},
-    session::{DurableSession, SessionRecord},
+    session::{
+        CompactionCheckpoint, CompactionError, CompactionReason, DurableSession, SessionRecord,
+    },
     tool::DeferredCleanup,
 };
 use futures::FutureExt;
@@ -67,6 +69,7 @@ struct Runtime {
     durable_operation_sender: DurableOperationSender,
     session: Option<DurableSession>,
     prompt_assembler: Option<PromptAssembler>,
+    compaction_checkpoint: Option<CompactionCheckpoint>,
     child_commits: ChildCommitReceiver,
     _child_commit_sender: ChildCommitSender,
     child_supervisor: Option<ChildSupervisorHandle>,
@@ -87,6 +90,44 @@ struct OperationCompletion {
     result: Result<AgentTurnResult, String>,
 }
 
+struct RuntimeSeed {
+    session: Option<DurableSession>,
+    prompt_assembler: Option<PromptAssembler>,
+    history: Vec<Message>,
+    initial_history: Vec<Message>,
+    compaction_checkpoint: Option<CompactionCheckpoint>,
+}
+
+impl RuntimeSeed {
+    #[cfg(test)]
+    fn transient() -> Self {
+        Self {
+            session: None,
+            prompt_assembler: None,
+            history: Vec::new(),
+            initial_history: Vec::new(),
+            compaction_checkpoint: None,
+        }
+    }
+
+    fn persistent(
+        session: DurableSession,
+        prompt_assembler: PromptAssembler,
+    ) -> Result<Self, RuntimeUnavailable> {
+        let initial_history = session.conversation().map_err(|_| RuntimeUnavailable)?;
+        let continuation = session
+            .prompt_continuation()
+            .map_err(|_| RuntimeUnavailable)?;
+        Ok(Self {
+            session: Some(session),
+            prompt_assembler: Some(prompt_assembler),
+            history: continuation.history,
+            initial_history,
+            compaction_checkpoint: continuation.checkpoint,
+        })
+    }
+}
+
 impl RuntimeHandle {
     #[cfg(test)]
     pub(crate) fn spawn(agent: Agent, policy: PermissionPolicy, controller_present: bool) -> Self {
@@ -94,9 +135,7 @@ impl RuntimeHandle {
             agent,
             policy,
             controller_present,
-            None,
-            None,
-            Vec::new(),
+            RuntimeSeed::transient(),
             None,
         )
     }
@@ -108,14 +147,11 @@ impl RuntimeHandle {
         session: DurableSession,
         prompt_assembler: PromptAssembler,
     ) -> Result<Self, RuntimeUnavailable> {
-        let history = session.conversation().map_err(|_| RuntimeUnavailable)?;
         Ok(Self::spawn_inner(
             agent,
             policy,
             controller_present,
-            Some(session),
-            Some(prompt_assembler),
-            history,
+            RuntimeSeed::persistent(session, prompt_assembler)?,
             None,
         ))
     }
@@ -129,14 +165,11 @@ impl RuntimeHandle {
         supervisor_handle: ChildSupervisorHandle,
         supervisor: ChildSupervisor,
     ) -> Result<Self, RuntimeUnavailable> {
-        let history = session.conversation().map_err(|_| RuntimeUnavailable)?;
         Ok(Self::spawn_inner(
             agent,
             policy,
             controller_present,
-            Some(session),
-            Some(prompt_assembler),
-            history,
+            RuntimeSeed::persistent(session, prompt_assembler)?,
             Some((supervisor_handle, supervisor)),
         ))
     }
@@ -145,12 +178,16 @@ impl RuntimeHandle {
         agent: Agent,
         policy: PermissionPolicy,
         controller_present: bool,
-        session: Option<DurableSession>,
-        prompt_assembler: Option<PromptAssembler>,
-        history: Vec<Message>,
+        seed: RuntimeSeed,
         child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
-        let initial_history = history.clone();
+        let RuntimeSeed {
+            session,
+            prompt_assembler,
+            history,
+            initial_history,
+            compaction_checkpoint,
+        } = seed;
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
         let (exit_sender, exit_receiver) = watch::channel(None);
@@ -192,6 +229,7 @@ impl RuntimeHandle {
             durable_operation_sender,
             session,
             prompt_assembler,
+            compaction_checkpoint,
             child_commits,
             _child_commit_sender: child_commit_sender,
             child_supervisor,
@@ -329,7 +367,38 @@ impl Runtime {
                         return false;
                     }
                     self.history.clear();
+                    self.compaction_checkpoint = None;
                     self.emit(AgentEvent::ConversationCleared);
+                }
+            }
+            RuntimeCommand::CompactConversation { operation_id } => {
+                if self.active.is_some() {
+                    self.emit(AgentEvent::CommandRejected {
+                        reason: "cannot compact conversation while an operation is active"
+                            .to_owned(),
+                    });
+                } else {
+                    self.emit(AgentEvent::CompactionStarted {
+                        operation_id,
+                        reason: CompactionReason::Manual,
+                    });
+                    match self.compact_now(operation_id, CompactionReason::Manual) {
+                        Ok(checkpoint) => {
+                            if let Ok(Some(prompt)) = self.prepare_turn_prompt()
+                                && let Some(ledger) = prompt.ledger(&self.history)
+                            {
+                                self.emit(AgentEvent::PromptPlanUpdated {
+                                    operation_id,
+                                    ledger,
+                                });
+                            }
+                            self.emit(AgentEvent::ConversationCompacted { checkpoint });
+                        }
+                        Err(reason) => self.emit(AgentEvent::CompactionUnavailable {
+                            operation_id,
+                            reason,
+                        }),
+                    }
                 }
             }
             RuntimeCommand::ResumeOperation { .. } => {
@@ -481,25 +550,72 @@ impl Runtime {
             return;
         }
 
-        let agent = Arc::clone(&self.agent);
-        let permissions = self.permissions.clone();
-        let events = self.events.clone();
-        let completions = self.completion_sender.clone();
-        let conversation_committer = self.conversation_committer.clone();
-        let durable_operation_sender = self.durable_operation_sender.clone();
-        let prompt = match self.prepare_turn_prompt() {
-            Ok(prompt) => prompt,
-            Err(reason) => {
-                self.emit(AgentEvent::CommandRejected { reason });
-                return;
-            }
-        };
         let mut content = vec![crate::message::ContentBlock::Text(input)];
         content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
         let user_message = Message {
             role: Role::User,
             content,
         };
+        let mut prompt = match self.prepare_turn_prompt() {
+            Ok(prompt) => prompt,
+            Err(reason) => {
+                self.emit(AgentEvent::CommandRejected { reason });
+                return;
+            }
+        };
+        if let Some(snapshot) = &prompt {
+            let mut candidate = self.history.clone();
+            candidate.push(user_message.clone());
+            if let Some(ledger) = snapshot.ledger(&candidate)
+                && ledger.estimated_input_tokens > ledger.budget.compaction_threshold_tokens
+            {
+                self.emit(AgentEvent::CompactionStarted {
+                    operation_id,
+                    reason: CompactionReason::AutomaticThreshold,
+                });
+                match self.compact_now(operation_id, CompactionReason::AutomaticThreshold) {
+                    Ok(checkpoint) => {
+                        self.emit(AgentEvent::ConversationCompacted { checkpoint });
+                        prompt = match self.prepare_turn_prompt() {
+                            Ok(prompt) => prompt,
+                            Err(reason) => {
+                                self.emit(AgentEvent::CommandRejected { reason });
+                                return;
+                            }
+                        };
+                    }
+                    Err(reason) => self.emit(AgentEvent::CompactionUnavailable {
+                        operation_id,
+                        reason,
+                    }),
+                }
+            }
+        }
+        let mut candidate = self.history.clone();
+        candidate.push(user_message.clone());
+        if let Some(snapshot) = &prompt {
+            if let Some(ledger) = snapshot.ledger(&candidate) {
+                self.emit(AgentEvent::PromptPlanUpdated {
+                    operation_id,
+                    ledger,
+                });
+            }
+            if let Err(error) = snapshot.messages_for_request(&candidate) {
+                self.emit(AgentEvent::CommandRejected {
+                    reason: format!(
+                        "turn still exceeds the safe prompt budget after compaction: {error}"
+                    ),
+                });
+                return;
+            }
+        }
+
+        let agent = Arc::clone(&self.agent);
+        let permissions = self.permissions.clone();
+        let events = self.events.clone();
+        let completions = self.completion_sender.clone();
+        let conversation_committer = self.conversation_committer.clone();
+        let durable_operation_sender = self.durable_operation_sender.clone();
         let input_entry_id = if let Some(session) = &mut self.session {
             match session.append_message(user_message.clone()) {
                 Ok(entry_id) => Some(entry_id),
@@ -765,9 +881,45 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| "persistent runtime has no prompt assembler".to_owned())?;
         assembler
-            .assemble(&sources)
+            .assemble_with_compaction(&sources, self.compaction_checkpoint.as_ref())
             .map(Some)
             .map_err(|error| format!("could not assemble turn prompt: {error}"))
+    }
+
+    fn compact_now(
+        &mut self,
+        operation_id: OperationId,
+        reason: CompactionReason,
+    ) -> Result<CompactionCheckpoint, String> {
+        let budget = self
+            .prompt_assembler
+            .as_ref()
+            .and_then(PromptAssembler::budget_plan)
+            .cloned()
+            .ok_or_else(|| {
+                "managed or transient runtime owns context; Xana compaction is unavailable"
+                    .to_owned()
+            })?;
+        let session = self.session.as_mut().ok_or_else(|| {
+            "managed or transient runtime owns context; Xana compaction is unavailable".to_owned()
+        })?;
+        let checkpoint = session
+            .compact_conversation(operation_id, reason, &budget)
+            .map_err(|error| {
+                if error.downcast_ref::<CompactionError>()
+                    == Some(&CompactionError::NothingToCompact)
+                {
+                    "conversation has no complete older turn to compact".to_owned()
+                } else {
+                    format!("could not commit durable compaction checkpoint: {error:#}")
+                }
+            })?;
+        let continuation = session
+            .prompt_continuation()
+            .map_err(|error| format!("could not restore compacted continuation: {error:#}"))?;
+        self.history = continuation.history;
+        self.compaction_checkpoint = continuation.checkpoint;
+        Ok(checkpoint)
     }
 
     fn handle_broker_event(&mut self, event: AgentEvent) {

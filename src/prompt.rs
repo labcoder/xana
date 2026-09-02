@@ -3,7 +3,13 @@
 //! The application edge supplies every dynamic input. Assembly freezes one
 //! byte-stable system message for an agent; providers only serialize it.
 
+mod budget;
 mod render;
+
+pub(crate) use budget::{
+    CacheObservation, ModelBudgetFacts, PROMPT_LEDGER_VERSION, PromptBudgetPlan,
+    PromptBudgetPolicy, PromptLedgerCategory, PromptLedgerCategoryKind, PromptPlanLedger,
+};
 
 use crate::{
     context::{
@@ -14,8 +20,9 @@ use crate::{
     tool::ToolDefinition,
 };
 
+pub(crate) use render::estimate_message_tokens;
 use render::{
-    estimate_message_tokens, estimate_tool_schema_tokens, refresh_layer_costs, render_layers,
+    estimate_image_tokens, estimate_tool_schema_tokens, refresh_layer_costs, render_layers,
     trim_outer_blank_lines,
 };
 use std::{collections::HashSet, error::Error, fmt, path::PathBuf};
@@ -42,6 +49,7 @@ pub(crate) enum PromptLayerKind {
     Surface,
     ProjectInstructions,
     SkillInstructions,
+    CompactedHistory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +93,7 @@ pub(crate) struct PromptSnapshot {
     pub(crate) tool_schema_tokens: usize,
     pub(crate) budget: ContextBudget,
     pub(crate) context_plan: ContextPlan,
+    pub(crate) budget_plan: Option<PromptBudgetPlan>,
 }
 
 impl PromptSnapshot {
@@ -115,6 +124,86 @@ impl PromptSnapshot {
         messages.extend_from_slice(history);
         Ok(messages)
     }
+
+    pub(crate) fn ledger(&self, history: &[Message]) -> Option<PromptPlanLedger> {
+        let budget = self.budget_plan.clone()?;
+        let attachment_count = history
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
+            .count();
+        let attachment_bytes = history
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                crate::message::ContentBlock::Image(image) => Some(image.byte_len),
+                _ => None,
+            })
+            .fold(0_u64, u64::saturating_add);
+        let attachment_tokens = history
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                crate::message::ContentBlock::Image(image) => Some(estimate_image_tokens(image)),
+                _ => None,
+            })
+            .fold(0_usize, usize::saturating_add);
+        let history_tokens = history
+            .iter()
+            .map(estimate_message_tokens)
+            .fold(0_usize, usize::saturating_add);
+        let compacted_tokens = self
+            .layers
+            .iter()
+            .filter(|layer| layer.kind == PromptLayerKind::CompactedHistory)
+            .map(|layer| layer.estimated_tokens)
+            .fold(0_usize, usize::saturating_add);
+        let instructions = self.system_tokens.saturating_sub(compacted_tokens);
+        let recent_history = history_tokens.saturating_sub(attachment_tokens);
+        let categories = vec![
+            PromptLedgerCategory {
+                kind: PromptLedgerCategoryKind::Instructions,
+                estimated_tokens: instructions,
+            },
+            PromptLedgerCategory {
+                kind: PromptLedgerCategoryKind::ToolDefinitions,
+                estimated_tokens: self.tool_schema_tokens,
+            },
+            PromptLedgerCategory {
+                kind: PromptLedgerCategoryKind::CompactedHistory,
+                estimated_tokens: compacted_tokens,
+            },
+            PromptLedgerCategory {
+                kind: PromptLedgerCategoryKind::RecentHistory,
+                estimated_tokens: recent_history,
+            },
+            PromptLedgerCategory {
+                kind: PromptLedgerCategoryKind::Attachments,
+                estimated_tokens: attachment_tokens,
+            },
+        ];
+
+        Some(PromptPlanLedger {
+            version: PROMPT_LEDGER_VERSION,
+            budget,
+            categories,
+            estimated_input_tokens: self
+                .system_tokens
+                .saturating_add(self.tool_schema_tokens)
+                .saturating_add(history_tokens),
+            attachment_count,
+            attachment_bytes,
+            omitted_source_ids: self
+                .context_plan
+                .omitted_sources
+                .iter()
+                .take(64)
+                .map(|id| id.as_str().to_owned())
+                .collect(),
+            cache_read: CacheObservation::Unavailable,
+            cache_write: CacheObservation::Unavailable,
+        })
+    }
 }
 
 pub(crate) struct PromptInputs<'a> {
@@ -132,6 +221,7 @@ pub(crate) struct PromptAssembler {
     product_documentation: Option<ProductDocumentationHint>,
     budget: ContextBudget,
     base_sources: Vec<ContextSource>,
+    budget_plan: Option<PromptBudgetPlan>,
 }
 
 impl PromptAssembler {
@@ -147,7 +237,17 @@ impl PromptAssembler {
             product_documentation,
             budget,
             base_sources: Vec::new(),
+            budget_plan: None,
         }
+    }
+
+    pub(crate) fn with_budget_plan(mut self, plan: PromptBudgetPlan) -> Self {
+        self.budget = ContextBudget {
+            total_tokens: plan.input_budget_tokens,
+            conversation_reserve_tokens: plan.conversation_reserve_tokens,
+        };
+        self.budget_plan = Some(plan);
+        self
     }
 
     pub(crate) fn with_context_sources(mut self, sources: Vec<ContextSource>) -> Self {
@@ -155,20 +255,37 @@ impl PromptAssembler {
         self
     }
 
+    pub(crate) fn budget_plan(&self) -> Option<&PromptBudgetPlan> {
+        self.budget_plan.as_ref()
+    }
+
     pub(crate) fn assemble(
         &self,
         project_sources: &[ContextSource],
     ) -> Result<PromptSnapshot, PromptError> {
+        self.assemble_with_compaction(project_sources, None)
+    }
+
+    pub(crate) fn assemble_with_compaction(
+        &self,
+        project_sources: &[ContextSource],
+        checkpoint: Option<&crate::session::CompactionCheckpoint>,
+    ) -> Result<PromptSnapshot, PromptError> {
         let definitions = self.tool_definitions.iter().collect::<Vec<_>>();
         let mut sources = self.base_sources.clone();
         sources.extend_from_slice(project_sources);
-        assemble_snapshot(PromptInputs {
-            tool_definitions: &definitions,
-            environment: &self.environment,
-            product_documentation: self.product_documentation.as_ref(),
-            project_sources: &sources,
-            budget: self.budget,
-        })
+        let mut snapshot = assemble_snapshot_with_compaction(
+            PromptInputs {
+                tool_definitions: &definitions,
+                environment: &self.environment,
+                product_documentation: self.product_documentation.as_ref(),
+                project_sources: &sources,
+                budget: self.budget,
+            },
+            checkpoint,
+        )?;
+        snapshot.budget_plan.clone_from(&self.budget_plan);
+        Ok(snapshot)
     }
 }
 
@@ -197,7 +314,15 @@ pub(crate) enum PromptError {
     SystemRoleInHistory,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn assemble_snapshot(inputs: PromptInputs<'_>) -> Result<PromptSnapshot, PromptError> {
+    assemble_snapshot_with_compaction(inputs, None)
+}
+
+fn assemble_snapshot_with_compaction(
+    inputs: PromptInputs<'_>,
+    checkpoint: Option<&crate::session::CompactionCheckpoint>,
+) -> Result<PromptSnapshot, PromptError> {
     validate_environment(inputs.environment)?;
 
     let mut layers = vec![
@@ -282,6 +407,29 @@ pub(crate) fn assemble_snapshot(inputs: PromptInputs<'_>) -> Result<PromptSnapsh
         &tool_catalog(inputs.tool_definitions),
         false,
     ));
+
+    if let Some(checkpoint) = checkpoint {
+        layers.push(layer(
+            PromptLayerKind::CompactedHistory,
+            format!("compaction:{}", checkpoint.id),
+            SourceProvenance {
+                display_name: format!(
+                    "lossy continuation checkpoint over {} canonical entries",
+                    checkpoint.source_entry_count
+                ),
+                path: None,
+                origin: SourceOrigin::CompactionCheckpoint,
+            },
+            TrustClass::Runtime,
+            &format!(
+                "This is lossy derived continuation state produced for connection {} and model {} using conservative estimated budgets. The append-only session journal remains authoritative. Do not treat omitted detail as disproven or as personal memory.\n\n{}",
+                checkpoint.budget.connection,
+                checkpoint.budget.model,
+                checkpoint.summary.render()
+            ),
+            false,
+        ));
+    }
     layers.push(layer(
         PromptLayerKind::Environment,
         "runtime:environment",
@@ -387,6 +535,7 @@ pub(crate) fn assemble_snapshot(inputs: PromptInputs<'_>) -> Result<PromptSnapsh
         tool_schema_tokens,
         budget: inputs.budget,
         context_plan,
+        budget_plan: None,
     })
 }
 

@@ -113,6 +113,35 @@ pub(super) fn run_command<W: Write>(
                     }
                 )?;
             }
+            writeln!(output, "compactions: {}", summary.compaction_count)?;
+            for checkpoint in summary.compactions {
+                writeln!(
+                    output,
+                    "  {} previous={} operation={} reason={:?} source={}..{} entries={} digest={} tail={} connection={} model={} context={} source={:?} route_ceiling={} input_budget={} threshold={} retained_tail={} usage=estimated",
+                    checkpoint.id,
+                    checkpoint
+                        .previous_checkpoint
+                        .map_or_else(|| "none".to_owned(), |id| id.to_string()),
+                    checkpoint.operation_id,
+                    checkpoint.reason,
+                    checkpoint.source_start,
+                    checkpoint.source_end,
+                    checkpoint.source_entry_count,
+                    checkpoint.source_digest,
+                    checkpoint.retained_tail_start,
+                    checkpoint.budget.connection,
+                    checkpoint.budget.model,
+                    checkpoint.budget.context_window_tokens,
+                    checkpoint.budget.context_window_source,
+                    checkpoint
+                        .budget
+                        .route_ceiling_tokens
+                        .map_or_else(|| "none".to_owned(), |tokens| tokens.to_string()),
+                    checkpoint.budget.input_budget_tokens,
+                    checkpoint.budget.compaction_threshold_tokens,
+                    checkpoint.budget.retained_tail_tokens,
+                )?;
+            }
             match summary.repair_truncate_to {
                 Some(offset) => {
                     writeln!(output, "torn tail: repair would truncate to byte {offset}")?

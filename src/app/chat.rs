@@ -28,7 +28,10 @@ use crate::{
     permission::PermissionPolicy,
     plain_terminal,
     presentation::{self, BannerMode},
-    prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
+    prompt::{
+        ModelBudgetFacts, ProductDocumentationHint, PromptAssembler, PromptBudgetPlan,
+        PromptEnvironment, PromptSurface,
+    },
     session::DurableSession,
     shell::Shell,
     tool::ToolRegistry,
@@ -38,9 +41,6 @@ use crate::{
 use anyhow::{Context, Result};
 use clap::Parser as _;
 use std::{io::Write, sync::Arc};
-
-const PROMPT_TOTAL_TOKENS: usize = 32_768;
-const PROMPT_CONVERSATION_RESERVE_TOKENS: usize = 8_192;
 
 pub(super) enum ChatSurface {
     Plain(BannerMode),
@@ -212,6 +212,7 @@ async fn run_once(
         permission_rules,
         shell,
         mut max_tool_rounds,
+        context: prompt_budget_policy,
         ..
     } = config;
     if let Some(profile) = &frozen_profile {
@@ -452,6 +453,21 @@ async fn run_once(
         };
     }
 
+    let descriptor = manager
+        .descriptor(&provider_name, &model)
+        .context("could not resolve selected model metadata for prompt planning")?;
+    let prompt_budget = PromptBudgetPlan::derive(
+        &prompt_budget_policy,
+        ModelBudgetFacts {
+            connection: provider_name.clone(),
+            model: model.clone(),
+            context_tokens: descriptor.context_tokens,
+            max_output_tokens: descriptor.max_output_tokens,
+            reasoning: descriptor.reasoning == Some(true),
+        },
+    )
+    .context("could not derive a safe native prompt budget")?;
+
     let (provider, endpoint) =
         compose_native_provider(&selected_connection, &model, artifact_store.clone(), false)
             .map_err(anyhow::Error::msg)?;
@@ -655,10 +671,11 @@ async fn run_once(
                 .collect(),
         }),
         ContextBudget {
-            total_tokens: PROMPT_TOTAL_TOKENS,
-            conversation_reserve_tokens: PROMPT_CONVERSATION_RESERVE_TOKENS,
+            total_tokens: prompt_budget.input_budget_tokens,
+            conversation_reserve_tokens: prompt_budget.conversation_reserve_tokens,
         },
     )
+    .with_budget_plan(prompt_budget)
     .with_context_sources(skill_sources);
     let prompt = prompt_assembler
         .assemble(&[])
