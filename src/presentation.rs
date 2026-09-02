@@ -447,6 +447,36 @@ impl ResolvedPresentation {
         format!("\x1b[{code}m{text}\x1b[0m")
     }
 
+    pub(crate) const fn plain_capabilities(
+        self,
+    ) -> crate::command_catalog::PresentationCapabilities {
+        crate::command_catalog::PresentationCapabilities::plain(self.catalog_color(), self.unicode)
+    }
+
+    pub(crate) const fn tui_capabilities(
+        self,
+        pointer: bool,
+        clipboard: bool,
+        inline_images: bool,
+    ) -> crate::command_catalog::PresentationCapabilities {
+        crate::command_catalog::PresentationCapabilities::tui(
+            self.catalog_color(),
+            self.unicode,
+            pointer,
+            clipboard,
+            inline_images,
+        )
+    }
+
+    const fn catalog_color(self) -> crate::command_catalog::ColorCapability {
+        match self.color_depth {
+            ColorDepth::TrueColor => crate::command_catalog::ColorCapability::TrueColor,
+            ColorDepth::Ansi256 => crate::command_catalog::ColorCapability::Ansi256,
+            ColorDepth::Ansi16 => crate::command_catalog::ColorCapability::Ansi16,
+            ColorDepth::None => crate::command_catalog::ColorCapability::None,
+        }
+    }
+
     #[cfg(test)]
     pub(crate) const fn test_plain() -> Self {
         Self::plain()

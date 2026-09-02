@@ -7,6 +7,9 @@
 
 use crate::{
     app::{ChatExit, ChatHeader},
+    command_catalog::{
+        self, AuthorityRequirement, CommandContext, CommandSurface, PresentationCapabilities,
+    },
     execution_host::{
         ConversationRegistration, ExecutionHost, HostChanges, HostEvent, HostedRun, RunAccess,
         WriteCollisionDecision,
@@ -44,6 +47,152 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const CRITICAL_UPDATE_GRACE: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PUBLIC_TEXT_BYTES: usize = 256 * 1024;
+
+/// Authority held by one Desktop frontend attachment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopAuthority {
+    Observer,
+    Controller,
+    Owner,
+}
+
+impl From<DesktopAuthority> for AuthorityRequirement {
+    fn from(value: DesktopAuthority) -> Self {
+        match value {
+            DesktopAuthority::Observer => Self::Observer,
+            DesktopAuthority::Controller => Self::Controller,
+            DesktopAuthority::Owner => Self::Owner,
+        }
+    }
+}
+
+/// Presentation-safe projection of one shared semantic command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopCommandDescriptor {
+    pub id: &'static str,
+    pub family: &'static str,
+    pub aliases: &'static [&'static str],
+    pub mode: &'static str,
+    pub summary: &'static str,
+    pub available: bool,
+    pub availability_code: &'static str,
+    pub unavailable_reason: Option<&'static str>,
+}
+
+/// Projects the application command catalog without granting runtime authority.
+pub fn desktop_commands(
+    authority: DesktopAuthority,
+    configured: bool,
+) -> Vec<DesktopCommandDescriptor> {
+    let context = CommandContext {
+        surface: CommandSurface::Desktop,
+        authority: authority.into(),
+        interactive: true,
+        configured,
+    };
+    command_catalog::commands_for(CommandSurface::Desktop)
+        .map(|command| project_desktop_command(command, context))
+        .collect()
+}
+
+/// Resolves one stable ID for menus, buttons, and compatibility handling.
+pub fn desktop_command(
+    stable_id: &str,
+    authority: DesktopAuthority,
+    configured: bool,
+) -> Option<DesktopCommandDescriptor> {
+    command_catalog::COMMANDS
+        .iter()
+        .copied()
+        .find(|command| {
+            command.stable_id == stable_id && command.surfaces.contains(CommandSurface::Desktop)
+        })
+        .map(|command| {
+            project_desktop_command(
+                command,
+                CommandContext {
+                    surface: CommandSurface::Desktop,
+                    authority: authority.into(),
+                    interactive: true,
+                    configured,
+                },
+            )
+        })
+}
+
+/// Desktop's presentation contract. It is not provider or tool authority.
+pub fn desktop_presentation_capabilities() -> DesktopPresentationCapabilities {
+    PresentationCapabilities::desktop().into()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DesktopPresentationCapabilities {
+    pub color: bool,
+    pub unicode: bool,
+    pub dimensions: bool,
+    pub pointer: bool,
+    pub clipboard: bool,
+    pub inline_images: bool,
+    pub inline_audio_video: bool,
+    pub safe_link_open: bool,
+    pub notifications: bool,
+    pub native_accessibility: bool,
+    pub rich_markdown: bool,
+    pub math: bool,
+    pub composable_layout: bool,
+}
+
+impl From<PresentationCapabilities> for DesktopPresentationCapabilities {
+    fn from(value: PresentationCapabilities) -> Self {
+        Self {
+            color: value.color != command_catalog::ColorCapability::None,
+            unicode: value.unicode,
+            dimensions: value.dimensions,
+            pointer: value.pointer,
+            clipboard: value.clipboard,
+            inline_images: value.inline_images,
+            inline_audio_video: value.inline_audio_video,
+            safe_link_open: value.safe_link_open,
+            notifications: value.notifications,
+            native_accessibility: value.accessibility
+                == command_catalog::AccessibilityCapability::NativeSemanticTree,
+            rich_markdown: value.rich_markdown,
+            math: value.math,
+            composable_layout: value.composable_layout,
+        }
+    }
+}
+
+fn project_desktop_command(
+    command: command_catalog::CommandSpec,
+    context: CommandContext,
+) -> DesktopCommandDescriptor {
+    let availability = command.availability(context);
+    DesktopCommandDescriptor {
+        id: command.stable_id,
+        family: command.name,
+        aliases: command.aliases,
+        mode: command.mode,
+        summary: command.summary,
+        available: availability.enabled,
+        availability_code: availability_label(availability.code),
+        unavailable_reason: availability.reason,
+    }
+}
+
+fn availability_label(code: command_catalog::AvailabilityCode) -> &'static str {
+    use command_catalog::AvailabilityCode;
+    match code {
+        AvailabilityCode::Available => "available",
+        AvailabilityCode::UnsupportedSurface => "unsupported_surface",
+        AvailabilityCode::AuthorityRequired => "authority_required",
+        AvailabilityCode::InteractiveInputRequired => "interactive_input_required",
+        AvailabilityCode::NoninteractiveOnly => "noninteractive_only",
+        AvailabilityCode::SetupRequired => "setup_required",
+        AvailabilityCode::NotImplemented => "not_implemented",
+        AvailabilityCode::UnknownCommand => "unknown_command",
+    }
+}
 
 type StartupSender = std_mpsc::SyncSender<Result<DesktopSnapshot, DesktopError>>;
 
@@ -1742,6 +1891,33 @@ mod tests {
             projected.content,
             vec![DesktopContent::Text("bounded answer".to_owned())]
         );
+    }
+
+    #[test]
+    fn desktop_command_projection_preserves_authority_and_stable_ids() {
+        let observer = desktop_commands(DesktopAuthority::Observer, true);
+        let project = observer
+            .iter()
+            .find(|command| command.id == "project.manage.v1")
+            .unwrap();
+        assert!(!project.available);
+        assert_eq!(project.availability_code, "authority_required");
+
+        let owner = desktop_command("project.manage.v1", DesktopAuthority::Owner, true).unwrap();
+        assert!(owner.available);
+        assert_eq!(owner.family, "project");
+        assert!(desktop_command("future.synthetic.v9", DesktopAuthority::Owner, true).is_none());
+    }
+
+    #[test]
+    fn desktop_presentation_capabilities_are_not_runtime_authority() {
+        let presentation = desktop_presentation_capabilities();
+        assert!(presentation.pointer);
+        assert!(presentation.inline_images);
+        assert!(presentation.native_accessibility);
+        let observer_clear =
+            desktop_command("conversation.clear.v1", DesktopAuthority::Observer, true).unwrap();
+        assert!(!observer_clear.available);
     }
 
     #[test]

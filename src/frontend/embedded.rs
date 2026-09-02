@@ -123,6 +123,12 @@ impl EmbeddedOwner {
             ));
         }
         let id = command.id;
+        if command.semantic_id != command.value.semantic_id() {
+            return Ok(ClientCommandResult::rejected(
+                id,
+                "frontend command semantic id does not match its typed value",
+            ));
+        }
         if let Err(reason) = command.value.validate() {
             return Ok(ClientCommandResult::rejected(id, reason));
         }

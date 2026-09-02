@@ -584,14 +584,24 @@ fn render_command_palette(
 
     let entries = state.palette_entries();
     let rows = entries.iter().map(|command| {
+        let availability = command.availability(crate::command_catalog::CommandContext {
+            surface: crate::command_catalog::CommandSurface::Tui,
+            authority: crate::command_catalog::AuthorityRequirement::Owner,
+            interactive: true,
+            configured: true,
+        });
+        let description = availability.reason.map_or_else(
+            || command.summary.to_owned(),
+            |reason| format!("Unavailable · {reason}"),
+        );
         Row::new(vec![
-            Cell::from(if command.id == command::CommandId::Reset {
+            Cell::from(if command.action == command::CommandId::Reset {
                 "Reset Xana state…".to_owned()
             } else {
                 format!("/{}", command.name)
             }),
             Cell::from(command.mode),
-            Cell::from(command.summary),
+            Cell::from(description),
         ])
     });
     let header = Row::new(vec!["COMMAND", "MODE OR PARAMETERS", "DESCRIPTION"])

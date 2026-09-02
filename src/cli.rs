@@ -215,11 +215,14 @@ pub(crate) enum Command {
     /// Inspect provider-neutral model, request, quota, and credit observations.
     #[command(display_order = 7)]
     Usage(UsageArgs),
-    /// List, refresh, and select connection-owned models.
+    /// Report configured, available, selected, and authorized capabilities separately.
     #[command(display_order = 8)]
+    Capabilities(CapabilitiesArgs),
+    /// List, refresh, and select connection-owned models.
+    #[command(display_order = 9)]
     Model(ModelArgs),
     /// List, create, inspect, select, or archive conversations.
-    #[command(display_order = 8)]
+    #[command(name = "conversation", visible_alias = "session", display_order = 10)]
     Session(SessionArgs),
     /// Organize conversations with optional local Xana projects.
     #[command(display_order = 9)]
@@ -272,6 +275,13 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct CapabilitiesArgs {
+    /// Emit the stable, versioned report as JSON.
+    #[arg(long)]
+    pub(crate) json: bool,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

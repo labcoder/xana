@@ -4,6 +4,7 @@
 //! current directory. It validates those inputs and passes owned configuration
 //! inward; it does not put frontend or process-global concerns into `Agent`.
 
+mod capabilities;
 mod chat;
 mod chat_contract;
 mod connect;
@@ -270,6 +271,10 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Usage(args)) => {
             let stdout = io::stdout();
             usage_commands::run(args, &paths, &mut stdout.lock()).await
+        }
+        Some(Command::Capabilities(args)) => {
+            let stdout = io::stdout();
+            capabilities::run(args, &paths, &mut stdout.lock())
         }
         Some(Command::Model(args)) => {
             let stdout = io::stdout();

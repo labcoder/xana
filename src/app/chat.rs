@@ -866,11 +866,16 @@ async fn continue_after_chat_exit(
         return Ok(None);
     }
     let mut force_new_conversation = exit == ChatExit::NewConversation;
-    if let ChatExit::ControlCommand { family, arguments } = &exit
-        && let Err(error) =
+    if let ChatExit::ControlCommand { family, arguments } = &exit {
+        if matches!(family.as_str(), "conversation" | "session" | "sessions")
+            && arguments.trim() == "new"
+        {
+            force_new_conversation = true;
+        } else if let Err(error) =
             run_chat_control_command(paths, family, arguments, &mut std::io::stdout().lock()).await
-    {
-        eprintln!("xana: {error:#}");
+        {
+            eprintln!("xana: {error:#}");
+        }
     }
     if let ChatExit::Setup(request) = &exit {
         let mut args = crate::setup::args_for_request(request)?;
@@ -940,7 +945,7 @@ pub(super) async fn run_chat_control_command(
     paths: &XanaPaths,
     family: &str,
     arguments: &str,
-    output: &mut dyn Write,
+    mut output: &mut dyn Write,
 ) -> Result<()> {
     if arguments.len() > 16 * 1024 {
         anyhow::bail!("control command exceeds the 16 KiB input limit");
@@ -978,10 +983,12 @@ pub(super) async fn run_chat_control_command(
             let stdin = std::io::stdin();
             super::image_commands::run(args.command, paths, &mut stdin.lock(), output).await
         }
+        Some(cli::Command::Session(args)) if args.command != cli::SessionCommand::New => {
+            super::sessions::run_command(args.command, paths, &mut output)
+        }
+        Some(cli::Command::Capabilities(args)) => super::capabilities::run(args, paths, output),
         _ => {
-            anyhow::bail!(
-                "only project, profile, skill, plugin, MCP, external-agent, and image commands are available from this control path"
-            )
+            anyhow::bail!("this command is not available from the interactive management path")
         }
     }
 }

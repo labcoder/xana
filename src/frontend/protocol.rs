@@ -7,8 +7,8 @@
 
 use super::managed::ManagedClientEvent;
 use super::semantic::{
-    AttachmentPolicySnapshotV1, SemanticDeltaV1, SemanticEventEnvelopeV1, SemanticReplicaV1,
-    SemanticSnapshotV1,
+    AttachmentPolicySnapshotV1, SemanticCodeV1, SemanticDeltaV1, SemanticEventEnvelopeV1,
+    SemanticReplicaV1, SemanticSnapshotV1,
 };
 use crate::{
     identity::{AgentId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
@@ -22,7 +22,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 4;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 5;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -43,15 +43,18 @@ impl ClientCommandId {
 pub(crate) struct ClientCommand {
     pub(crate) version: u16,
     pub(crate) id: ClientCommandId,
+    pub(crate) semantic_id: String,
     pub(crate) value: ClientCommandValue,
 }
 
 impl ClientCommand {
     pub(crate) fn new(value: impl Into<ClientCommandValue>) -> Self {
+        let value = value.into();
         Self {
             version: FRONTEND_PROTOCOL_VERSION,
             id: ClientCommandId::new(),
-            value: value.into(),
+            semantic_id: value.semantic_id().to_owned(),
+            value,
         }
     }
 }
@@ -261,6 +264,32 @@ impl From<ClientCommandValue> for RuntimeCommand {
 }
 
 impl ClientCommandValue {
+    pub(crate) fn semantic_id(&self) -> &'static str {
+        match self {
+            Self::SubmitTurn { .. } => "turn.submit.v1",
+            Self::ClearConversation => "conversation.clear.v1",
+            Self::CompactConversation { .. } => "conversation.compact.v1",
+            Self::ResumeOperation { .. } => "run.resume.v1",
+            Self::DecideRoundBudget {
+                action: RoundBudgetAction::Continue,
+                ..
+            } => "run.continue.v1",
+            Self::DecideRoundBudget {
+                action: RoundBudgetAction::Stop,
+                ..
+            } => "run.stop.v1",
+            Self::InterruptOperation { .. } => "run.interrupt.v1",
+            Self::SteerOperation { .. } => "run.steer.v1",
+            Self::DecidePermission { .. } | Self::DecideChildPermission { .. } => {
+                "approval.decide.v1"
+            }
+            Self::ListChildren => "child.list.v1",
+            Self::InspectChild { .. } => "child.inspect.v1",
+            Self::CancelChild { .. } => "child.cancel.v1",
+            Self::Shutdown => "application.shutdown.v1",
+        }
+    }
+
     pub(super) fn validate(&self) -> Result<(), String> {
         let bytes = serde_json::to_vec(self)
             .map_err(|error| format!("could not encode frontend command: {error}"))?
@@ -284,6 +313,7 @@ pub(crate) struct ClientCommandResult {
     pub(crate) version: u16,
     pub(crate) command_id: ClientCommandId,
     pub(crate) accepted: bool,
+    pub(crate) outcome: SemanticCodeV1,
     pub(crate) reason: Option<String>,
 }
 
@@ -293,6 +323,7 @@ impl ClientCommandResult {
             version: FRONTEND_PROTOCOL_VERSION,
             command_id,
             accepted: true,
+            outcome: SemanticCodeV1::new("command.accepted"),
             reason: None,
         }
     }
@@ -302,6 +333,7 @@ impl ClientCommandResult {
             version: FRONTEND_PROTOCOL_VERSION,
             command_id,
             accepted: false,
+            outcome: SemanticCodeV1::new("command.rejected"),
             reason: Some(bounded_text(reason.into(), MAX_OMISSION_LABEL_BYTES)),
         }
     }
@@ -667,6 +699,8 @@ mod tests {
             let encoded = serde_json::to_vec(&command).unwrap();
             let decoded: ClientCommand = serde_json::from_slice(&encoded).unwrap();
             assert_eq!(decoded.version, FRONTEND_PROTOCOL_VERSION);
+            assert_eq!(decoded.semantic_id, value.semantic_id());
+            assert!(crate::command_catalog::find(&decoded.semantic_id).is_some());
             assert_eq!(decoded.value, value);
             let runtime: RuntimeCommand = decoded.value.into();
             assert!(matches!(
@@ -675,6 +709,27 @@ mod tests {
                     | RuntimeCommand::SteerOperation { operation_id: actual, .. }
                     if actual == operation_id
             ));
+        }
+    }
+
+    #[test]
+    fn every_frontend_command_semantic_id_is_registered() {
+        for id in [
+            "turn.submit.v1",
+            "conversation.clear.v1",
+            "conversation.compact.v1",
+            "run.resume.v1",
+            "run.continue.v1",
+            "run.stop.v1",
+            "run.interrupt.v1",
+            "run.steer.v1",
+            "approval.decide.v1",
+            "child.list.v1",
+            "child.inspect.v1",
+            "child.cancel.v1",
+            "application.shutdown.v1",
+        ] {
+            assert!(crate::command_catalog::find(id).is_some(), "{id}");
         }
     }
 

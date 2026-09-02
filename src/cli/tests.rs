@@ -1,5 +1,34 @@
 use super::*;
-use clap::error::ErrorKind;
+use clap::{CommandFactory as _, error::ErrorKind};
+
+#[test]
+fn visible_cli_families_have_shared_catalog_projections() {
+    let catalog = crate::command_catalog::commands_for(crate::command_catalog::CommandSurface::Cli)
+        .map(|command| command.name)
+        .collect::<std::collections::HashSet<_>>();
+    let cli = Cli::command();
+    let missing = cli
+        .get_subcommands()
+        .filter(|command| !command.is_hide_set())
+        .map(clap::Command::get_name)
+        .filter(|name| *name != "help")
+        .filter(|name| !catalog.contains(name))
+        .collect::<Vec<_>>();
+    assert!(missing.is_empty(), "missing catalog families: {missing:?}");
+}
+
+#[test]
+fn conversation_is_canonical_and_session_remains_compatible() {
+    let canonical = Cli::try_parse_from(["xana", "conversation", "list"]).unwrap();
+    let compatibility = Cli::try_parse_from(["xana", "session", "list"]).unwrap();
+    assert_eq!(canonical.command, compatibility.command);
+    assert!(matches!(
+        canonical.command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::List
+        }))
+    ));
+}
 
 #[test]
 fn parses_plain_tui_and_one_shot_surface_contracts() {

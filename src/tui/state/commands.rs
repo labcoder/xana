@@ -466,8 +466,9 @@ impl TuiState {
                 };
                 self.execute_command(
                     ParsedCommand {
-                        id: command.id,
-                        arguments: command.arguments.to_owned(),
+                        action: command.action,
+                        stable_id: command.stable_id,
+                        arguments: command.palette_arguments().to_owned(),
                     },
                     true,
                 )
@@ -623,7 +624,22 @@ impl TuiState {
     }
 
     fn execute_command(&mut self, command: ParsedCommand, from_palette: bool) -> UpdateEffect {
-        match command.id {
+        if let Some(spec) = crate::command_catalog::find(command.stable_id) {
+            let availability = spec.availability(crate::command_catalog::CommandContext {
+                surface: crate::command_catalog::CommandSurface::Tui,
+                authority: crate::command_catalog::AuthorityRequirement::Owner,
+                interactive: true,
+                configured: true,
+            });
+            if !availability.enabled {
+                self.status = availability
+                    .reason
+                    .unwrap_or("This command is unavailable here")
+                    .to_owned();
+                return UpdateEffect::None;
+            }
+        }
+        match command.action {
             CommandId::Help => {
                 self.overlay = Some(Overlay::Help);
                 UpdateEffect::None
@@ -673,14 +689,14 @@ impl TuiState {
             CommandId::Continue | CommandId::Stop => {
                 self.composer.take();
                 if !command.arguments.is_empty() {
-                    self.status = command_usage(command.id);
+                    self.status = command_usage(command.action);
                     return UpdateEffect::None;
                 }
                 let Some(suspension) = self.pending_round_budget.clone() else {
                     self.status = "No native turn is awaiting a round-budget decision".to_owned();
                     return UpdateEffect::None;
                 };
-                let action = if command.id == CommandId::Continue {
+                let action = if command.action == CommandId::Continue {
                     RoundBudgetAction::Continue
                 } else {
                     RoundBudgetAction::Stop
@@ -758,7 +774,7 @@ impl TuiState {
                     UpdateEffect::None
                 }
             }
-            CommandId::Sessions => {
+            CommandId::Conversation => {
                 self.composer.take();
                 let mut parts = command.arguments.split_whitespace();
                 match (parts.next(), parts.next(), parts.next()) {
@@ -776,6 +792,19 @@ impl TuiState {
                         UpdateEffect::PersistRail(false)
                     }
                     (Some("archive"), selector, None) => self.archive_session(selector),
+                    (Some("preview"), Some(selector), None) => {
+                        match self.resolve_conversation(selector) {
+                            Ok(conversation) => UpdateEffect::ViewSession(conversation),
+                            Err(reason) => {
+                                self.status = reason;
+                                UpdateEffect::None
+                            }
+                        }
+                    }
+                    (Some("attach"), Some(_), None) => {
+                        self.status = "Conversation attach/resume is not available in this TUI yet; preview is read-only and M4-10 adds explicit controller attachment".to_owned();
+                        UpdateEffect::None
+                    }
                     (Some("new"), None, None) => {
                         if self.busy {
                             self.status = "Wait for or interrupt the active turn before starting a new session".to_owned();
@@ -785,7 +814,7 @@ impl TuiState {
                         }
                     }
                     _ => {
-                        self.status = command_usage(CommandId::Sessions);
+                        self.status = command_usage(CommandId::Conversation);
                         UpdateEffect::None
                     }
                 }
@@ -818,7 +847,7 @@ impl TuiState {
                     UpdateEffect::None
                 } else {
                     UpdateEffect::ControlCommand {
-                        family: match command.id {
+                        family: match command.action {
                             CommandId::Project => "project",
                             CommandId::Profile => "profile",
                             CommandId::Skill => "skill",
@@ -881,6 +910,20 @@ impl TuiState {
                 self.push_message(MessageKind::System, format!("Usage\n{summary}"));
                 self.status = "Usage shown in the conversation".to_owned();
                 UpdateEffect::None
+            }
+            CommandId::Capabilities => {
+                self.composer.take();
+                if self.busy {
+                    self.status =
+                        "Wait for or interrupt the active turn before inspecting capabilities"
+                            .to_owned();
+                    UpdateEffect::None
+                } else {
+                    UpdateEffect::ControlCommand {
+                        family: "capabilities".to_owned(),
+                        arguments: command.arguments,
+                    }
+                }
             }
             CommandId::Doctor => {
                 self.composer.take();
@@ -1001,38 +1044,66 @@ impl TuiState {
                 UpdateEffect::PersistComposer(preset)
             }
             CommandId::Quit => UpdateEffect::Quit,
+            CommandId::Connection
+            | CommandId::Approval
+            | CommandId::Child
+            | CommandId::Diagnostics
+            | CommandId::Espejo
+            | CommandId::Layout
+            | CommandId::Outbound
+            | CommandId::Route
+            | CommandId::Serve => {
+                self.status =
+                    "This catalog action is not directly invokable on the current TUI".to_owned();
+                UpdateEffect::None
+            }
+        }
+    }
+
+    fn resolve_conversation(&self, selector: &str) -> Result<ConversationRef, String> {
+        let matches = self
+            .sessions
+            .iter()
+            .filter(|row| {
+                row.conversation.to_string() == selector
+                    || row
+                        .conversation
+                        .conversation_id()
+                        .is_some_and(|id| id.to_string() == selector)
+                    || matches!(
+                        &row.conversation,
+                        ConversationRef::Native { session_id }
+                            if session_id.to_string() == selector
+                    )
+                    || matches!(
+                        &row.conversation,
+                        ConversationRef::Managed {
+                            connection,
+                            thread_id,
+                            ..
+                        } if thread_id == selector
+                            || format!("{connection}/{thread_id}") == selector
+                    )
+            })
+            .map(|row| row.conversation.clone())
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [conversation] => Ok(conversation.clone()),
+            [] => Err(format!(
+                "No retained Conversation matches {selector:?}; use /conversation to inspect exact IDs"
+            )),
+            _ => Err(format!(
+                "Conversation selector {selector:?} is ambiguous; use its exact canonical ID"
+            )),
         }
     }
 
     fn archive_session(&mut self, selector: Option<&str>) -> UpdateEffect {
         let conversation = if let Some(selector) = selector {
-            let matches = self
-                .sessions
-                .iter()
-                .filter_map(|row| match &row.conversation {
-                    ConversationRef::Managed {
-                        connection,
-                        thread_id,
-                        ..
-                    } if selector == thread_id
-                        || selector == format!("{connection}/{thread_id}") =>
-                    {
-                        Some(row.conversation.clone())
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            match matches.as_slice() {
-                [conversation] => conversation.clone(),
-                [] => {
-                    self.status = format!(
-                        "No retained managed session matches {selector:?}; use /sessions to inspect exact IDs"
-                    );
-                    return UpdateEffect::None;
-                }
-                _ => {
-                    self.status =
-                        format!("Managed session ID {selector:?} is ambiguous; use CONNECTION/ID");
+            match self.resolve_conversation(selector) {
+                Ok(conversation) => conversation,
+                Err(reason) => {
+                    self.status = reason;
                     return UpdateEffect::None;
                 }
             }

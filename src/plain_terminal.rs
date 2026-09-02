@@ -41,6 +41,7 @@ enum InputAction<'a> {
     Settings(&'a str),
     Help,
     Usage,
+    Capabilities,
     ControlCommand { family: &'a str, arguments: &'a str },
     Agents,
     Agent(&'a str),
@@ -51,27 +52,66 @@ enum InputAction<'a> {
 
 fn classify_input(line: &str) -> InputAction<'_> {
     let trimmed = line.trim();
-    for family in [
-        "project",
-        "profile",
-        "skill",
-        "plugin",
-        "mcp",
-        "external-agent",
-        "image",
-    ] {
-        let command = format!("/{family}");
-        if trimmed == command {
-            return InputAction::ControlCommand {
-                family,
-                arguments: "list",
-            };
-        }
-        if let Some(arguments) = trimmed.strip_prefix(&format!("{command} ")) {
-            return InputAction::ControlCommand {
-                family,
-                arguments: arguments.trim(),
-            };
+    if let Ok(parsed) =
+        crate::command_catalog::parse(trimmed, crate::command_catalog::CommandSurface::Plain)
+    {
+        let arguments = trimmed
+            .trim_start_matches('/')
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, arguments)| arguments.trim());
+        use crate::command_catalog::CommandAction;
+        match parsed.action {
+            CommandAction::Project
+            | CommandAction::Profile
+            | CommandAction::Skill
+            | CommandAction::Plugin
+            | CommandAction::Mcp
+            | CommandAction::ExternalAgent
+            | CommandAction::Image => {
+                let family = trimmed
+                    .trim_start_matches('/')
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or_default();
+                return InputAction::ControlCommand {
+                    family,
+                    arguments: if arguments.is_empty() {
+                        "list"
+                    } else {
+                        arguments
+                    },
+                };
+            }
+            CommandAction::Capabilities => return InputAction::Capabilities,
+            CommandAction::Attach => return InputAction::Attach(arguments),
+            CommandAction::Model => return InputAction::Model(arguments),
+            CommandAction::Vision => return InputAction::Vision(arguments),
+            CommandAction::Setup => return InputAction::Setup(arguments),
+            CommandAction::Settings => return InputAction::Settings(arguments),
+            CommandAction::Help => return InputAction::Help,
+            CommandAction::Usage => return InputAction::Usage,
+            CommandAction::Doctor => return InputAction::Doctor,
+            CommandAction::Quit => return InputAction::Quit,
+            CommandAction::Clear => return InputAction::Clear,
+            CommandAction::Compact => return InputAction::Compact,
+            CommandAction::Send => return InputAction::Send(arguments),
+            CommandAction::Conversation if arguments == "new" => {
+                return InputAction::ControlCommand {
+                    family: "conversation",
+                    arguments,
+                };
+            }
+            CommandAction::Conversation => {
+                return InputAction::ControlCommand {
+                    family: "conversation",
+                    arguments: if arguments.is_empty() {
+                        "list"
+                    } else {
+                        arguments
+                    },
+                };
+            }
+            _ => {}
         }
     }
     if let Some(agent_id) = trimmed.strip_prefix("/cancel-agent") {
@@ -767,17 +807,21 @@ pub(crate) async fn run_chat(
                 }
                 InputAction::Help => {
                     println!("xana> conversation commands:");
-                    println!("  /settings [SECTION]  browse, stage, review, and apply settings");
-                    println!("  /setup [SECTION]     rerun guided or focused setup");
-                    println!("  /doctor              run read-only diagnostics");
-                    println!("  /model [CONNECTION/MODEL]  inspect or change the next model");
-                    println!("  /attach PATH         stage a bounded image");
-                    println!("  /usage               show observed token usage");
-                    println!("  /clear               clear the current conversation");
-                    println!("  /compact             compact older context; keep raw history");
-                    println!("  /quit                leave Xana");
+                    for command in crate::command_catalog::slash_commands_for(
+                        crate::command_catalog::CommandSurface::Plain,
+                    ) {
+                        println!("  {:<38} {}", command.usage(), command.summary);
+                    }
                 }
                 InputAction::Usage => renderer.write_usage()?,
+                InputAction::Capabilities => {
+                    runtime.send(RuntimeCommand::Shutdown).await?;
+                    exit = ChatExit::ControlCommand {
+                        family: "capabilities".to_owned(),
+                        arguments: String::new(),
+                    };
+                    break;
+                }
                 InputAction::ControlCommand { family, arguments } => {
                     runtime.send(RuntimeCommand::Shutdown).await?;
                     exit = ChatExit::ControlCommand {
@@ -1585,6 +1629,7 @@ mod tests {
         );
         assert_eq!(classify_input("/help"), InputAction::Help);
         assert_eq!(classify_input("/usage"), InputAction::Usage);
+        assert_eq!(classify_input("/capabilities"), InputAction::Capabilities);
         assert_eq!(
             classify_input("/setup appearance"),
             InputAction::Setup("appearance")
@@ -1601,6 +1646,13 @@ mod tests {
             InputAction::Send("hello Xana")
         );
         assert_eq!(classify_input("clear"), InputAction::Send("clear"));
+        assert_eq!(
+            classify_input("/sessions"),
+            InputAction::ControlCommand {
+                family: "conversation",
+                arguments: "list",
+            }
+        );
         assert_eq!(
             classify_input("/attach assets/photo.png"),
             InputAction::Attach("assets/photo.png")

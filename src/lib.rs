@@ -12,6 +12,7 @@ mod artifact;
 mod bounded_file;
 mod capability;
 mod cli;
+mod command_catalog;
 mod config;
 mod config_edit;
 mod config_migration;
@@ -86,7 +87,12 @@ fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
     let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
         .context("could not resolve Xana paths")?;
     let diagnostics_read_only = match &cli.command {
-        Some(cli::Command::Doctor(_) | cli::Command::Logs(_) | cli::Command::Config(_)) => true,
+        Some(
+            cli::Command::Doctor(_)
+            | cli::Command::Logs(_)
+            | cli::Command::Config(_)
+            | cli::Command::Capabilities(_),
+        ) => true,
         Some(cli::Command::Setup(args)) => args.if_needed || args.dry_run,
         Some(cli::Command::Reset(args)) => args.dry_run,
         _ => false,
