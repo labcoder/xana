@@ -59,6 +59,9 @@ engineering contracts used to change it.
   records stop-before-admission, exact shutdown proof and interruption receipts,
   typed global notices, focus-aware notification policy, and conservative
   artifact reconciliation.
+- [M4 Desktop native lifecycle evidence](development/m4-desktop-native-lifecycle-evidence.md)
+  records command convergence, authenticated same-home instance forwarding,
+  native close/notification/external-open adapters, and owner-only checks.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,
@@ -100,6 +103,9 @@ engineering contracts used to change it.
 - [Full-screen terminal UI](user/tui.md) explains composer presets, portable
   keys, safe paste, follow-ups, command/model controls, and owner-specific
   limitations.
+- [Native Desktop](user/desktop.md) explains source launch, native menus and
+  palette, bounded shortcuts, one-instance behavior, safe close, redacted
+  notifications, status, and trusted external actions.
 - [Local foreground host](user/local-host.md) explains loopback-only serving,
   capability discovery, passive observer attachment, sequence boundaries, and
   the repository-private transport.

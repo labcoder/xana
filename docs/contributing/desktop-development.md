@@ -17,12 +17,15 @@ cargo run --locked -- setup
 cargo run --locked -p xana-desktop
 ```
 
-The initial M4 slice supports native conversational connections and displays a
-real Conversation plus Activity projection. A missing configuration, invalid
-workspace, protocol mismatch, or unavailable runtime exits nonzero with a
-stable semantic error. Managed Codex and the complete Workbench remain later
-M4 work; the walking skeleton rejects managed execution before starting a
-vendor process.
+The current M4 slice supports native conversational connections and displays a
+real Conversation plus Activity projection. It also projects the shared
+command registry into native menus and one retained command palette, enforces
+one Desktop process per canonical `XANA_HOME`, and waits for acknowledged
+runtime shutdown before removing the last window. A missing configuration,
+invalid workspace, protocol mismatch, unavailable instance, or unavailable
+runtime exits nonzero with a stable semantic error. Managed Codex and the
+complete Workbench remain later M4 work; the walking skeleton rejects managed
+execution before starting a vendor process.
 
 Review the provider-free visual system and real pinned component states without
 creating configuration:
@@ -56,6 +59,12 @@ Intel macOS job compiles and tests the Desktop package.
 - Retain GPUI entities and subscriptions; do not recreate them during render.
 - Drain only bounded runtime updates per frame and never block the GPUI thread
   on provider, tool, filesystem, or shutdown work.
+- Keep stable command IDs in Xana's shared catalog. Native menus, palette rows,
+  buttons, and shortcuts must converge on one Desktop dispatcher; unsupported
+  rows stay discoverable with a disabled reason.
+- Keep single-instance file locks, authenticated loopback forwarding, and
+  path resolution in `xana::desktop`. GPUI consumes only the closed
+  focus/navigation intent and exact Xana-owned paths.
 - Use `gpui-ai` directly for AI-native presentation and `gpui-component` for
   ordinary controls. Do not wrap every component or copy upstream source.
 - A reusable missing primitive gets a minimal reproduction and upstream
@@ -74,6 +83,8 @@ Intel macOS job compiles and tests the Desktop package.
   finish or interrupt it; attach-or-own behavior is completed later in M4.
 - `protocol_mismatch`: rebuild the whole workspace from one checkout and do not
   mix binaries or lockfiles.
+- `instance_unavailable`: stop the unresponsive same-home Desktop process and
+  retry. Do not turn the private descriptor into a general IPC endpoint.
 - Window closes immediately: run from a terminal and read the redacted startup
   error on stderr. Logs and durable runtime state remain under the configured
   Xana paths; Desktop does not log credentials or artifact bytes.

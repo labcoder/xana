@@ -22,19 +22,31 @@ flowchart LR
 ```
 
 Startup resolves and canonicalizes the workspace once, resolves `XANA_HOME`,
-and starts one named runtime thread. The runtime publishes an atomic initial
+claims one Desktop instance for that canonical home, and starts one named
+runtime thread. A later same-home launch authenticates over a loopback-only
+channel, forwards one closed focus/navigation intent, and exits; a different
+Xana home has a distinct owner. A locked owner file prevents races, while a
+private atomic descriptor contains only protocol versions, canonical instance
+root, loopback endpoint, process ID, and a random 256-bit capability. Payloads
+and queues are bounded, and neither arbitrary commands nor paths cross this
+process boundary.
+
+The runtime publishes an atomic initial
 snapshot before the window opens. A 32-entry command queue and 256-entry update
 queue bound cross-thread work. Replaceable streaming deltas may be dropped
 under pressure; finals, failures, approvals, command receipts, and terminal
 operation states receive a five-second delivery grace. A sequence gap causes
 the application projection to request a fresh snapshot instead of guessing.
 
-Closing the application first asks the execution host to stop admission and
+Closing an idle last window first asks the execution host to stop admission and
 expire controller authority, then requests runtime shutdown. The host records
 any remaining Run as interrupted only after the runtime accepts shutdown and
 publishes an idempotent cleanup receipt. If exact owned-execution cleanup cannot
-be proven, shutdown remains incomplete rather than claiming success. Explicit
-test shutdown joins the runtime thread with a ten-second bound. Managed Codex
+be proven, shutdown remains incomplete rather than claiming success. The window
+is removed only after the ordered expected-stop acknowledgment. While a Run is
+active, a native prompt offers keep-open, cancel-and-quit, or return; it does
+not infer intent from window destruction. Explicit test shutdown joins the
+runtime thread with a ten-second bound. Managed Codex
 presentation is not part of the initial M4 walking skeleton and is rejected
 before an app-server child can be started; M4-22 owns the final adapter and
 parity proof.
@@ -57,10 +69,12 @@ cross the Desktop presentation boundary. Clean shutdown expires the lease
 before shutdown work and publishes the ordered lifecycle and receipt before
 reporting that the backend stopped.
 
-The facade also projects bounded global notices and the host lifecycle. A pure
-focus-aware notification planner exposes fixed redacted candidates and exact
-Conversation/Operation correlation; native OS delivery belongs to the later
-Desktop lifecycle adapter and cannot become state authority.
+The facade also projects bounded global notices, notification preferences, and
+the host lifecycle. A pure focus-aware notification planner exposes fixed
+redacted candidates and exact Conversation/Operation correlation. The GPUI
+adapter delivers them only while unfocused, and activation focuses the existing
+window. Notification payloads contain no prompt, output, reasoning, filename,
+tool argument, or credential and cannot become state authority.
 
 ## Authority boundary
 
@@ -100,11 +114,20 @@ cannot change action identity or authority.
 before runtime launch. It exercises the same visual globals and real pinned
 components but has no provider, credential, filesystem, or tool authority.
 
+The shared command registry supplies stable semantic IDs, authority, and
+availability. Desktop supplies native labels, a bounded essential shortcut
+set, conventional menus, and a retained searchable palette. Every invocation
+path converges on one typed dispatcher; commands not implemented in the
+current Workbench remain visible but disabled with a reason. The status bar is
+a bounded projection of host lifecycle, current destination, active Runs,
+approvals, notices, and latest activity.
+
 Native GPUI has no WebView, browser DOM, navigation surface, CSP, JavaScript
 bridge, or general renderer IPC. Consequently the WebView threats considered
 during M4 framework selection are absent rather than configured open. External
-links, filesystem picking, clipboard, notifications, and richer OS integration
-must be added later as narrow typed capabilities with explicit policy and tests.
+documentation and Xana-owned configuration/log paths are exposed as narrow
+typed actions with fixed HTTPS and regular-file/directory checks. Arbitrary
+external URLs and paths remain unavailable.
 
 ## Dependency boundary
 
