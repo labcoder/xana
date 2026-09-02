@@ -320,6 +320,34 @@ Presentation preferences such as theme, density, typography, reduced motion,
 sidebar form, disclosure defaults, and window geometry remain machine-local.
 They do not silently mutate Project, Profile, Conversation, or runtime policy.
 
+### Setup, connections, credentials, and models
+
+First run offers **Start with one connection**, **Full customize**, and
+**Blank**. The first choice is Xana's bounded Quick Setup capability rather than
+a provider recommendation: it establishes one selected provider or managed
+runtime before model selection, reviews the effects, and reaches a usable
+Conversation. Full customize exposes the additional policy sections. Blank
+creates no provider, model, Profile, or Conversation fiction and makes Connect
+the primary recovery action.
+
+Use **provider** for the vendor or protocol family and **connection** for one
+stable named route to an endpoint or managed runtime. A connection owns one
+explicit credential source or managed-account authority. A model belongs to one
+connection's catalog; a Profile may reference an exact connection/model; a
+Conversation owns its resolved selection. Connect and Settings own connection,
+credential/account, catalog, repair, and removal lifecycles. Model pickers select
+from configured usable connections and state whether a change affects this
+Conversation, new Conversations, or an exact Profile.
+
+Readiness is derived from independent declaration, credential, managed-account,
+reachability, catalog, selected-model, and capability facts with source and
+freshness. Unknown never becomes healthy or unsupported. API-key replacement
+validates before swapping the stored secret. Managed login remains an external
+runtime-owned effect that may outlive cancellation of Xana's configuration form.
+Removing a connection preserves its credential and managed login by default;
+credential deletion and logout are separate confirmed operations. No surface
+silently substitutes a provider, connection, model, account, or capability.
+
 ```mermaid
 flowchart TD
     APP["Xana Desktop"] --> SIDEBAR["Persistent sidebar"]
