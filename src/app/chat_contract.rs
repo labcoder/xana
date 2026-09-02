@@ -2,6 +2,7 @@
 
 use crate::{
     artifact::ArtifactStore,
+    config::PermissionMode,
     identity::{OperationId, PrincipalId, SessionId},
     model_catalog::ModelManager,
     native_runtime::{OperationState, RoundBudgetSuspension},
@@ -13,6 +14,8 @@ use std::path::PathBuf;
 pub(crate) struct ChatHeader {
     pub(crate) provider_name: String,
     pub(crate) model: String,
+    pub(crate) profile_name: String,
+    pub(crate) permission_mode: PermissionMode,
     pub(crate) endpoint: String,
     pub(crate) context_report: String,
     pub(crate) session_id: SessionId,

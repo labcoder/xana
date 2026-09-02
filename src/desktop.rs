@@ -7,6 +7,10 @@
 
 use crate::{
     app::{ChatExit, ChatHeader},
+    execution_host::{
+        ConversationRegistration, ExecutionHost, HostChanges, HostEvent, HostedRun, RunAccess,
+        WriteCollisionDecision,
+    },
     frontend::{
         ClientCommand, ClientEvent, ClientObservation, ClientSnapshot, ClientSnapshotSeed,
         EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
@@ -19,7 +23,7 @@ use crate::{
     },
     paths::XanaPaths,
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
-    workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
+    workspace_host::{ConversationRef, WorkspaceHost},
 };
 use std::{
     ffi::OsString,
@@ -203,6 +207,10 @@ pub struct DesktopSnapshot {
     pub pending_approval_count: usize,
     pub activity_count: usize,
     pub artifact_count: usize,
+    pub host_sequence: u64,
+    pub hosted_workspace_count: usize,
+    pub hosted_conversation_count: usize,
+    pub attached_conversation: Option<String>,
 }
 
 /// Presentation-safe conversation message.
@@ -257,6 +265,51 @@ pub struct DesktopObservation {
     pub version: u16,
     pub sequence: u64,
     pub event: DesktopEvent,
+}
+
+/// One ordered host-coordination observation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopHostObservation {
+    pub sequence: u64,
+    pub event: DesktopHostEvent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopConversationState {
+    Idle,
+    Running,
+    Suspended,
+    Completed,
+    Failed,
+}
+
+/// Stable host-routing facts, separate from one Conversation's runtime events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DesktopHostEvent {
+    ConversationRegistered {
+        conversation: String,
+        workspace_id: String,
+    },
+    RunStarted {
+        conversation: String,
+        operation_id: DesktopOperationId,
+        workspace_write: bool,
+        collision_acknowledged: bool,
+    },
+    RuntimeObservation {
+        conversation: String,
+    },
+    RunFinished {
+        conversation: String,
+        operation_id: DesktopOperationId,
+        state: DesktopConversationState,
+        error: Option<String>,
+    },
+    ConversationAttached {
+        previous: Option<String>,
+        conversation: String,
+        restoration: String,
+    },
 }
 
 /// Minimal semantic vocabulary used by the M4 walking skeleton.
@@ -320,6 +373,7 @@ impl DesktopEvent {
 pub enum DesktopUpdate {
     Snapshot(DesktopSnapshot),
     Observation(DesktopObservation),
+    HostObservation(DesktopHostObservation),
     CommandResult {
         command_id: u64,
         accepted: bool,
@@ -449,10 +503,21 @@ impl DesktopClient {
     }
 
     pub fn submit(&self, input: impl Into<String>) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.submit_with_workspace_collision_acknowledgement(input, false)
+    }
+
+    /// Submits a turn while explicitly acknowledging concurrent writes in the
+    /// same canonical workspace when `acknowledge` is true.
+    pub fn submit_with_workspace_collision_acknowledgement(
+        &self,
+        input: impl Into<String>,
+        acknowledge: bool,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
         let operation_id = DesktopOperationId(OperationId::new());
         let command_id = self.enqueue(BridgeCommandValue::Submit {
             operation_id,
             input: input.into(),
+            acknowledge_workspace_write_collision: acknowledge,
         })?;
         Ok(DesktopCommandReceipt {
             command_id,
@@ -642,6 +707,7 @@ enum BridgeCommandValue {
     Submit {
         operation_id: DesktopOperationId,
         input: String,
+        acknowledge_workspace_write_collision: bool,
     },
     Clear,
     Interrupt {
@@ -691,10 +757,22 @@ pub(crate) async fn run_native(
         reasoning_effort,
         children: header.children.clone(),
     };
+    let execution_host = ExecutionHost::new();
+    execution_host.register(
+        workspace_host,
+        ConversationRegistration::new(
+            conversation.clone(),
+            header.provider_name.clone(),
+            header.model.clone(),
+            Some(header.profile_name.clone()),
+            header.permission_mode.as_str(),
+        ),
+    )?;
+    execution_host.attach(&conversation)?;
     bridge
         .serve_native(
             EmbeddedClient::from_runtime(runtime, seed),
-            workspace_host,
+            execution_host,
             conversation,
         )
         .await?;
@@ -716,13 +794,16 @@ impl Bridge {
     async fn serve_native(
         mut self,
         client: EmbeddedClient,
-        workspace_host: WorkspaceHost,
+        execution_host: ExecutionHost,
         conversation: ConversationRef,
     ) -> Result<(), DesktopError> {
         let (owner, mut observer) = client.into_parts();
         let mut snapshot = observer.snapshot().clone();
-        self.startup.ready(project_snapshot(&snapshot));
-        let mut active_root: Option<ActiveRootLease> = None;
+        let host_snapshot = execution_host.snapshot().map_err(host_error)?;
+        let mut host_cursor = host_snapshot.sequence;
+        self.startup
+            .ready(project_snapshot(&snapshot, &host_snapshot));
+        let mut active_run: Option<HostedRun> = None;
 
         loop {
             tokio::select! {
@@ -747,10 +828,15 @@ impl Bridge {
                     let should_stop = self.handle_command(
                         command,
                         &owner,
-                        &workspace_host,
+                        &execution_host,
                         &conversation,
                         &snapshot,
-                        &mut active_root,
+                        &mut active_run,
+                    ).await?;
+                    self.publish_host_changes(
+                        &execution_host,
+                        &snapshot,
+                        &mut host_cursor,
                     ).await?;
                     if should_stop {
                         break;
@@ -776,9 +862,28 @@ impl Bridge {
                             received_sequence: observation.sequence,
                         }).await?;
                     }
-                    if observation_ends_root(&observation) {
-                        active_root = None;
+                    if let Err(error) = execution_host.record_runtime_observation(
+                        &conversation,
+                        &observation,
+                    ) {
+                        self.publish_critical(DesktopUpdate::ResyncRequired {
+                            expected_sequence: snapshot.sequence.saturating_add(1),
+                            received_sequence: observation.sequence,
+                        }).await?;
+                        if !matches!(error, crate::execution_host::ExecutionHostError::RuntimeGap { .. }) {
+                            return Err(host_error(error));
+                        }
                     }
+                    if let Some(outcome) = observation_outcome(&observation)
+                        && let Some(run) = active_run.take()
+                    {
+                        execution_host.finish_run(run, outcome).map_err(host_error)?;
+                    }
+                    self.publish_host_changes(
+                        &execution_host,
+                        &snapshot,
+                        &mut host_cursor,
+                    ).await?;
                     snapshot.apply(&observation.event, observation.sequence);
                     let projected = DesktopObservation {
                         version: observation.version,
@@ -791,8 +896,7 @@ impl Bridge {
             }
         }
 
-        active_root = None;
-        drop(active_root);
+        drop(active_run);
         self.publish_critical(DesktopUpdate::BackendStopped {
             expected: true,
             error: None,
@@ -805,16 +909,20 @@ impl Bridge {
         &self,
         command: BridgeCommand,
         owner: &crate::frontend::EmbeddedOwner,
-        workspace_host: &WorkspaceHost,
+        execution_host: &ExecutionHost,
         conversation: &ConversationRef,
         snapshot: &ClientSnapshot,
-        active_root: &mut Option<ActiveRootLease>,
+        active_run: &mut Option<HostedRun>,
     ) -> Result<bool, DesktopError> {
         let command_id = command.command_id;
         match command.value {
             BridgeCommandValue::RequestSnapshot => {
-                self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(snapshot)))
-                    .await?;
+                let host_snapshot = execution_host.snapshot().map_err(host_error)?;
+                self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
+                    snapshot,
+                    &host_snapshot,
+                )))
+                .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
                 Ok(false)
             }
@@ -835,8 +943,9 @@ impl Bridge {
             BridgeCommandValue::Submit {
                 operation_id,
                 input,
+                acknowledge_workspace_write_collision,
             } => {
-                if active_root.is_some() {
+                if active_run.is_some() {
                     self.publish_command_result(
                         command_id,
                         Err(DesktopError::new(
@@ -847,15 +956,21 @@ impl Bridge {
                     .await?;
                     return Ok(false);
                 }
-                let lease = workspace_host
-                    .acquire_root(conversation.clone())
-                    .map_err(|error| {
-                        DesktopError::new(DesktopErrorCode::HostBusy, error.to_string())
-                    });
-                let lease = match lease {
-                    Ok(lease) => lease,
+                let run = execution_host.begin_run(
+                    conversation,
+                    operation_id.0,
+                    RunAccess::WorkspaceWrite,
+                    if acknowledge_workspace_write_collision {
+                        WriteCollisionDecision::Acknowledge
+                    } else {
+                        WriteCollisionDecision::Reject
+                    },
+                );
+                let run = match run {
+                    Ok(run) => run,
                     Err(error) => {
-                        self.publish_command_result(command_id, Err(error)).await?;
+                        self.publish_command_result(command_id, Err(host_error(error)))
+                            .await?;
                         return Ok(false);
                     }
                 };
@@ -873,7 +988,15 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 if result.is_ok() {
-                    *active_root = Some(lease);
+                    *active_run = Some(run);
+                } else {
+                    let reason = result.as_ref().err().map_or_else(
+                        || "runtime rejected the Run".to_owned(),
+                        ToString::to_string,
+                    );
+                    execution_host
+                        .finish_run(run, Err(reason))
+                        .map_err(host_error)?;
                 }
                 self.publish_command_result(command_id, result).await?;
                 Ok(false)
@@ -905,9 +1028,6 @@ impl Bridge {
                         )
                     })
                     .and_then(command_result);
-                if result.is_ok() {
-                    *active_root = None;
-                }
                 self.publish_command_result(command_id, result).await?;
                 Ok(false)
             }
@@ -943,18 +1063,17 @@ impl Bridge {
                 action,
             } => {
                 let mut acquired = None;
-                if action == RoundBudgetAction::Continue && active_root.is_none() {
-                    match workspace_host.acquire_root(conversation.clone()) {
-                        Ok(lease) => acquired = Some(lease),
+                if action == RoundBudgetAction::Continue && active_run.is_none() {
+                    match execution_host.begin_run(
+                        conversation,
+                        operation_id.0,
+                        RunAccess::WorkspaceWrite,
+                        WriteCollisionDecision::Reject,
+                    ) {
+                        Ok(run) => acquired = Some(run),
                         Err(error) => {
-                            self.publish_command_result(
-                                command_id,
-                                Err(DesktopError::new(
-                                    DesktopErrorCode::HostBusy,
-                                    error.to_string(),
-                                )),
-                            )
-                            .await?;
+                            self.publish_command_result(command_id, Err(host_error(error)))
+                                .await?;
                             return Ok(false);
                         }
                     }
@@ -974,12 +1093,17 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 if result.is_ok() {
-                    if let Some(lease) = acquired {
-                        *active_root = Some(lease);
+                    if let Some(run) = acquired {
+                        *active_run = Some(run);
                     }
-                    if action == RoundBudgetAction::Stop {
-                        *active_root = None;
-                    }
+                } else if let Some(run) = acquired {
+                    let reason = result.as_ref().err().map_or_else(
+                        || "runtime rejected the Run".to_owned(),
+                        ToString::to_string,
+                    );
+                    execution_host
+                        .finish_run(run, Err(reason))
+                        .map_err(host_error)?;
                 }
                 self.publish_command_result(command_id, result).await?;
                 Ok(false)
@@ -998,6 +1122,34 @@ impl Bridge {
             error: result.err(),
         })
         .await
+    }
+
+    async fn publish_host_changes(
+        &self,
+        host: &ExecutionHost,
+        frontend: &ClientSnapshot,
+        cursor: &mut u64,
+    ) -> Result<(), DesktopError> {
+        match host.changes_after(*cursor).map_err(host_error)? {
+            HostChanges::Events(events) => {
+                for event in events {
+                    *cursor = event.sequence;
+                    self.publish(
+                        DesktopUpdate::HostObservation(project_host_observation(event)),
+                        false,
+                    )
+                    .await?;
+                }
+            }
+            HostChanges::SnapshotRequired(snapshot) => {
+                *cursor = snapshot.sequence;
+                self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
+                    frontend, &snapshot,
+                )))
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn publish(&self, update: DesktopUpdate, replaceable: bool) -> Result<(), DesktopError> {
@@ -1040,21 +1192,42 @@ fn command_result(result: crate::frontend::ClientCommandResult) -> Result<(), De
     }
 }
 
-fn observation_ends_root(observation: &ClientObservation) -> bool {
-    matches!(
-        observation.event,
-        ClientEvent::Runtime(ref event)
-            if matches!(
-                event.as_ref(),
-                AgentEvent::OperationStateChanged {
-                    state: OperationState::Finished(_),
-                    ..
-                } | AgentEvent::OperationFailed { .. }
-            )
-    )
+fn host_error(error: crate::execution_host::ExecutionHostError) -> DesktopError {
+    let code = match error {
+        crate::execution_host::ExecutionHostError::Limit { .. }
+        | crate::execution_host::ExecutionHostError::ConversationBusy(_)
+        | crate::execution_host::ExecutionHostError::WriteCollision { .. }
+        | crate::execution_host::ExecutionHostError::Workspace(
+            crate::workspace_host::WorkspaceHostError::Busy(_),
+        ) => DesktopErrorCode::HostBusy,
+        crate::execution_host::ExecutionHostError::RuntimeGap { .. } => {
+            DesktopErrorCode::ProtocolMismatch
+        }
+        _ => DesktopErrorCode::StateInvalid,
+    };
+    DesktopError::new(code, error.to_string())
 }
 
-fn project_snapshot(snapshot: &ClientSnapshot) -> DesktopSnapshot {
+fn observation_outcome(
+    observation: &ClientObservation,
+) -> Option<Result<OperationOutcome, String>> {
+    match &observation.event {
+        ClientEvent::Runtime(event) => match event.as_ref() {
+            AgentEvent::OperationStateChanged {
+                state: OperationState::Finished(outcome),
+                ..
+            } => Some(Ok(*outcome)),
+            AgentEvent::OperationFailed { reason, .. } => Some(Err(reason.clone())),
+            _ => None,
+        },
+        ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => None,
+    }
+}
+
+fn project_snapshot(
+    snapshot: &ClientSnapshot,
+    host: &crate::execution_host::ExecutionHostSnapshot,
+) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
         sequence: snapshot.sequence,
@@ -1069,6 +1242,88 @@ fn project_snapshot(snapshot: &ClientSnapshot) -> DesktopSnapshot {
         pending_approval_count: snapshot.pending_approval_count,
         activity_count: snapshot.activity_count,
         artifact_count: snapshot.artifact_count,
+        host_sequence: host.sequence,
+        hosted_workspace_count: host.workspaces.len(),
+        hosted_conversation_count: host.conversations.len(),
+        attached_conversation: host.attached.as_ref().map(ToString::to_string),
+    }
+}
+
+fn project_host_observation(
+    observation: crate::execution_host::HostObservation,
+) -> DesktopHostObservation {
+    let event = match observation.event {
+        HostEvent::ConversationRegistered {
+            conversation,
+            workspace_id,
+        } => DesktopHostEvent::ConversationRegistered {
+            conversation: conversation.to_string(),
+            workspace_id,
+        },
+        HostEvent::RunStarted {
+            conversation,
+            operation_id,
+            access,
+            collision_acknowledged,
+        } => DesktopHostEvent::RunStarted {
+            conversation: conversation.to_string(),
+            operation_id: DesktopOperationId(operation_id),
+            workspace_write: access == RunAccess::WorkspaceWrite,
+            collision_acknowledged,
+        },
+        HostEvent::RuntimeObservation { conversation, .. } => {
+            DesktopHostEvent::RuntimeObservation {
+                conversation: conversation.to_string(),
+            }
+        }
+        HostEvent::RunFinished {
+            conversation,
+            operation_id,
+            state,
+            error,
+        } => DesktopHostEvent::RunFinished {
+            conversation: conversation.to_string(),
+            operation_id: DesktopOperationId(operation_id),
+            state: match state {
+                crate::execution_host::HostedConversationState::Idle => {
+                    DesktopConversationState::Idle
+                }
+                crate::execution_host::HostedConversationState::Running => {
+                    DesktopConversationState::Running
+                }
+                crate::execution_host::HostedConversationState::Suspended => {
+                    DesktopConversationState::Suspended
+                }
+                crate::execution_host::HostedConversationState::Completed => {
+                    DesktopConversationState::Completed
+                }
+                crate::execution_host::HostedConversationState::Failed => {
+                    DesktopConversationState::Failed
+                }
+            },
+            error,
+        },
+        HostEvent::ConversationAttached {
+            previous,
+            conversation,
+            restoration,
+        } => DesktopHostEvent::ConversationAttached {
+            previous: previous.map(|value| value.to_string()),
+            conversation: conversation.to_string(),
+            restoration: match restoration {
+                crate::execution_host::OwnerRestoration::NativeDurableHistory => {
+                    "native_durable_history"
+                }
+                crate::execution_host::OwnerRestoration::ManagedOpaqueThread => {
+                    "managed_opaque_thread"
+                }
+            }
+            .to_owned(),
+        },
+    };
+    DesktopHostObservation {
+        sequence: observation.sequence,
+        event,
     }
 }
 
@@ -1380,7 +1635,7 @@ mod tests {
         }
     }
 
-    fn scripted_client(workspace: &std::path::Path) -> EmbeddedClient {
+    fn scripted_client(workspace: &std::path::Path) -> (EmbeddedClient, ConversationRef) {
         let tools = ToolRegistry::new();
         let definitions = tools.definitions();
         let environment = PromptEnvironment {
@@ -1410,17 +1665,40 @@ mod tests {
             2,
         );
         let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), workspace).unwrap();
-        EmbeddedClient::from_runtime(
+        let session_id = crate::identity::SessionId::new();
+        let conversation = ConversationRef::Native { session_id };
+        let client = EmbeddedClient::from_runtime(
             RuntimeHandle::spawn(agent, policy, true),
             ClientSnapshotSeed {
-                session_id: crate::identity::SessionId::new(),
+                session_id,
                 connection: "scripted".to_owned(),
                 execution_owner: "native".to_owned(),
                 model: "test-model".to_owned(),
                 reasoning_effort: None,
                 children: Vec::new(),
             },
+        );
+        (client, conversation)
+    }
+
+    fn execution_host(
+        data_root: &std::path::Path,
+        workspace: &std::path::Path,
+        conversation: &ConversationRef,
+    ) -> ExecutionHost {
+        let host = ExecutionHost::new();
+        host.register(
+            WorkspaceHost::open(data_root, workspace).unwrap(),
+            ConversationRegistration::new(
+                conversation.clone(),
+                "scripted",
+                "test-model",
+                Some("test-profile".to_owned()),
+                "allow",
+            ),
         )
+        .unwrap();
+        host
     }
 
     fn bridge_channels() -> BridgeChannels {
@@ -1503,10 +1781,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
-        let client = scripted_client(&workspace);
+        let (client, conversation) = scripted_client(&workspace);
+        let host = execution_host(directory.path(), &workspace, &conversation);
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(client, host, ConversationRef::NewNative));
+        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation));
 
         let initial = startup
             .recv_timeout(Duration::from_secs(1))
@@ -1522,6 +1800,7 @@ mod tests {
                 value: BridgeCommandValue::Submit {
                     operation_id,
                     input: "hello".to_owned(),
+                    acknowledge_workspace_write_collision: false,
                 },
             })
             .await
@@ -1588,10 +1867,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let workspace = directory.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let host = WorkspaceHost::open(directory.path(), &workspace).unwrap();
-        let client = scripted_client(&workspace);
+        let (client, conversation) = scripted_client(&workspace);
+        let host = execution_host(directory.path(), &workspace, &conversation);
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(client, host, ConversationRef::NewNative));
+        let runtime = tokio::spawn(bridge.serve_native(client, host, conversation));
         startup
             .recv_timeout(Duration::from_secs(1))
             .unwrap()

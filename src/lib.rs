@@ -22,6 +22,7 @@ pub mod desktop;
 mod diagnostics;
 mod doctor;
 mod documents;
+mod execution_host;
 mod focused_service;
 mod frontend;
 mod http_client;

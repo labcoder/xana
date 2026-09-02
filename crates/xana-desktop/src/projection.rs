@@ -329,6 +329,10 @@ mod tests {
             pending_approval_count: 0,
             activity_count: 0,
             artifact_count: 0,
+            host_sequence: 0,
+            hosted_workspace_count: 1,
+            hosted_conversation_count: 1,
+            attached_conversation: Some("native/session".to_owned()),
         }
     }
 

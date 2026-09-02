@@ -206,6 +206,10 @@ async fn run_once(
         })
         .to_owned();
     let selected_connection = manager.connection(selected_connection_name)?.clone();
+    let profile_name = frozen_profile.as_ref().map_or_else(
+        || child_registry.default_profile.clone(),
+        |profile| profile.name.clone(),
+    );
 
     let XanaConfig {
         mut permission_mode,
@@ -719,6 +723,8 @@ async fn run_once(
     let header = ChatHeader {
         provider_name,
         model,
+        profile_name,
+        permission_mode,
         endpoint,
         context_report,
         session_id,

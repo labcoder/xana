@@ -106,6 +106,12 @@ impl ManagedThreadStore {
         connection: &str,
         workspace: &Path,
     ) -> Result<Self, ManagedThreadStoreError> {
+        let workspace = workspace
+            .canonicalize()
+            .map_err(|source| ManagedThreadStoreError::Io {
+                path: workspace.to_owned(),
+                source,
+            })?;
         let directory = data_root.join("managed-threads");
         fs::create_dir_all(&directory).map_err(|source| ManagedThreadStoreError::Io {
             path: directory.clone(),
@@ -145,7 +151,7 @@ impl ManagedThreadStore {
         let (thread_id, identity_version, threads) =
             match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
                 Ok(bytes) => {
-                    let decoded = decode_document(&bytes, connection, workspace)?;
+                    let decoded = decode_document(&bytes, connection, &workspace)?;
                     (
                         decoded.current_thread_id,
                         decoded.identity_version,
@@ -171,7 +177,7 @@ impl ManagedThreadStore {
         Ok(Self {
             state_path,
             connection: connection.to_owned(),
-            workspace: workspace.to_owned(),
+            workspace,
             thread_id,
             identity_version,
             threads,
@@ -292,6 +298,12 @@ impl ManagedThreadStore {
         workspace: &Path,
     ) -> Result<Vec<ManagedConversationHandle>, ManagedThreadStoreError> {
         const MAX_STATE_FILES: usize = 10_000;
+        let workspace = workspace
+            .canonicalize()
+            .map_err(|source| ManagedThreadStoreError::Io {
+                path: workspace.to_owned(),
+                source,
+            })?;
         let directory = data_root.join("managed-threads");
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -319,7 +331,7 @@ impl ManagedThreadStore {
                 Ok(bytes) => bytes,
                 Err(_) => continue,
             };
-            let Ok(decoded) = decode_catalog_document(&bytes, workspace) else {
+            let Ok(decoded) = decode_catalog_document(&bytes, &workspace) else {
                 continue;
             };
             let DecodedManagedDocument {
@@ -376,7 +388,7 @@ fn decode_catalog_document(
         Some(1) => {
             let document: ManagedThreadDocumentV1 = serde_json::from_value(value)
                 .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
-            if document.workspace != workspace {
+            if !same_workspace(&document.workspace, workspace) {
                 return Err(ManagedThreadStoreError::Invalid(
                     "route identity does not match its state file".into(),
                 ));
@@ -404,7 +416,9 @@ fn decode_catalog_document(
         Some(version) if version == u64::from(DOCUMENT_VERSION) => {
             let document: ManagedThreadDocument = serde_json::from_value(value)
                 .map_err(|error| ManagedThreadStoreError::Invalid(error.to_string()))?;
-            if document.workspace != workspace || document.threads.len() > MAX_THREADS {
+            if !same_workspace(&document.workspace, workspace)
+                || document.threads.len() > MAX_THREADS
+            {
                 return Err(ManagedThreadStoreError::Invalid(
                     "route identity or thread bound is invalid".into(),
                 ));
@@ -439,6 +453,10 @@ fn decode_catalog_document(
             "unsupported managed thread document version".to_owned(),
         )),
     }
+}
+
+fn same_workspace(stored: &Path, expected: &Path) -> bool {
+    same_file::is_same_file(stored, expected).unwrap_or(false)
 }
 
 fn validate_thread_state(

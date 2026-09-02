@@ -22,7 +22,7 @@ const DESCRIPTOR_VERSION: u16 = 2;
 const MAX_DESCRIPTOR_BYTES: usize = 16 * 1024;
 const MAX_CONVERSATIONS: usize = 10_000;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "owner", rename_all = "snake_case")]
 pub(crate) enum ConversationRef {
     Native {
@@ -194,6 +194,10 @@ impl WorkspaceHost {
 
     pub(crate) fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
     }
 
     pub(crate) fn acquire_root(

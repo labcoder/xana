@@ -133,6 +133,7 @@ impl Workbench {
                         self.projection.fail(error.message);
                     }
                 }
+                DesktopUpdate::HostObservation(_) => {}
                 DesktopUpdate::CommandResult {
                     accepted: false,
                     error,
