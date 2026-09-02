@@ -78,6 +78,12 @@ pub(crate) struct LoginInstructions {
     pub(crate) user_code: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LoginCancellation {
+    Cancelled,
+    NotFound,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedTurnInput {
     pub(crate) text: String,
@@ -995,6 +1001,27 @@ impl CodexAppServer {
             ));
         }
         self.account_status().await
+    }
+
+    pub(crate) async fn cancel_login(
+        &mut self,
+        login_id: &str,
+    ) -> Result<LoginCancellation, CodexError> {
+        let mut handler = RejectingHandler;
+        let result = self
+            .request(
+                "account/login/cancel",
+                json!({"loginId": login_id}),
+                &mut handler,
+            )
+            .await?;
+        match required_string(&result, "status")?.as_str() {
+            "canceled" => Ok(LoginCancellation::Cancelled),
+            "notFound" => Ok(LoginCancellation::NotFound),
+            status => Err(CodexError::Protocol(format!(
+                "account/login/cancel returned unknown status {status:?}"
+            ))),
+        }
     }
 
     pub(crate) async fn logout(&mut self) -> Result<(), CodexError> {

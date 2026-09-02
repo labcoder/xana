@@ -179,6 +179,7 @@ pub(crate) enum ConnectionEffect {
     CredentialReplaced,
     CredentialDeleted,
     ManagedLoginCompleted,
+    ManagedLoginCancelled,
     ManagedLogoutCompleted,
     CatalogRefreshed,
 }

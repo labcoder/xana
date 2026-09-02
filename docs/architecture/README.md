@@ -1271,6 +1271,12 @@ derived catalog after a successful probe. Credential deletion and managed
 logout remain distinct confirmed authority changes. Existing version 1-3
 documents remain readable.
 
+Managed Codex login remains a vendor-owned external operation. Xana starts one
+exact app-server login attempt, presents its browser or device-code
+instructions, waits for the correlated completion event, and forwards Ctrl+C
+to `account/login/cancel`. A completed account change is never rolled back by
+silently logging out; cancellation and logout have distinct typed receipts.
+
 The provider-neutral connect hub is a navigation surface, not a discovery
 engine. Focused image/vision setup and MCP add/remove operations are explicit
 configuration transactions: they stage exact typed declarations and

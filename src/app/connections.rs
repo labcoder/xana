@@ -9,7 +9,9 @@ use crate::{
         ManagedAccountState, ReachabilityState, RecoveryAction,
     },
     credential::{SecretString, delete_secret, store_secret},
-    managed::codex::{AccountStatus, CodexAppServer, CodexLaunchConfig, LoginMode},
+    managed::codex::{
+        AccountStatus, CodexAppServer, CodexLaunchConfig, LoginCancellation, LoginMode,
+    },
     model_catalog::{ExecutionKind, ModelManager},
     paths::XanaPaths,
 };
@@ -383,7 +385,36 @@ pub(super) async fn run_connection_command<W: Write>(
                 writeln!(output, "Code: {code}")?;
             }
             writeln!(output, "Waiting for authorization...")?;
-            let status = server.wait_for_login(&instructions.login_id).await?;
+            let status = tokio::select! {
+                result = server.wait_for_login(&instructions.login_id) => Some(result?),
+                signal = tokio::signal::ctrl_c() => {
+                    signal.context("could not listen for managed-login cancellation")?;
+                    None
+                }
+            };
+            let Some(status) = status else {
+                let cancellation = server.cancel_login(&instructions.login_id).await?;
+                let receipt = action_receipt(
+                    &id,
+                    "connection.managed_login.cancelled.v1",
+                    ConnectionEffect::ManagedLoginCancelled,
+                );
+                if json {
+                    write_json(output, &receipt)?;
+                } else {
+                    writeln!(
+                        output,
+                        "Managed login {}. No Xana configuration changed.",
+                        match cancellation {
+                            LoginCancellation::Cancelled => "cancelled",
+                            LoginCancellation::NotFound => "was already complete or absent",
+                        }
+                    )?;
+                    writeln!(output, "receipt: {}", receipt.semantic_code)?;
+                }
+                server.shutdown().await?;
+                return Ok(());
+            };
             if json {
                 write_json(
                     output,

@@ -64,6 +64,25 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn managed_login_cancel_uses_the_exact_vendor_operation() {
+    let fixture = Fixture::new();
+    let mut server = fixture
+        .spawn(
+            "READ \"method\":\"account/login/cancel\"\n\
+             HAS \"loginId\":\"login-1\"\n\
+             SEND {\"id\":2,\"result\":{\"status\":\"canceled\"}}\n",
+        )
+        .await;
+
+    assert_eq!(
+        server.cancel_login("login-1").await.unwrap(),
+        LoginCancellation::Cancelled
+    );
+    server.shutdown().await.unwrap();
+    fixture.assert_complete();
+}
+
+#[tokio::test]
 async fn start_and_resume_reject_incompatible_effective_scope() {
     let fixture = Fixture::new();
     let workspace = fixture.workspace();

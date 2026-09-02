@@ -547,6 +547,9 @@ The initial `connection add` intentionally refuses to save a managed connection
 until the configured Codex executable, account, catalog, and exact model are
 usable. Run `codex login` first because Xana cannot address `connection login`
 until that named connection exists. Guided `xana setup` follows the same rule.
+While Xana is waiting on a delegated browser or device-code login, Ctrl+C asks
+the Codex app-server to cancel that exact login attempt and returns a normal
+cancelled receipt. It does not log out an account whose login already completed.
 
 Replace `ADVERTISED_MODEL_ID` with an exact ID advertised by the installed
 Codex app-server; use `xana model list --connection codex` after refresh. No
