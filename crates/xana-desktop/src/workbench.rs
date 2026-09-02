@@ -25,11 +25,12 @@ use gpui_component::{
 use std::{fs, sync::Arc, time::Duration};
 use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopConversationState,
-    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
-    DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
-    DesktopRoundBudgetSuspension, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
-    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
-    NotificationDestination, NotificationPlanner, last_window_effect,
+    DesktopDockPlacement, DesktopEvent, DesktopHostEvent, DesktopInstanceLease,
+    DesktopLaunchIntent, DesktopLayoutNode, DesktopNativePaths, DesktopNavigationSnapshot,
+    DesktopNavigationTarget, DesktopPanelId, DesktopRoundBudgetSuspension, DesktopSidebarMode,
+    DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout, DesktopWorkspaceStatus,
+    LastWindowChoice, LastWindowEffect, NotificationDestination, NotificationPlanner,
+    last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -560,6 +561,21 @@ impl Workbench {
         cx.notify();
     }
 
+    fn dock_layout_panel_at_root(
+        &mut self,
+        panel: DesktopPanelId,
+        placement: DesktopDockPlacement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Err(error) = self.layout.dock_panel_at_root(panel, placement) {
+            self.projection.fail(error.message);
+        } else {
+            self.schedule_layout_save(window, cx);
+        }
+        cx.notify();
+    }
+
     fn reset_layout(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.runtime.reset_layout() {
             Ok(_) => self
@@ -735,10 +751,35 @@ impl Workbench {
                 }))
             }));
         let can_close = panel != DesktopPanelId::Message;
+        let dock_controls = [
+            (
+                DesktopDockPlacement::Tab,
+                "Tab",
+                "Move into the first panel stack",
+            ),
+            (DesktopDockPlacement::Left, "←", "Dock at the left edge"),
+            (DesktopDockPlacement::Above, "↑", "Dock at the top edge"),
+            (DesktopDockPlacement::Below, "↓", "Dock at the bottom edge"),
+            (DesktopDockPlacement::Right, "→", "Dock at the right edge"),
+        ];
         let controls = h_flex()
             .gap(tokens.spacing.xs)
+            .children(
+                dock_controls
+                    .into_iter()
+                    .map(|(placement, label, tooltip)| {
+                        Button::new(format!("{id}-dock-{placement:?}"))
+                            .compact()
+                            .label(label)
+                            .tooltip(tooltip)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.dock_layout_panel_at_root(panel, placement, window, cx);
+                            }))
+                    }),
+            )
             .child(
                 Button::new(format!("{id}-maximize"))
+                    .compact()
                     .label(if self.layout.maximized().is_some() {
                         "Restore"
                     } else {
@@ -749,11 +790,14 @@ impl Workbench {
                     })),
             )
             .when(can_close, |controls| {
-                controls.child(Button::new(format!("{id}-close")).label("Close").on_click(
-                    cx.listener(move |this, _, window, cx| {
-                        this.close_layout_panel(panel, window, cx);
-                    }),
-                ))
+                controls.child(
+                    Button::new(format!("{id}-close"))
+                        .compact()
+                        .label("Close")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.close_layout_panel(panel, window, cx);
+                        })),
+                )
             });
         v_flex()
             .id(id.to_owned())

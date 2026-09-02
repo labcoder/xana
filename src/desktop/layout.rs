@@ -246,6 +246,60 @@ impl DesktopWorkbenchLayout {
         *self = candidate;
         Ok(())
     }
+
+    /// Moves a panel into a deterministic root-level split, or tabs it into
+    /// the first remaining stack. This is the bounded keyboard/pointer adapter
+    /// used by the initial Workbench instead of persisting framework state.
+    pub fn dock_panel_at_root(
+        &mut self,
+        panel: DesktopPanelId,
+        placement: DesktopDockPlacement,
+    ) -> Result<(), DesktopError> {
+        let without = remove_panel(self.root.clone(), panel)
+            .ok_or_else(|| layout_error("cannot dock the only remaining Workbench panel"))?;
+        let mut candidate = Self {
+            version: self.version,
+            root: without,
+            maximized: None,
+        };
+        let next = next_node_number(&candidate.root);
+        if placement == DesktopDockPlacement::Tab {
+            let target = first_stack_id(&candidate.root)
+                .ok_or_else(|| layout_error("Workbench layout has no panel stack"))?
+                .to_owned();
+            dock_into(
+                &mut candidate.root,
+                panel,
+                &target,
+                DesktopDockPlacement::Tab,
+                next,
+            )?;
+        } else {
+            let old = candidate.root;
+            let fresh = DesktopLayoutNode::Stack {
+                id: format!("stack-{next}"),
+                panels: vec![panel],
+                active: 0,
+            };
+            let (axis, first, second) = match placement {
+                DesktopDockPlacement::Left => (DesktopSplitAxis::Horizontal, fresh, old),
+                DesktopDockPlacement::Right => (DesktopSplitAxis::Horizontal, old, fresh),
+                DesktopDockPlacement::Above => (DesktopSplitAxis::Vertical, fresh, old),
+                DesktopDockPlacement::Below => (DesktopSplitAxis::Vertical, old, fresh),
+                DesktopDockPlacement::Tab => unreachable!("handled above"),
+            };
+            candidate.root = DesktopLayoutNode::Split {
+                id: format!("split-{next}"),
+                axis,
+                ratio_permille: 500,
+                first: Box::new(first),
+                second: Box::new(second),
+            };
+        }
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
 }
 
 /// Source selected by the explicit layout-precedence chain.
@@ -479,6 +533,15 @@ fn first_stack_mut(node: &mut DesktopLayoutNode) -> Option<(&mut Vec<DesktopPane
     }
 }
 
+fn first_stack_id(node: &DesktopLayoutNode) -> Option<&str> {
+    match node {
+        DesktopLayoutNode::Split { first, second, .. } => {
+            first_stack_id(first).or_else(|| first_stack_id(second))
+        }
+        DesktopLayoutNode::Stack { id, .. } => Some(id),
+    }
+}
+
 fn activate_panel(node: &mut DesktopLayoutNode, panel: DesktopPanelId) -> bool {
     match node {
         DesktopLayoutNode::Split { first, second, .. } => {
@@ -690,6 +753,32 @@ mod tests {
                 .is_err()
         );
         assert_eq!(layout, before);
+    }
+
+    #[test]
+    fn root_docking_supports_each_bounded_placement() {
+        for placement in [
+            DesktopDockPlacement::Tab,
+            DesktopDockPlacement::Left,
+            DesktopDockPlacement::Right,
+            DesktopDockPlacement::Above,
+            DesktopDockPlacement::Below,
+        ] {
+            let mut layout = DesktopWorkbenchLayout::recovery();
+            layout.reopen_panel(DesktopPanelId::Usage).unwrap();
+            layout
+                .dock_panel_at_root(DesktopPanelId::Usage, placement)
+                .unwrap();
+            assert_eq!(
+                layout
+                    .panels()
+                    .into_iter()
+                    .filter(|panel| *panel == DesktopPanelId::Usage)
+                    .count(),
+                1
+            );
+            layout.validate().unwrap();
+        }
     }
 
     #[test]
