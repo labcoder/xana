@@ -6,10 +6,15 @@
 //! configuration replacement fails.
 
 mod custom;
+mod desktop;
 mod readiness;
 mod state;
 mod ui;
 
+pub(crate) use desktop::{
+    DesktopSetupCredential, DesktopSetupDraft, commit_blank_for_desktop, commit_for_desktop,
+    discover_for_desktop,
+};
 pub(crate) use readiness::{SetupPending, run as run_if_needed};
 pub(crate) use state::{SetupInstallation, inspect as inspect_installation};
 

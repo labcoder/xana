@@ -7,6 +7,7 @@
 
 mod instance;
 mod layout;
+mod management;
 mod navigation;
 mod settings;
 
@@ -17,6 +18,12 @@ pub use instance::{
 pub use layout::{
     DesktopDockPlacement, DesktopLayoutNode, DesktopLayoutSource, DesktopPanelId,
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
+};
+pub use management::{
+    DesktopConnection, DesktopConnectionSnapshot, DesktopControlPlane, DesktopCredentialInput,
+    DesktopCredentialState, DesktopExecutionKind, DesktopModelOption, DesktopPermissionMode,
+    DesktopProviderKind, DesktopSecret, DesktopSetupDraft, DesktopSetupMode, DesktopSetupReceipt,
+    DesktopSetupSnapshot,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
@@ -309,6 +316,11 @@ impl DesktopLaunch {
             )
         })?;
         navigation::DesktopNavigationStore::launch_catalog(&paths)
+    }
+
+    /// Opens the typed setup/settings control plane without granting workspace authority.
+    pub fn control_plane(&self) -> Result<DesktopControlPlane, DesktopError> {
+        DesktopControlPlane::resolve(self.xana_home.clone())
     }
 
     /// Selects one catalog target without exposing its stored filesystem path.

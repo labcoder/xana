@@ -261,7 +261,10 @@ fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
     validate_document(current)
 }
 
-fn merge_existing_connection_if_valid(paths: &XanaPaths, replacement: String) -> Result<String> {
+pub(super) fn merge_existing_connection_if_valid(
+    paths: &XanaPaths,
+    replacement: String,
+) -> Result<String> {
     if !paths.config_file().is_file() {
         return Ok(replacement);
     }
