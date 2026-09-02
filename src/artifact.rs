@@ -1,8 +1,8 @@
 //! Immutable content-addressed artifact bytes and logical registrations.
 
 use crate::{
-    bounded_file,
     identity::{ArtifactId, PrincipalId},
+    resource::MAX_RESOURCE_SOURCE_BYTES,
 };
 use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{
@@ -79,10 +79,31 @@ impl ArtifactStore {
         media_type: &str,
         owner: PrincipalId,
     ) -> Result<(ArtifactRecord, bool), ArtifactError> {
-        if bytes.len() > MAX_ARTIFACT_BYTES {
+        self.put_bounded(bytes, media_type, owner, MAX_ARTIFACT_BYTES)
+    }
+
+    /// Publish one resource under a caller-selected soft limit.
+    ///
+    /// Existing callers retain the historical 4 MiB bound through
+    /// [`Self::put`]. Resource adapters may select a stricter kind/route limit,
+    /// but no caller can raise it above Xana's compiled resource ceiling.
+    pub(crate) fn put_bounded(
+        &self,
+        bytes: &[u8],
+        media_type: &str,
+        owner: PrincipalId,
+        max_bytes: usize,
+    ) -> Result<(ArtifactRecord, bool), ArtifactError> {
+        if max_bytes == 0 || max_bytes > MAX_RESOURCE_SOURCE_BYTES {
+            return Err(ArtifactError::InvalidLimit {
+                value: max_bytes,
+                ceiling: MAX_RESOURCE_SOURCE_BYTES,
+            });
+        }
+        if bytes.len() > max_bytes {
             return Err(ArtifactError::TooLarge {
                 actual: bytes.len(),
-                limit: MAX_ARTIFACT_BYTES,
+                limit: max_bytes,
             });
         }
         if media_type.trim().is_empty() {
@@ -96,10 +117,10 @@ impl ArtifactStore {
         let content_hash = ContentHash::for_bytes(bytes);
         let final_path = self.path_for(&content_hash);
         let was_created = if final_path.exists() {
-            self.verify_path(&final_path, &content_hash, bytes.len())?;
+            self.verify_path(&final_path, &content_hash, bytes.len(), max_bytes)?;
             false
         } else {
-            self.publish_create_new(&final_path, bytes, &content_hash)?
+            self.publish_create_new(&final_path, bytes, &content_hash, max_bytes)?
         };
 
         Ok((
@@ -285,6 +306,7 @@ impl ArtifactStore {
         final_path: &Path,
         bytes: &[u8],
         content_hash: &ContentHash,
+        max_bytes: usize,
     ) -> Result<bool, ArtifactError> {
         let temp_path = self.root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
         let result = (|| {
@@ -307,7 +329,7 @@ impl ArtifactStore {
             match fs::hard_link(&temp_path, final_path) {
                 Ok(()) => Ok(true),
                 Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
-                    self.verify_path(final_path, content_hash, bytes.len())?;
+                    self.verify_path(final_path, content_hash, bytes.len(), max_bytes)?;
                     Ok(false)
                 }
                 Err(source) => Err(ArtifactError::Io {
@@ -325,6 +347,7 @@ impl ArtifactStore {
         path: &Path,
         expected_hash: &ContentHash,
         expected_len: usize,
+        max_bytes: usize,
     ) -> Result<(), ArtifactError> {
         let actual_len = fs::metadata(path)
             .map_err(|source| ArtifactError::Io {
@@ -332,20 +355,35 @@ impl ArtifactStore {
                 source,
             })?
             .len();
-        if actual_len != expected_len as u64 || actual_len > MAX_ARTIFACT_BYTES as u64 {
+        if actual_len != expected_len as u64 || actual_len > max_bytes as u64 {
             return Err(ArtifactError::CorruptContent {
                 path: path.to_owned(),
             });
         }
-        let bytes = bounded_file::read(path, MAX_ARTIFACT_BYTES).map_err(|error| match error {
-            bounded_file::BoundedReadError::TooLarge { .. } => ArtifactError::CorruptContent {
-                path: path.to_owned(),
-            },
-            bounded_file::BoundedReadError::Io { path, source } => {
-                ArtifactError::Io { path, source }
-            }
+        let mut file = fs::File::open(path).map_err(|source| ArtifactError::Io {
+            path: path.to_owned(),
+            source,
         })?;
-        if bytes.len() != expected_len || ContentHash::for_bytes(&bytes) != *expected_hash {
+        let mut hasher = blake3::Hasher::new();
+        let mut remaining = expected_len;
+        let mut chunk = [0_u8; 16 * 1024];
+        while remaining > 0 {
+            let limit = remaining.min(chunk.len());
+            let read = file
+                .read(&mut chunk[..limit])
+                .map_err(|source| ArtifactError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
+            if read == 0 {
+                return Err(ArtifactError::CorruptContent {
+                    path: path.to_owned(),
+                });
+            }
+            hasher.update(&chunk[..read]);
+            remaining -= read;
+        }
+        if hasher.finalize().to_hex().as_str() != expected_hash.as_str() {
             return Err(ArtifactError::CorruptContent {
                 path: path.to_owned(),
             });
@@ -373,6 +411,7 @@ impl ArtifactStore {
 #[derive(Debug)]
 pub(crate) enum ArtifactError {
     InvalidMediaType,
+    InvalidLimit { value: usize, ceiling: usize },
     TooLarge { actual: usize, limit: usize },
     CorruptContent { path: PathBuf },
     Io { path: PathBuf, source: io::Error },
@@ -382,6 +421,10 @@ impl fmt::Display for ArtifactError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidMediaType => write!(formatter, "artifact media type must not be blank"),
+            Self::InvalidLimit { value, ceiling } => write!(
+                formatter,
+                "artifact byte limit {value} is invalid; compiled ceiling is {ceiling}"
+            ),
             Self::TooLarge { actual, limit } => write!(
                 formatter,
                 "artifact contains {actual} bytes, exceeding the {limit}-byte limit"
@@ -406,7 +449,10 @@ impl Error for ArtifactError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::InvalidMediaType | Self::TooLarge { .. } | Self::CorruptContent { .. } => None,
+            Self::InvalidMediaType
+            | Self::InvalidLimit { .. }
+            | Self::TooLarge { .. }
+            | Self::CorruptContent { .. } => None,
         }
     }
 }

@@ -93,3 +93,22 @@ fn content_hash_deserialization_rejects_paths_and_uppercase() {
         assert!(serde_json::from_str::<ContentHash>(&json).is_err());
     }
 }
+
+#[test]
+fn resource_publication_accepts_only_explicit_limits_below_the_ceiling() {
+    let directory = tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().to_owned());
+
+    let (artifact, _) = store
+        .put_bounded(b"five", "application/octet-stream", PrincipalId::new(), 5)
+        .unwrap();
+    assert_eq!(artifact.byte_len, 4);
+    assert!(matches!(
+        store.put_bounded(b"five", "application/octet-stream", PrincipalId::new(), 3),
+        Err(ArtifactError::TooLarge { .. })
+    ));
+    assert!(matches!(
+        store.put_bounded(b"x", "application/octet-stream", PrincipalId::new(), 0),
+        Err(ArtifactError::InvalidLimit { .. })
+    ));
+}

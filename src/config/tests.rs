@@ -122,6 +122,38 @@ fn prompt_context_policy_defaults_are_bounded_and_user_limits_only_narrow() {
 }
 
 #[test]
+fn resource_policy_defaults_are_compatible_and_configured_values_only_narrow() {
+    let registry = XanaConfig::parse_registry(MINIMAL).unwrap();
+    assert_eq!(
+        registry.resources,
+        crate::resource::ResourcePolicyV1::default()
+    );
+
+    let configured = format!(
+        "{MINIMAL}\n[resources]\nmax_resources_per_turn = 4\nmax_total_source_bytes = 33554432\n\n[resources.static_raster]\nmax_per_turn = 4\n"
+    );
+    let registry = XanaConfig::parse_registry(&configured).unwrap();
+    assert_eq!(registry.resources.max_resources_per_turn, 4);
+    assert_eq!(registry.resources.static_raster.max_per_turn, 4);
+
+    for invalid in [
+        format!("{MINIMAL}\n[resources]\nmax_active_jobs = 0\n"),
+        format!(
+            "{MINIMAL}\n[resources]\nmax_total_source_bytes = {}\n",
+            u64::MAX
+        ),
+    ] {
+        assert!(matches!(
+            XanaConfig::parse_registry(&invalid),
+            Err(ConfigError::InvalidInteroperableConfig {
+                section: "resources",
+                ..
+            })
+        ));
+    }
+}
+
+#[test]
 fn v3_registry_preserves_complete_profiles_and_exact_routes() {
     let input = r#"
 version = 3
@@ -1103,10 +1135,12 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
             shell: crate::shell::ShellConfig::default(),
             max_tool_rounds: 12,
             context: crate::prompt::PromptBudgetPolicy::default(),
+            resources: crate::resource::ResourcePolicyV1::default(),
         }
     );
     assert!(rendered.contains("permission_mode = \"ask\""));
     assert!(rendered.contains("[context]"));
+    assert!(rendered.contains("[resources]"));
     assert!(rendered.contains("fallback_context_tokens = 32768"));
     assert!(rendered.contains("version = 4"));
     assert!(rendered.contains("default_child_route = \"default\""));

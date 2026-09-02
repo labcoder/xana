@@ -183,6 +183,7 @@ fn zero_selected_agents_does_not_touch_private_state() {
         egress_policies: BTreeMap::new(),
         diagnostics: crate::config::DiagnosticsConfig::default(),
         context: crate::prompt::PromptBudgetPolicy::default(),
+        resources: crate::resource::ResourcePolicyV1::default(),
     };
     assert!(
         ExternalAgentManager::open(&paths)

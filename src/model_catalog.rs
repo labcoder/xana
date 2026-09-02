@@ -1080,6 +1080,7 @@ mod tests {
             egress_policies: BTreeMap::new(),
             diagnostics: crate::config::DiagnosticsConfig::default(),
             context: crate::prompt::PromptBudgetPolicy::default(),
+            resources: crate::resource::ResourcePolicyV1::default(),
         }
     }
 
@@ -1144,6 +1145,7 @@ mod tests {
             egress_policies: BTreeMap::new(),
             diagnostics: crate::config::DiagnosticsConfig::default(),
             context: crate::prompt::PromptBudgetPolicy::default(),
+            resources: crate::resource::ResourcePolicyV1::default(),
         }
     }
 

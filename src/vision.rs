@@ -3,6 +3,12 @@
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore, MAX_ARTIFACT_BYTES},
     identity::PrincipalId,
+    resource::{
+        AccessibilityFactsV1, AccessibilitySourceV1, DEFAULT_STATIC_RASTER_PIXELS,
+        DEFAULT_STATIC_RASTER_TURN_BYTES, DEFAULT_STATIC_RASTERS_PER_TURN, MediaTypeFactsV1,
+        RESOURCE_SCHEMA_VERSION, ResourceKindV1, ResourceMetadataV1, ResourceRefV1,
+        ResourceValidationV1,
+    },
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
@@ -14,9 +20,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const MAX_IMAGE_PIXELS: u64 = 40_000_000;
-pub(crate) const MAX_IMAGES_PER_TURN: usize = 8;
-pub(crate) const MAX_IMAGE_BYTES_PER_TURN: u64 = 20 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = DEFAULT_STATIC_RASTER_PIXELS;
+pub(crate) const MAX_IMAGES_PER_TURN: usize = DEFAULT_STATIC_RASTERS_PER_TURN;
+pub(crate) const MAX_IMAGE_BYTES_PER_TURN: u64 = DEFAULT_STATIC_RASTER_TURN_BYTES;
 
 pub(crate) struct ClipboardImageData {
     pub(crate) width: usize,
@@ -51,6 +57,36 @@ pub(crate) struct ImageRef {
     pub(crate) byte_len: u64,
     pub(crate) width: Option<u32>,
     pub(crate) height: Option<u32>,
+}
+
+impl From<&ImageRef> for ResourceRefV1 {
+    fn from(image: &ImageRef) -> Self {
+        Self {
+            version: RESOURCE_SCHEMA_VERSION,
+            artifact: image.artifact.clone(),
+            kind: if image.media_type == "image/gif" {
+                ResourceKindV1::AnimatedRaster
+            } else {
+                ResourceKindV1::StaticRaster
+            },
+            media_type: MediaTypeFactsV1 {
+                declared: Some(image.media_type.clone()),
+                detected: Some(image.media_type.clone()),
+            },
+            metadata: ResourceMetadataV1 {
+                width: image.width,
+                height: image.height,
+                ..ResourceMetadataV1::default()
+            },
+            accessibility: Some(AccessibilityFactsV1 {
+                label: None,
+                transcript: None,
+                source: AccessibilitySourceV1::Unavailable,
+            }),
+            validation: ResourceValidationV1::Accepted,
+            lineage: None,
+        }
+    }
 }
 
 pub(crate) fn ingest_clipboard_image(

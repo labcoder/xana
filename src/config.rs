@@ -8,6 +8,7 @@ use crate::{
     bounded_file,
     permission::{PermissionPolicy, PermissionRule, PolicyDecision, PolicyError},
     prompt::PromptBudgetPolicy,
+    resource::ResourcePolicyV1,
     shell::{Shell, ShellConfig, ShellError},
 };
 use fs2::FileExt;
@@ -81,6 +82,8 @@ struct ConfigDocument {
     diagnostics: DiagnosticsConfig,
     #[serde(default)]
     context: PromptBudgetPolicy,
+    #[serde(default)]
+    resources: ResourcePolicyV1,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -396,6 +399,7 @@ pub(crate) struct XanaConfig {
     pub(crate) shell: ShellConfig,
     pub(crate) max_tool_rounds: usize,
     pub(crate) context: PromptBudgetPolicy,
+    pub(crate) resources: ResourcePolicyV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +460,7 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) egress_policies: BTreeMap<String, EgressPolicyDeclaration>,
     pub(crate) diagnostics: DiagnosticsConfig,
     pub(crate) context: PromptBudgetPolicy,
+    pub(crate) resources: ResourcePolicyV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1055,6 +1060,7 @@ impl XanaConfig {
             egress_policies: BTreeMap::new(),
             diagnostics: DiagnosticsConfig::default(),
             context: PromptBudgetPolicy::default(),
+            resources: ResourcePolicyV1::default(),
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -2179,6 +2185,14 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
             name: "settings".into(),
             reason: error.to_string(),
         })?;
+    document
+        .resources
+        .validate()
+        .map_err(|error| ConfigError::InvalidInteroperableConfig {
+            section: "resources",
+            name: "settings".into(),
+            reason: error.to_string(),
+        })?;
 
     for (name, provider) in &document.providers {
         validate_name("provider", name)?;
@@ -2463,6 +2477,7 @@ fn validate_and_resolve(mut document: ConfigDocument) -> Result<XanaConfig, Conf
         shell: document.shell,
         max_tool_rounds: profile.max_tool_rounds,
         context: document.context,
+        resources: document.resources,
     })
 }
 
@@ -2553,6 +2568,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         egress_policies: document.egress_policies,
         diagnostics: document.diagnostics,
         context: document.context,
+        resources: document.resources,
     }
 }
 

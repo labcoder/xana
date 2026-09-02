@@ -53,6 +53,7 @@ mod project;
 mod prompt;
 mod provider;
 mod reset;
+mod resource;
 mod self_docs;
 mod session;
 mod settings;
