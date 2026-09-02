@@ -571,7 +571,7 @@ applies_to = ["primary", "child"]
 [profiles.worker]
 connection = "openrouter"
 model = "openai/gpt-4.1"
-capabilities = ["fs.read", "fs.list", "xana.docs.read"]
+capabilities = ["fs.read", "fs.list", "network.fetch", "xana.docs.read"]
 permission_mode = "ask"
 max_tool_rounds = 4
 

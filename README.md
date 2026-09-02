@@ -24,7 +24,7 @@ sandbox, and conversation history.
 | --- | --- |
 | Interfaces | Adaptive full-screen TUI, append-only terminal, and JSON/text one-shot output |
 | Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
-| Workspace tools | Bounded recursive discovery and content search, paged reads, explicit file creation, atomic exact edits, timed shell commands, text/CSV extraction, and bundled Xana docs |
+| Native tools | Bounded workspace discovery/search, paged reads, explicit file creation, atomic exact edits, timed commands, text/CSV extraction, bundled Xana docs, and reviewed public-HTTPS text fetch |
 | State | Durable native sessions with lossless history and bounded compaction, Codex thread handles, immutable artifacts, projects, and named profiles |
 | Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
@@ -154,6 +154,7 @@ engineering contracts. Useful starting points include:
 - [Plain mode and automation](docs/user/automation.md)
 - [Sessions and recovery](docs/user/sessions.md)
 - [Workspace file, search, and command tools](docs/user/workspace-tools.md)
+- [Native bounded web fetch](docs/user/web-fetch.md)
 - [Agent Skills](docs/user/skills.md) and [Agent Plugins](docs/user/plugins.md)
 - [MCP integrations](docs/user/mcp.md)
 

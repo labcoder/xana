@@ -70,6 +70,9 @@ engineering contracts used to change it.
 - [Workspace file, search, and command tools](user/workspace-tools.md) explains
   bounded discovery, grep, paged reads, explicit creation, atomic multi-edit,
   command timeouts, exact external-path review, and troubleshooting.
+- [Native bounded web fetch](user/web-fetch.md) explains exact public-HTTPS
+  review, pinned address validation, explicit redirect chains, content and
+  timeout bounds, untrusted extraction, and immutable overflow artifacts.
 - [Child orchestration](user/orchestration.md) explains exact native routes,
   runtime-owned children, active/offline inspection, cancellation and timeout
   semantics, attributed lifecycle, bounded reports, and current limits.

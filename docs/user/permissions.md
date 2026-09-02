@@ -76,7 +76,8 @@ else permission_mode
 
 Supported effects are `read`, `write`, `execute`, `network`, and `external`.
 Current tool names are `read_file`, `list_files`, `find_files`, `grep_files`,
-`write_file`, `edit_file`, `run_command`, `read_document`, and `xana_docs`.
+`write_file`, `edit_file`, `run_command`, `web_fetch`, `read_document`, and
+`xana_docs`.
 Workspace matchers are relative to Xana's launch workspace;
 they are resolved to existing canonical paths when chat starts. Absolute,
 missing, escaping, and parent-traversing workspace rules fail startup. Command
@@ -198,6 +199,12 @@ executes. Its `cwd` may be workspace-relative or an absolute path that
 canonicalizes inside the launch workspace; an external absolute `cwd` remains
 invalid. A command that references an approved external file should keep
 `cwd = "."` and use the absolute file path in the command itself.
+
+`web_fetch` binds an external scope to one canonical GET URL plus its complete
+explicit redirect chain. The separate outbound-data guard remains final
+authority: a broad `network` allow rule or `permission_mode = "allow"` cannot
+replace the first exact recipient review. A saved deny wins, and a redirect not
+already present in the reviewed chain stops before the destination request.
 
 Each result produces an audit fact containing its ids, tool and
 effect, scope, final arguments, policy outcome, optional terminal decision,

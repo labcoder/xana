@@ -218,6 +218,7 @@ static WORKSPACE_TOOL_TOPICS: &[&str] = &[
     "permissions",
     "troubleshooting",
 ];
+static WEB_FETCH_TOPICS: &[&str] = &["web", "fetch", "network", "tools", "outbound", "security"];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -455,6 +456,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: WORKSPACE_TOOL_TOPICS,
         body: include_str!("../docs/user/workspace-tools.md"),
+    },
+    BundledDoc {
+        id: "user.web-fetch",
+        title: "Native bounded web fetch",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: WEB_FETCH_TOPICS,
+        body: include_str!("../docs/user/web-fetch.md"),
     },
     BundledDoc {
         id: "proposal.media",

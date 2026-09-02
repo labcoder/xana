@@ -2,8 +2,8 @@
 
 > Audience: People configuring or using Xana
 
-Xana has one typed gate for data sent to an external MCP server, external
-agent, or focused service. A configured integration is not blanket permission
+Xana has one typed gate for data sent to a native web-fetch recipient, external
+MCP server, external agent, or focused service. A configured integration is not blanket permission
 to share a conversation or workspace. The gate distinguishes these outbound
 data classes:
 
@@ -72,8 +72,11 @@ failure there sends nothing. After the transport returns, audit degradation is
 reported separately and Xana preserves the real transport receipt or error so a
 completed non-replay-safe effect is never presented as safe to retry.
 
-MCP stdio and Streamable HTTP, A2A delegation, focused image generation, and
-specialist vision all pass the same guard before their payload-bearing send seam.
+Native `web_fetch`, MCP stdio and Streamable HTTP, A2A delegation, focused image
+generation, and specialist vision all pass the same guard before their
+payload-bearing send seam. Web fetch binds a canonical GET URL and every
+explicit redirect destination into one recipient identity; it stops before an
+unreviewed redirect can broaden that identity.
 Explicit CLI resource/prompt/catalog actions reuse the command itself as the
 one-shot review action. `xana mcp refresh SERVER` additionally renders and saves
 the exact recipient/`workspace_metadata` grant used by later profile activation.

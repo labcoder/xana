@@ -19,9 +19,14 @@ never implied by discovery.
 
 The base production snapshot currently exposes `read_file`, `list_files`,
 `find_files`, `grep_files`, `write_file`, `edit_file`, `run_command`,
-`read_document`, and `xana_docs` in deterministic order. Adding or removing a
+`web_fetch`, `read_document`, and `xana_docs` in deterministic order. Adding or removing a
 capability requires a new agent composition; a model's schema does not mutate
 during a native turn.
+
+The stock `network.fetch` capability contributes `web_fetch`. Capability
+presence exposes its schema but grants no network authority: the tool still
+binds the exact canonical URL chain into permission and outbound-data review,
+then resolves and pins public addresses only inside the guarded send seam.
 
 Profile-exposed `image.generate` routes add one `generate_image` tool. Planning
 resolves an exact route, recipient identity, and prompt data class. Execution

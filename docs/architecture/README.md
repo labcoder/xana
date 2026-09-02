@@ -659,7 +659,7 @@ Unknown `Never` outcomes may require manual reconciliation.
 
 ## Tool boundary
 
-Xana exposes nine tools through a capability-resolved, provider-neutral
+Xana exposes ten tools through a capability-resolved, provider-neutral
 registry:
 
 - `read_file` reads bounded UTF-8 content with either an optional inclusive
@@ -680,6 +680,10 @@ registry:
   canonical target remains inside that workspace. It returns status plus
   independently bounded stdout and stderr, and an immutable per-call timeout
   ceiling stops an owned process that runs too long.
+- `web_fetch` retrieves one exactly reviewed public HTTPS text resource through
+  pinned public-address resolution, no proxy or credentials, an explicit
+  redirect chain, bounded response/extraction work, and untrusted attributed
+  text with immutable source overflow.
 - `read_document` performs one bounded workspace read and extracts bounded
   UTF-8 text or CSV-as-Markdown without executing or fetching content.
 - `xana_docs` lists and reads Xana's curated, version-matched documentation by
@@ -731,6 +735,22 @@ full pipe. Shell selection resolves once at the application edge: macOS/Linux su
 `sh -lc`, while Windows supports PowerShell, Git Bash, and `cmd` through
 explicit configurations. A custom compatible program path may replace the
 default executable.
+
+`web_fetch` is `Network` plus `ReplaySafety::Safe`. Planning canonicalizes one
+URL and up to three caller-declared redirect destinations without network I/O.
+The complete chain and a digest of its GET request become one `WebFetch`
+recipient identity and `prompt_text` outbound item. Outbound saved-deny and
+exact-review policy commit before transport. Each connection resolves its host,
+rejects private and special-use IPv4, IPv6, and IPv4-mapped addresses, pins the
+accepted address set into a no-proxy/no-redirect client, and rejects credentials,
+fragments, downgrade redirects, compressed responses, active content, and
+unsupported MIME or character encodings. A returned redirect not already in
+the reviewed chain stops before the next request. Successful results expose
+source URL, time, MIME, byte count, digest, redirects, truncation, and an
+untrusted marker; immediate text is capped at 24 KiB and complete bounded source
+overflow is content-addressed in the artifact store. The tool does not provide
+search, cookies, authentication, JavaScript, conditional cache revalidation, or
+browser authority.
 
 One runtime-owned broker task owns policy, memory-only session grants, pending
 requests, and controller presence for every built-in tool. Pure policy combines
