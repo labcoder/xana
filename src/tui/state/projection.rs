@@ -26,6 +26,7 @@ impl TuiState {
                 self.busy = false;
                 self.work_indicator_frame = 0;
                 self.active_operation = None;
+                self.pending_round_budget = None;
                 self.status = format!("Turn {outcome:?}");
                 self.push_card(ActivityCard::new(
                     "Xana root",
@@ -43,16 +44,24 @@ impl TuiState {
                 self.busy = false;
                 self.work_indicator_frame = 0;
                 self.active_operation = None;
-                self.status =
-                    "Turn interrupted; any uncertain effects remain recoverable".to_owned();
-                self.push_card(ActivityCard::new(
-                    "Xana root",
-                    operation_id.to_string(),
-                    ActivityKind::Warning,
-                    ActivityState::Failed,
-                    "operation suspended",
-                    "Any uncertain effects remain recoverable.",
-                ));
+                if self
+                    .pending_round_budget
+                    .as_ref()
+                    .is_some_and(|suspension| suspension.operation_id == *operation_id)
+                {
+                    self.status = "Round budget reached; use /continue or /stop".to_owned();
+                } else {
+                    self.status =
+                        "Turn interrupted; any uncertain effects remain recoverable".to_owned();
+                    self.push_card(ActivityCard::new(
+                        "Xana root",
+                        operation_id.to_string(),
+                        ActivityKind::Warning,
+                        ActivityState::Failed,
+                        "operation suspended",
+                        "Any uncertain effects remain recoverable.",
+                    ));
+                }
             }
             AgentEvent::AssistantTextDelta {
                 operation_id, text, ..
@@ -85,6 +94,43 @@ impl TuiState {
                 message,
             } => self.finish_assistant(*operation_id, message),
             AgentEvent::UsageObserved { usage, .. } => self.native_usage.observe(*usage),
+            AgentEvent::RoundBudgetReached { suspension } => {
+                self.busy = false;
+                self.active_operation = None;
+                self.pending_round_budget = Some(suspension.clone());
+                self.status = "Round budget reached; use /continue or /stop".to_owned();
+                self.push_card(ActivityCard::new(
+                    "Xana root",
+                    suspension.id.to_string(),
+                    ActivityKind::Warning,
+                    ActivityState::Running,
+                    format!(
+                        "round budget: {} / {}; {} remain",
+                        suspension.rounds_consumed,
+                        suspension.hard_round_limit,
+                        suspension.remaining_rounds,
+                    ),
+                    format!(
+                        "operation: {}\ncommitted steps: {}\ncommitted invocations: {}\ncommitted results: {}\nrepeated tool patterns: {}\nactions: {:?}",
+                        suspension.operation_id,
+                        suspension.committed.steps,
+                        suspension.committed.invocations,
+                        suspension.committed.results,
+                        suspension.repeated_tool_patterns,
+                        suspension.allowed_actions,
+                    ),
+                ));
+            }
+            AgentEvent::RoundBudgetDecisionCommitted { decision } => {
+                if self
+                    .pending_round_budget
+                    .as_ref()
+                    .is_some_and(|suspension| suspension.id == decision.suspension_id)
+                {
+                    self.pending_round_budget = None;
+                }
+                self.status = format!("Round-budget decision committed: {:?}", decision.action);
+            }
             AgentEvent::PermissionRequested { request } => {
                 self.status = format!("Approval required: {}", request.tool_name);
                 self.open_approval(ApprovalPrompt::native(request.clone()));
@@ -93,6 +139,7 @@ impl TuiState {
                 self.busy = false;
                 self.work_indicator_frame = 0;
                 self.active_operation = None;
+                self.pending_round_budget = None;
                 self.status = bounded(reason.clone(), MAX_ACTIVITY_BYTES);
                 self.push_card(ActivityCard::new(
                     "Xana root",

@@ -7,9 +7,9 @@
 
 use super::managed::ManagedClientEvent;
 use crate::{
-    identity::{AgentId, OperationId, SessionId, ToolInvocationId},
+    identity::{AgentId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
     message::Message,
-    native_runtime::{AgentEvent, RuntimeCommand},
+    native_runtime::{AgentEvent, RoundBudgetAction, RuntimeCommand},
     orchestration::{ChildInspection, ChildLifecycle},
     permission::ControllerDecision,
     vision::ImageRef,
@@ -17,7 +17,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 2;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 3;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -65,6 +65,11 @@ pub(crate) enum ClientCommandValue {
     ResumeOperation {
         session_id: SessionId,
         operation_id: OperationId,
+    },
+    DecideRoundBudget {
+        operation_id: OperationId,
+        suspension_id: RoundBudgetId,
+        action: RoundBudgetAction,
     },
     InterruptOperation {
         operation_id: OperationId,
@@ -124,6 +129,15 @@ impl From<RuntimeCommand> for ClientCommandValue {
             } => Self::ResumeOperation {
                 session_id,
                 operation_id,
+            },
+            RuntimeCommand::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
+            } => Self::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
             },
             RuntimeCommand::InterruptOperation { operation_id } => {
                 Self::InterruptOperation { operation_id }
@@ -193,6 +207,15 @@ impl From<ClientCommandValue> for RuntimeCommand {
             } => Self::ResumeOperation {
                 session_id,
                 operation_id,
+            },
+            ClientCommandValue::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
+            } => Self::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
             },
             ClientCommandValue::InterruptOperation { operation_id } => {
                 Self::InterruptOperation { operation_id }
@@ -534,6 +557,8 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::ToolFinished { .. } => "tool result",
         AgentEvent::AssistantMessage { .. } => "assistant message",
         AgentEvent::UsageObserved { .. } => "usage observation",
+        AgentEvent::RoundBudgetReached { .. } => "round budget reached",
+        AgentEvent::RoundBudgetDecisionCommitted { .. } => "round budget decision",
         AgentEvent::OperationFailed { .. } => "operation failure",
         AgentEvent::ConversationCleared => "conversation clear",
         AgentEvent::PromptPlanUpdated { .. } => "prompt plan",
@@ -614,6 +639,29 @@ mod tests {
                     if actual == operation_id
             ));
         }
+    }
+
+    #[test]
+    fn round_budget_command_keeps_exact_operation_and_suspension_correlation() {
+        let operation_id = OperationId::new();
+        let suspension_id = RoundBudgetId::new();
+        let value = ClientCommandValue::DecideRoundBudget {
+            operation_id,
+            suspension_id,
+            action: RoundBudgetAction::Continue,
+        };
+        let encoded = serde_json::to_vec(&ClientCommand::new(value.clone())).unwrap();
+        let decoded: ClientCommand = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded.version, FRONTEND_PROTOCOL_VERSION);
+        assert_eq!(decoded.value, value);
+        assert_eq!(
+            RuntimeCommand::from(decoded.value),
+            RuntimeCommand::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action: RoundBudgetAction::Continue,
+            }
+        );
     }
 
     #[test]

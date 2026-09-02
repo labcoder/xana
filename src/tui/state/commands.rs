@@ -670,6 +670,28 @@ impl TuiState {
                 self.composer.take();
                 self.interrupt()
             }
+            CommandId::Continue | CommandId::Stop => {
+                self.composer.take();
+                if !command.arguments.is_empty() {
+                    self.status = command_usage(command.id);
+                    return UpdateEffect::None;
+                }
+                let Some(suspension) = self.pending_round_budget.clone() else {
+                    self.status = "No native turn is awaiting a round-budget decision".to_owned();
+                    return UpdateEffect::None;
+                };
+                let action = if command.id == CommandId::Continue {
+                    RoundBudgetAction::Continue
+                } else {
+                    RoundBudgetAction::Stop
+                };
+                if !suspension.allowed_actions.contains(&action) {
+                    self.status = format!("Round-budget action {action:?} is unavailable");
+                    return UpdateEffect::None;
+                }
+                self.status = format!("Committing round-budget decision: {action:?}…");
+                UpdateEffect::DecideRoundBudget { suspension, action }
+            }
             CommandId::Steer => {
                 self.composer.take();
                 let Some(operation_id) = self.active_operation else {

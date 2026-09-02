@@ -233,6 +233,8 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::ChildReportCommitted { .. }
         | AgentEvent::ChildListSnapshot { .. }
         | AgentEvent::ChildInspectionSnapshot { .. }
-        | AgentEvent::ChildCancellationRequested { .. } => None,
+        | AgentEvent::ChildCancellationRequested { .. }
+        | AgentEvent::RoundBudgetReached { .. }
+        | AgentEvent::RoundBudgetDecisionCommitted { .. } => None,
     }
 }

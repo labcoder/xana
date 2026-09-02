@@ -4,7 +4,7 @@ use gpui_ai::prelude::{ChatMessage, ChatRole, MessageActions, StreamedContent};
 use std::collections::HashMap;
 use xana::desktop::{
     DesktopContent, DesktopEvent, DesktopMessage, DesktopObservation, DesktopOperationId,
-    DesktopOperationState, DesktopRole, DesktopSnapshot,
+    DesktopOperationState, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub(crate) struct ConversationProjection {
     streams: HashMap<DesktopOperationId, String>,
     sequence: u64,
     active_operation: Option<DesktopOperationId>,
+    pending_round_budget: Option<DesktopRoundBudgetSuspension>,
     latest_activity: String,
     failure: Option<String>,
 }
@@ -39,6 +40,7 @@ impl ConversationProjection {
             streams: HashMap::new(),
             sequence: snapshot.sequence,
             active_operation: snapshot.active_operation,
+            pending_round_budget: None,
             latest_activity: format!(
                 "{} / {} · session {}",
                 snapshot.connection, snapshot.model, snapshot.session_id
@@ -108,6 +110,32 @@ impl ConversationProjection {
             DesktopEvent::PermissionResolved { .. } => {
                 self.latest_activity = "Approval resolved".to_owned();
             }
+            DesktopEvent::RoundBudgetReached(suspension) => {
+                self.latest_activity = format!(
+                    "Round budget reached: {} / {}; {} remain",
+                    suspension.rounds_consumed,
+                    suspension.hard_round_limit,
+                    suspension.remaining_rounds,
+                );
+                self.pending_round_budget = Some(suspension);
+            }
+            DesktopEvent::RoundBudgetDecision {
+                suspension_id,
+                continued,
+            } => {
+                if self
+                    .pending_round_budget
+                    .as_ref()
+                    .is_some_and(|pending| pending.id == suspension_id)
+                {
+                    self.pending_round_budget = None;
+                }
+                self.latest_activity = if continued {
+                    "Continuing the same operation".to_owned()
+                } else {
+                    "Stopping the suspended operation".to_owned()
+                };
+            }
             DesktopEvent::Usage { .. } => {
                 self.latest_activity = "Usage updated".to_owned();
             }
@@ -115,6 +143,7 @@ impl ConversationProjection {
                 self.messages.clear();
                 self.streams.clear();
                 self.active_operation = None;
+                self.pending_round_budget = None;
                 self.latest_activity = "Conversation cleared".to_owned();
             }
             DesktopEvent::Activity { label } => self.latest_activity = label,
@@ -153,7 +182,11 @@ impl ConversationProjection {
     }
 
     pub(crate) fn is_running(&self) -> bool {
-        self.active_operation.is_some()
+        self.active_operation.is_some() && self.pending_round_budget.is_none()
+    }
+
+    pub(crate) fn pending_round_budget(&self) -> Option<&DesktopRoundBudgetSuspension> {
+        self.pending_round_budget.as_ref()
     }
 
     pub(crate) fn latest_activity(&self) -> &str {

@@ -334,6 +334,52 @@ async fn tool_round_limit_finishes_failed() {
 }
 
 #[tokio::test]
+async fn tranche_reports_round_budget_without_losing_committed_history_or_usage() {
+    let workspace = tempdir().expect("temporary workspace");
+    fs::write(workspace.path().join("note.txt"), "contents").expect("fixture");
+    let response = ScriptedResponse {
+        deltas: Vec::new(),
+        message: Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "call".to_owned(),
+                name: "read_file".to_owned(),
+                arguments: serde_json::json!({"path": "note.txt"}),
+            })],
+        },
+        usage: Some(ProviderUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            total_tokens: Some(12),
+        }),
+    };
+    let (provider, _) = ScriptedChatTransport::new(vec![response]);
+    let agent = make_agent(provider, workspace.path(), 2);
+    let (operation_id, permissions, events, _receiver) = operation_services();
+    let mut history = vec![Message::text(Role::User, "loop")];
+
+    let outcome = agent
+        .run_tranche_in_scope(
+            operation_id,
+            &mut history,
+            permissions,
+            events.into(),
+            DeferredCleanup::default(),
+            1,
+        )
+        .await
+        .expect("bounded tranche");
+
+    let AgentTurnOutcome::RoundBudgetReached { rounds, usage } = outcome else {
+        panic!("tool request should consume the complete tranche")
+    };
+    assert_eq!(rounds, 1);
+    assert_eq!(usage.requests, 1);
+    assert_eq!(usage.total_tokens, Some(12));
+    assert_eq!(history.len(), 3, "user, assistant intent, and tool result");
+}
+
+#[tokio::test]
 async fn subscriber_drop_does_not_change_returned_message() {
     let workspace = tempdir().expect("temporary workspace");
     let response = ScriptedResponse {

@@ -70,6 +70,7 @@ pub(crate) enum DurableValueRef {
 pub(crate) enum SuspensionReason {
     Permission,
     ProcessInterrupted,
+    RoundBudgetReached(crate::native_runtime::RoundBudgetSuspension),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,6 +180,7 @@ pub(crate) enum CrashSite {
     AfterEffectBeforeResult,
     AfterInvocationResult,
     AfterConversationResult,
+    AfterRoundBudgetDecision,
 }
 
 pub(crate) trait BoundaryObserver: Send + Sync {

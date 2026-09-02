@@ -16,7 +16,7 @@ use crate::{
     frontend::{EmbeddedClient, ManagedClientEvent},
     identity::{AgentId, OperationId, ToolInvocationId},
     message::{ContentBlock, Message, Role},
-    native_runtime::{AgentEvent, OperationState},
+    native_runtime::{AgentEvent, OperationState, RoundBudgetAction, RoundBudgetSuspension},
     permission::ControllerDecision,
     presentation::{ActivityPaneChoice, ComposerPreset},
     vision::{ImageAttachment, MAX_IMAGE_BYTES_PER_TURN, MAX_IMAGES_PER_TURN, image_paths_in_text},
@@ -233,6 +233,10 @@ pub(super) enum UpdateEffect {
     CompactConversation {
         operation_id: OperationId,
     },
+    DecideRoundBudget {
+        suspension: RoundBudgetSuspension,
+        action: RoundBudgetAction,
+    },
     NewConversation,
     OpenModelPicker,
     OpenReasoningPicker,
@@ -352,6 +356,7 @@ pub(super) struct TuiState {
     pub(super) busy: bool,
     pub(super) work_indicator_frame: u8,
     pub(super) active_operation: Option<OperationId>,
+    pub(super) pending_round_budget: Option<RoundBudgetSuspension>,
     pub(super) followups: VecDeque<QueuedTurn>,
     pub(super) overlay: Option<Overlay>,
     pub(super) activity_visibility: ActivityVisibility,
@@ -412,6 +417,7 @@ impl TuiState {
             busy: true,
             work_indicator_frame: 0,
             active_operation: None,
+            pending_round_budget: None,
             followups: VecDeque::new(),
             overlay: None,
             activity_visibility: ActivityVisibility::Auto,
@@ -459,6 +465,7 @@ impl TuiState {
             busy: snapshot.active_operation.is_some(),
             work_indicator_frame: 0,
             active_operation: snapshot.active_operation,
+            pending_round_budget: None,
             followups: VecDeque::new(),
             overlay: None,
             activity_visibility,
@@ -505,6 +512,7 @@ impl TuiState {
             busy: false,
             work_indicator_frame: 0,
             active_operation: None,
+            pending_round_budget: None,
             followups: VecDeque::new(),
             overlay: None,
             activity_visibility,
@@ -548,6 +556,17 @@ impl TuiState {
             self.restore_images(images);
             self.pending_vision_route = vision_route;
             self.status = "Draft retained; return to the runtime conversation or use exact resume before submitting".to_owned();
+            return UpdateEffect::None;
+        }
+        if let Some(operation_id) = self
+            .pending_round_budget
+            .as_ref()
+            .map(|suspension| suspension.operation_id)
+        {
+            self.composer.replace(input);
+            self.restore_images(images);
+            self.pending_vision_route = vision_route;
+            self.status = format!("Turn {} is awaiting /continue or /stop", operation_id);
             return UpdateEffect::None;
         }
         if self.busy {
@@ -615,7 +634,7 @@ impl TuiState {
     }
 
     pub(super) fn next_followup(&mut self) -> Option<UpdateEffect> {
-        if self.busy {
+        if self.busy || self.pending_round_budget.is_some() {
             return None;
         }
         let turn = self.followups.pop_front()?;

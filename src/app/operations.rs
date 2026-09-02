@@ -207,6 +207,7 @@ async fn execute_recovery_command<W: Write>(
         | RuntimeCommand::SteerOperation { .. }
         | RuntimeCommand::ClearConversation
         | RuntimeCommand::CompactConversation { .. }
+        | RuntimeCommand::DecideRoundBudget { .. }
         | RuntimeCommand::DecidePermission { .. }
         | RuntimeCommand::DecideChildPermission { .. }
         | RuntimeCommand::ListChildren

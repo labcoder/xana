@@ -11,9 +11,12 @@ use crate::{
         ClientCommand, ClientEvent, ClientObservation, ClientSnapshot, ClientSnapshotSeed,
         EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
     },
-    identity::{OperationId, ToolInvocationId},
+    identity::{OperationId, RoundBudgetId, ToolInvocationId},
     message::{ContentBlock, Message, Role},
-    native_runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
+    native_runtime::{
+        AgentEvent, OperationOutcome, OperationState, RoundBudgetAction, RuntimeCommand,
+        RuntimeHandle,
+    },
     paths::XanaPaths,
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
@@ -158,6 +161,25 @@ pub struct DesktopPermissionId {
     invocation_id: ToolInvocationId,
 }
 
+/// Opaque identity for one exact round-budget suspension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct DesktopRoundBudgetId(RoundBudgetId);
+
+/// Bounded committed facts shown when a native turn needs an explicit choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopRoundBudgetSuspension {
+    pub id: DesktopRoundBudgetId,
+    pub operation_id: DesktopOperationId,
+    pub rounds_consumed: u32,
+    pub hard_round_limit: u32,
+    pub remaining_rounds: u32,
+    pub committed_steps: u32,
+    pub committed_invocations: u32,
+    pub committed_results: u32,
+    pub repeated_tool_patterns: u32,
+    pub can_continue: bool,
+}
+
 /// One accepted application-side command enqueue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DesktopCommandReceipt {
@@ -264,6 +286,11 @@ pub enum DesktopEvent {
     },
     PermissionResolved {
         permission_id: DesktopPermissionId,
+    },
+    RoundBudgetReached(DesktopRoundBudgetSuspension),
+    RoundBudgetDecision {
+        suspension_id: DesktopRoundBudgetId,
+        continued: bool,
     },
     Usage {
         operation_id: DesktopOperationId,
@@ -467,6 +494,38 @@ impl DesktopClient {
         })
     }
 
+    /// Continues the same native operation for its next configured tranche.
+    pub fn continue_round_budget(
+        &self,
+        suspension: &DesktopRoundBudgetSuspension,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.decide_round_budget(suspension, RoundBudgetAction::Continue)
+    }
+
+    /// Stops the suspended native operation without rolling back committed effects.
+    pub fn stop_round_budget(
+        &self,
+        suspension: &DesktopRoundBudgetSuspension,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.decide_round_budget(suspension, RoundBudgetAction::Stop)
+    }
+
+    fn decide_round_budget(
+        &self,
+        suspension: &DesktopRoundBudgetSuspension,
+        action: RoundBudgetAction,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::DecideRoundBudget {
+            operation_id: suspension.operation_id,
+            suspension_id: suspension.id,
+            action,
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: Some(suspension.operation_id),
+        })
+    }
+
     pub fn request_snapshot(&self) -> Result<DesktopCommandReceipt, DesktopError> {
         self.enqueue(BridgeCommandValue::RequestSnapshot)
             .map(|command_id| DesktopCommandReceipt {
@@ -591,6 +650,11 @@ enum BridgeCommandValue {
     DecidePermission {
         permission_id: DesktopPermissionId,
         allow_once: bool,
+    },
+    DecideRoundBudget {
+        operation_id: DesktopOperationId,
+        suspension_id: DesktopRoundBudgetId,
+        action: RoundBudgetAction,
     },
     RequestSnapshot,
     Shutdown,
@@ -841,6 +905,9 @@ impl Bridge {
                         )
                     })
                     .and_then(command_result);
+                if result.is_ok() {
+                    *active_root = None;
+                }
                 self.publish_command_result(command_id, result).await?;
                 Ok(false)
             }
@@ -867,6 +934,53 @@ impl Bridge {
                         )
                     })
                     .and_then(command_result);
+                self.publish_command_result(command_id, result).await?;
+                Ok(false)
+            }
+            BridgeCommandValue::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
+            } => {
+                let mut acquired = None;
+                if action == RoundBudgetAction::Continue && active_root.is_none() {
+                    match workspace_host.acquire_root(conversation.clone()) {
+                        Ok(lease) => acquired = Some(lease),
+                        Err(error) => {
+                            self.publish_command_result(
+                                command_id,
+                                Err(DesktopError::new(
+                                    DesktopErrorCode::HostBusy,
+                                    error.to_string(),
+                                )),
+                            )
+                            .await?;
+                            return Ok(false);
+                        }
+                    }
+                }
+                let result = owner
+                    .send(ClientCommand::new(RuntimeCommand::DecideRoundBudget {
+                        operation_id: operation_id.0,
+                        suspension_id: suspension_id.0,
+                        action,
+                    }))
+                    .await
+                    .map_err(|_| {
+                        DesktopError::new(
+                            DesktopErrorCode::RuntimeUnavailable,
+                            "runtime is unavailable",
+                        )
+                    })
+                    .and_then(command_result);
+                if result.is_ok() {
+                    if let Some(lease) = acquired {
+                        *active_root = Some(lease);
+                    }
+                    if action == RoundBudgetAction::Stop {
+                        *active_root = None;
+                    }
+                }
                 self.publish_command_result(command_id, result).await?;
                 Ok(false)
             }
@@ -1054,6 +1168,28 @@ fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -
                 total_tokens: usage.total_tokens,
                 requests: usage.requests,
             },
+            AgentEvent::RoundBudgetReached { suspension } => {
+                DesktopEvent::RoundBudgetReached(DesktopRoundBudgetSuspension {
+                    id: DesktopRoundBudgetId(suspension.id),
+                    operation_id: DesktopOperationId(suspension.operation_id),
+                    rounds_consumed: suspension.rounds_consumed,
+                    hard_round_limit: suspension.hard_round_limit,
+                    remaining_rounds: suspension.remaining_rounds,
+                    committed_steps: suspension.committed.steps,
+                    committed_invocations: suspension.committed.invocations,
+                    committed_results: suspension.committed.results,
+                    repeated_tool_patterns: suspension.repeated_tool_patterns,
+                    can_continue: suspension
+                        .allowed_actions
+                        .contains(&RoundBudgetAction::Continue),
+                })
+            }
+            AgentEvent::RoundBudgetDecisionCommitted { decision } => {
+                DesktopEvent::RoundBudgetDecision {
+                    suspension_id: DesktopRoundBudgetId(decision.suspension_id),
+                    continued: decision.action == RoundBudgetAction::Continue,
+                }
+            }
             AgentEvent::OperationFailed {
                 operation_id,
                 reason,
@@ -1324,6 +1460,42 @@ mod tests {
 
         assert_eq!(error.code.as_str(), "protocol_mismatch");
         assert!(error.message.contains("does not match"));
+    }
+
+    #[test]
+    fn round_budget_projection_preserves_exact_decision_identity() {
+        let operation_id = OperationId::new();
+        let suspension_id = RoundBudgetId::new();
+        let event = ClientEvent::Runtime(Box::new(AgentEvent::RoundBudgetReached {
+            suspension: crate::native_runtime::RoundBudgetSuspension {
+                id: suspension_id,
+                operation_id,
+                soft_round_limit: 8,
+                last_tranche_rounds: 8,
+                rounds_consumed: 8,
+                hard_round_limit: 256,
+                remaining_rounds: 248,
+                continuations_used: 0,
+                committed: crate::native_runtime::RoundBudgetCommitFacts {
+                    steps: 8,
+                    invocations: 8,
+                    results: 8,
+                },
+                repeated_tool_patterns: 2,
+                usage: crate::agent::AgentTurnUsage::empty(),
+                allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
+            },
+        }));
+
+        let DesktopEvent::RoundBudgetReached(projected) =
+            project_event(&event, &crate::identity::SessionId::new())
+        else {
+            panic!("round-budget projection")
+        };
+        assert_eq!(projected.operation_id, DesktopOperationId(operation_id));
+        assert_eq!(projected.id, DesktopRoundBudgetId(suspension_id));
+        assert!(projected.can_continue);
+        assert_eq!(projected.committed_results, 8);
     }
 
     #[tokio::test(flavor = "multi_thread")]

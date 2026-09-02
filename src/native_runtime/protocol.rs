@@ -1,5 +1,5 @@
 use crate::{
-    identity::{AgentId, OperationId, SessionId, StepId, ToolInvocationId},
+    identity::{AgentId, OperationId, RoundBudgetId, SessionId, StepId, ToolInvocationId},
     message::Message,
     operation::{InvocationIntent, InvocationResultRecord},
     orchestration::{
@@ -35,6 +35,11 @@ pub(crate) enum RuntimeCommand {
     ResumeOperation {
         session_id: SessionId,
         operation_id: OperationId,
+    },
+    DecideRoundBudget {
+        operation_id: OperationId,
+        suspension_id: RoundBudgetId,
+        action: RoundBudgetAction,
     },
     InterruptOperation {
         operation_id: OperationId,
@@ -79,6 +84,43 @@ pub(crate) enum OperationState {
     Finished(OperationOutcome),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum RoundBudgetAction {
+    Continue,
+    Stop,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RoundBudgetCommitFacts {
+    pub(crate) steps: u32,
+    pub(crate) invocations: u32,
+    pub(crate) results: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RoundBudgetSuspension {
+    pub(crate) id: RoundBudgetId,
+    pub(crate) operation_id: OperationId,
+    pub(crate) soft_round_limit: u32,
+    pub(crate) last_tranche_rounds: u32,
+    pub(crate) rounds_consumed: u32,
+    pub(crate) hard_round_limit: u32,
+    pub(crate) remaining_rounds: u32,
+    pub(crate) continuations_used: u32,
+    pub(crate) committed: RoundBudgetCommitFacts,
+    pub(crate) repeated_tool_patterns: u32,
+    pub(crate) usage: crate::agent::AgentTurnUsage,
+    pub(crate) allowed_actions: Vec<RoundBudgetAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct RoundBudgetDecision {
+    pub(crate) operation_id: OperationId,
+    pub(crate) suspension_id: RoundBudgetId,
+    pub(crate) action: RoundBudgetAction,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
     OperationStateChanged {
@@ -119,6 +161,12 @@ pub(crate) enum AgentEvent {
     UsageObserved {
         operation_id: OperationId,
         usage: crate::agent::AgentTurnUsage,
+    },
+    RoundBudgetReached {
+        suspension: RoundBudgetSuspension,
+    },
+    RoundBudgetDecisionCommitted {
+        decision: RoundBudgetDecision,
     },
     OperationFailed {
         operation_id: OperationId,

@@ -88,6 +88,8 @@ pub(crate) struct RestoredOperation {
     pub(crate) intents: BTreeMap<ToolInvocationId, InvocationIntent>,
     pub(crate) results: BTreeMap<ToolInvocationId, InvocationResultRecord>,
     pub(crate) recovery_decisions: Vec<(ToolInvocationId, RecoveryDecision)>,
+    pub(crate) suspensions: Vec<crate::operation::SuspensionReason>,
+    pub(crate) round_budget_decisions: Vec<crate::native_runtime::RoundBudgetDecision>,
     pub(crate) finished: Option<OperationOutcome>,
 }
 
@@ -381,6 +383,49 @@ pub(crate) fn validate_envelope(
                     next: OperationState::Suspended,
                 })
         }
+        SessionRecord::RoundBudgetDecisionAppended { decision } => {
+            let operation = state.operation_details.get(&decision.operation_id).ok_or(
+                ReductionError::UnknownOperation {
+                    operation: decision.operation_id,
+                },
+            )?;
+            let suspension = operation.suspensions.iter().rev().find_map(|reason| {
+                let crate::operation::SuspensionReason::RoundBudgetReached(suspension) = reason
+                else {
+                    return None;
+                };
+                Some(suspension)
+            });
+            if operation.finished.is_some()
+                || state.operations.get(&decision.operation_id) != Some(&OperationState::Suspended)
+                || suspension.is_none_or(|suspension| suspension.id != decision.suspension_id)
+                || operation
+                    .round_budget_decisions
+                    .iter()
+                    .any(|existing| existing.suspension_id == decision.suspension_id)
+            {
+                return Err(ReductionError::InvalidRoundBudgetDecision {
+                    operation: decision.operation_id,
+                });
+            }
+            let suspension = suspension.expect("checked suspension exists");
+            if !suspension.allowed_actions.contains(&decision.action) {
+                return Err(ReductionError::InvalidRoundBudgetDecision {
+                    operation: decision.operation_id,
+                });
+            }
+            if decision.action == crate::native_runtime::RoundBudgetAction::Stop
+                && operation
+                    .invocation_order
+                    .iter()
+                    .any(|id| !operation.results.contains_key(id))
+            {
+                return Err(ReductionError::PendingInvocationAtFinish {
+                    operation: decision.operation_id,
+                });
+            }
+            Ok(())
+        }
         SessionRecord::OperationFinished {
             operation_id,
             outcome,
@@ -593,6 +638,8 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
                     intents: BTreeMap::new(),
                     results: BTreeMap::new(),
                     recovery_decisions: Vec::new(),
+                    suspensions: Vec::new(),
+                    round_budget_decisions: Vec::new(),
                     finished: None,
                 },
             );
@@ -630,10 +677,40 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
                 .results
                 .insert(result.invocation_id, result.clone());
         }
-        SessionRecord::OperationSuspended { operation_id, .. } => {
+        SessionRecord::OperationSuspended {
+            operation_id,
+            reason,
+        } => {
+            state
+                .operation_details
+                .get_mut(operation_id)
+                .expect("validated operation exists")
+                .suspensions
+                .push(reason.clone());
             state
                 .operations
                 .insert(*operation_id, OperationState::Suspended);
+        }
+        SessionRecord::RoundBudgetDecisionAppended { decision } => {
+            let operation = state
+                .operation_details
+                .get_mut(&decision.operation_id)
+                .expect("validated operation exists");
+            operation.round_budget_decisions.push(decision.clone());
+            match decision.action {
+                crate::native_runtime::RoundBudgetAction::Continue => {
+                    state
+                        .operations
+                        .insert(decision.operation_id, OperationState::Running);
+                }
+                crate::native_runtime::RoundBudgetAction::Stop => {
+                    operation.finished = Some(OperationOutcome::Declined);
+                    state.operations.insert(
+                        decision.operation_id,
+                        OperationState::Finished(OperationOutcome::Declined),
+                    );
+                }
+            }
         }
         SessionRecord::OperationFinished {
             operation_id,
@@ -1087,6 +1164,9 @@ pub(crate) enum ReductionError {
     },
     InvalidRecoveryDecision {
         invocation: ToolInvocationId,
+    },
+    InvalidRoundBudgetDecision {
+        operation: OperationId,
     },
     InvalidNamedValue {
         value: NamedValueId,

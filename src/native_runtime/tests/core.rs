@@ -5,6 +5,76 @@ use crate::frontend::{
     ClientCommand, ClientEvent, ClientSnapshotSeed, EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
 };
 
+fn read_file_call(id: &str) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: vec![ContentBlock::ToolCall(ToolCall {
+            id: id.to_owned(),
+            name: "read_file".to_owned(),
+            arguments: serde_json::json!({"path": "note.txt"}),
+        })],
+    }
+}
+
+fn persistent_tool_agent(
+    provider: Box<dyn ConversationalProvider>,
+    workspace: std::path::PathBuf,
+    max_tool_rounds: usize,
+) -> (Agent, PromptAssembler) {
+    let tools = ToolRegistry::builtins_for_tests().expect("built-in tools");
+    let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
+    let assembler = PromptAssembler::new(
+        definitions,
+        PromptEnvironment {
+            connection: "test-connection".to_owned(),
+            model: "test-model".to_owned(),
+            operating_system: "test".to_owned(),
+            working_directory: workspace.clone(),
+            configured_shell: "test shell".to_owned(),
+            surface: PromptSurface::Cli,
+        },
+        None,
+        ContextBudget {
+            total_tokens: 16_384,
+            conversation_reserve_tokens: 4_096,
+        },
+    );
+    let prompt = assembler.assemble(&[]).expect("base prompt");
+    (
+        Agent::new(provider, tools, workspace, prompt, max_tool_rounds),
+        assembler,
+    )
+}
+
+async fn receive_round_budget(
+    runtime: &mut RuntimeHandle,
+    operation_id: OperationId,
+) -> RoundBudgetSuspension {
+    loop {
+        match runtime.next_event().await.expect("runtime event") {
+            AgentEvent::RoundBudgetReached { suspension }
+                if suspension.operation_id == operation_id =>
+            {
+                return suspension;
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn hard_root_round_ceiling_never_admits_another_tranche() {
+    let (consumed, remaining, actions) = root_round_budget(MAX_ROOT_TOOL_ROUNDS);
+    assert_eq!(consumed, 256);
+    assert_eq!(remaining, 0);
+    assert_eq!(actions, vec![RoundBudgetAction::Stop]);
+
+    let (consumed, remaining, actions) = root_round_budget(usize::MAX);
+    assert_eq!(consumed, 256);
+    assert_eq!(remaining, 0);
+    assert_eq!(actions, vec![RoundBudgetAction::Stop]);
+}
+
 #[tokio::test]
 async fn panicking_provider_finishes_the_operation_as_failed() {
     let mut runtime = spawn_runtime(make_agent(Box::new(PanickingTransport)));
@@ -35,6 +105,29 @@ fn commands_and_events_round_trip_through_json() {
     let invocation_id = ToolInvocationId::new();
     let result_id = crate::identity::ToolResultId::new();
     let message = Message::text(Role::Assistant, "hello");
+    let suspension = RoundBudgetSuspension {
+        id: crate::identity::RoundBudgetId::new(),
+        operation_id,
+        soft_round_limit: 8,
+        last_tranche_rounds: 8,
+        rounds_consumed: 8,
+        hard_round_limit: 256,
+        remaining_rounds: 248,
+        continuations_used: 0,
+        committed: RoundBudgetCommitFacts {
+            steps: 8,
+            invocations: 8,
+            results: 8,
+        },
+        repeated_tool_patterns: 2,
+        usage: AgentTurnUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            total_tokens: Some(12),
+            requests: 8,
+        },
+        allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
+    };
     let child_attribution = ChildAttribution::new(
         crate::identity::AgentId::new(),
         crate::identity::AgentId::for_session(crate::identity::SessionId::new()),
@@ -58,6 +151,11 @@ fn commands_and_events_round_trip_through_json() {
         RuntimeCommand::ResumeOperation {
             session_id: crate::identity::SessionId::new(),
             operation_id,
+        },
+        RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: suspension.id,
+            action: RoundBudgetAction::Continue,
         },
         RuntimeCommand::InterruptOperation { operation_id },
         RuntimeCommand::SteerOperation {
@@ -88,6 +186,16 @@ fn commands_and_events_round_trip_through_json() {
         AgentEvent::OperationStateChanged {
             operation_id,
             state: OperationState::Running,
+        },
+        AgentEvent::RoundBudgetReached {
+            suspension: suspension.clone(),
+        },
+        AgentEvent::RoundBudgetDecisionCommitted {
+            decision: RoundBudgetDecision {
+                operation_id,
+                suspension_id: suspension.id,
+                action: RoundBudgetAction::Continue,
+            },
         },
         AgentEvent::ChildLifecycleChanged {
             attribution: child_attribution.clone(),
@@ -497,6 +605,199 @@ async fn persistent_runtime_commits_conversation_before_final_events() {
         }
     }
     assert!(saw_assistant);
+}
+
+#[tokio::test]
+async fn round_budget_suspends_durably_and_continues_the_same_operation() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("note.txt"), "durable bytes").expect("fixture");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let provider = QueueTransport {
+        responses: Mutex::new(
+            vec![
+                Ok(read_file_call("call-1")),
+                Ok(read_file_call("call-2")),
+                Ok(Message::text(Role::Assistant, "continued answer")),
+            ]
+            .into(),
+        ),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
+    let session = DurableSession::create(data.path(), workspace_root.clone()).expect("session");
+    let session_path = session.path().to_owned();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "read and answer".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+
+    let suspension = receive_round_budget(&mut runtime, operation_id).await;
+    assert_eq!(suspension.rounds_consumed, 1);
+    assert_eq!(suspension.remaining_rounds, 255);
+    assert_eq!(suspension.committed.steps, 1);
+    assert_eq!(suspension.committed.invocations, 1);
+    assert_eq!(suspension.committed.results, 1);
+    assert_eq!(suspension.usage.requests, 1);
+    assert!(
+        suspension
+            .allowed_actions
+            .contains(&RoundBudgetAction::Continue)
+    );
+
+    runtime
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: suspension.id,
+            action: RoundBudgetAction::Continue,
+        })
+        .await
+        .expect("continue exact suspension");
+    let second = receive_round_budget(&mut runtime, operation_id).await;
+    assert_ne!(second.id, suspension.id);
+    assert_eq!(second.rounds_consumed, 2);
+    assert_eq!(second.continuations_used, 1);
+    assert_eq!(second.usage.requests, 2);
+    assert_eq!(second.committed.steps, 2);
+    assert_eq!(second.repeated_tool_patterns, 1);
+
+    runtime
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: suspension.id,
+            action: RoundBudgetAction::Continue,
+        })
+        .await
+        .expect("queue stale decision");
+    runtime
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: second.id,
+            action: RoundBudgetAction::Continue,
+        })
+        .await
+        .expect("continue second suspension");
+    runtime
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: second.id,
+            action: RoundBudgetAction::Continue,
+        })
+        .await
+        .expect("queue duplicate decision");
+
+    let mut final_usage = None;
+    let mut duplicate_rejected = false;
+    loop {
+        match runtime.next_event().await.expect("runtime event") {
+            AgentEvent::UsageObserved {
+                operation_id: actual,
+                usage,
+            } if actual == operation_id => final_usage = Some(usage),
+            AgentEvent::CommandRejected { reason }
+                if reason.contains("does not match")
+                    || reason.contains("no root operation is awaiting") =>
+            {
+                duplicate_rejected = true;
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            _ => {}
+        }
+    }
+    assert_eq!(final_usage.expect("cumulative usage").requests, 3);
+    assert!(duplicate_rejected);
+
+    let restored = reduce(
+        &SessionStore::inspect(&session_path)
+            .expect("inspect session")
+            .records,
+    )
+    .expect("reduce session");
+    let operation = &restored.operation_details[&operation_id];
+    assert_eq!(operation.round_budget_decisions.len(), 2);
+    assert_eq!(operation.finished, Some(OperationOutcome::Completed));
+    assert_eq!(
+        restored.conversation_path().expect("conversation").len(),
+        6,
+        "one user entry, two tool requests, two results, and one final response"
+    );
+}
+
+#[tokio::test]
+async fn restart_reemits_the_exact_round_budget_and_stop_is_terminal() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("note.txt"), "durable bytes").expect("fixture");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let session = DurableSession::create(data.path(), workspace_root.clone()).expect("session");
+    let session_id = session.session_id();
+    let provider = QueueTransport {
+        responses: Mutex::new(vec![Ok(read_file_call("call-1"))].into()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "read".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+    let suspension = receive_round_budget(&mut runtime, operation_id).await;
+    runtime
+        .send(RuntimeCommand::Shutdown)
+        .await
+        .expect("shutdown runtime");
+    runtime.exit.changed().await.expect("runtime exit");
+    drop(runtime);
+
+    let (session, _) = DurableSession::resume(data.path(), session_id).expect("resume session");
+    let provider = QueueTransport {
+        responses: Mutex::new(VecDeque::new()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut resumed = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("resumed runtime");
+    let restored = receive_round_budget(&mut resumed, operation_id).await;
+    assert_eq!(restored, suspension);
+
+    resumed
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: restored.id,
+            action: RoundBudgetAction::Stop,
+        })
+        .await
+        .expect("stop exact suspension");
+    assert_eq!(
+        receive_finished(&mut resumed, operation_id).await,
+        OperationOutcome::Declined
+    );
 }
 
 #[tokio::test]
@@ -974,6 +1275,82 @@ struct RuntimeCrashObserver {
     target: CrashSite,
     path: std::path::PathBuf,
     snapshot: Mutex<Option<Vec<crate::session::SessionRecord>>>,
+}
+
+#[tokio::test]
+async fn crash_after_continue_decision_is_durably_incomplete_not_replayed() {
+    let data = tempdir().expect("Xana data tempdir");
+    let workspace = tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("note.txt"), "durable bytes").expect("fixture");
+    let workspace_root = workspace.path().canonicalize().expect("workspace root");
+    let session = DurableSession::create(data.path(), workspace_root.clone()).expect("session");
+    let path = session.path().to_owned();
+    let observer = Arc::new(RuntimeCrashObserver {
+        target: CrashSite::AfterRoundBudgetDecision,
+        path: path.clone(),
+        snapshot: Mutex::new(None),
+    });
+    let provider = QueueTransport {
+        responses: Mutex::new(vec![Ok(read_file_call("call-1"))].into()),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
+    let agent = agent.with_boundary_observer(observer);
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
+        .expect("allow policy");
+    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
+        .expect("persistent runtime");
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "read".to_owned(),
+        })
+        .await
+        .expect("submit turn");
+    let suspension = receive_round_budget(&mut runtime, operation_id).await;
+    runtime
+        .send(RuntimeCommand::DecideRoundBudget {
+            operation_id,
+            suspension_id: suspension.id,
+            action: RoundBudgetAction::Continue,
+        })
+        .await
+        .expect("continue decision");
+
+    loop {
+        if matches!(
+            runtime.next_event().await,
+            Some(AgentEvent::OperationFailed {
+                operation_id: actual,
+                ..
+            }) if actual == operation_id
+        ) {
+            break;
+        }
+    }
+    let restored =
+        reduce(&SessionStore::inspect(&path).expect("journal").records).expect("reduced journal");
+    assert_eq!(
+        restored.operations[&operation_id],
+        OperationState::Running,
+        "a committed continue with no spawned tranche is explicit unfinished work"
+    );
+    let operation = &restored.operation_details[&operation_id];
+    assert_eq!(operation.round_budget_decisions.len(), 1);
+    assert_eq!(operation.step_order.len(), 1);
+    let tools = ToolRegistry::builtins_for_tests().expect("tools");
+    assert_eq!(
+        crate::operation::plan_recovery(operation, &tools).expect("recovery plan"),
+        vec![
+            crate::operation::RecoveryAction::AlreadyCompleted {
+                result_id: operation.intents[&operation.invocation_order[0]].result_id,
+            },
+            crate::operation::RecoveryAction::FinishOperation
+        ]
+    );
 }
 
 impl BoundaryObserver for RuntimeCrashObserver {

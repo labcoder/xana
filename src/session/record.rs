@@ -92,6 +92,9 @@ pub(crate) enum SessionRecord {
         operation_id: OperationId,
         reason: SuspensionReason,
     },
+    RoundBudgetDecisionAppended {
+        decision: crate::native_runtime::RoundBudgetDecision,
+    },
     OperationFinished {
         operation_id: OperationId,
         outcome: crate::native_runtime::OperationOutcome,

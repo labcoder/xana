@@ -145,6 +145,8 @@ fn pending_operation(
         intents: BTreeMap::from([(invocation_id, intent)]),
         results: BTreeMap::new(),
         recovery_decisions: Vec::new(),
+        suspensions: Vec::new(),
+        round_budget_decisions: Vec::new(),
         finished: None,
     }
 }

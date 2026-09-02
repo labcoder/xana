@@ -10,7 +10,10 @@ use crate::{
     identity::{OperationId, ToolInvocationId},
     message::{ContentBlock, Message},
     model_catalog::{ExecutionKind, ModelManager},
-    native_runtime::{AgentEvent, OperationOutcome, OperationState, RuntimeCommand, RuntimeHandle},
+    native_runtime::{
+        AgentEvent, OperationOutcome, OperationState, RoundBudgetAction, RoundBudgetSuspension,
+        RuntimeCommand, RuntimeHandle,
+    },
     oneshot::{ExitCategory, OneShotFailure, OneShotSuccess},
     orchestration::{ChildActivity, ChildInspection},
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
@@ -222,6 +225,31 @@ impl<W: Write> EventRenderer<W> {
                 }
             }
             AgentEvent::UsageObserved { usage, .. } => self.usage.observe(*usage),
+            AgentEvent::RoundBudgetReached { suspension } => {
+                self.finish_stream()?;
+                writeln!(
+                    self.output,
+                    "xana> round budget reached after {} / {} rounds; {} committed tool result(s), {} round(s) remain",
+                    suspension.rounds_consumed,
+                    suspension.hard_round_limit,
+                    suspension.committed.results,
+                    suspension.remaining_rounds,
+                )?;
+                if suspension.repeated_tool_patterns > 0 {
+                    writeln!(
+                        self.output,
+                        "xana> diagnostic: {} repeated tool-call pattern(s) observed",
+                        suspension.repeated_tool_patterns,
+                    )?;
+                }
+            }
+            AgentEvent::RoundBudgetDecisionCommitted { decision } => {
+                writeln!(
+                    self.output,
+                    "xana> round-budget decision committed: {:?}",
+                    decision.action
+                )?;
+            }
             AgentEvent::OperationFailed { reason, .. } => {
                 self.finish_stream()?;
                 writeln!(
@@ -586,9 +614,17 @@ pub(crate) async fn run_chat(
         }
     }
 
-    let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let stdout = anstream::stdout();
     let mut renderer = EventRenderer::new(stdout.lock(), header.presentation);
+    if let Some(suspension) = &header.round_budget_suspension {
+        let root_lease = workspace_host
+            .acquire_root(conversation.clone())
+            .context("could not resume the suspended native turn")?;
+        let result = render_operation(&mut runtime, &mut renderer, suspension.operation_id).await;
+        drop(root_lease);
+        result?;
+    }
+    let mut editor = DefaultEditor::new().context("could not initialize line editor")?;
     let mut pending_images = PendingImages::default();
     let mut pending_vision_route: Option<String> = None;
     let mut exit = ChatExit::Quit;
@@ -1082,6 +1118,12 @@ pub(crate) async fn run_one_shot(
     workspace_host: &WorkspaceHost,
     conversation: ConversationRef,
 ) -> Result<OneShotSuccess, OneShotFailure> {
+    if let Some(suspension) = &header.round_budget_suspension {
+        return Err(round_budget_incomplete_failure(
+            header.session_id,
+            suspension,
+        ));
+    }
     let mut client = embedded_client(runtime, header);
     let _root_lease = workspace_host
         .acquire_root(conversation)
@@ -1146,6 +1188,14 @@ pub(crate) async fn run_one_shot(
             AgentEvent::AssistantMessage { message, .. } => {
                 final_text = Some(message_text(&message));
             }
+            AgentEvent::RoundBudgetReached { suspension }
+                if suspension.operation_id == operation_id =>
+            {
+                return Err(round_budget_incomplete_failure(
+                    header.session_id,
+                    &suspension,
+                ));
+            }
             AgentEvent::OperationFailed { reason, .. } => failure = Some(reason),
             AgentEvent::CommandRejected { reason } => {
                 return Err(OneShotFailure::new(ExitCategory::Runtime, reason));
@@ -1190,6 +1240,24 @@ pub(crate) async fn run_one_shot(
             _ => {}
         }
     }
+}
+
+fn round_budget_incomplete_failure(
+    session_id: crate::identity::SessionId,
+    suspension: &RoundBudgetSuspension,
+) -> OneShotFailure {
+    OneShotFailure::new(
+        ExitCategory::Incomplete,
+        format!(
+            "native operation {} is incomplete at round-budget suspension {}; {} / {} rounds consumed and {} remain; resume session {} in an interactive Xana surface to continue or stop it",
+            suspension.operation_id,
+            suspension.id,
+            suspension.rounds_consumed,
+            suspension.hard_round_limit,
+            suspension.remaining_rounds,
+            session_id,
+        ),
+    )
 }
 
 fn message_text(message: &Message) -> String {
@@ -1322,6 +1390,18 @@ async fn render_operation<W: Write>(
                 send_permission_decision(runtime, operation_id, request.invocation_id, decision)
                     .await?;
             }
+            AgentEvent::RoundBudgetReached { suspension }
+                if suspension.operation_id == operation_id =>
+            {
+                let action = prompt_round_budget_decision(&suspension)?;
+                runtime
+                    .send(RuntimeCommand::DecideRoundBudget {
+                        operation_id,
+                        suspension_id: suspension.id,
+                        action,
+                    })
+                    .await?;
+            }
             AgentEvent::ChildActivity {
                 attribution,
                 activity: ChildActivity::PermissionRequested { request },
@@ -1344,6 +1424,28 @@ async fn render_operation<W: Write>(
             _ => {}
         }
     }
+}
+
+fn prompt_round_budget_decision(
+    suspension: &crate::native_runtime::RoundBudgetSuspension,
+) -> Result<RoundBudgetAction> {
+    let can_continue = suspension
+        .allowed_actions
+        .contains(&RoundBudgetAction::Continue);
+    if !can_continue {
+        println!("xana> hard round ceiling reached; stopping the operation");
+        return Ok(RoundBudgetAction::Stop);
+    }
+    print!("xana> continue the same operation? [c]ontinue/[s]top [s]: ");
+    io::stdout().flush()?;
+    let mut answer = String::new();
+    if io::stdin().read_line(&mut answer)? == 0 {
+        return Ok(RoundBudgetAction::Stop);
+    }
+    Ok(match answer.trim().to_ascii_lowercase().as_str() {
+        "c" | "continue" | "y" | "yes" => RoundBudgetAction::Continue,
+        _ => RoundBudgetAction::Stop,
+    })
 }
 
 async fn send_permission_decision(
@@ -1545,6 +1647,39 @@ mod tests {
             classify_input("/cancel-agent child-id"),
             InputAction::CancelAgent("child-id")
         );
+    }
+
+    #[test]
+    fn one_shot_round_boundary_is_typed_incomplete_with_exact_resume_identity() {
+        let session_id = SessionId::new();
+        let operation_id = OperationId::new();
+        let suspension_id = crate::identity::RoundBudgetId::new();
+        let suspension = RoundBudgetSuspension {
+            id: suspension_id,
+            operation_id,
+            soft_round_limit: 8,
+            last_tranche_rounds: 8,
+            rounds_consumed: 8,
+            hard_round_limit: 256,
+            remaining_rounds: 248,
+            continuations_used: 0,
+            committed: crate::native_runtime::RoundBudgetCommitFacts {
+                steps: 8,
+                invocations: 8,
+                results: 8,
+            },
+            repeated_tool_patterns: 0,
+            usage: crate::agent::AgentTurnUsage::empty(),
+            allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
+        };
+
+        let failure = round_budget_incomplete_failure(session_id, &suspension);
+
+        assert_eq!(failure.category, ExitCategory::Incomplete);
+        assert_eq!(failure.exit_code(), std::process::ExitCode::from(7));
+        assert!(failure.message.contains(&operation_id.to_string()));
+        assert!(failure.message.contains(&suspension_id.to_string()));
+        assert!(failure.message.contains(&session_id.to_string()));
     }
 
     #[test]

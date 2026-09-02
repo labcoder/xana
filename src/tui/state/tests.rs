@@ -244,6 +244,57 @@ fn compact_is_available_only_when_xana_owns_native_context() {
 }
 
 #[test]
+fn round_budget_requires_the_exact_visible_continue_or_stop_decision() {
+    let operation_id = OperationId::new();
+    let suspension = crate::native_runtime::RoundBudgetSuspension {
+        id: crate::identity::RoundBudgetId::new(),
+        operation_id,
+        soft_round_limit: 8,
+        last_tranche_rounds: 8,
+        rounds_consumed: 8,
+        hard_round_limit: 256,
+        remaining_rounds: 248,
+        continuations_used: 0,
+        committed: crate::native_runtime::RoundBudgetCommitFacts {
+            steps: 8,
+            invocations: 8,
+            results: 8,
+        },
+        repeated_tool_patterns: 0,
+        usage: crate::agent::AgentTurnUsage {
+            input_tokens: Some(10),
+            output_tokens: Some(2),
+            total_tokens: Some(12),
+            requests: 8,
+        },
+        allowed_actions: vec![RoundBudgetAction::Continue, RoundBudgetAction::Stop],
+    };
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.apply_runtime(&AgentEvent::RoundBudgetReached {
+        suspension: suspension.clone(),
+    });
+    state.apply_runtime(&AgentEvent::OperationStateChanged {
+        operation_id,
+        state: OperationState::Suspended,
+    });
+
+    assert_eq!(state.pending_round_budget, Some(suspension.clone()));
+    assert!(state.status.contains("/continue"));
+    state.composer.replace("queued accidentally".to_owned());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert_eq!(state.composer.text, "queued accidentally");
+
+    state.composer.replace("/continue".to_owned());
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::DecideRoundBudget {
+            suspension,
+            action: RoundBudgetAction::Continue,
+        }
+    );
+}
+
+#[test]
 fn input_and_runtime_events_follow_one_explicit_update_path() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = false;

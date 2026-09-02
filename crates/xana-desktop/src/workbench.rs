@@ -9,9 +9,13 @@ use gpui_ai::prelude::{
     Chat, ChatEvent, ChatWelcome, LoadingState, ProgressState, PromptBar, PromptBarEvent,
     StatusBadge, StatusTone, Suggestion,
 };
-use gpui_component::{ActiveTheme as _, h_flex, v_flex};
+use gpui_component::{
+    ActiveTheme as _, Disableable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex, v_flex,
+};
 use std::{sync::Arc, time::Duration};
-use xana::desktop::{DesktopClient, DesktopUpdate};
+use xana::desktop::{DesktopClient, DesktopRoundBudgetSuspension, DesktopUpdate};
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 const MAX_UPDATES_PER_FRAME: usize = 64;
@@ -179,6 +183,24 @@ impl Workbench {
         });
         cx.notify();
     }
+
+    fn decide_round_budget(
+        &mut self,
+        suspension: DesktopRoundBudgetSuspension,
+        should_continue: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let result = if should_continue {
+            self.runtime.continue_round_budget(&suspension)
+        } else {
+            self.runtime.stop_round_budget(&suspension)
+        };
+        if let Err(error) = result {
+            self.projection.fail(error.message);
+        }
+        self.sync_components(window, cx);
+    }
 }
 
 impl Render for Workbench {
@@ -197,6 +219,54 @@ impl Render for Workbench {
                 .into_any_element()
         };
         let tokens = cx.theme().semantic_tokens();
+        let round_controls = self
+            .projection
+            .pending_round_budget()
+            .cloned()
+            .map(|suspension| {
+                let continue_suspension = suspension.clone();
+                v_flex()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} committed tool result(s). Continue the same operation or stop it.",
+                                suspension.committed_results
+                            )),
+                    )
+                    .child(
+                        h_flex()
+                            .gap(tokens.spacing.sm)
+                            .child(
+                                Button::new("continue-round-budget")
+                                    .primary()
+                                    .label("Continue")
+                                    .disabled(!suspension.can_continue)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.decide_round_budget(
+                                            continue_suspension.clone(),
+                                            true,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new("stop-round-budget").label("Stop").on_click(
+                                    cx.listener(move |this, _, window, cx| {
+                                        this.decide_round_budget(
+                                            suspension.clone(),
+                                            false,
+                                            window,
+                                            cx,
+                                        );
+                                    }),
+                                ),
+                            ),
+                    )
+            });
         let activity = v_flex()
             .h_full()
             .w(rems(18.))
@@ -218,7 +288,10 @@ impl Render for Workbench {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .child(self.projection.latest_activity().to_owned()),
-            );
+            )
+            .when_some(round_controls, |activity, controls| {
+                activity.child(controls)
+            });
 
         h_flex()
             .size_full()

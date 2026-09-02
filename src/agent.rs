@@ -101,6 +101,14 @@ pub(crate) struct AgentTurnResult {
     pub(crate) usage: AgentTurnUsage,
 }
 
+pub(crate) enum AgentTurnOutcome {
+    Completed(AgentTurnResult),
+    RoundBudgetReached {
+        rounds: usize,
+        usage: AgentTurnUsage,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AgentTurnUsage {
     pub(crate) input_tokens: Option<u64>,
@@ -172,6 +180,30 @@ impl SessionUsage {
     }
 }
 
+impl AgentTurnUsage {
+    pub(crate) const fn empty() -> Self {
+        Self {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+            total_tokens: Some(0),
+            requests: 0,
+        }
+    }
+
+    pub(crate) fn merge(self, next: Self) -> Self {
+        Self {
+            input_tokens: merge_count(self.input_tokens, next.input_tokens),
+            output_tokens: merge_count(self.output_tokens, next.output_tokens),
+            total_tokens: merge_count(self.total_tokens, next.total_tokens),
+            requests: self.requests.saturating_add(next.requests),
+        }
+    }
+}
+
+fn merge_count(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    left.and_then(|left| right.and_then(|right| left.checked_add(right)))
+}
+
 fn accumulate(total: &mut u64, complete: &mut bool, observed: Option<u64>) {
     match observed {
         Some(value) => *total = total.saturating_add(value),
@@ -226,10 +258,11 @@ impl Agent {
                 events.into(),
                 None,
                 cleanup.clone(),
+                self.max_tool_rounds,
             )
             .await;
         cleanup.drain().await;
-        result.map(|result| result.message)
+        completed(result?, self.max_tool_rounds).map(|result| result.message)
     }
 
     #[cfg(test)]
@@ -250,10 +283,11 @@ impl Agent {
                 events.into(),
                 None,
                 cleanup.clone(),
+                self.max_tool_rounds,
             )
             .await;
         cleanup.drain().await;
-        result
+        completed(result?, self.max_tool_rounds)
     }
 
     pub(crate) async fn run_turn_with_usage_in_scope(
@@ -264,20 +298,24 @@ impl Agent {
         events: AgentEventSender,
         cleanup: DeferredCleanup,
     ) -> Result<AgentTurnResult> {
-        self.run_turn_inner(
-            operation_id,
-            messages,
-            &self.prompt,
-            permissions,
-            events,
-            None,
-            cleanup,
+        completed(
+            self.run_turn_inner(
+                operation_id,
+                messages,
+                &self.prompt,
+                permissions,
+                events,
+                None,
+                cleanup,
+                self.max_tool_rounds,
+            )
+            .await?,
+            self.max_tool_rounds,
         )
-        .await
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn run_turn_with_prompt_in_scope(
+    pub(crate) async fn run_tranche_with_prompt_in_scope(
         &self,
         operation_id: OperationId,
         messages: &mut Vec<Message>,
@@ -286,7 +324,8 @@ impl Agent {
         events: AgentEventSender,
         durable: Option<DurableTurnServices>,
         cleanup: DeferredCleanup,
-    ) -> Result<AgentTurnResult> {
+        round_limit: usize,
+    ) -> Result<AgentTurnOutcome> {
         self.run_turn_inner(
             operation_id,
             messages,
@@ -295,8 +334,36 @@ impl Agent {
             events,
             durable,
             cleanup,
+            round_limit.min(self.max_tool_rounds),
         )
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn run_tranche_in_scope(
+        &self,
+        operation_id: OperationId,
+        messages: &mut Vec<Message>,
+        permissions: PermissionBrokerHandle,
+        events: AgentEventSender,
+        cleanup: DeferredCleanup,
+        round_limit: usize,
+    ) -> Result<AgentTurnOutcome> {
+        self.run_turn_inner(
+            operation_id,
+            messages,
+            &self.prompt,
+            permissions,
+            events,
+            None,
+            cleanup,
+            round_limit.min(self.max_tool_rounds),
+        )
+        .await
+    }
+
+    pub(crate) const fn max_tool_rounds(&self) -> usize {
+        self.max_tool_rounds
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -309,7 +376,11 @@ impl Agent {
         events: AgentEventSender,
         durable: Option<DurableTurnServices>,
         cleanup: DeferredCleanup,
-    ) -> Result<AgentTurnResult> {
+        round_limit: usize,
+    ) -> Result<AgentTurnOutcome> {
+        if round_limit == 0 {
+            bail!("native tool-round tranche must contain at least one round");
+        }
         let definitions = self.tools.definitions();
         let delta_sink = EventDeltaSink {
             operation_id,
@@ -317,7 +388,7 @@ impl Agent {
             usage: Mutex::new(UsageAccumulator::default()),
         };
 
-        for _ in 0..self.max_tool_rounds {
+        for _ in 0..round_limit {
             let request_messages = prompt.messages_for_request(messages)?;
             let step_id = StepId::new();
             delta_sink.begin_request();
@@ -336,10 +407,10 @@ impl Agent {
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
-                return Ok(AgentTurnResult {
+                return Ok(AgentTurnOutcome::Completed(AgentTurnResult {
                     message: assistant,
                     usage: delta_sink.usage(),
-                });
+                }));
             }
 
             messages.push(assistant.clone());
@@ -418,10 +489,10 @@ impl Agent {
             }
         }
 
-        bail!(
-            "model exceeded the {}-round tool limit",
-            self.max_tool_rounds
-        )
+        Ok(AgentTurnOutcome::RoundBudgetReached {
+            rounds: round_limit,
+            usage: delta_sink.usage(),
+        })
     }
 
     #[cfg(test)]
@@ -446,6 +517,15 @@ impl Agent {
 
     pub(crate) fn observe_boundary(&self, site: CrashSite) -> Result<()> {
         self.boundary_observer.reached(site)
+    }
+}
+
+fn completed(outcome: AgentTurnOutcome, round_limit: usize) -> Result<AgentTurnResult> {
+    match outcome {
+        AgentTurnOutcome::Completed(result) => Ok(result),
+        AgentTurnOutcome::RoundBudgetReached { .. } => {
+            bail!("model exceeded the {round_limit}-round tool limit")
+        }
     }
 }
 

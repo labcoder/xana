@@ -673,7 +673,7 @@ fn one_shot_json_is_one_versioned_envelope() {
     assert_success(&output);
     let envelope: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("one JSON envelope");
-    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["version"], 2);
     assert_eq!(envelope["status"], "success");
     assert_eq!(envelope["result"]["text"], "structured answer");
     assert_eq!(envelope["result"]["execution_owner"], "native");
@@ -727,7 +727,7 @@ fn one_shot_configuration_failure_has_stable_exit_and_json_shape() {
     assert_eq!(output.status.code(), Some(3));
     let envelope: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("configuration envelope");
-    assert_eq!(envelope["version"], 1);
+    assert_eq!(envelope["version"], 2);
     assert_eq!(envelope["status"], "error");
     assert_eq!(envelope["error"]["category"], "configuration");
     assert!(!output.stdout.contains(&0x1b));

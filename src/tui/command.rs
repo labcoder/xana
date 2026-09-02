@@ -7,6 +7,8 @@ pub(super) enum CommandId {
     Send,
     Newline,
     Interrupt,
+    Continue,
+    Stop,
     Steer,
     Model,
     Reasoning,
@@ -101,6 +103,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "compact",
         mode: "",
         summary: "Compact older native context without deleting raw history",
+        arguments: "",
+    },
+    CommandSpec {
+        id: CommandId::Continue,
+        name: "continue",
+        mode: "",
+        summary: "Continue the exact native turn suspended at its round budget",
         arguments: "",
     },
     CommandSpec {
@@ -325,6 +334,13 @@ pub(super) const COMMANDS: &[CommandSpec] = &[
         name: "steer",
         mode: "MESSAGE",
         summary: "Steer a capable active managed turn",
+        arguments: "",
+    },
+    CommandSpec {
+        id: CommandId::Stop,
+        name: "stop",
+        mode: "",
+        summary: "Stop the exact native turn suspended at its round budget",
         arguments: "",
     },
 ];

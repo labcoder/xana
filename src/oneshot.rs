@@ -4,7 +4,7 @@ use crate::identity::SessionId;
 use serde::Serialize;
 use std::{error::Error, fmt, io::Write, process::ExitCode};
 
-pub(crate) const ONE_SHOT_RESULT_VERSION: u16 = 1;
+pub(crate) const ONE_SHOT_RESULT_VERSION: u16 = 2;
 const MAX_DIAGNOSTIC_BYTES: usize = 4 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,7 @@ pub(crate) enum ExitCategory {
     Connection,
     Approval,
     Runtime,
+    Incomplete,
     Interrupted,
 }
 
@@ -32,6 +33,7 @@ impl ExitCategory {
             Self::Connection => 4,
             Self::Approval => 5,
             Self::Runtime => 6,
+            Self::Incomplete => 7,
             Self::Interrupted => 130,
         }
     }
@@ -148,7 +150,11 @@ pub(crate) fn write_failure(
             &mut *stdout,
             &ResultEnvelope {
                 version: ONE_SHOT_RESULT_VERSION,
-                status: "error",
+                status: if failure.category == ExitCategory::Incomplete {
+                    "incomplete"
+                } else {
+                    "error"
+                },
                 result: None,
                 error: Some(ErrorBody {
                     category: failure.category,
@@ -199,6 +205,15 @@ mod tests {
         let value: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
         assert_eq!(value["status"], "error");
         assert_eq!(value["error"]["category"], "approval");
+
+        let incomplete = OneShotFailure::new(ExitCategory::Incomplete, "resume interactively");
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        write_failure(OneShotOutput::Json, &incomplete, &mut stdout, &mut stderr).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(value["status"], "incomplete");
+        assert_eq!(value["error"]["category"], "incomplete");
+        assert_eq!(incomplete.category.code(), 7);
         assert_eq!(failure.exit_code(), ExitCode::from(5));
     }
 }

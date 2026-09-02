@@ -432,6 +432,31 @@ impl DurableSession {
         self.restored.operation_details.get(&operation_id).cloned()
     }
 
+    pub(crate) fn round_budget_suspension(
+        &self,
+    ) -> Option<crate::native_runtime::RoundBudgetSuspension> {
+        self.restored
+            .operations
+            .iter()
+            .rev()
+            .filter(|(_, state)| **state == OperationState::Suspended)
+            .find_map(|(operation_id, _)| {
+                let operation = self.restored.operation_details.get(operation_id)?;
+                let suspension = operation.suspensions.iter().rev().find_map(|reason| {
+                    let crate::operation::SuspensionReason::RoundBudgetReached(suspension) = reason
+                    else {
+                        return None;
+                    };
+                    Some(suspension)
+                })?;
+                (!operation
+                    .round_budget_decisions
+                    .iter()
+                    .any(|decision| decision.suspension_id == suspension.id))
+                .then(|| suspension.clone())
+            })
+    }
+
     pub(crate) fn append_message(&mut self, message: Message) -> Result<ConversationEntryId> {
         let entry_id = ConversationEntryId::new();
         self.append(SessionRecord::ConversationEntryAppended {

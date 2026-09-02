@@ -51,6 +51,7 @@ uuid_id!(NamedValueId);
 uuid_id!(OrchestrationPlanId);
 uuid_id!(ProjectId);
 uuid_id!(CompactionId);
+uuid_id!(RoundBudgetId);
 
 impl Default for OrchestrationPlanId {
     fn default() -> Self {

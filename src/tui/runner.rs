@@ -294,7 +294,7 @@ impl ExecutionOwner for NativeOwner<'_> {
         let terminal = matches!(
             event,
             AgentEvent::OperationStateChanged {
-                state: OperationState::Finished(_) | OperationState::Suspended,
+                state: OperationState::Finished(_),
                 ..
             } | AgentEvent::OperationFailed { .. }
         );

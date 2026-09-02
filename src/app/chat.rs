@@ -693,6 +693,7 @@ async fn run_once(
     .with_runtime_telemetry(crate::diagnostics::runtime_telemetry());
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
+    let round_budget_suspension = session.round_budget_suspension();
     let runtime = match child_supervisor {
         Some((handle, supervisor)) => RuntimeHandle::spawn_persistent_with_supervisor(
             agent,
@@ -725,6 +726,7 @@ async fn run_once(
         resumed,
         repair_truncate_to,
         unfinished,
+        round_budget_suspension,
         children: restored_children,
         workspace_root: workspace_root.clone(),
         artifact_store,

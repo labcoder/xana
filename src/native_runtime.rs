@@ -8,14 +8,16 @@ mod protocol;
 
 pub(crate) use protocol::{
     AgentEvent, AgentEventSender, DroppedAgentEvents, OperationOutcome, OperationState,
+    RoundBudgetAction, RoundBudgetCommitFacts, RoundBudgetDecision, RoundBudgetSuspension,
     RuntimeCommand,
 };
 
 use crate::{
     agent::{
-        Agent, AgentTurnResult, ConversationCommit, ConversationCommitSender, DurableTurnServices,
+        Agent, AgentTurnOutcome, AgentTurnUsage, ConversationCommit, ConversationCommitSender,
+        DurableTurnServices,
     },
-    identity::OperationId,
+    identity::{OperationId, RoundBudgetId},
     message::{Message, Role},
     operation::{CrashSite, DurableOperationCommand, DurableOperationSender, SuspensionReason},
     orchestration::{
@@ -31,13 +33,14 @@ use crate::{
 };
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
-use std::{error::Error, fmt, future::Future, sync::Arc};
+use std::{collections::BTreeMap, error::Error, fmt, future::Future, sync::Arc};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
 };
 
 const COMMAND_CAPACITY: usize = 16;
+const MAX_ROOT_TOOL_ROUNDS: usize = 256;
 
 pub(crate) struct RuntimeHandle {
     commands: mpsc::Sender<RuntimeCommand>,
@@ -57,6 +60,7 @@ struct Runtime {
     agent: Arc<Agent>,
     history: Vec<Message>,
     active: Option<ActiveOperation>,
+    suspended_round_budget: Option<RoundBudgetSuspension>,
     commands: mpsc::Receiver<RuntimeCommand>,
     events: mpsc::UnboundedSender<AgentEvent>,
     permissions: PermissionBrokerHandle,
@@ -82,12 +86,15 @@ struct ActiveOperation {
     progress_committed: bool,
     task: JoinHandle<()>,
     cleanup: DeferredCleanup,
+    rounds_before: usize,
+    continuations_used: usize,
+    usage_before: AgentTurnUsage,
 }
 
 struct OperationCompletion {
     operation_id: OperationId,
     history: Vec<Message>,
-    result: Result<AgentTurnResult, String>,
+    result: Result<AgentTurnOutcome, String>,
 }
 
 struct RuntimeSeed {
@@ -96,6 +103,7 @@ struct RuntimeSeed {
     history: Vec<Message>,
     initial_history: Vec<Message>,
     compaction_checkpoint: Option<CompactionCheckpoint>,
+    suspended_round_budget: Option<RoundBudgetSuspension>,
 }
 
 impl RuntimeSeed {
@@ -107,6 +115,7 @@ impl RuntimeSeed {
             history: Vec::new(),
             initial_history: Vec::new(),
             compaction_checkpoint: None,
+            suspended_round_budget: None,
         }
     }
 
@@ -118,12 +127,14 @@ impl RuntimeSeed {
         let continuation = session
             .prompt_continuation()
             .map_err(|_| RuntimeUnavailable)?;
+        let suspended_round_budget = session.round_budget_suspension();
         Ok(Self {
             session: Some(session),
             prompt_assembler: Some(prompt_assembler),
             history: continuation.history,
             initial_history,
             compaction_checkpoint: continuation.checkpoint,
+            suspended_round_budget,
         })
     }
 }
@@ -187,6 +198,7 @@ impl RuntimeHandle {
             history,
             initial_history,
             compaction_checkpoint,
+            suspended_round_budget,
         } = seed;
         let (command_sender, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (event_sender, event_receiver) = mpsc::unbounded_channel();
@@ -217,6 +229,7 @@ impl RuntimeHandle {
             agent: Arc::new(agent),
             history,
             active: None,
+            suspended_round_budget,
             commands: command_receiver,
             events: event_sender,
             permissions,
@@ -294,6 +307,9 @@ impl RuntimeHandle {
 
 impl Runtime {
     async fn run(mut self) -> RuntimeExit {
+        if let Some(suspension) = self.suspended_round_budget.clone() {
+            self.emit(AgentEvent::RoundBudgetReached { suspension });
+        }
         loop {
             tokio::select! {
                 command = self.commands.recv() => {
@@ -353,9 +369,9 @@ impl Runtime {
                 self.start_turn(operation_id, input, images).await;
             }
             RuntimeCommand::ClearConversation => {
-                if self.active.is_some() {
+                if self.active.is_some() || self.suspended_round_budget.is_some() {
                     self.emit(AgentEvent::CommandRejected {
-                        reason: "cannot clear conversation while an operation is active".to_owned(),
+                        reason: "cannot clear conversation while an operation is active or awaiting a round-budget decision".to_owned(),
                     });
                 } else {
                     if let Some(session) = &mut self.session
@@ -372,9 +388,9 @@ impl Runtime {
                 }
             }
             RuntimeCommand::CompactConversation { operation_id } => {
-                if self.active.is_some() {
+                if self.active.is_some() || self.suspended_round_budget.is_some() {
                     self.emit(AgentEvent::CommandRejected {
-                        reason: "cannot compact conversation while an operation is active"
+                        reason: "cannot compact conversation while an operation is active or awaiting a round-budget decision"
                             .to_owned(),
                     });
                 } else {
@@ -407,6 +423,14 @@ impl Runtime {
                         .to_owned(),
                 });
             }
+            RuntimeCommand::DecideRoundBudget {
+                operation_id,
+                suspension_id,
+                action,
+            } => {
+                self.decide_round_budget(operation_id, suspension_id, action)
+                    .await;
+            }
             RuntimeCommand::InterruptOperation { operation_id } => {
                 match self.active.as_ref().map(|active| active.operation_id) {
                     Some(active) if active == operation_id => self.interrupt_active().await,
@@ -415,6 +439,16 @@ impl Runtime {
                             "cannot interrupt operation {operation_id}; active operation is {active}"
                         ),
                     }),
+                    None if self
+                        .suspended_round_budget
+                        .as_ref()
+                        .is_some_and(|suspension| suspension.operation_id == operation_id) => {
+                        self.emit(AgentEvent::CommandRejected {
+                            reason: format!(
+                                "operation {operation_id} is already suspended; use its exact stop decision"
+                            ),
+                        })
+                    }
                     None => self.emit(AgentEvent::CommandRejected {
                         reason: format!("cannot interrupt operation {operation_id}; no root turn is active"),
                     }),
@@ -549,6 +583,15 @@ impl Runtime {
             });
             return;
         }
+        if let Some(suspended) = &self.suspended_round_budget {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!(
+                    "operation {} is suspended at round budget {}; continue or stop it before starting another turn",
+                    suspended.operation_id, suspended.id
+                ),
+            });
+            return;
+        }
 
         let mut content = vec![crate::message::ContentBlock::Text(input)];
         content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
@@ -610,12 +653,6 @@ impl Runtime {
             }
         }
 
-        let agent = Arc::clone(&self.agent);
-        let permissions = self.permissions.clone();
-        let events = self.events.clone();
-        let completions = self.completion_sender.clone();
-        let conversation_committer = self.conversation_committer.clone();
-        let durable_operation_sender = self.durable_operation_sender.clone();
         let input_entry_id = if let Some(session) = &mut self.session {
             match session.append_message(user_message.clone()) {
                 Ok(entry_id) => Some(entry_id),
@@ -632,7 +669,6 @@ impl Runtime {
             None
         };
         self.history.push(user_message);
-        let mut history = self.history.clone();
         if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
             if let Err(error) = session.append_record(SessionRecord::OperationAccepted {
                 operation_id,
@@ -660,7 +696,37 @@ impl Runtime {
             operation_id,
             state: OperationState::Running,
         });
-        let persist_from = history.len();
+        let persist_from = self.history.len();
+        let round_limit = self.agent.max_tool_rounds();
+        self.spawn_tranche(
+            operation_id,
+            prompt,
+            persist_from,
+            0,
+            0,
+            AgentTurnUsage::empty(),
+            round_limit,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_tranche(
+        &mut self,
+        operation_id: OperationId,
+        prompt: Option<PromptSnapshot>,
+        persist_from: usize,
+        rounds_before: usize,
+        continuations_used: usize,
+        usage_before: AgentTurnUsage,
+        round_limit: usize,
+    ) {
+        let agent = Arc::clone(&self.agent);
+        let permissions = self.permissions.clone();
+        let events = self.events.clone();
+        let completions = self.completion_sender.clone();
+        let conversation_committer = self.conversation_committer.clone();
+        let durable_operation_sender = self.durable_operation_sender.clone();
+        let mut history = self.history.clone();
         let cleanup = DeferredCleanup::default();
         let operation_cleanup = cleanup.clone();
         let task = tokio::spawn(async move {
@@ -668,7 +734,7 @@ impl Runtime {
                 match prompt {
                     Some(prompt) => {
                         agent
-                            .run_turn_with_prompt_in_scope(
+                            .run_tranche_with_prompt_in_scope(
                                 operation_id,
                                 &mut history,
                                 &prompt,
@@ -679,17 +745,19 @@ impl Runtime {
                                     durable_operation_sender,
                                 )),
                                 operation_cleanup,
+                                round_limit,
                             )
                             .await
                     }
                     None => {
                         agent
-                            .run_turn_with_usage_in_scope(
+                            .run_tranche_in_scope(
                                 operation_id,
                                 &mut history,
                                 permissions,
                                 events.into(),
                                 operation_cleanup,
+                                round_limit,
                             )
                             .await
                     }
@@ -700,7 +768,7 @@ impl Runtime {
             .map_err(|_| anyhow::anyhow!("native operation task panicked"))
             .and_then(|result| result)
             .map_err(|error| error.to_string());
-            if let Ok(result) = &result {
+            if let Ok(AgentTurnOutcome::Completed(result)) = &result {
                 history.push(result.message.clone());
             }
             let _ = completions.send(OperationCompletion {
@@ -715,6 +783,9 @@ impl Runtime {
             progress_committed: self.session.is_some(),
             task,
             cleanup,
+            rounds_before,
+            continuations_used,
+            usage_before,
         });
     }
 
@@ -739,10 +810,13 @@ impl Runtime {
 
         if let Some(session) = &mut self.session {
             let persist_from = if active.progress_committed {
-                if completion.result.is_ok() {
-                    completion.history.len().saturating_sub(1)
-                } else {
-                    completion.history.len()
+                match &completion.result {
+                    Ok(AgentTurnOutcome::Completed(_)) => {
+                        completion.history.len().saturating_sub(1)
+                    }
+                    Ok(AgentTurnOutcome::RoundBudgetReached { .. }) | Err(_) => {
+                        completion.history.len()
+                    }
                 }
             } else {
                 active.persist_from
@@ -763,8 +837,9 @@ impl Runtime {
         }
 
         match completion.result {
-            Ok(result) => {
+            Ok(AgentTurnOutcome::Completed(result)) => {
                 self.history = completion.history;
+                let usage = active.usage_before.merge(result.usage);
                 if active.progress_committed
                     && !self.commit_operation_finished(
                         completion.operation_id,
@@ -775,7 +850,7 @@ impl Runtime {
                 }
                 self.emit(AgentEvent::UsageObserved {
                     operation_id: completion.operation_id,
-                    usage: result.usage,
+                    usage,
                 });
                 self.emit(AgentEvent::AssistantMessage {
                     operation_id: completion.operation_id,
@@ -784,6 +859,43 @@ impl Runtime {
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id: completion.operation_id,
                     state: OperationState::Finished(OperationOutcome::Completed),
+                });
+            }
+            Ok(AgentTurnOutcome::RoundBudgetReached { rounds, usage }) => {
+                self.history = completion.history;
+                let usage = active.usage_before.merge(usage);
+                let rounds_consumed = active.rounds_before.saturating_add(rounds);
+                let suspension = self.round_budget_suspension(
+                    completion.operation_id,
+                    rounds,
+                    rounds_consumed,
+                    active.continuations_used,
+                    usage,
+                );
+                if active.progress_committed {
+                    let Some(session) = &mut self.session else {
+                        unreachable!("durably committed operation has a session")
+                    };
+                    if let Err(error) = session.append_record(SessionRecord::OperationSuspended {
+                        operation_id: completion.operation_id,
+                        reason: SuspensionReason::RoundBudgetReached(suspension.clone()),
+                    }) {
+                        self.agent.record_storage_failure(
+                            completion.operation_id,
+                            "round-budget-suspension",
+                        );
+                        self.emit(AgentEvent::OperationFailed {
+                            operation_id: completion.operation_id,
+                            reason: format!("could not commit round-budget suspension: {error:#}"),
+                        });
+                        return;
+                    }
+                }
+                self.suspended_round_budget = Some(suspension.clone());
+                self.emit(AgentEvent::RoundBudgetReached { suspension });
+                self.emit(AgentEvent::OperationStateChanged {
+                    operation_id: completion.operation_id,
+                    state: OperationState::Suspended,
                 });
             }
             Err(reason) => {
@@ -828,6 +940,159 @@ impl Runtime {
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id: completion.operation_id,
                     state: OperationState::Finished(OperationOutcome::Failed),
+                });
+            }
+        }
+    }
+
+    fn round_budget_suspension(
+        &self,
+        operation_id: OperationId,
+        last_tranche_rounds: usize,
+        rounds_consumed: usize,
+        continuations_used: usize,
+        usage: AgentTurnUsage,
+    ) -> RoundBudgetSuspension {
+        let operation = self
+            .session
+            .as_ref()
+            .and_then(|session| session.restored_operation(operation_id));
+        let committed =
+            operation
+                .as_ref()
+                .map_or_else(RoundBudgetCommitFacts::empty, |operation| {
+                    RoundBudgetCommitFacts {
+                        steps: usize_to_u32(operation.step_order.len()),
+                        invocations: usize_to_u32(operation.invocation_order.len()),
+                        results: usize_to_u32(operation.results.len()),
+                    }
+                });
+        let repeated_tool_patterns = operation.as_ref().map_or(0, repeated_tool_pattern_count);
+        let (rounds_consumed, remaining_rounds, allowed_actions) =
+            root_round_budget(rounds_consumed);
+        RoundBudgetSuspension {
+            id: RoundBudgetId::new(),
+            operation_id,
+            soft_round_limit: usize_to_u32(self.agent.max_tool_rounds()),
+            last_tranche_rounds: usize_to_u32(last_tranche_rounds),
+            rounds_consumed: usize_to_u32(rounds_consumed),
+            hard_round_limit: usize_to_u32(MAX_ROOT_TOOL_ROUNDS),
+            remaining_rounds: usize_to_u32(remaining_rounds),
+            continuations_used: usize_to_u32(continuations_used),
+            committed,
+            repeated_tool_patterns,
+            usage,
+            allowed_actions,
+        }
+    }
+
+    async fn decide_round_budget(
+        &mut self,
+        operation_id: OperationId,
+        suspension_id: RoundBudgetId,
+        action: RoundBudgetAction,
+    ) {
+        let Some(suspension) = self.suspended_round_budget.clone() else {
+            self.emit(AgentEvent::CommandRejected {
+                reason: "no root operation is awaiting a round-budget decision".to_owned(),
+            });
+            return;
+        };
+        if suspension.operation_id != operation_id || suspension.id != suspension_id {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!(
+                    "round-budget decision does not match suspended operation {} and suspension {}",
+                    suspension.operation_id, suspension.id
+                ),
+            });
+            return;
+        }
+        if !suspension.allowed_actions.contains(&action) {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!("round-budget action {action:?} is not allowed"),
+            });
+            return;
+        }
+        if self.active.is_some() {
+            self.emit(AgentEvent::CommandRejected {
+                reason: "cannot decide a round budget while a root operation is running".to_owned(),
+            });
+            return;
+        }
+
+        let prompt = if action == RoundBudgetAction::Continue {
+            match self.prepare_turn_prompt() {
+                Ok(prompt) => prompt,
+                Err(reason) => {
+                    self.emit(AgentEvent::CommandRejected { reason });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let decision = RoundBudgetDecision {
+            operation_id,
+            suspension_id,
+            action,
+        };
+        if let Some(session) = &mut self.session
+            && let Err(error) = session.append_record(SessionRecord::RoundBudgetDecisionAppended {
+                decision: decision.clone(),
+            })
+        {
+            self.agent
+                .record_storage_failure(operation_id, "round-budget-decision");
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!("could not commit round-budget decision: {error:#}"),
+            });
+            return;
+        }
+        if let Err(error) = self
+            .agent
+            .observe_boundary(CrashSite::AfterRoundBudgetDecision)
+        {
+            self.suspended_round_budget = None;
+            self.emit(AgentEvent::OperationFailed {
+                operation_id,
+                reason: format!("operation stopped after round-budget decision commit: {error:#}"),
+            });
+            return;
+        }
+        self.suspended_round_budget = None;
+        self.emit(AgentEvent::RoundBudgetDecisionCommitted {
+            decision: decision.clone(),
+        });
+
+        match action {
+            RoundBudgetAction::Continue => {
+                self.emit(AgentEvent::OperationStateChanged {
+                    operation_id,
+                    state: OperationState::Running,
+                });
+                let round_limit = usize::try_from(suspension.remaining_rounds)
+                    .unwrap_or(usize::MAX)
+                    .min(self.agent.max_tool_rounds());
+                self.spawn_tranche(
+                    operation_id,
+                    prompt,
+                    self.history.len(),
+                    usize::try_from(suspension.rounds_consumed).unwrap_or(usize::MAX),
+                    usize::try_from(suspension.continuations_used)
+                        .unwrap_or(usize::MAX)
+                        .saturating_add(1),
+                    suspension.usage,
+                    round_limit,
+                );
+            }
+            RoundBudgetAction::Stop => {
+                self.emit(AgentEvent::UsageObserved {
+                    operation_id,
+                    usage: suspension.usage,
+                });
+                self.emit(AgentEvent::OperationStateChanged {
+                    operation_id,
+                    state: OperationState::Finished(OperationOutcome::Declined),
                 });
             }
         }
@@ -928,18 +1193,27 @@ impl Runtime {
                 operation_id,
                 state,
             } => {
-                if *state == OperationState::Suspended
-                    && let Some(session) = &mut self.session
-                    && let Err(error) = session.append_record(SessionRecord::OperationSuspended {
-                        operation_id: *operation_id,
-                        reason: SuspensionReason::Permission,
-                    })
-                {
-                    self.emit(AgentEvent::OperationFailed {
-                        operation_id: *operation_id,
-                        reason: format!("could not commit operation suspension: {error:#}"),
-                    });
-                    return;
+                if let Some(session) = &mut self.session {
+                    let record = match state {
+                        OperationState::Suspended => Some(SessionRecord::OperationSuspended {
+                            operation_id: *operation_id,
+                            reason: SuspensionReason::Permission,
+                        }),
+                        OperationState::Running => Some(SessionRecord::OperationStateChanged {
+                            operation_id: *operation_id,
+                            state: OperationState::Running,
+                        }),
+                        OperationState::Finished(_) => None,
+                    };
+                    if let Some(record) = record
+                        && let Err(error) = session.append_record(record)
+                    {
+                        self.emit(AgentEvent::OperationFailed {
+                            operation_id: *operation_id,
+                            reason: format!("could not commit operation state: {error:#}"),
+                        });
+                        return;
+                    }
                 }
                 true
             }
@@ -1092,6 +1366,50 @@ impl Runtime {
             .as_ref()
             .is_some_and(|session| session.operation_has_pending(operation_id))
     }
+}
+
+impl RoundBudgetCommitFacts {
+    const fn empty() -> Self {
+        Self {
+            steps: 0,
+            invocations: 0,
+            results: 0,
+        }
+    }
+}
+
+fn repeated_tool_pattern_count(operation: &crate::session::RestoredOperation) -> u32 {
+    let mut patterns = BTreeMap::<String, u32>::new();
+    for invocation_id in &operation.invocation_order {
+        let Some(intent) = operation.intents.get(invocation_id) else {
+            continue;
+        };
+        let Ok(pattern) = serde_json::to_string(&(&intent.target, &intent.final_arguments)) else {
+            continue;
+        };
+        patterns
+            .entry(pattern)
+            .and_modify(|count| *count = count.saturating_add(1))
+            .or_insert(1);
+    }
+    patterns
+        .values()
+        .map(|count| count.saturating_sub(1))
+        .fold(0, u32::saturating_add)
+}
+
+fn usize_to_u32(value: usize) -> u32 {
+    u32::try_from(value).unwrap_or(u32::MAX)
+}
+
+fn root_round_budget(rounds_consumed: usize) -> (usize, usize, Vec<RoundBudgetAction>) {
+    let rounds_consumed = rounds_consumed.min(MAX_ROOT_TOOL_ROUNDS);
+    let remaining_rounds = MAX_ROOT_TOOL_ROUNDS.saturating_sub(rounds_consumed);
+    let mut allowed_actions = vec![RoundBudgetAction::Stop];
+    if remaining_rounds > 0 {
+        allowed_actions.insert(0, RoundBudgetAction::Continue);
+    }
+    (rounds_consumed, remaining_rounds, allowed_actions)
 }
 
 async fn await_supervisor_response<T>(

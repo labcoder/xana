@@ -313,6 +313,8 @@ pub(super) async fn dispatch_managed_effect(
         UpdateEffect::CompactConversation { .. } => {
             state.set_status("This managed runtime owns its context; Xana compaction is unavailable")
         }
+        UpdateEffect::DecideRoundBudget { .. } => state
+            .set_status("Managed runtimes own their continuation and do not use Xana round tranches"),
         UpdateEffect::OpenModelPicker => state.open_model_picker(
             driver
                 .models
@@ -619,6 +621,8 @@ pub(super) async fn dispatch_effect(
                         .reason
                         .unwrap_or_else(|| "interrupt was rejected".to_owned()),
                 );
+            } else {
+                *active_root = None;
             }
         }
         UpdateEffect::Steer {
@@ -824,6 +828,41 @@ pub(super) async fn dispatch_effect(
                     result
                         .reason
                         .unwrap_or_else(|| "compaction was rejected".to_owned()),
+                );
+            }
+        }
+        UpdateEffect::DecideRoundBudget { suspension, action } => {
+            let mut lease = None;
+            if action == crate::native_runtime::RoundBudgetAction::Continue && active_root.is_none()
+            {
+                match workspace_host.acquire_root(conversation.clone()) {
+                    Ok(acquired) => lease = Some(acquired),
+                    Err(error) => {
+                        state.set_status(format!("could not continue turn: {error}"));
+                        return Ok(None);
+                    }
+                }
+            }
+            let result = client
+                .send(RuntimeCommand::DecideRoundBudget {
+                    operation_id: suspension.operation_id,
+                    suspension_id: suspension.id,
+                    action,
+                })
+                .await
+                .context("native TUI runtime stopped during round-budget decision")?;
+            if result.accepted {
+                if let Some(lease) = lease {
+                    *active_root = Some(lease);
+                }
+                if action == crate::native_runtime::RoundBudgetAction::Stop {
+                    *active_root = None;
+                }
+            } else {
+                state.set_status(
+                    result
+                        .reason
+                        .unwrap_or_else(|| "round-budget decision was rejected".to_owned()),
                 );
             }
         }
