@@ -164,6 +164,7 @@ async fn run_with_target(
                 restart_tui,
                 tui_required,
                 tui_continuation,
+                desktop_restart,
             } => {
                 let Some(restart) = continue_after_chat_exit(
                     paths,
@@ -172,6 +173,7 @@ async fn run_with_target(
                     restart_tui,
                     tui_required,
                     tui_continuation,
+                    desktop_restart,
                 )
                 .await?
                 else {
@@ -196,7 +198,13 @@ enum ChatRun {
         restart_tui: bool,
         tui_required: bool,
         tui_continuation: Option<tui::TuiContinuation>,
+        desktop_restart: Option<DesktopRestart>,
     },
+}
+
+struct DesktopRestart {
+    bridge: crate::desktop::Bridge,
+    workspace: std::path::PathBuf,
 }
 
 struct ChatRestart {
@@ -226,6 +234,15 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         stream_sequence,
     } = intent;
     let presentation = surface.profile();
+    let desktop_restart = match &surface {
+        ChatSurface::Desktop {
+            bridge, workspace, ..
+        } => Some(DesktopRestart {
+            bridge: bridge.clone(),
+            workspace: workspace.clone(),
+        }),
+        _ => None,
+    };
     match (&surface, one_shot.is_none()) {
         (ChatSurface::Plain(mode), true) => {
             let mut output = anstream::stdout().lock();
@@ -655,6 +672,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                     restart_tui,
                     tui_required,
                     tui_continuation,
+                    desktop_restart,
                 })
             }
         };
@@ -1021,9 +1039,15 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             (ChatExit::Quit, None)
         }
         ChatSurface::Desktop { bridge, .. } => {
-            let exit =
-                crate::desktop::run_native(runtime, &header, workspace_host, conversation, bridge)
-                    .await?;
+            let exit = crate::desktop::run_native(
+                runtime,
+                &header,
+                workspace_host,
+                conversation,
+                bridge,
+                paths,
+            )
+            .await?;
             (exit, None)
         }
     };
@@ -1033,6 +1057,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         restart_tui,
         tui_required,
         tui_continuation,
+        desktop_restart,
     })
 }
 
@@ -1043,13 +1068,18 @@ async fn continue_after_chat_exit(
     restart_tui: bool,
     tui_required: bool,
     tui_continuation: Option<tui::TuiContinuation>,
+    desktop_restart: Option<DesktopRestart>,
 ) -> Result<Option<ChatRestart>> {
     if exit == ChatExit::Quit {
         return Ok(None);
     }
-    let mut force_new_conversation = exit == ChatExit::NewConversation;
+    let mut force_new_conversation = matches!(
+        exit,
+        ChatExit::NewConversation | ChatExit::DesktopNewConversation { .. }
+    );
     let mut conversation_target = match &exit {
         ChatExit::SwitchConversation(conversation) => Some(conversation.clone()),
+        ChatExit::DesktopSwitchConversation { conversation, .. } => Some(conversation.clone()),
         _ => None,
     };
     let mut continue_chat = false;
@@ -1110,7 +1140,20 @@ async fn continue_after_chat_exit(
             return Ok(None);
         }
     }
-    let restart_surface = if restart_tui {
+    let restart_surface = if let Some(mut desktop) = desktop_restart {
+        match &exit {
+            ChatExit::DesktopNewConversation { workspace }
+            | ChatExit::DesktopSwitchConversation { workspace, .. } => {
+                desktop.workspace = workspace.clone();
+            }
+            _ => {}
+        }
+        ChatSurface::Desktop {
+            bridge: desktop.bridge,
+            presentation,
+            workspace: desktop.workspace,
+        }
+    } else if restart_tui {
         let preferences =
             presentation::PresentationPreferences::load(&paths.presentation_file()).preferences;
         let presentation = super::resolved_presentation(paths, true, true);

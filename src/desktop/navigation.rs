@@ -1,0 +1,662 @@
+//! Bounded, presentation-safe Project and Conversation navigation for Desktop.
+
+use super::{DesktopError, DesktopErrorCode};
+use crate::{
+    bounded_file,
+    message::{ContentBlock, Role},
+    paths::XanaPaths,
+    private_state::ProjectLifecycle,
+    project::{Project, ProjectStore, WorkspaceStatus},
+    workspace_host::{ConversationRef, ConversationState, WorkspaceHost},
+};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashSet,
+    io::Write as _,
+    path::{Path, PathBuf},
+    time::UNIX_EPOCH,
+};
+
+const SNAPSHOT_VERSION: u16 = 1;
+const PREFERENCE_VERSION: u16 = 1;
+const MAX_PREFERENCE_BYTES: usize = 16 * 1024;
+const MAX_PROJECTS: usize = 10_000;
+const MAX_CONVERSATIONS: usize = 100_000;
+const MAX_TITLE_BYTES: usize = 160;
+const TITLE_PAGE_SIZE: usize = 32;
+
+/// The two supported Desktop sidebar presentations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopSidebarMode {
+    #[default]
+    Full,
+    Mini,
+}
+
+/// Availability of one Project's workspace without exposing filesystem authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopWorkspaceStatus {
+    Available,
+    Missing,
+    ChangedIdentity,
+}
+
+impl DesktopWorkspaceStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Missing => "missing",
+            Self::ChangedIdentity => "changed_identity",
+        }
+    }
+}
+
+/// Runtime state of one retained Conversation in the navigation projection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopNavigationConversationState {
+    Idle,
+    Active,
+    Controlled,
+    Observable,
+    Unavailable,
+}
+
+impl DesktopNavigationConversationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Active => "active",
+            Self::Controlled => "controlled",
+            Self::Observable => "observable",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// One bounded Conversation row keyed by Xana-owned stable identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopConversationNode {
+    pub id: String,
+    pub title: String,
+    pub owner: String,
+    pub connection: String,
+    pub workspace_id: String,
+    pub workspace_label: String,
+    pub state: DesktopNavigationConversationState,
+    pub selected: bool,
+    pub needs_attention: bool,
+    pub record_count: Option<usize>,
+    pub modified_unix_ms: Option<u64>,
+}
+
+/// One optional local Project and the Conversations assigned to its workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProjectNode {
+    pub id: String,
+    pub name: String,
+    pub workspace_label: String,
+    pub workspace_status: DesktopWorkspaceStatus,
+    pub archived: bool,
+    pub conversations: Vec<DesktopConversationNode>,
+}
+
+/// Atomic navigation state consumed by graphical clients.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopNavigationSnapshot {
+    pub version: u16,
+    pub sidebar_mode: DesktopSidebarMode,
+    pub projects: Vec<DesktopProjectNode>,
+    pub ungrouped: Vec<DesktopConversationNode>,
+    pub selected_conversation: Option<String>,
+    pub project_count: usize,
+    pub conversation_count: usize,
+    pub truncated: bool,
+}
+
+impl DesktopNavigationSnapshot {
+    pub fn empty(sidebar_mode: DesktopSidebarMode) -> Self {
+        Self {
+            version: SNAPSHOT_VERSION,
+            sidebar_mode,
+            projects: Vec::new(),
+            ungrouped: Vec::new(),
+            selected_conversation: None,
+            project_count: 0,
+            conversation_count: 0,
+            truncated: false,
+        }
+    }
+
+    pub fn conversation(&self, id: &str) -> Option<&DesktopConversationNode> {
+        self.ungrouped
+            .iter()
+            .find(|entry| entry.id == id)
+            .or_else(|| {
+                self.projects
+                    .iter()
+                    .flat_map(|project| &project.conversations)
+                    .find(|entry| entry.id == id)
+            })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopNavigationPreferences {
+    version: u16,
+    sidebar_mode: DesktopSidebarMode,
+}
+
+impl Default for DesktopNavigationPreferences {
+    fn default() -> Self {
+        Self {
+            version: PREFERENCE_VERSION,
+            sidebar_mode: DesktopSidebarMode::Full,
+        }
+    }
+}
+
+pub(super) struct DesktopNavigationStore {
+    paths: XanaPaths,
+    launch_workspace: PathBuf,
+    preference_file: PathBuf,
+}
+
+pub(super) struct DesktopConversationDestination {
+    pub(super) workspace: PathBuf,
+    pub(super) conversation: ConversationRef,
+}
+
+impl DesktopNavigationStore {
+    pub(super) fn open(paths: &XanaPaths, launch_workspace: &Path) -> Result<Self, DesktopError> {
+        let launch_workspace = launch_workspace.canonicalize().map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::WorkspaceUnavailable,
+                format!(
+                    "could not resolve Desktop launch workspace {}: {error}",
+                    launch_workspace.display()
+                ),
+            )
+        })?;
+        Ok(Self {
+            paths: paths.clone(),
+            launch_workspace,
+            preference_file: paths
+                .data_dir()
+                .join("frontend")
+                .join("desktop-navigation.toml"),
+        })
+    }
+
+    pub(super) fn snapshot(
+        &self,
+        selected: Option<&str>,
+    ) -> Result<DesktopNavigationSnapshot, DesktopError> {
+        let sidebar_mode = self.load_preferences().sidebar_mode;
+        let project_store = ProjectStore::open(&self.paths).map_err(navigation_error)?;
+        let projects = project_store.list(true).map_err(navigation_error)?;
+        let project_count = projects.len();
+        let mut output_projects = Vec::with_capacity(project_count.min(MAX_PROJECTS));
+        let mut ungrouped = Vec::new();
+        let mut seen_workspaces = HashSet::new();
+        let mut conversation_count = 0usize;
+        let mut truncated = project_count > MAX_PROJECTS;
+
+        for project in projects.into_iter().take(MAX_PROJECTS) {
+            let canonical = project.canonical_workspace.clone();
+            seen_workspaces.insert(canonical.clone());
+            let (workspace_status, conversations) =
+                self.project_conversations(&project_store, &project, selected)?;
+            conversation_count = conversation_count.saturating_add(conversations.len());
+            let (assigned, loose): (Vec<_>, Vec<_>) = conversations
+                .into_iter()
+                .partition(|(_, assigned)| *assigned);
+            ungrouped.extend(loose.into_iter().map(|(conversation, _)| conversation));
+            output_projects.push(DesktopProjectNode {
+                id: project.id.to_string(),
+                name: bounded(project.name),
+                workspace_label: workspace_label(&canonical),
+                workspace_status,
+                archived: project.lifecycle == ProjectLifecycle::Archived,
+                conversations: assigned
+                    .into_iter()
+                    .map(|(conversation, _)| conversation)
+                    .collect(),
+            });
+            if conversation_count >= MAX_CONVERSATIONS {
+                truncated = true;
+                break;
+            }
+        }
+
+        if conversation_count < MAX_CONVERSATIONS
+            && !seen_workspaces.contains(&self.launch_workspace)
+        {
+            let host = WorkspaceHost::open(self.paths.data_dir(), &self.launch_workspace)
+                .map_err(navigation_error)?;
+            let snapshot = host.snapshot().map_err(navigation_error)?;
+            let mut projected = project_workspace_conversations(&host, snapshot, selected)?;
+            conversation_count = conversation_count.saturating_add(projected.len());
+            ungrouped.extend(projected.drain(..).map(|(conversation, _)| conversation));
+        }
+
+        if conversation_count > MAX_CONVERSATIONS {
+            truncated = true;
+        }
+        trim_conversations(&mut output_projects, &mut ungrouped, MAX_CONVERSATIONS);
+
+        Ok(DesktopNavigationSnapshot {
+            version: SNAPSHOT_VERSION,
+            sidebar_mode,
+            projects: output_projects,
+            ungrouped,
+            selected_conversation: selected.map(ToOwned::to_owned),
+            project_count,
+            conversation_count: conversation_count.min(MAX_CONVERSATIONS),
+            truncated,
+        })
+    }
+
+    pub(super) fn set_sidebar_mode(&self, mode: DesktopSidebarMode) -> Result<(), DesktopError> {
+        let preferences = DesktopNavigationPreferences {
+            sidebar_mode: mode,
+            ..self.load_preferences()
+        };
+        if let Some(parent) = self.preference_file.parent() {
+            std::fs::create_dir_all(parent).map_err(preference_error)?;
+        }
+        let rendered = toml::to_string_pretty(&preferences).map_err(preference_error)?;
+        let mut file = atomic_write_file::AtomicWriteFile::open(&self.preference_file)
+            .map_err(preference_error)?;
+        file.write_all(rendered.as_bytes())
+            .and_then(|()| file.commit())
+            .map_err(preference_error)
+    }
+
+    pub(super) fn resolve_conversation(
+        &self,
+        id: &str,
+    ) -> Result<Option<DesktopConversationDestination>, DesktopError> {
+        for workspace in self.available_workspaces()? {
+            let host =
+                WorkspaceHost::open(self.paths.data_dir(), &workspace).map_err(navigation_error)?;
+            let snapshot = host.snapshot().map_err(navigation_error)?;
+            if let Some(conversation) = snapshot
+                .conversations
+                .into_iter()
+                .map(|entry| entry.conversation)
+                .find(|conversation| conversation.to_string() == id)
+            {
+                return Ok(Some(DesktopConversationDestination {
+                    workspace,
+                    conversation,
+                }));
+            }
+        }
+        Ok(None)
+    }
+
+    pub(super) fn resolve_new_workspace(
+        &self,
+        project_id: Option<&str>,
+    ) -> Result<PathBuf, DesktopError> {
+        let Some(project_id) = project_id else {
+            return Ok(self.launch_workspace.clone());
+        };
+        let projects = ProjectStore::open(&self.paths)
+            .and_then(|store| store.list(true))
+            .map_err(navigation_error)?;
+        let project = projects
+            .into_iter()
+            .find(|project| project.id.to_string() == project_id)
+            .ok_or_else(|| {
+                DesktopError::new(
+                    DesktopErrorCode::StateInvalid,
+                    format!("Desktop Project {project_id} is no longer available"),
+                )
+            })?;
+        project.canonical_workspace.canonicalize().map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::WorkspaceUnavailable,
+                format!(
+                    "Desktop Project {} workspace is unavailable: {error}",
+                    project.name
+                ),
+            )
+        })
+    }
+
+    fn load_preferences(&self) -> DesktopNavigationPreferences {
+        bounded_file::read(&self.preference_file, MAX_PREFERENCE_BYTES)
+            .ok()
+            .and_then(|bytes| toml::from_slice(&bytes).ok())
+            .filter(|preferences: &DesktopNavigationPreferences| {
+                preferences.version == PREFERENCE_VERSION
+            })
+            .unwrap_or_default()
+    }
+
+    fn project_conversations(
+        &self,
+        store: &ProjectStore,
+        project: &Project,
+        selected: Option<&str>,
+    ) -> Result<(DesktopWorkspaceStatus, Vec<(DesktopConversationNode, bool)>), DesktopError> {
+        let inspection = store.inspect(project.id).map_err(navigation_error)?;
+        let status = match inspection.workspace_status {
+            WorkspaceStatus::Available => DesktopWorkspaceStatus::Available,
+            WorkspaceStatus::Missing => DesktopWorkspaceStatus::Missing,
+            WorkspaceStatus::ChangedIdentity => DesktopWorkspaceStatus::ChangedIdentity,
+        };
+        if status != DesktopWorkspaceStatus::Available {
+            return Ok((status, Vec::new()));
+        }
+        let host = WorkspaceHost::open(self.paths.data_dir(), &project.canonical_workspace)
+            .map_err(navigation_error)?;
+        let snapshot = host.snapshot().map_err(navigation_error)?;
+        Ok((
+            status,
+            project_workspace_conversations(&host, snapshot, selected)?,
+        ))
+    }
+
+    fn available_workspaces(&self) -> Result<Vec<PathBuf>, DesktopError> {
+        let projects = ProjectStore::open(&self.paths)
+            .and_then(|store| store.list(true))
+            .map_err(navigation_error)?;
+        let mut seen = HashSet::new();
+        let mut workspaces = Vec::new();
+        for project in projects {
+            let Ok(workspace) = project.canonical_workspace.canonicalize() else {
+                continue;
+            };
+            if seen.insert(workspace.clone()) {
+                workspaces.push(workspace);
+            }
+        }
+        if seen.insert(self.launch_workspace.clone()) {
+            workspaces.push(self.launch_workspace.clone());
+        }
+        Ok(workspaces)
+    }
+}
+
+fn project_workspace_conversations(
+    host: &WorkspaceHost,
+    snapshot: crate::workspace_host::WorkspaceSnapshot,
+    selected: Option<&str>,
+) -> Result<Vec<(DesktopConversationNode, bool)>, DesktopError> {
+    let workspace_id = snapshot.workspace_id.clone();
+    let workspace_label = workspace_label(&snapshot.workspace);
+    snapshot
+        .conversations
+        .into_iter()
+        .map(|projection| {
+            let id = projection.conversation.to_string();
+            let assigned = projection.project.is_some();
+            let title = conversation_title(host, &projection.conversation);
+            let (owner, connection) = conversation_owner(&projection.conversation);
+            let state = match projection.state {
+                ConversationState::Inactive => DesktopNavigationConversationState::Idle,
+                ConversationState::Active => DesktopNavigationConversationState::Active,
+                ConversationState::Controlled => DesktopNavigationConversationState::Controlled,
+                ConversationState::Observable => DesktopNavigationConversationState::Observable,
+                ConversationState::Unavailable => DesktopNavigationConversationState::Unavailable,
+            };
+            let modified_unix_ms = projection
+                .modified
+                .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                .and_then(|value| u64::try_from(value.as_millis()).ok());
+            Ok((
+                DesktopConversationNode {
+                    id: id.clone(),
+                    title,
+                    owner: owner.to_owned(),
+                    connection,
+                    workspace_id: workspace_id.clone(),
+                    workspace_label: workspace_label.clone(),
+                    state,
+                    selected: selected == Some(id.as_str()),
+                    needs_attention: matches!(
+                        state,
+                        DesktopNavigationConversationState::Unavailable
+                    ),
+                    record_count: projection.record_count,
+                    modified_unix_ms,
+                },
+                assigned,
+            ))
+        })
+        .collect()
+}
+
+fn conversation_title(host: &WorkspaceHost, conversation: &ConversationRef) -> String {
+    let fallback = match conversation {
+        ConversationRef::Native { session_id } => {
+            format!("Native {}", short(&session_id.to_string()))
+        }
+        ConversationRef::Managed {
+            connection,
+            thread_id,
+            ..
+        } => format!("{connection} {}", short(thread_id)),
+        ConversationRef::NewNative => "New native Conversation".to_owned(),
+        ConversationRef::NewManaged { connection, .. } => {
+            format!("New {connection} Conversation")
+        }
+    };
+    host.conversation_history_page(conversation, None, TITLE_PAGE_SIZE)
+        .ok()
+        .flatten()
+        .and_then(|page| {
+            page.messages.into_iter().find_map(|message| {
+                (message.role == Role::User)
+                    .then(|| {
+                        message
+                            .content
+                            .into_iter()
+                            .find_map(|content| match content {
+                                ContentBlock::Text(text) => Some(text),
+                                _ => None,
+                            })
+                    })
+                    .flatten()
+            })
+        })
+        .map(|title| bounded(title.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| bounded(fallback))
+}
+
+fn conversation_owner(conversation: &ConversationRef) -> (&'static str, String) {
+    match conversation {
+        ConversationRef::Native { .. } | ConversationRef::NewNative => {
+            ("native", "native".to_owned())
+        }
+        ConversationRef::Managed { connection, .. }
+        | ConversationRef::NewManaged { connection, .. } => {
+            ("managed", bounded(connection.clone()))
+        }
+    }
+}
+
+fn sort_conversations(conversations: &mut [DesktopConversationNode]) {
+    conversations.sort_by(|left, right| {
+        right
+            .modified_unix_ms
+            .cmp(&left.modified_unix_ms)
+            .then_with(|| left.title.to_lowercase().cmp(&right.title.to_lowercase()))
+            .then_with(|| left.id.cmp(&right.id))
+    });
+}
+
+fn trim_conversations(
+    projects: &mut [DesktopProjectNode],
+    ungrouped: &mut Vec<DesktopConversationNode>,
+    mut remaining: usize,
+) {
+    for project in projects {
+        sort_conversations(&mut project.conversations);
+        let keep = project.conversations.len().min(remaining);
+        project.conversations.truncate(keep);
+        remaining = remaining.saturating_sub(keep);
+    }
+    sort_conversations(ungrouped);
+    ungrouped.truncate(remaining);
+}
+
+fn workspace_label(workspace: &Path) -> String {
+    workspace
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| workspace.display().to_string())
+}
+
+fn short(value: &str) -> &str {
+    value.get(..8).unwrap_or(value)
+}
+
+fn bounded(mut value: String) -> String {
+    if value.len() <= MAX_TITLE_BYTES {
+        return value;
+    }
+    let mut end = MAX_TITLE_BYTES.saturating_sub(3);
+    while !value.is_char_boundary(end) {
+        end = end.saturating_sub(1);
+    }
+    value.truncate(end);
+    value.push_str("...");
+    value
+}
+
+fn navigation_error(error: impl std::fmt::Display) -> DesktopError {
+    DesktopError::new(
+        DesktopErrorCode::StateInvalid,
+        format!("could not build Desktop navigation: {error}"),
+    )
+}
+
+fn preference_error(error: impl std::fmt::Display) -> DesktopError {
+    DesktopError::new(
+        DesktopErrorCode::StateInvalid,
+        format!("could not persist Desktop navigation preference: {error}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{identity::SessionId, session::DurableSession};
+    use std::ffi::OsString;
+
+    fn fixture() -> (tempfile::TempDir, XanaPaths, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        (directory, paths, workspace.canonicalize().unwrap())
+    }
+
+    #[test]
+    fn projects_and_ungrouped_conversations_keep_stable_identity() {
+        let (_directory, paths, workspace) = fixture();
+        let project = ProjectStore::open(&paths)
+            .unwrap()
+            .create("Xana", &workspace)
+            .unwrap();
+        let grouped = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        let grouped_id = grouped.session_id();
+        drop(grouped);
+        let loose = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        let loose_id = loose.session_id();
+        drop(loose);
+        ProjectStore::open(&paths)
+            .unwrap()
+            .place_conversation(&grouped_id.to_string(), &workspace, Some(project.id))
+            .unwrap();
+
+        let snapshot = DesktopNavigationStore::open(&paths, &workspace)
+            .unwrap()
+            .snapshot(Some(
+                &ConversationRef::Native {
+                    session_id: grouped_id,
+                }
+                .to_string(),
+            ))
+            .unwrap();
+
+        assert_eq!(snapshot.projects.len(), 1);
+        assert_eq!(snapshot.projects[0].id, project.id.to_string());
+        assert_eq!(snapshot.projects[0].conversations.len(), 1);
+        assert!(snapshot.projects[0].conversations[0].selected);
+        assert_eq!(snapshot.ungrouped.len(), 1);
+        assert!(snapshot.ungrouped[0].id.contains(&loose_id.to_string()));
+    }
+
+    #[test]
+    fn sidebar_preference_round_trips_without_runtime_or_conversation_state() {
+        let (_directory, paths, workspace) = fixture();
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        assert_eq!(
+            store.snapshot(None).unwrap().sidebar_mode,
+            DesktopSidebarMode::Full
+        );
+        store.set_sidebar_mode(DesktopSidebarMode::Mini).unwrap();
+        assert_eq!(
+            DesktopNavigationStore::open(&paths, &workspace)
+                .unwrap()
+                .snapshot(None)
+                .unwrap()
+                .sidebar_mode,
+            DesktopSidebarMode::Mini
+        );
+        let stored = std::fs::read_to_string(store.preference_file).unwrap();
+        assert!(!stored.contains(&SessionId::new().to_string()));
+        assert!(!stored.contains("conversation"));
+    }
+
+    #[test]
+    fn opaque_conversation_selection_resolves_to_workspace_owned_identity() {
+        let (_directory, paths, workspace) = fixture();
+        let session = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        let expected = ConversationRef::Native {
+            session_id: session.session_id(),
+        };
+        drop(session);
+
+        let destination = DesktopNavigationStore::open(&paths, &workspace)
+            .unwrap()
+            .resolve_conversation(&expected.to_string())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(destination.workspace, workspace);
+        assert_eq!(destination.conversation, expected);
+    }
+
+    #[test]
+    fn missing_project_workspace_remains_visible_and_actionable() {
+        let (directory, paths, workspace) = fixture();
+        let project = ProjectStore::open(&paths)
+            .unwrap()
+            .create("Movable", &workspace)
+            .unwrap();
+        std::fs::remove_dir(&workspace).unwrap();
+        let fallback = directory.path().join("fallback");
+        std::fs::create_dir(&fallback).unwrap();
+
+        let snapshot = DesktopNavigationStore::open(&paths, &fallback)
+            .unwrap()
+            .snapshot(None)
+            .unwrap();
+        assert_eq!(snapshot.projects[0].id, project.id.to_string());
+        assert_eq!(
+            snapshot.projects[0].workspace_status,
+            DesktopWorkspaceStatus::Missing
+        );
+        assert!(snapshot.projects[0].conversations.is_empty());
+    }
+}

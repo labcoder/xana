@@ -44,9 +44,19 @@ pub(crate) enum ChatExit {
     Restart,
     NewConversation,
     SwitchConversation(ConversationRef),
+    DesktopNewConversation {
+        workspace: PathBuf,
+    },
+    DesktopSwitchConversation {
+        workspace: PathBuf,
+        conversation: ConversationRef,
+    },
     Doctor(Option<SessionId>),
     Reset,
     Setup(String),
     Settings(String),
-    ControlCommand { family: String, arguments: String },
+    ControlCommand {
+        family: String,
+        arguments: String,
+    },
 }

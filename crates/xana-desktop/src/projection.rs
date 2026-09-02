@@ -393,6 +393,9 @@ mod tests {
             controllers: Vec::new(),
             host_lifecycle: "running".into(),
             global_notices: Vec::new(),
+            navigation: xana::desktop::DesktopNavigationSnapshot::empty(
+                xana::desktop::DesktopSidebarMode::Full,
+            ),
         }
     }
 

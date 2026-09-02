@@ -6,10 +6,15 @@
 //! ownership stay in this package.
 
 mod instance;
+mod navigation;
 
 pub use instance::{
     DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
     DesktopNavigationTarget,
+};
+pub use navigation::{
+    DesktopConversationNode, DesktopNavigationConversationState, DesktopNavigationSnapshot,
+    DesktopProjectNode, DesktopSidebarMode, DesktopWorkspaceStatus,
 };
 
 pub use crate::host_lifecycle::{
@@ -65,6 +70,16 @@ const MAX_PUBLIC_TEXT_BYTES: usize = 256 * 1024;
 struct DesktopController {
     conversation: ConversationRef,
     client_id: ControllerClientId,
+}
+
+struct NativeCommandContext<'a> {
+    owner: &'a crate::frontend::EmbeddedOwner,
+    execution_host: &'a ExecutionHost,
+    controller: &'a DesktopController,
+    snapshot: &'a ClientSnapshot,
+    active_run: &'a mut Option<HostedRun>,
+    navigation: &'a mut DesktopNavigationSnapshot,
+    navigation_store: &'a navigation::DesktopNavigationStore,
 }
 
 /// Authority held by one Desktop frontend attachment.
@@ -387,6 +402,7 @@ pub struct DesktopSnapshot {
     pub controllers: Vec<DesktopControllerLease>,
     pub host_lifecycle: String,
     pub global_notices: Vec<DesktopGlobalNotice>,
+    pub navigation: DesktopNavigationSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -582,7 +598,8 @@ impl DesktopEvent {
 /// Updates delivered to one Desktop projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopUpdate {
-    Snapshot(DesktopSnapshot),
+    Snapshot(Box<DesktopSnapshot>),
+    Navigation(DesktopNavigationSnapshot),
     Observation(DesktopObservation),
     HostObservation(DesktopHostObservation),
     CommandResult {
@@ -634,7 +651,7 @@ impl DesktopClient {
         let startup = StartupSignal::new(startup_sender);
         let (done_sender, done_receiver) = std_mpsc::sync_channel(1);
         let bridge = Bridge {
-            commands: command_receiver,
+            commands: Arc::new(tokio::sync::Mutex::new(command_receiver)),
             updates: updates.clone(),
             startup: startup.clone(),
             notification_policy: NotificationPolicy::default(),
@@ -811,6 +828,44 @@ impl DesktopClient {
             })
     }
 
+    /// Persists the local full/mini sidebar preference through the runtime.
+    pub fn set_sidebar_mode(
+        &self,
+        mode: DesktopSidebarMode,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SetSidebarMode { mode })
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
+    /// Requests that the persistent Desktop window attach to a retained Conversation.
+    pub fn switch_conversation(
+        &self,
+        conversation_id: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SwitchConversation {
+            conversation_id: conversation_id.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Requests a new ungrouped or Project-workspace Conversation.
+    pub fn new_conversation(
+        &self,
+        project_id: Option<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::NewConversation { project_id })
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
+
     /// Requests shutdown without blocking the GPUI application thread.
     pub fn request_shutdown(&self) -> Result<DesktopCommandReceipt, DesktopError> {
         self.enqueue(BridgeCommandValue::Shutdown)
@@ -893,12 +948,14 @@ impl StartupSignal {
         Self(Arc::new(Mutex::new(Some(sender))))
     }
 
-    fn ready(&self, snapshot: DesktopSnapshot) {
+    fn ready(&self, snapshot: DesktopSnapshot) -> bool {
         if let Ok(mut sender) = self.0.lock()
             && let Some(sender) = sender.take()
         {
             let _ = sender.send(Ok(snapshot));
+            return true;
         }
+        false
     }
 
     fn fail_if_pending(&self, error: DesktopError) {
@@ -910,8 +967,9 @@ impl StartupSignal {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct Bridge {
-    commands: mpsc::Receiver<BridgeCommand>,
+    commands: Arc<tokio::sync::Mutex<mpsc::Receiver<BridgeCommand>>>,
     updates: mpsc::Sender<DesktopUpdate>,
     startup: StartupSignal,
     notification_policy: NotificationPolicy,
@@ -945,6 +1003,15 @@ enum BridgeCommandValue {
         action: RoundBudgetAction,
     },
     RequestSnapshot,
+    SetSidebarMode {
+        mode: DesktopSidebarMode,
+    },
+    SwitchConversation {
+        conversation_id: String,
+    },
+    NewConversation {
+        project_id: Option<String>,
+    },
     Shutdown,
 }
 
@@ -980,6 +1047,7 @@ pub(crate) async fn run_native(
     workspace_host: WorkspaceHost,
     conversation: ConversationRef,
     bridge: Bridge,
+    paths: &XanaPaths,
 ) -> anyhow::Result<ChatExit> {
     let reasoning_effort = header
         .models
@@ -998,6 +1066,9 @@ pub(crate) async fn run_native(
         resource_policy: header.resource_policy.clone(),
     };
     let execution_host = ExecutionHost::new();
+    let navigation_store =
+        navigation::DesktopNavigationStore::open(paths, workspace_host.workspace())?;
+    let navigation = navigation_store.snapshot(Some(&conversation.to_string()))?;
     execution_host.register(
         workspace_host,
         ConversationRegistration::new(
@@ -1009,15 +1080,17 @@ pub(crate) async fn run_native(
         ),
     )?;
     execution_host.attach(&conversation)?;
-    bridge
+    let exit = bridge
         .serve_native(
             EmbeddedClient::from_runtime(runtime, seed),
             execution_host,
             conversation,
             header.notification_policy.clone(),
+            navigation,
+            navigation_store,
         )
         .await?;
-    Ok(ChatExit::Quit)
+    Ok(exit)
 }
 
 pub(crate) fn reject_managed(bridge: &Bridge, connection: &str) -> DesktopError {
@@ -1038,8 +1111,11 @@ impl Bridge {
         execution_host: ExecutionHost,
         conversation: ConversationRef,
         notification_policy: NotificationPolicy,
-    ) -> Result<(), DesktopError> {
+        mut navigation: DesktopNavigationSnapshot,
+        navigation_store: navigation::DesktopNavigationStore,
+    ) -> Result<ChatExit, DesktopError> {
         self.notification_policy = notification_policy;
+        let mut commands = self.commands.lock().await;
         let (owner, mut observer) = client.into_parts();
         let mut snapshot = observer.snapshot().clone();
         let controller = DesktopController {
@@ -1056,17 +1132,23 @@ impl Bridge {
             .map_err(host_error)?;
         let host_snapshot = execution_host.snapshot().map_err(host_error)?;
         let mut host_cursor = host_snapshot.sequence;
-        self.startup.ready(project_snapshot(
+        let initial = project_snapshot(
             &snapshot,
             &host_snapshot,
             &self.notification_policy,
-        ));
+            &navigation,
+        );
+        if !self.startup.ready(initial.clone()) {
+            self.publish_critical(DesktopUpdate::Snapshot(Box::new(initial)))
+                .await?;
+        }
         let mut active_run: Option<HostedRun> = None;
         let mut shutdown_cleanup = crate::host_lifecycle::OwnedExecutionCleanup::Unresolved;
+        let mut exit = ChatExit::Quit;
 
         loop {
             tokio::select! {
-                command = self.commands.recv() => {
+                command = commands.recv() => {
                     let Some(command) = command else {
                         execution_host.request_shutdown().map_err(host_error)?;
                         if owner.send(ClientCommand::new(RuntimeCommand::Shutdown)).await
@@ -1089,21 +1171,29 @@ impl Bridge {
                         ).await?;
                         continue;
                     }
-                    let stop_cleanup = self.handle_command(
-                        command,
-                        &owner,
-                        &execution_host,
-                        &controller,
-                        &snapshot,
-                        &mut active_run,
-                    ).await?;
+                    let stop = self
+                        .handle_command(
+                            command,
+                            NativeCommandContext {
+                                owner: &owner,
+                                execution_host: &execution_host,
+                                controller: &controller,
+                                snapshot: &snapshot,
+                                active_run: &mut active_run,
+                                navigation: &mut navigation,
+                                navigation_store: &navigation_store,
+                            },
+                        )
+                        .await?;
                     self.publish_host_changes(
                         &execution_host,
                         &snapshot,
                         &mut host_cursor,
+                        &navigation,
                     ).await?;
-                    if let Some(cleanup) = stop_cleanup {
+                    if let Some((cleanup, requested_exit)) = stop {
                         shutdown_cleanup = cleanup;
+                        exit = requested_exit;
                         break;
                     }
                 }
@@ -1148,6 +1238,7 @@ impl Bridge {
                         &execution_host,
                         &snapshot,
                         &mut host_cursor,
+                        &navigation,
                     ).await?;
                     snapshot.apply(&observation.event, observation.sequence);
                     let projected = DesktopObservation {
@@ -1169,29 +1260,39 @@ impl Bridge {
                 owned_execution: shutdown_cleanup,
             })
             .map_err(host_error)?;
-        self.publish_host_changes(&execution_host, &snapshot, &mut host_cursor)
+        self.publish_host_changes(&execution_host, &snapshot, &mut host_cursor, &navigation)
             .await?;
-        self.publish_critical(DesktopUpdate::BackendStopped {
-            expected: true,
-            error: None,
-        })
-        .await?;
-        Ok(())
+        if exit == ChatExit::Quit {
+            self.publish_critical(DesktopUpdate::BackendStopped {
+                expected: true,
+                error: None,
+            })
+            .await?;
+        }
+        Ok(exit)
     }
 
     async fn handle_command(
         &self,
         command: BridgeCommand,
-        owner: &crate::frontend::EmbeddedOwner,
-        execution_host: &ExecutionHost,
-        controller: &DesktopController,
-        snapshot: &ClientSnapshot,
-        active_run: &mut Option<HostedRun>,
-    ) -> Result<Option<crate::host_lifecycle::OwnedExecutionCleanup>, DesktopError> {
+        context: NativeCommandContext<'_>,
+    ) -> Result<Option<(crate::host_lifecycle::OwnedExecutionCleanup, ChatExit)>, DesktopError>
+    {
+        let NativeCommandContext {
+            owner,
+            execution_host,
+            controller,
+            snapshot,
+            active_run,
+            navigation,
+            navigation_store,
+        } = context;
         let command_id = command.command_id;
-        if !matches!(&command.value, BridgeCommandValue::RequestSnapshot)
-            && let Err(error) =
-                execution_host.require_controller(&controller.conversation, controller.client_id)
+        if !matches!(
+            &command.value,
+            BridgeCommandValue::RequestSnapshot | BridgeCommandValue::SetSidebarMode { .. }
+        ) && let Err(error) =
+            execution_host.require_controller(&controller.conversation, controller.client_id)
         {
             self.publish_command_result(command_id, Err(host_error(error)))
                 .await?;
@@ -1200,14 +1301,79 @@ impl Bridge {
         match command.value {
             BridgeCommandValue::RequestSnapshot => {
                 let host_snapshot = execution_host.snapshot().map_err(host_error)?;
-                self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
+                self.publish_critical(DesktopUpdate::Snapshot(Box::new(project_snapshot(
                     snapshot,
                     &host_snapshot,
                     &self.notification_policy,
-                )))
+                    navigation,
+                ))))
                 .await?;
                 self.publish_command_result(command_id, Ok(())).await?;
                 Ok(None)
+            }
+            BridgeCommandValue::SetSidebarMode { mode } => {
+                let result = navigation_store.set_sidebar_mode(mode);
+                if result.is_ok() {
+                    navigation.sidebar_mode = mode;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SwitchConversation { conversation_id } => {
+                if active_run.is_some() {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::HostBusy,
+                            "wait for or interrupt the active Run before switching Conversations",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+                let Some(destination) = navigation_store.resolve_conversation(&conversation_id)?
+                else {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::StateInvalid,
+                            format!("Conversation {conversation_id} is no longer available"),
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                };
+                let cleanup = shutdown_owner(owner).await;
+                self.publish_command_result(command_id, Ok(())).await?;
+                Ok(Some((
+                    cleanup,
+                    ChatExit::DesktopSwitchConversation {
+                        workspace: destination.workspace,
+                        conversation: destination.conversation,
+                    },
+                )))
+            }
+            BridgeCommandValue::NewConversation { project_id } => {
+                if active_run.is_some() {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::HostBusy,
+                            "wait for or interrupt the active Run before creating a Conversation",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
+                let workspace = navigation_store.resolve_new_workspace(project_id.as_deref())?;
+                let cleanup = shutdown_owner(owner).await;
+                self.publish_command_result(command_id, Ok(())).await?;
+                Ok(Some((
+                    cleanup,
+                    ChatExit::DesktopNewConversation { workspace },
+                )))
             }
             BridgeCommandValue::Shutdown => {
                 execution_host.request_shutdown().map_err(host_error)?;
@@ -1227,7 +1393,7 @@ impl Bridge {
                     crate::host_lifecycle::OwnedExecutionCleanup::Unresolved
                 };
                 self.publish_command_result(command_id, result).await?;
-                Ok(Some(cleanup))
+                Ok(Some((cleanup, ChatExit::Quit)))
             }
             BridgeCommandValue::Submit {
                 operation_id,
@@ -1418,6 +1584,7 @@ impl Bridge {
         host: &ExecutionHost,
         frontend: &ClientSnapshot,
         cursor: &mut u64,
+        navigation: &DesktopNavigationSnapshot,
     ) -> Result<(), DesktopError> {
         match host.changes_after(*cursor).map_err(host_error)? {
             HostChanges::Events(events) => {
@@ -1432,11 +1599,12 @@ impl Bridge {
             }
             HostChanges::SnapshotRequired(snapshot) => {
                 *cursor = snapshot.sequence;
-                self.publish_critical(DesktopUpdate::Snapshot(project_snapshot(
+                self.publish_critical(DesktopUpdate::Snapshot(Box::new(project_snapshot(
                     frontend,
                     &snapshot,
                     &self.notification_policy,
-                )))
+                    navigation,
+                ))))
                 .await?;
             }
         }
@@ -1467,6 +1635,20 @@ impl Bridge {
                 "Desktop did not receive a critical update within 5 seconds",
             )),
         }
+    }
+}
+
+async fn shutdown_owner(
+    owner: &crate::frontend::EmbeddedOwner,
+) -> crate::host_lifecycle::OwnedExecutionCleanup {
+    if owner
+        .send(ClientCommand::new(RuntimeCommand::Shutdown))
+        .await
+        .is_ok_and(|result| result.accepted)
+    {
+        crate::host_lifecycle::OwnedExecutionCleanup::Clean
+    } else {
+        crate::host_lifecycle::OwnedExecutionCleanup::Unresolved
     }
 }
 
@@ -1524,6 +1706,7 @@ fn project_snapshot(
     snapshot: &ClientSnapshot,
     host: &crate::execution_host::ExecutionHostSnapshot,
     notification_policy: &NotificationPolicy,
+    navigation: &DesktopNavigationSnapshot,
 ) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
@@ -1555,6 +1738,7 @@ fn project_snapshot(
             .iter()
             .map(project_global_notice)
             .collect(),
+        navigation: navigation.clone(),
     }
 }
 
@@ -2087,7 +2271,7 @@ mod tests {
         let (startup_sender, startup_receiver) = std_mpsc::sync_channel(1);
         (
             Bridge {
-                commands,
+                commands: Arc::new(tokio::sync::Mutex::new(commands)),
                 updates,
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
@@ -2193,12 +2377,20 @@ mod tests {
         let host = execution_host(directory.path(), &workspace, &conversation);
         let inspection = host.clone();
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(
-            client,
-            host,
-            conversation.clone(),
-            NotificationPolicy::default(),
-        ));
+        let runtime = tokio::spawn(
+            bridge.serve_native(
+                client,
+                host,
+                conversation.clone(),
+                NotificationPolicy::default(),
+                DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation::DesktopNavigationStore::open(
+                    &XanaPaths::resolve(Some(directory.path().into())).unwrap(),
+                    &workspace,
+                )
+                .unwrap(),
+            ),
+        );
 
         let initial = startup
             .recv_timeout(Duration::from_secs(1))
@@ -2297,12 +2489,20 @@ mod tests {
         let (client, conversation) = scripted_client(&workspace);
         let host = execution_host(directory.path(), &workspace, &conversation);
         let (bridge, commands, mut updates, startup) = bridge_channels();
-        let runtime = tokio::spawn(bridge.serve_native(
-            client,
-            host,
-            conversation,
-            NotificationPolicy::default(),
-        ));
+        let runtime = tokio::spawn(
+            bridge.serve_native(
+                client,
+                host,
+                conversation,
+                NotificationPolicy::default(),
+                DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation::DesktopNavigationStore::open(
+                    &XanaPaths::resolve(Some(directory.path().into())).unwrap(),
+                    &workspace,
+                )
+                .unwrap(),
+            ),
+        );
         startup
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
