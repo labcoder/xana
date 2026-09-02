@@ -8,17 +8,18 @@ use gpui::{
     Subscription, Window, div, prelude::*, rems,
 };
 use gpui_component::{
-    ActiveTheme as _, IconName, Selectable as _,
+    ActiveTheme as _, Disableable as _, IconName, Selectable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
     scroll::ScrollableElement as _,
+    switch::Switch,
     v_flex,
 };
 use xana::desktop::{
     DesktopSettingEffect, DesktopSettingEntry, DesktopSettingSource, DesktopSettingTarget,
-    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSection,
-    DesktopSettingsSnapshot,
+    DesktopSettingsDraftId, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
+    DesktopSettingsSection, DesktopSettingsSnapshot,
 };
 
 const WIDE_WINDOW_PX: f32 = 1_180.;
@@ -43,6 +44,19 @@ pub(crate) enum SettingsViewEvent {
     Review,
     Apply,
     Discard,
+    Set {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+        value: String,
+    },
+    Reset {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+    },
+    Revert {
+        draft_id: DesktopSettingsDraftId,
+        key: String,
+    },
 }
 
 pub(crate) struct SettingsView {
@@ -52,6 +66,8 @@ pub(crate) struct SettingsView {
     selected_section: DesktopSettingsSection,
     selected_key: Option<String>,
     search: Entity<InputState>,
+    value_editor: Entity<InputState>,
+    editor_key: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,24 +84,46 @@ impl SettingsView {
             .entries_in(selected_section)
             .next()
             .map(|entry| entry.key.clone());
+        let editor_value = selected_key
+            .as_deref()
+            .and_then(|key| snapshot.entries.iter().find(|entry| entry.key == key))
+            .and_then(|entry| entry.value.raw.clone())
+            .unwrap_or_default();
         let search = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search settings, values, and actions")
         });
-        let subscriptions =
-            vec![
-                cx.subscribe_in(&search, window, |_this, _, event: &InputEvent, _, cx| {
+        let value_editor = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enter a value")
+                .default_value(editor_value)
+        });
+        let subscriptions = vec![
+            cx.subscribe_in(&search, window, |_this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(
+                &value_editor,
+                window,
+                |_this, _, event: &InputEvent, _, cx| {
                     if matches!(event, InputEvent::Change) {
                         cx.notify();
                     }
-                }),
-            ];
+                },
+            ),
+        ];
         Self {
-            snapshot,
+            snapshot: draft
+                .as_ref()
+                .map_or_else(|| snapshot.clone(), |draft| draft.preview.clone()),
             draft,
             receipt,
             selected_section,
+            editor_key: selected_key.clone(),
             selected_key,
             search,
+            value_editor,
             _subscriptions: subscriptions,
         }
     }
@@ -95,9 +133,13 @@ impl SettingsView {
         snapshot: DesktopSettingsSnapshot,
         draft: Option<DesktopSettingsDraftSnapshot>,
         receipt: Option<DesktopSettingsReceipt>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.snapshot = snapshot;
+        let draft_ended = self.draft.is_some() && draft.is_none();
+        self.snapshot = draft
+            .as_ref()
+            .map_or_else(|| snapshot.clone(), |draft| draft.preview.clone());
         self.draft = draft;
         self.receipt = receipt;
         if self
@@ -106,6 +148,16 @@ impl SettingsView {
             .is_some_and(|key| !self.snapshot.entries.iter().any(|entry| entry.key == key))
         {
             self.selected_key = None;
+        }
+        if self.selected_key.is_none() {
+            self.selected_key = self
+                .snapshot
+                .entries_in(self.selected_section)
+                .next()
+                .map(|entry| entry.key.clone());
+        }
+        if draft_ended || self.editor_key != self.selected_key {
+            self.sync_editor(window, cx);
         }
         cx.notify();
     }
@@ -117,6 +169,24 @@ impl SettingsView {
 
     fn query(&self, cx: &App) -> String {
         self.search.read(cx).value().trim().to_lowercase()
+    }
+
+    fn select_entry(&mut self, key: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.selected_key = Some(key);
+        self.sync_editor(window, cx);
+        cx.notify();
+    }
+
+    fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor_key = self.selected_key.clone();
+        let value = self
+            .selected_key
+            .as_deref()
+            .and_then(|key| self.snapshot.entries.iter().find(|entry| entry.key == key))
+            .and_then(|entry| entry.value.raw.clone())
+            .unwrap_or_default();
+        self.value_editor
+            .update(cx, |editor, cx| editor.set_value(value, window, cx));
     }
 
     fn matching_entries<'a>(&'a self, cx: &App) -> Vec<&'a DesktopSettingEntry> {
@@ -202,14 +272,20 @@ impl SettingsView {
                 .w_full()
                 .ghost()
                 .selected(self.selected_section == section)
-                .on_click(cx.listener(move |this, _, _, cx| {
+                .on_click(cx.listener(move |this, _, window, cx| {
                     this.selected_section = section;
-                    this.selected_key = this
+                    let selected_key = this
                         .snapshot
                         .entries_in(section)
                         .next()
                         .map(|entry| entry.key.clone());
-                    cx.notify();
+                    if let Some(key) = selected_key {
+                        this.select_entry(key, window, cx);
+                    } else {
+                        this.selected_key = None;
+                        this.editor_key = None;
+                        cx.notify();
+                    }
                 }))
         });
         if compact {
@@ -321,9 +397,8 @@ impl SettingsView {
                                     ),
                             ),
                     )
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.selected_key = Some(key.clone());
-                        cx.notify();
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_entry(key.clone(), window, cx);
                     }))
             }))
             .into_any_element()
@@ -336,56 +411,53 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tokens = cx.theme().semantic_tokens();
-        let content = entry.map_or_else(
-            || {
-                v_flex()
-                    .gap(tokens.spacing.sm)
-                    .child("Nothing selected")
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("Choose a setting to inspect its source, scope, and effect."),
-                    )
-                    .into_any_element()
-            },
-            |entry| {
-                v_flex()
-                    .gap(tokens.spacing.md)
-                    .child(
-                        v_flex()
-                            .gap(tokens.spacing.xs)
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(entry.label.fallback.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(entry.description.fallback.clone()),
-                            ),
-                    )
-                    .child(inspector_fact("Current", entry.value.display.clone(), cx))
-                    .child(inspector_fact("Source", source_label(entry.source), cx))
-                    .child(inspector_fact("Scope", target_label(entry.target), cx))
-                    .child(inspector_fact("Effect", effect_label(entry.effect), cx))
-                    .when_some(entry.default.as_ref(), |panel, default| {
-                        panel.child(inspector_fact("Default", default.display.clone(), cx))
-                    })
-                    .when_some(entry.focused_action.as_ref(), |panel, action| {
-                        panel.child(inspector_fact("Managed by", action.clone(), cx))
-                    })
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(entry.key.clone()),
-                    )
-                    .into_any_element()
-            },
-        );
+        let content = match entry {
+            None => v_flex()
+                .gap(tokens.spacing.sm)
+                .child("Nothing selected")
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Choose a setting to inspect its source, scope, and effect."),
+                )
+                .into_any_element(),
+            Some(entry) => v_flex()
+                .gap(tokens.spacing.md)
+                .child(
+                    v_flex()
+                        .gap(tokens.spacing.xs)
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(entry.label.fallback.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(entry.description.fallback.clone()),
+                        ),
+                )
+                .child(inspector_fact("Current", entry.value.display.clone(), cx))
+                .child(inspector_fact("Source", source_label(entry.source), cx))
+                .child(inspector_fact("Scope", target_label(entry.target), cx))
+                .child(inspector_fact("Effect", effect_label(entry.effect), cx))
+                .when_some(entry.default.as_ref(), |panel, default| {
+                    panel.child(inspector_fact("Default", default.display.clone(), cx))
+                })
+                .when_some(entry.focused_action.as_ref(), |panel, action| {
+                    panel.child(inspector_fact("Managed by", action.clone(), cx))
+                })
+                .child(self.render_control(entry, cx))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(entry.key.clone()),
+                )
+                .into_any_element(),
+        };
         v_flex()
             .id("settings-inspector")
             .when(!compact, |panel| panel.w(rems(19.)).h_full().flex_none())
@@ -398,6 +470,161 @@ impl SettingsView {
             .border_color(cx.theme().border)
             .bg(cx.theme().sidebar)
             .child(content)
+            .into_any_element()
+    }
+
+    fn render_control(&self, entry: &DesktopSettingEntry, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let draft_id = self.draft.as_ref().map(|draft| draft.id);
+        let disabled = !entry.editable || draft_id.is_none();
+        let key = entry.key.clone();
+        let field = match entry.kind {
+            xana::desktop::DesktopSettingKind::Boolean => {
+                let checked = entry.value.raw.as_deref() == Some("true");
+                let event_key = key.clone();
+                Switch::new(format!("settings-control-{key}"))
+                    .label(if checked { "Enabled" } else { "Disabled" })
+                    .checked(checked)
+                    .disabled(disabled)
+                    .on_click(cx.listener(move |_, checked: &bool, _, cx| {
+                        if let Some(draft_id) = draft_id {
+                            cx.emit(SettingsViewEvent::Set {
+                                draft_id,
+                                key: event_key.clone(),
+                                value: checked.to_string(),
+                            });
+                        }
+                    }))
+                    .into_any_element()
+            }
+            xana::desktop::DesktopSettingKind::Choice => {
+                let choices = entry.choices.iter().take(16).cloned().collect::<Vec<_>>();
+                h_flex()
+                    .w_full()
+                    .flex_wrap()
+                    .gap(tokens.spacing.xs)
+                    .children(choices.into_iter().map(|choice| {
+                        let event_key = key.clone();
+                        let event_value = choice.clone();
+                        Button::new(format!("settings-choice-{key}-{choice}"))
+                            .compact()
+                            .label(choice.clone())
+                            .selected(entry.value.raw.as_deref() == Some(choice.as_str()))
+                            .disabled(disabled)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                if let Some(draft_id) = draft_id {
+                                    cx.emit(SettingsViewEvent::Set {
+                                        draft_id,
+                                        key: event_key.clone(),
+                                        value: event_value.clone(),
+                                    });
+                                }
+                            }))
+                    }))
+                    .when(entry.choices.len() > 16, |choices| {
+                        choices.child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("Open the focused manager to browse all choices."),
+                        )
+                    })
+                    .into_any_element()
+            }
+            xana::desktop::DesktopSettingKind::Integer
+            | xana::desktop::DesktopSettingKind::Bytes
+            | xana::desktop::DesktopSettingKind::DurationDays
+            | xana::desktop::DesktopSettingKind::OptionalPath => {
+                let editor = self.value_editor.clone();
+                let event_key = key.clone();
+                h_flex()
+                    .w_full()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(Input::new(&self.value_editor).disabled(disabled)),
+                    )
+                    .child(
+                        Button::new(format!("settings-stage-{key}"))
+                            .label("Stage")
+                            .disabled(disabled)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                if let Some(draft_id) = draft_id {
+                                    cx.emit(SettingsViewEvent::Set {
+                                        draft_id,
+                                        key: event_key.clone(),
+                                        value: editor.read(cx).value().to_string(),
+                                    });
+                                }
+                            })),
+                    )
+                    .into_any_element()
+            }
+            xana::desktop::DesktopSettingKind::ReadOnly => div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child("Read-only status")
+                .into_any_element(),
+        };
+        let reset_key = key.clone();
+        let revert_key = key.clone();
+        v_flex()
+            .w_full()
+            .gap(tokens.spacing.sm)
+            .pt(tokens.spacing.sm)
+            .child(field)
+            .when(!entry.editable, |panel| {
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("This value is derived or managed by a focused workflow."),
+                )
+            })
+            .when(entry.editable && draft_id.is_none(), |panel| {
+                panel.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("Preparing a settings draft…"),
+                )
+            })
+            .when(entry.editable && draft_id.is_some(), |panel| {
+                panel.child(
+                    h_flex()
+                        .gap(tokens.spacing.xs)
+                        .child(
+                            Button::new(format!("settings-reset-{key}"))
+                                .compact()
+                                .label("Reset to default")
+                                .disabled(entry.default.is_none())
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    if let Some(draft_id) = draft_id {
+                                        cx.emit(SettingsViewEvent::Reset {
+                                            draft_id,
+                                            key: reset_key.clone(),
+                                        });
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new(format!("settings-revert-{key}"))
+                                .compact()
+                                .label("Revert staged")
+                                .disabled(!entry.staged)
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    if let Some(draft_id) = draft_id {
+                                        cx.emit(SettingsViewEvent::Revert {
+                                            draft_id,
+                                            key: revert_key.clone(),
+                                        });
+                                    }
+                                })),
+                        ),
+                )
+            })
             .into_any_element()
     }
 

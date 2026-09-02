@@ -7,6 +7,7 @@ use crate::{
         QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
         ShowCommandPalette, ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
     },
+    design_system,
     projection::ConversationProjection,
     settings_view::{SettingsView, SettingsViewEvent},
 };
@@ -102,6 +103,11 @@ impl Workbench {
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
         let layout = runtime.initial_snapshot().layout.layout.clone();
         let settings_snapshot = runtime.initial_snapshot().settings.clone();
+        let appearance = design_system::appearance_from_settings(
+            &settings_snapshot,
+            design_system::VisualSystem::read(cx).preferences(),
+        );
+        design_system::apply(appearance, cx);
         let selected_project = navigation_snapshot
             .selected_conversation
             .as_deref()
@@ -312,6 +318,31 @@ impl Workbench {
                 };
                 match self.runtime.discard_settings(draft.id) {
                     Ok(_) => self.projection.set_activity("Discarding staged settings…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+            SettingsViewEvent::Set {
+                draft_id,
+                key,
+                value,
+            } => match self
+                .runtime
+                .set_setting(*draft_id, key.clone(), value.clone())
+            {
+                Ok(_) => self.projection.set_activity(format!("Staging {key}…")),
+                Err(error) => self.projection.fail(error.message),
+            },
+            SettingsViewEvent::Reset { draft_id, key } => {
+                match self.runtime.reset_setting(*draft_id, key.clone()) {
+                    Ok(_) => self.projection.set_activity(format!("Resetting {key}…")),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+            SettingsViewEvent::Revert { draft_id, key } => {
+                match self.runtime.revert_setting(*draft_id, key.clone()) {
+                    Ok(_) => self
+                        .projection
+                        .set_activity(format!("Reverting staged {key}…")),
                     Err(error) => self.projection.fail(error.message),
                 }
             }
@@ -702,9 +733,16 @@ impl Workbench {
                     }
                 }
                 DesktopUpdate::Settings(snapshot) => {
+                    self.apply_settings_appearance(&snapshot, cx);
                     self.settings_snapshot = snapshot;
                 }
                 DesktopUpdate::SettingsDraft(draft) => {
+                    if let Some(draft) = draft.as_ref() {
+                        self.apply_settings_appearance(&draft.preview, cx);
+                    } else {
+                        let snapshot = self.settings_snapshot.clone();
+                        self.apply_settings_appearance(&snapshot, cx);
+                    }
                     self.settings_draft = draft;
                 }
                 DesktopUpdate::SettingsReceipt(receipt) => {
@@ -781,6 +819,18 @@ impl Workbench {
             ));
         }
         changed
+    }
+
+    fn apply_settings_appearance(
+        &self,
+        snapshot: &DesktopSettingsSnapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let appearance = design_system::appearance_from_settings(
+            snapshot,
+            design_system::VisualSystem::read(cx).preferences(),
+        );
+        design_system::apply(appearance, cx);
     }
 
     fn notify_for_update(
@@ -883,6 +933,7 @@ impl Workbench {
                 self.settings_snapshot.clone(),
                 self.settings_draft.clone(),
                 self.settings_receipt.clone(),
+                window,
                 cx,
             );
         });

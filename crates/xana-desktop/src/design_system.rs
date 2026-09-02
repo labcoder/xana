@@ -10,6 +10,7 @@ use gpui_component::{
     ActiveTheme as _, SemanticThemeTokens, Theme, ThemeConfig, ThemeConfigColors, ThemeMode,
 };
 use std::rc::Rc;
+use xana::desktop::DesktopSettingsSnapshot;
 
 const BASE_FONT_SIZE: f32 = 16.0;
 const BASE_MONO_FONT_SIZE: f32 = 13.0;
@@ -286,6 +287,44 @@ pub(crate) fn apply(preferences: AppearancePreferences, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Resolve the subset of shared presentation settings that Desktop can
+/// preview today. Unknown and automatic values preserve the client-owned
+/// fallback instead of guessing operating-system state.
+pub(crate) fn appearance_from_settings(
+    snapshot: &DesktopSettingsSnapshot,
+    fallback: AppearancePreferences,
+) -> AppearancePreferences {
+    let value = |key: &str| {
+        snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key == key)
+            .and_then(|entry| entry.value.raw.as_deref())
+    };
+    let scheme = match value("appearance.theme") {
+        Some("light") => ColorScheme::Light,
+        Some("dark") => ColorScheme::Dark,
+        Some("monochrome") => ColorScheme::HighContrast,
+        _ => fallback.scheme,
+    };
+    let density = match value("appearance.density") {
+        Some("compact") => Density::Compact,
+        Some("comfortable") => Density::Comfortable,
+        _ => fallback.density,
+    };
+    let motion = match value("appearance.motion") {
+        Some("reduced") => MotionMode::Reduced,
+        Some("full") => MotionMode::Full,
+        _ => fallback.motion,
+    };
+    AppearancePreferences {
+        scheme,
+        density,
+        motion,
+        ..fallback
+    }
+}
+
 fn palette(scheme: ColorScheme) -> Palette {
     match scheme {
         ColorScheme::Light => LIGHT,
@@ -381,6 +420,38 @@ fn luminance(value: u32) -> f64 {
 mod tests {
     use super::*;
     use gpui::rgb;
+    use xana::desktop::{
+        DesktopLocalizedText, DesktopSettingEffect, DesktopSettingEntry, DesktopSettingKind,
+        DesktopSettingSource, DesktopSettingTarget, DesktopSettingValue, DesktopSettingsSection,
+    };
+
+    fn appearance_setting(key: &str, value: &str) -> DesktopSettingEntry {
+        DesktopSettingEntry {
+            key: key.to_owned(),
+            section: DesktopSettingsSection::Appearance,
+            label: DesktopLocalizedText {
+                code: format!("settings.{key}.label"),
+                fallback: key.to_owned(),
+            },
+            description: DesktopLocalizedText {
+                code: format!("settings.{key}.description"),
+                fallback: key.to_owned(),
+            },
+            value: DesktopSettingValue {
+                raw: Some(value.to_owned()),
+                display: value.to_owned(),
+            },
+            default: None,
+            kind: DesktopSettingKind::Choice,
+            choices: Vec::new(),
+            source: DesktopSettingSource::PresentationFile,
+            target: DesktopSettingTarget::MachinePresentation,
+            effect: DesktopSettingEffect::Immediate,
+            editable: true,
+            focused_action: None,
+            staged: true,
+        }
+    }
 
     #[test]
     fn every_palette_meets_text_contrast_contracts() {
@@ -433,5 +504,24 @@ mod tests {
     fn rgb_helper_matches_the_gpui_color_space() {
         assert_eq!(Hsla::from(rgb(0xffffff)).l, 1.0);
         assert_eq!(Hsla::from(rgb(0x000000)).l, 0.0);
+    }
+
+    #[test]
+    fn staged_shared_settings_resolve_to_desktop_preview_preferences() {
+        let snapshot = DesktopSettingsSnapshot {
+            version: 1,
+            revision: "preview".to_owned(),
+            warnings: Vec::new(),
+            entries: vec![
+                appearance_setting("appearance.theme", "light"),
+                appearance_setting("appearance.density", "compact"),
+                appearance_setting("appearance.motion", "reduced"),
+            ],
+            truncated: false,
+        };
+        let resolved = appearance_from_settings(&snapshot, AppearancePreferences::default());
+        assert_eq!(resolved.scheme, ColorScheme::Light);
+        assert_eq!(resolved.density, Density::Compact);
+        assert_eq!(resolved.motion, MotionMode::Reduced);
     }
 }
