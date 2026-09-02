@@ -89,8 +89,16 @@ fn tool_catalog_uses_registry_order_and_omits_json_schema() {
         .iter()
         .find(|layer| layer.kind == PromptLayerKind::ToolCatalog)
         .expect("tool catalog");
-    let positions = ["read_file", "list_files", "edit_file", "run_command"]
-        .map(|name| catalog.text.find(name).expect("registered tool name"));
+    let positions = [
+        "read_file",
+        "list_files",
+        "find_files",
+        "grep_files",
+        "write_file",
+        "edit_file",
+        "run_command",
+    ]
+    .map(|name| catalog.text.find(name).expect("registered tool name"));
 
     assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(!catalog.text.contains("properties"));

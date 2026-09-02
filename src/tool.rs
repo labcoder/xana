@@ -6,13 +6,17 @@
 
 mod child_agent;
 mod delegate_agent;
+mod discovery;
 mod edit_file;
+mod find_files;
+mod grep_files;
 mod list_files;
 mod orchestration_plan;
 mod read_document;
 mod read_file;
 mod run_command;
 mod workspace_path;
+mod write_file;
 mod xana_docs;
 
 use crate::identity::{OperationId, ToolInvocationId};
@@ -41,6 +45,9 @@ const DEFERRED_CLEANUP_DEADLINE: Duration = Duration::from_secs(6);
 pub(crate) const BUILTIN_TOOL_NAMES: &[&str] = &[
     "read_file",
     "list_files",
+    "find_files",
+    "grep_files",
+    "write_file",
     "edit_file",
     "run_command",
     "read_document",
@@ -618,6 +625,15 @@ impl ToolRegistry {
         }
         if exposed.contains("list_files") {
             registry.register(list_files::ListFiles)?;
+        }
+        if exposed.contains("find_files") {
+            registry.register(find_files::FindFiles)?;
+        }
+        if exposed.contains("grep_files") {
+            registry.register(grep_files::GrepFiles)?;
+        }
+        if exposed.contains("write_file") {
+            registry.register(write_file::WriteFile)?;
         }
         if exposed.contains("edit_file") {
             registry.register(edit_file::EditFile)?;

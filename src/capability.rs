@@ -76,6 +76,9 @@ impl AgentCapabilitySnapshot {
 const BUILTIN_CAPABILITIES: &[(&str, &str)] = &[
     ("fs.read", "read_file"),
     ("fs.list", "list_files"),
+    ("fs.discover", "find_files"),
+    ("fs.search", "grep_files"),
+    ("fs.create", "write_file"),
     ("fs.write", "edit_file"),
     ("process.execute", "run_command"),
     ("document.extract", "read_document"),

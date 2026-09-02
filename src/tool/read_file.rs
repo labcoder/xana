@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::error::Error;
 use std::fmt;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::string::FromUtf8Error;
 
@@ -24,6 +24,18 @@ struct ReadFileArgs {
     path: String,
     start_line: Option<usize>,
     end_line: Option<usize>,
+    offset_bytes: Option<u64>,
+    max_bytes: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
+struct ReadPageResult {
+    path: String,
+    content: String,
+    offset_bytes: u64,
+    next_offset_bytes: Option<u64>,
+    total_bytes: u64,
+    truncated: bool,
 }
 
 #[derive(Debug)]
@@ -34,6 +46,7 @@ enum ReadFileError {
         start_line: Option<usize>,
         end_line: Option<usize>,
     },
+    InvalidPaging,
     Unavailable {
         requested_path: String,
         source: io::Error,
@@ -64,6 +77,10 @@ impl fmt::Display for ReadFileError {
                 "line range start_line={start_line:?}, end_line={end_line:?} is invalid; \
                 values must be one-based and start_line must not exceed end_line"
             ),
+            Self::InvalidPaging => write!(
+                f,
+                "byte paging requires max_bytes in 4..={MAX_READ_BYTES}, an in-range UTF-8 boundary offset, and no line range"
+            ),
             Self::Unavailable { requested_path, .. } => {
                 write!(f, "file {requested_path:?} is unavailable")
             }
@@ -91,9 +108,10 @@ impl Error for ReadFileError {
             Self::Path(source) => Some(source),
             Self::Unavailable { source, .. } => Some(source),
             Self::InvalidUtf8 { source, .. } => Some(source),
-            Self::InvalidLineRange { .. } | Self::NotRegularFile { .. } | Self::TooLarge { .. } => {
-                None
-            }
+            Self::InvalidLineRange { .. }
+            | Self::InvalidPaging
+            | Self::NotRegularFile { .. }
+            | Self::TooLarge { .. } => None,
         }
     }
 }
@@ -104,6 +122,7 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
 
     let start_line = args.start_line.unwrap_or(1);
     let end_line = args.end_line;
+    let paging = args.offset_bytes.is_some() || args.max_bytes.is_some();
 
     if start_line == 0
         || end_line == Some(0)
@@ -113,6 +132,13 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
             start_line: args.start_line,
             end_line: args.end_line,
         });
+    }
+    if paging
+        && (args.start_line.is_some()
+            || args.end_line.is_some()
+            || !(4..=MAX_READ_BYTES).contains(&args.max_bytes.unwrap_or(MAX_READ_BYTES)))
+    {
+        return Err(ReadFileError::InvalidPaging);
     }
 
     let (resolved, location) = resolve_existing_for_read(args.path.clone(), workspace_root)
@@ -153,6 +179,10 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
         source,
     })?;
     verify_open_file(&requested_path, &file, &plan.identity).map_err(ReadFileError::Path)?;
+
+    if plan.args.offset_bytes.is_some() || plan.args.max_bytes.is_some() {
+        return execute_paged_read(file, plan);
+    }
 
     let mut reader = BufReader::new(file);
     let mut selected = Vec::new();
@@ -200,6 +230,69 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
     })
 }
 
+fn execute_paged_read(mut file: File, plan: &ReadFilePlan) -> Result<String, ReadFileError> {
+    let requested_path = plan.requested_path.clone();
+    let offset = plan.args.offset_bytes.unwrap_or(0);
+    let max_bytes = plan.args.max_bytes.unwrap_or(MAX_READ_BYTES);
+    let total_bytes = file
+        .metadata()
+        .map_err(|source| ReadFileError::Unavailable {
+            requested_path: requested_path.clone(),
+            source,
+        })?
+        .len();
+    if offset > total_bytes {
+        return Err(ReadFileError::InvalidPaging);
+    }
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|source| ReadFileError::Unavailable {
+            requested_path: requested_path.clone(),
+            source,
+        })?;
+    let remaining = total_bytes.saturating_sub(offset);
+    let read_limit = u64::try_from(max_bytes.saturating_add(4))
+        .unwrap_or(u64::MAX)
+        .min(remaining);
+    let mut bytes = Vec::with_capacity(usize::try_from(read_limit).unwrap_or(max_bytes));
+    (&mut file)
+        .take(read_limit)
+        .read_to_end(&mut bytes)
+        .map_err(|source| ReadFileError::Unavailable {
+            requested_path: requested_path.clone(),
+            source,
+        })?;
+    let mut retained = bytes.len().min(max_bytes);
+    let content = loop {
+        match std::str::from_utf8(&bytes[..retained]) {
+            Ok(text) => break text.to_owned(),
+            Err(error) if error.error_len().is_none() && error.valid_up_to() < retained => {
+                retained = error.valid_up_to();
+            }
+            Err(_) => {
+                return Err(ReadFileError::InvalidUtf8 {
+                    requested_path,
+                    source: String::from_utf8(bytes).unwrap_err(),
+                });
+            }
+        }
+    };
+    if retained == 0 && offset < total_bytes {
+        return Err(ReadFileError::InvalidPaging);
+    }
+    let retained = u64::try_from(retained).map_err(|_| ReadFileError::InvalidPaging)?;
+    let next = offset.saturating_add(retained);
+    let truncated = next < total_bytes;
+    serde_json::to_string(&ReadPageResult {
+        path: requested_path,
+        content,
+        offset_bytes: offset,
+        next_offset_bytes: truncated.then_some(next),
+        total_bytes,
+        truncated,
+    })
+    .map_err(ReadFileError::InvalidArguments)
+}
+
 #[cfg(test)]
 fn read_file(arguments: &Value, workspace_root: &Path) -> Result<String, ReadFileError> {
     execute_read_file(&plan_read_file(arguments, workspace_root)?)
@@ -210,7 +303,7 @@ impl Tool for ReadFile {
         ToolDefinition {
             name: "read_file".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Read a UTF-8 file. Workspace-relative paths use normal workspace policy; absolute paths outside the workspace require explicit approval".into(),
+            description: "Read a UTF-8 file. Use offset_bytes/max_bytes for deterministic bounded pages of large files; line ranges retain the concise legacy text result. Workspace-relative paths use normal workspace policy and absolute external paths require exact approval.".into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -229,6 +322,17 @@ impl Tool for ReadFile {
                         "type": "integer",
                         "minimum": 1,
                         "description": "Last line to return, one-based and inclusive; defaults to end of file"
+                    },
+                    "offset_bytes": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Zero-based UTF-8 byte boundary for paged mode; cannot be combined with line ranges"
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "minimum": 4,
+                        "maximum": MAX_READ_BYTES,
+                        "description": "Maximum UTF-8 bytes returned in paged mode; result includes the next offset and truncation facts"
                     }
                 }
             }),
@@ -294,6 +398,52 @@ mod tests {
             .expect("nested file should be readable");
 
         assert_eq!(output, "hello from Xana\n");
+    }
+
+    #[test]
+    fn pages_large_utf8_files_with_an_exact_continuation() {
+        let workspace = tempdir().expect("workspace");
+        let content = format!("{}é{}", "a".repeat(64), "b".repeat(MAX_READ_BYTES));
+        fs::write(workspace.path().join("large.txt"), &content).expect("large");
+
+        let first = read_file(
+            &json!({"path": "large.txt", "offset_bytes": 0, "max_bytes": 65}),
+            workspace.path(),
+        )
+        .expect("first page");
+        let first: Value = serde_json::from_str(&first).expect("page JSON");
+        assert_eq!(first["content"], "a".repeat(64));
+        assert_eq!(first["next_offset_bytes"], 64);
+        assert_eq!(first["truncated"], true);
+
+        let second = read_file(
+            &json!({"path": "large.txt", "offset_bytes": 64, "max_bytes": 4}),
+            workspace.path(),
+        )
+        .expect("second page");
+        let second: Value = serde_json::from_str(&second).expect("page JSON");
+        assert!(second["content"].as_str().unwrap().starts_with('é'));
+    }
+
+    #[test]
+    fn byte_paging_rejects_line_mix_and_non_utf8_boundary() {
+        let workspace = tempdir().expect("workspace");
+        fs::write(workspace.path().join("utf8.txt"), "éclair").expect("utf8");
+
+        assert!(matches!(
+            read_file(
+                &json!({"path": "utf8.txt", "offset_bytes": 0, "start_line": 1}),
+                workspace.path()
+            ),
+            Err(ReadFileError::InvalidPaging)
+        ));
+        assert!(matches!(
+            read_file(
+                &json!({"path": "utf8.txt", "offset_bytes": 1, "max_bytes": 4}),
+                workspace.path()
+            ),
+            Err(ReadFileError::InvalidUtf8 { .. })
+        ));
     }
 
     #[test]

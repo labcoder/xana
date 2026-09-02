@@ -15,10 +15,13 @@ use std::{
     error::Error,
     fmt, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 use tokio::process::Command;
 
 const MAX_STREAM_BYTES: usize = 32 * 1024;
+const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const MAX_TIMEOUT_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +29,8 @@ struct RunCommandArgs {
     command: String,
     #[serde(default = "default_cwd")]
     cwd: String,
+    #[serde(default = "default_timeout_ms")]
+    timeout_ms: u64,
 }
 
 struct RunCommandPlan {
@@ -53,6 +58,7 @@ pub(super) struct RunCommand {
 enum RunCommandError {
     InvalidArguments(serde_json::Error),
     BlankCommand,
+    InvalidTimeout,
     InvalidCwd {
         requested: String,
         source: workspace_path::WorkspacePathError,
@@ -64,6 +70,9 @@ enum RunCommandError {
     Process {
         plan: ProcessPlan,
         source: io::Error,
+    },
+    TimedOut {
+        timeout_ms: u64,
     },
     Serialize(serde_json::Error),
 }
@@ -83,6 +92,9 @@ impl RunCommand {
 
         if args.command.trim().is_empty() {
             return Err(RunCommandError::BlankCommand);
+        }
+        if args.timeout_ms == 0 || args.timeout_ms > MAX_TIMEOUT_MS {
+            return Err(RunCommandError::InvalidTimeout);
         }
 
         let resolved_cwd = if Path::new(&args.cwd).is_absolute() {
@@ -136,12 +148,18 @@ impl RunCommand {
         command
             .args(&plan.process.args)
             .current_dir(&plan.canonical_cwd);
-        let output = process_capture::run(&mut command, MAX_STREAM_BYTES)
-            .await
-            .map_err(|source| RunCommandError::Process {
-                plan: plan.process.clone(),
-                source,
-            })?;
+        let output = tokio::time::timeout(
+            Duration::from_millis(plan.args.timeout_ms),
+            process_capture::run(&mut command, MAX_STREAM_BYTES),
+        )
+        .await
+        .map_err(|_| RunCommandError::TimedOut {
+            timeout_ms: plan.args.timeout_ms,
+        })?
+        .map_err(|source| RunCommandError::Process {
+            plan: plan.process.clone(),
+            source,
+        })?;
         let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
@@ -158,6 +176,10 @@ impl RunCommand {
 
 fn default_cwd() -> String {
     ".".to_owned()
+}
+
+fn default_timeout_ms() -> u64 {
+    DEFAULT_TIMEOUT_MS
 }
 
 impl Tool for RunCommand {
@@ -177,6 +199,13 @@ impl Tool for RunCommand {
                         "type": "string",
                         "description": "Existing directory inside the launch workspace. Use '.' for the workspace root; workspace-relative paths are preferred, and absolute paths are accepted only when they resolve inside the workspace. To operate on an approved external file, keep cwd='.' and reference the absolute file in command.",
                         "default": "."
+                    },
+                    "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_TIMEOUT_MS,
+                        "default": DEFAULT_TIMEOUT_MS,
+                        "description": "Per-call wall-clock timeout in milliseconds; the immutable ceiling is 120000"
                     }
                 },
                 "required": ["command"],
@@ -227,6 +256,9 @@ impl fmt::Display for RunCommandError {
         match self {
             Self::InvalidArguments(_) => write!(f, "invalid run_command arguments"),
             Self::BlankCommand => write!(f, "run_command requires a non-blank command"),
+            Self::InvalidTimeout => {
+                write!(f, "run_command timeout_ms must be in 1..={MAX_TIMEOUT_MS}")
+            }
             Self::InvalidCwd { requested, .. } => {
                 write!(
                     f,
@@ -244,6 +276,10 @@ impl fmt::Display for RunCommandError {
             Self::Process { plan, source } => {
                 write!(f, "could not execute {}: {source}", display_argv(plan))
             }
+            Self::TimedOut { timeout_ms } => write!(
+                f,
+                "run_command exceeded its reviewed {timeout_ms} ms timeout; the owned process was stopped"
+            ),
             Self::Serialize(_) => write!(f, "could not encode run_command result"),
         }
     }
@@ -255,7 +291,10 @@ impl Error for RunCommandError {
             Self::InvalidArguments(source) | Self::Serialize(source) => Some(source),
             Self::InvalidCwd { source, .. } => Some(source),
             Self::Process { source, .. } => Some(source),
-            Self::BlankCommand | Self::CwdNotDirectory { .. } => None,
+            Self::BlankCommand
+            | Self::InvalidTimeout
+            | Self::CwdNotDirectory { .. }
+            | Self::TimedOut { .. } => None,
         }
     }
 }

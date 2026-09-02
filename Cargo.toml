@@ -61,9 +61,12 @@ csv = { version = "1.4.0", optional = true }
 directories = "6.0.0"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 fs2 = "0.4.3"
+globset = "0.4.20"
+ignore = "0.4.33"
 keyring = "4.1.6"
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "http2", "json", "rustls-no-provider", "stream", "system-proxy"] }
+regex = "1.13.1"
 # Xana does not require AWS-LC's FIPS or post-quantum extensions, so select
 # Rustls's smaller built-in provider without its CMake-based build dependency.
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }

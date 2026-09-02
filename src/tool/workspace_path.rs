@@ -75,6 +75,16 @@ pub(super) struct ResolvedPath {
     pub(super) identity: FileIdentity,
 }
 
+#[derive(Debug)]
+pub(super) struct ResolvedWritePath {
+    pub(super) requested_path: String,
+    pub(super) canonical_path: PathBuf,
+    pub(super) canonical_parent: PathBuf,
+    pub(super) parent_identity: FileIdentity,
+    pub(super) existing_identity: Option<FileIdentity>,
+    pub(super) location: ResolvedPathLocation,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ResolvedPathLocation {
     Workspace,
@@ -166,6 +176,105 @@ pub(super) fn resolve_existing_for_read(
         },
         location,
     ))
+}
+
+pub(super) fn resolve_for_write(
+    requested_path: String,
+    workspace_root: &Path,
+) -> Result<ResolvedWritePath, WorkspacePathError> {
+    let requested = Path::new(&requested_path);
+    if requested_path.trim().is_empty()
+        || requested.file_name().is_none()
+        || (!requested.is_absolute()
+            && requested.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            }))
+    {
+        return Err(WorkspacePathError::InvalidPath { requested_path });
+    }
+    let canonical_root = workspace_root
+        .canonicalize()
+        .map_err(|source| WorkspacePathError::WorkspaceUnavailable { source })?;
+    let lexical_target = if requested.is_absolute() {
+        requested.to_owned()
+    } else {
+        canonical_root.join(requested)
+    };
+    let parent = lexical_target
+        .parent()
+        .ok_or_else(|| WorkspacePathError::InvalidPath {
+            requested_path: requested_path.clone(),
+        })?;
+    let canonical_parent =
+        parent
+            .canonicalize()
+            .map_err(|source| WorkspacePathError::Unavailable {
+                requested_path: requested_path.clone(),
+                source,
+            })?;
+    let parent_identity = file_identity(&canonical_parent, &requested_path)?;
+    let unresolved_target = canonical_parent.join(lexical_target.file_name().ok_or_else(|| {
+        WorkspacePathError::InvalidPath {
+            requested_path: requested_path.clone(),
+        }
+    })?);
+    let existing = match fs::symlink_metadata(&unresolved_target) {
+        Ok(_) => Some(unresolved_target.canonicalize().map_err(|source| {
+            WorkspacePathError::Unavailable {
+                requested_path: requested_path.clone(),
+                source,
+            }
+        })?),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => None,
+        Err(source) => {
+            return Err(WorkspacePathError::Unavailable {
+                requested_path,
+                source,
+            });
+        }
+    };
+    let canonical_path = existing.clone().unwrap_or(unresolved_target);
+    let location = if canonical_path.starts_with(&canonical_root) {
+        ResolvedPathLocation::Workspace
+    } else {
+        ResolvedPathLocation::External
+    };
+    let existing_identity = existing
+        .as_deref()
+        .map(|path| file_identity(path, &requested_path))
+        .transpose()?;
+    Ok(ResolvedWritePath {
+        requested_path,
+        canonical_path,
+        canonical_parent,
+        parent_identity,
+        existing_identity,
+        location,
+    })
+}
+
+pub(super) fn revalidate_write_target(
+    planned: &ResolvedWritePath,
+) -> Result<(), WorkspacePathError> {
+    revalidate_path(
+        &planned.requested_path,
+        &planned.canonical_parent,
+        &planned.parent_identity,
+    )?;
+    match &planned.existing_identity {
+        Some(identity) => {
+            revalidate_path(&planned.requested_path, &planned.canonical_path, identity)
+        }
+        None => match fs::symlink_metadata(&planned.canonical_path) {
+            Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(_) | Err(_) => Err(WorkspacePathError::ChangedSincePlanning {
+                requested_path: planned.requested_path.clone(),
+            }),
+        },
+    }
 }
 
 pub(super) fn revalidate_path(
@@ -327,6 +436,42 @@ mod tests {
             }
             other => panic!("expected unavailable path, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn write_planning_distinguishes_missing_existing_and_external_targets() {
+        let workspace = tempdir().expect("workspace");
+        let outside = tempdir().expect("outside");
+        fs::write(workspace.path().join("existing.txt"), "existing").expect("existing");
+
+        let missing = resolve_for_write("new.txt".into(), workspace.path()).expect("missing");
+        assert_eq!(missing.location, ResolvedPathLocation::Workspace);
+        assert!(missing.existing_identity.is_none());
+        let existing =
+            resolve_for_write("existing.txt".into(), workspace.path()).expect("existing");
+        assert!(existing.existing_identity.is_some());
+        let external = resolve_for_write(
+            outside
+                .path()
+                .join("new.txt")
+                .to_string_lossy()
+                .into_owned(),
+            workspace.path(),
+        )
+        .expect("external");
+        assert_eq!(external.location, ResolvedPathLocation::External);
+    }
+
+    #[test]
+    fn a_write_target_appearing_after_planning_is_rejected() {
+        let workspace = tempdir().expect("workspace");
+        let plan = resolve_for_write("new.txt".into(), workspace.path()).expect("plan");
+        fs::write(workspace.path().join("new.txt"), "racer").expect("racer");
+
+        assert!(matches!(
+            revalidate_write_target(&plan),
+            Err(WorkspacePathError::ChangedSincePlanning { .. })
+        ));
     }
 
     #[cfg(unix)]

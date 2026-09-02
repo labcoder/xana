@@ -261,30 +261,47 @@ fn builtins_expose_one_ordered_schema_and_safety_contract() {
         vec![
             "read_file",
             "list_files",
+            "find_files",
+            "grep_files",
+            "write_file",
             "edit_file",
             "run_command",
             "read_document",
             "xana_docs",
         ]
     );
-    assert_eq!(definitions[0].effect_class, EffectClass::Read);
-    assert_eq!(definitions[0].replay_safety, ReplaySafety::Safe);
-    assert_eq!(definitions[1].effect_class, EffectClass::Read);
-    assert_eq!(definitions[1].replay_safety, ReplaySafety::Safe);
-    assert_eq!(definitions[2].effect_class, EffectClass::Write);
-    assert_eq!(definitions[2].replay_safety, ReplaySafety::Never);
-    assert_eq!(definitions[3].effect_class, EffectClass::Execute);
-    assert_eq!(definitions[3].replay_safety, ReplaySafety::Never);
-    assert_eq!(definitions[4].effect_class, EffectClass::Read);
-    assert_eq!(definitions[4].replay_safety, ReplaySafety::Safe);
-    assert_eq!(definitions[5].effect_class, EffectClass::Read);
-    assert_eq!(definitions[5].replay_safety, ReplaySafety::Safe);
+    assert_eq!(
+        definitions
+            .iter()
+            .map(|definition| (definition.effect_class, definition.replay_safety))
+            .collect::<Vec<_>>(),
+        vec![
+            (EffectClass::Read, ReplaySafety::Safe),
+            (EffectClass::Read, ReplaySafety::Safe),
+            (EffectClass::Read, ReplaySafety::Safe),
+            (EffectClass::Read, ReplaySafety::Safe),
+            (EffectClass::Write, ReplaySafety::Never),
+            (EffectClass::Write, ReplaySafety::Never),
+            (EffectClass::Execute, ReplaySafety::Never),
+            (EffectClass::Read, ReplaySafety::Safe),
+            (EffectClass::Read, ReplaySafety::Safe),
+        ]
+    );
 
     let read = &registry.definition("read_file").unwrap().parameters;
     assert_eq!(read["properties"]["start_line"]["minimum"], 1);
     assert_eq!(read["properties"]["end_line"]["minimum"], 1);
+    assert_eq!(read["properties"]["max_bytes"]["maximum"], 65536);
+    let find = &registry.definition("find_files").unwrap().parameters;
+    assert_eq!(find["properties"]["max_depth"]["maximum"], 32);
+    let grep = &registry.definition("grep_files").unwrap().parameters;
+    assert_eq!(grep["properties"]["max_matches"]["maximum"], 1000);
+    let write = registry.definition("write_file").unwrap();
+    assert_eq!(write.parameters["properties"]["mode"]["enum"][0], "create");
+    assert_eq!(write.effect_class, EffectClass::Write);
     let command = &registry.definition("run_command").unwrap().parameters;
     assert_eq!(command["additionalProperties"], false);
+    assert_eq!(command["properties"]["timeout_ms"]["maximum"], 120000);
     let document = registry.definition("read_document").unwrap();
     assert_eq!(
         document.description.contains("CSV"),
@@ -295,18 +312,51 @@ fn builtins_expose_one_ordered_schema_and_safety_contract() {
 }
 
 #[test]
-fn builtins_dispatch_read_list_and_edit_with_call_ids() {
+fn builtins_dispatch_typed_file_workflow_with_correlated_serialized_results() {
     use std::fs;
 
     let workspace = tempdir().expect("temporary workspace");
-    fs::write(workspace.path().join("state.txt"), "status=rough\n").expect("state fixture");
+    fs::create_dir(workspace.path().join("notes")).expect("notes directory");
+    fs::write(
+        workspace.path().join("state.txt"),
+        "status=rough\nowner=unknown\n",
+    )
+    .expect("state fixture");
     let registry = ToolRegistry::builtins_for_tests().expect("built-in registry");
 
+    let write = registry.execute_for_tests(
+        &ToolCall {
+            id: "call-write".to_owned(),
+            name: "write_file".to_owned(),
+            arguments: json!({
+                "path": "notes/context.txt",
+                "content": "alpha beta gamma\n",
+                "mode": "create"
+            }),
+        },
+        workspace.path(),
+    );
     let list = registry.execute_for_tests(
         &ToolCall {
             id: "call-list".to_owned(),
             name: "list_files".to_owned(),
             arguments: json!({"path": "."}),
+        },
+        workspace.path(),
+    );
+    let find = registry.execute_for_tests(
+        &ToolCall {
+            id: "call-find".to_owned(),
+            name: "find_files".to_owned(),
+            arguments: json!({"pattern": "**/*.txt"}),
+        },
+        workspace.path(),
+    );
+    let grep = registry.execute_for_tests(
+        &ToolCall {
+            id: "call-grep".to_owned(),
+            name: "grep_files".to_owned(),
+            arguments: json!({"query": "beta", "glob": "**/*.txt"}),
         },
         workspace.path(),
     );
@@ -316,8 +366,16 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
             name: "edit_file".to_owned(),
             arguments: json!({
                 "path": "state.txt",
-                "old_text": "status=rough",
-                "new_text": "status=ready"
+                "edits": [
+                    {
+                        "old_text": "status=rough",
+                        "new_text": "status=ready"
+                    },
+                    {
+                        "old_text": "owner=unknown",
+                        "new_text": "owner=xana"
+                    }
+                ]
             }),
         },
         workspace.path(),
@@ -330,15 +388,45 @@ fn builtins_dispatch_read_list_and_edit_with_call_ids() {
         },
         workspace.path(),
     );
+    let page = registry.execute_for_tests(
+        &ToolCall {
+            id: "call-page".to_owned(),
+            name: "read_file".to_owned(),
+            arguments: json!({"path": "notes/context.txt", "offset_bytes": 0, "max_bytes": 8}),
+        },
+        workspace.path(),
+    );
 
+    assert_eq!(write.call_id, "call-write");
+    assert_eq!(write.status, ToolResultStatus::Success);
     assert_eq!(list.call_id, "call-list");
     assert_eq!(list.status, ToolResultStatus::Success);
     assert!(list.output.contains("state.txt"));
+    assert_eq!(find.call_id, "call-find");
+    assert_eq!(find.status, ToolResultStatus::Success);
+    assert_eq!(
+        serde_json::from_str::<Value>(&find.output).unwrap()["entries"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(grep.call_id, "call-grep");
+    assert_eq!(grep.status, ToolResultStatus::Success);
+    assert_eq!(
+        serde_json::from_str::<Value>(&grep.output).unwrap()["matches"][0]["path"],
+        "notes/context.txt"
+    );
     assert_eq!(edit.call_id, "call-edit");
     assert_eq!(edit.status, ToolResultStatus::Success);
     assert_eq!(read.call_id, "call-read");
     assert_eq!(read.status, ToolResultStatus::Success);
-    assert_eq!(read.output, "status=ready\n");
+    assert_eq!(read.output, "status=ready\nowner=xana\n");
+    assert_eq!(page.call_id, "call-page");
+    assert_eq!(page.status, ToolResultStatus::Success);
+    let page: Value = serde_json::from_str(&page.output).expect("paged read result");
+    assert_eq!(page["content"], "alpha be");
+    assert_eq!(page["next_offset_bytes"], 8);
 }
 
 struct FakeEffect {

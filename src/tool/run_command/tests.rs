@@ -97,7 +97,7 @@ fn plan_binds_normalized_arguments_shell_command_and_canonical_cwd() {
 
     assert_eq!(
         planned.final_arguments,
-        serde_json::json!({"command": "cargo test", "cwd": "nested"})
+        serde_json::json!({"command": "cargo test", "cwd": "nested", "timeout_ms": DEFAULT_TIMEOUT_MS})
     );
     assert!(matches!(
         planned.scope,
@@ -213,4 +213,43 @@ async fn assert_smoke_result(command: &str, expected: &str) {
     assert!(result.success);
     assert_eq!(result.stdout, expected);
     assert!(result.stderr.is_empty());
+}
+
+#[test]
+fn invalid_timeout_fails_before_workspace_io() {
+    let unavailable_workspace = tempdir().expect("parent").path().join("missing");
+    let result = tool().plan_inner(
+        &serde_json::json!({"command": "echo no", "timeout_ms": MAX_TIMEOUT_MS + 1}),
+        &unavailable_workspace,
+    );
+
+    assert!(matches!(result, Err(RunCommandError::InvalidTimeout)));
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn hung_command_hits_the_reviewed_timeout() {
+    assert_timeout("sleep 5").await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn hung_command_hits_the_reviewed_timeout() {
+    assert_timeout("Start-Sleep -Seconds 5").await;
+}
+
+async fn assert_timeout(command: &str) {
+    let workspace = tempdir().expect("workspace");
+    let tool = tool();
+    let plan = tool
+        .plan_inner(
+            &serde_json::json!({"command": command, "timeout_ms": 25}),
+            workspace.path(),
+        )
+        .expect("timeout plan");
+
+    assert!(matches!(
+        tool.execute_inner(&plan).await,
+        Err(RunCommandError::TimedOut { timeout_ms: 25 })
+    ));
 }

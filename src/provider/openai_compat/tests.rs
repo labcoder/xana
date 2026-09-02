@@ -499,7 +499,7 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
     let value = serde_json::to_value(&request).expect("request JSON");
     let tools = value["tools"].as_array().expect("tool array");
 
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 9);
     assert_eq!(
         tools
             .iter()
@@ -508,6 +508,9 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
         vec![
             "read_file",
             "list_files",
+            "find_files",
+            "grep_files",
+            "write_file",
             "edit_file",
             "run_command",
             "read_document",
@@ -559,7 +562,11 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
     );
     assert_eq!(
         edit_file["function"]["parameters"]["required"],
-        serde_json::json!(["path", "old_text", "new_text"])
+        serde_json::json!(["path"])
+    );
+    assert_eq!(
+        edit_file["function"]["parameters"]["properties"]["edits"]["maxItems"],
+        32
     );
 }
 
