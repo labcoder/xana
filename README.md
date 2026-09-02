@@ -120,6 +120,7 @@ for the ownership boundaries.
 | `xana connect` | Open the provider-neutral integration hub |
 | `xana model` | Inspect the active model and available catalog |
 | `xana session list` | List conversations for the current workspace |
+| `xana session branch ID --at POINT` | Preserve a source and create an explicit continuation |
 | `xana --continue` | Continue the latest compatible conversation |
 | `xana doctor` | Inspect configuration, credentials, paths, and runtime readiness |
 | `xana logs list` | Inspect local metadata-only diagnostics |

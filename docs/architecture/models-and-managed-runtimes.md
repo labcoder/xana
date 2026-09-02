@@ -314,13 +314,17 @@ so an interrupted request cannot corrupt the following frame or starve the
 interrupt path.
 
 Xana stores a bounded catalog of opaque managed thread ids, their non-secret
-creating identity versions, and one current selection beneath
+creating identity versions, stable Xana-owned Conversation ids, and one
+current selection beneath
 `data/managed-threads/`, keyed by connection and canonical
 workspace. A companion lock gives one local writer ownership of that route.
 The selected handle lets a later Xana process ask Codex to resume its own
 thread; retained handles can be selected without copying vendor history. This is
 not a transcript, portable session, auth token, or claim that Xana owns the
-inner state. `/clear` atomically records an empty handle and creates a new
+inner state. New documents use schema version 3; legacy version-1 and
+version-2 handles derive deterministic Conversation identities during their
+bounded read without changing provider ownership. `/clear` atomically records
+an empty handle and creates a new
 thread on the next prompt. It does not delete the external Codex thread. Native
 `--resume` remains a separate session protocol.
 

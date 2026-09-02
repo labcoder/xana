@@ -204,6 +204,44 @@ plain client may hold an inactive session writer and draft input, but its turn
 cannot cross the root gate. Dropping the active embedded client follows the
 existing runtime cancellation path before its lease is released.
 
+`execution_host` is the bounded application coordinator above those
+workspace-scoped owners. It admits at most eight durable Conversations and
+four simultaneous Runs, keys every command, observation, approval count,
+failure, and terminal receipt by stable `ConversationId`, and never holds its
+coordination lock while model or tool work executes. Filesystem identity—not
+path spelling—groups aliases into one write-collision domain. Independent
+workspaces may run concurrently; a second write-capable Run in the same
+workspace is rejected unless its caller supplies the explicit collision-risk
+acknowledgement. Xana never creates a worktree implicitly.
+
+The host projects one atomic snapshot with a sequence watermark followed by a
+bounded ordered event suffix. A retained cursor receives only later events; an
+evicted or otherwise unprovable cursor receives a fresh snapshot. Slow clients
+cannot make the host retain or retransmit an unbounded cumulative history.
+Host restart reconstructs durable Conversation owners as idle and never
+replays an interrupted Run. The current Desktop bridge consumes this contract
+for one walking-skeleton Conversation; multi-Conversation navigation remains a
+frontend workflow, not missing backend identity or concurrency semantics.
+
+Native and managed Conversations have one Xana-owned stable identity distinct
+from their execution owner's handle. For native Conversations the UUID is
+currently identical to the durable session UUID as a compatibility mapping;
+managed Conversations persist a separate Xana UUID beside the opaque provider
+thread id. Version-1 and version-2 managed-handle documents derive a stable
+legacy identity when read, while new writes use version 3.
+
+An explicit branch always creates a new Xana Conversation and preserves the
+source. A native branch reuses the exact immutable entry records through the
+chosen active-path entry, writes lineage before atomic publication, and shares
+the source's immutable Profile snapshot and optional Project membership. A
+managed owner-native fork is retained only when the adapter proves that
+capability. Otherwise Xana records a fresh managed continuation with zero
+claimed shared entries; it does not fabricate or translate vendor history.
+An ordinary Profile-commit failure removes the just-staged native or managed
+target before returning. Recovery from a process crash between the two durable
+stores remains part of the M4 lifecycle/recovery work rather than an implied
+cross-file atomicity guarantee.
+
 The append-only terminal and one-shot adapter are permanent clients of this
 boundary. One-shot accepts exactly one bounded argument or stdin source,
 denies unresolved approvals, and writes only the final payload to stdout.

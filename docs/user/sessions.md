@@ -39,6 +39,8 @@ refuses an active or locked handle.
 ```text
 xana session list
 xana session new
+xana session branch CONVERSATION_ID --at ENTRY_ID
+xana session branch CONVERSATION_ID --at current
 xana session select codex THREAD_ID
 xana session archive codex THREAD_ID
 ```
@@ -70,6 +72,47 @@ Conversation ownership is not a filesystem or worktree lock. Multiple
 conversations may reference the same workspace, which is useful outside code,
 but parallel code edits can conflict. Prefer separate Git worktrees when work
 may overlap; Xana does not create them automatically.
+
+## Branching a Conversation
+
+Branching preserves the source and creates a separately resumable
+Conversation with the same frozen Profile and optional Project membership. To
+branch a native Conversation, first inspect its bounded metadata:
+
+```text
+xana session inspect SESSION_ID
+xana session branch CONVERSATION_ID --at ENTRY_ID
+```
+
+For native Conversations, `CONVERSATION_ID` currently has the same UUID text as
+`SESSION_ID`. Inspection prints the active history count and at most the newest
+128 immutable entry ids, oldest to newest, without printing message content.
+Choose one of those ids as `ENTRY_ID`. The new journal reuses the exact
+immutable entries through that point, records source lineage, and leaves the
+source head and records unchanged. The receipt prints the new Conversation id
+and exact resume command.
+
+Managed history stays owned by its provider. Use the stable Xana Conversation
+id shown by `xana session list` and the explicit current owner boundary:
+
+```text
+xana session branch CONVERSATION_ID --at current
+```
+
+If a managed adapter proves a native fork operation, Xana retains the returned
+opaque thread under the new Conversation id. Codex does not currently expose a
+fork through Xana's managed adapter, so Xana records a fresh managed
+continuation instead. Its frozen Profile and lineage are preserved, but shared
+history is reported as zero and the provider creates a new thread on the first
+turn. Xana never copies native history into Codex or claims that a fresh
+provider thread contains the source transcript.
+
+Overlapping write-capable Runs in one canonical workspace are rejected unless
+the initiating surface presents and records an explicit risk acknowledgement.
+Safe choices are to wait, use a separate Git worktree, or acknowledge only
+when the work cannot conflict. Different spellings, symlinks, junctions, path
+case, UNC paths, and Windows extended prefixes do not create independent
+collision domains for the same opened directory.
 
 ## TUI navigation
 
@@ -135,8 +178,9 @@ With `XANA_HOME`, `data/` is beneath that absolute root. Otherwise the platform
 data directory described in [Configuration](configuration.md) applies.
 
 A managed-thread document contains only a format version, connection id,
-canonical workspace, a bounded list of opaque thread ids and identity versions,
-and the selected id. It contains no transcript, model context, tool state,
+canonical workspace, a bounded list of stable Xana Conversation ids, opaque
+thread ids and identity versions, and the selected id. It contains no
+transcript, model context, tool state,
 credential, or token. Its companion lock permits
 one Xana writer for the same managed route while allowing different
 workspaces. Writes are atomic and bounded. Codex remains the authority for
@@ -177,6 +221,7 @@ xana session inspect SESSION_ID
 ```
 
 It reads without modifying the session and prints ids, path, record count,
+active history count, at most the newest 128 immutable branch-point entry ids,
 unfinished operation states, artifact counts and bytes, context versions,
 child lineage/route/owner/connection/model/lifecycle/usage/report facts, and
 whether a torn tail is repairable. It also reports the total compaction count

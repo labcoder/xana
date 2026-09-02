@@ -68,11 +68,17 @@ protocol transactionally while retaining explicit version/capability checks,
 typed unsupported results, fresh-snapshot recovery, and safe unknown-content
 fallbacks.
 
-M4-07A has implemented the shared filesystem collision identity,
-generation-backed foreground ownership, repository-private protocol version 2,
-and transactional private-record version-2 migration beneath this broader
-Accepted proposal. This is partial implementation evidence, not a status change
-for the remaining Desktop, Workbench, lifecycle, and controller work.
+M4-07A and M4-07 have implemented the shared filesystem collision identity,
+generation-backed foreground ownership, transactional private-record
+version-2 migration, stable native/managed Conversation identities, the
+bounded eight-Conversation/four-Run application coordinator, ordered
+snapshot/delta projection, explicit same-workspace write collision admission,
+atomic native branching, honest managed fork/fresh-continuation boundaries,
+and exact Profile/Project lineage beneath this broader Accepted proposal. The
+current Desktop walking skeleton consumes the host contract for one
+Conversation; multi-Conversation client leases, navigation, complete lifecycle,
+and Workbench presentation remain later M4 work. This is partial implementation
+evidence, not a status change for the proposal as a whole.
 
 ## 2. Attach or own without split brain
 

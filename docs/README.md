@@ -36,6 +36,9 @@ engineering contracts used to change it.
 - [M4 state migration and ownership evidence](development/m4-state-migration-and-ownership-evidence.md)
   records filesystem collision identity, generation-backed attach-or-own
   claims, private-record v2 transactionality, fault recovery, and verification.
+- [M4 multiworkspace host evidence](development/m4-multiworkspace-host-evidence.md)
+  records bounded multi-Conversation admission, workspace collision policy,
+  snapshot/delta behavior, owner-specific branching, and isolation evidence.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
