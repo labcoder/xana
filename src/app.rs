@@ -281,6 +281,28 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
     }
 }
 
+pub(crate) async fn run_desktop(
+    paths: XanaPaths,
+    workspace: std::path::PathBuf,
+    bridge: crate::desktop::Bridge,
+) -> Result<()> {
+    let presentation = resolved_presentation(&paths, true, true);
+    chat::run(
+        &paths,
+        chat::ChatSurface::Desktop {
+            bridge,
+            presentation,
+            workspace,
+        },
+        None,
+        false,
+        false,
+        None,
+    )
+    .await
+    .map(|_| ())
+}
+
 async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
     match XanaConfig::load_from(paths.config_file()) {
         Ok(_) => Ok(()),

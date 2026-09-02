@@ -18,6 +18,7 @@ gpui-ai.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui_platform.workspace = true
+xana = { path = "../.." }
 
 [lints.clippy]
 dbg_macro = "deny"

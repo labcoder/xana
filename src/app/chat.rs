@@ -53,6 +53,11 @@ pub(super) enum ChatSurface {
         port: u16,
         presentation: presentation::ResolvedPresentation,
     },
+    Desktop {
+        bridge: crate::desktop::Bridge,
+        presentation: presentation::ResolvedPresentation,
+        workspace: std::path::PathBuf,
+    },
 }
 
 impl ChatSurface {
@@ -61,6 +66,14 @@ impl ChatSurface {
             Self::Plain(mode) => mode.profile(),
             Self::Tui { prepared, .. } => prepared.profile(),
             Self::Hosted { presentation, .. } => *presentation,
+            Self::Desktop { presentation, .. } => *presentation,
+        }
+    }
+
+    fn workspace(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Desktop { workspace, .. } => Some(workspace),
+            _ => None,
         }
     }
 }
@@ -136,7 +149,7 @@ async fn run_once(
         }
         // A full-screen surface must only be mutated through Ratatui. Direct
         // stderr output here survives the redraw and corrupts the composer.
-        (ChatSurface::Tui { .. }, _) => {}
+        (ChatSurface::Tui { .. } | ChatSurface::Desktop { .. }, _) => {}
         _ => {
             writeln!(
                 anstream::stderr().lock(),
@@ -210,7 +223,10 @@ async fn run_once(
     let model = selected_model;
     let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
     let configured_shell = shell.prompt_description();
-    let workspace_root = std::env::current_dir()
+    let workspace_root = surface
+        .workspace()
+        .map(std::path::Path::to_path_buf)
+        .map_or_else(std::env::current_dir, Ok)
         .context("could not resolve Xana workspace root")?
         .canonicalize()
         .context("could not canonicalize Xana workspace root")?;
@@ -335,6 +351,12 @@ async fn run_once(
                 "Xana durable --resume applies to native conversations or a planned managed continuation with a frozen profile; Codex owns ordinary managed thread resume"
             )
         }
+        if let ChatSurface::Desktop { bridge, .. } = &surface {
+            return Err(anyhow::Error::new(crate::desktop::reject_managed(
+                bridge,
+                &provider_name,
+            )));
+        }
         let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
         let developer_instructions = if managed_skill_instructions.is_empty() {
             crate::prompt::xana_identity().to_owned()
@@ -416,6 +438,9 @@ async fn run_once(
                         .await?;
                         ChatExit::Quit
                     }
+                    ChatSurface::Desktop { .. } => unreachable!(
+                        "managed Desktop execution is rejected before the Codex server starts"
+                    ),
                 };
                 Ok(ChatRun::Exited {
                     exit,
@@ -728,6 +753,10 @@ async fn run_once(
             )
             .await?;
             ChatExit::Quit
+        }
+        ChatSurface::Desktop { bridge, .. } => {
+            crate::desktop::run_native(runtime, &header, workspace_host, conversation, bridge)
+                .await?
         }
     };
     Ok(ChatRun::Exited {

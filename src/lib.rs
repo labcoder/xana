@@ -17,6 +17,8 @@ mod config_edit;
 mod config_migration;
 mod context;
 mod credential;
+#[doc(hidden)]
+pub mod desktop;
 mod diagnostics;
 mod doctor;
 mod documents;
