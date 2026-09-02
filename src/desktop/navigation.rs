@@ -3,8 +3,10 @@
 use super::{DesktopError, DesktopErrorCode};
 use crate::{
     bounded_file,
+    config::ConfigReadiness,
     conversation_branch::ConversationBranchService,
     identity::ProjectId,
+    managed::thread_store::ManagedThreadStore,
     message::{ContentBlock, Role},
     paths::XanaPaths,
     private_state::ProjectLifecycle,
@@ -18,12 +20,13 @@ use std::{
     collections::HashSet,
     io::Write as _,
     path::{Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 const SNAPSHOT_VERSION: u16 = 1;
-const PREFERENCE_VERSION: u16 = 1;
+const PREFERENCE_VERSION: u16 = 2;
 const MAX_PREFERENCE_BYTES: usize = 16 * 1024;
+const MAX_RECENT_LAUNCHES: usize = 12;
 const MAX_PROJECTS: usize = 10_000;
 const MAX_CONVERSATIONS: usize = 100_000;
 const MAX_TITLE_BYTES: usize = 160;
@@ -122,6 +125,39 @@ pub struct DesktopNavigationSnapshot {
     pub truncated: bool,
 }
 
+/// Kind of one explicit choice on the Desktop cold-launch surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesktopLaunchChoiceKind {
+    Project,
+    Conversation,
+    Workspace,
+}
+
+/// One bounded, presentation-safe launch choice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopLaunchChoice {
+    pub id: String,
+    pub label: String,
+    pub detail: String,
+    pub kind: DesktopLaunchChoiceKind,
+    pub(super) target: DesktopLaunchTarget,
+}
+
+/// Read-only state shown before a workspace runtime is started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopLaunchCatalog {
+    pub configuration_state: String,
+    pub projects: Vec<DesktopLaunchChoice>,
+    pub recent: Vec<DesktopLaunchChoice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DesktopLaunchTarget {
+    pub(super) workspace: PathBuf,
+    pub(super) conversation: Option<ConversationRef>,
+    pub(super) force_new: bool,
+}
+
 impl DesktopNavigationSnapshot {
     pub fn empty(sidebar_mode: DesktopSidebarMode) -> Self {
         Self {
@@ -149,11 +185,21 @@ impl DesktopNavigationSnapshot {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DesktopNavigationPreferences {
     version: u16,
     sidebar_mode: DesktopSidebarMode,
+    #[serde(default)]
+    recent_launches: Vec<DesktopRecentLaunch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DesktopRecentLaunch {
+    workspace: PathBuf,
+    conversation: Option<String>,
+    touched_unix_ms: u64,
 }
 
 impl Default for DesktopNavigationPreferences {
@@ -161,6 +207,7 @@ impl Default for DesktopNavigationPreferences {
         Self {
             version: PREFERENCE_VERSION,
             sidebar_mode: DesktopSidebarMode::Full,
+            recent_launches: Vec::new(),
         }
     }
 }
@@ -184,6 +231,87 @@ struct ProjectConversationProjection {
 }
 
 impl DesktopNavigationStore {
+    pub(super) fn launch_catalog(paths: &XanaPaths) -> Result<DesktopLaunchCatalog, DesktopError> {
+        let preference_file = paths
+            .data_dir()
+            .join("frontend")
+            .join("desktop-navigation.toml");
+        let preferences = load_preferences(&preference_file);
+        let projects = ProjectStore::list_existing(paths, false).map_err(navigation_error)?;
+        let mut project_choices = Vec::with_capacity(projects.len().min(MAX_PROJECTS));
+        for project in projects.into_iter().take(MAX_PROJECTS) {
+            let Ok(workspace) = project.canonical_workspace.canonicalize() else {
+                continue;
+            };
+            project_choices.push(DesktopLaunchChoice {
+                id: format!("project:{}", project.id),
+                label: bounded(project.name),
+                detail: workspace.display().to_string(),
+                kind: DesktopLaunchChoiceKind::Project,
+                target: DesktopLaunchTarget {
+                    workspace,
+                    conversation: None,
+                    force_new: false,
+                },
+            });
+        }
+
+        let mut recent = Vec::new();
+        for (index, entry) in preferences
+            .recent_launches
+            .into_iter()
+            .take(MAX_RECENT_LAUNCHES)
+            .enumerate()
+        {
+            let Ok(workspace) = entry.workspace.canonicalize() else {
+                continue;
+            };
+            if workspace != entry.workspace {
+                continue;
+            }
+            let conversation = match entry.conversation.as_deref() {
+                Some(id) => match resolve_read_only_conversation(paths, &workspace, id)? {
+                    Some(conversation) => Some(conversation),
+                    None => continue,
+                },
+                None => None,
+            };
+            let (kind, label) = conversation.as_ref().map_or_else(
+                || {
+                    (
+                        DesktopLaunchChoiceKind::Workspace,
+                        format!("{} workspace", workspace_label(&workspace)),
+                    )
+                },
+                |conversation| {
+                    (
+                        DesktopLaunchChoiceKind::Conversation,
+                        read_only_conversation_title(paths, conversation),
+                    )
+                },
+            );
+            recent.push(DesktopLaunchChoice {
+                id: format!("recent:{index}"),
+                label,
+                detail: workspace.display().to_string(),
+                kind,
+                target: DesktopLaunchTarget {
+                    workspace,
+                    conversation,
+                    force_new: false,
+                },
+            });
+        }
+
+        Ok(DesktopLaunchCatalog {
+            configuration_state: ConfigReadiness::inspect(paths.config_file())
+                .as_str()
+                .to_owned(),
+            projects: project_choices,
+            recent,
+        })
+    }
+
     pub(super) fn open(paths: &XanaPaths, launch_workspace: &Path) -> Result<Self, DesktopError> {
         let launch_workspace = launch_workspace.canonicalize().map_err(|error| {
             DesktopError::new(
@@ -284,6 +412,30 @@ impl DesktopNavigationStore {
             sidebar_mode: mode,
             ..self.load_preferences()
         };
+        self.save_preferences(&preferences)
+    }
+
+    pub(super) fn record_recent(&self, selected: Option<&str>) -> Result<(), DesktopError> {
+        let mut preferences = self.load_preferences();
+        preferences.recent_launches.retain(|entry| {
+            entry.workspace != self.launch_workspace || entry.conversation.as_deref() != selected
+        });
+        preferences.recent_launches.insert(
+            0,
+            DesktopRecentLaunch {
+                workspace: self.launch_workspace.clone(),
+                conversation: selected.map(ToOwned::to_owned),
+                touched_unix_ms: now_unix_ms(),
+            },
+        );
+        preferences.recent_launches.truncate(MAX_RECENT_LAUNCHES);
+        self.save_preferences(&preferences)
+    }
+
+    fn save_preferences(
+        &self,
+        preferences: &DesktopNavigationPreferences,
+    ) -> Result<(), DesktopError> {
         if let Some(parent) = self.preference_file.parent() {
             std::fs::create_dir_all(parent).map_err(preference_error)?;
         }
@@ -461,13 +613,7 @@ impl DesktopNavigationStore {
     }
 
     fn load_preferences(&self) -> DesktopNavigationPreferences {
-        bounded_file::read(&self.preference_file, MAX_PREFERENCE_BYTES)
-            .ok()
-            .and_then(|bytes| toml::from_slice(&bytes).ok())
-            .filter(|preferences: &DesktopNavigationPreferences| {
-                preferences.version == PREFERENCE_VERSION
-            })
-            .unwrap_or_default()
+        load_preferences(&self.preference_file)
     }
 
     fn project_conversations(
@@ -570,6 +716,95 @@ fn project_workspace_conversations(
             ))
         })
         .collect()
+}
+
+fn load_preferences(path: &Path) -> DesktopNavigationPreferences {
+    bounded_file::read(path, MAX_PREFERENCE_BYTES)
+        .ok()
+        .and_then(|bytes| toml::from_slice::<DesktopNavigationPreferences>(&bytes).ok())
+        .filter(|preferences| matches!(preferences.version, 1 | PREFERENCE_VERSION))
+        .map(|mut preferences| {
+            preferences.version = PREFERENCE_VERSION;
+            preferences.recent_launches.truncate(MAX_RECENT_LAUNCHES);
+            preferences
+        })
+        .unwrap_or_default()
+}
+
+fn resolve_read_only_conversation(
+    paths: &XanaPaths,
+    workspace: &Path,
+    id: &str,
+) -> Result<Option<ConversationRef>, DesktopError> {
+    let native = DurableSession::list_for_workspace(paths.data_dir(), workspace)
+        .map_err(navigation_error)?
+        .into_iter()
+        .map(|entry| ConversationRef::Native {
+            session_id: entry.session_id,
+        })
+        .find(|conversation| conversation.to_string() == id);
+    if native.is_some() {
+        return Ok(native);
+    }
+    Ok(
+        ManagedThreadStore::list_for_workspace(paths.data_dir(), workspace)
+            .map_err(navigation_error)?
+            .into_iter()
+            .map(|entry| ConversationRef::Managed {
+                conversation_id: entry.conversation_id,
+                connection: entry.connection,
+                thread_id: entry.thread_id,
+            })
+            .find(|conversation| conversation.to_string() == id),
+    )
+}
+
+fn read_only_conversation_title(paths: &XanaPaths, conversation: &ConversationRef) -> String {
+    let fallback = match conversation {
+        ConversationRef::Native { session_id } => {
+            format!("Native {}", short(&session_id.to_string()))
+        }
+        ConversationRef::Managed {
+            connection,
+            thread_id,
+            ..
+        } => format!("{connection} {}", short(thread_id)),
+        ConversationRef::NewNative => "New native Conversation".to_owned(),
+        ConversationRef::NewManaged { connection, .. } => {
+            format!("New {connection} Conversation")
+        }
+    };
+    let ConversationRef::Native { session_id } = conversation else {
+        return bounded(fallback);
+    };
+    DurableSession::conversation_page(paths.data_dir(), *session_id, None, TITLE_PAGE_SIZE)
+        .ok()
+        .and_then(|page| {
+            page.messages.into_iter().find_map(|message| {
+                (message.role == Role::User)
+                    .then(|| {
+                        message
+                            .content
+                            .into_iter()
+                            .find_map(|content| match content {
+                                ContentBlock::Text(text) => Some(text),
+                                _ => None,
+                            })
+                    })
+                    .flatten()
+            })
+        })
+        .map(|title| bounded(title.split_whitespace().collect::<Vec<_>>().join(" ")))
+        .filter(|title| !title.is_empty())
+        .unwrap_or_else(|| bounded(fallback))
+}
+
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok())
+        .unwrap_or_default()
 }
 
 fn conversation_branch_point(paths: &XanaPaths, conversation: &ConversationRef) -> Option<String> {
@@ -827,6 +1062,75 @@ mod tests {
         let stored = std::fs::read_to_string(store.preference_file).unwrap();
         assert!(!stored.contains(&SessionId::new().to_string()));
         assert!(!stored.contains("conversation"));
+    }
+
+    #[test]
+    fn cold_catalog_is_read_only_when_xana_has_no_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
+
+        let catalog = DesktopNavigationStore::launch_catalog(&paths).unwrap();
+
+        assert_eq!(catalog.configuration_state, "missing");
+        assert!(catalog.projects.is_empty());
+        assert!(catalog.recent.is_empty());
+        assert!(!paths.data_dir().exists());
+    }
+
+    #[test]
+    fn cold_catalog_offers_active_projects_and_exact_recent_conversations() {
+        let (_directory, paths, workspace) = fixture();
+        let project = ProjectStore::open(&paths)
+            .unwrap()
+            .create("Xana", &workspace)
+            .unwrap();
+        let mut session = DurableSession::create(paths.data_dir(), workspace.clone()).unwrap();
+        session
+            .append_message(Message::text(Role::User, "A durable recent task"))
+            .unwrap();
+        let conversation = ConversationRef::Native {
+            session_id: session.session_id(),
+        };
+        drop(session);
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        store
+            .record_recent(Some(&conversation.to_string()))
+            .unwrap();
+
+        let catalog = DesktopNavigationStore::launch_catalog(&paths).unwrap();
+
+        assert_eq!(catalog.configuration_state, "healthy");
+        assert_eq!(catalog.projects.len(), 1);
+        assert_eq!(catalog.projects[0].id, format!("project:{}", project.id));
+        assert_eq!(catalog.projects[0].kind, DesktopLaunchChoiceKind::Project);
+        assert_eq!(catalog.recent.len(), 1);
+        assert_eq!(catalog.recent[0].label, "A durable recent task");
+        assert_eq!(
+            catalog.recent[0].kind,
+            DesktopLaunchChoiceKind::Conversation
+        );
+        assert_eq!(catalog.recent[0].target.conversation, Some(conversation));
+    }
+
+    #[test]
+    fn legacy_sidebar_preference_is_migrated_without_losing_its_mode() {
+        let (_directory, paths, workspace) = fixture();
+        let preference_file = paths
+            .data_dir()
+            .join("frontend")
+            .join("desktop-navigation.toml");
+        fs::create_dir_all(preference_file.parent().unwrap()).unwrap();
+        fs::write(&preference_file, "version = 1\nsidebar_mode = \"mini\"\n").unwrap();
+
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        assert_eq!(
+            store.snapshot(None).unwrap().sidebar_mode,
+            DesktopSidebarMode::Mini
+        );
+        store.record_recent(None).unwrap();
+        let persisted = fs::read_to_string(preference_file).unwrap();
+        assert!(persisted.contains("version = 2"));
+        assert!(persisted.contains("sidebar_mode = \"mini\""));
     }
 
     #[test]

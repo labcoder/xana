@@ -15,7 +15,13 @@ from the same checkout:
 ```bash
 cargo run --locked -- setup
 cargo run --locked -p xana-desktop
+cargo run --locked -p xana-desktop -- --workspace .
 ```
+
+The argument-free command exercises the icon-style read-only launcher. Pass
+`--workspace .` when you want the repository to be the explicit runtime
+workspace. This distinction prevents a packaged icon launch from silently
+using an arbitrary inherited process directory.
 
 The current M4 slice supports native conversational connections and displays a
 real Conversation plus Activity projection. It also projects the shared
@@ -78,7 +84,8 @@ Intel macOS job compiles and tests the Desktop package.
 
 - `configuration_unavailable`: run `cargo run --locked -- setup` with the same
   `XANA_HOME` environment.
-- `workspace_unavailable`: launch from an existing accessible directory.
+- `workspace_unavailable`: choose an existing accessible folder or pass an
+  explicit `--workspace PATH`.
 - `host_busy`: another Xana frontend owns the workspace root turn. Let it
   finish or interrupt it; attach-or-own behavior is completed later in M4.
 - `protocol_mismatch`: rebuild the whole workspace from one checkout and do not

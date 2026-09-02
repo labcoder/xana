@@ -18,8 +18,9 @@ pub use layout::{
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use navigation::{
-    DesktopConversationNode, DesktopNavigationConversationState, DesktopNavigationSnapshot,
-    DesktopProjectNode, DesktopSidebarMode, DesktopWorkspaceStatus,
+    DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
+    DesktopNavigationConversationState, DesktopNavigationSnapshot, DesktopProjectNode,
+    DesktopSidebarMode, DesktopWorkspaceStatus,
 };
 
 pub use crate::host_lifecycle::{
@@ -247,7 +248,9 @@ type StartupSender = std_mpsc::SyncSender<Result<DesktopSnapshot, DesktopError>>
 /// Owned process-edge inputs used to start the bundled Desktop runtime.
 #[derive(Debug, Clone)]
 pub struct DesktopLaunch {
-    workspace: PathBuf,
+    workspace: Option<PathBuf>,
+    conversation: Option<ConversationRef>,
+    force_new: bool,
     xana_home: Option<OsString>,
 }
 
@@ -261,16 +264,61 @@ impl DesktopLaunch {
             )
         })?;
         Ok(Self {
-            workspace,
+            workspace: Some(workspace),
+            conversation: None,
+            force_new: false,
             xana_home: std::env::var_os("XANA_HOME"),
         })
+    }
+
+    /// Creates a cold icon-style launch that owns no workspace authority yet.
+    pub fn for_launcher_from_process() -> Self {
+        Self {
+            workspace: None,
+            conversation: None,
+            force_new: false,
+            xana_home: std::env::var_os("XANA_HOME"),
+        }
     }
 
     /// Creates an explicit launch without reading process-global workspace state.
     pub fn new(workspace: impl Into<PathBuf>, xana_home: Option<OsString>) -> Self {
         Self {
-            workspace: workspace.into(),
+            workspace: Some(workspace.into()),
+            conversation: None,
+            force_new: false,
             xana_home,
+        }
+    }
+
+    /// Reads the bounded launch catalog without starting a workspace runtime.
+    pub fn launch_catalog(&self) -> Result<DesktopLaunchCatalog, DesktopError> {
+        let paths = XanaPaths::resolve(self.xana_home.clone()).map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::ConfigurationUnavailable,
+                format!("could not resolve Xana paths: {error}"),
+            )
+        })?;
+        navigation::DesktopNavigationStore::launch_catalog(&paths)
+    }
+
+    /// Selects one catalog target without exposing its stored filesystem path.
+    pub fn with_choice(&self, choice: &DesktopLaunchChoice) -> Self {
+        Self {
+            workspace: Some(choice.target.workspace.clone()),
+            conversation: choice.target.conversation.clone(),
+            force_new: choice.target.force_new,
+            xana_home: self.xana_home.clone(),
+        }
+    }
+
+    /// Selects an explicit folder after a native folder-picker result.
+    pub fn with_workspace(&self, workspace: impl Into<PathBuf>, force_new: bool) -> Self {
+        Self {
+            workspace: Some(workspace.into()),
+            conversation: None,
+            force_new,
+            xana_home: self.xana_home.clone(),
         }
     }
 }
@@ -646,15 +694,23 @@ pub struct DesktopClient {
 impl DesktopClient {
     /// Starts Xana's matching runtime inside this process.
     pub fn launch(launch: DesktopLaunch) -> Result<Self, DesktopError> {
-        let workspace = launch.workspace.canonicalize().map_err(|error| {
+        let workspace = launch.workspace.ok_or_else(|| {
+            DesktopError::new(
+                DesktopErrorCode::WorkspaceUnavailable,
+                "Desktop launch requires an explicit workspace selection",
+            )
+        })?;
+        let workspace = workspace.canonicalize().map_err(|error| {
             DesktopError::new(
                 DesktopErrorCode::WorkspaceUnavailable,
                 format!(
                     "could not canonicalize Desktop workspace {}: {error}",
-                    launch.workspace.display()
+                    workspace.display()
                 ),
             )
         })?;
+        let conversation = launch.conversation;
+        let force_new = launch.force_new;
         let paths = XanaPaths::resolve(launch.xana_home).map_err(|error| {
             DesktopError::new(
                 DesktopErrorCode::ConfigurationUnavailable,
@@ -678,7 +734,7 @@ impl DesktopClient {
             .stack_size(4 * 1024 * 1024)
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_backend(paths, workspace, bridge)
+                    run_backend(paths, workspace, conversation, force_new, bridge)
                 }));
                 match result {
                     Ok(Ok(())) => {
@@ -1176,7 +1232,13 @@ enum BridgeCommandValue {
     Shutdown,
 }
 
-fn run_backend(paths: XanaPaths, workspace: PathBuf, bridge: Bridge) -> anyhow::Result<()> {
+fn run_backend(
+    paths: XanaPaths,
+    workspace: PathBuf,
+    conversation: Option<ConversationRef>,
+    force_new: bool,
+    bridge: Bridge,
+) -> anyhow::Result<()> {
     let _diagnostics = crate::diagnostics::DiagnosticRuntime::start(&paths)
         .ok()
         .flatten();
@@ -1199,7 +1261,13 @@ fn run_backend(paths: XanaPaths, workspace: PathBuf, bridge: Bridge) -> anyhow::
         .enable_all()
         .build()
         .map_err(|error| anyhow::anyhow!("could not create Desktop async runtime: {error}"))?;
-    runtime.block_on(crate::app::run_desktop(paths, workspace, bridge))
+    runtime.block_on(crate::app::run_desktop(
+        paths,
+        workspace,
+        conversation,
+        force_new,
+        bridge,
+    ))
 }
 
 pub(crate) async fn run_native(
@@ -1230,6 +1298,9 @@ pub(crate) async fn run_native(
     let navigation_store =
         navigation::DesktopNavigationStore::open(paths, workspace_host.workspace())?;
     let navigation = navigation_store.snapshot(Some(&conversation.to_string()))?;
+    // A launch history entry is presentation state only. Failure to persist it
+    // must not prevent the selected Conversation from starting.
+    let _ = navigation_store.record_recent(Some(&conversation.to_string()));
     let layout_store = layout::DesktopLayoutStore::open(paths);
     let layout = layout_store.resolve(&conversation.to_string());
     execution_host.register(

@@ -14,6 +14,18 @@ cargo run --locked -- setup
 cargo run --locked -p xana-desktop
 ```
 
+An argument-free, icon-style launch opens a read-only chooser. It offers active
+Projects and valid recent workspaces/Conversations, or lets you choose a folder.
+No Project or Conversation is inferred or created while this screen is open.
+After choosing a folder, choose either **Open latest Conversation** or **New
+ungrouped Conversation** so the lifecycle effect is explicit.
+
+To open the current repository directly while developing, name it explicitly:
+
+```console
+cargo run --locked -p xana-desktop -- --workspace .
+```
+
 The current Desktop slice supports native conversational providers and a
 persistent Project/Conversation sidebar. Managed Codex presentation, complete
 graphical management forms, multiple windows, and installation as a packaged
@@ -26,10 +38,13 @@ Desktop instance or select it on first launch:
 ```console
 cargo run --locked -p xana-desktop -- --catalog
 cargo run --locked -p xana-desktop -- --open activity
+cargo run --locked -p xana-desktop -- --workspace . --open conversation
 ```
 
-Launch destinations are a closed list; Xana never accepts a forwarded URL,
-path, prompt, command line, or credential.
+Launch destinations are a closed list. A workspace path is accepted only from
+the primary process's explicit `--workspace` option or native folder picker;
+Xana never forwards a URL, path, prompt, command line, or credential to an
+already-running process.
 
 ## Projects and Conversations
 
@@ -158,7 +173,8 @@ arbitrary URL or filesystem path from the command palette.
 - `instance_unavailable`: the existing Desktop did not respond to authenticated
   forwarding. Close a hung process and retry; do not manually reuse the
   endpoint or capability from the descriptor.
-- `workspace_unavailable`: launch from an existing accessible directory.
+- `workspace_unavailable`: choose an existing accessible directory or pass an
+  explicit `--workspace PATH`.
 - `protocol_mismatch`: rebuild the full workspace from one checkout.
 - A disabled palette row explains which authority, configuration, active Run,
   or later Desktop slice it requires.

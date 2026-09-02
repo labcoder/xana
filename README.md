@@ -197,6 +197,7 @@ matching Xana runtime; it never discovers or launches a `xana` executable from
 
 ```bash
 cargo run --locked -p xana-desktop
+cargo run --locked -p xana-desktop -- --workspace .
 ```
 
 Desktop currently provides the M4 native-provider walking skeleton, native
@@ -208,6 +209,10 @@ default, and inert layout sharing. Its contextual navigation actions rename and
 archive Projects, move or ungroup Conversations, and create exact
 source-preserving branches or cross-workspace continuations through the shared
 runtime services. Complete `xana setup` first.
+Launching without arguments opens a read-only workspace chooser; it neither
+infers the process directory nor creates a Project or Conversation. Use
+`--workspace .` during repository development to open the current directory
+directly.
 Managed-runtime presentation and the complete graphical Conversation,
 management, Espejo, and rich-content workflows are added by later M4 tickets.
 See [using Xana Desktop](docs/user/desktop.md) and

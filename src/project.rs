@@ -97,6 +97,38 @@ impl ProjectStore {
         })
     }
 
+    /// Reads the existing registry without creating or migrating private state.
+    ///
+    /// Cold graphical launch uses this path so displaying a workspace picker
+    /// cannot implicitly initialize Xana or mutate Project records.
+    pub(crate) fn list_existing(
+        paths: &XanaPaths,
+        include_archived: bool,
+    ) -> Result<Vec<Project>, ProjectError> {
+        let document = match read_document::<ProjectRegistryDocument>(&paths.projects_file()) {
+            Ok(document) => document,
+            Err(PrivateStateError::Io { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(ProjectError::State(error)),
+        };
+        let mut projects = document
+            .projects
+            .values()
+            .filter(|record| include_archived || record.lifecycle == ProjectLifecycle::Active)
+            .map(Project::from)
+            .collect::<Vec<_>>();
+        projects.sort_by(|left, right| {
+            left.name
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.id.cmp(&right.id))
+        });
+        Ok(projects)
+    }
+
     pub(crate) fn list(&self, include_archived: bool) -> Result<Vec<Project>, ProjectError> {
         let document = self.read()?;
         let mut projects = document
@@ -517,6 +549,20 @@ mod tests {
         let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
         let store = ProjectStore::open(&paths).unwrap();
         (directory, paths, store)
+    }
+
+    #[test]
+    fn read_only_listing_does_not_initialize_private_state() {
+        let directory = tempdir().unwrap();
+        let paths = XanaPaths::resolve(Some(OsString::from(directory.path()))).unwrap();
+
+        assert!(
+            ProjectStore::list_existing(&paths, false)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!paths.projects_file().exists());
+        assert!(!paths.data_dir().exists());
     }
 
     #[test]

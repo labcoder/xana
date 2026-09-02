@@ -6,12 +6,14 @@ mod component_inventory;
 mod design_system;
 mod localization;
 mod projection;
+mod shell;
 mod workbench;
 
 use catalog::ComponentCatalog;
 use gpui::{App, AppContext as _, Styled as _, WindowOptions};
 use gpui_component::{ActiveTheme as _, Root};
-use std::{env, ffi::OsString, process::ExitCode};
+use shell::DesktopShell;
+use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 use workbench::Workbench;
 use xana::desktop::{
     DesktopClient, DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunch, DesktopLaunchIntent,
@@ -71,6 +73,19 @@ fn main() -> ExitCode {
                             });
                             cx.new(|cx| Root::new(workbench, window, cx).bg(cx.theme().background))
                         }
+                        LaunchSurface::Launcher(launcher) => {
+                            window.set_window_title(APPLICATION_NAME);
+                            let shell = cx.new(|_| {
+                                DesktopShell::new(
+                                    launcher.launch,
+                                    launcher.instance,
+                                    launcher.native_paths,
+                                    launcher.catalog,
+                                    launcher.initial_intent,
+                                )
+                            });
+                            cx.new(|cx| Root::new(shell, window, cx).bg(cx.theme().background))
+                        }
                     },
                 )
                 .expect("could not open the Xana Desktop window");
@@ -98,7 +113,16 @@ fn main() -> ExitCode {
 
 enum LaunchSurface {
     Catalog,
+    Launcher(Box<LauncherLaunch>),
     Workbench(Box<WorkbenchLaunch>),
+}
+
+struct LauncherLaunch {
+    launch: DesktopLaunch,
+    instance: DesktopInstanceLease,
+    native_paths: DesktopNativePaths,
+    catalog: xana::desktop::DesktopLaunchCatalog,
+    initial_intent: DesktopLaunchIntent,
 }
 
 struct WorkbenchLaunch {
@@ -108,24 +132,52 @@ struct WorkbenchLaunch {
     initial_intent: DesktopLaunchIntent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum LaunchRequest {
     Catalog,
-    Workbench(DesktopLaunchIntent),
+    Launcher,
+    Workbench {
+        workspace: Option<PathBuf>,
+        intent: DesktopLaunchIntent,
+    },
 }
 
 fn prepare_surface(
     request: LaunchRequest,
 ) -> Result<Option<LaunchSurface>, xana::desktop::DesktopError> {
-    let LaunchRequest::Workbench(initial_intent) = request else {
+    if request == LaunchRequest::Catalog {
         return Ok(Some(LaunchSurface::Catalog));
+    }
+    let (launch, initial_intent, cold) = match request {
+        LaunchRequest::Catalog => unreachable!("catalog handled above"),
+        LaunchRequest::Launcher => (
+            DesktopLaunch::for_launcher_from_process(),
+            DesktopLaunchIntent::Focus,
+            true,
+        ),
+        LaunchRequest::Workbench { workspace, intent } => (
+            workspace.map_or_else(DesktopLaunch::from_process, |workspace| {
+                Ok(DesktopLaunch::new(workspace, env::var_os("XANA_HOME")))
+            })?,
+            intent,
+            false,
+        ),
     };
-    let launch = DesktopLaunch::from_process()?;
     let native_paths = launch.native_paths()?;
     let instance = match launch.claim_instance(initial_intent)? {
         DesktopInstanceClaim::Primary(instance) => instance,
         DesktopInstanceClaim::Forwarded => return Ok(None),
     };
+    if cold {
+        let catalog = launch.launch_catalog()?;
+        return Ok(Some(LaunchSurface::Launcher(Box::new(LauncherLaunch {
+            launch,
+            instance,
+            native_paths,
+            catalog,
+            initial_intent,
+        }))));
+    }
     let runtime = DesktopClient::launch(launch)?;
     Ok(Some(LaunchSurface::Workbench(Box::new(WorkbenchLaunch {
         runtime,
@@ -136,36 +188,56 @@ fn prepare_surface(
 }
 
 fn parse_launch_request(args: impl IntoIterator<Item = OsString>) -> Result<LaunchRequest, String> {
-    let mut args = args.into_iter();
-    let Some(first) = args.next() else {
-        return Ok(LaunchRequest::Workbench(DesktopLaunchIntent::Focus));
-    };
-    let first = first
-        .into_string()
-        .map_err(|_| "launch arguments must be valid Unicode".to_owned())?;
-    let request = if first == "--catalog" {
-        LaunchRequest::Catalog
-    } else if let Some(target) = first.strip_prefix("--open=") {
-        LaunchRequest::Workbench(DesktopLaunchIntent::Navigate(parse_navigation(target)?))
-    } else if first == "--open" {
-        let target = args
-            .next()
-            .ok_or_else(|| {
-                "--open requires one of: conversation, activity, diagnostics, settings, espejo"
-                    .to_owned()
-            })?
-            .into_string()
-            .map_err(|_| "the --open destination must be valid Unicode".to_owned())?;
-        LaunchRequest::Workbench(DesktopLaunchIntent::Navigate(parse_navigation(&target)?))
-    } else {
-        return Err(format!(
-            "unknown launch argument {first:?}; use --catalog or --open DESTINATION"
-        ));
-    };
-    if let Some(extra) = args.next() {
-        return Err(format!("unexpected extra launch argument {extra:?}"));
+    let mut args = args.into_iter().peekable();
+    if args.peek().is_none() {
+        return Ok(LaunchRequest::Launcher);
     }
-    Ok(request)
+    let mut workspace = None;
+    let mut intent = DesktopLaunchIntent::Focus;
+    let mut has_workbench_option = false;
+    while let Some(argument) = args.next() {
+        let display = argument.to_string_lossy();
+        if display == "--catalog" {
+            if has_workbench_option || args.peek().is_some() {
+                return Err("--catalog cannot be combined with other launch options".to_owned());
+            }
+            return Ok(LaunchRequest::Catalog);
+        }
+        if display == "--workspace" {
+            let path = args
+                .next()
+                .ok_or_else(|| "--workspace requires a directory path".to_owned())?;
+            workspace = Some(PathBuf::from(path));
+            has_workbench_option = true;
+            continue;
+        }
+        if let Some(path) = display.strip_prefix("--workspace=") {
+            if path.is_empty() {
+                return Err("--workspace requires a non-empty directory path".to_owned());
+            }
+            workspace = Some(PathBuf::from(path));
+            has_workbench_option = true;
+            continue;
+        }
+        let target = if display == "--open" {
+            args.next()
+                .ok_or_else(|| {
+                    "--open requires one of: conversation, activity, diagnostics, settings, espejo"
+                        .to_owned()
+                })?
+                .into_string()
+                .map_err(|_| "the --open destination must be valid Unicode".to_owned())?
+        } else if let Some(target) = display.strip_prefix("--open=") {
+            target.to_owned()
+        } else {
+            return Err(format!(
+                "unknown launch argument {display:?}; use --catalog, --workspace PATH, or --open DESTINATION"
+            ));
+        };
+        intent = DesktopLaunchIntent::Navigate(parse_navigation(&target)?);
+        has_workbench_option = true;
+    }
+    Ok(LaunchRequest::Workbench { workspace, intent })
 }
 
 fn parse_navigation(value: &str) -> Result<DesktopNavigationTarget, String> {
@@ -180,13 +252,14 @@ fn parse_navigation(value: &str) -> Result<DesktopNavigationTarget, String> {
 mod tests {
     use super::{LaunchRequest, parse_launch_request};
     use std::ffi::OsString;
+    use std::path::PathBuf;
     use xana::desktop::{DesktopLaunchIntent, DesktopNavigationTarget};
 
     #[test]
     fn launch_arguments_are_closed_and_typed() {
         assert_eq!(
             parse_launch_request(std::iter::empty()).expect("default launch"),
-            LaunchRequest::Workbench(DesktopLaunchIntent::Focus)
+            LaunchRequest::Launcher
         );
         assert_eq!(
             parse_launch_request([OsString::from("--catalog")]).expect("catalog launch"),
@@ -195,15 +268,25 @@ mod tests {
         assert_eq!(
             parse_launch_request([OsString::from("--open"), OsString::from("diagnostics")])
                 .expect("diagnostics launch"),
-            LaunchRequest::Workbench(DesktopLaunchIntent::Navigate(
-                DesktopNavigationTarget::Diagnostics
-            ))
+            LaunchRequest::Workbench {
+                workspace: None,
+                intent: DesktopLaunchIntent::Navigate(DesktopNavigationTarget::Diagnostics),
+            }
         );
         assert_eq!(
             parse_launch_request([OsString::from("--open=settings")]).expect("settings launch"),
-            LaunchRequest::Workbench(DesktopLaunchIntent::Navigate(
-                DesktopNavigationTarget::Settings
-            ))
+            LaunchRequest::Workbench {
+                workspace: None,
+                intent: DesktopLaunchIntent::Navigate(DesktopNavigationTarget::Settings),
+            }
+        );
+        assert_eq!(
+            parse_launch_request([OsString::from("--workspace"), OsString::from("."),])
+                .expect("workspace launch"),
+            LaunchRequest::Workbench {
+                workspace: Some(PathBuf::from(".")),
+                intent: DesktopLaunchIntent::Focus,
+            }
         );
         assert!(parse_launch_request([OsString::from("--open=../secrets")]).is_err());
         assert!(parse_launch_request([OsString::from("--unknown")]).is_err());

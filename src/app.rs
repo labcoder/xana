@@ -335,23 +335,20 @@ async fn run_connect_command<W: Write>(
 pub(crate) async fn run_desktop(
     paths: XanaPaths,
     workspace: std::path::PathBuf,
+    conversation: Option<crate::workspace_host::ConversationRef>,
+    force_new: bool,
     bridge: crate::desktop::Bridge,
 ) -> Result<()> {
     let presentation = resolved_presentation(&paths, true, true);
-    chat::run(
-        &paths,
-        chat::ChatSurface::Desktop {
-            bridge,
-            presentation,
-            workspace,
-        },
-        None,
-        false,
-        false,
-        None,
-        None,
-    )
-    .await
+    let surface = chat::ChatSurface::Desktop {
+        bridge,
+        presentation,
+        workspace,
+    };
+    match conversation {
+        Some(conversation) => chat::run_attached(&paths, surface, conversation).await,
+        None => chat::run(&paths, surface, None, false, force_new, None, None).await,
+    }
     .map(|_| ())
 }
 

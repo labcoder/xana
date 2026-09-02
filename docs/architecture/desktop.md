@@ -21,22 +21,34 @@ flowchart LR
     FACADE -->|"bounded presentation DTOs"| GPUI
 ```
 
-Startup resolves and canonicalizes the workspace once, resolves `XANA_HOME`,
-claims one Desktop instance for that canonical home, and starts one named
-runtime thread. A later same-home launch authenticates over a loopback-only
+An argument-free icon launch resolves `XANA_HOME`, claims one Desktop instance,
+and renders a read-only catalog before it owns any workspace runtime. The
+catalog reads existing Project records plus bounded, validated recent launch
+preferences; missing state remains an empty state and is not initialized as a
+side effect. A Project, recent Conversation, explicit `--workspace` argument,
+or native folder-picker result selects the workspace. Only then does Xana
+canonicalize it and start one named runtime thread. Choosing a folder presents
+separate open-latest and force-new-ungrouped actions, so launch never disguises
+a lifecycle mutation.
+
+A later same-home launch authenticates over a loopback-only
 channel, forwards one closed focus/navigation intent, and exits; a different
 Xana home has a distinct owner. A locked owner file prevents races, while a
 private atomic descriptor contains only protocol versions, canonical instance
 root, loopback endpoint, process ID, and a random 256-bit capability. Payloads
 and queues are bounded, and neither arbitrary commands nor paths cross this
-process boundary.
+process boundary. An explicit primary-process workspace path never enters the
+forwarding protocol.
 
 The runtime also owns a bounded Desktop navigation projection assembled from
 the Project store and each available workspace host. It exposes Projects,
 ungrouped Conversations, workspace availability, running/attention state, and
 opaque stable identities without giving GPUI filesystem or provider authority.
-The full/mini sidebar preference is the only state persisted by the
-presentation adapter. Selecting or creating a Conversation sends a typed
+The presentation adapter persists the full/mini sidebar preference and a
+bounded twelve-entry recent-launch list containing canonical workspace and
+opaque Conversation identity. Invalid, moved, missing, or no-longer-retained
+entries are omitted from the cold catalog rather than trusted. Selecting or
+creating a Conversation sends a typed
 intent through the same bridge; the current native runtime shuts down cleanly,
 the application composition layer resolves the requested workspace and
 Conversation, and the existing GPUI window receives the next authoritative
