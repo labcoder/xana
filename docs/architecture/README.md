@@ -466,9 +466,12 @@ The application edge owns a `PromptAssembler` built from embedded,
 non-replaceable identity and guideline files; a concise tool catalog derived
 from the immutable registry; active connection/model; owned operating-system,
 canonical session workspace, configured-shell, and CLI-surface values; and
-fixed budgets. When a
+one model-aware budget plan. When a
 root turn is accepted, the runtime refreshes durable project context and
-assembles one `xana-prompt-v2` snapshot. Native composition supplies a concise
+assembles one `xana-prompt-v2` snapshot. That snapshot freezes the selected
+model, effective context limit, reserves, context selection, and compacted
+continuation for every provider call and tool round in the turn. Native
+composition supplies a concise
 product-documentation layer that names the readable logical ids exposed by the
 bounded `xana_docs` tool; documentation bodies are fetched only when needed.
 The runtime layer is authoritative for current connection, model, workspace,
@@ -495,14 +498,21 @@ planning as `SkillInstructions` with qualified source/digest provenance.
 Project instructions and skills can guide work but cannot mutate tools,
 configuration, permission state, egress, or Xana's non-replaceable core.
 
-One estimated 32,768-token budget charges rendered system layers, exact tool
-schemas, selected previews, and actual history while reserving 8,192 tokens
-for conversation during assembly. The Phase 2 text estimator uses one token
+Native budgeting starts with the selected catalog descriptor. A known model
+context limit is authoritative; optional `[context].max_context_tokens` can
+only narrow it. Missing metadata uses the documented conservative 32,768-token
+fallback, while contradictory limits fail rather than overclaim capacity.
+Output, reasoning, tool, and retained-conversation reserves are derived before
+rendered system layers, exact tool schemas, selected previews, actual history,
+tool results, and attachments are charged. The text estimator uses one token
 per three Unicode scalar values, rounded up; image blocks reserve a
 provider-neutral, pixel-based conservative estimate instead of a textual
 placeholder. Neither estimate is a provider tokenizer. Over-budget required
-input or history fails before provider I/O. Range and literal-search previews
-remain bounded, Unicode-safe, and provenance-bearing.
+input or history fails before provider I/O. A bounded, redacted prompt-plan
+ledger reports category estimates, reserves, omissions, attachment counts and
+bytes, and unavailable provider cache observations without copying prompt
+content. Range and literal-search previews remain bounded, Unicode-safe, and
+provenance-bearing.
 
 Prompt-layer ids are transient to one snapshot. Durable `ContextRecord`s carry
 id, monotonic version, artifact reference, kind, BLAKE3 hash, logical size,
@@ -514,9 +524,17 @@ artifact bytes. Only the resulting bounded text can enter a prompt.
 Root context refresh occurs only when a new turn is accepted. Unchanged bytes
 reuse the version; changed bytes append one artifact/context version; a missing
 live source does not erase the prior version. Opening or inspecting a session
-does not read live project files. Xana has no general native context plan or
-prompt compaction. The bounded catalog and `xana_docs` tool are included in the
-resolved production tool snapshot.
+does not read live project files. When estimated native input crosses the
+configured threshold, Xana synchronously commits a lossy continuation
+checkpoint before provider I/O, then sends that structured summary plus a
+verbatim recent tail. `/compact` requests the same boundary while idle. A
+checkpoint records its predecessor, operation and reason, exact source entry
+range and BLAKE3 digest, tail boundary, structured goal/progress/constraints/
+decisions/unresolved/references, and the budget/model provenance that produced
+it. Repeated compaction summarizes only the newly retired span; source history
+is never edited or deleted. Managed runtimes continue to own their context and
+report Xana compaction as unavailable. The bounded catalog and `xana_docs`
+tool are included in the resolved production tool snapshot.
 
 Image attachments are reference-based and artifact-backed; see
 [Image input and media resolution](vision.md). OpenAI-compatible and Anthropic
@@ -557,8 +575,15 @@ durable values, artifact metadata, context versions, context views, and
 named-context moves. The reducer rejects wrong or duplicate identities,
 unknown references, non-monotonic versions, invalid heads/parents, second
 creation, invalid transitions, mismatched preallocated result ids, second
-results, and terminal operations with pending invocations. Only the
+results, terminal operations with pending invocations, and malformed,
+duplicated, stale, or source-mismatched compaction checkpoints. Only the
 head-to-root conversation path becomes model history.
+
+Read-only session inspection reports bounded compaction metadata—including
+reason, source range/digest, predecessor, selected connection/model, estimated
+limits, threshold, and retained tail—without printing the derived summary or
+conversation content. At most the newest 64 checkpoint records are rendered
+while the total count remains visible.
 
 Inspection is bounded to 256 KiB per record, 10,000 records, and 16 MiB per
 session. A malformed physical tail after a valid newline-terminated prefix

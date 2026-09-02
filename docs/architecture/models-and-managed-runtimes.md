@@ -148,6 +148,12 @@ exchange retires the process connection and requests child termination rather
 than allowing another request to consume an ambiguous response. A complete,
 correlated remote rejection leaves the connection synchronized and reusable.
 
+Projected Codex context-compaction notifications remain vendor-owned activity
+facts. They are not Xana native compaction checkpoints, are not copied into a
+native session journal, and do not grant Xana control over Codex's context
+window. `/compact` therefore reports unavailable on this route unless a future
+advertised managed contract provides an explicit correlated control.
+
 Application composition passes Xana's canonical, versioned built-in identity
 to every thread start and delegated resume as `developerInstructions`. The
 adapter intentionally does not set `baseInstructions`: Codex retains its

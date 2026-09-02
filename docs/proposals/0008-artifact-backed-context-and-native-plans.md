@@ -17,15 +17,20 @@ language kernel, or a second blob store. Artifacts remain the byte/document
 substrate, and the Rust runtime remains the complete composition path.
 
 Xana implements a durable precursor: `xana-prompt-v2` applies one estimated
-input budget to fixed layers, exact tool schemas, persisted root `AGENTS.md`
-views, and actual history. Artifact-backed context records carry identity,
+model-aware input budget to fixed layers, exact tool schemas, persisted root
+`AGENTS.md` views, actual history, tool results, and attachments. Native
+sessions now append a validated, source-digested compaction checkpoint and
+retain a verbatim recent tail when a conservative threshold is crossed.
+Artifact-backed context records carry identity,
 owner, version, provenance, trust, and recovery identity; full, line, and
 literal-search selectors materialize bounded persisted bytes. That subset is
 implemented through historical
-[Proposal 0012](0012-durable-sessions-and-context.md). This proposal remains
-unimplemented for model-facing context capabilities, native plans, and
-optional computation. The narrower, statically bounded child-composition plan
-is accepted as `OrchestrationPlan` by
+[Proposal 0012](0012-durable-sessions-and-context.md) and the M4 native-context
+readiness work. Compaction remains derived continuation state rather than a
+general context service or personal memory. This proposal remains unimplemented
+for model-facing context capabilities, native plans, and optional computation.
+The narrower, statically bounded child-composition plan is accepted as
+`OrchestrationPlan` by
 [Proposal 0016](0016-bounded-child-orchestration-and-task-routes.md); it does
 not accept the broader context-plan or computation design here.
 
@@ -147,14 +152,16 @@ depth one under the same total-work budget. Keep general computation optional
 until the native path demonstrates a measured gap and the backend passes
 authority and recovery tests on every supported platform.
 
-## Milestone 3 status review
+## Milestone 4 status review
 
 [Proposal 0019](0019-projects-profiles-and-portable-configuration.md) accepts a
 bounded reviewable continuation handoff and
 [Proposal 0021](0021-focused-multimodal-services-and-routing.md) requires
 artifact-backed media provenance. Neither accepts generalized context views,
-automatic compaction, native plans, or general computation from this proposal,
-which remains Proposed.
+native plans, or general computation from this proposal. M4 separately ships
+automatic/manual durable compaction, model-aware native budgets, and redacted
+prompt-plan facts without accepting those broader capabilities. This proposal
+therefore remains Proposed.
 
 ## Open questions
 

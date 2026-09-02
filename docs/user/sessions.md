@@ -151,6 +151,16 @@ admission, nonterminal lifecycle, and terminal report are also separate record
 kinds. They retain parent/root, operation, thread, route, connection, model,
 and execution-owner attribution without storing a full child transcript.
 
+Native compaction is another append-only record kind. It stores a bounded lossy
+summary, predecessor, initiating operation and reason, exact compacted entry
+range and digest, verbatim-tail boundary, and the conservative model/budget
+plan used. It never replaces a conversation entry or moves the thread head.
+Automatic compaction runs synchronously before an over-threshold request can
+reach the provider; `/compact` requests it manually while idle. Cancellation
+cannot leave a half-applied logical checkpoint: either the complete validated
+record is appended or canonical history is unchanged. A malformed physical
+tail follows the ordinary journal-repair rules below.
+
 Each logical artifact has its own id, media type, byte length, and owner. Its
 bytes use a shared BLAKE3 content path. Existing content is reused only after
 length and digest verification; a digest proves byte equality, not origin,
@@ -167,7 +177,13 @@ xana session inspect SESSION_ID
 It reads without modifying the session and prints ids, path, record count,
 unfinished operation states, artifact counts and bytes, context versions,
 child lineage/route/owner/connection/model/lifecycle/usage/report facts, and
-whether a torn tail is repairable. It does not render conversation content.
+whether a torn tail is repairable. It also reports the total compaction count
+and at most the newest 64 checkpoint ids, reasons, source ranges/digests,
+predecessors, tail boundaries, model/connection, estimated context and input
+budgets, threshold, and retained-tail target. It does not render conversation
+content or the lossy checkpoint summary. Changing provider or model composes a
+new runtime budget; an existing checkpoint still retains the older plan that
+produced it. Managed Codex owns its context and has no native Xana checkpoint.
 Any child whose durable prefix ends before a terminal report is shown as an
 explicit read-only `Interrupted` projection. Inspection neither appends that
 projection nor replays provider or tool work.
@@ -206,7 +222,8 @@ reconcile it.
 Current load limits are 256 KiB per record, 10,000 records, and 16 MiB per
 session. Artifact registrations accept at most 4 MiB. Root `AGENTS.md` input is
 at most 64 KiB and its automatic view is bounded independently to 16 KiB and
-1,024 estimated tokens.
+1,024 estimated tokens. Compaction summaries default to 16 KiB and remain
+subject to both their configured safe ceiling and the per-record limit.
 
 ## Backup expectations and limits
 

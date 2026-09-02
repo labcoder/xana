@@ -24,10 +24,12 @@ Xana assembles available layers in this order:
    capability or logical references;
 4. a concise catalog generated from the tools actually registered for the
    agent;
-5. the active connection/model and the owned operating system, canonical
+5. a structured compacted-history checkpoint, when older native history has
+   crossed its safe budget;
+6. the active connection/model and the owned operating system, canonical
    working directory, and configured shell;
-6. the active CLI surface; and
-7. a bounded preview of root `AGENTS.md`, when present.
+7. the active CLI surface; and
+8. a bounded preview of root `AGENTS.md`, when present.
 
 Native foreground composition advertises `xana_docs` and the curated logical
 ids in layer 3. The runtime catalog itself is bounded and explicit; it never
@@ -114,16 +116,28 @@ Xana records that rule in its built-in guidelines but discovers only the root
 file today. If relevant instructions still conflict or ambiguity would
 materially change the result, Xana should surface the conflict and ask.
 
-## Budgets and previews
+## Budgets, ledgers, and compaction
 
-The developer preview uses one 32,768-token estimated input budget and reserves
-at least 8,192 tokens for conversation. Xana charges all of these against that
-same total:
+For native execution, Xana derives a fresh immutable budget plan when the
+conversation runtime is composed. A known model-catalog context limit wins;
+`[context].max_context_tokens` may narrow but never enlarge it. Missing metadata
+uses a conservative 32,768-token fallback. A contradictory limit below Xana's
+minimum usable window is an error rather than permission to guess higher.
+
+The plan subtracts output and, for reasoning-capable models, reasoning reserves.
+It also holds back tool and recent-conversation capacity. Xana then charges all
+of these against the effective input budget:
 
 - every fixed system layer and its source-boundary text;
 - exact tool schemas even though they are not repeated inside the system text;
 - selected project previews; and
 - actual conversation messages, tool calls, arguments, and bounded results.
+
+The defaults are an 80% automatic-compaction threshold, 4,096 estimated output
+tokens, 2,048 reasoning tokens when applicable, a 4,096-token tool reserve, an
+8,192-token recent-tail target, and a 16 KiB structured summary ceiling. They
+are conservative estimates, not provider promises, and can be narrowed under
+the safe configuration bounds described in [Configuration](configuration.md).
 
 The estimator charges one token per three Unicode scalar values, rounded up.
 It is deliberately more conservative than the common four-character rule, but
@@ -132,6 +146,23 @@ and preserves source order. If a required layer plus schemas and the minimum
 conversation reserve cannot fit, agent construction fails. If later history
 exceeds the total, Xana fails before provider I/O instead of dropping or
 reordering conversation entries.
+
+Before a native turn would cross its automatic threshold, Xana commits an
+append-only compaction checkpoint and rebuilds the request from its structured
+summary plus a verbatim recent tail. Use `/compact` while idle to request the
+same operation manually. The checkpoint records exactly which immutable entries
+were summarized, their digest, the retained-tail boundary, its predecessor,
+why it ran, and the connection/model/budget facts used. A repeated checkpoint
+extends the chain and processes only newly retired messages. The complete raw
+history remains canonical and is still visible on resume; compaction is not
+deletion, personal memory, retrieval, or proof that omitted details are false.
+
+Prompt-plan events expose only bounded category totals for instructions, tool
+definitions, compacted history, recent history, and attachments, plus omissions
+and whether provider cache facts were available. They are labeled estimates
+and never include the underlying prompt, file, tool-result, or message text.
+Managed Codex owns its own context window, so Xana neither compacts it nor
+pretends a native checkpoint applies.
 
 The internal preview API also supports inclusive one-based line ranges and
 literal matching lines with an explicit match cap. Every preview retains its
@@ -169,6 +200,7 @@ artifact, so changing the live file cannot alter an old context version.
 Inclusive one-based lines and capped literal-line search are implemented as
 internal selectors, not model tools.
 
-Xana has no general context service, model-facing context tools, compaction,
-native context-plan executor, artifact garbage collection, or portable-session
-claim. See [Sessions](sessions.md) for storage and recovery boundaries.
+Xana has durable native compaction and prompt-plan facts, but no personal
+memory, retrieval/index service, model-facing context tools, native context-plan
+executor, artifact garbage collection, or portable-session claim. See
+[Sessions](sessions.md) for storage and recovery boundaries.

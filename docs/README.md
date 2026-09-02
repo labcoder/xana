@@ -19,12 +19,16 @@ engineering contracts used to change it.
   structured logs, retention and resource bounds, panic/unclean-exit reports,
   local inspection, and redacted support bundles.
 - [Project context and system prompt](user/project-context.md) explains the
-  built-in prompt, root `AGENTS.md` discovery, input budgets, and instruction
-  boundaries.
+  built-in prompt, root `AGENTS.md` discovery, model-aware input budgets,
+  durable native compaction, and instruction boundaries.
+- [M4 native context and compaction evidence](development/m4-native-context-compaction-evidence.md)
+  records the redacted budget, prompt-size, checkpoint-size, recovery, and
+  managed-runtime baseline used to validate that boundary.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
-  immutable artifacts, inspection, corruption handling, and backup limits.
+  bounded compaction, immutable artifacts, inspection, corruption handling,
+  and backup limits.
 - [Projects](user/projects.md) explains optional local project identity,
   lifecycle, Ungrouped conversations, membership, and continuation review.
 - [Agent Skills](user/skills.md) explains standards-compatible discovery,

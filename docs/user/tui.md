@@ -78,7 +78,7 @@ Palette actions and slash input use that one registry:
 - `/model [CONNECTION/MODEL]`, `/reasoning [EFFORT]`
 - `/activity view auto|hide|show`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
-- `/clear`, `/composer submit|newline`
+- `/clear`, `/compact`, `/composer submit|newline`
 - `/sessions`, `/sessions new`, `/sessions archive [ID]`, `/sessions view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
@@ -95,6 +95,13 @@ or models. A managed Codex model or reasoning change applies to subsequent
 turns and preserves the Codex thread. Native reasoning control is unavailable.
 Activity visibility changes only what the frontend renders and never changes
 model reasoning effort.
+
+`/compact` is idle-only and applies only to native conversations whose context
+Xana owns. It durably summarizes older entries into a bounded continuation and
+keeps the recent tail verbatim; it never deletes raw session history. The
+activity pane reports planning, start, source range/digest, model/budget facts,
+completion, or an honest unavailable result. Managed Codex owns its context,
+so the same command explains that limitation instead of approximating it.
 
 `/mcp list` runs inside the attached TUI and presents its bounded output in a
 scrollable result modal. Bare `/profile create` opens a three-field form with

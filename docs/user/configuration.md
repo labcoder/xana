@@ -584,6 +584,17 @@ max_context_tokens = 8192
 max_report_bytes = 32768
 max_artifact_bytes = 8388608
 
+[context]
+# Optional route ceiling; it can only narrow known model metadata.
+# max_context_tokens = 24000
+fallback_context_tokens = 32768
+output_reserve_tokens = 4096
+reasoning_reserve_tokens = 2048
+tool_reserve_tokens = 4096
+compaction_threshold_percent = 80
+retained_tail_tokens = 8192
+summary_max_bytes = 16384
+
 [routes.worker]
 profile = "worker"
 ```
@@ -628,6 +639,12 @@ readable.
 | `service_routes.<id>` | Exact `image.generate` or `vision.analyze` route selecting a connection, model, bounded options, optional description/default, and egress policy |
 | `egress_policies.<id>.allowed` | Exact outbound data classes that a configured integration may receive |
 | `routes.<id>.profile` | Exact profile selected by a child task route; no fallback |
+| `context.max_context_tokens` | Optional native input ceiling; cannot enlarge a known model context limit or Xana's immutable ceiling |
+| `context.fallback_context_tokens` | Conservative native context window used only when selected-model metadata is absent; default 32,768 |
+| `context.output_reserve_tokens`, `reasoning_reserve_tokens`, `tool_reserve_tokens` | Conservative native request reserves applied before admission; defaults 4,096, 2,048, and 4,096 |
+| `context.compaction_threshold_percent` | Automatic native compaction watermark, `50..=95`, default 80 |
+| `context.retained_tail_tokens` | Target estimated recent-history tail retained verbatim after compaction; default 8,192 |
+| `context.summary_max_bytes` | Structured compaction-summary bound, `1024..=262144`, default 16 KiB |
 | `diagnostics.enabled`, `level`, `targets` | Metadata-only process logging switch, `error`–`trace` threshold, and stable target classes |
 | `diagnostics.directory` | Optional absolute or normalized Xana-data-relative log directory; crash reports remain in Xana's crash directory |
 | `diagnostics.retention_days`, `max_file_bytes`, `max_total_bytes`, `max_files`, `queue_capacity` | Mandatory rolling retention, disk, file-count, and nonblocking memory ceilings |
@@ -636,6 +653,11 @@ Model overrides accept `input_modalities = ["text", "image"]`, `tools`,
 `reasoning`, `context_tokens`, and `max_output_tokens`. Unknown modalities and
 unknown TOML fields are errors. Discovered capability metadata is cached and
 merged with explicit fields; unknown capabilities fail closed.
+
+Context policy applies only when Xana owns the native loop. The effective plan
+is frozen with the runtime's selected model and exposed as bounded estimated
+facts; a setting can narrow known catalog metadata but never increase it.
+Managed Codex retains its own context policy and compaction implementation.
 
 Focused-service routes are independent of the conversational connection and
 model. A profile exposes an exact list through `service_routes`. At most one

@@ -67,6 +67,9 @@ values, prompt or response bodies, hidden reasoning, file/clipboard contents,
 raw paths or URLs, tool arguments/results, or artifact bytes. Session journals,
 permission audit facts, and operation recovery remain separate authoritative
 records; logs do not duplicate them.
+Prompt-plan ledgers and compaction summaries are likewise excluded from log
+files. Their bounded metadata is available through the attached frontend and
+`xana session inspect`; the append-only session checkpoint remains authoritative.
 The separate `data/interoperable/outbound-audit.json` journal contains only
 bounded recipient/class/count/digest metadata and keeps at most 512 records.
 Its pre-send facts are authoritative; diagnostic forwarding remains
