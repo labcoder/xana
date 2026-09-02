@@ -79,6 +79,8 @@ async fn plain_text_is_bounded_attributed_and_untrusted() {
         .expect("fetch");
 
     assert_eq!(result["text"], "public evidence");
+    assert_eq!(result["title"], "public evidence");
+    assert_eq!(result["site_name"], "127.0.0.1");
     assert_eq!(result["untrusted"], true);
     assert_eq!(result["response_bytes"], 15);
     assert_eq!(result["media_type"], "text/plain");
@@ -103,6 +105,7 @@ async fn html_parser_ignores_active_content_and_control_bytes() {
     assert!(text.contains("Useful text"));
     assert!(!text.contains("steal-secret"));
     assert!(!text.contains("x{}"));
+    assert_eq!(result["title"], "Safe title");
     server.await.expect("server");
 }
 

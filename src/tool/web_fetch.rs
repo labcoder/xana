@@ -6,6 +6,7 @@ use super::{
 use crate::{
     artifact::ArtifactStore,
     config::OutboundDataClass,
+    frontend::semantic::{LinkPreviewCacheStatusV1, LinkPreviewCardV1},
     identity::{OperationId, PrincipalId},
     mcp::{McpHttpSecurity, pinned_client},
     outbound::{
@@ -88,22 +89,6 @@ enum ResponseKind {
     PlainText,
     Markdown,
     Html,
-}
-
-#[derive(Debug, Serialize)]
-struct FetchResult {
-    requested_url: String,
-    final_url: String,
-    fetched_unix_ms: u64,
-    media_type: String,
-    response_bytes: usize,
-    content_digest: String,
-    redirects: Vec<String>,
-    text: String,
-    text_truncated: bool,
-    untrusted: bool,
-    cache_status: &'static str,
-    artifact: Option<crate::artifact::ArtifactRecord>,
 }
 
 #[derive(Debug)]
@@ -709,12 +694,22 @@ async fn render_receipt(
         .as_millis()
         .try_into()
         .map_err(|_| "web_fetch timestamp is out of range".to_owned())?;
-    let result = FetchResult {
+    let site_name = receipt
+        .final_url
+        .host_str()
+        .ok_or_else(|| FetchError::InvalidUrl.to_string())?
+        .to_owned();
+    let title = preview_title(&extracted);
+    let response_bytes = u64::try_from(receipt.body.len())
+        .map_err(|_| "web_fetch response length is out of range".to_owned())?;
+    let result = LinkPreviewCardV1 {
         requested_url: receipt.requested_url.to_string(),
         final_url: receipt.final_url.to_string(),
+        site_name,
+        title,
         fetched_unix_ms,
         media_type: receipt.media_type,
-        response_bytes: receipt.body.len(),
+        response_bytes,
         content_digest: blake3::hash(&receipt.body).to_hex().to_string(),
         redirects: receipt
             .redirects
@@ -724,11 +719,21 @@ async fn render_receipt(
         text,
         text_truncated,
         untrusted: true,
-        cache_status: "fresh_not_cached",
+        cache_status: LinkPreviewCacheStatusV1::FreshNotCached,
         artifact,
     };
+    result.validate().map_err(|error| error.to_string())?;
     serde_json::to_string(&result)
         .map_err(|_| "web_fetch could not encode its bounded result".to_owned())
+}
+
+fn preview_title(text: &str) -> Option<String> {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|line| line.trim_start_matches('#').trim_start())
+        .filter(|line| !line.is_empty())
+        .map(|line| truncate_utf8(line.to_owned(), 512).0)
 }
 
 fn sanitize_text(value: &str) -> String {
