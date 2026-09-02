@@ -129,6 +129,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Desktop development](contributing/desktop-development.md) explains the
   native GPUI package, exact dependency boundary, source launch, checks, and
   troubleshooting for the M4 walking skeleton.
+- [Desktop visual system and component ownership](contributing/desktop-visual-system.md)
+  defines semantic tokens, upstream component boundaries, localization rules,
+  the deterministic catalog, and the manual accessibility matrix.
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
 - [Desktop architecture](architecture/desktop.md) describes the embedded

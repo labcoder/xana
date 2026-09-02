@@ -191,6 +191,13 @@ Desktop currently provides the M4 native-provider walking skeleton. Complete
 `xana setup` first. Managed-runtime presentation and the complete Workbench are
 added by later M4 tickets. See [Desktop development](docs/contributing/desktop-development.md).
 
+Contributors can inspect the provider-free visual foundation and deterministic
+component fixtures without creating configuration:
+
+```bash
+cargo run --locked -p xana-desktop -- --catalog
+```
+
 Run the required checks before submitting a change:
 
 ```bash

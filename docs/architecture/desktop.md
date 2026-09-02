@@ -34,9 +34,10 @@ expire controller authority, then requests runtime shutdown. The host records
 any remaining Run as interrupted only after the runtime accepts shutdown and
 publishes an idempotent cleanup receipt. If exact owned-execution cleanup cannot
 be proven, shutdown remains incomplete rather than claiming success. Explicit
-test shutdown joins the runtime thread with a ten-second bound. Managed Codex presentation is not part
-of the initial M4 walking skeleton and is rejected before an app-server child
-can be started; M4-22 owns the final adapter and parity proof.
+test shutdown joins the runtime thread with a ten-second bound. Managed Codex
+presentation is not part of the initial M4 walking skeleton and is rejected
+before an app-server child can be started; M4-22 owns the final adapter and
+parity proof.
 
 The Activity projection exposes an unresolved native round-budget suspension
 with exact operation/suspension identity, committed-result count, and typed
@@ -77,6 +78,27 @@ values, arbitrary path/file handles, executable command authority, unrestricted
 URLs, session writers, or tool registries. Runtime and durable state remain
 authoritative; Desktop state is a controlled projection with optimistic input
 only until the authoritative final arrives.
+
+## Presentation system
+
+Desktop initializes `gpui-ai` once, applies one Xana-owned semantic visual
+system, and wraps each window in one `gpui-component::Root`. Light, dark, and
+high-contrast palettes, density, 100–200% text scaling, and full/reduced/no
+motion are application preferences projected into the pinned UI stack. Raw
+product colors are isolated to `design_system.rs`; individual features consume
+semantic tokens.
+
+Retained `Chat`, `PromptBar`, `ThreadList`, `SidebarNav`, and `CommandSearch`
+entities own component interaction mechanics. Xana owns their bounded
+snapshots, stable domain IDs, progressive lifecycle, subscriptions, and typed
+intent handling. Other AI surfaces are stateless projections rebuilt from
+bounded data. Semantic client copy is addressed by stable message code with
+typed, bounded parameters; unknown or untranslated codes remain visible and
+cannot change action identity or authority.
+
+`xana-desktop --catalog` selects a provider-free deterministic review surface
+before runtime launch. It exercises the same visual globals and real pinned
+components but has no provider, credential, filesystem, or tool authority.
 
 Native GPUI has no WebView, browser DOM, navigation surface, CSP, JavaScript
 bridge, or general renderer IPC. Consequently the WebView threats considered

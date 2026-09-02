@@ -24,6 +24,16 @@ stable semantic error. Managed Codex and the complete Workbench remain later
 M4 work; the walking skeleton rejects managed execution before starting a
 vendor process.
 
+Review the provider-free visual system and real pinned component states without
+creating configuration:
+
+```bash
+cargo run --locked -p xana-desktop -- --catalog
+```
+
+The catalog is deterministic and intentionally separate from final Workbench
+layout approval. See [Desktop visual system and component ownership](desktop-visual-system.md).
+
 ## Required checks
 
 ```bash
@@ -51,6 +61,9 @@ Intel macOS job compiles and tests the Desktop package.
 - A reusable missing primitive gets a minimal reproduction and upstream
   `gpui-ai` issue/contribution. Consuming it requires an explicit reviewed pin
   update.
+- Keep raw Xana palette values in `design_system.rs`. Feature code consumes
+  semantic theme, size, and motion tokens instead of inventing local colors or
+  clocks.
 
 ## Troubleshooting
 
