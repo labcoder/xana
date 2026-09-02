@@ -4,9 +4,11 @@
 //! identity, local bindings, package install state, and endpoint trust remain
 //! separate runtime-owned records and are never copied into portable files.
 
+mod migration;
 mod schema;
 mod store;
 
+pub(crate) use migration::{PrivateMigrationPlan, private_migration_pending};
 pub(crate) use schema::{
     ExternalAgentSkillRecord, ExternalAgentStateDocument, ExternalAgentStateRecord,
     ExternalAgentTaskRecord, FrozenProfileSnapshot, InstalledPackageRecord, LocalBindingRecord,

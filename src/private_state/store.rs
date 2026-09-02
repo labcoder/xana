@@ -1,3 +1,4 @@
+use super::migration::{MigrationLock, private_migration_pending};
 use super::schema::{
     EndpointTrustDocument, ExternalAgentStateDocument, OutboundAuditDocument,
     OutboundDecisionDocument, PRIVATE_RECORD_VERSION, PackageStateDocument,
@@ -18,6 +19,7 @@ const MAX_PRIVATE_RECORD_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) enum PrivateRecordStatus {
     Healthy,
     Missing,
+    Migratable,
     Invalid,
     Unsupported,
     Indeterminate,
@@ -28,6 +30,7 @@ impl PrivateRecordStatus {
         match self {
             Self::Healthy => "healthy",
             Self::Missing => "missing",
+            Self::Migratable => "migration required",
             Self::Invalid => "invalid",
             Self::Unsupported => "unsupported",
             Self::Indeterminate => "indeterminate",
@@ -45,12 +48,30 @@ pub(crate) struct PrivateRecordInspection {
 #[derive(Debug)]
 pub(crate) enum PrivateStateError {
     Busy(PathBuf),
-    Io { path: PathBuf, source: io::Error },
-    TooLarge { path: PathBuf, actual: u64 },
-    Decode { path: PathBuf, reason: String },
-    UnsupportedVersion { path: PathBuf, found: u32 },
+    Changed(PathBuf),
+    RecoveryRequired(PathBuf),
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
+    TooLarge {
+        path: PathBuf,
+        actual: u64,
+    },
+    Decode {
+        path: PathBuf,
+        reason: String,
+    },
+    UnsupportedVersion {
+        path: PathBuf,
+        found: u32,
+    },
     Encode(serde_json::Error),
     Invalid(String),
+    Rollback {
+        operation: String,
+        failures: Vec<String>,
+    },
 }
 
 impl fmt::Display for PrivateStateError {
@@ -59,6 +80,16 @@ impl fmt::Display for PrivateStateError {
             Self::Busy(path) => write!(
                 formatter,
                 "private Xana state is being changed by another process ({})",
+                path.display()
+            ),
+            Self::Changed(path) => write!(
+                formatter,
+                "{} changed after migration review; create a new plan",
+                path.display()
+            ),
+            Self::RecoveryRequired(path) => write!(
+                formatter,
+                "an interrupted private-state migration needs recovery at {}; run `xana config migrate --apply`",
                 path.display()
             ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
@@ -72,13 +103,21 @@ impl fmt::Display for PrivateStateError {
             }
             Self::UnsupportedVersion { path, found } => write!(
                 formatter,
-                "{} uses unsupported private-record version {found}; expected {PRIVATE_RECORD_VERSION}",
+                "{} uses unsupported private-record version {found}; expected {PRIVATE_RECORD_VERSION}; run `xana config migrate` to review supported migrations",
                 path.display()
             ),
             Self::Encode(source) => {
                 write!(formatter, "could not encode private Xana state: {source}")
             }
             Self::Invalid(reason) => formatter.write_str(reason),
+            Self::Rollback {
+                operation,
+                failures,
+            } => write!(
+                formatter,
+                "{operation}; rollback was incomplete: {}",
+                failures.join("; ")
+            ),
         }
     }
 }
@@ -89,10 +128,13 @@ impl Error for PrivateStateError {
             Self::Io { source, .. } => Some(source),
             Self::Encode(source) => Some(source),
             Self::Busy(_)
+            | Self::Changed(_)
+            | Self::RecoveryRequired(_)
             | Self::TooLarge { .. }
             | Self::Decode { .. }
             | Self::UnsupportedVersion { .. }
-            | Self::Invalid(_) => None,
+            | Self::Invalid(_)
+            | Self::Rollback { .. } => None,
         }
     }
 }
@@ -115,6 +157,15 @@ pub(crate) fn inspect_interoperable_records(paths: &XanaPaths) -> Vec<PrivateRec
 pub(crate) fn ensure_interoperable_records(
     paths: &XanaPaths,
 ) -> Result<Vec<PathBuf>, PrivateStateError> {
+    let _migration_lock = MigrationLock::acquire(paths)?;
+    if private_migration_pending(paths)? {
+        return Err(PrivateStateError::RecoveryRequired(
+            paths
+                .data_dir()
+                .join("interoperable")
+                .join("private-state-migration.json"),
+        ));
+    }
     let mut created = Vec::new();
     let initialized = (|| {
         ensure_one(
@@ -200,6 +251,8 @@ pub(crate) fn update_document<T, R, E>(
 where
     T: DeserializeOwned + Serialize,
 {
+    let _migration_lock =
+        MigrationLock::acquire_for_document(path).map_err(UpdateDocumentError::State)?;
     let _lock = RecordLock::acquire(path).map_err(UpdateDocumentError::State)?;
     let mut document = read_document(path).map_err(UpdateDocumentError::State)?;
     let output = update(&mut document).map_err(UpdateDocumentError::Update)?;
@@ -250,12 +303,12 @@ fn inspect<T: DeserializeOwned>(name: &'static str, path: &Path) -> PrivateRecor
                     .get("version")
                     .and_then(serde_json::Value::as_u64)
                     .and_then(|value| u32::try_from(value).ok());
-                let status = if version != Some(PRIVATE_RECORD_VERSION) {
-                    PrivateRecordStatus::Unsupported
-                } else if serde_json::from_slice::<T>(&bytes).is_ok() {
-                    PrivateRecordStatus::Healthy
-                } else {
-                    PrivateRecordStatus::Invalid
+                let decodes = serde_json::from_slice::<T>(&bytes).is_ok();
+                let status = match version {
+                    Some(PRIVATE_RECORD_VERSION) if decodes => PrivateRecordStatus::Healthy,
+                    Some(1) if decodes => PrivateRecordStatus::Migratable,
+                    Some(PRIVATE_RECORD_VERSION) | Some(1) => PrivateRecordStatus::Invalid,
+                    _ => PrivateRecordStatus::Unsupported,
                 };
                 (version, status)
             }

@@ -11,7 +11,7 @@ use crate::{
     presentation::PresentationPreferences,
     private_state::{
         PrivateRecordStatus, ProjectBindingsDocument, ProjectLifecycle, ProjectRegistryDocument,
-        inspect_interoperable_records, read_document,
+        inspect_interoperable_records, private_migration_pending, read_document,
     },
     skill::{SkillCatalog, standard_sources},
 };
@@ -394,17 +394,39 @@ fn inspect_private_records(paths: &XanaPaths, report: &mut DoctorReport) {
         return;
     }
     let records = inspect_interoperable_records(paths);
-    let missing = records
+    match private_migration_pending(paths) {
+        Ok(true) => report.push(Finding::new(
+            "state.migration_recovery_required",
+            Severity::Error,
+            "an interrupted private-state migration needs recovery",
+            "Xana will not mutate interoperable state until the transaction is reconciled",
+            Some("xana config migrate --apply".into()),
+        )),
+        Ok(false) => {}
+        Err(error) => report.push(Finding::new(
+            "state.migration_journal_invalid",
+            Severity::Error,
+            "the private-state migration journal is unreadable",
+            error.to_string(),
+            Some("xana config migrate".into()),
+        )),
+    }
+    let needs_migration = records
         .iter()
-        .filter(|record| record.status == PrivateRecordStatus::Missing)
-        .map(|record| record.name)
+        .filter(|record| {
+            matches!(
+                record.status,
+                PrivateRecordStatus::Missing | PrivateRecordStatus::Migratable
+            )
+        })
+        .map(|record| format!("{}={}", record.name, record.status.as_str()))
         .collect::<Vec<_>>();
-    if !missing.is_empty() {
+    if !needs_migration.is_empty() {
         report.push(Finding::new(
             "state.migration_required",
             Severity::Warning,
-            "Xana private interoperability state needs initialization",
-            format!("missing records: {}", missing.join(", ")),
+            "Xana private interoperability state needs migration",
+            needs_migration.join(", "),
             Some("xana config migrate --apply".into()),
         ));
     }
@@ -413,7 +435,9 @@ fn inspect_private_records(paths: &XanaPaths, report: &mut DoctorReport) {
         .filter(|record| {
             !matches!(
                 record.status,
-                PrivateRecordStatus::Healthy | PrivateRecordStatus::Missing
+                PrivateRecordStatus::Healthy
+                    | PrivateRecordStatus::Missing
+                    | PrivateRecordStatus::Migratable
             )
         })
         .map(|record| format!("{}={}", record.name, record.status.as_str()))

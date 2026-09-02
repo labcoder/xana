@@ -4,7 +4,7 @@ use std::{collections::BTreeMap, path::PathBuf};
 use crate::config::OutboundDataClass;
 use crate::identity::ProjectId;
 
-pub(super) const PRIVATE_RECORD_VERSION: u32 = 1;
+pub(super) const PRIVATE_RECORD_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

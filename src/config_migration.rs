@@ -7,10 +7,7 @@ use crate::{
     bounded_file,
     config::{CONFIG_VERSION, ConfigTransactionLock, XanaConfig},
     paths::XanaPaths,
-    private_state::{
-        PrivateRecordInspection, PrivateRecordStatus, ensure_interoperable_records,
-        inspect_interoperable_records,
-    },
+    private_state::{PrivateMigrationPlan, PrivateRecordInspection},
 };
 use std::{
     error::Error,
@@ -21,7 +18,7 @@ use std::{
 
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct ConfigMigrationPlan {
     config_path: PathBuf,
     original: Vec<u8>,
@@ -29,6 +26,8 @@ pub(crate) struct ConfigMigrationPlan {
     pub(crate) source_version: u32,
     pub(crate) target_version: u32,
     pub(crate) private_records: Vec<PrivateRecordInspection>,
+    pub(crate) private_recovery_pending: bool,
+    private_plan: PrivateMigrationPlan,
 }
 
 impl ConfigMigrationPlan {
@@ -44,22 +43,22 @@ impl ConfigMigrationPlan {
         let migrated = XanaConfig::migrate_to_current(text)
             .map_err(|error| ConfigMigrationError::Invalid(error.to_string()))?
             .into_bytes();
+        let private_plan = PrivateMigrationPlan::build(paths)
+            .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
         Ok(Self {
             config_path,
             original,
             migrated,
             source_version,
             target_version: CONFIG_VERSION,
-            private_records: inspect_interoperable_records(paths),
+            private_records: private_plan.inspections().to_vec(),
+            private_recovery_pending: private_plan.recovery_pending(),
+            private_plan,
         })
     }
 
     pub(crate) fn requires_apply(&self) -> bool {
-        self.original != self.migrated
-            || self
-                .private_records
-                .iter()
-                .any(|record| record.status == PrivateRecordStatus::Missing)
+        self.original != self.migrated || self.private_plan.requires_apply()
     }
 
     pub(crate) fn apply(
@@ -81,39 +80,37 @@ impl ConfigMigrationPlan {
         if current != self.original {
             return Err(ConfigMigrationError::Changed(self.config_path));
         }
-        for record in &self.private_records {
-            if !matches!(
-                record.status,
-                PrivateRecordStatus::Healthy | PrivateRecordStatus::Missing
-            ) {
-                return Err(ConfigMigrationError::Invalid(format!(
-                    "{} private state is {}; repair or restore it before migration",
-                    record.name,
-                    record.status.as_str()
-                )));
-            }
-        }
-
         let backup_path = self.config_path.with_extension("toml.bak");
         let previous_backup = read_optional(&backup_path)?;
-        let created = ensure_interoperable_records(paths)
+        let private_transaction = self
+            .private_plan
+            .begin(paths, &self.original, &self.migrated)
             .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
         if let Err(error) = writer.write(&backup_path, &self.original, MigrationWrite::Backup) {
-            return Err(with_rollback_failures(error, remove_created(&created)));
+            return Err(with_rollback_failures(
+                error,
+                private_transaction.rollback(),
+            ));
         }
         if let Err(error) = writer.write(&self.config_path, &self.migrated, MigrationWrite::Config)
         {
             let restore = writer.restore(&backup_path, previous_backup.as_deref());
-            let mut failures = remove_created(&created);
+            let mut failures = private_transaction.rollback();
             if let Err(restore) = restore {
                 failures.push(restore.to_string());
             }
             return Err(with_rollback_failures(error, failures));
         }
+        let private = private_transaction
+            .commit()
+            .map_err(|error| ConfigMigrationError::Private(error.to_string()))?;
 
         Ok(ConfigMigrationOutcome {
             changed_config: self.original != self.migrated,
-            initialized_private_records: created.len(),
+            initialized_private_records: private.initialized_records,
+            migrated_private_records: private.migrated_records,
+            private_backup_path: private.backup_path,
+            recovered_private_transaction: private.recovered_transaction,
             backup_path,
         })
     }
@@ -157,6 +154,9 @@ impl MigrationWriter for FilesystemMigrationWriter {
 pub(crate) struct ConfigMigrationOutcome {
     pub(crate) changed_config: bool,
     pub(crate) initialized_private_records: usize,
+    pub(crate) migrated_private_records: usize,
+    pub(crate) private_backup_path: Option<PathBuf>,
+    pub(crate) recovered_private_transaction: bool,
     pub(crate) backup_path: PathBuf,
 }
 
@@ -262,6 +262,7 @@ fn restore_optional(path: &Path, bytes: Option<&[u8]>) -> Result<(), ConfigMigra
     }
 }
 
+#[cfg(test)]
 fn remove_created(paths: &[PathBuf]) -> Vec<String> {
     let mut failures = Vec::new();
     for path in paths.iter().rev() {
@@ -320,6 +321,10 @@ mod tests {
     use super::*;
     use crate::{
         config::{InitialConfig, InitialConnection, PermissionMode},
+        private_state::{
+            PrivateRecordStatus, ProjectRegistryDocument, inspect_interoperable_records,
+            read_document,
+        },
         shell::ShellConfig,
     };
     use std::ffi::OsString;
@@ -396,6 +401,33 @@ mod tests {
         assert_eq!(fs::read(&outcome.backup_path).unwrap(), original);
         assert_eq!(outcome.initialized_private_records, 7);
         assert!(XanaConfig::parse(&migrated).is_ok());
+    }
+
+    #[test]
+    fn config_and_real_v1_private_state_commit_under_one_reviewed_plan() {
+        let (_directory, paths, _) = paths_and_v3();
+        let mut projects = serde_json::to_value(ProjectRegistryDocument::default()).unwrap();
+        projects["version"] = serde_json::Value::from(1);
+        fs::create_dir_all(paths.projects_file().parent().unwrap()).unwrap();
+        let original = serde_json::to_vec_pretty(&projects).unwrap();
+        fs::write(paths.projects_file(), &original).unwrap();
+        let plan = ConfigMigrationPlan::build(&paths).unwrap();
+        assert_eq!(
+            plan.private_records[0].status,
+            PrivateRecordStatus::Migratable
+        );
+
+        let outcome = plan.apply(&paths).unwrap();
+
+        assert_eq!(outcome.migrated_private_records, 1);
+        assert_eq!(outcome.initialized_private_records, 6);
+        let private_backup = outcome.private_backup_path.unwrap();
+        assert_eq!(
+            fs::read(private_backup.join("projects.json")).unwrap(),
+            original
+        );
+        let migrated: ProjectRegistryDocument = read_document(&paths.projects_file()).unwrap();
+        assert_eq!(migrated.version, 2);
     }
 
     #[test]

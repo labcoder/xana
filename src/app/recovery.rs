@@ -54,6 +54,12 @@ pub(super) fn run_config_command<W: Write>(
                         .unwrap_or_default()
                 )?;
             }
+            if plan.private_recovery_pending {
+                writeln!(
+                    output,
+                    "private state: interrupted transaction needs recovery"
+                )?;
+            }
             Ok(())
         }
         ConfigCommand::List {
@@ -94,6 +100,9 @@ pub(super) fn run_config_command<W: Write>(
             for record in &plan.private_records {
                 writeln!(output, "  {}: {}", record.name, record.status.as_str())?;
             }
+            if plan.private_recovery_pending {
+                writeln!(output, "  Recovery: interrupted private-state transaction")?;
+            }
             if !apply {
                 writeln!(
                     output,
@@ -109,6 +118,17 @@ pub(super) fn run_config_command<W: Write>(
                 "  Private records initialized: {}",
                 outcome.initialized_private_records
             )?;
+            writeln!(
+                output,
+                "  Private records migrated: {}",
+                outcome.migrated_private_records
+            )?;
+            if let Some(path) = outcome.private_backup_path {
+                writeln!(output, "  Private backup: {}", path.display())?;
+            }
+            if outcome.recovered_private_transaction {
+                writeln!(output, "  Interrupted private transaction recovered")?;
+            }
             Ok(())
         }
         ConfigCommand::Edit { editor } => {
