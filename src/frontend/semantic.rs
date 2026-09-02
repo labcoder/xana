@@ -7,6 +7,7 @@
 mod activity;
 mod content;
 mod event;
+mod projection;
 mod state;
 mod usage;
 
@@ -17,7 +18,8 @@ pub(crate) use activity::{
 pub(crate) use content::{
     AttachmentPolicySnapshotV1, AttachmentV1, ContentPartV1, DisclosureReceiptV1,
 };
-pub(crate) use event::SemanticEventEnvelopeV1;
+pub(crate) use event::{DecodedSemanticEventV1, SemanticEventEnvelopeV1, SemanticEventV1};
+pub(crate) use projection::{LinkPreviewCacheStatusV1, LinkPreviewCardV1, normalize_message};
 pub(crate) use state::{SemanticDeltaV1, SemanticReplicaV1, SemanticSnapshotV1};
 pub(crate) use usage::{
     ContextOccupancyV1, CreditBalanceV1, LimitObservationV1, UsageAccountingV1, UsageAggregateV1,
@@ -37,6 +39,11 @@ pub(crate) const MAX_SAFE_TEXT_BYTES: usize = 256 * 1024;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum FactSourceV1 {
     Runtime,
+    Surface,
+    Connection,
+    Model,
+    Route,
+    Adapter,
     Provider,
     ManagedRuntime,
     Mcp,

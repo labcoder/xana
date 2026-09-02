@@ -69,6 +69,12 @@ fn attachment() -> AttachmentV1 {
         capabilities: vec![CapabilityFactV1 {
             operation: ResourceOperationV1::PresentInline,
             availability: AvailabilityV1::Available,
+            selected: false,
+            authorized: false,
+            connection: None,
+            model: None,
+            effective_max_source_bytes: Some(4 * 1024 * 1024),
+            reason_code: None,
             source: FactSourceV1::Runtime,
             freshness: freshness(),
         }],

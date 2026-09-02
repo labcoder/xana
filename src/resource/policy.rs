@@ -2,7 +2,7 @@
 
 use super::{
     DEFAULT_STATIC_RASTER_BYTES, DEFAULT_STATIC_RASTER_PIXELS, DEFAULT_STATIC_RASTER_TURN_BYTES,
-    DEFAULT_STATIC_RASTERS_PER_TURN,
+    DEFAULT_STATIC_RASTERS_PER_TURN, ResourceKindV1,
 };
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
@@ -195,6 +195,18 @@ impl Default for ResourcePolicyV1 {
 }
 
 impl ResourcePolicyV1 {
+    pub(crate) fn max_source_bytes_for(&self, kind: &ResourceKindV1) -> u64 {
+        match kind {
+            ResourceKindV1::StaticRaster => self.static_raster.max_source_bytes,
+            ResourceKindV1::AnimatedRaster => self.animated_raster.max_source_bytes,
+            ResourceKindV1::Svg => self.svg.max_source_bytes,
+            ResourceKindV1::Lottie => self.lottie.max_source_bytes,
+            ResourceKindV1::Audio => self.audio.max_source_bytes,
+            ResourceKindV1::Video => self.video.max_source_bytes,
+            ResourceKindV1::Binary | ResourceKindV1::Unknown(_) => self.unknown.max_source_bytes,
+        }
+    }
+
     pub(crate) fn hard_ceiling() -> Self {
         Self {
             max_resources_per_turn: 32,

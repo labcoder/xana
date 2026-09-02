@@ -8,7 +8,7 @@
 use super::managed::ManagedClientEvent;
 use super::semantic::{
     AttachmentPolicySnapshotV1, SemanticCodeV1, SemanticDeltaV1, SemanticEventEnvelopeV1,
-    SemanticReplicaV1, SemanticSnapshotV1,
+    SemanticReplicaV1, SemanticSnapshotV1, normalize_message,
 };
 use crate::{
     identity::{AgentId, OperationId, RoundBudgetId, SessionId, ToolInvocationId},
@@ -28,6 +28,9 @@ const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
 const MAX_COMMAND_BYTES: usize = 1024 * 1024;
 const MAX_OMISSION_LABEL_BYTES: usize = 160;
+const MAX_PROJECTED_CONTENT_PARTS: usize = 256;
+const MAX_PROJECTED_CONTENT_BYTES: usize = 1024 * 1024;
+const MAX_PROJECTED_FINAL_BYTES: usize = 512 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -462,7 +465,18 @@ impl ClientSnapshot {
                     ..
                 }
                 | AgentEvent::OperationFailed { .. } => self.active_operation = None,
-                AgentEvent::AssistantMessage { message, .. } => {
+                AgentEvent::AssistantMessage {
+                    operation_id,
+                    message,
+                } => {
+                    let parts = normalize_message(message);
+                    append_semantic_content(&mut self.semantic, parts.clone());
+                    if !parts.is_empty() {
+                        self.semantic
+                            .authoritative_finals
+                            .insert(*operation_id, parts);
+                        bound_authoritative_finals(&mut self.semantic, *operation_id);
+                    }
                     let mut conversation = std::mem::take(&mut self.conversation);
                     conversation.push(message.clone());
                     let (conversation, truncated) = bounded_history(conversation);
@@ -480,6 +494,11 @@ impl ClientSnapshot {
                     self.conversation_truncated = false;
                     self.active_operation = None;
                     self.artifact_count = 0;
+                    self.semantic.content.clear();
+                    self.semantic.authoritative_finals.clear();
+                }
+                AgentEvent::ToolFinished { result, .. } => {
+                    append_semantic_content(&mut self.semantic, normalize_message(result));
                 }
                 AgentEvent::PermissionRequested { .. } => {
                     self.pending_approval_count = self.pending_approval_count.saturating_add(1);
@@ -512,6 +531,38 @@ impl ClientSnapshot {
                 self.activity_count = self.activity_count.saturating_add(1);
             }
         }
+    }
+}
+
+fn bound_authoritative_finals(semantic: &mut SemanticSnapshotV1, retained: OperationId) {
+    while !semantic.authoritative_finals.is_empty()
+        && serde_json::to_vec(&semantic.authoritative_finals)
+            .map_or(true, |encoded| encoded.len() > MAX_PROJECTED_FINAL_BYTES)
+    {
+        let remove = semantic
+            .authoritative_finals
+            .keys()
+            .copied()
+            .find(|operation_id| *operation_id != retained)
+            .unwrap_or(retained);
+        semantic.authoritative_finals.remove(&remove);
+    }
+}
+
+fn append_semantic_content(
+    semantic: &mut SemanticSnapshotV1,
+    parts: impl IntoIterator<Item = super::semantic::ContentPartV1>,
+) {
+    semantic.content.extend(parts);
+    if semantic.content.len() > MAX_PROJECTED_CONTENT_PARTS {
+        let excess = semantic.content.len() - MAX_PROJECTED_CONTENT_PARTS;
+        semantic.content.drain(..excess);
+    }
+    while !semantic.content.is_empty()
+        && serde_json::to_vec(&semantic.content)
+            .map_or(true, |encoded| encoded.len() > MAX_PROJECTED_CONTENT_BYTES)
+    {
+        semantic.content.remove(0);
     }
 }
 
@@ -867,5 +918,43 @@ mod tests {
             resource_policy
         );
         assert!(snapshot.semantic.attachment_policy.route_limit.is_none());
+    }
+
+    #[test]
+    fn final_runtime_messages_gain_bounded_inert_semantic_projections() {
+        let operation_id = OperationId::new();
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::AssistantMessage {
+                operation_id,
+                message: Message::text(Role::Assistant, "```diff\n-old\n+new\n```"),
+            }),
+            1,
+        );
+
+        assert!(matches!(
+            snapshot.semantic.content.as_slice(),
+            [crate::frontend::semantic::ContentPartV1::Diff { .. }]
+        ));
+        assert!(matches!(
+            snapshot.semantic.authoritative_finals[&operation_id].as_slice(),
+            [crate::frontend::semantic::ContentPartV1::Diff { .. }]
+        ));
+        snapshot.semantic.validate().unwrap();
+
+        snapshot.apply(&ClientEvent::bounded(AgentEvent::ConversationCleared), 2);
+        assert!(snapshot.semantic.content.is_empty());
+        assert!(snapshot.semantic.authoritative_finals.is_empty());
     }
 }

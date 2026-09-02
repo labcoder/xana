@@ -4,7 +4,7 @@ use super::{
 };
 use crate::{
     identity::ArtifactId,
-    resource::{ResourcePolicyV1, ResourceRefV1},
+    resource::{MAX_RESOURCE_SOURCE_BYTES, ResourcePolicyV1, ResourceRefV1},
 };
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -367,8 +367,58 @@ pub(crate) enum ResourceOperationV1 {
 pub(crate) struct CapabilityFactV1 {
     pub(crate) operation: ResourceOperationV1,
     pub(crate) availability: AvailabilityV1,
+    #[serde(default)]
+    pub(crate) selected: bool,
+    #[serde(default)]
+    pub(crate) authorized: bool,
+    #[serde(default)]
+    pub(crate) connection: Option<String>,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) effective_max_source_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) reason_code: Option<String>,
     pub(crate) source: FactSourceV1,
     pub(crate) freshness: FreshnessV1,
+}
+
+impl CapabilityFactV1 {
+    pub(crate) fn validate(&self) -> Result<(), SemanticError> {
+        for (field, value) in [
+            ("capability connection", self.connection.as_deref()),
+            ("capability model", self.model.as_deref()),
+        ] {
+            if let Some(value) = value {
+                validate_text(field, value, MAX_DESTINATION_BYTES)?;
+            }
+        }
+        if let Some(code) = self.reason_code.as_deref() {
+            validate_code("capability reason", code, 96)?;
+        }
+        if self.effective_max_source_bytes == Some(0) {
+            return Err(SemanticError::InvalidStructure {
+                field: "capability source-byte limit",
+                reason: "must not be zero",
+            });
+        }
+        if self
+            .effective_max_source_bytes
+            .is_some_and(|limit| limit > MAX_RESOURCE_SOURCE_BYTES as u64)
+        {
+            return Err(SemanticError::InvalidStructure {
+                field: "capability source-byte limit",
+                reason: "exceeds the compiled resource ceiling",
+            });
+        }
+        if self.selected && (self.connection.is_none() || self.model.is_none()) {
+            return Err(SemanticError::InvalidStructure {
+                field: "selected resource capability",
+                reason: "must name its exact connection and model",
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +452,9 @@ impl AttachmentV1 {
                 actual: self.capabilities.len(),
                 limit: MAX_CAPABILITY_FACTS,
             });
+        }
+        for capability in &self.capabilities {
+            capability.validate()?;
         }
         Ok(())
     }
