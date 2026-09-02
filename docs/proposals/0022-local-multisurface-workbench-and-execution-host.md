@@ -216,13 +216,29 @@ flowchart LR
 A Conversation renders ordered, inert **content parts**, not provider wire
 objects or executable markup. The initial shared vocabulary must cover text,
 bounded Markdown source, code, diffs, tables, math source, reasoning/activity
-disclosure, tool calls/results, approvals, images, generic attachments,
-artifacts, usage observations, attention, progress, errors, and unknown parts.
+disclosure, tool calls/results, approvals, artifact-backed resources, usage
+observations, attention, progress, errors, and unknown parts. One versioned
+resource reference covers raster and animated images, vector and animation
+documents, audio, video, opaque binary, and unknown future kinds; raw bytes and
+provider-native content objects never enter frontend or session payloads.
 
 An **attachment** is user-selected input awaiting authorization and staging. An
 **artifact** is immutable runtime-owned content with an opaque identity,
 provenance, media type, size, sensitivity, and lifecycle. Large bytes stay in
 the artifact store and cross frontend boundaries by bounded reference.
+Declared and detected media types remain distinct. Typed bounded metadata may
+describe dimensions, frames, duration, codecs, tracks, accessibility, and
+animation, while unknown fields and kinds fall back safely.
+
+Acquisition, inline presentation, playback, external open, conversational
+provider input, focused analysis, and transformation are independent
+capability facts with source and freshness. A surface renderer never grants
+provider input, and provider support never grants local capture or playback.
+Disclosure is an operation-scoped decision naming the exact artifact or
+derivative, destination, route/model, byte count, and transform; it is not a
+mutable `approved` flag on an artifact. Each resize, poster, selected frame,
+waveform, metadata-stripped copy, or safe SVG raster is a new immutable artifact
+with source lineage and normalized transformer identity and parameters.
 
 Reasoning and activity are disclosure data distinct from the final answer.
 Surfaces may collapse them, but cannot discard terminal state, approvals,
@@ -248,6 +264,39 @@ flowchart LR
     PRESENT --> ACTION["Explicit runtime command for open/save/copy/approve"]
     FALLBACK --> ACTION
 ```
+
+### Accepted media and resource policy
+
+M4 preserves the current image defaults—eight images, 4 MiB per image, 20 MiB
+of images per turn, and 40 million decoded pixels per image—while generalizing
+admission to checked, configurable soft limits below immutable compiled
+ceilings. `0` and “unlimited” are invalid. Limits are checked before read,
+decode, transform, cache reservation, allocation, or upload; route/provider
+limits may only reduce the effective allowance.
+
+The initial cross-resource defaults are eight resources per turn, 64 MiB total
+encoded source bytes, two active metadata/decoder jobs, one playing time-based
+resource, a 128 MiB decoded/derived cache, an 8 MiB in-memory media buffer, and
+a 10-second transform deadline. Corresponding immutable ceilings are 32
+resources, 512 MiB encoded source, four jobs, two players, a 512 MiB cache, a
+64 MiB buffer, and 120 seconds. Per-kind limits additionally bound source bytes,
+dimensions and decoded pixels, frames and pixel-frame work, duration, tracks,
+sample rate/channels, structured-document nodes/items, embedded assets, and
+transform work. Checked `u128` intermediates precede every narrowing conversion.
+
+M4 presents PNG/JPEG/WebP and bounded animated GIF/WebP where a reviewed adapter
+passes. SVG is secure-static or runtime-rasterized and never embedded as source
+in a privileged UI. Lottie receives a typed card/poster fallback; native Lottie
+is not an M4 exit requirement. Audio and video/WebM receive bounded local cards,
+open/save/reveal, and optional playback only through a small maintained adapter
+that passes platform, accessibility, cancellation, and resource gates. Unknown
+binaries are never rendered, transformed, executed, or sent to a provider.
+Remote media never auto-loads.
+
+M4 does not add microphone capture, live PCM, endpointing, STT, TTS, barge-in,
+or speech-provider routing. Future STT produces an authenticated Xana command;
+future TTS consumes authoritative Xana content/events. Neither belongs in the
+conversational-provider trait.
 
 ## 7. Workbench, panels, and Espejo
 
