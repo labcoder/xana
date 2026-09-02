@@ -41,7 +41,7 @@ selection is stored outside the human-authored configuration.
 
 An **agent profile** is a named immutable configuration template for an exact
 connection/model/options pair, logical capability selection, permission
-ceiling, tool-round limit, and orchestration limits. A **task route** maps one
+ceiling, soft tool-round tranche, and orchestration limits. A **task route** maps one
 stable child-task name to exactly one profile. `xana route list` and `xana
 route check NAME` resolve configured/cached metadata, local credential
 availability, model options, and built-in capabilities without network or

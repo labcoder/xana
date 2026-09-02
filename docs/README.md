@@ -30,6 +30,9 @@ engineering contracts used to change it.
 - [M4 native web-fetch evidence](development/m4-native-web-fetch-evidence.md)
   records the exact outbound/HTTP boundary, adversarial loopback fixtures,
   prompt/schema/resource bounds, and complete local verification gate.
+- [M4 native round-budget evidence](development/m4-native-round-budget-evidence.md)
+  records durable suspension, exact continuation/stop correlation, cumulative
+  accounting, crash/restart behavior, and cross-surface verification.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,

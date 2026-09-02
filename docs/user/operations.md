@@ -30,6 +30,22 @@ result identifiers plus the proposed action. It does not print tool arguments.
 The session id and unfinished operation ids are available from `xana session
 inspect SESSION_ID` and normal terminal output.
 
+## Ordinary round-budget suspension
+
+A native operation that cleanly reaches its configured soft tool-round tranche
+is not a crash-recovery case. Xana commits an exact round-budget suspension and
+keeps the same operation, conversation history, tool results, usage, and
+workspace ownership. Resume the session in the full-screen or plain interactive
+surface and choose Continue or Stop (`/continue` or `/stop` in the TUI). The
+same unresolved suspension identity is re-emitted after restart. One-shot
+reports it as `incomplete` with exit code 7 rather than guessing a decision.
+
+Continue admits one more configured tranche below the immutable root ceiling;
+it does not reset token, time, cost, child, permission, or external-effect
+accounting. Stop records a terminal declined outcome. Do not use `xana
+operation resume` for this ordinary boundary: that command is reserved for the
+unknown-effect recovery cases below.
+
 ## Explicit reconciliation
 
 After reviewing the plan, reconcile exactly that operation with:

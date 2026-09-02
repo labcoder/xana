@@ -55,6 +55,15 @@ references). `/queue` shows the queue, `/queue edit N` returns one item to the
 composer, and `/queue remove N` removes one item. A follow-up starts only after
 the preceding root reaches a terminal state and releases its lease.
 
+When a native turn consumes its configured soft round tranche, Xana preserves
+the same root operation and displays its committed progress, cumulative usage,
+remaining immutable ceiling, and any repeated exact tool-call-pattern count.
+Use `/continue` to grant only the next configured tranche or `/stop` to finish
+that exact operation as declined. Neither action creates a new user message;
+`/continue` does not reset other budgets or prior effects. The workspace root
+remains owned while the decision is pending, so queued follow-ups cannot jump
+ahead. After restart, the same unresolved suspension is shown again.
+
 Ctrl+C copies a retained conversation selection when one exists. Otherwise it,
 or `/interrupt`, requests interruption of the exact active operation;
 Ctrl+Q or `/quit` shuts down the foreground client. Interruption and steering
@@ -74,7 +83,7 @@ descriptions; both `ses` and `/ses` find `/sessions`.
 Palette actions and slash input use that one registry:
 
 - `/help`, `/header view hide|show`, `/send [MESSAGE]`, `/newline`, `/quit`
-- `/interrupt`, `/steer MESSAGE`
+- `/interrupt`, `/steer MESSAGE`, `/continue`, `/stop`
 - `/model [CONNECTION/MODEL]`, `/reasoning [EFFORT]`
 - `/activity view auto|hide|show`
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`

@@ -25,7 +25,7 @@ sandbox, and conversation history.
 | Interfaces | Adaptive full-screen TUI, append-only terminal, and JSON/text one-shot output |
 | Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
 | Native tools | Bounded workspace discovery/search, paged reads, explicit file creation, atomic exact edits, timed commands, text/CSV extraction, bundled Xana docs, and reviewed public-HTTPS text fetch |
-| State | Durable native sessions with lossless history and bounded compaction, Codex thread handles, immutable artifacts, projects, and named profiles |
+| State | Durable native sessions with lossless history, resumable round-budget boundaries, and bounded compaction; Codex thread handles, immutable artifacts, projects, and named profiles |
 | Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
 

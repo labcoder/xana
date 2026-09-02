@@ -34,6 +34,13 @@ active turn and Ctrl+Q shuts down. Managed Codex chat uses plain mode until its
 full-screen event and approval projection is attached. See the
 [full-screen TUI guide](tui.md) for portable keys and interactive approvals.
 
+When an attached native turn reaches its configured soft round tranche, plain
+mode prints cumulative progress and asks whether to Continue or Stop. Continue
+keeps the same operation and grants only the next tranche; EOF and every answer
+other than an explicit Continue stop safely. A restarted unresolved suspension
+is also durable and is best resumed through the full-screen TUI, whose exact
+`/continue` and `/stop` actions are always discoverable.
+
 Plain chat accepts `/project ...`, `/profile ...`, `/skill ...`, and `/plugin
 ...`. Xana stops the current idle execution owner, runs the exact typed command
 used by the matching `xana` subcommand, prints its normal result, and resumes
@@ -66,7 +73,11 @@ Text mode writes only final assistant text to stdout. Loading, activity,
 warnings, and diagnostics use stderr, so redirecting stdout captures a clean
 payload. One-shot mode denies any approval that requires an interactive
 decision and exits instead of waiting. A configured rule or permission mode
-may authorize an effect before an approval is needed.
+may authorize an effect before an approval is needed. If a native turn reaches
+its configured round tranche, one-shot exits with a typed `incomplete` result
+after the suspension is committed. Resume that session in an interactive Xana
+surface to continue or stop the same operation; one-shot never chooses for the
+user or waits forever.
 
 One-shot creates a new native session or managed thread by default. Use
 `--continue` to select the latest compatible conversation for the canonical
@@ -77,15 +88,16 @@ workspace.
 
 ## JSON and process status
 
-`--output json` and `--json` emit one redacted version-1 envelope to stdout:
+`--output json` and `--json` emit one redacted version-2 envelope to stdout:
 
 ```json
-{"version":1,"status":"success","result":{"text":"...","execution_owner":"native","session_id":"..."}}
+{"version":2,"status":"success","result":{"text":"...","execution_owner":"native","session_id":"..."}}
 ```
 
 Failures use `status: "error"` with an `error.category` and bounded message.
-Diagnostics remain on stderr. JSON and redirected output contain no terminal
-control sequences.
+A committed round-budget suspension uses `status: "incomplete"` and category
+`incomplete`. Diagnostics remain on stderr. JSON and redirected output contain
+no terminal control sequences.
 
 | Exit | Category | Meaning |
 |---:|---|---|
@@ -95,6 +107,7 @@ control sequences.
 | 4 | `connection` | Authentication, model availability, or provider connection failed. |
 | 5 | `approval` | The turn required an unavailable interactive approval. |
 | 6 | `runtime` | Provider or runtime execution failed. |
+| 7 | `incomplete` | The same native operation is durably suspended at a round boundary and needs an interactive continue/stop decision. |
 | 130 | `interrupted` | The operation was interrupted. |
 
 The envelope is a result contract, not an event stream. Use stderr for human

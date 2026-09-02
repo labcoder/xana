@@ -199,23 +199,26 @@ existing runtime cancellation path before its lease is released.
 The append-only terminal and one-shot adapter are permanent clients of this
 boundary. One-shot accepts exactly one bounded argument or stdin source,
 denies unresolved approvals, and writes only the final payload to stdout.
-Human activity and diagnostics use stderr. Its version-1 JSON result envelope
+Human activity and diagnostics use stderr. Its version-2 JSON result envelope
 is redacted and maps invalid input, configuration, connection, approval,
-runtime, and interruption outcomes to stable process categories. It is a
+runtime, incomplete, and interruption outcomes to stable process categories.
+`incomplete` means the operation committed progress and is awaiting an exact
+round-budget decision; it is neither success nor failure. The envelope is a
 terminal result contract, not an event stream.
 
 Behind the embedded adapter, control values cross a bounded Tokio channel as
 serializable `RuntimeCommand`s. One internal foreground receiver drains
 serializable `AgentEvent`s from the runtime's unbounded channel into the
 bounded client queue. Commands submit turns, clear idle
-history, identify explicit recovery work, correlate permission decisions, and
-shut down the runtime. The dedicated CLI recovery controller consumes
+history, identify explicit recovery work, correlate permission and round-budget
+decisions, and shut down the runtime. The dedicated CLI recovery controller consumes
 `ResumeOperation`; merely opening a foreground chat never reconciles effects.
 Events carry operation state, assistant deltas, permission requests and audit
-facts, committed invocation facts, tool completion, final messages, failures,
-clearing, rejections, and attributed child lifecycle/activity/reports. Except for the
-explicit permission request, event delivery is passive: losing the receiver does
-not alter an operation's result.
+facts, committed invocation facts, tool completion, round-budget suspensions
+and decisions, final messages, failures, clearing, rejections, and attributed
+child lifecycle/activity/reports. Except for explicit permission and
+round-budget decisions, event delivery is passive: losing the receiver does not
+alter an operation's result.
 
 Each child has a 256-event bounded observation queue. Its permission-request
 control lane remains separate so an activity flood cannot hide a decision that
@@ -398,13 +401,32 @@ treated as a replay log.
 
 `Agent` owns one asynchronous `ConversationalProvider`, a deterministic tool
 registry, the session workspace, a base `PromptSnapshot`, and a configured
-tool-round limit. The runtime supplies a project-context-aware snapshot for
+soft tool-round tranche. The runtime supplies a project-context-aware snapshot for
 each accepted root turn; that snapshot is unchanged across the turn's provider
 calls. Before each provider call the agent charges the complete current
 history and prepends the snapshot's system message. It executes
 requested tools serially, appends correlated results, and returns the final
 assistant message. The foreground runtime commits immutable user, assistant,
 and tool-result entries and moves the thread head separately.
+
+Exhausting the configured `max_tool_rounds` tranche is not a failed Turn. The
+runtime first commits a `RoundBudgetReached` suspension containing the exact
+operation and suspension identities, cumulative and last-tranche round counts,
+an immutable 256-round root ceiling, cumulative provider usage, committed
+step/invocation/result counts, repeated exact tool-call-pattern diagnostics,
+and the currently allowed actions. A correlated `Continue` record moves the
+same operation back to running and admits only the next configured tranche; it
+does not add another user message, discard tool results, or reset token,
+wall-time, cost, child, permission, or external-effect accounting. `Stop` is an
+atomic terminal `Declined` decision. At the hard ceiling only Stop is exposed.
+
+The suspension and decision are durable session facts. Restart re-emits the
+same unresolved suspension identity rather than silently continuing. Stale,
+duplicate, mismatched, or disallowed decisions are rejected. A crash after a
+Continue decision has committed leaves explicit unfinished running work; the
+normal operation-recovery boundary can terminate it as interrupted but never
+replays another provider or tool call automatically. Repeated tool patterns
+are evidence only and do not create a hidden automatic loop policy.
 
 The provider-neutral conversation model carries ordered text, image,
 tool-call, and tool-result content. Provider request and response shapes remain
@@ -784,8 +806,9 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 2 adds exact
-interrupt and capability-gated steer commands. The native TUI maps keyboard,
+staged images, and an ordered follow-up queue. Frontend protocol version 3 adds
+exact round-budget decisions to the existing exact interrupt and
+capability-gated steer commands. The native TUI maps keyboard,
 mouse, bracketed-paste, and runtime events through one terminal-independent
 update model; slash input and the searchable palette share one typed command
 registry. Native runtime and managed Codex are two private adapters to one TUI

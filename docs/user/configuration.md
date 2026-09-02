@@ -628,7 +628,7 @@ readable.
 | `reasoning_effort` / `reasoning_summary` | Optional managed Codex model options validated against local catalog metadata |
 | `capabilities` | Optional exact built-in logical capability ids; omitted means all built-ins and `[]` means none |
 | `profiles.<id>.permission_mode` | Optional ceiling that can narrow but never widen the global policy |
-| `max_tool_rounds` | Native loop limit, `1..=64`, default 8 |
+| `max_tool_rounds` | Native soft round tranche, `1..=64`, default 8; reaching it suspends for an explicit continue/stop decision under Xana's immutable 256-round root ceiling |
 | `profiles.<id>.orchestration` | Bounded fan-out, descendants, concurrency, deadline, context, report, and artifact defaults |
 | `profiles.<id>.identity` / `applies_to` | Optional identity text and exact `primary`/`child` use scope |
 | `profiles.<id>.skills`, `plugins`, `mcp_servers`, `external_agents`, `service_routes` | Portable logical activation references; local resolution and authority remain separate |

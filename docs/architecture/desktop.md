@@ -35,6 +35,13 @@ runtime thread with a ten-second bound. Managed Codex presentation is not part
 of the initial M4 walking skeleton and is rejected before an app-server child
 can be started; M4-22 owns the final adapter and parity proof.
 
+The Activity projection exposes an unresolved native round-budget suspension
+with exact operation/suspension identity, committed-result count, and typed
+Continue/Stop controls. Continue retains the existing root lease and operation;
+Stop releases it only after the runtime projects the terminal decision. The
+GPUI layer cannot manufacture identities or infer a decision from display
+text.
+
 ## Authority boundary
 
 The GPUI package receives:
