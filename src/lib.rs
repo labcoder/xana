@@ -34,6 +34,8 @@ mod http_client;
 mod identity;
 mod init;
 mod local_host;
+#[doc(hidden)]
+pub mod localization;
 mod managed;
 mod managed_execution;
 mod mcp;

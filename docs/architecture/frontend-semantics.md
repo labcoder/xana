@@ -244,8 +244,13 @@ that an available capability is selected or authorized.
 
 Errors, attention, approvals, recovery, capability, and receipt outcomes use a
 stable lowercase semantic code plus at most 16 bounded typed parameters.
-Clients may localize copy without changing the code or action. Unknown codes
-remain visible as safe generic outcomes.
+Clients may localize copy without changing the code or action. Xana's local
+clients share a bounded presentation-only copy catalog for the representative
+setup, approval, attention, error, recovery, capability, and receipt families;
+Desktop and terminal layouts still own their rendering. The catalog includes
+expanded pseudolocalization and a deliberately narrow Spanish setup/approval/
+receipt path. Missing translations and unknown future codes remain visible as
+safe generic outcomes with their technical identity intact.
 
 The only voice seam is a future submission origin containing a validated
 adapter ID and idempotent request UUID. No microphone samples, audio streams,
@@ -270,6 +275,8 @@ and consume authoritative content/activity through the same boundary.
   resource-capability projection, and attributed summary intent.
 - `command_catalog` owns typed user intent and safe per-surface discovery; it
   does not own domain validation or effects.
+- `localization` owns bounded local-client copy and safe locale fallbacks; it
+  does not interpret policy or change semantic actions.
 - `frontend::protocol` owns transport bounds, sequence assignment, and the
   bounded transition from legacy observations to semantic projections.
 
