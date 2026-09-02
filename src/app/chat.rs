@@ -81,14 +81,67 @@ impl ChatSurface {
 
 pub(super) async fn run(
     paths: &XanaPaths,
-    mut surface: ChatSurface,
-    mut resume: Option<crate::identity::SessionId>,
-    mut continue_chat: bool,
-    mut force_new: bool,
-    mut one_shot: Option<String>,
+    surface: ChatSurface,
+    resume: Option<crate::identity::SessionId>,
+    continue_chat: bool,
+    force_new: bool,
+    one_shot: Option<String>,
     stream_sequence: Option<StreamSequence>,
 ) -> Result<Option<OneShotSuccess>> {
-    let mut conversation_target = None;
+    run_with_target(
+        paths,
+        surface,
+        ChatLaunch {
+            resume,
+            continue_chat,
+            force_new,
+            one_shot,
+            stream_sequence,
+            conversation_target: None,
+        },
+    )
+    .await
+}
+
+pub(super) async fn run_attached(
+    paths: &XanaPaths,
+    surface: ChatSurface,
+    conversation: ConversationRef,
+) -> Result<Option<OneShotSuccess>> {
+    run_with_target(
+        paths,
+        surface,
+        ChatLaunch {
+            conversation_target: Some(conversation),
+            ..ChatLaunch::default()
+        },
+    )
+    .await
+}
+
+#[derive(Default)]
+struct ChatLaunch {
+    resume: Option<crate::identity::SessionId>,
+    continue_chat: bool,
+    force_new: bool,
+    one_shot: Option<String>,
+    stream_sequence: Option<StreamSequence>,
+    conversation_target: Option<ConversationRef>,
+}
+
+async fn run_with_target(
+    paths: &XanaPaths,
+    mut surface: ChatSurface,
+    launch: ChatLaunch,
+) -> Result<Option<OneShotSuccess>> {
+    let ChatLaunch {
+        mut resume,
+        mut continue_chat,
+        mut force_new,
+        mut one_shot,
+        stream_sequence,
+        mut conversation_target,
+    } = launch;
     loop {
         match run_once(
             paths,
@@ -127,7 +180,7 @@ pub(super) async fn run(
                 surface = restart.surface;
                 resume = restart.resume;
                 conversation_target = restart.conversation_target;
-                continue_chat = false;
+                continue_chat = restart.continue_chat;
                 force_new = restart.force_new;
                 one_shot = None;
             }
@@ -150,6 +203,7 @@ struct ChatRestart {
     surface: ChatSurface,
     resume: Option<crate::identity::SessionId>,
     conversation_target: Option<ConversationRef>,
+    continue_chat: bool,
     force_new: bool,
 }
 
@@ -994,15 +1048,32 @@ async fn continue_after_chat_exit(
         return Ok(None);
     }
     let mut force_new_conversation = exit == ChatExit::NewConversation;
-    let conversation_target = match &exit {
+    let mut conversation_target = match &exit {
         ChatExit::SwitchConversation(conversation) => Some(conversation.clone()),
         _ => None,
     };
+    let mut continue_chat = false;
     if let ChatExit::ControlCommand { family, arguments } = &exit {
         if matches!(family.as_str(), "conversation" | "session" | "sessions")
             && arguments.trim() == "new"
         {
             force_new_conversation = true;
+        } else if matches!(family.as_str(), "conversation" | "session" | "sessions")
+            && arguments.trim() == "continue"
+        {
+            continue_chat = true;
+        } else if matches!(family.as_str(), "conversation" | "session" | "sessions")
+            && arguments.trim_start().starts_with("attach ")
+        {
+            let selector = arguments
+                .trim_start()
+                .strip_prefix("attach ")
+                .expect("checked prefix")
+                .trim();
+            match super::sessions::resolve_attach_target(paths, selector) {
+                Ok(conversation) => conversation_target = Some(conversation),
+                Err(error) => eprintln!("xana: {error:#}"),
+            }
         } else if let Err(error) =
             run_chat_control_command(paths, family, arguments, &mut std::io::stdout().lock()).await
         {
@@ -1070,6 +1141,7 @@ async fn continue_after_chat_exit(
         surface: restart_surface,
         resume: doctor_resume,
         conversation_target,
+        continue_chat,
         force_new: force_new_conversation,
     }))
 }
@@ -1132,7 +1204,14 @@ pub(super) async fn run_chat_control_command<W: Write>(
             super::operations::run_route(args.command, paths, output)
         }
         Some(cli::Command::Connect(args)) => super::run_connect_command(args, paths, output).await,
-        Some(cli::Command::Session(args)) if args.command != cli::SessionCommand::New => {
+        Some(cli::Command::Session(args))
+            if !matches!(
+                &args.command,
+                cli::SessionCommand::New
+                    | cli::SessionCommand::Continue
+                    | cli::SessionCommand::Attach { .. }
+            ) =>
+        {
             super::sessions::run_command(args.command, paths, output)
         }
         Some(cli::Command::Capabilities(args)) => super::capabilities::run(args, paths, output),

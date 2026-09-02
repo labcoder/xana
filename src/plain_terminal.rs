@@ -1827,6 +1827,20 @@ mod tests {
             }
         );
         assert_eq!(
+            classify_input("/conversation continue"),
+            InputAction::ControlCommand {
+                family: "conversation",
+                arguments: "continue",
+            }
+        );
+        assert_eq!(
+            classify_input("/conversation attach 018f0000-0000-7000-8000-000000000000"),
+            InputAction::ControlCommand {
+                family: "conversation",
+                arguments: "attach 018f0000-0000-7000-8000-000000000000",
+            }
+        );
+        assert_eq!(
             classify_input("/attach assets/photo.png"),
             InputAction::Attach("assets/photo.png")
         );

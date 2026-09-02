@@ -688,6 +688,13 @@ conversation path. The optional `xana
 session inspect SESSION_ID` reports bounded metadata without conversation
 content and never opens for writing.
 
+The canonical Conversation CLI exposes the same lifecycle to non-TUI clients:
+`conversation continue` selects the latest compatible owner, `conversation
+attach ID` acquires one exact inactive retained Conversation, and `conversation
+preview ID` reads a bounded native history page without acquiring control.
+Managed preview remains unavailable because its runtime owns the transcript;
+the API reports that boundary instead of creating a partial Xana mirror.
+
 Managed Codex threads remain Codex-owned and are not mirrored into Xana's
 native session log. Xana stores a bounded version-2 catalog of opaque thread
 ids per connection and canonical workspace, including the current selection,

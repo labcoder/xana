@@ -686,6 +686,56 @@ fn one_shot_text_keeps_payload_on_stdout_and_diagnostics_on_stderr() {
 }
 
 #[test]
+fn conversation_preview_returns_bounded_history_without_starting_a_runtime() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, worker) = fake_chat_server("retained answer");
+    init_native(&home, &base_url);
+
+    let turn = xana(&home)
+        .args(["--plain", "-p", "retain this question"])
+        .output()
+        .expect("run retained turn");
+    worker.join().expect("fake provider worker");
+    assert_success(&turn);
+    let session = std::fs::read_dir(home.join("data/sessions"))
+        .expect("durable sessions")
+        .filter_map(Result::ok)
+        .find(|entry| {
+            entry
+                .path()
+                .extension()
+                .is_some_and(|value| value == "jsonl")
+        })
+        .expect("one session")
+        .path()
+        .file_stem()
+        .expect("session id")
+        .to_string_lossy()
+        .into_owned();
+
+    let preview = xana(&home)
+        .args([
+            "conversation",
+            "preview",
+            &session,
+            "--limit",
+            "2",
+            "--json",
+        ])
+        .output()
+        .expect("preview retained Conversation");
+
+    assert_success(&preview);
+    let value: serde_json::Value = serde_json::from_slice(&preview.stdout).unwrap();
+    assert_eq!(value["version"], 1);
+    assert_eq!(value["messages"].as_array().map(Vec::len), Some(2));
+    assert_eq!(value["total"], 2);
+    assert_eq!(value["has_older"], false);
+    assert!(!String::from_utf8_lossy(&preview.stderr).contains("provider"));
+}
+
+#[test]
 fn one_shot_json_is_one_versioned_envelope() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");
@@ -734,6 +784,14 @@ fn one_shot_stream_json_is_ordered_jsonl_ending_in_authoritative_result() {
         assert_eq!(frame["execution_owner"], "native");
         assert!(frame["conversation_id"].is_string());
     }
+    let summary = frames
+        .iter()
+        .find(|frame| frame["type"] == "summary")
+        .expect("one bounded semantic run summary");
+    assert!(summary["payload"]["execution"].is_object());
+    assert!(summary["payload"]["completion"].is_object());
+    assert!(summary["payload"]["prompt_plan"].is_object());
+    assert!(summary["payload"]["usage"].is_array());
     let final_frame = frames.last().expect("result frame");
     assert_eq!(final_frame["type"], "result");
     assert_eq!(final_frame["payload"]["status"], "success");

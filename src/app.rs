@@ -175,18 +175,34 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 )
             }
         }
-        Some(Command::Session(args)) => {
-            if args.command == SessionCommand::New {
+        Some(Command::Session(args)) => match args.command {
+            SessionCommand::New => {
                 ensure_setup(&paths).await?;
                 let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
                 chat::run(&paths, surface, None, false, true, None, None)
                     .await
                     .map(|_| ())
-            } else {
-                let stdout = io::stdout();
-                sessions::run_command(args.command, &paths, &mut stdout.lock())
             }
-        }
+            SessionCommand::Continue => {
+                ensure_setup(&paths).await?;
+                let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
+                chat::run(&paths, surface, None, true, false, None, None)
+                    .await
+                    .map(|_| ())
+            }
+            SessionCommand::Attach { conversation } => {
+                ensure_setup(&paths).await?;
+                let conversation = sessions::resolve_attach_target(&paths, &conversation)?;
+                let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
+                chat::run_attached(&paths, surface, conversation)
+                    .await
+                    .map(|_| ())
+            }
+            command => {
+                let stdout = io::stdout();
+                sessions::run_command(command, &paths, &mut stdout.lock())
+            }
+        },
         Some(Command::Project(args)) => {
             let stdout = io::stdout();
             projects::run_command(args.command, &paths, &mut stdout.lock())

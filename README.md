@@ -126,6 +126,9 @@ for the ownership boundaries.
 | `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
 | `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |
 | `xana conversation list` | List conversations for the current workspace (`session` remains an alias) |
+| `xana conversation preview ID` | Print a bounded, read-only native transcript preview without acquiring control |
+| `xana conversation attach ID` | Open the interactive frontend on one exact idle retained Conversation |
+| `xana conversation continue` | Continue the latest compatible Conversation for this workspace |
 | `xana conversation search QUERY` | Search bounded retained native Conversation text; add `--json` for structured output |
 | `xana conversation branch ID --at POINT` | Preserve a source and create an explicit continuation |
 | `xana serve` | Run an explicit loopback-only foreground host for the current workspace |

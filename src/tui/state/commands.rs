@@ -1064,6 +1064,17 @@ impl TuiState {
                             UpdateEffect::NewConversation
                         }
                     }
+                    (Some("continue"), None, None) => {
+                        if self.busy {
+                            self.status = "Wait for or interrupt the active turn before continuing another Conversation".to_owned();
+                            UpdateEffect::None
+                        } else {
+                            UpdateEffect::ControlCommand {
+                                family: "conversation".to_owned(),
+                                arguments: "continue".to_owned(),
+                            }
+                        }
+                    }
                     _ => {
                         self.status = command_usage(CommandId::Conversation);
                         UpdateEffect::None

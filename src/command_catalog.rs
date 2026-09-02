@@ -202,6 +202,7 @@ impl CommandSpec {
             "presentation.header.show.v1" => "view show",
             "conversation.archive.v1" => "archive",
             "conversation.new.v1" => "new",
+            "conversation.continue.v1" => "continue",
             "conversation.search.v1" => "search",
             "presentation.conversation_list.hide.v1" => "view hide",
             "presentation.conversation_list.show.v1" => "view show",
@@ -1113,6 +1114,23 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         true
     ),
     command!(
+        "conversation.continue.v1",
+        Conversation,
+        "conversation",
+        &["session", "sessions"],
+        "continue",
+        "Continue the latest compatible Conversation",
+        ArgumentSchema::None,
+        Controller,
+        Interactive,
+        None,
+        Control,
+        ALL_SURFACES,
+        true,
+        true,
+        true
+    ),
+    command!(
         "conversation.preview.v1",
         Conversation,
         "conversation",
@@ -1121,10 +1139,10 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         "Preview retained history without acquiring control",
         ArgumentSchema::Required("conversation_id"),
         Observer,
-        Interactive,
+        Any,
         None,
         Inspect,
-        LOCAL_INTERACTIVE,
+        ALL_SURFACES,
         true,
         true,
         true
@@ -1141,7 +1159,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Interactive,
         None,
         Control,
-        TUI_ONLY,
+        ALL_SURFACES,
         true,
         true,
         true
@@ -1764,7 +1782,7 @@ mod tests {
     }
 
     #[test]
-    fn attach_and_preview_are_distinct_and_tui_attach_is_available() {
+    fn attach_and_preview_are_distinct_across_local_surfaces() {
         let preview = find("conversation.preview.v1").unwrap();
         let attach = find("conversation.attach.v1").unwrap();
         assert_eq!(preview.effect, CommandEffect::Inspect);
@@ -1781,10 +1799,13 @@ mod tests {
             surface: CommandSurface::Desktop,
             ..context
         };
-        assert_eq!(
-            attach.availability(desktop).code,
-            AvailabilityCode::UnsupportedSurface
-        );
+        assert!(attach.availability(desktop).enabled);
+        let cli = CommandContext {
+            surface: CommandSurface::Cli,
+            ..context
+        };
+        assert!(preview.availability(cli).enabled);
+        assert!(attach.availability(cli).enabled);
     }
 
     #[test]

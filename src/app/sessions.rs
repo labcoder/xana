@@ -10,7 +10,18 @@ use crate::{
     workspace_host::{ConversationRef, ConversationState, WorkspaceHost},
 };
 use anyhow::{Context, Result};
+use serde::Serialize;
 use std::io::Write;
+
+#[derive(Debug, Serialize)]
+struct ConversationPreview {
+    version: u16,
+    conversation: ConversationRef,
+    start: usize,
+    total: usize,
+    has_older: bool,
+    messages: Vec<crate::message::Message>,
+}
 
 pub(super) fn run_command<W: Write>(
     command: SessionCommand,
@@ -23,11 +34,64 @@ pub(super) fn run_command<W: Write>(
                 "session new must be routed through the interactive application lifecycle"
             )
         }
+        SessionCommand::Continue | SessionCommand::Attach { .. } => {
+            anyhow::bail!(
+                "conversation lifecycle command must be routed through the interactive application"
+            )
+        }
+        SessionCommand::Preview {
+            conversation,
+            limit,
+            json,
+        } => {
+            let workspace = current_workspace()?;
+            let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+            let snapshot = host.snapshot()?;
+            let conversation = resolve_conversation(&snapshot.conversations, Some(&conversation))?;
+            let page = host
+                .conversation_history_page(&conversation, None, limit)?
+                .with_context(|| {
+                    format!(
+                        "{conversation} history is owned by its managed runtime; attach it to resume and inspect vendor-retained history"
+                    )
+                })?;
+            let preview = ConversationPreview {
+                version: 1,
+                conversation,
+                start: page.start,
+                total: page.total,
+                has_older: page.has_older,
+                messages: page.messages,
+            };
+            if json {
+                serde_json::to_writer(&mut *output, &preview)?;
+                writeln!(output)?;
+            } else {
+                writeln!(output, "Conversation: {}", preview.conversation)?;
+                writeln!(
+                    output,
+                    "Messages: {} of {}{}",
+                    preview.messages.len(),
+                    preview.total,
+                    if preview.has_older {
+                        " (older messages omitted)"
+                    } else {
+                        ""
+                    }
+                )?;
+                for message in &preview.messages {
+                    writeln!(
+                        output,
+                        "{}> {}",
+                        role_label(message.role),
+                        message_text(message)
+                    )?;
+                }
+            }
+            Ok(())
+        }
         SessionCommand::List => {
-            let workspace = std::env::current_dir()
-                .context("could not resolve current workspace")?
-                .canonicalize()
-                .context("could not canonicalize current workspace")?;
+            let workspace = current_workspace()?;
             let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
             let snapshot = host.snapshot()?;
             writeln!(output, "workspace: {}", snapshot.workspace.display())?;
@@ -341,4 +405,57 @@ fn resolve_conversation(
             "Conversation selector {selector:?} is ambiguous; use its exact canonical ID"
         ),
     }
+}
+
+pub(super) fn resolve_attach_target(paths: &XanaPaths, selector: &str) -> Result<ConversationRef> {
+    let workspace = current_workspace()?;
+    let host = WorkspaceHost::open(paths.data_dir(), &workspace)?;
+    let snapshot = host.snapshot()?;
+    let conversation = resolve_conversation(&snapshot.conversations, Some(selector))?;
+    let state = snapshot
+        .conversations
+        .iter()
+        .find(|candidate| candidate.conversation == conversation)
+        .map(|candidate| candidate.state)
+        .context("resolved Conversation disappeared from the workspace snapshot")?;
+    if state != ConversationState::Inactive {
+        anyhow::bail!(
+            "Conversation {conversation} is {state}; attach requires an idle retained Conversation"
+        );
+    }
+    Ok(conversation)
+}
+
+fn current_workspace() -> Result<std::path::PathBuf> {
+    std::env::current_dir()
+        .context("could not resolve current workspace")?
+        .canonicalize()
+        .context("could not canonicalize current workspace")
+}
+
+fn role_label(role: crate::message::Role) -> &'static str {
+    match role {
+        crate::message::Role::System => "system",
+        crate::message::Role::User => "you",
+        crate::message::Role::Assistant => "xana",
+        crate::message::Role::Tool => "tool",
+    }
+}
+
+fn message_text(message: &crate::message::Message) -> String {
+    message
+        .content
+        .iter()
+        .map(|block| match block {
+            crate::message::ContentBlock::Text(text) => text.clone(),
+            crate::message::ContentBlock::Image(image) => {
+                format!("[image: {} bytes]", image.byte_len)
+            }
+            crate::message::ContentBlock::ToolCall(call) => {
+                format!("[tool call: {}]", call.name)
+            }
+            crate::message::ContentBlock::ToolResult(result) => result.output.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

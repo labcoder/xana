@@ -1244,6 +1244,24 @@ pub(crate) enum SessionCommand {
     },
     /// Start Xana in a fresh native session or managed thread.
     New,
+    /// Continue the latest compatible Conversation for this workspace and execution owner.
+    Continue,
+    /// Print a bounded read-only preview without acquiring Conversation control.
+    Preview {
+        /// Exact Conversation, native session, or managed thread identifier.
+        conversation: String,
+        /// Maximum number of recent messages to include.
+        #[arg(long, default_value_t = 64, value_parser = parse_conversation_preview_limit)]
+        limit: usize,
+        /// Emit a stable JSON preview receipt.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Start Xana attached to one exact idle retained Conversation.
+    Attach {
+        /// Exact Conversation, native session, or managed thread identifier.
+        conversation: String,
+    },
     /// Print bounded metadata without conversation content.
     Inspect { session_id: SessionId },
     /// Create a new Conversation from one explicit immutable source point.
@@ -1265,6 +1283,17 @@ pub(crate) enum SessionCommand {
         connection: String,
         thread_id: String,
     },
+}
+
+fn parse_conversation_preview_limit(value: &str) -> Result<usize, String> {
+    let limit = value
+        .parse::<usize>()
+        .map_err(|_| "Conversation preview limit must be an integer in 1..=256".to_owned())?;
+    if (1..=256).contains(&limit) {
+        Ok(limit)
+    } else {
+        Err("Conversation preview limit must be in 1..=256".to_owned())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

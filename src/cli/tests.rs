@@ -606,6 +606,42 @@ fn parses_explicit_resume_and_session_inspection() {
         }))
     ));
     assert!(matches!(
+        Cli::try_parse_from(["xana", "conversation", "continue"])
+            .unwrap()
+            .command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::Continue
+        }))
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["xana", "conversation", "attach", &id.to_string()])
+            .unwrap()
+            .command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::Attach { conversation }
+        })) if conversation == id.to_string()
+    ));
+    assert!(matches!(
+        Cli::try_parse_from([
+            "xana",
+            "conversation",
+            "preview",
+            &id.to_string(),
+            "--limit",
+            "32",
+            "--json"
+        ])
+        .unwrap()
+        .command,
+        Some(Command::Session(SessionArgs {
+            command: SessionCommand::Preview {
+                conversation,
+                limit: 32,
+                json: true,
+            }
+        })) if conversation == id.to_string()
+    ));
+    assert!(matches!(
         Cli::try_parse_from([
             "xana",
             "conversation",

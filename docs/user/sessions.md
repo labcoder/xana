@@ -44,6 +44,9 @@ refuses an active or locked handle.
 ```text
 xana conversation list
 xana conversation new
+xana conversation continue
+xana conversation preview CONVERSATION_ID [--limit N] [--json]
+xana conversation attach CONVERSATION_ID
 xana conversation search QUERY [--conversation ID] [--limit N] [--json]
 xana conversation branch CONVERSATION_ID --at ENTRY_ID
 xana conversation branch CONVERSATION_ID --at current
@@ -57,6 +60,20 @@ workspace. It preserves every prior session. Native Xana creates the durable
 session during launch; managed Codex creates its vendor-owned thread on the
 first turn. Use `/conversation new` for the same lifecycle while the full-screen
 frontend is already open.
+
+`xana conversation continue` is the explicit command form of `xana --continue`.
+It selects only the latest compatible Conversation for the current canonical
+workspace and execution owner. `xana conversation attach ID` is stricter: it
+requires one exact retained Conversation in the inactive state, then opens the
+interactive frontend on that identity. Neither command silently takes control
+from another process or transfers a draft between Conversations.
+
+`xana conversation preview ID` prints at most 256 recent committed messages
+without acquiring Conversation control; the default limit is 64. `--json`
+emits a versioned receipt with paging facts and structured messages. Native
+history is available through this command. A managed runtime still owns its
+transcript, so Xana reports that boundary and requires an explicit attach
+instead of manufacturing a local preview.
 
 `xana conversation search` scans canonical retained native history in bounded
 pages. It searches user text, assistant text, and committed tool-result output,
@@ -178,6 +195,11 @@ owner and composes a fresh native session or managed Codex thread with the
 current resolved configuration; it does not erase or translate the previous
 history. An active root must finish or be interrupted first. Managed Codex
 creates the vendor-owned thread lazily on the new session's first turn.
+
+`/conversation continue`, `/conversation preview ID`, and `/conversation attach ID`
+use the same selection and ownership rules as their `xana conversation ...`
+forms. This keeps scripts, the plain terminal, and the full-screen TUI on one
+Conversation lifecycle rather than maintaining frontend-specific semantics.
 
 Use `/espejo [global|project]` to inspect the bounded local workspace through
 attention and execution state rather than transcript order. Espejo can preview a

@@ -105,7 +105,7 @@ Palette actions and slash input use that one registry:
 - `/activity view auto|hide|show`
 - `/attach PATH|--clipboard|list|clear`, `/queue [edit|remove N]`
 - `/clear`, `/compact`, `/composer submit|newline`
-- `/conversation`, `/conversation new`, `/conversation preview ID`,
+- `/conversation`, `/conversation new`, `/conversation continue`, `/conversation preview ID`,
   `/conversation attach ID`, `/conversation archive [ID]`,
   `/conversation search QUERY`, `/conversation view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
@@ -249,6 +249,12 @@ the first turn. An active turn must finish or be interrupted first so this
 command cannot create a competing workspace root. `/clear` remains different:
 it clears the active owner's context rather than creating and navigating to a
 separate session.
+
+`/conversation continue` selects the latest compatible Conversation for this
+workspace. `xana conversation continue` exposes the same lifecycle from the
+shell. `xana conversation preview ID` and `xana conversation attach ID` likewise
+provide the TUI's bounded read-only preview and exact idle attach semantics to
+plain-terminal and scripted users.
 
 `/session` and `/sessions` remain compatibility aliases. New help and
 documentation use Conversation; Run is reserved for one execution attempt.
