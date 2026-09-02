@@ -48,7 +48,7 @@ pub(super) async fn run_auth_command<W: Write>(
     run_connection_command(translated, paths, output, false).await
 }
 
-pub(super) fn model_manager(paths: &XanaPaths) -> Result<ModelManager> {
+pub(crate) fn model_manager(paths: &XanaPaths) -> Result<ModelManager> {
     let registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load connection registry")?;
     Ok(ModelManager::new(
@@ -58,7 +58,7 @@ pub(super) fn model_manager(paths: &XanaPaths) -> Result<ModelManager> {
     ))
 }
 
-pub(super) fn codex_launch(connection: &crate::config::ConnectionConfig) -> CodexLaunchConfig {
+pub(crate) fn codex_launch(connection: &crate::config::ConnectionConfig) -> CodexLaunchConfig {
     CodexLaunchConfig {
         program: connection
             .codex_program

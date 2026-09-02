@@ -3,6 +3,12 @@
 //! GPUI owns form state only. All path resolution, config parsing, live
 //! discovery, secret handling, validation, and durable mutation stay here.
 
+mod actions;
+
+pub use actions::{
+    DesktopConnectionMutationReceipt, DesktopConnectionRemovalPlan, DesktopManagedLogin,
+};
+
 use super::{DesktopError, DesktopErrorCode};
 use crate::{
     config::{ConfigReadiness, PermissionMode, ProviderKind},

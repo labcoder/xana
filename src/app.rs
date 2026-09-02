@@ -27,12 +27,10 @@ mod usage_commands;
 pub(crate) mod vision;
 mod vision_commands;
 
-pub(crate) use connections::{refresh_connection, test_connection};
+pub(crate) use connections::{codex_launch, model_manager, refresh_connection, test_connection};
 
 pub(crate) use chat_contract::{ChatExit, ChatHeader};
-use connections::{
-    codex_launch, model_manager, run_auth_command, run_connection_command, run_model_command,
-};
+use connections::{run_auth_command, run_connection_command, run_model_command};
 #[cfg(test)]
 use recovery::run_reset_with_io;
 use recovery::{run_config_command, run_doctor_command, run_reset_command};

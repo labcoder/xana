@@ -1,6 +1,9 @@
 //! Focused connection and model manager for Desktop settings.
 
-use crate::setup_view::{SetupView, SetupViewEvent};
+use crate::{
+    connection_actions::{ConnectionActions, ConnectionActionsEvent},
+    setup_view::{SetupView, SetupViewEvent},
+};
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
     Subscription, Task, Window, div, prelude::*, px, rems, size,
@@ -31,6 +34,7 @@ pub(crate) struct ConnectionManager {
     selected_model: Option<String>,
     filter: Entity<InputState>,
     setup: Option<Entity<SetupView>>,
+    actions: Option<Entity<ConnectionActions>>,
     receipt: Option<DesktopConnectionOperationReceipt>,
     setup_receipt: Option<String>,
     busy: Option<String>,
@@ -64,6 +68,37 @@ impl ConnectionManager {
                     cx.notify();
                 }
             });
+        let actions = selected_connection
+            .as_deref()
+            .and_then(|selected| {
+                snapshot
+                    .as_ref()
+                    .ok()?
+                    .connections
+                    .iter()
+                    .find(|connection| connection.id == selected)
+                    .cloned()
+            })
+            .map(|connection| {
+                cx.new(|cx| ConnectionActions::new(control.clone(), connection, window, cx))
+            });
+        let mut subscriptions = vec![filter_subscription];
+        if let Some(actions) = &actions {
+            subscriptions.push(cx.subscribe_in(
+                actions,
+                window,
+                |this, _, event: &ConnectionActionsEvent, window, cx| {
+                    if matches!(event, ConnectionActionsEvent::Changed) {
+                        let previous = this.selected_connection.clone();
+                        this.reload();
+                        if this.selected_connection != previous {
+                            this.rebuild_actions(window, cx);
+                        }
+                        cx.notify();
+                    }
+                },
+            ));
+        }
         Self {
             control,
             snapshot,
@@ -71,13 +106,51 @@ impl ConnectionManager {
             selected_model: None,
             filter,
             setup: None,
+            actions,
             receipt: None,
             setup_receipt: None,
             busy: None,
             error: None,
             _task: None,
-            _subscriptions: vec![filter_subscription],
+            _subscriptions: subscriptions,
         }
+    }
+
+    fn rebuild_actions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let connection = self.selected().cloned();
+        self.actions = connection.map(|connection| {
+            let actions =
+                cx.new(|cx| ConnectionActions::new(self.control.clone(), connection, window, cx));
+            let subscription = cx.subscribe_in(
+                &actions,
+                window,
+                |this, _, event: &ConnectionActionsEvent, window, cx| {
+                    if matches!(event, ConnectionActionsEvent::Changed) {
+                        let previous = this.selected_connection.clone();
+                        this.reload();
+                        if this.selected_connection != previous {
+                            this.rebuild_actions(window, cx);
+                        }
+                        cx.notify();
+                    }
+                },
+            );
+            self._subscriptions.push(subscription);
+            actions
+        });
+    }
+
+    fn select_connection(
+        &mut self,
+        connection: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_connection = Some(connection);
+        self.selected_model = None;
+        self.error = None;
+        self.rebuild_actions(window, cx);
+        cx.notify();
     }
 
     fn reload(&mut self) {
@@ -114,7 +187,7 @@ impl ConnectionManager {
         let subscription = cx.subscribe_in(
             &setup,
             window,
-            |this, _, event: &SetupViewEvent, _, cx| match event {
+            |this, _, event: &SetupViewEvent, window, cx| match event {
                 SetupViewEvent::Cancel => {
                     this.setup = None;
                     cx.notify();
@@ -126,6 +199,7 @@ impl ConnectionManager {
                     ));
                     this.setup = None;
                     this.reload();
+                    this.rebuild_actions(window, cx);
                     cx.notify();
                 }
             },
@@ -278,11 +352,8 @@ impl ConnectionManager {
                                         )),
                                 ),
                         )
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.selected_connection = Some(id.clone());
-                            this.selected_model = None;
-                            this.error = None;
-                            cx.notify();
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.select_connection(id.clone(), window, cx);
                         }))
                 }))
                 .into_any_element(),
@@ -302,6 +373,7 @@ impl ConnectionManager {
         v_flex()
             .size_full()
             .min_h_0()
+            .overflow_y_scrollbar()
             .gap(tokens.spacing.md)
             .child(
                 h_flex()
@@ -366,6 +438,16 @@ impl ConnectionManager {
                     .disabled(self.selected_model.is_none() || self.busy.is_some())
                     .on_click(cx.listener(|this, _, _, cx| this.select_model(cx))),
             )
+            .when_some(self.actions.as_ref(), |content, actions| {
+                content.child(
+                    div()
+                        .w_full()
+                        .pt(tokens.spacing.lg)
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(actions.clone()),
+                )
+            })
             .into_any_element()
     }
 
