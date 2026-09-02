@@ -52,6 +52,10 @@ engineering contracts used to change it.
 - [M4 typed command and presentation-capability evidence](development/m4-command-catalog-evidence.md)
   records stable command IDs, authority-filtered cross-surface projections,
   deterministic capability reporting, and presentation fallbacks.
+- [M4 terminal management and semantic-parity evidence](development/m4-terminal-management-evidence.md)
+  records shared lifecycle commands, validated connection transactions,
+  bounded terminal productivity, managed cancellation, localization, and the
+  remaining owner-verification boundary.
 - [M4 rich-content and disclosure evidence](development/m4-rich-content-and-disclosure-evidence.md)
   records deterministic normalization, generic link cards, verified artifact
   ranges, resource inspection, capability separation, and adversarial bounds.
