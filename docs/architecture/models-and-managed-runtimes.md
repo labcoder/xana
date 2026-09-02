@@ -282,10 +282,18 @@ be reused. Cancellation also races process startup, account validation,
 and thread creation; once observed, it prevents the model turn from starting.
 An older app-server that does
 not support the request is closed and yields an attributed failed child with
-the typed remote error, not a claimed successful cancellation. Thread token-usage updates retain thread/turn correlation and map
-to provider-neutral input/output/total observations; missing updates remain
-unknown, spend is never inferred, and the single managed turn count does not
-claim to expose Codex's private upstream request count.
+the typed remote error, not a claimed successful cancellation. Thread
+token-usage updates retain thread/turn correlation and map cumulative input,
+cached input, output, reasoning, total, last-input context occupancy, and
+advertised context-window facts into provider-neutral observations. Missing
+updates remain unknown, spend is never inferred, and the single managed turn
+count does not claim to expose Codex's private upstream request count.
+
+The explicit `xana usage` control-plane query may launch app-server long enough
+to read ChatGPT rate-limit windows. It does not read Codex credentials, poll in
+the background, or treat API-key mode as subscription usage. These account
+facts use the same bounded cache, availability, source, freshness, and reset
+semantics as native-provider observations.
 
 Child approval callbacks pass through the existing child permission broker.
 An effective `deny` policy makes a managed Codex child route unavailable:

@@ -131,15 +131,24 @@ Each `UsageObservationV1` has a stable ID and independently states:
 - scope: request, thread, run, connection, model, account, or context;
 - accounting: a per-request delta or a cumulative snapshot with sequence;
 - period identity and optional reset time;
-- token categories, cost/currency, context occupancy, rate limit, quota, and
-  credits;
+- input, output, cache-read, cache-write, reasoning, and tool token categories;
+- request count, serialized prompt/tool-schema bytes, provider-reported cost,
+  redacted request-affinity evidence, context occupancy, rate limit, quota,
+  and credits;
 - source, authority, freshness, and availability.
 
 The ledger deduplicates observation IDs. For one source/scope/period, a newer
 cumulative snapshot replaces the older snapshot; older or replayed snapshots
 do not inflate totals. Deltas remain additive. A new period remains separate,
-and unavailable or unsupported values are never converted to zero. Live
-provider/account acquisition belongs to the M4-04B adapters, not this model.
+and unavailable or unsupported values are never converted to zero.
+
+`usage_observation` is the runtime-owned acquisition and normalization edge.
+Native provider deltas and managed cumulative snapshots enter the same model.
+Explicit account refresh reads or replaces a bounded per-connection cache;
+ordinary rendering never polls. A failed refresh can return marked-stale facts,
+while cancellation remains control flow rather than a fabricated unavailable
+account value. Raw provider responses, credentials, authorization headers, and
+account identifiers never enter semantic state.
 
 ## Deterministic capability projection
 

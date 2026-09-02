@@ -18,6 +18,9 @@ engineering contracts used to change it.
 - [Logs and crash diagnostics](user/diagnostics.md) explains metadata-only
   structured logs, retention and resource bounds, panic/unclean-exit reports,
   local inspection, and redacted support bundles.
+- [Usage, limits, and model facts](user/usage.md) explains process token
+  counters, provider/account observations, explicit refresh and cache behavior,
+  credential authority, and why unavailable never means zero.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, model-aware input budgets,
   durable native compaction, and instruction boundaries.
@@ -43,6 +46,9 @@ engineering contracts used to change it.
   records rich-content/resource bounds, deterministic usage and attention,
   execution/completion facts, capability distinctions, and snapshot/delta
   compatibility coverage.
+- [M4 provider-usage observation evidence](development/m4-provider-usage-observation-evidence.md)
+  records native and managed normalization, account adapters, credential
+  boundaries, cache/retry/cancellation behavior, and provider fixtures.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,

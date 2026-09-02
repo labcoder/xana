@@ -951,7 +951,7 @@ pub(crate) struct UsageArgs {
     /// Include facts for one exact model (requires --connection).
     #[arg(long, value_name = "MODEL", requires = "connection")]
     pub(crate) model: Option<String>,
-    /// Bypass an expired cache, subject to the bounded refresh interval.
+    /// Request a live account refresh, subject to the bounded refresh interval.
     #[arg(long)]
     pub(crate) refresh: bool,
     /// Emit the stable provider-neutral JSON report.

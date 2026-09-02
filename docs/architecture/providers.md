@@ -76,3 +76,44 @@ no first-class reasoning-effort or reasoning-summary wire mapping. Those model
 options are therefore accepted only for managed Codex selections. Supporting
 them for the OpenAI API requires a future native Responses adapter rather than
 silently dropping the user's requested setting.
+
+## Usage and account observations
+
+Provider execution and account inspection are separate. Native response
+adapters retain only provider-reported input, output, cache-read, cache-write,
+reasoning, tool, total-token, and cost fields. Xana also measures serialized
+prompt and tool-schema byte counts as local resource facts. Request IDs are
+reduced to a bounded BLAKE3 affinity digest before they leave the adapter; raw
+IDs and headers are never retained in frontend state.
+
+`usage_observation` normalizes those per-request deltas alongside managed
+cumulative snapshots. It also owns explicit, bounded account refresh:
+
+```mermaid
+flowchart LR
+    USER["xana usage\noptional --refresh"] --> SERVICE["usage observation service\ncache + timeout + one retry"]
+    SERVICE --> CODEX["Codex app-server\nChatGPT rate-limit windows"]
+    SERVICE --> OR["OpenRouter /key\n/credits only for management key"]
+    SERVICE --> GATED["OpenAI / Anthropic\nmanagement authority required"]
+    SERVICE --> UNSUPPORTED["Ollama / custom endpoint\nunsupported account facts"]
+    CODEX --> FACTS["provider-neutral observations"]
+    OR --> FACTS
+    GATED --> FACTS
+    UNSUPPORTED --> FACTS
+    FACTS --> CACHE["bounded non-secret cache"]
+```
+
+OpenRouter's configured inference key may inspect its own key facts. Xana calls
+the credit endpoint only when that response identifies the credential as a
+management key. Ordinary OpenAI and Anthropic inference keys are never tried
+against organization-management APIs; the current configuration has no
+separate admin-credential slot, so those account facts report permission
+required. Ollama and generic compatible endpoints report unsupported rather
+than zero or unlimited. A Codex ChatGPT account exposes app-server rate-limit
+windows; API-key Codex mode does not pretend those are subscription limits.
+
+Account responses and caches are capped at 256 KiB, observations at 128 per
+refresh, source work at 15 seconds, and retryable failure at one retry. Cache
+freshness defaults to 60 seconds and explicit refreshes within one second reuse
+the cache. There is no background poller. Failures preserve a marked-stale
+cache when available and cannot block conversational generation.

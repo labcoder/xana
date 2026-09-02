@@ -1155,6 +1155,18 @@ and usage observations remain with their existing runtime/session owners or are
 derived rather than being duplicated speculatively. They contain references
 and decisions, never resolved credentials.
 
+Provider and account usage inspection is an explicit control-plane operation.
+Native requests preserve provider-reported token categories and cost plus
+locally measured prompt/tool-schema bytes; managed Codex emits correlated
+cumulative token and context observations. `usage_observation` normalizes these
+facts and official Codex/OpenRouter account responses into the shared semantic
+usage model. Its 256 KiB per-connection cache lives under `cache/usage/`, is
+fresh for 60 seconds by default, and falls back to explicitly stale facts after
+a bounded refresh failure. Ordinary startup and rendering perform no usage
+poll. OpenAI/Anthropic organization facts remain permission-gated until Xana
+has a separately configured management credential; Ollama and generic
+compatible endpoints report account inspection as unsupported.
+
 Configuration migration is an explicit plan/review/apply transaction. The
 read-only plan snapshots the exact config bytes, validates semantic equivalence,
 and classifies each private record as healthy, missing, migratable, invalid, or

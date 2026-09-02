@@ -119,6 +119,7 @@ for the ownership boundaries.
 | `xana settings` | Browse and edit settings in the terminal workspace |
 | `xana connect` | Open the provider-neutral integration hub |
 | `xana model` | Inspect the active model and available catalog |
+| `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
 | `xana session list` | List conversations for the current workspace |
 | `xana session branch ID --at POINT` | Preserve a source and create an explicit continuation |
 | `xana --continue` | Continue the latest compatible conversation |
@@ -151,6 +152,7 @@ The [documentation index](docs/README.md) separates user guides from
 engineering contracts. Useful starting points include:
 
 - [Configuration and provider setup](docs/user/configuration.md)
+- [Usage, limits, and model facts](docs/user/usage.md)
 - [Full-screen terminal UI](docs/user/tui.md)
 - [Plain mode and automation](docs/user/automation.md)
 - [Sessions and recovery](docs/user/sessions.md)

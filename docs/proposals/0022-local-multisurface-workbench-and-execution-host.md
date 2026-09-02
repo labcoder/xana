@@ -34,9 +34,13 @@ content/fallback types, attachments and disclosure receipts, usage accounting,
 activity and attention, approvals, execution facts, completion receipts,
 capability projection, localization codes, and the narrow future voice seam.
 The validated configured resource policy is present in the initial snapshot.
-Runtime producers, provider/account observation adapters, commands, and
-specialized terminal/Desktop projections remain future M4 work, so this
-proposal remains Accepted rather than Implemented.
+Native and managed usage producers now preserve detailed token, context,
+resource-byte, cost, and redacted request-affinity facts. Explicit bounded
+Codex and OpenRouter account adapters normalize rate-limit, quota, and credit
+observations with a non-secret stale-capable cache; unsupported and
+management-credential-gated providers stay explicit. The unified command
+registry and specialized terminal/Desktop projections remain future M4 work,
+so this proposal remains Accepted rather than Implemented.
 
 ## 1. Official local surfaces and authority
 
