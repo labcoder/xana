@@ -27,6 +27,9 @@ engineering contracts used to change it.
 - [M4 typed file and search tool evidence](development/m4-typed-file-tools-evidence.md)
   records schema, permission, durability, adversarial, output-bound, timeout,
   and prompt-resource validation for the native tool baseline.
+- [M4 native web-fetch evidence](development/m4-native-web-fetch-evidence.md)
+  records the exact outbound/HTTP boundary, adversarial loopback fixtures,
+  prompt/schema/resource bounds, and complete local verification gate.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Sessions](user/sessions.md) explains durable history, explicit resume,
