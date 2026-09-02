@@ -141,6 +141,35 @@ hidden—and keeps Espejo and Settings as fixed bottom destinations. Filtering,
 disclosure, focus, and scrolling remain component-owned while lifecycle work
 returns to Xana through typed commands.
 
+Workbench layout is a separate Xana-owned, versioned domain model. It is a
+bounded binary split tree whose leaves are tab stacks containing only trusted
+built-in panel IDs. GPUI resizable groups render that model and report pointer
+resizes back as bounded ratios; they do not become state authority and their
+internal layout representation is never serialized.
+
+```mermaid
+flowchart TD
+    C["Selected Conversation"] --> O["Conversation layout override"]
+    O -->|"missing or invalid"| D["One user default"]
+    D -->|"missing or invalid"| R["Built-in recovery layout"]
+    O --> V["Validate bounds and trusted panel IDs"]
+    D --> V
+    R --> V
+    V --> G["GPUI split and tab projection"]
+    G -->|"resize, tab, dock, close, reopen, maximize"| V
+    V -->|"250 ms latest-generation debounce"| A["Atomic Conversation layout write"]
+```
+
+Layouts have strict depth, node, panel-count, ID, active-tab, and split-ratio
+bounds. Conversation overrides resolve before the single user default and the
+built-in recovery layout. Corrupt or future state cannot block startup. The
+Message panel cannot be closed, and the panel library, reset action, and
+command palette remain outside the mutable tree. Import and export accept only
+bounded, non-symbolic-link `.toml` files containing the version, panel IDs,
+split structure, ratios, active tabs, and maximized panel. Unknown panel IDs
+become inert placeholders; paths, prompts, messages, commands, credentials,
+and artifacts are not representable.
+
 Native GPUI has no WebView, browser DOM, navigation surface, CSP, JavaScript
 bridge, or general renderer IPC. Consequently the WebView threats considered
 during M4 framework selection are absent rather than configured open. External

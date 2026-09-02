@@ -202,9 +202,13 @@ cargo run --locked -p xana-desktop
 Desktop currently provides the M4 native-provider walking skeleton, native
 menus, a searchable command palette, a bounded shortcut set, redacted
 notifications, safe close handling, and one instance per canonical
-`XANA_HOME`. Complete `xana setup` first. Managed-runtime presentation and the
-complete Workbench are added by later M4 tickets. See [using Xana Desktop](docs/user/desktop.md)
-and [Desktop development](docs/contributing/desktop-development.md).
+`XANA_HOME`. Its persistent Project/Conversation sidebar and bounded,
+recoverable Workbench support trusted panels, resizable split layouts, one user
+default, and inert layout sharing. Complete `xana setup` first.
+Managed-runtime presentation and the complete graphical Conversation,
+management, Espejo, and rich-content workflows are added by later M4 tickets.
+See [using Xana Desktop](docs/user/desktop.md) and
+[Desktop development](docs/contributing/desktop-development.md).
 
 Contributors can inspect the provider-free visual foundation and deterministic
 component fixtures without creating configuration:

@@ -3,7 +3,11 @@
 use super::{DesktopError, DesktopErrorCode};
 use crate::{bounded_file, paths::XanaPaths};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, io::Write as _, path::PathBuf};
+use std::{
+    collections::HashSet,
+    io::Write as _,
+    path::{Path, PathBuf},
+};
 
 const LAYOUT_VERSION: u16 = 1;
 const MAX_LAYOUT_BYTES: usize = 128 * 1024;
@@ -159,6 +163,39 @@ impl DesktopWorkbenchLayout {
             ));
         }
         Ok(())
+    }
+
+    /// Encodes only the inert, validated layout contract.
+    pub fn to_inert_toml(&self) -> Result<String, DesktopError> {
+        self.validate()?;
+        toml::to_string_pretty(self).map_err(layout_error)
+    }
+
+    /// Decodes a bounded inert layout without accepting executable state.
+    pub fn from_inert_toml(input: &[u8]) -> Result<Self, DesktopError> {
+        if input.len() > MAX_LAYOUT_BYTES {
+            return Err(layout_error("Workbench layout import exceeds 128 KiB"));
+        }
+        let layout: Self = toml::from_slice(input).map_err(layout_error)?;
+        layout.validate()?;
+        Ok(layout)
+    }
+
+    /// Reads one explicitly selected, non-symbolic-link TOML layout file.
+    pub fn read_inert_file(path: &Path) -> Result<Self, DesktopError> {
+        validate_layout_file_path(path, true)?;
+        let bytes = bounded_file::read(path, MAX_LAYOUT_BYTES).map_err(layout_error)?;
+        Self::from_inert_toml(&bytes)
+    }
+
+    /// Atomically writes one explicitly selected inert TOML layout file.
+    pub fn write_inert_file(&self, path: &Path) -> Result<(), DesktopError> {
+        validate_layout_file_path(path, false)?;
+        let rendered = self.to_inert_toml()?;
+        let mut file = atomic_write_file::AtomicWriteFile::open(path).map_err(layout_error)?;
+        file.write_all(rendered.as_bytes())
+            .and_then(|()| file.commit())
+            .map_err(layout_error)
     }
 
     pub fn resize_split(&mut self, id: &str, ratio_permille: u16) -> Result<(), DesktopError> {
@@ -363,17 +400,11 @@ impl DesktopLayoutStore {
     }
 
     pub(super) fn export(layout: &DesktopWorkbenchLayout) -> Result<String, DesktopError> {
-        layout.validate()?;
-        toml::to_string_pretty(layout).map_err(layout_error)
+        layout.to_inert_toml()
     }
 
     pub(super) fn import(input: &[u8]) -> Result<DesktopWorkbenchLayout, DesktopError> {
-        if input.len() > MAX_LAYOUT_BYTES {
-            return Err(layout_error("Workbench layout import exceeds 128 KiB"));
-        }
-        let layout: DesktopWorkbenchLayout = toml::from_slice(input).map_err(layout_error)?;
-        layout.validate()?;
-        Ok(layout)
+        DesktopWorkbenchLayout::from_inert_toml(input)
     }
 
     fn resolve_default(&self, warning: Option<String>) -> DesktopResolvedLayout {
@@ -684,6 +715,33 @@ fn remove_optional(path: &std::path::Path) -> Result<(), DesktopError> {
     }
 }
 
+fn validate_layout_file_path(path: &Path, must_exist: bool) -> Result<(), DesktopError> {
+    if path.extension().and_then(|value| value.to_str()) != Some("toml") {
+        return Err(layout_error("Workbench layout files must use .toml"));
+    }
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(layout_error(
+                "Workbench layout file cannot be a symbolic link",
+            ));
+        }
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(layout_error("Workbench layout path is not a regular file"));
+        }
+        Ok(_) => {}
+        Err(error) if !must_exist && error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(layout_error(error)),
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| layout_error("Workbench layout path has no parent"))?;
+    let metadata = std::fs::metadata(parent).map_err(layout_error)?;
+    if !metadata.is_dir() {
+        return Err(layout_error("Workbench layout parent is not a directory"));
+    }
+    Ok(())
+}
+
 fn layout_error(error: impl std::fmt::Display) -> DesktopError {
     DesktopError::new(
         DesktopErrorCode::StateInvalid,
@@ -849,5 +907,24 @@ panels = []
 active = 0
 "#;
         assert!(DesktopLayoutStore::import(invalid).is_err());
+    }
+
+    #[test]
+    fn explicit_layout_file_round_trip_is_atomic_and_extension_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("shared-layout.toml");
+        let mut layout = DesktopWorkbenchLayout::recovery();
+        layout.reopen_panel(DesktopPanelId::Summary).unwrap();
+
+        layout.write_inert_file(&path).unwrap();
+        assert_eq!(
+            DesktopWorkbenchLayout::read_inert_file(&path).unwrap(),
+            layout
+        );
+        assert!(
+            layout
+                .write_inert_file(&directory.path().join("layout.exe"))
+                .is_err()
+        );
     }
 }

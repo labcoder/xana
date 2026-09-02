@@ -9,8 +9,8 @@ use crate::{
     projection::ConversationProjection,
 };
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, ParentElement as _, PromptLevel, Render, Role,
-    Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
+    AnyElement, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, PromptLevel,
+    Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
     Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState, ProgressState,
@@ -606,6 +606,132 @@ impl Workbench {
         self.sync_components(window, cx);
     }
 
+    fn export_layout_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let directory = self.native_paths.config_file.parent().map_or_else(
+            || std::path::PathBuf::from("."),
+            std::path::Path::to_path_buf,
+        );
+        let selection = cx.prompt_for_new_path(&directory, Some("xana-workbench-layout.toml"));
+        let layout = self.layout.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match selection.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Could not choose a layout destination: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Layout destination picker stopped: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+            };
+            let written = cx
+                .background_executor()
+                .spawn(async move { layout.write_inert_file(&path).map(|()| path) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                match written {
+                    Ok(path) => this
+                        .projection
+                        .set_activity(format!("Exported inert layout to {}", path.display())),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn import_layout_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Select a Xana Workbench TOML layout".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let path = match selection.await {
+                Ok(Ok(Some(paths))) => match paths.into_iter().next() {
+                    Some(path) => path,
+                    None => return,
+                },
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Could not choose a layout file: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Layout file picker stopped: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+            };
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { DesktopWorkbenchLayout::read_inert_file(&path) })
+                .await;
+            let layout = match loaded {
+                Ok(layout) => layout,
+                Err(error) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection.fail(error.message);
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+            };
+            let panel_names = layout
+                .panels()
+                .into_iter()
+                .map(DesktopPanelId::label)
+                .collect::<Vec<_>>()
+                .join(", ");
+            let confirmation = this.update_in(cx, |_, window, cx| {
+                window.prompt(
+                    PromptLevel::Info,
+                    "Import this Workbench layout?",
+                    Some(&format!(
+                        "Panels: {panel_names}. Only bounded panel IDs, splits, sizes, and visibility will be applied."
+                    )),
+                    &["Import", "Cancel"],
+                    cx,
+                )
+            });
+            let Ok(confirmation) = confirmation else {
+                return;
+            };
+            if confirmation.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this.runtime.save_layout(layout) {
+                    Ok(_) => this
+                        .projection
+                        .set_activity("Importing validated Workbench layout…"),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
     fn render_panel_library(&self, cx: &mut Context<Self>) -> AnyElement {
         let tokens = cx.theme().semantic_tokens();
         let open_panels = self.layout.panels();
@@ -645,7 +771,24 @@ impl Workbench {
             )
             .child(div().flex_1())
             .child(
+                Button::new("import-layout")
+                    .compact()
+                    .label("Import…")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.import_layout_file(window, cx);
+                    })),
+            )
+            .child(
+                Button::new("export-layout")
+                    .compact()
+                    .label("Export…")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.export_layout_file(window, cx);
+                    })),
+            )
+            .child(
                 Button::new("save-layout-default")
+                    .compact()
                     .label("Use as default")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.save_layout_as_default(window, cx);
@@ -653,6 +796,7 @@ impl Workbench {
             )
             .child(
                 Button::new("clear-layout-default")
+                    .compact()
                     .label("Clear default")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.clear_default_layout(window, cx);
@@ -660,6 +804,7 @@ impl Workbench {
             )
             .child(
                 Button::new("reset-conversation-layout")
+                    .compact()
                     .label("Reset")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.reset_layout(window, cx);

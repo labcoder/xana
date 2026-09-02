@@ -52,6 +52,35 @@ confirmation controls are not in this first navigation slice yet. Continue to
 use the root `xana project` and `xana conversation` commands for those actions
 until the graphical controls ship.
 
+## Workbench layouts
+
+The content area is a resizable Workbench. Its default places Conversation
+above Message and Activity to the right. Panel header buttons let you select a
+tab, move the active panel into the first tab stack, dock it at any outer edge,
+maximize or restore it, and close panels that are safe to close. These buttons
+are ordinary focusable controls, so the same actions work with pointer or
+keyboard navigation.
+
+The panel bar reopens Summary, Artifacts, Usage, and Working Set. It also lets
+you reset the selected Conversation, save the current arrangement as the one
+user default, remove that default, or import/export a layout. Resolution is:
+
+1. the selected Conversation's last valid layout;
+2. the one saved user default; then
+3. Xana's built-in recovery layout.
+
+Resize changes are saved atomically after a short debounce. A corrupt,
+unsupported, oversized, or impossible file falls back safely and leaves an
+explanation in Activity. Shared layout files are inert `.toml`: before import,
+Xana previews the bounded panel list and substitutes an unavailable placeholder
+for an unknown future panel. They cannot contain messages, paths, prompts,
+commands, credentials, or executable content.
+
+The Message panel is currently a guaranteed layout anchor while the retained
+`gpui-ai` composer remains inside Conversation. The next M4 Desktop slice
+separates those two views without replacing the retained, virtualized chat or
+its IME-capable composer.
+
 ## Menus, palette, and shortcuts
 
 Desktop uses conventional application, File, Edit, View, Conversation,

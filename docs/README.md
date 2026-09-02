@@ -109,8 +109,8 @@ engineering contracts used to change it.
 - [Full-screen terminal UI](user/tui.md) explains composer presets, portable
   keys, safe paste, follow-ups, command/model controls, and owner-specific
   limitations.
-- [Native Desktop](user/desktop.md) explains source launch, native menus and
-  palette, bounded shortcuts, one-instance behavior, safe close, redacted
+- [Native Desktop](user/desktop.md) explains source launch, Workbench layouts,
+  native menus and palette, bounded shortcuts, one-instance behavior, safe close, redacted
   notifications, status, and trusted external actions.
 - [Local foreground host](user/local-host.md) explains loopback-only serving,
   capability discovery, passive observer attachment, sequence boundaries, and
