@@ -31,6 +31,18 @@ root, loopback endpoint, process ID, and a random 256-bit capability. Payloads
 and queues are bounded, and neither arbitrary commands nor paths cross this
 process boundary.
 
+The runtime also owns a bounded Desktop navigation projection assembled from
+the Project store and each available workspace host. It exposes Projects,
+ungrouped Conversations, workspace availability, running/attention state, and
+opaque stable identities without giving GPUI filesystem or provider authority.
+The full/mini sidebar preference is the only state persisted by the
+presentation adapter. Selecting or creating a Conversation sends a typed
+intent through the same bridge; the current native runtime shuts down cleanly,
+the application composition layer resolves the requested workspace and
+Conversation, and the existing GPUI window receives the next authoritative
+snapshot. A navigation change therefore does not create a second agent loop or
+make the sidebar authoritative.
+
 The runtime publishes an atomic initial
 snapshot before the window opens. A 32-entry command queue and 256-entry update
 queue bound cross-thread work. Replaceable streaming deltas may be dropped
@@ -121,6 +133,13 @@ path converges on one typed dispatcher; commands not implemented in the
 current Workbench remain visible but disabled with a reason. The status bar is
 a bounded projection of host lifecycle, current destination, active Runs,
 approvals, notices, and latest activity.
+
+The Workbench uses `SidebarNav` as a virtualized Project/Conversation tree.
+Project and Conversation labels are display values; every selection is routed
+by a prefixed stable ID. The sidebar remains full or mini—never secretly
+hidden—and keeps Espejo and Settings as fixed bottom destinations. Filtering,
+disclosure, focus, and scrolling remain component-owned while lifecycle work
+returns to Xana through typed commands.
 
 Native GPUI has no WebView, browser DOM, navigation surface, CSP, JavaScript
 bridge, or general renderer IPC. Consequently the WebView threats considered

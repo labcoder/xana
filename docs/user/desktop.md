@@ -14,9 +14,10 @@ cargo run --locked -- setup
 cargo run --locked -p xana-desktop
 ```
 
-The current Desktop slice supports native conversational providers. Managed
-Codex presentation, the complete sidebar and settings workspace, multiple
-windows, and installation as a packaged application remain unavailable.
+The current Desktop slice supports native conversational providers and a
+persistent Project/Conversation sidebar. Managed Codex presentation, complete
+graphical management forms, multiple windows, and installation as a packaged
+application remain unavailable.
 
 `--catalog` opens the provider-free component review surface. `--open
 conversation` and `--open activity` focus a named part of an already-running
@@ -29,6 +30,27 @@ cargo run --locked -p xana-desktop -- --open activity
 
 Launch destinations are a closed list; Xana never accepts a forwarded URL,
 path, prompt, command line, or credential.
+
+## Projects and Conversations
+
+The left sidebar shows user-created Projects with their workspace
+Conversations plus a separate ungrouped Conversations section. Its native
+filter handles labels while retaining stable Xana identities. Selecting a
+Conversation cleanly replaces the runtime attached to the same Desktop window;
+selecting a Project makes its workspace the destination for the sidebar's new
+Conversation action. A new Conversation is ungrouped when no Project is
+selected.
+
+Use the sidebar's collapse control to switch between full and mini modes. That
+presentation choice survives restart. Missing or identity-changed Project
+workspaces remain visible with a status badge instead of disappearing. Espejo
+and Settings remain fixed at the bottom; their complete workspaces arrive in
+later M4 slices.
+
+Rename, archive/unarchive, move/ungroup, branch-at-point, and destructive
+confirmation controls are not in this first navigation slice yet. Continue to
+use the root `xana project` and `xana conversation` commands for those actions
+until the graphical controls ship.
 
 ## Menus, palette, and shortcuts
 

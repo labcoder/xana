@@ -14,10 +14,11 @@ use gpui::{
 };
 use gpui_ai::prelude::{
     Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState, ProgressState,
-    PromptBar, PromptBarEvent, StatusBadge, StatusTone, Suggestion,
+    PromptBar, PromptBarEvent, SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavPresentation,
+    SidebarSection, StatusBadge, StatusTone, Suggestion,
 };
 use gpui_component::{
-    ActiveTheme as _, Disableable as _,
+    ActiveTheme as _, Disableable as _, IconName,
     button::{Button, ButtonVariants as _},
     h_flex, v_flex,
 };
@@ -25,8 +26,9 @@ use std::{fs, sync::Arc, time::Duration};
 use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopConversationState,
     DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
-    DesktopNavigationTarget, DesktopRoundBudgetSuspension, DesktopUpdate, LastWindowChoice,
-    LastWindowEffect, NotificationDestination, NotificationPlanner, last_window_effect,
+    DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopRoundBudgetSuspension,
+    DesktopSidebarMode, DesktopUpdate, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
+    NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -39,14 +41,18 @@ pub(crate) struct Workbench {
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
     projection: ConversationProjection,
+    navigation_snapshot: DesktopNavigationSnapshot,
+    selected_project: Option<String>,
     navigation: DesktopNavigationTarget,
     chat: Entity<Chat>,
+    sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
     palette_open: bool,
     shutdown_pending: bool,
     close_prompt_open: bool,
     notifications: NotificationPlanner,
     _chat_subscription: Subscription,
+    _sidebar_subscription: Subscription,
     _command_subscription: Subscription,
     _runtime_driver: Task<()>,
 }
@@ -61,6 +67,11 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> Self {
         let projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
+        let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
+        let selected_project = navigation_snapshot
+            .selected_conversation
+            .as_deref()
+            .and_then(|id| project_for_conversation(&navigation_snapshot, id));
         let navigation = navigation_for_intent(initial_intent);
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
@@ -85,6 +96,21 @@ impl Workbench {
             search.set_items(commands::palette_items(projection.is_running()), window, cx);
         });
 
+        let sidebar = cx.new(|cx| {
+            SidebarNav::new("xana-sidebar", window, cx)
+                .with_presentation(SidebarNavPresentation::Embedded)
+        });
+        sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
+            if let Some(selected) = navigation_snapshot.selected_conversation.as_deref() {
+                sidebar.set_active_item(conversation_item_id(selected), cx);
+            }
+            sidebar.set_collapsed(
+                navigation_snapshot.sidebar_mode == DesktopSidebarMode::Mini,
+                cx,
+            );
+        });
+
         let chat_subscription =
             cx.subscribe_in(&chat, window, |this, _, event: &ChatEvent, window, cx| {
                 this.handle_chat_event(event, window, cx);
@@ -94,6 +120,13 @@ impl Workbench {
             window,
             |this, _, event: &CommandSearchEvent, window, cx| {
                 this.handle_command_search_event(event, window, cx);
+            },
+        );
+        let sidebar_subscription = cx.subscribe_in(
+            &sidebar,
+            window,
+            |this, _, event: &SidebarNavEvent, window, cx| {
+                this.handle_sidebar_event(event, window, cx);
             },
         );
         let runtime_driver = cx.spawn_in(window, async move |this, cx| {
@@ -122,14 +155,18 @@ impl Workbench {
             instance,
             native_paths,
             projection,
+            navigation_snapshot,
+            selected_project,
             navigation,
             chat,
+            sidebar,
             command_search,
             palette_open: false,
             shutdown_pending: false,
             close_prompt_open: false,
             notifications: NotificationPlanner::new(),
             _chat_subscription: chat_subscription,
+            _sidebar_subscription: sidebar_subscription,
             _command_subscription: command_subscription,
             _runtime_driver: runtime_driver,
         }
@@ -186,6 +223,59 @@ impl Workbench {
         }
     }
 
+    fn handle_sidebar_event(
+        &mut self,
+        event: &SidebarNavEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            SidebarNavEvent::CollapsedChanged { collapsed, .. } => {
+                let mode = if *collapsed {
+                    DesktopSidebarMode::Mini
+                } else {
+                    DesktopSidebarMode::Full
+                };
+                self.navigation_snapshot.sidebar_mode = mode;
+                if let Err(error) = self.runtime.set_sidebar_mode(mode) {
+                    self.projection.fail(error.message);
+                }
+            }
+            SidebarNavEvent::Selected { item_id, .. } => {
+                let item_id = item_id.as_ref();
+                if let Some(conversation_id) = item_id.strip_prefix("conversation:") {
+                    if self.navigation_snapshot.selected_conversation.as_deref()
+                        != Some(conversation_id)
+                    {
+                        self.selected_project =
+                            project_for_conversation(&self.navigation_snapshot, conversation_id);
+                        match self.runtime.switch_conversation(conversation_id) {
+                            Ok(_) => self.projection.set_activity(format!(
+                                "Opening {}",
+                                conversation_title(&self.navigation_snapshot, conversation_id)
+                            )),
+                            Err(error) => self.projection.fail(error.message),
+                        }
+                    }
+                } else if let Some(project_id) = item_id.strip_prefix("project:") {
+                    self.selected_project = Some(project_id.to_owned());
+                    self.projection.set_activity(format!(
+                        "Project {} selected for the next Conversation",
+                        project_title(&self.navigation_snapshot, project_id)
+                    ));
+                }
+            }
+            SidebarNavEvent::NewTaskRequested { .. } => {
+                match self.runtime.new_conversation(self.selected_project.clone()) {
+                    Ok(_) => self.projection.set_activity("Creating a new Conversation…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
+            SidebarNavEvent::QueryChanged { .. } => {}
+        }
+        self.sync_components(window, cx);
+    }
+
     /// Returns false once the backend has stopped and there is nothing left to poll.
     fn drain_runtime_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let mut changed = self.drain_launch_intents(window);
@@ -204,7 +294,18 @@ impl Workbench {
             changed = true;
             self.notify_for_update(&update, window, cx);
             match update {
-                DesktopUpdate::Snapshot(snapshot) => self.projection.replace_snapshot(&snapshot),
+                DesktopUpdate::Snapshot(snapshot) => {
+                    self.navigation_snapshot = snapshot.navigation.clone();
+                    self.selected_project = self
+                        .navigation_snapshot
+                        .selected_conversation
+                        .as_deref()
+                        .and_then(|id| project_for_conversation(&self.navigation_snapshot, id));
+                    self.projection.replace_snapshot(&snapshot);
+                }
+                DesktopUpdate::Navigation(navigation) => {
+                    self.navigation_snapshot = navigation;
+                }
                 DesktopUpdate::Observation(observation) => {
                     if !self.projection.apply(observation)
                         && let Err(error) = self.runtime.request_snapshot()
@@ -350,6 +451,16 @@ impl Workbench {
             search.set_items(
                 commands::palette_items(self.projection.is_running()),
                 window,
+                cx,
+            );
+        });
+        self.sidebar.update(cx, |sidebar, cx| {
+            sidebar.set_sections(sidebar_sections(&self.navigation_snapshot), cx);
+            if let Some(selected) = self.navigation_snapshot.selected_conversation.as_deref() {
+                sidebar.set_active_item(conversation_item_id(selected), cx);
+            }
+            sidebar.set_collapsed(
+                self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Mini,
                 cx,
             );
         });
@@ -602,6 +713,53 @@ impl Render for Workbench {
             .when_some(round_controls, |activity, controls| {
                 activity.child(controls)
             });
+        let sidebar_is_full = self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Full;
+        let sidebar_footer = v_flex()
+            .w_full()
+            .flex_none()
+            .gap(tokens.spacing.xs)
+            .p(tokens.spacing.sm)
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                Button::new("open-espejo")
+                    .label(if sidebar_is_full { "Espejo" } else { "E" })
+                    .w_full()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.navigation = DesktopNavigationTarget::Espejo;
+                        this.projection.set_activity("Espejo opened");
+                        cx.notify();
+                    })),
+            )
+            .child(
+                Button::new("open-settings")
+                    .label(if sidebar_is_full { "Settings" } else { "S" })
+                    .w_full()
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.navigation = DesktopNavigationTarget::Settings;
+                        this.projection.set_activity("Settings opened");
+                        cx.notify();
+                    })),
+            );
+        let sidebar = v_flex()
+            .h_full()
+            .flex_none()
+            .w(if sidebar_is_full {
+                rems(20.)
+            } else {
+                rems(4.5)
+            })
+            .border_r_1()
+            .border_color(cx.theme().border)
+            .bg(cx.theme().sidebar)
+            .child(
+                div()
+                    .id("xana-sidebar-navigation")
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.sidebar.clone()),
+            )
+            .child(sidebar_footer);
         let status_bar = h_flex()
             .w_full()
             .flex_none()
@@ -629,6 +787,7 @@ impl Render for Workbench {
         let main = h_flex()
             .size_full()
             .min_h_0()
+            .child(sidebar)
             .child(
                 v_flex()
                     .size_full()
@@ -711,6 +870,78 @@ impl Render for Workbench {
                 )
             })
     }
+}
+
+fn sidebar_sections(snapshot: &DesktopNavigationSnapshot) -> Vec<SidebarSection> {
+    let projects = snapshot.projects.iter().map(|project| {
+        let status = match project.workspace_status {
+            DesktopWorkspaceStatus::Available if project.archived => Some("Archived"),
+            DesktopWorkspaceStatus::Available => None,
+            DesktopWorkspaceStatus::Missing => Some("Missing"),
+            DesktopWorkspaceStatus::ChangedIdentity => Some("Changed"),
+        };
+        let mut item = SidebarNavItem::new(project_item_id(&project.id), project.name.clone())
+            .icon(IconName::Folder)
+            .children(project.conversations.iter().map(conversation_item));
+        if let Some(status) = status {
+            item = item.badge(status);
+        }
+        item
+    });
+    let mut sections = vec![SidebarSection::new("projects", "Projects").items(projects)];
+    sections.push(
+        SidebarSection::new("ungrouped", "Conversations")
+            .items(snapshot.ungrouped.iter().map(conversation_item)),
+    );
+    sections
+}
+
+fn conversation_item(conversation: &xana::desktop::DesktopConversationNode) -> SidebarNavItem {
+    let badge = if conversation.needs_attention {
+        "Needs you"
+    } else {
+        conversation.state.as_str()
+    };
+    SidebarNavItem::new(
+        conversation_item_id(&conversation.id),
+        conversation.title.clone(),
+    )
+    .icon(IconName::SquareTerminal)
+    .badge(badge)
+}
+
+fn conversation_item_id(id: &str) -> String {
+    format!("conversation:{id}")
+}
+
+fn project_item_id(id: &str) -> String {
+    format!("project:{id}")
+}
+
+fn project_for_conversation(snapshot: &DesktopNavigationSnapshot, id: &str) -> Option<String> {
+    snapshot.projects.iter().find_map(|project| {
+        project
+            .conversations
+            .iter()
+            .any(|conversation| conversation.id == id)
+            .then(|| project.id.clone())
+    })
+}
+
+fn conversation_title(snapshot: &DesktopNavigationSnapshot, id: &str) -> String {
+    snapshot
+        .conversation(id)
+        .map(|conversation| conversation.title.clone())
+        .unwrap_or_else(|| "Conversation".to_owned())
+}
+
+fn project_title(snapshot: &DesktopNavigationSnapshot, id: &str) -> String {
+    snapshot
+        .projects
+        .iter()
+        .find(|project| project.id == id)
+        .map(|project| project.name.clone())
+        .unwrap_or_else(|| "Project".to_owned())
 }
 
 fn navigation_for_intent(intent: DesktopLaunchIntent) -> DesktopNavigationTarget {
