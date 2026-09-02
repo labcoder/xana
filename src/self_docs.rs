@@ -210,6 +210,14 @@ static FOCUSED_SERVICE_TOPICS: &[&str] = &[
     "routes",
     "artifacts",
 ];
+static WORKSPACE_TOOL_TOPICS: &[&str] = &[
+    "tools",
+    "files",
+    "search",
+    "commands",
+    "permissions",
+    "troubleshooting",
+];
 static PRINCIPLES_TOPICS: &[&str] = &["principles", "safety", "architecture"];
 static PROPOSAL_TOPICS: &[&str] = &["proposal", "future"];
 
@@ -438,6 +446,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: TUI_TOPICS,
         body: include_str!("../docs/user/tui.md"),
+    },
+    BundledDoc {
+        id: "user.workspace-tools",
+        title: "Workspace file, search, and command tools",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: WORKSPACE_TOOL_TOPICS,
+        body: include_str!("../docs/user/workspace-tools.md"),
     },
     BundledDoc {
         id: "proposal.media",

@@ -725,6 +725,10 @@ Without the override, Xana uses platform application directories:
 `cmd` where appropriate. Program and arguments are passed separately. Xana
 does not classify shell text or claim OS containment. `permission_mode` and
 rules govern Xana's runtime authorization; see [Permissions](permissions.md).
+Each invocation has a 30-second default timeout that the agent may narrow or
+raise to the immutable 120-second ceiling. That ceiling and the typed file,
+search, and output resource bounds are not user-configurable; see
+[Workspace tools](workspace-tools.md).
 
 ## Deliberate limits
 

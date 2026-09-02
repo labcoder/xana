@@ -18,9 +18,10 @@ Authorization remains an invocation-time permission-broker decision and is
 never implied by discovery.
 
 The base production snapshot currently exposes `read_file`, `list_files`,
-`edit_file`, `run_command`, `read_document`, and `xana_docs` in deterministic
-order. Adding or removing a capability requires a new agent composition; a
-model's schema does not mutate during a native turn.
+`find_files`, `grep_files`, `write_file`, `edit_file`, `run_command`,
+`read_document`, and `xana_docs` in deterministic order. Adding or removing a
+capability requires a new agent composition; a model's schema does not mutate
+during a native turn.
 
 Profile-exposed `image.generate` routes add one `generate_image` tool. Planning
 resolves an exact route, recipient identity, and prompt data class. Execution

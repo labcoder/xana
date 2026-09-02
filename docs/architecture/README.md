@@ -629,8 +629,9 @@ before intent performs no effect; an intent without result means the external
 outcome is unknown.
 
 Built-in tool contract version starts at 1. `read_file`, `list_files`,
-`read_document`, and `xana_docs` declare `ReplaySafety::Safe`; `edit_file` and
-`run_command` declare `Never`.
+`find_files`, `grep_files`, `read_document`, and `xana_docs` declare
+`ReplaySafety::Safe`; `write_file`, `edit_file`, and `run_command` declare
+`Never`.
 Recovery never infers safety from a tool name or effect class: an exact
 invocation is eligible only when saved and current declarations are both
 `Safe`, the installed name/version still matches, replanning produces the same
@@ -650,36 +651,61 @@ transient. Large output uses an immutable artifact; bounded inline JSON,
 artifact references, and context id/version pairs are the only authoritative
 named values. No heap, process, channel, socket, or open file is recovery
 state. These guarantees cover process crashes at flushed record boundaries,
-not power loss, filesystem transactions, effect idempotency, containment, or
-`fsync`. Unknown `Never` outcomes may require manual reconciliation.
+not power loss, general filesystem transactions, effect idempotency, or
+containment. `write_file` overwrite and `edit_file` stage, sync, and atomically
+rename one replacement on the target filesystem; create may leave a partial
+new file after an I/O failure and no operation claims multi-file atomicity.
+Unknown `Never` outcomes may require manual reconciliation.
 
 ## Tool boundary
 
-Xana exposes six tools through a capability-resolved, provider-neutral
+Xana exposes nine tools through a capability-resolved, provider-neutral
 registry:
 
-- `read_file` reads bounded UTF-8 content with an optional inclusive line
-  range.
+- `read_file` reads bounded UTF-8 content with either an optional inclusive
+  line range or deterministic byte paging with an exact continuation offset.
 - `list_files` returns a bounded, sorted, non-recursive directory listing.
-- `edit_file` replaces exactly one match in an existing bounded UTF-8 file.
+- `find_files` performs bounded, sorted, gitignore-aware recursive path
+  discovery without following symlinks.
+- `grep_files` searches bounded UTF-8 files in stable path/line order with a
+  literal query or bounded Rust regular expression and explicit skip and
+  truncation facts.
+- `write_file` explicitly creates an absent UTF-8 file or atomically replaces
+  an existing regular file while preserving its permissions.
+- `edit_file` atomically applies one or more exact, unique, non-overlapping
+  replacements against the original bounded UTF-8 bytes.
 - `run_command` executes one command string through a configured shell in an
   existing directory inside the launch workspace after runtime authorization.
   Relative paths are preferred; an absolute cwd is accepted only when its
   canonical target remains inside that workspace. It returns status plus
-  independently bounded stdout and stderr.
+  independently bounded stdout and stderr, and an immutable per-call timeout
+  ceiling stops an owned process that runs too long.
 - `read_document` performs one bounded workspace read and extracts bounded
   UTF-8 text or CSV-as-Markdown without executing or fetching content.
 - `xana_docs` lists and reads Xana's curated, version-matched documentation by
   logical id.
 
-File and listing tool paths are relative to Xana's launch workspace. A command
-cwd may also use an absolute spelling whose canonical target remains inside
-that workspace. Execution revalidates
-the planned canonical path and filesystem identity; file tools also verify the
-opened handle before reading or writing. This rejects ordinary replacement or
-symlink-retargeting races between permission planning and execution. Reads and
-resulting edits are capped at 64 KiB; directory listings are capped at 256
-entries and 64 KiB of output.
+Listing, discovery, and search roots are relative to Xana's launch workspace.
+`read_file`, `write_file`, and `edit_file` additionally support one exact
+absolute external file through `ExternalPath` review; that authority never
+becomes recursive discovery. A command cwd may use an absolute spelling only
+when its canonical target remains inside the workspace. Execution revalidates
+the planned canonical path and filesystem identity; open reads verify the
+opened handle, while creates and replacements bind the canonical parent and
+the target's planned presence/identity. This rejects ordinary replacement or
+symlink-retargeting races between permission planning and execution without
+claiming OS containment.
+
+Reads and resulting edits are capped at 64 KiB; writes accept at most 256 KiB.
+Directory listings are capped at 256 entries and 64 KiB of output. Shared
+recursive discovery caps depth at 32, selected results at 1,000, visited
+entries at 50,000, encoded output at 64 KiB, and elapsed walking at two
+seconds. It follows no symlink, ignores user-global Git rules, and applies the
+workspace and nested repository ignore rules. Grep additionally caps a file
+at 2 MiB, total scanned bytes at 16 MiB, matches at 1,000, query bytes at
+1,024, and regex program/DFA construction. Binary, invalid UTF-8, oversized,
+changed, and failed paths are counted. Truncated discovery/search has no
+unstable cursor or hidden full result; callers narrow the next request.
 
 The registry caches each validated, versioned definition beside its
 implementation and reports effect class separately from replay safety. It is
@@ -696,8 +722,10 @@ may validate metadata but performs no write, process, network, or external
 effect.
 
 `run_command` is `Execute` plus `ReplaySafety::Never`; its exact program argv,
-command, shell, and canonical cwd exist before authorization and spawn. Stdout
-and stderr are drained concurrently after their independent 32 KiB retention
+command, shell, canonical cwd, and bounded timeout exist before authorization
+and spawn. The default timeout is 30 seconds and the immutable ceiling is 120
+seconds. Timeout or owner cancellation drops a kill-on-drop child. Stdout and
+stderr are drained concurrently after their independent 32 KiB retention
 limits, so child output cannot force unbounded capture memory or deadlock on a
 full pipe. Shell selection resolves once at the application edge: macOS/Linux support POSIX
 `sh -lc`, while Windows supports PowerShell, Git Bash, and `cmd` through
@@ -720,8 +748,9 @@ invocation ids, tool/effect, final arguments, scope, policy outcome, optional
 controller decision, and effective decision. The runtime commits the fact as a
 non-conversation session record before forwarding its audit event. Neither policy, metadata, workspace path
 checks, nor authorization provides process containment. Tools run
-asynchronously with the Xana process's ordinary host access, and `edit_file`
-does not claim atomic or crash-safe writes.
+asynchronously with the Xana process's ordinary host access. Atomic
+single-file replacement prevents a partially rewritten visible target; it is
+not a sandbox, multi-file transaction, or universal power-loss promise.
 
 ## CLI, configuration, and initialization
 

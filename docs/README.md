@@ -64,6 +64,9 @@ engineering contracts used to change it.
   the repository-private transport.
 - [Operation recovery](user/operations.md) explains read-only recovery plans,
   explicit reconciliation, replay safety, and unknown effect outcomes.
+- [Workspace file, search, and command tools](user/workspace-tools.md) explains
+  bounded discovery, grep, paged reads, explicit creation, atomic multi-edit,
+  command timeouts, exact external-path review, and troubleshooting.
 - [Child orchestration](user/orchestration.md) explains exact native routes,
   runtime-owned children, active/offline inspection, cancellation and timeout
   semantics, attributed lifecycle, bounded reports, and current limits.

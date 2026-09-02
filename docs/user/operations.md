@@ -51,6 +51,9 @@ Current built-ins use this matrix:
 |---|---|---|
 | `read_file` | `Safe` | eligible for one explicit, reauthorized replay |
 | `list_files` | `Safe` | eligible for one explicit, reauthorized replay |
+| `find_files` | `Safe` | eligible for one explicit, reauthorized replay |
+| `grep_files` | `Safe` | eligible for one explicit, reauthorized replay |
+| `write_file` | `Never` | record interruption; never repeat automatically |
 | `edit_file` | `Never` | record interruption; never repeat automatically |
 | `run_command` | `Never` | record interruption; never repeat automatically |
 | `read_document` | `Safe` | eligible for one explicit, reauthorized replay |
