@@ -70,14 +70,22 @@ Conversation while retaining the prior one.
 
 Preview and attach are also distinct. Preview reads bounded retained history
 without acquiring control. Attach/resume acquires controller authority for the
-composer. The current TUI supports explicit `/conversation preview ID`; the
-same-surface attach command is discoverable but reports its current limitation
-until Conversation switching lands. Selecting a normal Conversation row will
-become attach/resume; preview will remain explicit.
+composer. The TUI supports explicit `/conversation preview ID` and
+`/conversation attach ID`. In the Conversation picker, Enter performs the
+eligible attach/resume action and Space performs read-only preview. Attach is
+refused without changing the current target when the source is busy or queued,
+the target has another controller, or its frozen execution owner cannot be
+reconstructed safely.
 
 User-facing Conversation states are `Attached here`, `Running`, `Needs input`,
 `Idle`, `Preview only`, and `Archived`. Internal runtime ownership terms are not
 instructions users must interpret.
+
+`/espejo [global|project]` is currently a TUI-only presentation command. It
+opens the bounded current-workspace attention perspective; it does not claim
+remote supervision or scheduled work. Plain and Desktop projections report the
+surface limitation through the same command catalog rather than inventing a
+different action.
 
 ## Presentation fallback
 

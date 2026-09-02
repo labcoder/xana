@@ -67,6 +67,8 @@ engineering contracts used to change it.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,
   bounded compaction, immutable artifacts, inspection, corruption handling,
   and backup limits.
+- [Espejo](user/espejo.md) explains the bounded current-workspace attention
+  perspective, its evidence limits, and terminal navigation.
 - [Projects](user/projects.md) explains optional local project identity,
   lifecycle, Ungrouped conversations, membership, and continuation review.
 - [Agent Skills](user/skills.md) explains standards-compatible discovery,

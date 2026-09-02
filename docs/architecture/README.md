@@ -996,6 +996,23 @@ owner and re-enters the application composition boundary with `NewNative` or
 `NewManaged`, preserving the prior session and current resolved configuration
 without translating history. The workspace root gate prevents the action while
 a root turn is active.
+The Conversation picker separates ownership from inspection: Enter requests an
+exact idle attach/resume, Space opens a read-only preview, and
+`/conversation attach ID` names the same attach operation directly. Before a
+TUI owner is rebuilt, the update model rejects active source Runs, queued source
+input, and active, controlled, observable, unavailable, missing, or execution-
+owner-incompatible targets. Frontend-local drafts retain composer cursor and
+selection, staged image references, selected vision route, and queued input by
+exact `ConversationRef`; history and execution authority remain canonical in
+their existing owners.
+
+`tui::espejo` is a full-screen Ratatui projection over the bounded workspace-host
+snapshot and current frontend observations. It classifies at most 512 rows into
+Needs-you, in-motion, blocked, failed, or idle state, preserves `Ungrouped` in
+Project scope, and exposes host collision, current Run/queue/approval, observed
+tool/child/artifact Activity, and usage facts. Missing performance and completion
+receipt facts remain visibly unavailable. The current global scope is explicitly
+local to one workspace, and no empty scheduler or remote capability is inferred.
 One idempotent terminal lifecycle owner restores raw mode, alternate screen,
 cursor, mouse capture, and bracketed paste after normal exit, input EOF,
 transport error, cancellation, panic unwind, or partial initialization.

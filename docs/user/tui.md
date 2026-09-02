@@ -89,12 +89,14 @@ Palette actions and slash input use that one registry:
 - `/attach WORKSPACE_RELATIVE_PATH`, `/queue [edit|remove N]`
 - `/clear`, `/compact`, `/composer submit|newline`
 - `/conversation`, `/conversation new`, `/conversation preview ID`,
-  `/conversation archive [ID]`, `/conversation view hide|show`
+  `/conversation attach ID`, `/conversation archive [ID]`,
+  `/conversation view hide|show`
 - `/project [SUBCOMMAND ...]`, `/profile [SUBCOMMAND ...]`, `/skill [SUBCOMMAND ...]`, `/plugin [SUBCOMMAND ...]`
 - `/mcp [SUBCOMMAND ...]`, `/external-agent [SUBCOMMAND ...]`, `/image [SUBCOMMAND ...]`
 - `/setup [quick|full|connection|permissions-shell|profiles-routes|appearance]`
 - `/settings [overview|appearance|connections|profiles|permissions|execution|diagnostics|integrations|advanced]`
 - `/usage`, `/capabilities`
+- `/espejo [global|project]`
 - `/doctor`
 
 Up/Down changes the selected palette or picker item, Enter activates it, and
@@ -177,7 +179,12 @@ application. See [Rich terminal content and artifacts](rich-content.md).
 ## Conversation navigation
 
 `/conversation` opens a searchable, keyboard-complete picker backed by the bounded
-workspace-host snapshot and displays each exact session or managed-thread ID.
+workspace-host snapshot and displays each exact native or managed Conversation ID.
+Enter attaches to an eligible idle Conversation; Space previews it without
+changing the execution owner. `/conversation attach ID` performs the same exact
+attach action without the picker. An active source Run, queued source input, a
+target controlled by another process, an unavailable target, or an execution-owner
+mismatch leaves the current attachment unchanged and reports the recovery action.
 On wide terminals `/conversation view show` and `/conversation view hide` persist the
 panel state for this workspace; clicking the visible panel title also hides
 it. A hidden panel returns all of its columns to the conversation. After
@@ -196,10 +203,22 @@ separate session.
 
 `/session` and `/sessions` remain compatibility aliases. New help and
 documentation use Conversation; Run is reserved for one execution attempt.
-`/conversation preview ID` is read-only and does not acquire control. The
-separate attach/resume semantic action remains disabled until same-surface
-controller switching is implemented, so preview cannot silently become an
-ownership transition.
+`/conversation preview ID` is read-only and does not acquire control. Preview
+mode is labeled in both the row and composer status; submission remains disabled
+until the user returns to the attached Conversation or explicitly attaches the
+previewed one.
+
+Unsent composer text, cursor and selection, staged images, selected vision route,
+and queued follow-ups remain keyed to their exact Conversation while the TUI
+switches execution owners. Xana saves the source draft before rebuilding the
+owner and restores only the destination draft; it never carries unsent input
+between Conversations or translates history between native and managed owners.
+The state is frontend-local and process-bounded, not durable Conversation history.
+
+`/espejo` opens the full-screen, terminal-native work and attention perspective.
+Use `/espejo project` to limit it to the selected Conversation's Project, including
+`Ungrouped` as a real scope. See [Espejo](espejo.md) for its evidence limits,
+navigation, and accessibility contract.
 
 Session rows show the optional local project name or `Ungrouped`. Project,
 profile, skill, and plugin commands are deliberately executed outside

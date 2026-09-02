@@ -131,20 +131,27 @@ time. Older native sessions do not durably retain their historical model, so
 Xana says `not retained` instead of guessing. Managed rows retain connection
 and opaque thread identity but no transcript or reliable recency.
 
-Selecting an inactive native row opens the newest page of its committed
-transcript read-only. A page contains at most 128 messages; reaching the older
-edge requests the preceding page and preserves the visible scroll anchor. The
-session journal scan retains entry ancestry and byte offsets, then reads only
-the selected messages into the frontend. At most 512 projected messages remain
-in the TUI cache.
+Pressing Space on an inactive native row opens the newest page of its committed
+transcript read-only. Pressing Enter attaches to an eligible inactive row and
+rebuilds the execution owner around that exact Conversation. A page contains at
+most 128 messages; reaching the older edge requests the preceding page and
+preserves the visible scroll anchor. The session journal scan retains entry
+ancestry and byte offsets, then reads only the selected messages into the
+frontend. At most 512 projected messages remain in the TUI cache.
 
-Selecting a managed row explains that Codex still owns the transcript. This is
-view focus only: it does not transfer controller ownership, cancel the active
-root, change the model, or send a draft. Incoming completion/error state for
-the runtime conversation remains visible as a text indicator. A draft may be
-edited while viewing another transcript, but submission is refused and the
-draft retained until the runtime conversation is selected or the user exits
-and uses exact `--resume SESSION_ID`.
+Previewing a managed row explains that Codex still owns the transcript. Preview
+does not transfer controller ownership, cancel the active root, change the
+model, or send a draft. Incoming completion/error state for the attached
+Conversation remains visible as a text indicator. Enter or
+`/conversation attach ID` may attach an eligible inactive managed handle through
+its frozen Profile; Xana does not copy the provider-owned transcript.
+
+The TUI isolates unsent text, cursor/selection, staged images, selected vision
+route, and queued input by exact Conversation. An attach saves the source state
+and restores only the destination state. If the source has an active Run or
+queued input, or the destination is active, controlled, observable, unavailable,
+missing, or owned by an incompatible execution adapter, the attach is refused
+without changing the current target. Preview remains available when safe.
 
 `/conversation view show` and `/conversation view hide` persist the default wide rail
 state in a version-1 workspace/frontend preference beneath
@@ -162,6 +169,11 @@ owner and composes a fresh native session or managed Codex thread with the
 current resolved configuration; it does not erase or translate the previous
 history. An active root must finish or be interrupted first. Managed Codex
 creates the vendor-owned thread lazily on the new session's first turn.
+
+Use `/espejo [global|project]` to inspect the bounded local workspace through
+attention and execution state rather than transcript order. Espejo can preview a
+selected Conversation with Enter but does not acknowledge unrelated attention.
+See [Espejo](espejo.md).
 
 ## Storage
 
