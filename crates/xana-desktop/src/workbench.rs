@@ -33,9 +33,9 @@ use gpui_component::{
 use std::{collections::HashSet, fs, sync::Arc, time::Duration};
 use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopCommandReceipt,
-    DesktopConversationState, DesktopDockPlacement, DesktopEvent, DesktopHostEvent,
-    DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode, DesktopNativePaths,
-    DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
+    DesktopControlPlane, DesktopConversationState, DesktopDockPlacement, DesktopEvent,
+    DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
+    DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
     DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
     DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
     DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
@@ -94,6 +94,7 @@ pub(crate) struct Workbench {
 impl Workbench {
     pub(crate) fn new(
         runtime: DesktopClient,
+        control: DesktopControlPlane,
         instance: DesktopInstanceLease,
         native_paths: DesktopNativePaths,
         initial_intent: DesktopLaunchIntent,
@@ -151,8 +152,9 @@ impl Workbench {
                 .with_presentation(SidebarNavPresentation::Embedded)
         });
         let navigation_input = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
-        let settings_view =
-            cx.new(|cx| SettingsView::new(settings_snapshot.clone(), None, None, window, cx));
+        let settings_view = cx.new(|cx| {
+            SettingsView::new(control, settings_snapshot.clone(), None, None, window, cx)
+        });
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
             if let Some(selected) = navigation_snapshot.selected_conversation.as_deref() {

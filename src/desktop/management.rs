@@ -264,6 +264,19 @@ pub struct DesktopConnectionSnapshot {
     pub connections: Vec<DesktopConnection>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopConnectionOperationReceipt {
+    pub semantic_code: String,
+    pub connection: String,
+    pub usable: Option<bool>,
+    pub reachability: Option<String>,
+    pub credential: Option<DesktopCredentialState>,
+    pub managed_account: Option<String>,
+    pub discovered_model_count: usize,
+    pub recovery: Option<String>,
+    pub failure: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct DesktopControlPlane {
     paths: XanaPaths,
@@ -384,6 +397,52 @@ impl DesktopControlPlane {
             backup_created: false,
             requires_new_conversation: true,
         })
+    }
+
+    pub async fn test_connection(
+        &self,
+        connection: &str,
+    ) -> Result<DesktopConnectionOperationReceipt, DesktopError> {
+        crate::app::test_connection(&self.paths, connection)
+            .await
+            .map(|(receipt, _)| DesktopConnectionOperationReceipt {
+                semantic_code: receipt.semantic_code.to_owned(),
+                connection: receipt.connection,
+                usable: Some(receipt.usable),
+                reachability: Some(reachability(receipt.reachability)),
+                credential: Some(match receipt.credential {
+                    CredentialState::Available => DesktopCredentialState::Available,
+                    CredentialState::Missing => DesktopCredentialState::Missing,
+                    CredentialState::Inaccessible => DesktopCredentialState::Inaccessible,
+                    CredentialState::NotRequired => DesktopCredentialState::NotRequired,
+                    CredentialState::ManagedExternally => DesktopCredentialState::ManagedExternally,
+                }),
+                managed_account: Some(account_state(&receipt.account)),
+                discovered_model_count: receipt.discovered_model_count,
+                recovery: Some(recovery(receipt.recovery)),
+                failure: receipt.failure.map(bounded),
+            })
+            .map_err(control_error)
+    }
+
+    pub async fn refresh_connection(
+        &self,
+        connection: &str,
+    ) -> Result<DesktopConnectionOperationReceipt, DesktopError> {
+        crate::app::refresh_connection(&self.paths, connection)
+            .await
+            .map(|(receipt, count)| DesktopConnectionOperationReceipt {
+                semantic_code: receipt.semantic_code.to_owned(),
+                connection: receipt.connection,
+                usable: None,
+                reachability: None,
+                credential: None,
+                managed_account: None,
+                discovered_model_count: count,
+                recovery: None,
+                failure: None,
+            })
+            .map_err(control_error)
     }
 }
 

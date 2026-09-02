@@ -509,7 +509,7 @@ fn permission_choice(mode: crate::config::PermissionMode) -> PermissionChoice {
     }
 }
 
-async fn test_connection(
+pub(crate) async fn test_connection(
     paths: &XanaPaths,
     id: &str,
 ) -> Result<(
@@ -810,12 +810,10 @@ fn wire_name<T: Serialize>(value: &T) -> String {
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
-async fn refresh_models<W: Write>(
+pub(crate) async fn refresh_connection(
     paths: &XanaPaths,
     id: &str,
-    output: &mut W,
-    json: bool,
-) -> Result<()> {
+) -> Result<(ConnectionReceipt, usize)> {
     let manager = model_manager(paths)?;
     let connection = manager.connection(id)?;
     let models = if connection.kind == ProviderKind::Codex {
@@ -827,17 +825,28 @@ async fn refresh_models<W: Write>(
     } else {
         manager.refresh_native(id).await?
     };
+    let count = models.len();
+    Ok((
+        action_receipt(
+            id,
+            "connection.catalog_refresh.completed.v1",
+            ConnectionEffect::CatalogRefreshed,
+        ),
+        count,
+    ))
+}
+
+async fn refresh_models<W: Write>(
+    paths: &XanaPaths,
+    id: &str,
+    output: &mut W,
+    json: bool,
+) -> Result<()> {
+    let (receipt, model_count) = refresh_connection(paths, id).await?;
     if json {
-        write_json(
-            output,
-            &action_receipt(
-                id,
-                "connection.catalog_refresh.completed.v1",
-                ConnectionEffect::CatalogRefreshed,
-            ),
-        )?;
+        write_json(output, &receipt)?;
     } else {
-        writeln!(output, "cached {} model(s) for {id}", models.len())?;
+        writeln!(output, "cached {model_count} model(s) for {id}")?;
     }
     Ok(())
 }

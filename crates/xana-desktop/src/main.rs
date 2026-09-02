@@ -3,10 +3,12 @@
 mod catalog;
 mod commands;
 mod component_inventory;
+mod connection_manager;
 mod design_system;
 mod localization;
 mod projection;
 mod settings_view;
+mod setup_view;
 mod shell;
 mod workbench;
 
@@ -65,6 +67,7 @@ fn main() -> ExitCode {
                             let workbench = cx.new(|cx| {
                                 Workbench::new(
                                     workbench.runtime,
+                                    workbench.control,
                                     workbench.instance,
                                     workbench.native_paths,
                                     workbench.initial_intent,
@@ -76,13 +79,15 @@ fn main() -> ExitCode {
                         }
                         LaunchSurface::Launcher(launcher) => {
                             window.set_window_title(APPLICATION_NAME);
-                            let shell = cx.new(|_| {
+                            let shell = cx.new(|cx| {
                                 DesktopShell::new(
                                     launcher.launch,
                                     launcher.instance,
                                     launcher.native_paths,
                                     launcher.catalog,
                                     launcher.initial_intent,
+                                    window,
+                                    cx,
                                 )
                             });
                             cx.new(|cx| Root::new(shell, window, cx).bg(cx.theme().background))
@@ -128,6 +133,7 @@ struct LauncherLaunch {
 
 struct WorkbenchLaunch {
     runtime: DesktopClient,
+    control: xana::desktop::DesktopControlPlane,
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
     initial_intent: DesktopLaunchIntent,
@@ -179,9 +185,11 @@ fn prepare_surface(
             initial_intent,
         }))));
     }
+    let control = launch.control_plane()?;
     let runtime = DesktopClient::launch(launch)?;
     Ok(Some(LaunchSurface::Workbench(Box::new(WorkbenchLaunch {
         runtime,
+        control,
         instance,
         native_paths,
         initial_intent,

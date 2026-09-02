@@ -1,7 +1,9 @@
 //! Retained, native presentation state for Xana Desktop settings.
 //!
 //! The view owns only navigation, search, selection, and focus. All catalog,
-//! draft, validation, and persistence truth remains behind `DesktopClient`.
+//! draft, validation, and persistence truth remains behind typed Rust clients.
+
+use crate::connection_manager::{ConnectionManager, ConnectionManagerEvent};
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, Role,
@@ -17,9 +19,10 @@ use gpui_component::{
     v_flex,
 };
 use xana::desktop::{
-    DesktopSettingEffect, DesktopSettingEntry, DesktopSettingSource, DesktopSettingTarget,
-    DesktopSettingsBackup, DesktopSettingsDraftId, DesktopSettingsDraftSnapshot,
-    DesktopSettingsOwner, DesktopSettingsReceipt, DesktopSettingsSection, DesktopSettingsSnapshot,
+    DesktopControlPlane, DesktopSettingEffect, DesktopSettingEntry, DesktopSettingSource,
+    DesktopSettingTarget, DesktopSettingsBackup, DesktopSettingsDraftId,
+    DesktopSettingsDraftSnapshot, DesktopSettingsOwner, DesktopSettingsReceipt,
+    DesktopSettingsSection, DesktopSettingsSnapshot,
 };
 
 const WIDE_WINDOW_PX: f32 = 1_180.;
@@ -60,6 +63,7 @@ pub(crate) enum SettingsViewEvent {
 }
 
 pub(crate) struct SettingsView {
+    control: DesktopControlPlane,
     snapshot: DesktopSettingsSnapshot,
     draft: Option<DesktopSettingsDraftSnapshot>,
     receipt: Option<DesktopSettingsReceipt>,
@@ -71,11 +75,13 @@ pub(crate) struct SettingsView {
     review_open: bool,
     busy_label: Option<String>,
     error: Option<String>,
+    focused_manager: Option<Entity<ConnectionManager>>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
     pub(crate) fn new(
+        control: DesktopControlPlane,
         snapshot: DesktopSettingsSnapshot,
         draft: Option<DesktopSettingsDraftSnapshot>,
         receipt: Option<DesktopSettingsReceipt>,
@@ -117,6 +123,7 @@ impl SettingsView {
             ),
         ];
         Self {
+            control,
             snapshot: draft
                 .as_ref()
                 .map_or_else(|| snapshot.clone(), |draft| draft.preview.clone()),
@@ -130,8 +137,34 @@ impl SettingsView {
             review_open: false,
             busy_label: None,
             error: None,
+            focused_manager: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    fn open_focused_manager(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if action != "connections.manage" {
+            self.error = Some(format!(
+                "The {action} focused workflow is scheduled in the next M4-19 manager slice."
+            ));
+            cx.notify();
+            return;
+        }
+        let manager = cx.new(|cx| ConnectionManager::new(self.control.clone(), window, cx));
+        let subscription = cx.subscribe_in(
+            &manager,
+            window,
+            |this, _, event: &ConnectionManagerEvent, _, cx| {
+                if matches!(event, ConnectionManagerEvent::Close) {
+                    this.focused_manager = None;
+                    cx.notify();
+                }
+            },
+        );
+        self._subscriptions.push(subscription);
+        self.focused_manager = Some(manager);
+        self.error = None;
+        cx.notify();
     }
 
     pub(crate) fn set_state(
@@ -471,7 +504,16 @@ impl SettingsView {
                     panel.child(inspector_fact("Default", default.display.clone(), cx))
                 })
                 .when_some(entry.focused_action.as_ref(), |panel, action| {
-                    panel.child(inspector_fact("Managed by", action.clone(), cx))
+                    let action_for_click = action.clone();
+                    panel
+                        .child(inspector_fact("Managed by", action.clone(), cx))
+                        .child(
+                            Button::new(format!("settings-open-manager-{action}"))
+                                .label("Open focused manager")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.open_focused_manager(&action_for_click, window, cx);
+                                })),
+                        )
                 })
                 .child(self.render_control(entry, cx))
                 .child(
@@ -955,6 +997,9 @@ impl EventEmitter<SettingsViewEvent> for SettingsView {}
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(manager) = &self.focused_manager {
+            return manager.clone().into_any_element();
+        }
         let width = f32::from(window.viewport_size().width);
         let compact = width < MEDIUM_WINDOW_PX;
         let wide = width >= WIDE_WINDOW_PX;
@@ -1023,6 +1068,7 @@ impl Render for SettingsView {
             .when_some(self.render_review_dialog(cx), |view, dialog| {
                 view.child(dialog)
             })
+            .into_any_element()
     }
 }
 

@@ -27,6 +27,8 @@ mod usage_commands;
 pub(crate) mod vision;
 mod vision_commands;
 
+pub(crate) use connections::{refresh_connection, test_connection};
+
 pub(crate) use chat_contract::{ChatExit, ChatHeader};
 use connections::{
     codex_launch, model_manager, run_auth_command, run_connection_command, run_model_command,

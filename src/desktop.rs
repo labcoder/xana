@@ -20,10 +20,10 @@ pub use layout::{
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use management::{
-    DesktopConnection, DesktopConnectionSnapshot, DesktopControlPlane, DesktopCredentialInput,
-    DesktopCredentialState, DesktopExecutionKind, DesktopModelOption, DesktopPermissionMode,
-    DesktopProviderKind, DesktopSecret, DesktopSetupDraft, DesktopSetupMode, DesktopSetupReceipt,
-    DesktopSetupSnapshot,
+    DesktopConnection, DesktopConnectionOperationReceipt, DesktopConnectionSnapshot,
+    DesktopControlPlane, DesktopCredentialInput, DesktopCredentialState, DesktopExecutionKind,
+    DesktopModelOption, DesktopPermissionMode, DesktopProviderKind, DesktopSecret,
+    DesktopSetupDraft, DesktopSetupMode, DesktopSetupReceipt, DesktopSetupSnapshot,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
