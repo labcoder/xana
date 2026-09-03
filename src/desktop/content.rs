@@ -15,9 +15,10 @@ use crate::{
     message::{Message, Role},
     resource::{ResourceKindV1, ResourcePolicyV1, ResourceRefV1, ResourceValidationV1},
 };
-use std::{collections::HashMap, fmt, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 const MAX_PUBLIC_TEXT_BYTES: usize = 256 * 1024;
+const COMPILED_CAPABILITY_OBSERVED_AT_UNIX_MILLIS: u64 = 0;
 
 /// Presentation-safe conversation message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -419,7 +420,10 @@ fn project_part(part: ContentPartV1, policy: &ResourcePolicyV1) -> DesktopConten
 }
 
 fn project_resource(resource: ResourceRefV1, policy: &ResourcePolicyV1) -> DesktopResource {
-    let observed_at_unix_millis = observed_at_unix_millis();
+    // Presentation support is a timeless fact of the pinned Desktop build, not
+    // a live probe. A wall-clock timestamp would make identical snapshots
+    // project differently and falsely imply expiring evidence.
+    let observed_at_unix_millis = COMPILED_CAPABILITY_OBSERVED_AT_UNIX_MILLIS;
     let capabilities = match project_resource_capabilities(
         &resource,
         &ResourceCapabilityContextV1 {
@@ -588,14 +592,6 @@ fn project_resource_kind(kind: &ResourceKindV1) -> DesktopResourceKind {
     }
 }
 
-fn observed_at_unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 fn bounded_text(mut value: String, limit: usize) -> String {
     if value.len() <= limit {
         return value;
@@ -664,6 +660,36 @@ mod tests {
             .unwrap();
         assert_eq!(preview.bytes.as_ref(), bytes);
         assert_eq!(preview.width, 1);
+    }
+
+    #[test]
+    fn compiled_resource_capabilities_project_deterministically() {
+        let directory = TempDir::new().unwrap();
+        let store = ArtifactStore::new(directory.path().to_owned());
+        let bytes = tiny_png();
+        let (artifact, _) = store.put(&bytes, "image/png", PrincipalId::new()).unwrap();
+        let message = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Image(ImageRef {
+                artifact,
+                media_type: "image/png".to_owned(),
+                byte_len: bytes.len() as u64,
+                width: Some(1),
+                height: Some(1),
+            })],
+        };
+
+        let first = project_message("same".to_owned(), &message, &ResourcePolicyV1::default());
+        let second = project_message("same".to_owned(), &message, &ResourcePolicyV1::default());
+
+        assert_eq!(first, second);
+        let DesktopContentValue::Resource(resource) = &first.content[0].value else {
+            panic!("expected resource")
+        };
+        assert!(resource.capabilities.iter().all(|fact| {
+            fact.observed_at_unix_millis == COMPILED_CAPABILITY_OBSERVED_AT_UNIX_MILLIS
+                && fact.max_age_millis.is_none()
+        }));
     }
 
     fn tiny_png() -> Vec<u8> {
