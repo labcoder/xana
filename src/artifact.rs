@@ -155,6 +155,160 @@ impl ArtifactStore {
         ))
     }
 
+    /// Streams one regular source file into the immutable store without using
+    /// the source-size limit as an in-memory allocation.
+    ///
+    /// The source identity and length are checked before and after the copy.
+    /// Publication remains create-only and content-addressed; a failed or raced
+    /// copy removes only its own locked staging file.
+    pub(crate) fn put_file_bounded(
+        &self,
+        source_path: &Path,
+        media_type: &str,
+        owner: PrincipalId,
+        max_bytes: usize,
+    ) -> Result<(ArtifactRecord, bool), ArtifactError> {
+        if max_bytes == 0 || max_bytes > MAX_RESOURCE_SOURCE_BYTES {
+            return Err(ArtifactError::InvalidLimit {
+                value: max_bytes,
+                ceiling: MAX_RESOURCE_SOURCE_BYTES,
+            });
+        }
+        if media_type.trim().is_empty() {
+            return Err(ArtifactError::InvalidMediaType);
+        }
+        let source_metadata =
+            fs::symlink_metadata(source_path).map_err(|source| ArtifactError::Io {
+                path: source_path.to_owned(),
+                source,
+            })?;
+        if source_metadata.file_type().is_symlink() || !source_metadata.file_type().is_file() {
+            return Err(ArtifactError::NotRegular {
+                path: source_path.to_owned(),
+            });
+        }
+        let declared_len = source_metadata.len();
+        if declared_len > max_bytes as u64 {
+            return Err(ArtifactError::TooLarge {
+                actual: usize::try_from(declared_len).unwrap_or(usize::MAX),
+                limit: max_bytes,
+            });
+        }
+
+        let mut input = fs::File::open(source_path).map_err(|source| ArtifactError::Io {
+            path: source_path.to_owned(),
+            source,
+        })?;
+        let source_identity = artifact_file_identity(&input, source_path)?;
+        if input
+            .metadata()
+            .map_err(|source| ArtifactError::Io {
+                path: source_path.to_owned(),
+                source,
+            })?
+            .len()
+            != declared_len
+        {
+            return Err(ArtifactError::ChangedDuringRead {
+                path: source_path.to_owned(),
+            });
+        }
+
+        fs::create_dir_all(&self.root).map_err(|source| ArtifactError::Io {
+            path: self.root.clone(),
+            source,
+        })?;
+        let temp_path = self.root.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let mut temp = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp_path)
+                .map_err(|source| ArtifactError::Io {
+                    path: temp_path.clone(),
+                    source,
+                })?;
+            temp.try_lock_exclusive()
+                .map_err(|source| ArtifactError::Io {
+                    path: temp_path.clone(),
+                    source,
+                })?;
+
+            let mut actual = 0_u64;
+            let mut hasher = blake3::Hasher::new();
+            let mut chunk = [0_u8; 16 * 1024];
+            loop {
+                let read = input.read(&mut chunk).map_err(|source| ArtifactError::Io {
+                    path: source_path.to_owned(),
+                    source,
+                })?;
+                if read == 0 {
+                    break;
+                }
+                actual = actual
+                    .checked_add(read as u64)
+                    .ok_or(ArtifactError::ArithmeticOverflow("artifact byte count"))?;
+                if actual > max_bytes as u64 {
+                    return Err(ArtifactError::TooLarge {
+                        actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                        limit: max_bytes,
+                    });
+                }
+                hasher.update(&chunk[..read]);
+                temp.write_all(&chunk[..read])
+                    .map_err(|source| ArtifactError::Io {
+                        path: temp_path.clone(),
+                        source,
+                    })?;
+            }
+            temp.flush().map_err(|source| ArtifactError::Io {
+                path: temp_path.clone(),
+                source,
+            })?;
+            if actual != declared_len || artifact_path_identity(source_path)? != source_identity {
+                return Err(ArtifactError::ChangedDuringRead {
+                    path: source_path.to_owned(),
+                });
+            }
+
+            let content_hash = ContentHash(hasher.finalize().to_hex().to_string());
+            let final_path = self.path_for(&content_hash);
+            drop(temp);
+            let was_created = match fs::hard_link(&temp_path, &final_path) {
+                Ok(()) => true,
+                Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {
+                    self.verify_path(
+                        &final_path,
+                        &content_hash,
+                        usize::try_from(actual).unwrap_or(usize::MAX),
+                        max_bytes,
+                    )?;
+                    false
+                }
+                Err(source) => {
+                    return Err(ArtifactError::Io {
+                        path: final_path,
+                        source,
+                    });
+                }
+            };
+            Ok((
+                ArtifactRecord {
+                    reference: ArtifactRef {
+                        id: ArtifactId::new(),
+                        content_hash,
+                    },
+                    media_type: media_type.to_owned(),
+                    byte_len: actual,
+                    owner,
+                },
+                was_created,
+            ))
+        })();
+        let _ = fs::remove_file(&temp_path);
+        result
+    }
+
     pub(crate) fn read_bounded(
         &self,
         artifact: &ArtifactRecord,

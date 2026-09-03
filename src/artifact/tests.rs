@@ -201,6 +201,33 @@ fn resource_publication_accepts_only_explicit_limits_below_the_ceiling() {
 }
 
 #[test]
+fn file_publication_streams_content_and_reuses_verified_identity() {
+    let directory = tempdir().unwrap();
+    let store = ArtifactStore::new(directory.path().join("store"));
+    let source = directory.path().join("source.bin");
+    let bytes = vec![0x5a; 128 * 1024 + 7];
+    fs::write(&source, &bytes).unwrap();
+    let owner = PrincipalId::new();
+
+    let (first, created) = store
+        .put_file_bounded(&source, "application/octet-stream", owner, bytes.len())
+        .unwrap();
+    let (second, created_again) = store
+        .put_file_bounded(&source, "application/octet-stream", owner, bytes.len())
+        .unwrap();
+
+    assert!(created);
+    assert!(!created_again);
+    assert_eq!(first.byte_len, bytes.len() as u64);
+    assert_eq!(first.reference.content_hash, second.reference.content_hash);
+    assert_eq!(store.read_bounded(&first, bytes.len()).unwrap(), bytes,);
+    assert!(matches!(
+        store.put_file_bounded(&source, "application/octet-stream", owner, bytes.len() - 1,),
+        Err(ArtifactError::TooLarge { .. })
+    ));
+}
+
+#[test]
 fn verified_ranges_are_bounded_and_hash_the_complete_artifact() {
     let directory = tempdir().unwrap();
     let store = ArtifactStore::new(directory.path().to_owned());

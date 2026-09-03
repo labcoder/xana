@@ -135,6 +135,36 @@ fn ingestor_classifies_non_image_media_and_keeps_only_a_display_basename() {
 }
 
 #[test]
+fn ingestion_streams_sources_larger_than_the_in_memory_probe_limit() {
+    use std::io::{Seek as _, SeekFrom, Write as _};
+
+    let workspace = tempdir().unwrap();
+    let source = workspace.path().join("large.webm");
+    let policy = ResourcePolicyV1::default();
+    let source_len = policy.max_in_memory_buffer_bytes + 1;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&source)
+        .unwrap();
+    file.write_all(&[0x1a, 0x45, 0xdf, 0xa3]).unwrap();
+    file.seek(SeekFrom::Start(source_len - 1)).unwrap();
+    file.write_all(&[0]).unwrap();
+    drop(file);
+    let artifacts = tempdir().unwrap();
+    let ingestor =
+        ResourceIngestor::new(ArtifactStore::new(artifacts.path().to_owned()), policy).unwrap();
+
+    let staged = ingestor
+        .ingest_path(workspace.path(), "large.webm", PrincipalId::new())
+        .unwrap();
+
+    assert_eq!(staged.resource.kind, ResourceKindV1::Video);
+    assert_eq!(staged.resource.artifact.byte_len, source_len);
+    assert_eq!(staged.resource.validation, ResourceValidationV1::Accepted);
+}
+
+#[test]
 fn external_resource_requires_the_explicit_approved_ingestion_path() {
     let workspace = tempdir().unwrap();
     let external = tempdir().unwrap();

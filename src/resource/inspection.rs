@@ -13,8 +13,7 @@ use crate::artifact::{ArtifactError, ArtifactRecord, ArtifactStore};
 use crate::identity::PrincipalId;
 use std::{
     error::Error,
-    fmt, fs,
-    io::Read,
+    fmt,
     path::{Path, PathBuf},
 };
 
@@ -92,34 +91,14 @@ impl ResourceIngestor {
         source_path: String,
         owner: PrincipalId,
     ) -> Result<IngestedResource, ResourceIngestError> {
-        let limit = usize::try_from(
-            self.inspector
-                .policy
-                .max_total_source_bytes
-                .min(self.inspector.policy.max_in_memory_buffer_bytes),
-        )
-        .unwrap_or(MAX_RESOURCE_SOURCE_BYTES)
-        .min(MAX_RESOURCE_SOURCE_BYTES);
-        let mut file = fs::File::open(&canonical)?;
-        let mut bytes = Vec::with_capacity(
-            usize::try_from(file.metadata()?.len())
-                .unwrap_or(limit)
-                .min(limit),
-        );
-        file.by_ref()
-            .take((limit as u64).saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > limit {
-            return Err(ResourceIngestError::TooLarge {
-                actual: bytes.len(),
-                limit,
-            });
-        }
+        let limit = usize::try_from(self.inspector.policy.max_total_source_bytes)
+            .unwrap_or(MAX_RESOURCE_SOURCE_BYTES)
+            .min(MAX_RESOURCE_SOURCE_BYTES);
         let declared = declared_media_type(&canonical);
         let (artifact, _) = self
             .inspector
             .store
-            .put_bounded(&bytes, declared, owner, limit)?;
+            .put_file_bounded(&canonical, declared, owner, limit)?;
         let resource = self.inspector.inspect(&artifact)?;
         let source_label = canonical
             .file_name()
