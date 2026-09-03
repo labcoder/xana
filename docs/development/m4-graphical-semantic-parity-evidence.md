@@ -1,6 +1,7 @@
 # M4 graphical semantic-parity evidence
 
-> Ticket: M4-22  
+> Ticket: M4-22
+>
 > Status: Implementation complete; owner and cross-platform verification pending
 
 ## Delivered contract
@@ -17,6 +18,7 @@ not command identity, permission, effect, result, or error meaning.
 | Advanced integrations | Existing terminal domain commands and deterministic capability facts | Status and containment view; lifecycle mutations remain in typed terminal flows |
 | Artifacts and rich content | Runtime-owned immutable artifacts, disclosure policy, and capabilities | Sanitized rich rendering, reverified bounded static-raster previews, and typed fallbacks |
 | External effects | Runtime-owned typed adapters | No direct process, network, provider HTTP, credential-store, or arbitrary-path authority |
+| Co-running surfaces | Foreground-host discovery and Conversation controller reducer | Desktop attaches to a compatible owner, acquires only an unclaimed controller, and otherwise remains an observer |
 
 The Desktop command palette has an explicit exposure for every command in its
 catalog. Context-bound commands name the exact control that can invoke them.
@@ -55,6 +57,13 @@ and deterministic offline Workbench fixtures. The dependency gate verifies that
 CLI/TUI do not resolve GPUI, the Desktop direct-dependency set is reviewed, one
 coordinated GPUI source family resolves, and presentation source has no direct
 process, network, provider-HTTP, or credential-store authority.
+
+Real loopback fixtures additionally prove attached Desktop command routing and
+that an incumbent terminal controller is not displaced. A paused Desktop
+projection fixture proves active runtime work completes without waiting on the
+renderer, then converges through deferred critical updates or snapshot resync.
+Settings-manager and native-path control work runs on the GPUI background
+executor rather than the foreground presentation executor.
 
 ## Intentional surface differences
 

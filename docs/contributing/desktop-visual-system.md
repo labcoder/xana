@@ -1,6 +1,7 @@
 # Desktop visual system and component ownership
 
-> Audience: Contributors and coding agents  
+> Audience: Contributors and coding agents
+>
 > Authority: Repository policy
 
 Xana owns the semantic meaning and restrained, warm character of its native

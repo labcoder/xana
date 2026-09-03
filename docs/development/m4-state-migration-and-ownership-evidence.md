@@ -1,7 +1,9 @@
 # M4 state migration and ownership evidence
 
-> Audience: Xana maintainers  
-> Authority: Development evidence  
+> Audience: Xana maintainers
+>
+> Authority: Development evidence
+>
 > Scope: M4-07A
 
 This record explains the implemented migration and collision boundary. Current

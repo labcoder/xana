@@ -191,9 +191,10 @@ cargo build --locked
 cargo run -- setup
 ```
 
-The native Desktop is developed in the same Cargo workspace and embeds the
-matching Xana runtime; it never discovers or launches a `xana` executable from
-`PATH`:
+The native Desktop is developed in the same Cargo workspace and includes the
+matching Xana runtime. It owns that embedded runtime when the workspace is
+unclaimed, or attaches to a compatible live foreground Xana host; it never
+discovers or launches a `xana` executable from `PATH`:
 
 ```bash
 cargo run --locked -p xana-desktop
@@ -223,6 +224,10 @@ available alongside a global/Project Espejo command center. Complete graphical
 rich-content rendering includes sanitized Markdown, selectable code and diff
 content, safe links, bounded static image previews, and typed fallbacks for
 formats without a reviewed native adapter.
+When a compatible CLI/TUI foreground host already owns the selected workspace,
+Desktop joins it as a local client instead of creating a second writer. It
+requests only an unclaimed controller lease and otherwise opens as an observer;
+takeover remains explicit in the terminal host flow.
 See [using Xana Desktop](docs/user/desktop.md) and
 [Desktop development](docs/contributing/desktop-development.md).
 

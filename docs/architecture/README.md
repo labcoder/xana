@@ -118,10 +118,11 @@ execution owner, child summaries, artifact-backed image references, and a
 versioned semantic snapshot under explicit message-count and encoded-size
 limits. The semantic snapshot freezes the validated configured resource policy
 and provides bounded content, resource, usage, activity, attention, approval,
-execution-fact, capability, disclosure, and completion families. Most runtime
-producers and specialized renderers still use the legacy projection while M4
-migrates them incrementally; an absent semantic fact does not imply a false
-capability or outcome. See [Frontend semantic protocol](frontend-semantics.md).
+execution-fact, capability, disclosure, and completion families. Current native,
+managed, TUI, and Desktop adapters project the implemented semantic families;
+legacy observations remain repository-private compatibility input. An absent
+semantic fact does not imply a false capability or outcome. See [Frontend
+semantic protocol](frontend-semantics.md).
 The embedded client then assigns monotonically
 increasing sequence numbers to live observations and forwards them through a
 256-entry bounded queue. An oversized observation becomes a bounded omission
@@ -932,10 +933,12 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 7
-retains version 5's stable semantic command identifiers and adds frozen host
-location and approval-policy facts so native and managed Runs can publish
-authoritative execution facts and deterministic completion receipts. One application-owned catalog now
+staged images, and an ordered follow-up queue. Frontend protocol version 9
+retains version 5's stable semantic command identifiers, version 7's frozen
+execution/completion facts, and version 8's Desktop Conversation controls, then
+adds Espejo and host-supervision projection. Native and managed Runs publish
+authoritative execution facts and deterministic completion receipts. One
+application-owned catalog now
 projects command names, aliases, argument shapes, authority, availability,
 confirmation, and outcome codes into CLI, plain, TUI, and Desktop without
 moving validation or effects out of their runtime/domain handlers. The native

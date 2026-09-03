@@ -5,16 +5,20 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 5 adds stable command-semantic identifiers to version
-4's surface-neutral semantic layer for content,
-resources, activity, attention, usage, approvals, execution facts,
-capabilities, disclosures, and completion evidence.
+facts. Protocol version 9 retains version 5's stable command-semantic
+identifiers, version 7's execution and completion facts, version 8's Desktop
+Conversation controls, and version 9's Espejo and host-supervision projection
+over the surface-neutral semantic layer for content, resources, activity,
+attention, usage, approvals, execution facts, capabilities, disclosures, and
+completion evidence.
 
 The semantic layer is implemented vocabulary and deterministic reduction
-logic. It is not yet a claim that every runtime emits every semantic event or
-that every frontend has a specialized renderer. During the M4 migration,
-legacy native and managed observations remain present beside the semantic
-snapshot. Later M4 tickets add producers and projections family by family.
+logic. It is not a claim that every runtime emits every optional semantic event
+or that every frontend has a specialized renderer. Legacy native and managed
+observations remain beside the semantic snapshot as repository-private
+compatibility input, while current native, managed, TUI, and Desktop adapters
+project the implemented families and preserve typed fallbacks for unsupported
+ones.
 
 ## Authority and data flow
 

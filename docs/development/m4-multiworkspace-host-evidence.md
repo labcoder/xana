@@ -30,9 +30,11 @@ loop.
   owner-native fork only when an adapter proves one; otherwise it records a
   fresh continuation and claims zero shared provider entries.
 - Branch targets preserve the source's immutable Profile snapshot and optional
-  Project membership. An ordinary failed cross-store publication removes the
-  staged target; later M4 recovery work owns process-crash reconciliation
-  between stores.
+  Project membership. If publishing that registry state fails normally, Xana
+  removes the newly staged native session or locally retained managed handle
+  before returning the error. The source remains unchanged throughout; Xana
+  does not claim a general transaction spanning provider-owned state and local
+  files.
 
 ## Automated evidence
 

@@ -75,4 +75,3 @@ web-fetch suite passed 11 tests. The shared outbound, permission, operation,
 diagnostics, protocol, and frontend projection suites ran in the same full
 gate. Windows passed locally; Linux/macOS compilation and tests await the next
 authorized CI push and are not claimed here.
-

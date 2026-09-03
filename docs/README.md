@@ -77,6 +77,9 @@ engineering contracts used to change it.
   records event-driven scheduling, transcript and media resource bounds,
   release-profile probes, security and accessibility gates, and the remaining
   reference-system and owner checks.
+- [M4 adversarial closeout evidence](development/m4-closeout-evidence.md)
+  records review findings, bounded fixes, retained scope boundaries, and the
+  owner/platform gates that still prevent milestone completion.
 - [M4 Desktop Espejo evidence](development/m4-desktop-espejo-evidence.md)
   records bounded global/Project supervision, attention grouping, redacted
   notices, and exact navigation.
@@ -155,14 +158,14 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   policy for modules, tests, comments, formatting, and tooling.
 - [Desktop development](contributing/desktop-development.md) explains the
   native GPUI package, exact dependency boundary, source launch, checks, and
-  troubleshooting for the M4 walking skeleton.
+  troubleshooting for the M4 Workbench.
 - [Desktop visual system and component ownership](contributing/desktop-visual-system.md)
   defines semantic tokens, upstream component boundaries, localization rules,
   the deterministic catalog, and the manual accessibility matrix.
 - [Architecture](architecture/README.md) describes what exists and how it
   works.
-- [Desktop architecture](architecture/desktop.md) describes the embedded
-  runtime lifecycle, typed authority boundary, backpressure, security posture,
+- [Desktop architecture](architecture/desktop.md) describes embedded ownership,
+  foreground-host attachment, typed authority, backpressure, security posture,
   and CLI/TUI dependency isolation.
 - [Frontend semantic protocol](architecture/frontend-semantics.md) describes
   the versioned rich-content, resource, usage, attention, execution-evidence,

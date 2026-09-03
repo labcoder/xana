@@ -1,6 +1,7 @@
 # M4 Desktop Espejo evidence
 
-> Scope: M4-18 implementation evidence  
+> Scope: M4-18 implementation evidence
+>
 > Status: Implementation complete; owner visual/accessibility verification remains in M4-24
 
 ## Implemented contract

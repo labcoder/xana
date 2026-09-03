@@ -27,8 +27,11 @@ make that limitation decision evidence; it cannot replace the target silently.
 
 ## Implementation progress
 
-The repository-private frontend protocol now implements version 5's inert
-semantic vocabulary and deterministic snapshot/delta reducer. It includes
+The repository-private frontend protocol is now version 9. Version 5 introduced
+stable semantic command identities; later revisions added authoritative
+execution and completion facts, Desktop Conversation controls, and Espejo/host
+supervision while retaining inert content and deterministic snapshot/delta
+reduction. It includes
 artifact-backed resource references, configurable bounded resource policy,
 content/fallback types, attachments and disclosure receipts, usage accounting,
 activity and attention, approvals, execution facts, completion receipts,
@@ -64,10 +67,12 @@ receipts, and fail-closed owned-execution proof. Startup extends the M3
 Diagnostics authority with idempotent cleanup of only unlocked Xana artifact
 staging files. A shared notification policy emits fixed redacted candidates
 only while unfocused/minimized and is configurable by attention kind; native OS
-delivery and last-window presentation remain M4-15. The specialized TUI and
-Desktop renderers and the Desktop Workbench now exist, while cross-surface
-conformance, performance/cross-platform evidence, and owner closeout remain M4
-work. This proposal therefore remains Accepted rather than Implemented.
+delivery, activation routing, single-instance forwarding, and reviewed
+last-window behavior are implemented. The specialized TUI and Desktop
+renderers, Desktop Workbench, Espejo, graphical management, and attach-or-own
+adapter now exist. Cross-platform reference-system measurements, manual
+accessibility evidence, and owner closeout remain open M4 gates. This proposal
+therefore remains Accepted rather than Implemented.
 
 ## 1. Official local surfaces and authority
 
@@ -94,7 +99,7 @@ boundary as a loopback client even when the transport is an in-process channel.
 
 ```mermaid
 flowchart LR
-    M3["M3 foreground runtime and private frontend v2"] --> HOST["Authoritative local execution host"]
+    M3["M3 foreground runtime and private frontend foundation"] --> HOST["Authoritative local execution host"]
     PLAIN["Plain CLI"] --> CONTRACT["Private versioned command / snapshot / event contract"]
     TUI["Terminal UI"] --> CONTRACT
     DESKTOP["Desktop client"] --> CONTRACT
@@ -112,17 +117,21 @@ protocol transactionally while retaining explicit version/capability checks,
 typed unsupported results, fresh-snapshot recovery, and safe unknown-content
 fallbacks.
 
-M4-07A and M4-07 have implemented the shared filesystem collision identity,
+M4-07A through M4-22 have implemented the shared filesystem collision identity,
 generation-backed foreground ownership, transactional private-record
 version-2 migration, stable native/managed Conversation identities, the
 bounded eight-Conversation/four-Run application coordinator, ordered
 snapshot/delta projection, explicit same-workspace write collision admission,
 atomic native branching, honest managed fork/fresh-continuation boundaries,
 and exact Profile/Project lineage beneath this broader Accepted proposal. The
-current Desktop walking skeleton consumes the host contract for one
-Conversation; multi-Conversation client leases, navigation, complete lifecycle,
-and Workbench presentation remain later M4 work. This is partial implementation
-evidence, not a status change for the proposal as a whole.
+current Desktop can own its embedded host or attach through the authenticated
+loopback boundary to a compatible foreground owner. It requests only an
+unclaimed controller lease, otherwise remains an observer, and never starts a
+competing writer after successful discovery. Persistent multi-Conversation
+navigation, Workbench layouts, lifecycle, notifications, Espejo, settings,
+rich content, and typed fallback presentation are implemented. This remains
+partial implementation evidence until M4's platform, accessibility, and owner
+gates close; it is not a status change for the proposal as a whole.
 
 ## 2. Attach or own without split brain
 
@@ -537,7 +546,7 @@ its own accessibility, security, bundle, input, and maintenance decision.
 2. Build and measure the equal disposable framework slices.
 3. Record the owner's native GPUI and `gpui-ai` decision in ADR 0003.
 4. Extend the private content and host contracts while building the first
-   in-repository Desktop walking skeleton.
+   in-repository production Desktop slice.
 5. Improve the terminal surfaces and grow Desktop through the shared typed
    semantics. Keep local web deferred unless separately accepted.
 

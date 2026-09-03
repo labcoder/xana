@@ -1,8 +1,10 @@
 # Xana Desktop
 
 Xana Desktop is the native GPUI client included in the Xana Cargo workspace.
-It embeds the matching Xana runtime in its own process, so it does not search
-for or launch a `xana` executable from `PATH`.
+It includes the matching Xana runtime and owns it when the selected workspace
+is unclaimed. If a compatible local foreground Xana host is already live,
+Desktop attaches to that owner instead. It never searches for or launches a
+`xana` executable from `PATH`.
 
 ## Start Desktop
 
@@ -19,6 +21,12 @@ Projects and valid recent workspaces/Conversations, or lets you choose a folder.
 No Project or Conversation is inferred or created while this screen is open.
 After choosing a folder, choose either **Open latest Conversation** or **New
 ungrouped Conversation** so the lifecycle effect is explicit.
+
+If that workspace is already hosted by `xana serve` or an attached terminal
+frontend, Desktop authenticates over the host's private loopback boundary and
+uses its authoritative snapshot. It requests control only when no incumbent
+controller exists; otherwise mutation controls stay disabled and Desktop is an
+observer. Desktop never takes over implicitly or starts a competing runtime.
 
 To open the current repository directly while developing, name it explicitly:
 
@@ -181,8 +189,9 @@ showing the message performs no network request.
 Xana resources appear as typed attachment cards. An accepted immutable static
 PNG, JPEG, or WebP may gain a thumbnail only after the runtime re-verifies its
 complete length and content digest and checks the configured byte, pixel, and
-edge limits. Only the newest eight eligible previews totaling at most 20 MiB
-remain admitted; older previews fall back to their typed cards.
+edge limits. Only the newest eight eligible previews totaling at most 20 MiB of
+source data and an estimated 32 MiB of decoded RGBA data remain admitted;
+older previews fall back to their typed cards.
 Animated raster, SVG, Lottie, audio, video, unknown, rejected, oversized, or
 deleted resources keep a metadata card instead of being decoded optimistically.
 Desktop currently advertises neither native audio/video playback nor rich math.
@@ -244,6 +253,11 @@ The instance descriptor contains a random capability and a loopback endpoint.
 It is stored beneath Xana's runtime directory, carries no prompt or credential,
 and is replaced after a stale owner lock is recovered. Forwarding is not a
 general local control API.
+
+The Desktop instance lease and the workspace execution-host lease are distinct.
+One Desktop process may present an external compatible foreground host without
+owning that host; closing the attached Desktop detaches its client and does not
+stop the terminal-owned runtime.
 
 ## Closing, status, and notifications
 

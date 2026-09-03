@@ -32,9 +32,9 @@ instead of being guessed into an executable or interactive form. Tool-call
 arguments are not copied into the shared rich-content projection.
 
 Each interface chooses one honest presentation tier: rich, text, metadata, or
-unsupported. Every tier retains a bounded readable fallback. The current TUI
-keeps its established terminal renderer while the remaining M4 interface work
-adopts this shared projection; equal semantics do not require equal pixels.
+unsupported. Every tier retains a bounded readable fallback. The TUI keeps its
+established terminal renderer and Desktop consumes the same shared projection;
+equal semantics do not require equal pixels.
 
 Desktop preserves the typed parts instead of flattening them into one string.
 It renders bounded Markdown, code, tables, and diffs through the selectable
@@ -137,8 +137,8 @@ usage effect; Xana does not silently spend tokens to summarize every turn.
 - Explicit visible conversation selection: 256 Ki terminal cells, then bounded
   again to the 1 MiB projected-message limit before clipboard delivery.
 - Artifact range: at most 64 KiB retained while the whole source is verified.
-- Desktop inline previews: at most 8 eligible static images and 20 MiB of
-  aggregate source bytes retained at once.
+- Desktop inline previews: at most 8 eligible static images, 20 MiB of aggregate
+  source bytes, and an estimated 32 MiB of decoded RGBA data retained at once.
 - Current image input: 8 images, 4 MiB per image, 20 MiB total source bytes per
   turn, and 40 million decoded pixels per image.
 

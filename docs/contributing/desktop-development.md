@@ -1,13 +1,14 @@
 # Desktop development
 
-> Audience: Contributors  
+> Audience: Contributors
+>
 > Authority: Repository policy
 
 Xana Desktop lives in `crates/xana-desktop` inside this repository and Cargo
 workspace. It links the matching Xana runtime directly; installing the `xana`
 CLI is neither required nor consulted.
 
-## Run the walking skeleton
+## Run the Desktop Workbench
 
 Use the root package to create or repair configuration, then launch Desktop
 from the same checkout:
@@ -23,9 +24,10 @@ The argument-free command exercises the icon-style read-only launcher. Pass
 workspace. This distinction prevents a packaged icon launch from silently
 using an arbitrary inherited process directory.
 
-The current M4 slice supports native conversational connections and managed
+The current M4 Workbench supports native conversational connections and managed
 Codex, with real Conversation, isolated Message composer, and nested Activity
-projections. It also projects the shared
+projections. It can own the matching embedded runtime or attach to a compatible
+foreground owner without split brain. It also projects the shared
 command registry into native menus and one retained command palette, enforces
 one Desktop process per canonical `XANA_HOME`, and waits for acknowledged
 runtime shutdown before removing the last window. A missing configuration,
@@ -79,6 +81,9 @@ Intel macOS job compiles and tests the Desktop package.
 - Retain GPUI entities and subscriptions; do not recreate them during render.
 - Drain only bounded runtime updates per frame and never block the GPUI thread
   on provider, tool, filesystem, or shutdown work.
+- Load control-plane snapshots and execute management or native-path inspection
+  on GPUI's background executor. Return bounded typed results, then update
+  retained entities on the foreground executor.
 - Keep stable command IDs in Xana's shared catalog. Native menus, palette rows,
   buttons, and shortcuts must converge on one Desktop dispatcher; unsupported
   rows stay discoverable with a disabled reason. A status-only Desktop route
@@ -109,8 +114,10 @@ security, accessibility, load, and all four supported source-build targets.
   `XANA_HOME` environment.
 - `workspace_unavailable`: choose an existing accessible folder or pass an
   explicit `--workspace PATH`.
-- `host_busy`: another Xana frontend owns the workspace root turn. Let it
-  finish or interrupt it; attach-or-own behavior is completed later in M4.
+- `host_busy`: a compatible foreground host exists but could not be attached
+  safely. Inspect its typed recovery detail; do not bypass discovery or start a
+  second writer. If attachment succeeds while another controller is present,
+  Desktop remains an observer until control changes explicitly.
 - `protocol_mismatch`: rebuild the whole workspace from one checkout and do not
   mix binaries or lockfiles.
 - `instance_unavailable`: stop the unresponsive same-home Desktop process and

@@ -3,15 +3,18 @@
 > Scope: implementation evidence for course ticket M4-04
 > Status: Complete locally; cross-platform CI remains the repository gate
 
-Xana now has one versioned, bounded, repository-private semantic model for
-official local frontends. The work defines inert facts and deterministic
-reduction; later M4 tickets own runtime producers, provider/account acquisition,
-commands, and specialized presentation.
+Xana has one versioned, bounded, repository-private semantic model for official
+local frontends. M4-04 established the inert facts and deterministic reduction;
+the protocol has since advanced compatibly to version 9 as the native and
+managed producers, TUI, Desktop, Workbench, Espejo, and settings adapters were
+implemented.
 
 ## Implemented contracts
 
-- Frontend protocol version 4 carries a defaulted semantic snapshot and bounded
-  semantic event envelope alongside the legacy migration projection.
+- Frontend protocol version 9 carries the semantic snapshot and bounded event
+  envelope. Versions 5 through 9 add stable semantic identities, execution and
+  completion facts, Desktop controls, Espejo, and host-supervision state without
+  changing the M4-04 content/usage/attention authority boundaries.
 - One sequence watermark orders legacy and semantic observations. Duplicate
   deltas are ignored, gaps require a fresh snapshot, and authoritative finals
   converge after progress streaming.
@@ -69,10 +72,11 @@ cargo test --workspace --all-targets --no-default-features
 - `e2ad7d2 feat(resource): define bounded resource policy`
 - `24a4360 feat(frontend): add shared semantic protocol`
 
-## Deferred ownership
+## Subsequent M4 ownership
 
-M4-04B owns live provider/account usage and capability acquisition. M4-05 and
-M4-06 own command/projection integration and resource adapters. Terminal and
-Desktop tickets own their renderers. This ticket does not claim media playback,
-general provider upload, remote transport, speech mode, memory, or public SDK
-compatibility.
+M4-04B added live provider/account usage and capability acquisition. M4-05 and
+M4-06 integrated commands, projections, and resource adapters; later Terminal
+and Desktop tickets implemented their renderers. Those implementations consume
+this contract rather than creating competing semantic models. M4 still does not
+claim general media playback, general provider upload, remote transport, speech
+mode, personal memory, or a public SDK compatibility promise.

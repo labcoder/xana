@@ -1,8 +1,9 @@
 # M4 controller lease evidence
 
-> Scope: M4-08 controller/observer coordination  
+> Scope: M4-08 controller/observer coordination
+>
 > Status: implementation complete; cross-platform CI pending an authorized push
-> Implementation: Xana `94499a1`
+> Implementation: Xana `94499a1`, Desktop attach adapter `3bbc131`
 
 ## Implemented contract
 
@@ -37,6 +38,13 @@ recovers through a fresh snapshot, and fails closed on release or grace expiry.
 A new authenticated transport can replace a stalled socket with the current
 capability without briefly authorizing both clients.
 
+Desktop startup now also discovers a compatible live foreground workspace host
+before launching an embedded owner. It authenticates to that host, requests
+only an unclaimed controller lease, and otherwise projects observer authority.
+An incumbent controller remains unchanged, mutating Desktop controls fail
+closed, and closing Desktop detaches the client without shutting down the
+external host.
+
 ## Deterministic evidence
 
 - Unit-clock fixtures cover acquire, renew, transport replacement, disconnect,
@@ -53,6 +61,9 @@ capability without briefly authorizing both clients.
   snapshot sequencing.
 - Desktop integration proves the initial controller projection, a complete
   streamed turn, and lease release on shutdown.
+- Real loopback Desktop fixtures prove unclaimed-controller command routing and
+  prove that an incumbent terminal controller remains controller after Desktop
+  attaches.
 - Controller changes emit ordered host observations and metadata-only
   Diagnostics facts without bearer material.
 
@@ -73,8 +84,8 @@ ordinary CI evidence boundary at the next authorized push.
 ## Deliberate limits
 
 This is local coordination, not user identity, collaboration, remote authority,
-shared editing, or provider-native controller semantics. Loopback currently
-hosts one controllable Conversation while `ExecutionHost` owns the bounded
-multi-Conversation registry. Desktop navigation and complete surface
-composition remain later M4 tickets; those clients consume this lease contract
+shared editing, or provider-native controller semantics. One attached client
+controls or observes one selected Conversation while `ExecutionHost` owns the
+bounded multi-Conversation registry. Multi-window shared editing and remote
+coordination remain outside M4; current clients consume this lease contract
 instead of reimplementing it.

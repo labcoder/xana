@@ -1,6 +1,7 @@
 # M4 Desktop Conversation evidence
 
-> Ticket: M4-17A  
+> Ticket: M4-17A
+>
 > Status: Implementation complete; owner verification pending
 
 ## Delivered contract

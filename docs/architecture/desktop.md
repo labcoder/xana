@@ -1,23 +1,29 @@
 # Desktop architecture
 
-> Audience: Contributors and coding agents  
+> Audience: Contributors and coding agents
+>
 > Authority: Descriptive
 
 Xana Desktop is a native GPUI application in `crates/xana-desktop`. It is a
 thin presentation client around the matching Xana runtime linked into the same
-binary. It does not find a CLI on `PATH`, download a runtime, or own a second
-agent loop.
+binary. It can own that embedded runtime or attach to a compatible live local
+foreground host; it does not find a CLI on `PATH`, download a runtime, or own a
+second agent loop for the same workspace.
 
 ## Process and lifecycle
 
 ```mermaid
 flowchart LR
     GPUI["GPUI application thread"] -->|"bounded typed commands"| FACADE["xana::desktop facade"]
-    FACADE --> QUEUE["bounded command queue"]
+    FACADE --> DISCOVER{"Compatible foreground owner?"}
+    DISCOVER -->|"no"| QUEUE["bounded embedded queues"]
     QUEUE --> HOST["named Xana runtime thread\nTokio runtime + application policy"]
-    HOST --> EMBEDDED["existing EmbeddedClient"]
-    EMBEDDED --> NATIVE["native runtime / agent / tools"]
-    EMBEDDED -->|"snapshot + ordered observations"| FACADE
+    DISCOVER -->|"yes"| ATTACH["authenticated loopback client"]
+    ATTACH --> EXISTING["existing foreground execution host"]
+    HOST --> NATIVE["native runtime / agent / tools"]
+    EXISTING --> NATIVE
+    HOST -->|"snapshot + ordered observations"| FACADE
+    EXISTING -->|"snapshot + ordered observations"| FACADE
     FACADE -->|"bounded presentation DTOs"| GPUI
 ```
 
@@ -27,7 +33,8 @@ catalog reads existing Project records plus bounded, validated recent launch
 preferences; missing state remains an empty state and is not initialized as a
 side effect. A Project, recent Conversation, explicit `--workspace` argument,
 or native folder-picker result selects the workspace. Only then does Xana
-canonicalize it and start one named runtime thread. Choosing a folder presents
+canonicalize it and either attach to the compatible live foreground owner or
+start one named runtime thread after proving the domain is unowned. Choosing a folder presents
 separate open-latest and force-new-ungrouped actions, so launch never disguises
 a lifecycle mutation.
 
@@ -75,12 +82,14 @@ flowchart LR
     S --> N
 ```
 
-The runtime publishes an atomic initial
-snapshot before the window opens. A 32-entry command queue and 256-entry update
-queue bound cross-thread work. Replaceable streaming deltas may be dropped
-under pressure; finals, failures, approvals, command receipts, and terminal
-operation states receive a five-second delivery grace. A sequence gap causes
-the application projection to request a fresh snapshot instead of guessing.
+The runtime publishes an atomic initial snapshot before the Workbench opens. A
+32-entry command queue and 256-entry update queue bound cross-thread work.
+Replaceable streaming deltas may be dropped under pressure. Critical updates
+enter a separate bounded 64-entry deferred queue when presentation is paused;
+the runtime never waits for GPUI, command results and terminal stop retain
+priority, and overflow requires an authoritative snapshot resync. A sequence
+gap likewise causes the application projection to request a fresh snapshot
+instead of guessing.
 
 Closing an idle last window first asks the execution host to stop admission and
 expire controller authority, then requests runtime shutdown. The host records
@@ -103,10 +112,14 @@ Stop releases it only after the runtime projects the terminal decision. The
 GPUI layer cannot manufacture identities or infer a decision from display
 text.
 
-The Desktop backend acquires one application-host controller identity for its
-Conversation before it publishes the initial snapshot. Every submission,
+An embedded Desktop backend acquires one application-host controller identity
+for its Conversation before it publishes the initial snapshot. An attached
+Desktop requests an unclaimed controller lease but remains an observer when an
+incumbent controller exists; it never takes over implicitly. Every submission,
 clear, interrupt, approval, round-budget decision, and shutdown command is
-revalidated against that identity; snapshot requests remain observer-safe.
+revalidated against the current authority; snapshot requests remain
+observer-safe. Attached shutdown detaches the client rather than stopping the
+external owner.
 Initial snapshots and ordered host observations project only the controller's
 public identity, generation, state, takeover fact, disconnect reason, and
 remaining grace. Reconnect capabilities and client transport identities never
@@ -165,7 +178,9 @@ over runtime-owned typed commands. `src/desktop/management` owns bounded
 snapshots, drafts, previews, revisions, exact repair/reset plans, and receipts.
 The GPUI package owns selection, layout, focus, local draft presentation, and
 semantic copy; it never parses or writes `config.toml`, private records, model
-catalogs, layout files, or credentials.
+catalogs, layout files, or credentials. Snapshot reads, validation, provider or
+managed-account work, and mutations run on GPUI's background executor and
+return bounded typed results before foreground entities update.
 
 ```mermaid
 flowchart LR
@@ -254,8 +269,10 @@ Resource cards retain declared and detected media types, validation, lineage,
 and per-operation capability facts. A private `DesktopArtifactReader` repeats
 the immutable artifact's length/digest and policy checks before returning bytes
 for accepted PNG, JPEG, or WebP previews. The Workbench admits only the newest
-eight eligible previews totaling at most 20 MiB. Snapshot replacement evicts
-decoded entries outside that window; pixel and edge limits remain policy-owned.
+eight eligible previews totaling at most 20 MiB of source data and an estimated
+32 MiB of decoded RGBA data. Missing dimensions and checked-arithmetic overflow
+remain typed cards. Snapshot replacement evicts decoded entries outside that
+window; per-resource pixel and edge limits remain policy-owned.
 Animated images, SVG, Lottie, audio, video, binary, unknown, rejected, missing,
 or oversized resources stay typed cards. Desktop therefore advertises neither
 audio/video playback nor rich math. Activating a card opens the Artifacts panel;

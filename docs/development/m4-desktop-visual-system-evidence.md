@@ -1,7 +1,9 @@
 # M4 Desktop visual-system evidence
 
-> Recorded: 2026-09-02  
-> Scope: M4-14 automated implementation evidence  
+> Recorded: 2026-09-02
+>
+> Scope: M4-14 automated implementation evidence
+>
 > Manual accessibility and visual review: pending owner verification
 
 ## Delivered
