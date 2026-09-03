@@ -494,6 +494,7 @@ pub(crate) async fn run_managed(
         workspace,
         store: config.artifact_store.clone(),
         ingestor: ImageIngestor::new(config.artifact_store.clone(), ImageLimits::default()),
+        resource_policy: config.resource_policy.clone(),
         owner: config.owner,
     };
     let (driver, conversation) =
@@ -999,7 +1000,7 @@ impl Bridge {
                 self.publish_command_result(command_id, result.map(|_| ()))
                     .await?;
             }
-            BridgeCommandValue::StageImage {
+            BridgeCommandValue::StageResource {
                 path,
                 external_approved,
             } => {
@@ -1671,7 +1672,7 @@ fn validate_managed_attachments(
             ));
         }
         bytes = bytes.saturating_add(attachment.byte_len);
-        images.push(attachment.into_managed_image());
+        images.push(attachment.into_managed_image()?);
     }
     if bytes > crate::vision::MAX_IMAGE_BYTES_PER_TURN {
         return Err(DesktopError::new(

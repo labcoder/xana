@@ -152,6 +152,7 @@ struct DesktopAttachmentService {
     workspace: PathBuf,
     store: crate::artifact::ArtifactStore,
     ingestor: ImageIngestor,
+    resource_policy: crate::resource::ResourcePolicyV1,
     owner: crate::identity::PrincipalId,
 }
 
@@ -161,20 +162,45 @@ impl DesktopAttachmentService {
         source_path: &str,
         external_approved: bool,
     ) -> Result<DesktopAttachment, DesktopError> {
-        let attachment = if external_approved {
-            self.ingestor
-                .ingest_approved_dropped_path(&self.workspace, source_path, self.owner)
+        if is_provider_image_path(source_path) {
+            let attachment = if external_approved {
+                self.ingestor
+                    .ingest_approved_dropped_path(&self.workspace, source_path, self.owner)
+            } else {
+                self.ingestor
+                    .ingest_dropped_path(&self.workspace, source_path, self.owner)
+            }
+            .map_err(|error| {
+                DesktopError::new(
+                    DesktopErrorCode::StateInvalid,
+                    format!("could not stage image attachment: {error}"),
+                )
+            })?;
+            return Ok(DesktopAttachment::from_image(attachment));
+        }
+
+        let ingestor = crate::resource::inspection::ResourceIngestor::new(
+            self.store.clone(),
+            self.resource_policy.clone(),
+        )
+        .map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("could not initialize resource validation: {error}"),
+            )
+        })?;
+        let resource = if external_approved {
+            ingestor.ingest_approved_path(&self.workspace, source_path, self.owner)
         } else {
-            self.ingestor
-                .ingest_dropped_path(&self.workspace, source_path, self.owner)
+            ingestor.ingest_path(&self.workspace, source_path, self.owner)
         }
         .map_err(|error| {
             DesktopError::new(
                 DesktopErrorCode::StateInvalid,
-                format!("could not stage image attachment: {error}"),
+                format!("could not stage resource attachment: {error}"),
             )
         })?;
-        Ok(DesktopAttachment::from_image(attachment))
+        Ok(DesktopAttachment::from_resource(resource))
     }
 
     fn stage_clipboard(&self) -> Result<DesktopAttachment, DesktopError> {
@@ -226,6 +252,18 @@ impl DesktopAttachmentService {
             )
         })
     }
+}
+
+fn is_provider_image_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "png" | "jpg" | "jpeg" | "gif"
+            )
+        })
 }
 
 fn artifact_record_for_id(
@@ -674,7 +712,7 @@ pub struct DesktopRoundBudgetSuspension {
     pub can_continue: bool,
 }
 
-/// An immutable image staged by Xana for one Desktop draft.
+/// An immutable resource staged by Xana for one Desktop draft.
 ///
 /// The filesystem path and artifact integrity record remain private to the
 /// runtime package. Desktop presentation code can retain and return this
@@ -687,7 +725,15 @@ pub struct DesktopAttachment {
     pub byte_len: u64,
     pub width: Option<u32>,
     pub height: Option<u32>,
-    image: ImageAttachment,
+    pub kind: String,
+    pub provider_input_available: bool,
+    payload: DesktopAttachmentPayload,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+enum DesktopAttachmentPayload {
+    Image(ImageAttachment),
+    Resource(Box<crate::resource::ResourceRefV1>),
 }
 
 impl fmt::Debug for DesktopAttachment {
@@ -700,6 +746,8 @@ impl fmt::Debug for DesktopAttachment {
             .field("byte_len", &self.byte_len)
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("kind", &self.kind)
+            .field("provider_input_available", &self.provider_input_available)
             .finish_non_exhaustive()
     }
 }
@@ -719,16 +767,59 @@ impl DesktopAttachment {
             byte_len: image.image.byte_len,
             width: image.image.width,
             height: image.image.height,
-            image,
+            kind: "static_raster".to_owned(),
+            provider_input_available: true,
+            payload: DesktopAttachmentPayload::Image(image),
         }
     }
 
-    fn into_image(self) -> crate::vision::ImageRef {
-        self.image.image
+    fn from_resource(resource: crate::resource::inspection::IngestedResource) -> Self {
+        let media_type = resource
+            .resource
+            .media_type
+            .detected
+            .clone()
+            .or_else(|| resource.resource.media_type.declared.clone())
+            .unwrap_or_else(|| "application/octet-stream".to_owned());
+        Self {
+            id: resource.resource.artifact.reference.id.to_string(),
+            name: resource.source_label,
+            media_type,
+            byte_len: resource.resource.artifact.byte_len,
+            width: resource.resource.metadata.width,
+            height: resource.resource.metadata.height,
+            kind: resource.resource.kind.code().to_owned(),
+            provider_input_available: false,
+            payload: DesktopAttachmentPayload::Resource(Box::new(resource.resource)),
+        }
     }
 
-    fn into_managed_image(self) -> ImageAttachment {
-        self.image
+    fn into_image(self) -> Result<crate::vision::ImageRef, DesktopError> {
+        match self.payload {
+            DesktopAttachmentPayload::Image(image) => Ok(image.image),
+            DesktopAttachmentPayload::Resource(resource) => Err(DesktopError::new(
+                DesktopErrorCode::CommandRejected,
+                format!(
+                    "{} resource {} is retained, but the selected route does not support it as turn input",
+                    resource.kind.code(),
+                    resource.artifact.reference.id
+                ),
+            )),
+        }
+    }
+
+    fn into_managed_image(self) -> Result<ImageAttachment, DesktopError> {
+        match self.payload {
+            DesktopAttachmentPayload::Image(image) => Ok(image),
+            DesktopAttachmentPayload::Resource(resource) => Err(DesktopError::new(
+                DesktopErrorCode::CommandRejected,
+                format!(
+                    "{} resource {} is retained, but Codex input support was not established for it",
+                    resource.kind.code(),
+                    resource.artifact.reference.id
+                ),
+            )),
+        }
     }
 }
 
@@ -1213,7 +1304,7 @@ impl DesktopClient {
         )
     }
 
-    /// Submits a turn with staged images and an explicit write-collision decision.
+    /// Submits a turn with staged resources and an explicit write-collision decision.
     pub fn submit_with_attachments_and_workspace_collision_acknowledgement(
         &self,
         input: impl Into<String>,
@@ -1233,13 +1324,13 @@ impl DesktopClient {
         })
     }
 
-    /// Asks Xana to validate and ingest one user-selected image path.
-    pub fn stage_image(
+    /// Asks Xana to validate and ingest one user-selected resource path.
+    pub fn stage_resource(
         &self,
         path: impl Into<PathBuf>,
         external_approved: bool,
     ) -> Result<DesktopCommandReceipt, DesktopError> {
-        self.enqueue(BridgeCommandValue::StageImage {
+        self.enqueue(BridgeCommandValue::StageResource {
             path: path.into(),
             external_approved,
         })
@@ -1722,7 +1813,7 @@ enum BridgeCommandValue {
         attachments: Vec<DesktopAttachment>,
         acknowledge_workspace_write_collision: bool,
     },
-    StageImage {
+    StageResource {
         path: PathBuf,
         external_approved: bool,
     },
@@ -1897,6 +1988,7 @@ pub(crate) async fn run_native(
         workspace: header.workspace_root.clone(),
         store: attachment_store.clone(),
         ingestor: ImageIngestor::new(attachment_store, ImageLimits::default()),
+        resource_policy: header.resource_policy.clone(),
         owner: header.owner,
     };
     execution_host.register(
@@ -2492,7 +2584,7 @@ impl Bridge {
                     .await?;
                 Ok(None)
             }
-            BridgeCommandValue::StageImage {
+            BridgeCommandValue::StageResource {
                 path,
                 external_approved,
             } => {
@@ -3409,7 +3501,7 @@ fn validate_desktop_attachments(
             ));
         }
         byte_len = byte_len.saturating_add(attachment.byte_len);
-        images.push(attachment.into_image());
+        images.push(attachment.into_image()?);
     }
     if byte_len > crate::vision::MAX_IMAGE_BYTES_PER_TURN {
         return Err(DesktopError::new(
@@ -3588,6 +3680,7 @@ mod tests {
             workspace: workspace.to_owned(),
             store: store.clone(),
             ingestor: ImageIngestor::new(store, ImageLimits::default()),
+            resource_policy: crate::resource::ResourcePolicyV1::default(),
             owner: crate::identity::PrincipalId::new(),
         }
     }
@@ -3670,7 +3763,11 @@ mod tests {
         std::fs::write(&image_path, &png).unwrap();
         let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
         let service = attachment_service(&paths, &workspace);
-        let image = service.stage_path("image.png", false).unwrap().into_image();
+        let image = service
+            .stage_path("image.png", false)
+            .unwrap()
+            .into_image()
+            .unwrap();
         let artifact_id = image.artifact.reference.id.to_string();
         let snapshot = ClientSnapshot::initial(
             ClientSnapshotSeed {
@@ -3718,6 +3815,36 @@ mod tests {
         let error = validate_desktop_attachments(vec![attachment.clone(), attachment]).unwrap_err();
         assert_eq!(error.code, DesktopErrorCode::StateInvalid);
         assert!(error.message.contains("more than once"));
+    }
+
+    #[test]
+    fn desktop_retains_non_image_resources_without_claiming_provider_input() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(
+            workspace.join("clip.webm"),
+            [0x1a, 0x45, 0xdf, 0xa3, 0, 0, 0, 0],
+        )
+        .unwrap();
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+
+        let attachment = attachment_service(&paths, &workspace)
+            .stage_path("clip.webm", false)
+            .unwrap();
+
+        assert_eq!(attachment.name, "clip.webm");
+        assert_eq!(attachment.kind, "video");
+        assert_eq!(attachment.media_type, "video/webm");
+        assert!(!attachment.provider_input_available);
+        let debug = format!("{attachment:?}");
+        assert!(!debug.contains(&workspace.display().to_string()));
+        assert!(!debug.contains("content_hash"));
+
+        let error = validate_desktop_attachments(vec![attachment]).unwrap_err();
+        assert_eq!(error.code, DesktopErrorCode::CommandRejected);
+        assert!(error.message.contains("retained"));
+        assert!(error.message.contains("does not support it as turn input"));
     }
 
     #[test]

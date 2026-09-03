@@ -711,7 +711,7 @@ impl Workbench {
             files: true,
             directories: false,
             multiple: true,
-            prompt: Some("Choose one or more images for this Xana turn".into()),
+            prompt: Some("Choose one or more resources for this Xana turn".into()),
         });
         let conversation = self.composer.active_key().to_owned();
         cx.spawn_in(window, async move |this, cx| {
@@ -749,11 +749,11 @@ impl Workbench {
         paths: impl IntoIterator<Item = std::path::PathBuf>,
     ) {
         for path in paths {
-            match self.runtime.stage_image(path, true) {
+            match self.runtime.stage_resource(path, true) {
                 Ok(receipt) => {
                     self.pending_attachment_commands
                         .insert(receipt.command_id, conversation.to_owned());
-                    self.projection.set_activity("Validating image attachment…");
+                    self.projection.set_activity("Validating resource…");
                 }
                 Err(error) => self.projection.fail(error.message),
             }
@@ -1536,10 +1536,9 @@ impl Workbench {
                 } => {
                     if let Some(conversation) = self.pending_attachment_commands.get(&command_id) {
                         if self.composer.stage_for(conversation, attachment) {
-                            self.projection.set_activity("Image attachment is ready");
+                            self.projection.set_activity("Resource is ready");
                         } else {
-                            self.projection
-                                .set_activity("Image attachment was already staged");
+                            self.projection.set_activity("Resource was already staged");
                         }
                     }
                 }
@@ -3549,11 +3548,16 @@ impl Render for Workbench {
 }
 
 fn prompt_attachment(attachment: &DesktopAttachment) -> Attachment {
-    let detail = attachment
+    let metadata = attachment
         .width
         .zip(attachment.height)
         .map(|(width, height)| format!("{width}×{height}"))
         .unwrap_or_else(|| attachment.media_type.clone());
+    let detail = if attachment.provider_input_available {
+        metadata
+    } else {
+        format!("{metadata} · retained only")
+    };
     Attachment::new(attachment.id.clone(), attachment.name.clone())
         .size_bytes(attachment.byte_len)
         .detail(detail)
