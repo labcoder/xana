@@ -35,10 +35,13 @@ pub(crate) struct PendingApproval {
 /// Xana Desktop owns this state; `gpui-ai` receives immutable snapshots.
 pub(crate) struct ConversationProjection {
     connection: String,
+    execution_owner: String,
     model: String,
+    reasoning_effort: Option<String>,
     artifact_count: usize,
     messages: Vec<ProjectedMessage>,
     streams: HashMap<DesktopOperationId, String>,
+    message_operations: HashMap<DesktopOperationId, String>,
     sequence: u64,
     active_operation: Option<DesktopOperationId>,
     pending_round_budget: Option<DesktopRoundBudgetSuspension>,
@@ -56,10 +59,13 @@ impl ConversationProjection {
     pub(crate) fn from_snapshot(snapshot: &DesktopSnapshot) -> Self {
         Self {
             connection: snapshot.connection.clone(),
+            execution_owner: snapshot.execution_owner.clone(),
             model: snapshot.model.clone(),
+            reasoning_effort: snapshot.reasoning_effort.clone(),
             artifact_count: snapshot.artifact_count,
             messages: snapshot.conversation.iter().map(project_message).collect(),
             streams: HashMap::new(),
+            message_operations: HashMap::new(),
             sequence: snapshot.sequence,
             active_operation: snapshot.active_operation,
             pending_round_budget: None,
@@ -145,6 +151,16 @@ impl ConversationProjection {
             DesktopEvent::ReasoningDelta { .. } => {
                 self.latest_activity = "Xana is reasoning".to_owned();
             }
+            DesktopEvent::ExecutionSelectionChanged {
+                model,
+                reasoning_effort,
+                receipt,
+            } => {
+                self.model = model;
+                self.reasoning_effort = reasoning_effort;
+                self.latest_activity = receipt;
+                self.failure = None;
+            }
             DesktopEvent::MessageFinal {
                 operation_id,
                 message,
@@ -215,6 +231,7 @@ impl ConversationProjection {
             DesktopEvent::ConversationCleared => {
                 self.messages.clear();
                 self.streams.clear();
+                self.message_operations.clear();
                 self.active_operation = None;
                 self.pending_round_budget = None;
                 self.latest_activity = "Conversation cleared".to_owned();
@@ -286,6 +303,14 @@ impl ConversationProjection {
         &self.model
     }
 
+    pub(crate) fn execution_owner(&self) -> &str {
+        &self.execution_owner
+    }
+
+    pub(crate) fn reasoning_effort(&self) -> Option<&str> {
+        self.reasoning_effort.as_deref()
+    }
+
     pub(crate) fn artifact_count(&self) -> usize {
         self.artifact_count
     }
@@ -338,6 +363,27 @@ impl ConversationProjection {
         self.failure.as_deref()
     }
 
+    pub(crate) fn operation_for_message(&self, message_id: &str) -> Option<DesktopOperationId> {
+        self.streams
+            .iter()
+            .chain(self.message_operations.iter())
+            .find_map(|(operation_id, candidate)| {
+                (candidate == message_id).then_some(*operation_id)
+            })
+    }
+
+    pub(crate) fn preceding_user_text(&self, message_id: &str) -> Option<&str> {
+        let index = self
+            .messages
+            .iter()
+            .position(|message| message.id == message_id)?;
+        self.messages[..index]
+            .iter()
+            .rev()
+            .find(|message| message.role == ChatRole::User)
+            .map(|message| message.text.as_str())
+    }
+
     fn append_stream(&mut self, operation_id: DesktopOperationId, delta: String) {
         let id = self
             .streams
@@ -368,7 +414,10 @@ impl ConversationProjection {
                 .iter()
                 .position(|candidate| candidate.id == stream_id)
         {
-            self.messages[index] = project_message(&message);
+            let projected = project_message(&message);
+            self.message_operations
+                .insert(operation_id, projected.id.clone());
+            self.messages[index] = projected;
             return;
         }
         if !self
@@ -376,18 +425,35 @@ impl ConversationProjection {
             .iter()
             .any(|candidate| candidate.id == message.id)
         {
-            self.messages.push(project_message(&message));
+            let projected = project_message(&message);
+            self.message_operations
+                .insert(operation_id, projected.id.clone());
+            self.messages.push(projected);
         }
     }
 
     fn finish_stream(&mut self, operation_id: DesktopOperationId, failure: Option<String>) {
-        let Some(id) = self.streams.get(&operation_id) else {
-            return;
-        };
-        if let Some(message) = self.messages.iter_mut().find(|message| &message.id == id) {
+        let id = self
+            .streams
+            .get(&operation_id)
+            .or_else(|| self.message_operations.get(&operation_id))
+            .cloned()
+            .unwrap_or_else(|| {
+                let id = format!("desktop-stream-{operation_id}");
+                self.streams.insert(operation_id, id.clone());
+                id
+            });
+        if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
             message.lifecycle = failure
                 .map(MessageLifecycle::Failed)
                 .unwrap_or(MessageLifecycle::Complete);
+        } else if let Some(reason) = failure {
+            self.messages.push(ProjectedMessage {
+                id,
+                role: ChatRole::Assistant,
+                text: "The Run ended before Xana received an assistant response.".to_owned(),
+                lifecycle: MessageLifecycle::Failed(reason),
+            });
         }
     }
 
@@ -581,6 +647,62 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id().as_ref(), "final");
         assert_eq!(messages[0].content().text(), "Hello");
+    }
+
+    #[test]
+    fn terminal_failure_marks_the_authoritative_message_retryable() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        let operation_id = DesktopOperationId::new();
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 1,
+            event: DesktopEvent::MessageFinal {
+                operation_id,
+                message: DesktopMessage {
+                    id: "managed-final".to_owned(),
+                    role: DesktopRole::Assistant,
+                    content: vec![DesktopContent::Text("partial result".to_owned())],
+                },
+            },
+        }));
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 2,
+            event: DesktopEvent::OperationState {
+                operation_id,
+                state: DesktopOperationState::Failed,
+            },
+        }));
+
+        let messages = projection.messages();
+        assert!(matches!(
+            messages[0].content().state(),
+            gpui_ai::prelude::ProgressState::Failed(reason) if reason.as_ref() == "Operation failed"
+        ));
+        assert_eq!(
+            projection.operation_for_message("managed-final"),
+            Some(operation_id)
+        );
+    }
+
+    #[test]
+    fn managed_selection_receipt_updates_only_later_turn_controls() {
+        let mut snapshot = empty_snapshot();
+        snapshot.execution_owner = "managed_codex".to_owned();
+        let mut projection = ConversationProjection::from_snapshot(&snapshot);
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 1,
+            event: DesktopEvent::ExecutionSelectionChanged {
+                model: "gpt-next".to_owned(),
+                reasoning_effort: Some("high".to_owned()),
+                receipt: "thread retained".to_owned(),
+            },
+        }));
+
+        assert_eq!(projection.model(), "gpt-next");
+        assert_eq!(projection.reasoning_effort(), Some("high"));
+        assert_eq!(projection.latest_activity(), "thread retained");
     }
 
     #[test]

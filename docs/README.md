@@ -66,6 +66,9 @@ engineering contracts used to change it.
 - [M4 Desktop native lifecycle evidence](development/m4-desktop-native-lifecycle-evidence.md)
   records command convergence, authenticated same-home instance forwarding,
   native close/notification/external-open adapters, and owner-only checks.
+- [M4 Desktop Conversation evidence](development/m4-desktop-conversation-evidence.md)
+  records native/managed Conversation, isolated composer, Activity, attachment,
+  transition, and recovery behavior.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,

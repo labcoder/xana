@@ -200,7 +200,7 @@ cargo run --locked -p xana-desktop
 cargo run --locked -p xana-desktop -- --workspace .
 ```
 
-Desktop currently provides the M4 native-provider walking skeleton, native
+Desktop currently provides native and managed Codex Conversations, native
 menus, a searchable command palette, a bounded shortcut set, redacted
 notifications, safe close handling, and one instance per canonical
 `XANA_HOME`. Its persistent Project/Conversation sidebar and bounded,
@@ -208,13 +208,19 @@ recoverable Workbench support trusted panels, resizable split layouts, one user
 default, and inert layout sharing. Its contextual navigation actions rename and
 archive Projects, move or ungroup Conversations, and create exact
 source-preserving branches or cross-workspace continuations through the shared
-runtime services. Complete `xana setup` first.
+runtime services. The isolated Message panel supports multiline drafts, multiple
+validated image attachments, drag/drop and clipboard images, queued follow-ups,
+interrupt, retry, and explicit edit/regenerate recovery. Managed Codex model and
+reasoning changes preserve the vendor thread when accepted; native model and
+Profile changes start a fresh Conversation instead of claiming to rewrite
+history. Complete `xana setup` first.
 Launching without arguments opens a read-only workspace chooser; it neither
 infers the process directory nor creates a Project or Conversation. Use
 `--workspace .` during repository development to open the current directory
 directly.
-Managed-runtime presentation and the complete graphical Conversation,
-management, Espejo, and rich-content workflows are added by later M4 tickets.
+Graphical setup, Settings, connection/model management, Doctor, and recovery are
+available. Espejo and complete rich-content rendering are added by later M4
+tickets.
 See [using Xana Desktop](docs/user/desktop.md) and
 [Desktop development](docs/contributing/desktop-development.md).
 

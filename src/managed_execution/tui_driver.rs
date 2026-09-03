@@ -11,7 +11,7 @@ use crate::{
         },
         thread_store::ManagedThreadStore,
     },
-    model_catalog::{ModelDescriptor, ModelManager},
+    model_catalog::{ModelDescriptor, ModelManager, ModelSelection},
     vision::ImageAttachment,
     workspace_host::{ConversationRef, WorkspaceHost},
 };
@@ -46,8 +46,14 @@ enum ManagedTuiCommand {
         input: String,
         images: Vec<ImageAttachment>,
     },
-    SelectModel(String),
-    SetReasoning(Option<String>),
+    SelectModel {
+        model: String,
+        reply: oneshot::Sender<Result<ModelSelection, String>>,
+    },
+    SetReasoning {
+        effort: Option<String>,
+        reply: oneshot::Sender<Result<ModelSelection, String>>,
+    },
     Clear,
     Archive {
         thread_id: String,
@@ -217,18 +223,29 @@ impl ManagedTuiDriver {
         true
     }
 
-    pub(crate) async fn select_model(&self, model: String) -> Result<(), String> {
+    pub(crate) async fn select_model(&self, model: String) -> Result<ModelSelection, String> {
+        let (reply, response) = oneshot::channel();
         self.commands
-            .send(ManagedTuiCommand::SelectModel(model))
+            .send(ManagedTuiCommand::SelectModel { model, reply })
             .await
-            .map_err(|_| "managed runtime stopped".to_owned())
+            .map_err(|_| "managed runtime stopped".to_owned())?;
+        response
+            .await
+            .map_err(|_| "managed runtime stopped before selecting the model".to_owned())?
     }
 
-    pub(crate) async fn set_reasoning(&self, effort: Option<String>) -> Result<(), String> {
+    pub(crate) async fn set_reasoning(
+        &self,
+        effort: Option<String>,
+    ) -> Result<ModelSelection, String> {
+        let (reply, response) = oneshot::channel();
         self.commands
-            .send(ManagedTuiCommand::SetReasoning(effort))
+            .send(ManagedTuiCommand::SetReasoning { effort, reply })
             .await
-            .map_err(|_| "managed runtime stopped".to_owned())
+            .map_err(|_| "managed runtime stopped".to_owned())?;
+        response
+            .await
+            .map_err(|_| "managed runtime stopped before updating reasoning".to_owned())?
     }
 
     pub(crate) async fn clear(&self) -> Result<(), String> {
@@ -390,16 +407,24 @@ async fn run_actor(
                 .await?;
                 drop(lease);
             }
-            ManagedTuiCommand::SelectModel(model) => {
-                selection = models
+            ManagedTuiCommand::SelectModel { model, reply } => {
+                let result = models
                     .select(&config.connection, &model)
-                    .map_err(|error| CodexError::Protocol(error.to_string()))?;
-                config.model = model;
+                    .map_err(|error| error.to_string());
+                if let Ok(next) = &result {
+                    selection = next.clone();
+                    config.model.clone_from(&next.model);
+                }
+                let _ = reply.send(result);
             }
-            ManagedTuiCommand::SetReasoning(effort) => {
-                selection = models
+            ManagedTuiCommand::SetReasoning { effort, reply } => {
+                let result = models
                     .update_reasoning_effort(effort)
-                    .map_err(|error| CodexError::Protocol(error.to_string()))?;
+                    .map_err(|error| error.to_string());
+                if let Ok(next) = &result {
+                    selection = next.clone();
+                }
+                let _ = reply.send(result);
             }
             ManagedTuiCommand::Clear => {
                 store

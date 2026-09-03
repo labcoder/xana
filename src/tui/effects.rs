@@ -439,20 +439,22 @@ pub(super) async fn dispatch_managed_effect(
             if !driver.models.iter().any(|model| model.id == requested) {
                 state.set_status(format!("Codex does not advertise model {requested:?}"));
             } else {
-                driver
+                let selected = driver
                     .select_model(requested.to_owned())
                     .await
                     .map_err(anyhow::Error::msg)?;
-                state.set_model(requested.to_owned());
+                state.set_model(selected.model);
             }
         }
         UpdateEffect::SetReasoning(effort) => {
-            driver
+            let selected = driver
                 .set_reasoning((effort != "auto").then_some(effort))
                 .await
                 .map_err(anyhow::Error::msg)?;
-            state
-                .set_status("Reasoning updated for subsequent turns; managed context is unchanged");
+            state.set_status(format!(
+                "Reasoning {} for subsequent turns; managed context is unchanged",
+                selected.reasoning_effort.as_deref().unwrap_or("auto")
+            ));
         }
         UpdateEffect::PersistComposer(preset) => {
             if let Err(error) = PresentationPreferences::set_composer(preferences_path, preset) {

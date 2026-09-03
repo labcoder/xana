@@ -11,7 +11,7 @@ use crate::{
     },
     managed::codex::{ApprovalDecision, ApprovalRequest, CodexAppServer, ManagedTokenUsage},
     managed_execution::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
-    model_catalog::{ModelDescriptor, ModelManager},
+    model_catalog::{ModelDescriptor, ModelManager, ModelSelection},
 };
 use std::{collections::HashMap, time::SystemTime};
 use tokio::sync::oneshot;
@@ -223,6 +223,44 @@ impl ManagedDesktopState {
             MAX_MANAGED_RECEIPTS,
             |candidate| candidate.operation_id == operation_id.to_string(),
         );
+    }
+
+    fn apply_selection(&mut self, selection: &ModelSelection, models: &[ModelDescriptor]) {
+        self.snapshot.model.clone_from(&selection.model);
+        self.snapshot
+            .reasoning_effort
+            .clone_from(&selection.reasoning_effort);
+        let descriptor = models.iter().find(|model| model.id == selection.model);
+        if let Some(image) = self
+            .facts
+            .capabilities
+            .iter_mut()
+            .find(|capability| capability.id == "image_input")
+        {
+            image.availability =
+                if descriptor.is_some_and(|model| model.input_modalities.contains("image")) {
+                    DesktopAvailability::Available
+                } else {
+                    DesktopAvailability::Unsupported
+                };
+            image.freshness = freshness(observed_at_unix_millis());
+        }
+        if let Some(reasoning) = self
+            .facts
+            .capabilities
+            .iter_mut()
+            .find(|capability| capability.id == "reasoning_summary")
+        {
+            reasoning.availability =
+                if descriptor.is_some_and(|model| model.reasoning == Some(true)) {
+                    DesktopAvailability::Available
+                } else {
+                    DesktopAvailability::Unavailable {
+                        code: "model_did_not_advertise_reasoning".to_owned(),
+                    }
+                };
+            reasoning.freshness = freshness(observed_at_unix_millis());
+        }
     }
 
     fn finish_run(&mut self, operation_id: OperationId, error: Option<String>) -> DesktopMessage {
@@ -1098,6 +1136,66 @@ impl Bridge {
                     ))
                 };
                 self.publish_command_result(command_id, result).await?;
+            }
+            BridgeCommandValue::SelectManagedModel { model } => {
+                if reject_while_running(self, command_id, active_run).await? {
+                    return Ok(None);
+                }
+                match driver.select_model(model).await {
+                    Ok(selection) => {
+                        state.apply_selection(&selection, &driver.models);
+                        let receipt = format!(
+                            "Managed model changed to {}; existing Codex thread and context retained",
+                            selection.model
+                        );
+                        self.publish_critical(DesktopUpdate::Observation(state.observation(
+                            DesktopEvent::ExecutionSelectionChanged {
+                                model: selection.model,
+                                reasoning_effort: selection.reasoning_effort,
+                                receipt,
+                            },
+                        )))
+                        .await?;
+                        self.publish_command_result(command_id, Ok(())).await?;
+                    }
+                    Err(error) => {
+                        self.publish_command_result(
+                            command_id,
+                            Err(DesktopError::new(DesktopErrorCode::CommandRejected, error)),
+                        )
+                        .await?;
+                    }
+                }
+            }
+            BridgeCommandValue::SetManagedReasoning { effort } => {
+                if reject_while_running(self, command_id, active_run).await? {
+                    return Ok(None);
+                }
+                match driver.set_reasoning(effort).await {
+                    Ok(selection) => {
+                        state.apply_selection(&selection, &driver.models);
+                        let receipt = format!(
+                            "Managed reasoning changed to {}; model and existing Codex context retained",
+                            selection.reasoning_effort.as_deref().unwrap_or("auto")
+                        );
+                        self.publish_critical(DesktopUpdate::Observation(state.observation(
+                            DesktopEvent::ExecutionSelectionChanged {
+                                model: selection.model,
+                                reasoning_effort: selection.reasoning_effort,
+                                receipt,
+                            },
+                        )))
+                        .await?;
+                        self.publish_command_result(command_id, Ok(())).await?;
+                    }
+                    Err(error) => {
+                        self.publish_command_result(
+                            command_id,
+                            Err(DesktopError::new(DesktopErrorCode::CommandRejected, error)),
+                        )
+                        .await?;
+                    }
+                }
             }
             BridgeCommandValue::DecidePermission {
                 permission_id,

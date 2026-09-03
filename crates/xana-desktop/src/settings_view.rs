@@ -51,6 +51,7 @@ const SECTIONS: [DesktopSettingsSection; 12] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SettingsViewEvent {
     Close,
+    StartNewConversation,
     Reload,
     Review,
     Apply,
@@ -916,6 +917,17 @@ impl SettingsView {
                             cx.emit(SettingsViewEvent::Reload);
                         })),
                 )
+                .when(receipt.requires_new_conversation, |bar| {
+                    bar.child(
+                        Button::new("settings-start-new-conversation")
+                            .primary()
+                            .compact()
+                            .label("Start new Conversation")
+                            .on_click(cx.listener(|_, _, _, cx| {
+                                cx.emit(SettingsViewEvent::StartNewConversation);
+                            })),
+                    )
+                })
                 .into_any_element(),
         )
     }

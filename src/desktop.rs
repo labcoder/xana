@@ -818,6 +818,12 @@ pub enum DesktopEvent {
         operation_id: DesktopOperationId,
         text: String,
     },
+    /// A managed owner accepted a later-turn model or reasoning selection.
+    ExecutionSelectionChanged {
+        model: String,
+        reasoning_effort: Option<String>,
+        receipt: String,
+    },
     MessageFinal {
         operation_id: DesktopOperationId,
         message: DesktopMessage,
@@ -1108,6 +1114,33 @@ impl DesktopClient {
             .map(|command_id| DesktopCommandReceipt {
                 command_id,
                 operation_id: Some(operation_id),
+            })
+    }
+
+    /// Changes the model for later turns of the current managed Conversation.
+    /// The provider-owned thread and its existing context remain unchanged.
+    pub fn select_managed_model(
+        &self,
+        model: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SelectManagedModel {
+            model: model.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Changes reasoning effort for later turns of the current managed Conversation.
+    pub fn set_managed_reasoning(
+        &self,
+        effort: Option<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SetManagedReasoning { effort })
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
             })
     }
 
@@ -1537,6 +1570,12 @@ enum BridgeCommandValue {
     Clear,
     Interrupt {
         operation_id: DesktopOperationId,
+    },
+    SelectManagedModel {
+        model: String,
+    },
+    SetManagedReasoning {
+        effort: Option<String>,
     },
     DecidePermission {
         permission_id: DesktopPermissionId,
@@ -2457,6 +2496,18 @@ impl Bridge {
                     })
                     .and_then(command_result);
                 self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SelectManagedModel { .. }
+            | BridgeCommandValue::SetManagedReasoning { .. } => {
+                self.publish_command_result(
+                    command_id,
+                    Err(DesktopError::new(
+                        DesktopErrorCode::UnsupportedExecutionOwner,
+                        "in-place model and reasoning changes belong to managed runtimes; use Settings and start a new native Conversation",
+                    )),
+                )
+                .await?;
                 Ok(None)
             }
             BridgeCommandValue::DecidePermission {

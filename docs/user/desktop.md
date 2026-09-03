@@ -26,11 +26,10 @@ To open the current repository directly while developing, name it explicitly:
 cargo run --locked -p xana-desktop -- --workspace .
 ```
 
-The current Desktop supports native conversational providers, a persistent
-Project/Conversation sidebar, graphical first-run setup, staged Settings, and
-focused management and recovery views. Managed Codex conversation
-presentation, multiple windows, and installation as a packaged application
-remain unavailable.
+The current Desktop supports native conversational providers and managed Codex,
+a persistent Project/Conversation sidebar, graphical first-run setup, staged
+Settings, and focused management and recovery views. Multiple windows and
+installation as a packaged application remain unavailable.
 
 `--catalog` opens the provider-free component review surface. `--open
 conversation` and `--open activity` focus a named part of an already-running
@@ -132,10 +131,37 @@ Xana previews the bounded panel list and substitutes an unavailable placeholder
 for an unknown future panel. They cannot contain messages, paths, prompts,
 commands, credentials, or executable content.
 
-The Message panel is currently a guaranteed layout anchor while the retained
-`gpui-ai` composer remains inside Conversation. The next M4 Desktop slice
-separates those two views without replacing the retained, virtualized chat or
-its IME-capable composer.
+Conversation and Message are independent panels over one selected Xana
+Conversation. Conversation uses a retained, virtualized `gpui-ai` transcript;
+Message owns the retained IME-capable composer. Switching Conversations keeps a
+bounded UI entity per recent Conversation, so draft text, cursor/selection,
+focus, transcript scroll, staged attachments, and queued follow-ups do not leak
+into another Conversation.
+
+The attachment picker accepts multiple images. You can also drag image files
+onto Message or use **Clipboard image**; every path or clipboard payload is
+validated by the runtime before it becomes part of a turn. While a Run is
+active, a new submission becomes a visible queued follow-up. Current native and
+managed owners do not advertise same-turn steering, so Xana says so rather than
+silently treating a follow-up as a steer.
+
+The model menu is populated from the selected connection's runtime-owned model
+catalog. Managed Codex model and reasoning controls apply to later turns only
+after the app-server acknowledges them, and the existing vendor thread remains
+attached. A native model or Profile transition instead requires a fresh
+Conversation; the prior history remains unchanged. Every transition reports its
+effect in Activity.
+
+Failed responses expose **Retry** only while Xana retains the exact bounded Run
+input. **Regenerate** and edit actions copy text into Message for review and do
+not mutate immutable history. Interrupt targets the exact active Run. Clear,
+new, archive, branch, retry, and follow-up remain distinct lifecycle actions.
+
+Activity shows owner-qualified reasoning summaries, tools, approvals, child and
+integration work, progress, execution facts, usage freshness, receipts, and
+terminal failures. Approval cards carry exact runtime-issued identity and offer
+allow-once, allow-session-scope, and deny; hiding or moving Activity does not
+grant authority. The status bar continues to surface outstanding attention.
 
 ## Menus, palette, and shortcuts
 

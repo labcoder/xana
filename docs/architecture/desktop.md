@@ -90,10 +90,11 @@ be proven, shutdown remains incomplete rather than claiming success. The window
 is removed only after the ordered expected-stop acknowledgment. While a Run is
 active, a native prompt offers keep-open, cancel-and-quit, or return; it does
 not infer intent from window destruction. Explicit test shutdown joins the
-runtime thread with a ten-second bound. Managed Codex
-presentation is not part of the initial M4 walking skeleton and is rejected
-before an app-server child can be started; M4-22 owns the final adapter and
-parity proof.
+runtime thread with a ten-second bound. Managed Codex uses the same Desktop
+projection and command queues but delegates its inner loop to the vendor-owned
+app-server. Xana keeps the app-server thread identity, exposed activity,
+approvals, completion state, and later-turn selection receipts inside the same
+Conversation boundary; it never represents the managed loop as native work.
 
 The Activity projection exposes an unresolved native round-budget suspension
 with exact operation/suspension identity, committed-result count, and typed
@@ -195,6 +196,24 @@ intent handling. Other AI surfaces are stateless projections rebuilt from
 bounded data. Semantic client copy is addressed by stable message code with
 typed, bounded parameters; unknown or untranslated codes remain visible and
 cannot change action identity or authority.
+
+Conversation and Message are separate trusted Workbench panels. Xana retains a
+bounded `Chat`/`PromptBar` pair per recently visited Conversation, matching the
+bounded composer-state store. That preserves component-owned cursor/selection,
+focus, virtual-list scroll, and follow-tail state while Xana separately retains
+draft text, staged attachment references, and queued turns by stable
+Conversation identity. Eviction drops only inactive presentation state; it can
+never move input or authority to another Conversation.
+
+The runtime—not GPUI—validates picker, drag/drop, and clipboard image inputs and
+returns typed staged-attachment projections. Submission, interruption,
+permission decisions, retries, and managed selection changes all carry exact
+command or Operation identity. Managed model/reasoning changes wait for the
+app-server actor's acknowledgment and affect later turns without replacing the
+thread. Native provider/model/Profile changes use the settings transaction and
+a fresh Conversation. Failed-response retry is available only while a bounded
+application cache still holds the exact originating submission; edit and
+regenerate copy text into the composer and never rewrite history.
 
 `xana-desktop --catalog` selects a provider-free deterministic review surface
 before runtime launch. It exercises the same visual globals and real pinned

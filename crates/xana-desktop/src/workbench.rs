@@ -13,8 +13,9 @@ use crate::{
     settings_view::{SettingsView, SettingsViewEvent},
 };
 use gpui::{
-    AnyElement, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions, PromptLevel,
-    Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
+    AnyElement, Context, Entity, ExternalPaths, IntoElement, ParentElement as _, PathPromptOptions,
+    PromptLevel, Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px,
+    rems,
 };
 use gpui_ai::prelude::{
     ApprovalCard, ApprovalEvent, Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch,
@@ -33,7 +34,7 @@ use gpui_component::{
     v_flex, v_resizable,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     sync::Arc,
     time::Duration,
@@ -43,15 +44,18 @@ use xana::desktop::{
     DesktopActivityState, DesktopAttachment, DesktopClient, DesktopCommandReceipt,
     DesktopControlPlane, DesktopConversationState, DesktopDockPlacement, DesktopEvent,
     DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
-    DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
-    DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
-    DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
-    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
-    NotificationDestination, NotificationPlanner, last_window_effect,
+    DesktopModelOption, DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget,
+    DesktopOperationState, DesktopPanelId, DesktopRoundBudgetSuspension,
+    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSnapshot,
+    DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout,
+    DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect, NotificationDestination,
+    NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 const MAX_UPDATES_PER_FRAME: usize = 64;
+const MAX_RECOVERABLE_SUBMISSIONS: usize = 64;
+const MAX_RETAINED_CONVERSATION_UIS: usize = 128;
 const DOCUMENTATION_URL: &str = "https://github.com/labcoder/xana#readme";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,9 +70,17 @@ enum NavigationDialog {
     MoveConversation { conversation_id: String },
 }
 
+struct RetainedConversationUi {
+    chat: Entity<Chat>,
+    prompt: Entity<PromptBar>,
+    _chat_subscription: Subscription,
+    _prompt_subscription: Subscription,
+}
+
 /// Owns retained GPUI entities, Xana's runtime client, and controlled snapshots.
 pub(crate) struct Workbench {
     runtime: DesktopClient,
+    control: DesktopControlPlane,
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
     projection: ConversationProjection,
@@ -86,6 +98,9 @@ pub(crate) struct Workbench {
     navigation: DesktopNavigationTarget,
     chat: Entity<Chat>,
     prompt: Entity<PromptBar>,
+    conversation_uis: HashMap<String, RetainedConversationUi>,
+    conversation_ui_recency: VecDeque<String>,
+    model_options: Vec<DesktopModelOption>,
     composer: ComposerStore,
     pending_submissions: HashMap<
         u64,
@@ -95,6 +110,8 @@ pub(crate) struct Workbench {
             Option<xana::desktop::DesktopOperationId>,
         ),
     >,
+    recoverable_submissions: HashMap<xana::desktop::DesktopOperationId, (String, QueuedSubmission)>,
+    recoverable_order: VecDeque<xana::desktop::DesktopOperationId>,
     pending_attachment_commands: HashMap<u64, String>,
     sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
@@ -103,8 +120,6 @@ pub(crate) struct Workbench {
     shutdown_pending: bool,
     close_prompt_open: bool,
     notifications: NotificationPlanner,
-    _chat_subscription: Subscription,
-    _prompt_subscription: Subscription,
     _sidebar_subscription: Subscription,
     _command_subscription: Subscription,
     _settings_subscription: Subscription,
@@ -150,17 +165,16 @@ impl Workbench {
             .clone()
             .or_else(|| navigation_snapshot.selected_conversation.clone())
             .unwrap_or_else(|| runtime.initial_snapshot().session_id.clone());
-        let composer = ComposerStore::new(active_conversation);
+        let composer = ComposerStore::new(active_conversation.clone());
+        let model_options = model_options_for(&control, projection.connection());
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
             prompt.set_progress(ProgressState::Pending, cx);
             prompt.set_models(
-                [
-                    PromptModel::new(projection.model().to_owned(), projection.model().to_owned())
-                        .provider(projection.connection().to_owned()),
-                ],
+                prompt_models(&model_options, projection.connection(), projection.model()),
                 cx,
             );
+            prompt.set_selected_model(projection.model().to_owned(), cx);
         });
 
         // `gpui-ai::Chat` currently requires a PromptBar. Xana mounts one
@@ -192,7 +206,14 @@ impl Workbench {
         });
         let navigation_input = cx.new(|cx| InputState::new(window, cx).placeholder("Project name"));
         let settings_view = cx.new(|cx| {
-            SettingsView::new(control, settings_snapshot.clone(), None, None, window, cx)
+            SettingsView::new(
+                control.clone(),
+                settings_snapshot.clone(),
+                None,
+                None,
+                window,
+                cx,
+            )
         });
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
@@ -216,6 +237,15 @@ impl Workbench {
                 this.handle_prompt_event(event, window, cx);
             },
         );
+        let conversation_uis = HashMap::from([(
+            active_conversation.clone(),
+            RetainedConversationUi {
+                chat: chat.clone(),
+                prompt: prompt.clone(),
+                _chat_subscription: chat_subscription,
+                _prompt_subscription: prompt_subscription,
+            },
+        )]);
         let command_subscription = cx.subscribe_in(
             &command_search,
             window,
@@ -260,6 +290,7 @@ impl Workbench {
 
         Self {
             runtime,
+            control,
             instance,
             native_paths,
             projection,
@@ -277,8 +308,13 @@ impl Workbench {
             navigation,
             chat,
             prompt,
+            conversation_uis,
+            conversation_ui_recency: VecDeque::from([active_conversation]),
+            model_options,
             composer,
             pending_submissions: HashMap::new(),
+            recoverable_submissions: HashMap::new(),
+            recoverable_order: VecDeque::new(),
             pending_attachment_commands: HashMap::new(),
             sidebar,
             command_search,
@@ -287,12 +323,92 @@ impl Workbench {
             shutdown_pending: false,
             close_prompt_open: false,
             notifications: NotificationPlanner::new(),
-            _chat_subscription: chat_subscription,
-            _prompt_subscription: prompt_subscription,
             _sidebar_subscription: sidebar_subscription,
             _command_subscription: command_subscription,
             _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
+        }
+    }
+
+    fn activate_conversation_ui(
+        &mut self,
+        conversation: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.conversation_uis.contains_key(conversation) {
+            let prompt_id = format!("xana-composer-{conversation}");
+            let prompt = cx.new(|cx| PromptBar::new(prompt_id, window, cx));
+            prompt.update(cx, |prompt, cx| {
+                prompt.set_models(
+                    prompt_models(
+                        &self.model_options,
+                        self.projection.connection(),
+                        self.projection.model(),
+                    ),
+                    cx,
+                );
+                prompt.set_selected_model(self.projection.model().to_owned(), cx);
+            });
+
+            let transcript_prompt_id = format!("xana-transcript-anchor-{conversation}");
+            let transcript_prompt =
+                cx.new(|cx| PromptBar::new(transcript_prompt_id, window, cx).hidden());
+            let chat_id = format!("xana-conversation-{conversation}");
+            let chat = cx.new(|cx| Chat::new(chat_id, transcript_prompt, window, cx));
+            chat.update(cx, |chat, cx| {
+                chat.set_welcome(
+                    Some(
+                        ChatWelcome::new("What can I help you with?")
+                            .description("Xana Desktop is connected to the local Xana runtime.")
+                            .suggestions([Suggestion::new("capabilities", "What can Xana do?")]),
+                    ),
+                    cx,
+                );
+                chat.set_messages(Arc::from(self.projection.messages()), window, cx);
+            });
+
+            let chat_subscription =
+                cx.subscribe_in(&chat, window, |this, _, event: &ChatEvent, window, cx| {
+                    this.handle_chat_event(event, window, cx);
+                });
+            let prompt_subscription = cx.subscribe_in(
+                &prompt,
+                window,
+                |this, _, event: &PromptBarEvent, window, cx| {
+                    this.handle_prompt_event(event, window, cx);
+                },
+            );
+            self.conversation_uis.insert(
+                conversation.to_owned(),
+                RetainedConversationUi {
+                    chat: chat.clone(),
+                    prompt: prompt.clone(),
+                    _chat_subscription: chat_subscription,
+                    _prompt_subscription: prompt_subscription,
+                },
+            );
+        }
+
+        let retained = self
+            .conversation_uis
+            .get(conversation)
+            .expect("the active Conversation UI is retained");
+        self.chat = retained.chat.clone();
+        self.prompt = retained.prompt.clone();
+        self.conversation_ui_recency
+            .retain(|candidate| candidate != conversation);
+        self.conversation_ui_recency
+            .push_back(conversation.to_owned());
+        while self.conversation_uis.len() > MAX_RETAINED_CONVERSATION_UIS {
+            let Some(candidate) = self.conversation_ui_recency.pop_front() else {
+                break;
+            };
+            if candidate == conversation {
+                self.conversation_ui_recency.push_back(candidate);
+            } else {
+                self.conversation_uis.remove(&candidate);
+            }
         }
     }
 
@@ -303,6 +419,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         match event {
+            ChatEvent::Prompt(event) => self.handle_prompt_event(event, window, cx),
             ChatEvent::SuggestionSelected { suggestion_id }
                 if suggestion_id.as_ref() == "capabilities" =>
             {
@@ -310,8 +427,70 @@ impl Workbench {
                     prompt.set_draft("What can Xana do?", window, cx);
                 });
             }
+            ChatEvent::RetryRequested { message_id } => {
+                self.retry_message(message_id.as_ref(), window, cx);
+            }
+            ChatEvent::RegenerateRequested { message_id } => {
+                if let Some(text) = self.projection.preceding_user_text(message_id.as_ref()) {
+                    let text = text.to_owned();
+                    if let Err(reason) = self.composer.set_draft(text.clone()) {
+                        self.projection.fail(reason);
+                    } else {
+                        self.projection.set_activity(
+                            "Prior request copied to the composer; review it, then send or branch explicitly.",
+                        );
+                        self.prompt.update(cx, |prompt, cx| {
+                            prompt.set_draft(text, window, cx);
+                            prompt.focus(window, cx);
+                        });
+                    }
+                }
+            }
+            ChatEvent::EditSubmitted { text, .. } => {
+                let text = text.to_string();
+                if let Err(reason) = self.composer.set_draft(text.clone()) {
+                    self.projection.fail(reason);
+                } else {
+                    self.projection.set_activity(
+                        "Edited text moved to the composer; immutable history is unchanged.",
+                    );
+                    self.prompt.update(cx, |prompt, cx| {
+                        prompt.set_draft(text, window, cx);
+                        prompt.focus(window, cx);
+                    });
+                }
+            }
             _ => {}
         }
+        self.sync_components(window, cx);
+    }
+
+    fn retry_message(&mut self, message_id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(operation_id) = self.projection.operation_for_message(message_id) else {
+            self.projection
+                .fail("This response has no recoverable Xana Run identity.");
+            return;
+        };
+        let Some((conversation, submission)) =
+            self.recoverable_submissions.get(&operation_id).cloned()
+        else {
+            self.projection.fail(
+                "The bounded retry record for this Run is no longer retained; copy the request instead.",
+            );
+            return;
+        };
+        if conversation != self.composer.active_key() {
+            self.projection
+                .fail("Retry is available only in the Conversation that owns this Run.");
+        } else if self.projection.is_running() {
+            self.projection
+                .fail("Wait for or interrupt the active Run before retrying.");
+        } else {
+            self.submit_composer_submission(submission);
+            self.projection
+                .set_activity("Retrying the same bounded request as a new Turn…");
+        }
+        self.sync_components(window, cx);
     }
 
     fn handle_prompt_event(
@@ -360,14 +539,93 @@ impl Workbench {
             }
             PromptBarEvent::ModelChanged { model_id, .. } => {
                 if model_id.as_ref() != self.projection.model() {
-                    self.projection.fail(
-                        "Changing models from the composer requires an owner-correct transition; open Settings to review it.",
-                    );
+                    self.request_model_change(model_id.to_string(), window, cx);
+                    return;
                 }
             }
             PromptBarEvent::MentionSelected { .. }
             | PromptBarEvent::CommandSelected { .. }
             | PromptBarEvent::EnhanceRequested { .. } => {}
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn request_model_change(&mut self, model: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.projection.is_running() {
+            self.projection
+                .fail("Wait for or interrupt the active Run before changing models.");
+            self.sync_components(window, cx);
+            return;
+        }
+        if self.projection.execution_owner() == "managed_codex" {
+            match self.runtime.select_managed_model(model.clone()) {
+                Ok(_) => self.projection.set_activity(format!(
+                    "Changing later managed turns to {model}; the Codex thread is retained…"
+                )),
+                Err(error) => self.projection.fail(error.message),
+            }
+            self.sync_components(window, cx);
+            return;
+        }
+
+        let connection = self.projection.connection().to_owned();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Start a new Conversation with this model?",
+            Some(
+                "Native model changes do not rewrite this Conversation. Xana will update the default selection and open a fresh Conversation in the same workspace.",
+            ),
+            &["Start new Conversation", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                _ = this.update_in(cx, |this, window, cx| {
+                    this.sync_components(window, cx);
+                });
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this.control.select_model(&connection, &model, None) {
+                    Ok(receipt) if receipt.requires_new_conversation => {
+                        match this.runtime.new_conversation(this.selected_project.clone()) {
+                            Ok(_) => this.projection.set_activity(format!(
+                                "Opening a new native Conversation with {model}; prior history is unchanged…"
+                            )),
+                            Err(error) => this.projection.fail(format!(
+                                "Model selection was saved, but the new Conversation could not open: {}",
+                                error.message
+                            )),
+                        }
+                    }
+                    Ok(_) => this.projection.fail(
+                        "The model selection did not require the expected new Conversation.",
+                    ),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn set_managed_reasoning(
+        &mut self,
+        effort: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.projection.is_running() {
+            self.projection
+                .fail("Wait for or interrupt the active Run before changing reasoning.");
+        } else {
+            match self.runtime.set_managed_reasoning(effort.clone()) {
+                Ok(_) => self.projection.set_activity(format!(
+                    "Changing later managed turns to {} reasoning; the Codex thread is retained…",
+                    effort.as_deref().unwrap_or("auto")
+                )),
+                Err(error) => self.projection.fail(error.message),
+            }
         }
         self.sync_components(window, cx);
     }
@@ -380,6 +638,18 @@ impl Workbench {
             .submit_with_attachments(text.clone(), submission.attachments.clone())
         {
             Ok(receipt) => {
+                if let Some(operation_id) = receipt.operation_id {
+                    self.recoverable_submissions
+                        .insert(operation_id, (conversation.clone(), submission.clone()));
+                    self.recoverable_order
+                        .retain(|candidate| *candidate != operation_id);
+                    self.recoverable_order.push_back(operation_id);
+                    while self.recoverable_order.len() > MAX_RECOVERABLE_SUBMISSIONS {
+                        if let Some(expired) = self.recoverable_order.pop_front() {
+                            self.recoverable_submissions.remove(&expired);
+                        }
+                    }
+                }
                 self.pending_submissions.insert(
                     receipt.command_id,
                     (conversation, submission, receipt.operation_id),
@@ -425,20 +695,39 @@ impl Workbench {
                 }
             };
             _ = this.update_in(cx, |this, window, cx| {
-                for path in paths {
-                    match this.runtime.stage_image(path, true) {
-                        Ok(receipt) => {
-                            this.pending_attachment_commands
-                                .insert(receipt.command_id, conversation.clone());
-                            this.projection.set_activity("Validating image attachment…");
-                        }
-                        Err(error) => this.projection.fail(error.message),
-                    }
-                }
+                this.stage_paths_for(&conversation, paths);
                 this.sync_components(window, cx);
             });
         })
         .detach();
+    }
+
+    fn stage_paths_for(
+        &mut self,
+        conversation: &str,
+        paths: impl IntoIterator<Item = std::path::PathBuf>,
+    ) {
+        for path in paths {
+            match self.runtime.stage_image(path, true) {
+                Ok(receipt) => {
+                    self.pending_attachment_commands
+                        .insert(receipt.command_id, conversation.to_owned());
+                    self.projection.set_activity("Validating image attachment…");
+                }
+                Err(error) => self.projection.fail(error.message),
+            }
+        }
+    }
+
+    fn stage_dropped_paths(
+        &mut self,
+        paths: &ExternalPaths,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let conversation = self.composer.active_key().to_owned();
+        self.stage_paths_for(&conversation, paths.0.iter().cloned());
+        self.sync_components(window, cx);
     }
 
     fn stage_clipboard_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -504,6 +793,14 @@ impl Workbench {
     ) {
         match event {
             SettingsViewEvent::Close => self.request_close_settings(window, cx),
+            SettingsViewEvent::StartNewConversation => {
+                match self.runtime.new_conversation(self.selected_project.clone()) {
+                    Ok(_) => self
+                        .projection
+                        .set_activity("Opening a new Conversation with the applied model/Profile…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+            }
             SettingsViewEvent::Reload => {
                 let result = self.runtime.reload_settings();
                 self.track_settings_command(result, "Refreshing authoritative settings…", cx);
@@ -1007,8 +1304,11 @@ impl Workbench {
                         .clone()
                         .or_else(|| snapshot.navigation.selected_conversation.clone())
                         .unwrap_or_else(|| snapshot.session_id.clone());
-                    self.composer.switch_to(conversation);
+                    self.composer.switch_to(conversation.clone());
                     self.projection.replace_snapshot(&snapshot);
+                    self.model_options =
+                        model_options_for(&self.control, self.projection.connection());
+                    self.activate_conversation_ui(&conversation, window, cx);
                 }
                 DesktopUpdate::Navigation(navigation) => {
                     self.navigation_snapshot = navigation;
@@ -1053,10 +1353,27 @@ impl Workbench {
                     }
                 }
                 DesktopUpdate::Observation(observation) => {
+                    let terminal = match &observation.event {
+                        DesktopEvent::OperationState {
+                            operation_id,
+                            state,
+                        } => Some((*operation_id, *state)),
+                        DesktopEvent::ConversationCleared => {
+                            self.recoverable_submissions.clear();
+                            self.recoverable_order.clear();
+                            None
+                        }
+                        _ => None,
+                    };
                     if !self.projection.apply(observation)
                         && let Err(error) = self.runtime.request_snapshot()
                     {
                         self.projection.fail(error.message);
+                    }
+                    if let Some((operation_id, DesktopOperationState::Completed)) = terminal {
+                        self.recoverable_submissions.remove(&operation_id);
+                        self.recoverable_order
+                            .retain(|candidate| *candidate != operation_id);
                     }
                 }
                 DesktopUpdate::HostObservation(observation) => {
@@ -1100,6 +1417,9 @@ impl Workbench {
                         if !accepted {
                             if let Some(operation_id) = operation_id {
                                 self.projection.reject_user(operation_id);
+                                self.recoverable_submissions.remove(&operation_id);
+                                self.recoverable_order
+                                    .retain(|candidate| *candidate != operation_id);
                             }
                             self.composer
                                 .restore_submission_for(&conversation, submission);
@@ -1275,13 +1595,14 @@ impl Workbench {
             prompt.set_draft(composer.draft, window, cx);
             prompt.set_attachments(prompt_attachments, cx);
             prompt.set_models(
-                [PromptModel::new(
-                    self.projection.model().to_owned(),
-                    self.projection.model().to_owned(),
-                )
-                .provider(self.projection.connection().to_owned())],
+                prompt_models(
+                    &self.model_options,
+                    self.projection.connection(),
+                    self.projection.model(),
+                ),
                 cx,
             );
+            prompt.set_selected_model(self.projection.model().to_owned(), cx);
         });
         self.command_search.update(cx, |search, cx| {
             search.set_items(
@@ -1872,11 +2193,59 @@ impl Workbench {
             .collect::<Vec<_>>();
         let workbench = cx.weak_entity();
         let clipboard_workbench = cx.weak_entity();
+        let dropped_workbench = cx.weak_entity();
+        let settings_workbench = cx.weak_entity();
+        let reasoning_controls =
+            (self.projection.execution_owner() == "managed_codex").then(|| {
+                let descriptor = self
+                    .model_options
+                    .iter()
+                    .find(|model| model.id == self.projection.model());
+                let mut efforts = vec![None];
+                efforts.extend(
+                    descriptor
+                        .into_iter()
+                        .flat_map(|model| model.reasoning_efforts.iter().cloned().map(Some)),
+                );
+                h_flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(tokens.spacing.xs)
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("Reasoning"),
+                    )
+                    .children(efforts.into_iter().map(|effort| {
+                        let selected = self.projection.reasoning_effort() == effort.as_deref();
+                        let label = effort.clone().unwrap_or_else(|| "auto".to_owned());
+                        let workbench = cx.weak_entity();
+                        let mut button = Button::new(format!("reasoning-{label}"))
+                            .compact()
+                            .label(label);
+                        if selected {
+                            button = button.primary();
+                        }
+                        button.on_click(move |_, window, cx| {
+                            _ = workbench.update(cx, |this, cx| {
+                                this.set_managed_reasoning(effort.clone(), window, cx);
+                            });
+                        })
+                    }))
+                    .into_any_element()
+            });
         v_flex()
             .size_full()
             .min_h_0()
             .gap(tokens.spacing.sm)
             .p(tokens.spacing.sm)
+            .drag_over::<ExternalPaths>(|panel, _, _, _| panel.border_2())
+            .on_drop(move |paths: &ExternalPaths, window, cx| {
+                _ = dropped_workbench.update(cx, |this, cx| {
+                    this.stage_dropped_paths(paths, window, cx);
+                });
+            })
             .when(!queue.is_empty(), |panel| {
                 panel.child(
                     div().max_h(rems(12.)).overflow_y_scrollbar().child(
@@ -1892,18 +2261,33 @@ impl Workbench {
                 )
             })
             .child(
-                h_flex().justify_end().child(
-                    Button::new("xana-paste-clipboard-image")
-                        .compact()
-                        .label("Paste clipboard image")
-                        .tooltip("Stage the image currently on the native clipboard")
-                        .on_click(move |_, window, cx| {
-                            _ = clipboard_workbench.update(cx, |this, cx| {
-                                this.stage_clipboard_image(window, cx);
-                            });
-                        }),
-                ),
+                h_flex()
+                    .justify_between()
+                    .gap(tokens.spacing.sm)
+                    .child(
+                        Button::new("xana-open-conversation-settings")
+                            .compact()
+                            .label("Model & Profile settings")
+                            .tooltip("Native changes apply to a new Conversation")
+                            .on_click(move |_, window, cx| {
+                                _ = settings_workbench.update(cx, |this, cx| {
+                                    this.open_settings(window, cx);
+                                });
+                            }),
+                    )
+                    .child(
+                        Button::new("xana-paste-clipboard-image")
+                            .compact()
+                            .label("Paste clipboard image")
+                            .tooltip("Stage the image currently on the native clipboard")
+                            .on_click(move |_, window, cx| {
+                                _ = clipboard_workbench.update(cx, |this, cx| {
+                                    this.stage_clipboard_image(window, cx);
+                                });
+                            }),
+                    ),
             )
+            .when_some(reasoning_controls, |panel, controls| panel.child(controls))
             .child(div().w_full().flex_none().child(self.prompt.clone()))
             .into_any_element()
     }
@@ -2806,6 +3190,72 @@ fn project_title(snapshot: &DesktopNavigationSnapshot, id: &str) -> String {
         .unwrap_or_else(|| "Project".to_owned())
 }
 
+fn model_options_for(control: &DesktopControlPlane, connection: &str) -> Vec<DesktopModelOption> {
+    control
+        .connections()
+        .ok()
+        .and_then(|snapshot| {
+            snapshot
+                .connections
+                .into_iter()
+                .find(|candidate| candidate.id == connection)
+                .map(|candidate| candidate.models)
+        })
+        .unwrap_or_default()
+}
+
+fn prompt_models(
+    options: &[DesktopModelOption],
+    connection: &str,
+    selected: &str,
+) -> Vec<PromptModel> {
+    let mut models = options
+        .iter()
+        .map(|model| {
+            let capabilities = [
+                model
+                    .reasoning
+                    .is_some_and(|value| value)
+                    .then_some("reasoning"),
+                model
+                    .input_modalities
+                    .iter()
+                    .any(|input| input == "image")
+                    .then_some("vision"),
+                model.tools.is_some_and(|value| value).then_some("tools"),
+            ]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" · ");
+            let description = if capabilities.is_empty() {
+                model.source.clone()
+            } else {
+                format!("{} · {capabilities}", model.source)
+            };
+            let mut option = PromptModel::new(model.id.clone(), model.display_name.clone())
+                .provider(connection.to_owned())
+                .description(description);
+            if let Some(context) = model
+                .context_tokens
+                .and_then(|value| u64::try_from(value).ok())
+            {
+                option = option.context_window(context);
+            }
+            option
+        })
+        .collect::<Vec<_>>();
+    if !models.iter().any(|model| model.id().as_ref() == selected) {
+        models.insert(
+            0,
+            PromptModel::new(selected.to_owned(), selected.to_owned())
+                .provider(connection.to_owned())
+                .description("Current retained Conversation selection"),
+        );
+    }
+    models
+}
+
 fn navigation_for_intent(intent: DesktopLaunchIntent) -> DesktopNavigationTarget {
     match intent {
         DesktopLaunchIntent::Focus => DesktopNavigationTarget::Conversation,
@@ -2959,5 +3409,31 @@ mod tests {
         assert!(trusted_regular_file(&file));
         assert!(trusted_directory(directory.path()));
         assert!(!trusted_regular_file(&directory.path().join("missing")));
+    }
+
+    #[test]
+    fn prompt_catalog_retains_current_model_and_capability_metadata() {
+        let models = prompt_models(
+            &[DesktopModelOption {
+                id: "vision-model".to_owned(),
+                display_name: "Vision Model".to_owned(),
+                input_modalities: vec!["text".to_owned(), "image".to_owned()],
+                output_modalities: vec!["text".to_owned()],
+                tools: Some(true),
+                reasoning: Some(true),
+                reasoning_efforts: vec!["high".to_owned()],
+                default_reasoning_effort: Some("high".to_owned()),
+                context_tokens: Some(128_000),
+                max_output_tokens: Some(8_000),
+                pricing: None,
+                source: "managed runtime".to_owned(),
+            }],
+            "codex",
+            "missing-current",
+        );
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id().as_ref(), "missing-current");
+        assert_eq!(models[1].id().as_ref(), "vision-model");
     }
 }

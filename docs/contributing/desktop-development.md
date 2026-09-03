@@ -23,15 +23,16 @@ The argument-free command exercises the icon-style read-only launcher. Pass
 workspace. This distinction prevents a packaged icon launch from silently
 using an arbitrary inherited process directory.
 
-The current M4 slice supports native conversational connections and displays a
-real Conversation plus Activity projection. It also projects the shared
+The current M4 slice supports native conversational connections and managed
+Codex, with real Conversation, isolated Message composer, and nested Activity
+projections. It also projects the shared
 command registry into native menus and one retained command palette, enforces
 one Desktop process per canonical `XANA_HOME`, and waits for acknowledged
 runtime shutdown before removing the last window. A missing configuration,
 invalid workspace, protocol mismatch, unavailable instance, or unavailable
-runtime exits nonzero with a stable semantic error. Managed Codex and the
-complete Workbench remain later M4 work; the walking skeleton rejects managed
-execution before starting a vendor process.
+runtime exits nonzero with a stable semantic error. Managed commands remain
+typed and bounded: Codex owns its inner loop, while Xana owns its Conversation
+projection, activity, approval routing, and exact later-turn selection receipts.
 
 Review the provider-free visual system and real pinned component states without
 creating configuration:
