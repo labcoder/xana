@@ -545,12 +545,6 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                 "Xana durable --resume applies to native conversations or a planned managed continuation with a frozen profile; Codex owns ordinary managed thread resume"
             )
         }
-        if let ChatSurface::Desktop { bridge, .. } = &surface {
-            return Err(anyhow::Error::new(crate::desktop::reject_managed(
-                bridge,
-                &provider_name,
-            )));
-        }
         if frozen_profile.is_none() {
             let conversation_id = conversation
                 .conversation_id()
@@ -575,6 +569,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         let managed_config = ManagedChatConfig {
             connection: provider_name,
             model,
+            profile_name,
             selection: managed_selection,
             workspace: workspace_root,
             data_root: paths.data_dir().to_owned(),
@@ -583,6 +578,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             developer_instructions,
             identity_version: crate::prompt::XANA_IDENTITY_VERSION,
             presentation,
+            resource_policy,
         };
         return match one_shot {
             Some(input) => {
@@ -662,9 +658,20 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                         .await?;
                         (ChatExit::Quit, None)
                     }
-                    ChatSurface::Desktop { .. } => unreachable!(
-                        "managed Desktop execution is rejected before the Codex server starts"
-                    ),
+                    ChatSurface::Desktop { bridge, .. } => {
+                        let exit = crate::desktop::run_managed(
+                            server,
+                            manager,
+                            managed_config,
+                            workspace_host,
+                            conversation,
+                            bridge,
+                            paths,
+                            notification_policy,
+                        )
+                        .await?;
+                        (exit, None)
+                    }
                 };
                 Ok(ChatRun::Exited {
                     exit,

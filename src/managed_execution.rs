@@ -33,6 +33,7 @@ use std::path::PathBuf;
 pub(crate) struct ManagedChatConfig {
     pub(crate) connection: String,
     pub(crate) model: String,
+    pub(crate) profile_name: String,
     pub(crate) selection: ModelSelection,
     pub(crate) workspace: PathBuf,
     pub(crate) data_root: PathBuf,
@@ -41,6 +42,7 @@ pub(crate) struct ManagedChatConfig {
     pub(crate) developer_instructions: String,
     pub(crate) identity_version: &'static str,
     pub(crate) presentation: ResolvedPresentation,
+    pub(crate) resource_policy: crate::resource::ResourcePolicyV1,
 }
 
 pub(crate) struct ManagedOneShotRequest {

@@ -422,7 +422,7 @@ pub(crate) struct ClientSnapshotSeed {
 }
 
 impl ClientSnapshot {
-    pub(super) fn initial(seed: ClientSnapshotSeed, history: Vec<Message>) -> Self {
+    pub(crate) fn initial(seed: ClientSnapshotSeed, history: Vec<Message>) -> Self {
         let (conversation, conversation_truncated) = bounded_history(history);
         let artifact_count = conversation
             .iter()

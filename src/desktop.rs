@@ -8,6 +8,7 @@
 mod conversation;
 mod instance;
 mod layout;
+mod managed;
 mod management;
 mod navigation;
 mod settings;
@@ -56,6 +57,8 @@ pub use settings::{
     DesktopSettingsBackup, DesktopSettingsDraftId, DesktopSettingsDraftSnapshot,
     DesktopSettingsOwner, DesktopSettingsReceipt, DesktopSettingsSection, DesktopSettingsSnapshot,
 };
+
+pub(crate) use managed::run_managed;
 
 pub use crate::host_lifecycle::{
     AttentionKind, AttentionSignal, ClientFocus, GlobalNotice, GlobalNoticeKind, LastWindowChoice,
@@ -127,7 +130,7 @@ struct NativeCommandContext<'a> {
     attachments: &'a DesktopAttachmentService,
 }
 
-struct NativeFrontendState {
+struct DesktopFrontendState {
     navigation: DesktopNavigationSnapshot,
     navigation_store: navigation::DesktopNavigationStore,
     layout: DesktopResolvedLayout,
@@ -490,9 +493,41 @@ impl fmt::Display for DesktopOperationId {
 
 /// Opaque permission correlation retained by the Desktop application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct DesktopPermissionId {
-    operation_id: OperationId,
-    invocation_id: ToolInvocationId,
+pub struct DesktopPermissionId(DesktopPermissionTarget);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum DesktopPermissionTarget {
+    Native {
+        operation_id: OperationId,
+        invocation_id: ToolInvocationId,
+    },
+    Managed {
+        operation_id: OperationId,
+        request_id: u64,
+    },
+}
+
+impl DesktopPermissionId {
+    fn native(operation_id: OperationId, invocation_id: ToolInvocationId) -> Self {
+        Self(DesktopPermissionTarget::Native {
+            operation_id,
+            invocation_id,
+        })
+    }
+
+    fn managed(operation_id: OperationId, request_id: u64) -> Self {
+        Self(DesktopPermissionTarget::Managed {
+            operation_id,
+            request_id,
+        })
+    }
+
+    fn operation_id(self) -> OperationId {
+        match self.0 {
+            DesktopPermissionTarget::Native { operation_id, .. }
+            | DesktopPermissionTarget::Managed { operation_id, .. } => operation_id,
+        }
+    }
 }
 
 /// Opaque identity for one exact round-budget suspension.
@@ -565,6 +600,10 @@ impl DesktopAttachment {
 
     fn into_image(self) -> crate::vision::ImageRef {
         self.image.image
+    }
+
+    fn into_managed_image(self) -> ImageAttachment {
+        self.image
     }
 }
 
@@ -1058,7 +1097,7 @@ impl DesktopClient {
         })
         .map(|command_id| DesktopCommandReceipt {
             command_id,
-            operation_id: Some(DesktopOperationId(permission_id.operation_id)),
+            operation_id: Some(DesktopOperationId(permission_id.operation_id())),
         })
     }
 
@@ -1643,7 +1682,7 @@ pub(crate) async fn run_native(
             execution_host,
             conversation,
             header.notification_policy.clone(),
-            NativeFrontendState {
+            DesktopFrontendState {
                 navigation,
                 navigation_store,
                 layout,
@@ -1656,17 +1695,6 @@ pub(crate) async fn run_native(
     Ok(exit)
 }
 
-pub(crate) fn reject_managed(bridge: &Bridge, connection: &str) -> DesktopError {
-    let error = DesktopError::new(
-        DesktopErrorCode::UnsupportedExecutionOwner,
-        format!(
-            "Desktop managed-runtime projection for connection {connection} is not available in the M4 walking skeleton"
-        ),
-    );
-    bridge.startup.fail_if_pending(error.clone());
-    error
-}
-
 impl Bridge {
     async fn serve_native(
         mut self,
@@ -1674,10 +1702,10 @@ impl Bridge {
         execution_host: ExecutionHost,
         conversation: ConversationRef,
         notification_policy: NotificationPolicy,
-        frontend: NativeFrontendState,
+        frontend: DesktopFrontendState,
     ) -> Result<ChatExit, DesktopError> {
         self.notification_policy = notification_policy;
-        let NativeFrontendState {
+        let DesktopFrontendState {
             mut navigation,
             navigation_store,
             mut layout,
@@ -2410,6 +2438,21 @@ impl Bridge {
                 permission_id,
                 allow_once,
             } => {
+                let DesktopPermissionTarget::Native {
+                    operation_id,
+                    invocation_id,
+                } = permission_id.0
+                else {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::CommandRejected,
+                            "managed approval was sent to the native runtime",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                };
                 let decision = if allow_once {
                     ControllerDecision::AllowOnce
                 } else {
@@ -2417,8 +2460,8 @@ impl Bridge {
                 };
                 let result = owner
                     .send(ClientCommand::new(RuntimeCommand::DecidePermission {
-                        operation_id: permission_id.operation_id,
-                        invocation_id: permission_id.invocation_id,
+                        operation_id,
+                        invocation_id,
                         decision,
                     }))
                     .await
@@ -2895,10 +2938,10 @@ fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -
             },
             AgentEvent::PermissionRequested { request } => project_permission(request),
             AgentEvent::PermissionAudited { fact } => DesktopEvent::PermissionResolved {
-                permission_id: DesktopPermissionId {
-                    operation_id: fact.request.operation_id,
-                    invocation_id: fact.request.invocation_id,
-                },
+                permission_id: DesktopPermissionId::native(
+                    fact.request.operation_id,
+                    fact.request.invocation_id,
+                ),
             },
             AgentEvent::AssistantMessage {
                 operation_id,
@@ -3034,10 +3077,7 @@ fn project_operation_state(state: OperationState) -> DesktopOperationState {
 
 fn project_permission(request: &PermissionRequest) -> DesktopEvent {
     DesktopEvent::PermissionRequired {
-        permission_id: DesktopPermissionId {
-            operation_id: request.operation_id,
-            invocation_id: request.invocation_id,
-        },
+        permission_id: DesktopPermissionId::native(request.operation_id, request.invocation_id),
         tool: request.tool_name.clone(),
         effect: format!("{:?}", request.effect_class).to_ascii_lowercase(),
         scope: permission_scope_label(&request.scope),
@@ -3445,7 +3485,7 @@ mod tests {
             host,
             conversation.clone(),
             NotificationPolicy::default(),
-            NativeFrontendState {
+            DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
                 navigation_store,
                 layout,
@@ -3564,7 +3604,7 @@ mod tests {
             host,
             conversation,
             NotificationPolicy::default(),
-            NativeFrontendState {
+            DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
                 navigation_store,
                 layout,
@@ -3710,7 +3750,7 @@ mod tests {
             host,
             conversation,
             NotificationPolicy::default(),
-            NativeFrontendState {
+            DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
                 navigation_store,
                 layout,

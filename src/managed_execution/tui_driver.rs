@@ -75,12 +75,44 @@ pub(crate) struct ManagedTuiDriver {
 
 impl ManagedTuiDriver {
     pub(crate) async fn start(
-        mut server: CodexAppServer,
+        server: CodexAppServer,
         models: ModelManager,
         config: ManagedChatConfig,
         workspace_host: Arc<WorkspaceHost>,
         conversation: ConversationRef,
     ) -> Result<Self, CodexError> {
+        Self::start_inner(
+            server,
+            models,
+            config,
+            Some(workspace_host),
+            conversation.clone(),
+            false,
+        )
+        .await
+        .map(|(driver, _)| driver)
+    }
+
+    /// Starts the same managed frontend actor while an application execution
+    /// host owns workspace leases. The Codex thread is opened eagerly so the
+    /// host receives a durable Conversation identity before admitting a Run.
+    pub(crate) async fn start_hosted(
+        server: CodexAppServer,
+        models: ModelManager,
+        config: ManagedChatConfig,
+        conversation: ConversationRef,
+    ) -> Result<(Self, ConversationRef), CodexError> {
+        Self::start_inner(server, models, config, None, conversation, true).await
+    }
+
+    async fn start_inner(
+        mut server: CodexAppServer,
+        models: ModelManager,
+        config: ManagedChatConfig,
+        workspace_host: Option<Arc<WorkspaceHost>>,
+        mut conversation: ConversationRef,
+        eager_thread: bool,
+    ) -> Result<(Self, ConversationRef), CodexError> {
         if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
             return Err(CodexError::LoginFailed(format!(
                 "Codex is logged out; run `xana connection login {}` first",
@@ -98,10 +130,10 @@ impl ManagedTuiDriver {
             )));
         }
         let selected_model = config.model.clone();
-        let store =
+        let mut store =
             ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
                 .map_err(|error| CodexError::Io(error.to_string()))?;
-        let (initial_thread, thread) = initial_managed_thread(
+        let (initial_thread, mut thread) = initial_managed_thread(
             &conversation,
             &store,
             &config.connection,
@@ -110,6 +142,21 @@ impl ManagedTuiDriver {
         let version = server.version.clone();
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(EVENT_CAPACITY);
+        let initial_thread = if eager_thread {
+            let mut handler = TuiManagedHandler::new(event_tx.clone());
+            let thread_id =
+                ensure_thread_loaded(&mut server, &mut thread, &mut store, &config, &mut handler)
+                    .await?;
+            conversation = ConversationRef::Managed {
+                conversation_id: thread.conversation_id(),
+                connection: config.connection.clone(),
+                thread_id: thread_id.clone(),
+            };
+            send_event(&event_tx, ManagedTuiEvent::ThreadOpened(thread_id.clone())).await?;
+            Some(thread_id)
+        } else {
+            initial_thread
+        };
         let active = Arc::new(Mutex::new(None));
         let task_active = Arc::clone(&active);
         let task = tokio::spawn(run_actor(
@@ -117,23 +164,26 @@ impl ManagedTuiDriver {
             models,
             config,
             workspace_host,
-            conversation,
+            conversation.clone(),
             store,
             thread,
             command_rx,
             event_tx,
             task_active,
         ));
-        Ok(Self {
-            commands: command_tx,
-            events: event_rx,
-            active,
-            task,
-            models: available,
-            initial_thread,
-            version,
-            selected_model,
-        })
+        Ok((
+            Self {
+                commands: command_tx,
+                events: event_rx,
+                active,
+                task,
+                models: available,
+                initial_thread,
+                version,
+                selected_model,
+            },
+            conversation,
+        ))
     }
 
     pub(crate) async fn submit(
@@ -216,7 +266,7 @@ async fn run_actor(
     mut server: CodexAppServer,
     models: ModelManager,
     mut config: ManagedChatConfig,
-    workspace_host: Arc<WorkspaceHost>,
+    workspace_host: Option<Arc<WorkspaceHost>>,
     mut conversation: ConversationRef,
     mut store: ManagedThreadStore,
     mut thread: ManagedThreadState,
@@ -232,19 +282,23 @@ async fn run_actor(
                 input,
                 images,
             } => {
-                let lease = match workspace_host.acquire_root(conversation.clone()) {
-                    Ok(lease) => lease,
-                    Err(error) => {
-                        send_event(
-                            &events,
-                            ManagedTuiEvent::TurnFinished {
-                                operation_id,
-                                error: Some(error.to_string()),
-                            },
-                        )
-                        .await?;
-                        continue;
+                let lease = if let Some(workspace_host) = workspace_host.as_ref() {
+                    match workspace_host.acquire_root(conversation.clone()) {
+                        Ok(lease) => Some(lease),
+                        Err(error) => {
+                            send_event(
+                                &events,
+                                ManagedTuiEvent::TurnFinished {
+                                    operation_id,
+                                    error: Some(error.to_string()),
+                                },
+                            )
+                            .await?;
+                            continue;
+                        }
                     }
+                } else {
+                    None
                 };
                 let local_images = match images
                     .iter()
