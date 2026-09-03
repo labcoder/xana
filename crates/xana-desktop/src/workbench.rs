@@ -15,9 +15,9 @@ use crate::{
     settings_view::{SettingsView, SettingsViewEvent},
 };
 use gpui::{
-    AnyElement, Context, Entity, ExternalPaths, IntoElement, ParentElement as _, PathPromptOptions,
-    PromptLevel, Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px,
-    rems,
+    AnyElement, ClipboardItem, Context, Entity, ExternalPaths, Image, ImageFormat, IntoElement,
+    ParentElement as _, PathPromptOptions, PromptLevel, Render, Role, Subscription,
+    SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
     ApprovalCard, ApprovalEvent, Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch,
@@ -43,15 +43,15 @@ use std::{
 };
 use xana::desktop::{
     AttentionKind, AttentionSignal, ClientFocus, DesktopActivityItem, DesktopActivityOwner,
-    DesktopActivityState, DesktopAttachment, DesktopClient, DesktopCommandReceipt,
-    DesktopControlPlane, DesktopConversationState, DesktopDockPlacement, DesktopEvent,
-    DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
+    DesktopActivityState, DesktopArtifactReader, DesktopAttachment, DesktopClient,
+    DesktopCommandReceipt, DesktopControlPlane, DesktopConversationState, DesktopDockPlacement,
+    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
     DesktopModelOption, DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget,
-    DesktopOperationState, DesktopPanelId, DesktopRoundBudgetSuspension,
-    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSection,
-    DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
-    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
-    NotificationDestination, NotificationPlanner, last_window_effect,
+    DesktopOperationState, DesktopPanelId, DesktopResource, DesktopResourceValidation,
+    DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
+    DesktopSettingsSection, DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis,
+    DesktopUpdate, DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice,
+    LastWindowEffect, NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -82,6 +82,7 @@ struct RetainedConversationUi {
 /// Owns retained GPUI entities, Xana's runtime client, and controlled snapshots.
 pub(crate) struct Workbench {
     runtime: DesktopClient,
+    artifact_reader: DesktopArtifactReader,
     control: DesktopControlPlane,
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
@@ -116,6 +117,8 @@ pub(crate) struct Workbench {
     recoverable_submissions: HashMap<xana::desktop::DesktopOperationId, (String, QueuedSubmission)>,
     recoverable_order: VecDeque<xana::desktop::DesktopOperationId>,
     pending_attachment_commands: HashMap<u64, String>,
+    preview_attempted: HashSet<String>,
+    selected_artifact: Option<String>,
     sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
     settings_view: Entity<SettingsView>,
@@ -140,6 +143,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let artifact_reader = runtime.artifact_reader();
         let mut projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
         let layout = runtime.initial_snapshot().layout.layout.clone();
@@ -307,8 +311,9 @@ impl Workbench {
                 .unwrap_or(true)
         });
 
-        Self {
+        let mut workbench = Self {
             runtime,
+            artifact_reader,
             control,
             instance,
             native_paths,
@@ -336,6 +341,8 @@ impl Workbench {
             recoverable_submissions: HashMap::new(),
             recoverable_order: VecDeque::new(),
             pending_attachment_commands: HashMap::new(),
+            preview_attempted: HashSet::new(),
+            selected_artifact: None,
             sidebar,
             command_search,
             settings_view,
@@ -348,7 +355,9 @@ impl Workbench {
             _espejo_subscription: espejo_subscription,
             _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
-        }
+        };
+        workbench.schedule_image_previews(window, cx);
+        workbench
     }
 
     fn activate_conversation_ui(
@@ -480,6 +489,15 @@ impl Workbench {
                         prompt.focus(window, cx);
                     });
                 }
+            }
+            ChatEvent::AttachmentActivated { attachment_id, .. } => {
+                self.selected_artifact = Some(attachment_id.to_string());
+                if !self.layout.panels().contains(&DesktopPanelId::Artifacts) {
+                    self.reopen_layout_panel(DesktopPanelId::Artifacts, window, cx);
+                }
+                self.activate_layout_panel(DesktopPanelId::Artifacts, window, cx);
+                self.projection
+                    .set_activity("Opened artifact details in the Artifacts panel");
             }
             _ => {}
         }
@@ -1739,7 +1757,48 @@ impl Workbench {
         self.espejo.update(cx, |espejo, cx| {
             espejo.update_navigation(navigation, selected_project, queue_counts, cx);
         });
+        self.schedule_image_previews(window, cx);
         cx.notify();
+    }
+
+    fn schedule_image_previews(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preview_attempted
+            .retain(|artifact_id| self.projection.resource(artifact_id).is_some());
+        for resource in self.projection.pending_preview_resources() {
+            if !self.preview_attempted.insert(resource.artifact_id.clone()) {
+                continue;
+            }
+            let reader = self.artifact_reader.clone();
+            let artifact_id = resource.artifact_id.clone();
+            cx.spawn_in(window, async move |this, cx| {
+                let loaded = cx
+                    .background_executor()
+                    .spawn(async move { reader.read_static_raster(&resource) })
+                    .await;
+                _ = this.update_in(cx, |this, window, cx| {
+                    match loaded {
+                        Ok(preview) => {
+                            if let Some(format) = ImageFormat::from_mime_type(&preview.media_type) {
+                                let image = Arc::new(Image::from_bytes(format, preview.bytes.to_vec()));
+                                this.projection
+                                    .install_image_preview(preview.artifact_id, image);
+                            } else {
+                                this.projection.set_activity(format!(
+                                    "No reviewed Desktop decoder is available for {}",
+                                    preview.media_type
+                                ));
+                            }
+                        }
+                        Err(error) => this.projection.set_activity(format!(
+                            "Preview unavailable for {}: {}. The safe resource card remains available.",
+                            artifact_id, error.message
+                        )),
+                    }
+                    this.sync_components(window, cx);
+                });
+            })
+            .detach();
+        }
     }
 
     fn schedule_layout_save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2257,11 +2316,7 @@ impl Workbench {
                 ),
                 cx,
             ),
-            DesktopPanelId::Artifacts => self.placeholder_panel(
-                "Artifacts",
-                format!("{} retained artifact(s)", self.projection.artifact_count()),
-                cx,
-            ),
+            DesktopPanelId::Artifacts => self.render_artifacts_panel(cx),
             DesktopPanelId::Usage => self.placeholder_panel(
                 "Usage",
                 "Usage observations remain source-qualified in Activity.",
@@ -2610,6 +2665,174 @@ impl Workbench {
                     })
                     .children(approval_cards)
                     .children(activity_items),
+            )
+            .into_any_element()
+    }
+
+    fn render_artifacts_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let selected = self
+            .selected_artifact
+            .as_deref()
+            .and_then(|artifact_id| self.projection.resource(artifact_id));
+        let resources = self.projection.recent_resources();
+        let cards = resources
+            .iter()
+            .map(|resource| {
+                let artifact_id = resource.artifact_id.clone();
+                let mut button = Button::new(format!("artifact-{artifact_id}"))
+                    .label(format!(
+                        "{} · {} · {} bytes",
+                        resource.display_name(),
+                        resource.media_type(),
+                        resource.byte_len
+                    ))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.selected_artifact = Some(artifact_id.clone());
+                        cx.notify();
+                    }));
+                if self.selected_artifact.as_deref() == Some(resource.artifact_id.as_str()) {
+                    button = button.primary();
+                }
+                button
+            })
+            .collect::<Vec<_>>();
+        let detail = selected.map(|resource| self.render_artifact_detail(resource, cx));
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap(tokens.spacing.md)
+            .p(tokens.spacing.md)
+            .child(
+                h_flex()
+                    .justify_between()
+                    .child(
+                        div()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child("Artifacts"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} retained · newest 128 shown",
+                                self.projection.artifact_count()
+                            )),
+                    ),
+            )
+            .when(resources.is_empty(), |panel| {
+                panel.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child("No typed resources are present in this Conversation."),
+                )
+            })
+            .when(!resources.is_empty(), |panel| {
+                panel.child(
+                    v_flex()
+                        .id("artifact-list")
+                        .max_h(px(180.))
+                        .gap(tokens.spacing.xs)
+                        .overflow_y_scrollbar()
+                        .children(cards),
+                )
+            })
+            .when_some(detail, |panel, detail| panel.child(detail))
+            .into_any_element()
+    }
+
+    fn render_artifact_detail(
+        &self,
+        resource: &DesktopResource,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let validation = match &resource.validation {
+            DesktopResourceValidation::Pending => "pending".to_owned(),
+            DesktopResourceValidation::Accepted => "accepted".to_owned(),
+            DesktopResourceValidation::Rejected { code } => format!("rejected: {code}"),
+        };
+        let declared = resource
+            .declared_media_type
+            .as_deref()
+            .unwrap_or("not declared");
+        let detected = resource
+            .detected_media_type
+            .as_deref()
+            .unwrap_or("not detected");
+        let lineage = resource.lineage.as_ref().map_or_else(
+            || "Original retained artifact".to_owned(),
+            |lineage| {
+                format!(
+                    "Derived from {} by {} {}",
+                    lineage.source_artifact_id, lineage.transformer, lineage.transformer_version
+                )
+            },
+        );
+        let capability_lines = resource.capabilities.iter().map(|capability| {
+            div()
+                .text_xs()
+                .text_color(cx.theme().muted_foreground)
+                .child(format!(
+                    "{:?}: {:?} · source {:?} · selected {} · authorized {}{}{}",
+                    capability.operation,
+                    capability.availability,
+                    capability.source,
+                    capability.selected,
+                    capability.authorized,
+                    capability
+                        .connection
+                        .as_deref()
+                        .map(|value| format!(" · connection {value}"))
+                        .unwrap_or_default(),
+                    capability
+                        .model
+                        .as_deref()
+                        .map(|value| format!(" · model {value}"))
+                        .unwrap_or_default(),
+                ))
+        });
+        let artifact_id = resource.artifact_id.clone();
+        v_flex()
+            .min_h_0()
+            .gap(tokens.spacing.sm)
+            .p(tokens.spacing.sm)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(tokens.radius.md)
+            .child(
+                div()
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .child(resource.display_name()),
+            )
+            .child(div().text_sm().child(format!(
+                "Declared {declared} · detected {detected} · {validation}"
+            )))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(lineage),
+            )
+            .child(
+                h_flex().child(
+                    Button::new(format!("copy-artifact-{artifact_id}"))
+                        .label("Copy reference")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(artifact_id.clone()));
+                            this.projection.set_activity("Artifact reference copied");
+                            this.sync_components(window, cx);
+                        })),
+                ),
+            )
+            .child(
+                v_flex()
+                    .min_h_0()
+                    .gap(tokens.spacing.xs)
+                    .overflow_y_scrollbar()
+                    .children(capability_lines),
             )
             .into_any_element()
     }

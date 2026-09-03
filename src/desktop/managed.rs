@@ -11,6 +11,7 @@ use crate::{
     },
     managed::codex::{ApprovalDecision, ApprovalRequest, CodexAppServer, ManagedTokenUsage},
     managed_execution::{ManagedChatConfig, ManagedTuiDriver, ManagedTuiEvent},
+    message::ContentBlock,
     model_catalog::{ModelDescriptor, ModelManager, ModelSelection},
 };
 use std::{collections::HashMap, time::SystemTime};
@@ -329,11 +330,11 @@ impl ManagedDesktopState {
             MAX_MANAGED_RECEIPTS,
             |candidate| candidate.operation_id == operation_id.to_string(),
         );
-        DesktopMessage {
-            id: format!("managed-{}-{operation_id}", self.thread_id),
-            role: DesktopRole::Assistant,
-            content: vec![DesktopContent::Text(text)],
-        }
+        content::project_message(
+            format!("managed-{}-{operation_id}", self.thread_id),
+            &Message::text(Role::Assistant, text),
+            &self.snapshot.semantic.attachment_policy.configured,
+        )
     }
 
     fn observation(&mut self, event: DesktopEvent) -> DesktopObservation {
@@ -1833,10 +1834,13 @@ mod tests {
 
         let message = state.finish_run(operation_id, None);
 
-        assert_eq!(
-            message.content,
-            vec![DesktopContent::Text("final answer".to_owned())]
-        );
+        assert!(matches!(
+            message.content.as_slice(),
+            [DesktopContent {
+                value: DesktopContentValue::Text(text),
+                ..
+            }] if text == "final answer"
+        ));
         assert_eq!(state.facts.completions.len(), 1);
         assert_eq!(state.facts.completions[0].status, "completed");
         assert_eq!(state.facts.completions[0].input_tokens, Some(10));

@@ -17,13 +17,13 @@ pub(crate) use activity::{
     ExecutionOwnerV1, HostLocationV1, WorkspaceAuthorityV1,
 };
 pub(crate) use content::{
-    AttachmentPolicySnapshotV1, AttachmentProvenanceV1, AttachmentV1, ContentPartV1,
-    DisclosureReceiptV1,
+    AttachmentPolicySnapshotV1, AttachmentProvenanceV1, AttachmentV1, CapabilityFactV1,
+    ContentPartV1, DisclosureReceiptV1, ResourceOperationV1,
 };
 pub(crate) use event::{DecodedSemanticEventV1, SemanticEventEnvelopeV1, SemanticEventV1};
 pub(crate) use projection::{
-    LinkPreviewCacheStatusV1, LinkPreviewCardV1, ResourceCapabilityContextV1, normalize_message,
-    project_resource_capabilities,
+    ContentActionV1, ContentProjectionTierV1, LinkPreviewCacheStatusV1, LinkPreviewCardV1,
+    ResourceCapabilityContextV1, normalize_message, project_content, project_resource_capabilities,
 };
 pub(crate) use state::{SemanticDeltaV1, SemanticReplicaV1, SemanticSnapshotV1};
 pub(crate) use usage::{

@@ -21,6 +21,8 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "wayland",
     "x11",
 ] }
+markdown = "1.0.0"
+url = "2.5.8"
 
 [package]
 name = "xana"

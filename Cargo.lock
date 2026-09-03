@@ -9563,7 +9563,9 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui_platform",
+ "markdown",
  "tempfile",
+ "url",
  "xana",
 ]
 

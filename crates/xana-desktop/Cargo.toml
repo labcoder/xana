@@ -18,6 +18,8 @@ gpui-ai.workspace = true
 gpui-component.workspace = true
 gpui-component-assets.workspace = true
 gpui_platform.workspace = true
+markdown.workspace = true
+url.workspace = true
 xana = { path = "../.." }
 
 [dev-dependencies]

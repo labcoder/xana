@@ -5,6 +5,7 @@
 //! and typed intent; provider adapters, credentials, tools, paths, and runtime
 //! ownership stay in this package.
 
+mod content;
 mod conversation;
 mod instance;
 mod layout;
@@ -13,6 +14,13 @@ mod management;
 mod navigation;
 mod settings;
 
+pub use content::{
+    DesktopArtifactReader, DesktopCapabilitySource, DesktopContent, DesktopContentAction,
+    DesktopContentTier, DesktopContentValue, DesktopImagePreview, DesktopMessage, DesktopResource,
+    DesktopResourceAvailability, DesktopResourceCapability, DesktopResourceKind,
+    DesktopResourceLineage, DesktopResourceMetadata, DesktopResourceOperation,
+    DesktopResourceValidation, DesktopRole,
+};
 pub use conversation::{
     DesktopActivityDisclosure, DesktopActivityItem, DesktopActivityOwner, DesktopActivityState,
     DesktopAvailability, DesktopCompletionCheck, DesktopCompletionReceipt,
@@ -80,7 +88,7 @@ use crate::{
         EmbeddedClient, FRONTEND_PROTOCOL_VERSION,
     },
     identity::{OperationId, RoundBudgetId, ToolInvocationId},
-    message::{ContentBlock, Message, Role},
+    message::{Message, Role},
     native_runtime::{
         AgentEvent, OperationOutcome, OperationState, RoundBudgetAction, RuntimeCommand,
         RuntimeHandle,
@@ -690,42 +698,6 @@ pub struct DesktopControllerLease {
     pub disconnect_reason: Option<String>,
 }
 
-/// Presentation-safe conversation message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesktopMessage {
-    pub id: String,
-    pub role: DesktopRole,
-    pub content: Vec<DesktopContent>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DesktopRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-/// Typed message content without artifact bytes or filesystem authority.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DesktopContent {
-    Text(String),
-    Image {
-        artifact_id: String,
-        media_type: String,
-        byte_len: u64,
-        width: Option<u32>,
-        height: Option<u32>,
-    },
-    ToolCall {
-        name: String,
-    },
-    ToolResult {
-        succeeded: bool,
-        output: String,
-    },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesktopOperationState {
     Running,
@@ -936,6 +908,7 @@ pub struct DesktopClient {
     backend: Option<thread::JoinHandle<()>>,
     backend_done: std_mpsc::Receiver<()>,
     initial_snapshot: DesktopSnapshot,
+    artifacts: DesktopArtifactReader,
 }
 
 impl DesktopClient {
@@ -964,6 +937,9 @@ impl DesktopClient {
                 format!("could not resolve Xana paths: {error}"),
             )
         })?;
+        let artifacts = DesktopArtifactReader::new(crate::artifact::ArtifactStore::new(
+            paths.data_dir().join("artifacts"),
+        ));
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
         let (startup_sender, startup_receiver) = std_mpsc::sync_channel(1);
@@ -1043,11 +1019,17 @@ impl DesktopClient {
             backend: Some(backend),
             backend_done: done_receiver,
             initial_snapshot,
+            artifacts,
         })
     }
 
     pub fn initial_snapshot(&self) -> &DesktopSnapshot {
         &self.initial_snapshot
+    }
+
+    /// Returns a bounded reader that accepts only runtime-projected resources.
+    pub fn artifact_reader(&self) -> DesktopArtifactReader {
+        self.artifacts.clone()
     }
 
     pub fn submit(&self, input: impl Into<String>) -> Result<DesktopCommandReceipt, DesktopError> {
@@ -1948,7 +1930,11 @@ impl Bridge {
                     let projected = DesktopObservation {
                         version: observation.version,
                         sequence: observation.sequence,
-                        event: project_event(&observation.event, &snapshot.session_id),
+                        event: project_event(
+                            &observation.event,
+                            &snapshot.session_id,
+                            &snapshot.semantic.attachment_policy.configured,
+                        ),
                     };
                     let replaceable = projected.event.replaceable();
                     self.publish(DesktopUpdate::Observation(projected), replaceable).await?;
@@ -2794,7 +2780,11 @@ fn project_snapshot(
         model: snapshot.model.clone(),
         reasoning_effort: snapshot.reasoning_effort.clone(),
         notification_policy: notification_policy.clone(),
-        conversation: project_messages(snapshot.session_id.to_string(), &snapshot.conversation),
+        conversation: content::project_messages(
+            snapshot.session_id.to_string(),
+            &snapshot.conversation,
+            &snapshot.semantic.attachment_policy.configured,
+        ),
         conversation_truncated: snapshot.conversation_truncated,
         active_operation: snapshot.active_operation.map(DesktopOperationId),
         pending_approval_count: snapshot.pending_approval_count,
@@ -3001,57 +2991,11 @@ fn project_controller<K: ToString>(
     }
 }
 
-fn project_messages(session_id: String, messages: &[Message]) -> Vec<DesktopMessage> {
-    let mut duplicate_counts = std::collections::HashMap::<String, usize>::new();
-    messages
-        .iter()
-        .map(|message| {
-            let encoded = serde_json::to_vec(message).unwrap_or_default();
-            let digest = blake3::hash(&encoded).to_hex().to_string();
-            let duplicate = duplicate_counts.entry(digest.clone()).or_default();
-            let id = format!("{session_id}:{digest}:{duplicate}");
-            *duplicate = duplicate.saturating_add(1);
-            project_message(id, message)
-        })
-        .collect()
-}
-
-fn project_message(id: String, message: &Message) -> DesktopMessage {
-    DesktopMessage {
-        id,
-        role: match message.role {
-            Role::System => DesktopRole::System,
-            Role::User => DesktopRole::User,
-            Role::Assistant => DesktopRole::Assistant,
-            Role::Tool => DesktopRole::Tool,
-        },
-        content: message
-            .content
-            .iter()
-            .map(|content| match content {
-                ContentBlock::Text(text) => {
-                    DesktopContent::Text(bounded_text(text.clone(), MAX_PUBLIC_TEXT_BYTES))
-                }
-                ContentBlock::Image(image) => DesktopContent::Image {
-                    artifact_id: image.artifact.reference.id.to_string(),
-                    media_type: image.media_type.clone(),
-                    byte_len: image.byte_len,
-                    width: image.width,
-                    height: image.height,
-                },
-                ContentBlock::ToolCall(call) => DesktopContent::ToolCall {
-                    name: call.name.clone(),
-                },
-                ContentBlock::ToolResult(result) => DesktopContent::ToolResult {
-                    succeeded: matches!(result.status, crate::message::ToolResultStatus::Success),
-                    output: bounded_text(result.output.clone(), MAX_PUBLIC_TEXT_BYTES),
-                },
-            })
-            .collect(),
-    }
-}
-
-fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -> DesktopEvent {
+fn project_event(
+    event: &ClientEvent,
+    session_id: &crate::identity::SessionId,
+    resource_policy: &crate::resource::ResourcePolicyV1,
+) -> DesktopEvent {
     if let Some(activity) = conversation::project_live_activity(event) {
         return DesktopEvent::ActivityUpserted(activity);
     }
@@ -3088,7 +3032,11 @@ fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -
                 message,
             } => DesktopEvent::MessageFinal {
                 operation_id: DesktopOperationId(*operation_id),
-                message: project_message(format!("{session_id}:{operation_id}:final"), message),
+                message: content::project_message(
+                    format!("{session_id}:{operation_id}:final"),
+                    message,
+                    resource_policy,
+                ),
             },
             AgentEvent::UsageObserved {
                 operation_id,
@@ -3472,13 +3420,20 @@ mod tests {
     #[test]
     fn public_message_projection_never_exposes_image_paths_or_bytes() {
         let message = Message::text(Role::Assistant, "bounded answer");
-        let projected = project_message("stable".to_owned(), &message);
+        let projected = content::project_message(
+            "stable".to_owned(),
+            &message,
+            &crate::resource::ResourcePolicyV1::default(),
+        );
 
         assert_eq!(projected.id, "stable");
-        assert_eq!(
-            projected.content,
-            vec![DesktopContent::Text("bounded answer".to_owned())]
-        );
+        assert!(matches!(
+            projected.content.as_slice(),
+            [DesktopContent {
+                value: DesktopContentValue::Text(text),
+                ..
+            }] if text == "bounded answer"
+        ));
     }
 
     #[test]
@@ -3594,9 +3549,11 @@ mod tests {
             },
         }));
 
-        let DesktopEvent::RoundBudgetReached(projected) =
-            project_event(&event, &crate::identity::SessionId::new())
-        else {
+        let DesktopEvent::RoundBudgetReached(projected) = project_event(
+            &event,
+            &crate::identity::SessionId::new(),
+            &crate::resource::ResourcePolicyV1::default(),
+        ) else {
             panic!("round-budget projection")
         };
         assert_eq!(projected.operation_id, DesktopOperationId(operation_id));
@@ -3688,7 +3645,10 @@ mod tests {
                         .content
                         .into_iter()
                         .find_map(|content| match content {
-                            DesktopContent::Text(text) => Some(text),
+                            DesktopContent {
+                                value: DesktopContentValue::Text(text),
+                                ..
+                            } => Some(text),
                             _ => None,
                         });
                 }

@@ -1704,12 +1704,16 @@ impl PresentationCapabilities {
             pointer: true,
             clipboard: true,
             inline_images: true,
-            inline_audio_video: true,
+            // M4 presents audio/video as typed metadata cards. Advertising
+            // inline playback waits for a reviewed native adapter.
+            inline_audio_video: false,
             safe_link_open: true,
             notifications: true,
             accessibility: AccessibilityCapability::NativeSemanticTree,
             rich_markdown: true,
-            math: true,
+            // The GPUI adapter currently presents bounded LaTeX source. Do
+            // not claim rich math until a bundled nontrusting renderer lands.
+            math: false,
             composable_layout: true,
         }
     }
@@ -1874,7 +1878,11 @@ mod tests {
             PresentationCapabilities::tui(ColorCapability::None, false, false, false, false);
         assert!(!hostile.inline_images);
         assert!(!hostile.clipboard);
-        assert!(PresentationCapabilities::desktop().composable_layout);
+        let desktop = PresentationCapabilities::desktop();
+        assert!(desktop.composable_layout);
+        assert!(desktop.inline_images);
+        assert!(!desktop.inline_audio_video);
+        assert!(!desktop.math);
     }
 
     #[test]

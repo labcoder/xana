@@ -1,19 +1,27 @@
 //! Pure application-owned projection from Xana's Desktop protocol to UI state.
 
-use gpui_ai::prelude::{ChatMessage, ChatRole, MessageActions, StreamedContent};
-use std::collections::HashMap;
-use xana::desktop::{
-    DesktopActivityItem, DesktopContent, DesktopConversationFacts, DesktopEvent, DesktopHostEvent,
-    DesktopHostObservation, DesktopMessage, DesktopObservation, DesktopOperationId,
-    DesktopOperationState, DesktopPermissionId, DesktopRole, DesktopRoundBudgetSuspension,
-    DesktopSnapshot, NotificationPolicy,
+use gpui::{Image, SharedString};
+use gpui_ai::prelude::{
+    Attachment, AttachmentKind, ChatMessage, ChatRole, MessageActions, StreamedContent,
 };
+use std::{collections::HashMap, sync::Arc};
+use xana::desktop::{
+    DesktopActivityItem, DesktopContent, DesktopContentValue, DesktopConversationFacts,
+    DesktopEvent, DesktopHostEvent, DesktopHostObservation, DesktopMessage, DesktopObservation,
+    DesktopOperationId, DesktopOperationState, DesktopPermissionId, DesktopResource,
+    DesktopResourceKind, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
+    NotificationPolicy,
+};
+
+const MAX_INLINE_PREVIEWS: usize = 8;
+const MAX_INLINE_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectedMessage {
     id: String,
     role: ChatRole,
     text: String,
+    resources: Vec<DesktopResource>,
     lifecycle: MessageLifecycle,
 }
 
@@ -40,6 +48,7 @@ pub(crate) struct ConversationProjection {
     reasoning_effort: Option<String>,
     artifact_count: usize,
     messages: Vec<ProjectedMessage>,
+    image_previews: HashMap<String, Arc<Image>>,
     streams: HashMap<DesktopOperationId, String>,
     message_operations: HashMap<DesktopOperationId, String>,
     sequence: u64,
@@ -64,6 +73,7 @@ impl ConversationProjection {
             reasoning_effort: snapshot.reasoning_effort.clone(),
             artifact_count: snapshot.artifact_count,
             messages: snapshot.conversation.iter().map(project_message).collect(),
+            image_previews: HashMap::new(),
             streams: HashMap::new(),
             message_operations: HashMap::new(),
             sequence: snapshot.sequence,
@@ -93,7 +103,17 @@ impl ConversationProjection {
     }
 
     pub(crate) fn replace_snapshot(&mut self, snapshot: &DesktopSnapshot) {
+        let previews = std::mem::take(&mut self.image_previews);
         *self = Self::from_snapshot(snapshot);
+        self.image_previews = previews;
+        let referenced = self
+            .messages
+            .iter()
+            .flat_map(|message| &message.resources)
+            .map(|resource| resource.artifact_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        self.image_previews
+            .retain(|artifact_id, _| referenced.contains(artifact_id.as_str()));
     }
 
     pub(crate) fn append_user(&mut self, operation_id: DesktopOperationId, text: String) {
@@ -101,6 +121,7 @@ impl ConversationProjection {
             id: format!("desktop-user-{operation_id}"),
             role: ChatRole::User,
             text,
+            resources: Vec::new(),
             lifecycle: MessageLifecycle::Complete,
         });
         self.active_operation = Some(operation_id);
@@ -290,6 +311,9 @@ impl ConversationProjection {
                     }
                 };
                 ChatMessage::new(message.id.clone(), message.role, content)
+                    .attachments(message.resources.iter().map(|resource| {
+                        project_attachment(resource, self.image_previews.get(&resource.artifact_id))
+                    }))
                     .actions(MessageActions::for_role(message.role))
             })
             .collect()
@@ -313,6 +337,65 @@ impl ConversationProjection {
 
     pub(crate) fn artifact_count(&self) -> usize {
         self.artifact_count
+    }
+
+    /// Returns only the newest eligible resources within the compiled
+    /// concurrent-preview budget. The runtime reader enforces per-resource
+    /// policy again before any bytes cross the boundary.
+    pub(crate) fn pending_preview_resources(&self) -> Vec<DesktopResource> {
+        let mut selected = Vec::new();
+        let mut bytes = 0_u64;
+        for resource in self
+            .messages
+            .iter()
+            .rev()
+            .flat_map(|message| message.resources.iter().rev())
+        {
+            if selected.len() == MAX_INLINE_PREVIEWS
+                || self.image_previews.contains_key(&resource.artifact_id)
+                || !resource.supports_inline_preview()
+            {
+                continue;
+            }
+            let Some(next_bytes) = bytes.checked_add(resource.byte_len) else {
+                continue;
+            };
+            if next_bytes > MAX_INLINE_PREVIEW_BYTES {
+                continue;
+            }
+            bytes = next_bytes;
+            selected.push(resource.clone());
+        }
+        selected
+    }
+
+    pub(crate) fn install_image_preview(&mut self, artifact_id: String, image: Arc<Image>) {
+        if self.messages.iter().any(|message| {
+            message
+                .resources
+                .iter()
+                .any(|resource| resource.artifact_id == artifact_id)
+        }) {
+            self.image_previews.insert(artifact_id, image);
+        }
+    }
+
+    pub(crate) fn resource(&self, artifact_id: &str) -> Option<&DesktopResource> {
+        self.messages
+            .iter()
+            .flat_map(|message| &message.resources)
+            .find(|resource| resource.artifact_id == artifact_id)
+    }
+
+    pub(crate) fn recent_resources(&self) -> Vec<&DesktopResource> {
+        let mut seen = std::collections::HashSet::new();
+        self.messages
+            .iter()
+            .rev()
+            .flat_map(|message| message.resources.iter().rev())
+            .filter(|resource| seen.insert(resource.artifact_id.as_str()))
+            .take(128)
+            .collect()
     }
 
     pub(crate) fn is_running(&self) -> bool {
@@ -398,6 +481,7 @@ impl ConversationProjection {
                 id,
                 role: ChatRole::Assistant,
                 text: delta,
+                resources: Vec::new(),
                 lifecycle: MessageLifecycle::Running,
             });
         }
@@ -452,6 +536,7 @@ impl ConversationProjection {
                 id,
                 role: ChatRole::Assistant,
                 text: "The Run ended before Xana received an assistant response.".to_owned(),
+                resources: Vec::new(),
                 lifecycle: MessageLifecycle::Failed(reason),
             });
         }
@@ -476,15 +561,25 @@ impl ConversationProjection {
 }
 
 fn project_message(message: &DesktopMessage) -> ProjectedMessage {
+    let mut resources = Vec::new();
+    let mut parts = Vec::new();
+    for content in &message.content {
+        if let DesktopContentValue::Resource(resource) = &content.value {
+            resources.push(resource.as_ref().clone());
+        } else {
+            parts.push(project_content(content));
+        }
+    }
+    let text = if parts.is_empty() && !resources.is_empty() {
+        "Attached resource.".to_owned()
+    } else {
+        parts.join("\n\n")
+    };
     ProjectedMessage {
         id: message.id.clone(),
         role: project_role(message.role),
-        text: message
-            .content
-            .iter()
-            .map(project_content)
-            .collect::<Vec<_>>()
-            .join("\n"),
+        text,
+        resources,
         lifecycle: MessageLifecycle::Complete,
     }
 }
@@ -499,27 +594,247 @@ fn project_role(role: DesktopRole) -> ChatRole {
 }
 
 fn project_content(content: &DesktopContent) -> String {
-    match content {
-        DesktopContent::Text(text) => text.clone(),
-        DesktopContent::Image {
-            media_type,
-            byte_len,
-            width,
-            height,
-            ..
-        } => format!(
-            "[image: {media_type}, {byte_len} bytes{}]",
-            width
-                .zip(*height)
-                .map(|(width, height)| format!(", {width}×{height}"))
-                .unwrap_or_default()
-        ),
-        DesktopContent::ToolCall { name } => format!("[tool call: {name}]"),
-        DesktopContent::ToolResult { succeeded, output } => format!(
-            "[tool result: {}]\n{output}",
-            if *succeeded { "completed" } else { "failed" }
-        ),
+    match &content.value {
+        DesktopContentValue::Text(text) => text.clone(),
+        DesktopContentValue::Markdown(text) => sanitize_markdown_for_desktop(text),
+        DesktopContentValue::Code { language, code } => fenced(language.as_deref(), code),
+        DesktopContentValue::Table { columns, rows } => markdown_table(columns, rows),
+        DesktopContentValue::Diff(patch) => fenced(Some("diff"), patch),
+        DesktopContentValue::Math { source, display } => {
+            if *display {
+                format!("$$\n{source}\n$$")
+            } else {
+                format!("${source}$")
+            }
+        }
+        DesktopContentValue::Link { label, url } => format!("[{label}]({url})"),
+        DesktopContentValue::Resource(_) => content.fallback_text.clone(),
+        DesktopContentValue::Unsupported { .. } => content.fallback_text.clone(),
     }
+}
+
+fn project_attachment(resource: &DesktopResource, thumbnail: Option<&Arc<Image>>) -> Attachment {
+    let mut attachment = Attachment::new(resource.artifact_id.clone(), resource.display_name())
+        .kind(attachment_kind(&resource.kind))
+        .size_bytes(resource.byte_len)
+        .detail(resource_detail(resource));
+    if let Some(thumbnail) = thumbnail {
+        attachment = attachment.thumbnail(thumbnail.clone());
+    }
+    attachment
+}
+
+fn attachment_kind(kind: &DesktopResourceKind) -> AttachmentKind {
+    match kind {
+        DesktopResourceKind::StaticRaster
+        | DesktopResourceKind::AnimatedRaster
+        | DesktopResourceKind::Svg
+        | DesktopResourceKind::Lottie => AttachmentKind::Image,
+        DesktopResourceKind::Audio => AttachmentKind::Audio,
+        DesktopResourceKind::Video => AttachmentKind::Video,
+        DesktopResourceKind::Binary | DesktopResourceKind::Unknown(_) => AttachmentKind::Other,
+    }
+}
+
+fn resource_detail(resource: &DesktopResource) -> SharedString {
+    let mut details = vec![resource.media_type().to_owned()];
+    if let (Some(width), Some(height)) = (resource.metadata.width, resource.metadata.height) {
+        details.push(format!("{width}×{height}"));
+    }
+    if let Some(duration) = resource.metadata.duration_millis {
+        details.push(format!("{}.{:03}s", duration / 1_000, duration % 1_000));
+    }
+    if let Some(label) = &resource.accessibility_label {
+        details.push(label.clone());
+    }
+    details.join(" · ").into()
+}
+
+fn markdown_table(columns: &[String], rows: &[Vec<String>]) -> String {
+    let mut output = String::new();
+    output.push('|');
+    for column in columns {
+        output.push(' ');
+        output.push_str(&escape_table_cell(column));
+        output.push_str(" |");
+    }
+    output.push('\n');
+    output.push('|');
+    for _ in columns {
+        output.push_str(" --- |");
+    }
+    for row in rows {
+        output.push('\n');
+        output.push('|');
+        for cell in row {
+            output.push(' ');
+            output.push_str(&escape_table_cell(cell));
+            output.push_str(" |");
+        }
+    }
+    output
+}
+
+fn escape_table_cell(cell: &str) -> String {
+    cell.replace('\\', "\\\\")
+        .replace('|', "\\|")
+        .replace(['\r', '\n'], " ")
+}
+
+fn fenced(language: Option<&str>, body: &str) -> String {
+    let longest = body
+        .split(|character| character != '`')
+        .map(str::len)
+        .max()
+        .unwrap_or_default();
+    let fence = "`".repeat(longest.max(2).saturating_add(1));
+    format!("{fence}{}\n{body}\n{fence}", language.unwrap_or_default())
+}
+
+#[derive(Debug)]
+struct MarkdownReplacement {
+    start: usize,
+    end: usize,
+    text: String,
+}
+
+/// Keep GPUI's Markdown renderer useful without granting model-authored
+/// markup implicit URL, image-fetch, or HTML authority.
+fn sanitize_markdown_for_desktop(source: &str) -> String {
+    let Ok(tree) = markdown::to_mdast(source, &markdown::ParseOptions::gfm()) else {
+        return fenced(None, source);
+    };
+    let mut replacements = Vec::new();
+    collect_markdown_replacements(&tree, &mut replacements);
+    replacements.sort_by_key(|replacement| std::cmp::Reverse(replacement.start));
+    let mut sanitized = source.to_owned();
+    let mut prior_start = source.len();
+    for replacement in replacements {
+        if replacement.start > replacement.end
+            || replacement.end > prior_start
+            || replacement.end > sanitized.len()
+            || !sanitized.is_char_boundary(replacement.start)
+            || !sanitized.is_char_boundary(replacement.end)
+        {
+            return fenced(None, source);
+        }
+        sanitized.replace_range(replacement.start..replacement.end, &replacement.text);
+        prior_start = replacement.start;
+    }
+    sanitized
+}
+
+fn collect_markdown_replacements(
+    node: &markdown::mdast::Node,
+    replacements: &mut Vec<MarkdownReplacement>,
+) {
+    use markdown::mdast::Node;
+    let replacement = match node {
+        Node::Image(image) => Some((
+            image.position.as_ref(),
+            format!(
+                "[remote image omitted: {}]",
+                escape_markdown_text(&image.alt)
+            ),
+        )),
+        Node::ImageReference(image) => Some((
+            image.position.as_ref(),
+            format!("[image omitted: {}]", escape_markdown_text(&image.alt)),
+        )),
+        Node::Html(html) => Some((html.position.as_ref(), escape_markdown_text(&html.value))),
+        Node::MdxjsEsm(value) => Some((
+            value.position.as_ref(),
+            "[executable markup omitted]".to_owned(),
+        )),
+        Node::MdxFlowExpression(value) => Some((
+            value.position.as_ref(),
+            "[executable markup omitted]".to_owned(),
+        )),
+        Node::MdxTextExpression(value) => Some((
+            value.position.as_ref(),
+            "[executable markup omitted]".to_owned(),
+        )),
+        Node::MdxJsxFlowElement(value) => Some((
+            value.position.as_ref(),
+            "[executable markup omitted]".to_owned(),
+        )),
+        Node::MdxJsxTextElement(value) => Some((
+            value.position.as_ref(),
+            "[executable markup omitted]".to_owned(),
+        )),
+        Node::Link(link) if !safe_http_url(&link.url) => Some((
+            link.position.as_ref(),
+            format!(
+                "{} [unsafe link omitted]",
+                escape_markdown_text(
+                    &link
+                        .children
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<String>()
+                )
+            ),
+        )),
+        Node::Definition(definition) if !safe_http_url(&definition.url) => Some((
+            definition.position.as_ref(),
+            "[unsafe link definition omitted]".to_owned(),
+        )),
+        _ => None,
+    };
+    if let Some((Some(position), text)) = replacement {
+        replacements.push(MarkdownReplacement {
+            start: position.start.offset,
+            end: position.end.offset,
+            text,
+        });
+        return;
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_markdown_replacements(child, replacements);
+        }
+    }
+}
+
+fn safe_http_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| {
+        matches!(url.scheme(), "http" | "https")
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none()
+    })
+}
+
+fn escape_markdown_text(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '`'
+                | '*'
+                | '_'
+                | '{'
+                | '}'
+                | '['
+                | ']'
+                | '<'
+                | '>'
+                | '#'
+                | '+'
+                | '-'
+                | '.'
+                | '!'
+                | '|'
+        ) {
+            escaped.push('\\');
+        }
+        if matches!(character, '\r' | '\n') {
+            escaped.push(' ');
+        } else {
+            escaped.push(character);
+        }
+    }
+    escaped
 }
 
 fn operation_label(state: DesktopOperationState) -> &'static str {
@@ -540,6 +855,16 @@ mod tests {
         DesktopActivityDisclosure, DesktopActivityOwner, DesktopActivityState, DesktopError,
         DesktopErrorCode, DesktopFactFreshness, DesktopFactSource,
     };
+
+    fn text_content(text: &str) -> DesktopContent {
+        DesktopContent {
+            tier: xana::desktop::DesktopContentTier::Text,
+            outcome: "content.text".to_owned(),
+            fallback_text: text.to_owned(),
+            value: DesktopContentValue::Text(text.to_owned()),
+            actions: Vec::new(),
+        }
+    }
 
     fn empty_snapshot() -> DesktopSnapshot {
         DesktopSnapshot {
@@ -604,6 +929,64 @@ mod tests {
     }
 
     #[test]
+    fn markdown_keeps_safe_structure_and_removes_ambient_authority() {
+        let source = concat!(
+            "# Résumé\n\n",
+            "[safe](https://example.test/docs) ",
+            "[run](javascript:alert(1))\n\n",
+            "![tracker](https://attacker.test/pixel.png)\n\n",
+            "<img src=\"https://attacker.test/html.png\">\n",
+        );
+
+        let sanitized = sanitize_markdown_for_desktop(source);
+
+        assert!(sanitized.contains("# Résumé"));
+        assert!(sanitized.contains("[safe](https://example.test/docs)"));
+        assert!(!sanitized.contains("javascript:"));
+        assert!(!sanitized.contains("attacker.test"));
+        assert!(sanitized.contains("unsafe link omitted"));
+        assert!(sanitized.contains("remote image omitted"));
+    }
+
+    #[test]
+    fn typed_code_tables_diffs_and_math_have_readable_markdown_fallbacks() {
+        let code = DesktopContent {
+            tier: xana::desktop::DesktopContentTier::Rich,
+            outcome: "content.code.rich".to_owned(),
+            fallback_text: "code".to_owned(),
+            value: DesktopContentValue::Code {
+                language: Some("rust".to_owned()),
+                code: "let fence = ```;".to_owned(),
+            },
+            actions: Vec::new(),
+        };
+        let table = DesktopContent {
+            tier: xana::desktop::DesktopContentTier::Rich,
+            outcome: "content.table.rich".to_owned(),
+            fallback_text: "table".to_owned(),
+            value: DesktopContentValue::Table {
+                columns: vec!["name".to_owned(), "state".to_owned()],
+                rows: vec![vec!["Xa|na".to_owned(), "ready".to_owned()]],
+            },
+            actions: Vec::new(),
+        };
+        let math = DesktopContent {
+            tier: xana::desktop::DesktopContentTier::Text,
+            outcome: "content.math.source_fallback".to_owned(),
+            fallback_text: "x^2".to_owned(),
+            value: DesktopContentValue::Math {
+                source: "x^2".to_owned(),
+                display: true,
+            },
+            actions: Vec::new(),
+        };
+
+        assert!(project_content(&code).starts_with("````rust\n"));
+        assert!(project_content(&table).contains("Xa\\|na"));
+        assert_eq!(project_content(&math), "$$\nx^2\n$$");
+    }
+
+    #[test]
     fn sequence_gap_requires_an_atomic_snapshot() {
         let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
         let operation_id = DesktopOperationId::new();
@@ -639,7 +1022,7 @@ mod tests {
                 message: DesktopMessage {
                     id: "final".to_owned(),
                     role: DesktopRole::Assistant,
-                    content: vec![DesktopContent::Text("Hello".to_owned())],
+                    content: vec![text_content("Hello")],
                 },
             },
         }));
@@ -662,7 +1045,7 @@ mod tests {
                 message: DesktopMessage {
                     id: "managed-final".to_owned(),
                     role: DesktopRole::Assistant,
-                    content: vec![DesktopContent::Text("partial result".to_owned())],
+                    content: vec![text_content("partial result")],
                 },
             },
         }));
