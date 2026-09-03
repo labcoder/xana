@@ -1341,6 +1341,14 @@ fn advanced_entries(paths: &XanaPaths) -> Vec<SettingEntry> {
             SettingValue::summary("Review required"),
         )
         .action("xana config migrate"),
+        SettingEntry::new(
+            "advanced.reset",
+            SettingsSection::Advanced,
+            "Scoped reset",
+            "Review exact Xana-owned targets and preserved state before any filesystem or credential removal.",
+            SettingValue::summary("Separate filesystem and credential confirmation"),
+        )
+        .action("xana reset"),
     ]
 }
 

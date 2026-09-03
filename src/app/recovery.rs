@@ -5,10 +5,9 @@ mod settings_commands;
 use super::load_config;
 use crate::{
     cli::{self, ConfigCommand, OutputChoice},
-    config::{CredentialReference, XanaConfig},
     credential::delete_secret,
     paths::XanaPaths,
-    reset::{ResetPlan, ResetScope},
+    reset::{ResetPlan, ResetScope, referenced_credential_ids},
 };
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -351,45 +350,9 @@ fn reset_credential_ids(
     if !scopes.contains(&ResetScope::Credentials) {
         return Ok(Vec::new());
     }
-    let registry = XanaConfig::load_registry_from(paths.config_file()).context(
+    referenced_credential_ids(paths).context(
         "credential reset requires a valid config so Xana can enumerate only referenced stored credentials",
-    )?;
-    let mut ids = std::collections::BTreeSet::new();
-    for reference in registry
-        .connections
-        .values()
-        .filter_map(|connection| connection.credential.as_ref())
-        .chain(
-            registry
-                .external_agents
-                .values()
-                .filter_map(|agent| agent.credential.as_ref()),
-        )
-        .chain(
-            registry
-                .service_connections
-                .values()
-                .filter_map(|connection| connection.credential.as_ref()),
-        )
-    {
-        if let CredentialReference::Stored { id } = reference {
-            ids.insert(id.clone());
-        }
-    }
-    for declaration in registry.mcp_servers.values() {
-        if let crate::config::McpServerDeclaration::StreamableHttp {
-            credential, oauth, ..
-        } = declaration
-        {
-            if let Some(CredentialReference::Stored { id }) = credential {
-                ids.insert(id.clone());
-            }
-            if let Some(oauth) = oauth {
-                ids.insert(oauth.credential_id.clone());
-            }
-        }
-    }
-    Ok(ids.into_iter().collect())
+    )
 }
 
 fn write_reset_preservation<W: Write>(output: &mut W, plan: &ResetPlan) -> Result<()> {

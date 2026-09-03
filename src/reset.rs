@@ -3,7 +3,10 @@
 //! Every target is derived from typed Xana paths, inspected without following
 //! links, and removed in recoverability order. Configuration is always last.
 
-use crate::paths::XanaPaths;
+use crate::{
+    config::{CredentialReference, McpServerDeclaration, XanaConfig},
+    paths::XanaPaths,
+};
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -50,6 +53,7 @@ pub(crate) enum ResetError {
     Remove { path: PathBuf, source: io::Error },
     ActiveWorkspace { path: PathBuf },
     TooManyWorkspaceLocks { path: PathBuf, limit: usize },
+    Credentials(String),
 }
 
 impl fmt::Display for ResetError {
@@ -75,6 +79,7 @@ impl fmt::Display for ResetError {
                 "refusing to inspect more than {limit} workspace locks under {}",
                 path.display()
             ),
+            Self::Credentials(reason) => f.write_str(reason),
         }
     }
 }
@@ -83,9 +88,55 @@ impl Error for ResetError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Inspect { source, .. } | Self::Remove { source, .. } => Some(source),
-            Self::ActiveWorkspace { .. } | Self::TooManyWorkspaceLocks { .. } => None,
+            Self::ActiveWorkspace { .. }
+            | Self::TooManyWorkspaceLocks { .. }
+            | Self::Credentials(_) => None,
         }
     }
+}
+
+pub(crate) fn referenced_credential_ids(paths: &XanaPaths) -> Result<Vec<String>, ResetError> {
+    let registry = XanaConfig::load_registry_from(paths.config_file()).map_err(|error| {
+        ResetError::Credentials(format!(
+            "credential reset requires a valid configuration so Xana can enumerate only referenced stored credentials: {error}"
+        ))
+    })?;
+    let mut ids = BTreeSet::new();
+    for reference in registry
+        .connections
+        .values()
+        .filter_map(|connection| connection.credential.as_ref())
+        .chain(
+            registry
+                .external_agents
+                .values()
+                .filter_map(|agent| agent.credential.as_ref()),
+        )
+        .chain(
+            registry
+                .service_connections
+                .values()
+                .filter_map(|connection| connection.credential.as_ref()),
+        )
+    {
+        if let CredentialReference::Stored { id } = reference {
+            ids.insert(id.clone());
+        }
+    }
+    for declaration in registry.mcp_servers.values() {
+        if let McpServerDeclaration::StreamableHttp {
+            credential, oauth, ..
+        } = declaration
+        {
+            if let Some(CredentialReference::Stored { id }) = credential {
+                ids.insert(id.clone());
+            }
+            if let Some(oauth) = oauth {
+                ids.insert(oauth.credential_id.clone());
+            }
+        }
+    }
+    Ok(ids.into_iter().collect())
 }
 
 impl ResetPlan {

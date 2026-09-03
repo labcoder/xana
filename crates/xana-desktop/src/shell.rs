@@ -1,6 +1,7 @@
 //! Cold-launch selection and transition into the workspace-owned Workbench.
 
 use crate::{
+    maintenance_view::{MaintenanceTab, MaintenanceView, MaintenanceViewEvent},
     setup_view::{SetupView, SetupViewEvent},
     workbench::Workbench,
 };
@@ -24,6 +25,7 @@ use xana::desktop::{
 enum ShellSurface {
     Launcher,
     Setup(Entity<SetupView>),
+    Maintenance(Entity<MaintenanceView>),
     Workbench(Entity<Workbench>),
 }
 
@@ -58,7 +60,11 @@ impl DesktopShell {
             .ok()
             .and_then(|control| control.setup_snapshot().ok())
             .is_some_and(|snapshot| snapshot.intentionally_blank);
-        let requires_setup = catalog.configuration_state != "healthy" && !intentionally_blank;
+        let requires_setup = catalog.configuration_state == "missing" && !intentionally_blank;
+        let requires_recovery = matches!(
+            catalog.configuration_state.as_str(),
+            "invalid" | "incompatible" | "indeterminate"
+        );
         let mut shell = Self {
             launch,
             instance: Some(instance),
@@ -75,6 +81,11 @@ impl DesktopShell {
         if requires_setup {
             match control {
                 Ok(control) => shell.open_setup(control, window, cx),
+                Err(error) => shell.error = Some(error.message),
+            }
+        } else if requires_recovery {
+            match control {
+                Ok(control) => shell.open_maintenance(control, window, cx),
                 Err(error) => shell.error = Some(error.message),
             }
         }
@@ -125,6 +136,47 @@ impl DesktopShell {
     fn start_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match self.launch.control_plane() {
             Ok(control) => self.open_setup(control, window, cx),
+            Err(error) => {
+                self.error = Some(error.message);
+                cx.notify();
+            }
+        }
+    }
+
+    fn open_maintenance(
+        &mut self,
+        control: DesktopControlPlane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let maintenance =
+            cx.new(|cx| MaintenanceView::new(control, MaintenanceTab::Doctor, true, cx));
+        let subscription = cx.subscribe_in(
+            &maintenance,
+            window,
+            |this, _, event: &MaintenanceViewEvent, _, cx| match event {
+                MaintenanceViewEvent::Close => {
+                    this.surface = ShellSurface::Launcher;
+                    cx.notify();
+                }
+                MaintenanceViewEvent::ConfigurationChanged => {
+                    if let Ok(control) = this.launch.control_plane()
+                        && let Ok(snapshot) = control.setup_snapshot()
+                    {
+                        this.catalog.configuration_state = snapshot.configuration_state;
+                    }
+                    cx.notify();
+                }
+            },
+        );
+        self._subscriptions.push(subscription);
+        self.surface = ShellSurface::Maintenance(maintenance);
+        cx.notify();
+    }
+
+    fn start_maintenance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.launch.control_plane() {
+            Ok(control) => self.open_maintenance(control, window, cx),
             Err(error) => {
                 self.error = Some(error.message);
                 cx.notify();
@@ -410,6 +462,22 @@ impl DesktopShell {
                                         this.start_setup(window, cx);
                                     })),
                             )
+                            .when(
+                                matches!(
+                                    self.catalog.configuration_state.as_str(),
+                                    "invalid" | "incompatible" | "indeterminate"
+                                ),
+                                |actions| {
+                                    actions.child(
+                                        Button::new("diagnose-xana")
+                                            .label("Diagnose & recover")
+                                            .disabled(self.opening)
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.start_maintenance(window, cx);
+                                            })),
+                                    )
+                                },
+                            )
                             .child(
                                 Button::new("choose-workspace-folder")
                                     .label("Choose a folder…")
@@ -450,6 +518,7 @@ impl Render for DesktopShell {
         match &self.surface {
             ShellSurface::Launcher => self.render_launcher(cx).into_any_element(),
             ShellSurface::Setup(setup) => setup.clone().into_any_element(),
+            ShellSurface::Maintenance(maintenance) => maintenance.clone().into_any_element(),
             ShellSurface::Workbench(workbench) => workbench.clone().into_any_element(),
         }
     }

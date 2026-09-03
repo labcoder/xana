@@ -90,6 +90,10 @@ impl Finding {
         self.repair = Some(repair);
         self
     }
+
+    pub(crate) const fn repairable(&self) -> bool {
+        self.repair.is_some()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

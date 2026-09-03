@@ -5,6 +5,7 @@
 
 mod actions;
 mod entities;
+mod maintenance;
 mod permissions;
 mod resources;
 mod workbench;
@@ -16,6 +17,13 @@ pub use entities::{
     DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopEntityMutationReceipt,
     DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
     DesktopProjectSummary,
+};
+pub use maintenance::{
+    DesktopDiagnosticEntry, DesktopDiagnosticsSnapshot, DesktopDoctorFinding,
+    DesktopDoctorRepairReceipt, DesktopDoctorRepairResult, DesktopDoctorSeverity,
+    DesktopDoctorSnapshot, DesktopMigrationReceipt, DesktopMigrationSnapshot,
+    DesktopPrivateMigrationRecord, DesktopResetPlan, DesktopResetReceipt, DesktopResetScope,
+    DesktopResetTarget,
 };
 pub use permissions::{
     DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionPreview,

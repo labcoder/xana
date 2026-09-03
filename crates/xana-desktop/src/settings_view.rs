@@ -4,6 +4,7 @@
 //! draft, validation, and persistence truth remains behind typed Rust clients.
 
 use crate::connection_manager::{ConnectionManager, ConnectionManagerEvent};
+use crate::maintenance_view::{MaintenanceTab, MaintenanceView, MaintenanceViewEvent};
 use crate::management_view::{ManagementTab, ManagementView, ManagementViewEvent};
 use crate::permission_view::{PermissionView, PermissionViewEvent};
 use crate::resource_policy_view::{ResourcePolicyView, ResourcePolicyViewEvent};
@@ -89,6 +90,7 @@ pub(crate) struct SettingsView {
 enum FocusedManager {
     Connections(Entity<ConnectionManager>),
     Management(Entity<ManagementView>),
+    Maintenance(Entity<MaintenanceView>),
     Permissions(Entity<PermissionView>),
     ResourcePolicy(Entity<ResourcePolicyView>),
     WorkbenchPreferences(Entity<WorkbenchPreferencesView>),
@@ -253,6 +255,34 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::WorkbenchPreferences(manager));
+                self.error = None;
+            }
+            "xana doctor" | "xana config migrate" | "xana reset" => {
+                let tab = match action {
+                    "xana config migrate" => MaintenanceTab::Migration,
+                    "xana reset" => MaintenanceTab::Reset,
+                    _ => MaintenanceTab::Doctor,
+                };
+                let manager = cx.new(|cx| {
+                    MaintenanceView::new(self.control.clone(), tab, action == "xana doctor", cx)
+                });
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &MaintenanceViewEvent, _, cx| match event {
+                        MaintenanceViewEvent::Close => {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                        MaintenanceViewEvent::ConfigurationChanged => {
+                            this.focused_manager = None;
+                            cx.emit(SettingsViewEvent::Reload);
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::Maintenance(manager));
                 self.error = None;
             }
             _ => {
@@ -1098,6 +1128,7 @@ impl Render for SettingsView {
             return match manager {
                 FocusedManager::Connections(manager) => manager.clone().into_any_element(),
                 FocusedManager::Management(manager) => manager.clone().into_any_element(),
+                FocusedManager::Maintenance(manager) => manager.clone().into_any_element(),
                 FocusedManager::Permissions(manager) => manager.clone().into_any_element(),
                 FocusedManager::ResourcePolicy(manager) => manager.clone().into_any_element(),
                 FocusedManager::WorkbenchPreferences(manager) => manager.clone().into_any_element(),
