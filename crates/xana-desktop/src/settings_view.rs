@@ -1342,4 +1342,14 @@ mod tests {
             "New Conversations"
         );
     }
+
+    #[test]
+    fn section_navigation_is_complete_unique_and_stable() {
+        assert_eq!(SECTIONS.len(), 12);
+        let ids = SECTIONS.map(DesktopSettingsSection::id);
+        let unique = ids.into_iter().collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(unique.len(), SECTIONS.len());
+        assert_eq!(ids[0], "overview");
+        assert_eq!(ids[11], "advanced");
+    }
 }

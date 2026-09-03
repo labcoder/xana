@@ -1,8 +1,8 @@
 //! Focused permission-rule review and mutation UI.
 
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    Subscription, Task, Window, div, prelude::*, rems,
+    AnyElement, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, Subscription, Task, Window, div, prelude::*, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
@@ -228,7 +228,7 @@ impl PermissionView {
         cx.notify();
     }
 
-    fn render_list(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_list(&self, compact: bool, cx: &mut Context<Self>) -> AnyElement {
         let tokens = cx.theme().semantic_tokens();
         let rules = self
             .snapshot
@@ -237,8 +237,8 @@ impl PermissionView {
             .map(|snapshot| snapshot.rules.clone())
             .unwrap_or_default();
         v_flex()
-            .w(rems(22.))
-            .h_full()
+            .when(!compact, |list| list.w(rems(22.)).h_full())
+            .when(compact, |list| list.w_full().h(rems(12.)).flex_none())
             .min_h_0()
             .p(tokens.spacing.md)
             .gap(tokens.spacing.xs)
@@ -367,9 +367,28 @@ impl PermissionView {
 impl EventEmitter<PermissionViewEvent> for PermissionView {}
 
 impl Render for PermissionView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
+        let compact = f32::from(window.viewport_size().width) < 880.;
+        let body = if compact {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.render_list(true, cx))
+                .child(self.render_editor(cx))
+                .into_any_element()
+        } else {
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.render_list(false, cx))
+                .child(self.render_editor(cx))
+                .into_any_element()
+        };
         v_flex()
+            .id("xana-permission-manager")
+            .role(Role::Region)
+            .aria_label("Permission rules")
             .size_full()
             .min_h_0()
             .child(
@@ -387,13 +406,7 @@ impl Render for PermissionView {
                             })),
                     ),
             )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(self.render_list(cx))
-                    .child(self.render_editor(cx)),
-            )
+            .child(body)
             .when_some(self.busy.clone(), |panel, busy| {
                 panel.child(status(busy, false, cx))
             })

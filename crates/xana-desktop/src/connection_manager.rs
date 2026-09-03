@@ -2,11 +2,12 @@
 
 use crate::{
     connection_actions::{ConnectionActions, ConnectionActionsEvent},
+    model_filter,
     setup_view::{SetupView, SetupViewEvent},
 };
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    Subscription, Task, Window, div, prelude::*, px, rems, size,
+    AnyElement, App, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, Subscription, Task, Window, div, prelude::*, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
@@ -294,15 +295,7 @@ impl ConnectionManager {
         self.selected()
             .into_iter()
             .flat_map(|connection| &connection.models)
-            .filter(|model| {
-                query.is_empty()
-                    || model.id.to_lowercase().contains(&query)
-                    || model.display_name.to_lowercase().contains(&query)
-                    || model
-                        .input_modalities
-                        .iter()
-                        .any(|value| value.to_lowercase().contains(&query))
-            })
+            .filter(|model| model_filter::matches(model, &query))
             .cloned()
             .collect()
     }
@@ -371,6 +364,9 @@ impl ConnectionManager {
         let model_count = connection.models.len();
         let selected_for_new = connection.selected_for_new_conversations;
         v_flex()
+            .id("xana-connection-manager")
+            .role(Role::Region)
+            .aria_label("Connections and models")
             .size_full()
             .min_h_0()
             .overflow_y_scrollbar()
@@ -514,16 +510,66 @@ impl ConnectionManager {
 impl EventEmitter<ConnectionManagerEvent> for ConnectionManager {}
 
 impl Render for ConnectionManager {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(setup) = &self.setup {
             return setup.clone().into_any_element();
         }
         let tokens = cx.theme().semantic_tokens();
+        let compact = f32::from(window.viewport_size().width) < 880.;
+        let body = if compact {
+            v_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .w_full()
+                        .h(rems(12.))
+                        .flex_none()
+                        .overflow_y_scrollbar()
+                        .p(tokens.spacing.md)
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(self.render_connections(cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scrollbar()
+                        .p(tokens.spacing.md)
+                        .child(self.render_detail(cx)),
+                )
+                .into_any_element()
+        } else {
+            h_flex()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    div()
+                        .w(rems(22.))
+                        .h_full()
+                        .overflow_y_scrollbar()
+                        .p(tokens.spacing.md)
+                        .border_r_1()
+                        .border_color(cx.theme().border)
+                        .child(self.render_connections(cx)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .h_full()
+                        .p(tokens.spacing.lg)
+                        .child(self.render_detail(cx)),
+                )
+                .into_any_element()
+        };
         v_flex()
             .size_full()
             .min_h_0()
             .child(
                 h_flex()
+                    .flex_wrap()
                     .justify_between()
                     .p(tokens.spacing.md)
                     .border_b_1()
@@ -558,29 +604,7 @@ impl Render for ConnectionManager {
                             ),
                     ),
             )
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .child(
-                        div()
-                            .w(rems(22.))
-                            .h_full()
-                            .overflow_y_scrollbar()
-                            .p(tokens.spacing.md)
-                            .border_r_1()
-                            .border_color(cx.theme().border)
-                            .child(self.render_connections(cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .p(tokens.spacing.lg)
-                            .child(self.render_detail(cx)),
-                    ),
-            )
+            .child(body)
             .when_some(self.busy.clone(), |content, busy| {
                 content.child(status_card(busy, false, cx))
             })

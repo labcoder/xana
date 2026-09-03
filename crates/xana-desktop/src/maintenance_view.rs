@@ -381,6 +381,9 @@ impl MaintenanceView {
             .map(|snapshot| snapshot.findings.clone())
             .unwrap_or_default();
         v_flex()
+            .id("xana-maintenance")
+            .role(Role::Region)
+            .aria_label("Diagnose and recover Xana")
             .size_full()
             .min_h_0()
             .gap(tokens.spacing.md)

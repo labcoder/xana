@@ -1,8 +1,9 @@
 //! Focused Profile, Project, and capability management for Desktop settings.
 
 use gpui::{
-    AnyElement, Context, Entity, EventEmitter, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, Subscription, Task, Window, div, prelude::*, rems,
+    AnyElement, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, Role, Subscription, Task, Window, div,
+    prelude::*, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
@@ -662,6 +663,9 @@ impl Render for ManagementView {
             ManagementTab::Capabilities => self.render_capabilities(cx),
         };
         v_flex()
+            .id("xana-management")
+            .role(Role::Region)
+            .aria_label("Profiles projects and capabilities")
             .size_full()
             .min_h_0()
             .child(

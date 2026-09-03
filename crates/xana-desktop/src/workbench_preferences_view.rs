@@ -1,7 +1,8 @@
 //! Focused Workbench preference explanation and safe reset.
 
 use gpui::{
-    Context, EventEmitter, IntoElement, ParentElement as _, Render, Task, Window, div, prelude::*,
+    Context, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
+    Task, Window, div, prelude::*,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _,
@@ -76,6 +77,9 @@ impl Render for WorkbenchPreferencesView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
         v_flex()
+            .id("xana-workbench-preferences")
+            .role(Role::Region)
+            .aria_label("Workbench preferences")
             .size_full()
             .p(tokens.spacing.lg)
             .gap(tokens.spacing.lg)

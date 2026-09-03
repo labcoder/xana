@@ -1,8 +1,10 @@
 //! Retained graphical setup state over Xana's typed control plane.
 
+use crate::model_filter;
+
 use gpui::{
-    AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    Subscription, Task, Window, div, prelude::*, px, rems, size,
+    AnyElement, App, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, Subscription, Task, Window, div, prelude::*, px, rems, size,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, Selectable as _,
@@ -311,15 +313,7 @@ impl SetupView {
         self.models
             .iter()
             .enumerate()
-            .filter(|(_, model)| {
-                query.is_empty()
-                    || model.id.to_lowercase().contains(&query)
-                    || model.display_name.to_lowercase().contains(&query)
-                    || model
-                        .input_modalities
-                        .iter()
-                        .any(|value| value.to_lowercase().contains(&query))
-            })
+            .filter(|(_, model)| model_filter::matches(model, &query))
             .map(|(index, _)| index)
             .collect()
     }
@@ -500,6 +494,9 @@ impl SetupView {
         )
         .size_full();
         v_flex()
+            .id("xana-setup")
+            .role(Role::Region)
+            .aria_label("Xana setup")
             .size_full()
             .min_h_0()
             .gap(tokens.spacing.md)

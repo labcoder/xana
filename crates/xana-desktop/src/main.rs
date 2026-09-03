@@ -9,6 +9,7 @@ mod design_system;
 mod localization;
 mod maintenance_view;
 mod management_view;
+mod model_filter;
 mod permission_view;
 mod projection;
 mod resource_policy_view;
