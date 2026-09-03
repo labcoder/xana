@@ -336,7 +336,6 @@ impl ConnectionActions {
 
     fn render_login(&self, login: &DesktopManagedLogin, cx: &mut Context<Self>) -> AnyElement {
         let tokens = cx.theme().semantic_tokens();
-        let url = login.authorization_url().unwrap_or_default().to_owned();
         v_flex()
             .gap(tokens.spacing.sm)
             .p(tokens.spacing.md)
@@ -344,7 +343,9 @@ impl ConnectionActions {
             .border_1()
             .border_color(cx.theme().border)
             .child("Authorization started by Codex")
-            .child(div().text_sm().child(url.clone()))
+            .when_some(login.authorization_url(), |panel, url| {
+                panel.child(div().text_sm().child(url.to_owned()))
+            })
             .when_some(login.user_code(), |panel, code| {
                 panel.child(format!("Device code: {code}"))
             })
@@ -352,11 +353,14 @@ impl ConnectionActions {
                 h_flex()
                     .flex_wrap()
                     .gap(tokens.spacing.sm)
-                    .child(
-                        Button::new("connection-open-login")
-                            .label("Open authorization page")
-                            .on_click(move |_, _, cx| cx.open_url(&url)),
-                    )
+                    .when_some(login.authorization_url(), |row, url| {
+                        let url = url.to_owned();
+                        row.child(
+                            Button::new("connection-open-login")
+                                .label("Open authorization page")
+                                .on_click(move |_, _, cx| cx.open_url(&url)),
+                        )
+                    })
                     .child(
                         Button::new("connection-complete-login")
                             .label("I completed authorization")

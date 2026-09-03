@@ -1175,6 +1175,78 @@ mod tests {
     }
 
     #[test]
+    fn execution_and_nested_activity_owners_remain_explicit() {
+        let conversation_id = ConversationId::new();
+        let run_id = OperationId::new();
+        for (owner, expected) in [
+            (ExecutionOwnerV1::Native, "native"),
+            (ExecutionOwnerV1::Managed, "managed"),
+            (ExecutionOwnerV1::ExternalAgent, "external_agent"),
+        ] {
+            let facts = ExecutionFactsV1 {
+                conversation_id,
+                run_id,
+                owner,
+                host: HostLocationV1::Embedded,
+                workspace_authority: WorkspaceAuthorityV1::ReadOnly,
+                tool_authority: vec!["workspace.read".to_owned()],
+                connection: Some("fixture".to_owned()),
+                model: Some("fixture-model".to_owned()),
+                capability_grants: Vec::new(),
+                egress_policy: Some("deny".to_owned()),
+                controller: Some("desktop".to_owned()),
+                approval_policy: "ask".to_owned(),
+                source: FactSourceV1::Runtime,
+                freshness: FreshnessV1 {
+                    observed_at_unix_millis: 42,
+                    max_age_millis: None,
+                },
+            };
+            facts.validate().unwrap();
+            assert_eq!(project_execution(&facts).owner, expected);
+        }
+
+        for (owner, expected) in [
+            (
+                ActivityOwnerV1::Mcp {
+                    server: "docs".to_owned(),
+                },
+                DesktopActivityOwner::Mcp {
+                    server: "docs".to_owned(),
+                },
+            ),
+            (
+                ActivityOwnerV1::A2a {
+                    agent: "research".to_owned(),
+                },
+                DesktopActivityOwner::A2a {
+                    agent: "research".to_owned(),
+                },
+            ),
+        ] {
+            let item = ActivityItemV1 {
+                id: Uuid::new_v4(),
+                parent_id: None,
+                conversation_id,
+                run_id: Some(run_id),
+                owner,
+                state: ActivityStateV1::Working,
+                summary: SemanticCodeV1::new("activity.working"),
+                disclosed_text: None,
+                disclosure: ActivityDisclosureV1::Summary,
+                source: FactSourceV1::Runtime,
+                freshness: FreshnessV1 {
+                    observed_at_unix_millis: 42,
+                    max_age_millis: None,
+                },
+                started_at_unix_millis: Some(42),
+                finished_at_unix_millis: None,
+            };
+            assert_eq!(project_activity(&item).owner, expected);
+        }
+    }
+
+    #[test]
     fn bounded_detail_preserves_utf8_boundaries() {
         let text = "水".repeat(100_000);
         let projected = bounded_detail(text, 1024);

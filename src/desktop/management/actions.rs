@@ -12,6 +12,7 @@ use crate::{
     credential::{delete_secret, store_secret},
     managed::codex::{AccountStatus, CodexAppServer, LoginCancellation, LoginMode},
 };
+use reqwest::Url;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,9 +241,16 @@ impl DesktopControlPlane {
             })
             .await
             .map_err(control_error)?;
+        let url = match validated_authorization_url(instructions.url) {
+            Ok(url) => url,
+            Err(error) => {
+                _ = server.shutdown().await;
+                return Err(error);
+            }
+        };
         Ok(DesktopManagedLogin {
             connection: connection.to_owned(),
-            url: Some(bounded(instructions.url)),
+            url: Some(url),
             user_code: instructions.user_code.map(bounded),
             login_id: Some(instructions.login_id),
             server: Some(server),
@@ -309,6 +317,28 @@ impl DesktopControlPlane {
             .map(project_receipt)
             .map_err(control_error)
     }
+}
+
+fn validated_authorization_url(value: String) -> Result<String, DesktopError> {
+    let value = bounded(value);
+    let url = Url::parse(&value)
+        .map_err(|_| state_error("managed login returned an invalid authorization URL"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| state_error("managed login authorization URL has no host"))?;
+    let secure = url.scheme() == "https";
+    let host_ip = host.trim_start_matches('[').trim_end_matches(']');
+    let loopback_http = url.scheme() == "http"
+        && (host.eq_ignore_ascii_case("localhost")
+            || host_ip
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback()));
+    if (!secure && !loopback_http) || !url.username().is_empty() || url.password().is_some() {
+        return Err(state_error(
+            "managed login authorization URL must be HTTPS or loopback HTTP without credentials",
+        ));
+    }
+    Ok(value)
 }
 
 fn blocker_label(blocker: &RemovalBlocker) -> String {
@@ -404,5 +434,28 @@ mod tests {
         );
         assert!(!plan.retains_credential);
         assert!(!format!("{plan:?}").contains("api_key"));
+    }
+
+    #[test]
+    fn managed_login_urls_are_bounded_to_browser_safe_origins() {
+        for allowed in [
+            "https://auth.example.test/authorize?client=xana",
+            "http://localhost:1455/callback",
+            "http://127.0.0.1:1455/callback",
+            "http://[::1]:1455/callback",
+        ] {
+            assert_eq!(
+                validated_authorization_url(allowed.to_owned()).unwrap(),
+                allowed
+            );
+        }
+        for rejected in [
+            "file:///tmp/token",
+            "javascript:alert(1)",
+            "http://example.test/authorize",
+            "https://user:secret@example.test/authorize",
+        ] {
+            assert!(validated_authorization_url(rejected.to_owned()).is_err());
+        }
     }
 }
