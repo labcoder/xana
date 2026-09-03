@@ -56,7 +56,6 @@ use xana::desktop::{
     NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
-const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
 const MAX_UPDATES_PER_FRAME: usize = 64;
 const MAX_RECOVERABLE_SUBMISSIONS: usize = 64;
 const MAX_RETAINED_CONVERSATION_UIS: usize = 128;
@@ -134,6 +133,7 @@ pub(crate) struct Workbench {
     _espejo_subscription: Subscription,
     _settings_subscription: Subscription,
     _runtime_driver: Task<()>,
+    _instance_driver: Task<()>,
 }
 
 impl Workbench {
@@ -293,10 +293,15 @@ impl Workbench {
                 this.handle_espejo_event(event, window, cx);
             },
         );
+        let runtime_signal = runtime.update_signal();
+        let instance_signal = instance.update_signal();
         let runtime_driver = cx.spawn_in(window, async move |this, cx| {
+            let mut drain_without_wait = false;
             loop {
-                cx.background_executor().timer(UPDATE_INTERVAL).await;
-                let Ok(keep_running) = this.update_in(cx, |this, window, cx| {
+                if !drain_without_wait {
+                    runtime_signal.wait().await;
+                }
+                let Ok((keep_running, saturated)) = this.update_in(cx, |this, window, cx| {
                     this.drain_runtime_updates(window, cx)
                 }) else {
                     break;
@@ -304,6 +309,19 @@ impl Workbench {
                 if !keep_running {
                     break;
                 }
+                drain_without_wait = saturated;
+            }
+        });
+        let instance_driver = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                instance_signal.wait().await;
+                let Ok(()) = this.update_in(cx, |this, window, cx| {
+                    if this.drain_launch_intents(window, cx) {
+                        cx.notify();
+                    }
+                }) else {
+                    break;
+                };
             }
         });
 
@@ -359,6 +377,7 @@ impl Workbench {
             _espejo_subscription: espejo_subscription,
             _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
+            _instance_driver: instance_driver,
         };
         workbench.schedule_image_previews(window, cx);
         workbench
@@ -1493,10 +1512,16 @@ impl Workbench {
         cx.notify();
     }
 
-    /// Returns false once the backend has stopped and there is nothing left to poll.
-    fn drain_runtime_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let mut changed = self.drain_launch_intents(window, cx);
+    /// Returns `(keep_running, saturated)`. A saturated drain is continued
+    /// without waiting for another coalesced wake permit.
+    fn drain_runtime_updates(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (bool, bool) {
+        let mut changed = false;
         let mut keep_running = true;
+        let mut drained = 0;
         for _ in 0..MAX_UPDATES_PER_FRAME {
             let update = match self.runtime.try_next() {
                 Ok(Some(update)) => update,
@@ -1508,6 +1533,7 @@ impl Workbench {
                     break;
                 }
             };
+            drained += 1;
             changed = true;
             self.notify_for_update(&update, window, cx);
             match update {
@@ -1707,7 +1733,7 @@ impl Workbench {
         if changed {
             self.sync_components(window, cx);
         }
-        keep_running
+        (keep_running, drained == MAX_UPDATES_PER_FRAME)
     }
 
     fn drain_launch_intents(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {

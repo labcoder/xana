@@ -57,6 +57,9 @@ try {
             throw "Desktop presentation source gained $($entry.Key) authority; keep it behind xana::desktop"
         }
     }
+    if ($desktopSource -match '(?m)\bUPDATE_INTERVAL\b') {
+        throw 'Desktop presentation source regained periodic runtime polling; use typed wake signals and bounded drains'
+    }
 
     $gpuiTree = (& cargo tree --locked -p xana-desktop -i gpui --prefix none 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0) {
@@ -83,7 +86,7 @@ try {
         }
     }
 
-    Write-Host 'desktop dependency boundary verified: CLI/TUI isolated; direct dependencies and privileged authorities bounded; one reviewed GPUI source family'
+    Write-Host 'desktop dependency boundary verified: CLI/TUI isolated; direct dependencies and privileged authorities bounded; runtime updates are event-driven; one reviewed GPUI source family'
 }
 finally {
     Pop-Location

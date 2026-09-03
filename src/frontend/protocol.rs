@@ -944,8 +944,8 @@ mod tests {
     use crate::{permission::PermissionRequest, tool::EffectClass};
 
     #[test]
-    fn snapshot_keeps_recent_bounded_history() {
-        let history = (0..(MAX_SNAPSHOT_MESSAGES + 8))
+    fn ten_thousand_source_messages_reduce_to_the_recent_bounded_snapshot() {
+        let history = (0..10_000)
             .map(|index| Message::text(Role::User, format!("message {index}")))
             .collect();
         let (bounded, truncated) = bounded_history(history);
@@ -954,7 +954,7 @@ mod tests {
         assert_eq!(bounded.len(), MAX_SNAPSHOT_MESSAGES);
         assert!(matches!(
             bounded.first().and_then(|message| message.content.first()),
-            Some(ContentBlock::Text(text)) if text == "message 8"
+            Some(ContentBlock::Text(text)) if text == "message 9488"
         ));
         assert!(serde_json::to_vec(&bounded).unwrap().len() <= MAX_SNAPSHOT_BYTES);
     }

@@ -1097,11 +1097,30 @@ pub enum DesktopUpdate {
 pub struct DesktopClient {
     commands: mpsc::Sender<BridgeCommand>,
     updates: mpsc::Receiver<DesktopUpdate>,
+    update_signal: DesktopWakeSignal,
     next_command_id: std::sync::atomic::AtomicU64,
     backend: Option<thread::JoinHandle<()>>,
     backend_done: std_mpsc::Receiver<()>,
     initial_snapshot: DesktopSnapshot,
     artifacts: DesktopArtifactReader,
+}
+
+/// A coalescing, executor-independent wake signal for newly queued Desktop work.
+///
+/// The signal carries no data or authority. Consumers must still drain the
+/// bounded typed channel and validate every update.
+#[derive(Clone, Default)]
+pub struct DesktopWakeSignal(Arc<tokio::sync::Notify>);
+
+impl DesktopWakeSignal {
+    pub(crate) fn wake(&self) {
+        self.0.notify_one();
+    }
+
+    /// Waits until a producer reports that typed Desktop work may be available.
+    pub async fn wait(&self) {
+        self.0.notified().await;
+    }
 }
 
 impl DesktopClient {
@@ -1135,16 +1154,19 @@ impl DesktopClient {
         ));
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
+        let update_signal = DesktopWakeSignal::default();
         let (startup_sender, startup_receiver) = std_mpsc::sync_channel(1);
         let startup = StartupSignal::new(startup_sender);
         let (done_sender, done_receiver) = std_mpsc::sync_channel(1);
         let bridge = Bridge {
             commands: Arc::new(tokio::sync::Mutex::new(command_receiver)),
             updates: updates.clone(),
+            update_signal: update_signal.clone(),
             startup: startup.clone(),
             notification_policy: NotificationPolicy::default(),
         };
         let failure_updates = updates.clone();
+        let failure_signal = update_signal.clone();
         let backend = thread::Builder::new()
             .name("xana-desktop-runtime".to_owned())
             .stack_size(4 * 1024 * 1024)
@@ -1162,10 +1184,15 @@ impl DesktopClient {
                     Ok(Err(error)) => {
                         let error = classify_backend_error(&error);
                         startup.fail_if_pending(error.clone());
-                        let _ = failure_updates.blocking_send(DesktopUpdate::BackendStopped {
-                            expected: false,
-                            error: Some(error),
-                        });
+                        if failure_updates
+                            .blocking_send(DesktopUpdate::BackendStopped {
+                                expected: false,
+                                error: Some(error),
+                            })
+                            .is_ok()
+                        {
+                            failure_signal.wake();
+                        }
                     }
                     Err(_) => {
                         let error = DesktopError::new(
@@ -1173,10 +1200,15 @@ impl DesktopClient {
                             "Desktop runtime thread panicked; durable state remains recoverable",
                         );
                         startup.fail_if_pending(error.clone());
-                        let _ = failure_updates.blocking_send(DesktopUpdate::BackendStopped {
-                            expected: false,
-                            error: Some(error),
-                        });
+                        if failure_updates
+                            .blocking_send(DesktopUpdate::BackendStopped {
+                                expected: false,
+                                error: Some(error),
+                            })
+                            .is_ok()
+                        {
+                            failure_signal.wake();
+                        }
                     }
                 }
                 let _ = done_sender.send(());
@@ -1208,6 +1240,7 @@ impl DesktopClient {
         Ok(Self {
             commands,
             updates: update_receiver,
+            update_signal,
             next_command_id: std::sync::atomic::AtomicU64::new(1),
             backend: Some(backend),
             backend_done: done_receiver,
@@ -1218,6 +1251,12 @@ impl DesktopClient {
 
     pub fn initial_snapshot(&self) -> &DesktopSnapshot {
         &self.initial_snapshot
+    }
+
+    /// Returns a coalescing signal used to wake a presentation only when the
+    /// runtime may have queued updates.
+    pub fn update_signal(&self) -> DesktopWakeSignal {
+        self.update_signal.clone()
     }
 
     /// Returns a bounded reader that accepts only runtime-projected resources.
@@ -1811,6 +1850,7 @@ impl StartupSignal {
 pub(crate) struct Bridge {
     commands: Arc<tokio::sync::Mutex<mpsc::Receiver<BridgeCommand>>>,
     updates: mpsc::Sender<DesktopUpdate>,
+    update_signal: DesktopWakeSignal,
     startup: StartupSignal,
     notification_policy: NotificationPolicy,
 }
@@ -3000,7 +3040,10 @@ impl Bridge {
 
     async fn publish(&self, update: DesktopUpdate, replaceable: bool) -> Result<(), DesktopError> {
         match self.updates.try_send(update) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.update_signal.wake();
+                Ok(())
+            }
             Err(mpsc::error::TrySendError::Full(_)) if replaceable => Ok(()),
             Err(mpsc::error::TrySendError::Full(update)) => self.publish_critical(update).await,
             Err(mpsc::error::TrySendError::Closed(_)) => Err(DesktopError::new(
@@ -3012,7 +3055,10 @@ impl Bridge {
 
     async fn publish_critical(&self, update: DesktopUpdate) -> Result<(), DesktopError> {
         match tokio::time::timeout(CRITICAL_UPDATE_GRACE, self.updates.send(update)).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => {
+                self.update_signal.wake();
+                Ok(())
+            }
             Ok(Err(_)) => Err(DesktopError::new(
                 DesktopErrorCode::RuntimeUnavailable,
                 "Desktop projection detached",
@@ -3735,6 +3781,7 @@ mod tests {
             Bridge {
                 commands: Arc::new(tokio::sync::Mutex::new(commands)),
                 updates,
+                update_signal: DesktopWakeSignal::default(),
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
             },
@@ -3742,6 +3789,33 @@ mod tests {
             update_receiver,
             startup_receiver,
         )
+    }
+
+    #[tokio::test]
+    async fn bridge_publication_wakes_the_observer_without_a_polling_clock() {
+        let (bridge, _, mut updates, _) = bridge_channels();
+        let signal = bridge.update_signal.clone();
+
+        bridge
+            .publish_critical(DesktopUpdate::CommandResult {
+                command_id: 7,
+                accepted: true,
+                error: None,
+            })
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(1), signal.wait())
+            .await
+            .expect("published update must wake the observer");
+
+        assert!(matches!(
+            updates.try_recv(),
+            Ok(DesktopUpdate::CommandResult {
+                command_id: 7,
+                accepted: true,
+                error: None,
+            })
+        ));
     }
 
     #[test]

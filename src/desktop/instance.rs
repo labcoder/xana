@@ -4,7 +4,7 @@
 //! and the canonical Xana runtime directory. Forwarded values are a closed,
 //! bounded intent enum rather than commands, prompts, credentials, or paths.
 
-use super::{DesktopError, DesktopErrorCode, DesktopLaunch};
+use super::{DesktopError, DesktopErrorCode, DesktopLaunch, DesktopWakeSignal};
 use crate::{bounded_file, paths::XanaPaths};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -96,6 +96,7 @@ pub struct DesktopInstanceLease {
     endpoint: SocketAddr,
     lock: Option<fs::File>,
     receiver: mpsc::Receiver<DesktopLaunchIntent>,
+    update_signal: DesktopWakeSignal,
     stopping: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
 }
@@ -174,6 +175,11 @@ impl DesktopInstanceLease {
     /// Receives one already-authenticated launch intent without blocking GPUI.
     pub fn try_next(&self) -> Option<DesktopLaunchIntent> {
         self.receiver.try_recv().ok()
+    }
+
+    /// Returns a coalescing signal for already-authenticated launch intents.
+    pub fn update_signal(&self) -> DesktopWakeSignal {
+        self.update_signal.clone()
     }
 }
 
@@ -264,13 +270,21 @@ fn own(
     write_descriptor(&descriptor_path, &descriptor)?;
 
     let (sender, receiver) = mpsc::sync_channel(FORWARD_CAPACITY);
+    let update_signal = DesktopWakeSignal::default();
     let stopping = Arc::new(AtomicBool::new(false));
     let listener_stopping = stopping.clone();
     let listener_capability = capability.clone();
+    let listener_signal = update_signal.clone();
     let listener_thread = thread::Builder::new()
         .name("xana-desktop-instance".to_owned())
         .spawn(move || {
-            serve(listener, &listener_capability, sender, &listener_stopping);
+            serve(
+                listener,
+                &listener_capability,
+                sender,
+                &listener_signal,
+                &listener_stopping,
+            );
             let mut listener_capability = listener_capability;
             listener_capability.zeroize();
         })
@@ -287,6 +301,7 @@ fn own(
         endpoint,
         lock: Some(lock),
         receiver,
+        update_signal,
         stopping,
         listener: Some(listener_thread),
     }))
@@ -296,11 +311,12 @@ fn serve(
     listener: TcpListener,
     capability: &str,
     sender: mpsc::SyncSender<DesktopLaunchIntent>,
+    update_signal: &DesktopWakeSignal,
     stopping: &AtomicBool,
 ) {
     while !stopping.load(Ordering::Acquire) {
         match listener.accept() {
-            Ok((stream, _)) => handle_connection(stream, capability, &sender),
+            Ok((stream, _)) => handle_connection(stream, capability, &sender, update_signal),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 thread::sleep(ACCEPT_POLL_DELAY);
             }
@@ -313,6 +329,7 @@ fn handle_connection(
     mut stream: TcpStream,
     capability: &str,
     sender: &mpsc::SyncSender<DesktopLaunchIntent>,
+    update_signal: &DesktopWakeSignal,
 ) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
@@ -321,9 +338,14 @@ fn handle_connection(
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
     let accepted = request.is_ok_and(|request| {
-        request.version == FORWARD_PROTOCOL_VERSION
-            && request.capability == capability
-            && sender.try_send(request.intent).is_ok()
+        if request.version != FORWARD_PROTOCOL_VERSION || request.capability != capability {
+            return false;
+        }
+        if sender.try_send(request.intent).is_err() {
+            return false;
+        }
+        update_signal.wake();
+        true
     });
     let response = ForwardResponse {
         version: FORWARD_PROTOCOL_VERSION,
@@ -533,8 +555,8 @@ mod tests {
         DesktopLaunch::new(root, Some(OsString::from(root)))
     }
 
-    #[test]
-    fn later_same_home_launch_forwards_one_closed_intent() {
+    #[tokio::test]
+    async fn later_same_home_launch_wakes_and_forwards_one_closed_intent() {
         let root = tempfile::tempdir().unwrap();
         let launch = launch(root.path());
         let DesktopInstanceClaim::Primary(primary) =
@@ -543,6 +565,7 @@ mod tests {
             panic!("first launch must own the instance")
         };
 
+        let signal = primary.update_signal();
         assert!(matches!(
             launch
                 .claim_instance(DesktopLaunchIntent::Navigate(
@@ -551,16 +574,11 @@ mod tests {
                 .unwrap(),
             DesktopInstanceClaim::Forwarded
         ));
-        let mut received = None;
-        for _ in 0..50 {
-            received = primary.try_next();
-            if received.is_some() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        tokio::time::timeout(IO_TIMEOUT, signal.wait())
+            .await
+            .expect("forwarded intent must wake the primary");
         assert_eq!(
-            received,
+            primary.try_next(),
             Some(DesktopLaunchIntent::Navigate(
                 DesktopNavigationTarget::Diagnostics
             ))
