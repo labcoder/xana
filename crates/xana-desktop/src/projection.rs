@@ -561,6 +561,7 @@ mod tests {
             host_sequence: 0,
             hosted_workspace_count: 1,
             hosted_conversation_count: 1,
+            hosted_conversations: Vec::new(),
             attached_conversation: Some("native/session".to_owned()),
             controllers: Vec::new(),
             host_lifecycle: "running".into(),

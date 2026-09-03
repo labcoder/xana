@@ -22,6 +22,7 @@ pub(crate) const LOGS_ID: &str = "diagnostics.logs.v1";
 pub(crate) const CLEAR_ID: &str = "conversation.clear.v1";
 pub(crate) const INTERRUPT_ID: &str = "run.interrupt.v1";
 pub(crate) const ACTIVITY_ID: &str = "presentation.activity.show.v1";
+pub(crate) const ESPEJO_ID: &str = "espejo.open.v1";
 pub(crate) const SETTINGS_ID: &str = "settings.open.v1";
 
 actions!(
@@ -36,6 +37,7 @@ actions!(
         ClearConversation,
         InterruptRun,
         ShowActivity,
+        ShowEspejo,
         ShowSettings,
         NewConversation,
         RenameSelectedProject,
@@ -58,6 +60,7 @@ pub(crate) enum WorkbenchCommand {
     ClearConversation,
     InterruptRun,
     ShowActivity,
+    ShowEspejo,
     ShowSettings,
 }
 
@@ -73,6 +76,7 @@ impl WorkbenchCommand {
             Self::ClearConversation => CLEAR_ID,
             Self::InterruptRun => INTERRUPT_ID,
             Self::ShowActivity => ACTIVITY_ID,
+            Self::ShowEspejo => ESPEJO_ID,
             Self::ShowSettings => SETTINGS_ID,
         }
     }
@@ -88,6 +92,7 @@ impl WorkbenchCommand {
             CLEAR_ID => Self::ClearConversation,
             INTERRUPT_ID => Self::InterruptRun,
             ACTIVITY_ID => Self::ShowActivity,
+            ESPEJO_ID => Self::ShowEspejo,
             SETTINGS_ID => Self::ShowSettings,
             _ => return None,
         })
@@ -144,6 +149,7 @@ fn native_menus() -> Vec<Menu> {
         Menu::new("View").items([
             MenuItem::action("Command Palette…", ShowCommandPalette),
             MenuItem::action("Activity", ShowActivity),
+            MenuItem::action("Espejo", ShowEspejo),
             MenuItem::action("Settings…", ShowSettings),
         ]),
         Menu::new("Conversation").items([
@@ -255,6 +261,7 @@ mod tests {
             WorkbenchCommand::ClearConversation,
             WorkbenchCommand::InterruptRun,
             WorkbenchCommand::ShowActivity,
+            WorkbenchCommand::ShowEspejo,
             WorkbenchCommand::ShowSettings,
         ] {
             assert_eq!(
@@ -297,5 +304,11 @@ mod tests {
                 .subtitle_text()
                 .is_some_and(|subtitle| subtitle.contains("later Milestone 4"))
         );
+
+        let espejo = items
+            .iter()
+            .find(|item| item.id().as_ref() == ESPEJO_ID)
+            .expect("Espejo command");
+        assert!(!espejo.is_disabled());
     }
 }

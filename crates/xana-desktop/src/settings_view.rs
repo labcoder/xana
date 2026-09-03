@@ -352,6 +352,23 @@ impl SettingsView {
             .update(cx, |search, cx| search.focus(window, cx));
     }
 
+    pub(crate) fn open_section(
+        &mut self,
+        section: DesktopSettingsSection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.selected_section = section;
+        self.selected_key = self
+            .snapshot
+            .entries_in(section)
+            .next()
+            .map(|entry| entry.key.clone());
+        self.focused_manager = None;
+        self.sync_editor(window, cx);
+        cx.notify();
+    }
+
     fn query(&self, cx: &App) -> String {
         self.search.read(cx).value().trim().to_lowercase()
     }

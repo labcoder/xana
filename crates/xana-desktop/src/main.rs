@@ -7,6 +7,7 @@ mod composer;
 mod connection_actions;
 mod connection_manager;
 mod design_system;
+mod espejo;
 mod localization;
 mod maintenance_view;
 mod management_view;
@@ -108,8 +109,14 @@ fn main() -> ExitCode {
             cx.on_system_notification_response(move |response, cx| {
                 _ = notification_window.update(cx, |_, window, cx| {
                     window.activate_window();
-                    if response.tag.as_ref() != "xana-desktop-conversation" {
-                        window.dispatch_action(Box::new(commands::ShowActivity), cx);
+                    match response.tag.as_ref() {
+                        "xana-desktop-activity" => {
+                            window.dispatch_action(Box::new(commands::ShowActivity), cx);
+                        }
+                        "xana-desktop-diagnostics" => {
+                            window.dispatch_action(Box::new(commands::ShowEspejo), cx);
+                        }
+                        _ => {}
                     }
                 });
             });

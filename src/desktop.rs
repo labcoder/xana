@@ -650,6 +650,7 @@ pub struct DesktopSnapshot {
     pub host_sequence: u64,
     pub hosted_workspace_count: usize,
     pub hosted_conversation_count: usize,
+    pub hosted_conversations: Vec<DesktopHostedConversation>,
     pub attached_conversation: Option<String>,
     pub controllers: Vec<DesktopControllerLease>,
     pub host_lifecycle: String,
@@ -759,6 +760,37 @@ pub enum DesktopConversationState {
     Failed,
     Declined,
     Interrupted,
+}
+
+impl DesktopConversationState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Running => "running",
+            Self::Suspended => "suspended",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Declined => "declined",
+            Self::Interrupted => "interrupted",
+        }
+    }
+}
+
+/// Bounded host-owned work state for one Conversation in global projections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopHostedConversation {
+    pub conversation: String,
+    pub workspace_id: String,
+    pub connection: String,
+    pub model: String,
+    pub profile: Option<String>,
+    pub permission_mode: String,
+    pub state: DesktopConversationState,
+    pub active_operation: Option<DesktopOperationId>,
+    pub pending_approvals: usize,
+    pub activity_count: usize,
+    pub last_outcome: Option<String>,
+    pub controller: Option<DesktopControllerLease>,
 }
 
 /// Stable host-routing facts, separate from one Conversation's runtime events.
@@ -2781,6 +2813,26 @@ fn project_snapshot(
         host_sequence: host.sequence,
         hosted_workspace_count: host.workspaces.len(),
         hosted_conversation_count: host.conversations.len(),
+        hosted_conversations: host
+            .conversations
+            .iter()
+            .map(|conversation| DesktopHostedConversation {
+                conversation: conversation.conversation.to_string(),
+                workspace_id: conversation.workspace_id.clone(),
+                connection: conversation.connection.clone(),
+                model: conversation.model.clone(),
+                profile: conversation.profile.clone(),
+                permission_mode: conversation.permission_mode.clone(),
+                state: project_conversation_state(conversation.state),
+                active_operation: conversation.active_operation.map(DesktopOperationId),
+                pending_approvals: conversation.pending_approvals,
+                activity_count: conversation.activity_count,
+                last_outcome: conversation
+                    .last_outcome
+                    .map(|outcome| format!("{outcome:?}").to_ascii_lowercase()),
+                controller: conversation.controller.as_ref().map(project_controller),
+            })
+            .collect(),
         attached_conversation: host.attached.as_ref().map(ToString::to_string),
         controllers: host
             .conversations
@@ -2839,29 +2891,7 @@ fn project_host_observation(
         } => DesktopHostEvent::RunFinished {
             conversation: conversation.to_string(),
             operation_id: DesktopOperationId(operation_id),
-            state: match state {
-                crate::execution_host::HostedConversationState::Idle => {
-                    DesktopConversationState::Idle
-                }
-                crate::execution_host::HostedConversationState::Running => {
-                    DesktopConversationState::Running
-                }
-                crate::execution_host::HostedConversationState::Suspended => {
-                    DesktopConversationState::Suspended
-                }
-                crate::execution_host::HostedConversationState::Completed => {
-                    DesktopConversationState::Completed
-                }
-                crate::execution_host::HostedConversationState::Failed => {
-                    DesktopConversationState::Failed
-                }
-                crate::execution_host::HostedConversationState::Declined => {
-                    DesktopConversationState::Declined
-                }
-                crate::execution_host::HostedConversationState::Interrupted => {
-                    DesktopConversationState::Interrupted
-                }
-            },
+            state: project_conversation_state(state),
             error,
         },
         HostEvent::ConversationAttached {
@@ -2916,6 +2946,30 @@ fn project_host_observation(
     DesktopHostObservation {
         sequence: observation.sequence,
         event,
+    }
+}
+
+fn project_conversation_state(
+    state: crate::execution_host::HostedConversationState,
+) -> DesktopConversationState {
+    match state {
+        crate::execution_host::HostedConversationState::Idle => DesktopConversationState::Idle,
+        crate::execution_host::HostedConversationState::Running => {
+            DesktopConversationState::Running
+        }
+        crate::execution_host::HostedConversationState::Suspended => {
+            DesktopConversationState::Suspended
+        }
+        crate::execution_host::HostedConversationState::Completed => {
+            DesktopConversationState::Completed
+        }
+        crate::execution_host::HostedConversationState::Failed => DesktopConversationState::Failed,
+        crate::execution_host::HostedConversationState::Declined => {
+            DesktopConversationState::Declined
+        }
+        crate::execution_host::HostedConversationState::Interrupted => {
+            DesktopConversationState::Interrupted
+        }
     }
 }
 

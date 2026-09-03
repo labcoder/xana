@@ -150,7 +150,6 @@ const ALL_SURFACES: SurfaceSet = SurfaceSet::new(true, true, true, true);
 const CHAT_SURFACES: SurfaceSet = SurfaceSet::new(false, true, true, true);
 const RICH_CHAT_SURFACES: SurfaceSet = SurfaceSet::new(false, false, true, true);
 const LOCAL_INTERACTIVE: SurfaceSet = SurfaceSet::new(false, false, true, true);
-const TUI_ONLY: SurfaceSet = SurfaceSet::new(false, false, true, false);
 const CLI_AND_CHAT: SurfaceSet = SurfaceSet::new(true, true, true, true);
 const CLI_ONLY: SurfaceSet = SurfaceSet::new(true, false, false, false);
 const DESKTOP_ONLY: SurfaceSet = SurfaceSet::new(false, false, false, true);
@@ -1499,7 +1498,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Interactive,
         None,
         Inspect,
-        TUI_ONLY,
+        LOCAL_INTERACTIVE,
         true,
         true,
         true

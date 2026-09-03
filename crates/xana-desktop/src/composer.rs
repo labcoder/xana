@@ -190,6 +190,14 @@ impl ComposerStore {
         self.current_mut().queue.clear();
     }
 
+    pub(crate) fn queue_counts(&self) -> HashMap<String, usize> {
+        self.states
+            .iter()
+            .filter(|(_, state)| !state.queue.is_empty())
+            .map(|(conversation, state)| (conversation.clone(), state.queue.len()))
+            .collect()
+    }
+
     fn current_mut(&mut self) -> &mut ComposerState {
         self.states
             .get_mut(&self.active)

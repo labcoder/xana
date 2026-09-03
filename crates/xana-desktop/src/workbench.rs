@@ -5,10 +5,12 @@ use crate::{
         self, ArchiveSelectedProject, BranchSelectedConversation, ClearConversation, InterruptRun,
         MinimizeWindow, MoveSelectedConversation, OpenConfigurationFile, OpenDocumentation,
         QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
-        ShowCommandPalette, ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
+        ShowCommandPalette, ShowEspejo, ShowSettings, UngroupSelectedConversation,
+        WorkbenchCommand,
     },
     composer::{ComposerStore, QueuedSubmission},
     design_system,
+    espejo::{EspejoScope, EspejoView, EspejoViewEvent},
     projection::ConversationProjection,
     settings_view::{SettingsView, SettingsViewEvent},
 };
@@ -46,10 +48,10 @@ use xana::desktop::{
     DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
     DesktopModelOption, DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget,
     DesktopOperationState, DesktopPanelId, DesktopRoundBudgetSuspension,
-    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSnapshot,
-    DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate, DesktopWorkbenchLayout,
-    DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect, NotificationDestination,
-    NotificationPlanner, last_window_effect,
+    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSection,
+    DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
+    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
+    NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -84,6 +86,7 @@ pub(crate) struct Workbench {
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
     projection: ConversationProjection,
+    espejo: Entity<EspejoView>,
     navigation_snapshot: DesktopNavigationSnapshot,
     layout: DesktopWorkbenchLayout,
     layout_save_generation: u64,
@@ -122,6 +125,7 @@ pub(crate) struct Workbench {
     notifications: NotificationPlanner,
     _sidebar_subscription: Subscription,
     _command_subscription: Subscription,
+    _espejo_subscription: Subscription,
     _settings_subscription: Subscription,
     _runtime_driver: Task<()>,
 }
@@ -154,8 +158,10 @@ impl Workbench {
             .clone()
             .map(SidebarSelection::Conversation);
         let navigation = navigation_for_intent(initial_intent);
-        if navigation == DesktopNavigationTarget::Settings
-            && let Err(error) = runtime.begin_settings()
+        if matches!(
+            navigation,
+            DesktopNavigationTarget::Settings | DesktopNavigationTarget::Diagnostics
+        ) && let Err(error) = runtime.begin_settings()
         {
             projection.fail(error.message);
         }
@@ -215,6 +221,12 @@ impl Workbench {
                 cx,
             )
         });
+        let espejo = cx.new(|_| EspejoView::new(runtime.initial_snapshot()));
+        if navigation == DesktopNavigationTarget::Diagnostics {
+            settings_view.update(cx, |settings, cx| {
+                settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
+            });
+        }
         sidebar.update(cx, |sidebar, cx| {
             sidebar.set_sections(sidebar_sections(&navigation_snapshot), cx);
             if let Some(selected) = navigation_snapshot.selected_conversation.as_deref() {
@@ -267,6 +279,13 @@ impl Workbench {
                 this.handle_settings_event(event, window, cx);
             },
         );
+        let espejo_subscription = cx.subscribe_in(
+            &espejo,
+            window,
+            |this, _, event: &EspejoViewEvent, window, cx| {
+                this.handle_espejo_event(event, window, cx);
+            },
+        );
         let runtime_driver = cx.spawn_in(window, async move |this, cx| {
             loop {
                 cx.background_executor().timer(UPDATE_INTERVAL).await;
@@ -294,6 +313,7 @@ impl Workbench {
             instance,
             native_paths,
             projection,
+            espejo,
             navigation_snapshot,
             layout,
             layout_save_generation: 0,
@@ -325,6 +345,7 @@ impl Workbench {
             notifications: NotificationPlanner::new(),
             _sidebar_subscription: sidebar_subscription,
             _command_subscription: command_subscription,
+            _espejo_subscription: espejo_subscription,
             _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
         }
@@ -942,6 +963,74 @@ impl Workbench {
         self.sync_components(window, cx);
     }
 
+    fn open_diagnostics(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.navigation = DesktopNavigationTarget::Diagnostics;
+        if self.settings_draft.is_none() {
+            let result = self.runtime.begin_settings();
+            self.track_settings_command(result, "Preparing Diagnostics…", cx);
+        }
+        self.projection.set_activity("Diagnostics opened");
+        self.settings_view.update(cx, |settings, cx| {
+            settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
+        });
+        self.sync_components(window, cx);
+    }
+
+    fn open_espejo(&mut self, scope: EspejoScope, cx: &mut Context<Self>) {
+        self.espejo.update(cx, |espejo, cx| espejo.open(scope, cx));
+        self.navigation = DesktopNavigationTarget::Espejo;
+        self.projection.set_activity("Espejo opened");
+        cx.notify();
+    }
+
+    fn handle_espejo_event(
+        &mut self,
+        event: &EspejoViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            EspejoViewEvent::Close => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                cx.notify();
+            }
+            EspejoViewEvent::OpenConversation {
+                conversation_id,
+                needs_attention,
+            } => {
+                self.open_espejo_conversation(conversation_id.clone(), *needs_attention, window, cx)
+            }
+            EspejoViewEvent::OpenDiagnostics => self.open_diagnostics(window, cx),
+        }
+    }
+
+    fn open_espejo_conversation(
+        &mut self,
+        conversation_id: String,
+        needs_attention: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.sidebar_selection = Some(SidebarSelection::Conversation(conversation_id.clone()));
+        self.selected_project =
+            project_for_conversation(&self.navigation_snapshot, &conversation_id);
+        if self.navigation_snapshot.selected_conversation.as_deref() != Some(&conversation_id) {
+            match self.runtime.switch_conversation(&conversation_id) {
+                Ok(_) => self.projection.set_activity(format!(
+                    "Opening {}",
+                    conversation_title(&self.navigation_snapshot, &conversation_id)
+                )),
+                Err(error) => {
+                    self.projection.fail(error.message);
+                    self.sync_components(window, cx);
+                    return;
+                }
+            }
+        }
+        self.navigation = espejo_destination(needs_attention);
+        self.sync_components(window, cx);
+    }
+
     fn handle_command_search_event(
         &mut self,
         event: &CommandSearchEvent,
@@ -1287,6 +1376,9 @@ impl Workbench {
             self.notify_for_update(&update, window, cx);
             match update {
                 DesktopUpdate::Snapshot(snapshot) => {
+                    self.espejo.update(cx, |espejo, cx| {
+                        espejo.replace_snapshot(&snapshot, cx);
+                    });
                     self.navigation_snapshot = snapshot.navigation.clone();
                     self.layout = snapshot.layout.layout.clone();
                     self.selected_project = self
@@ -1378,6 +1470,9 @@ impl Workbench {
                 }
                 DesktopUpdate::HostObservation(observation) => {
                     self.projection.apply_host(&observation);
+                    self.espejo.update(cx, |espejo, cx| {
+                        espejo.apply_host(&observation, cx);
+                    });
                 }
                 DesktopUpdate::CommandResult {
                     command_id,
@@ -1479,14 +1574,22 @@ impl Workbench {
             changed = true;
             window.activate_window();
             self.navigation = navigation_for_intent(intent);
-            if self.navigation == DesktopNavigationTarget::Settings {
+            if matches!(
+                self.navigation,
+                DesktopNavigationTarget::Settings | DesktopNavigationTarget::Diagnostics
+            ) {
+                let diagnostics = self.navigation == DesktopNavigationTarget::Diagnostics;
                 if self.settings_draft.is_none()
                     && let Err(error) = self.runtime.begin_settings()
                 {
                     self.projection.fail(error.message);
                 }
                 self.settings_view.update(cx, |settings, cx| {
-                    settings.focus_search(window, cx);
+                    if diagnostics {
+                        settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
+                    } else {
+                        settings.focus_search(window, cx);
+                    }
                 });
             }
             self.projection.set_activity(format!(
@@ -1629,6 +1732,12 @@ impl Workbench {
                 window,
                 cx,
             );
+        });
+        let navigation = self.navigation_snapshot.clone();
+        let selected_project = self.selected_project.clone();
+        let queue_counts = self.composer.queue_counts();
+        self.espejo.update(cx, |espejo, cx| {
+            espejo.update_navigation(navigation, selected_project, queue_counts, cx);
         });
         cx.notify();
     }
@@ -2742,6 +2851,7 @@ impl Workbench {
                 self.projection.set_activity("Activity opened");
                 cx.notify();
             }
+            WorkbenchCommand::ShowEspejo => self.open_espejo(EspejoScope::Global, cx),
             WorkbenchCommand::ShowSettings => self.open_settings(window, cx),
         }
     }
@@ -2832,9 +2942,15 @@ impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
         let layout = self.layout.clone();
-        let showing_settings = self.navigation == DesktopNavigationTarget::Settings;
+        let showing_settings = matches!(
+            self.navigation,
+            DesktopNavigationTarget::Settings | DesktopNavigationTarget::Diagnostics
+        );
+        let showing_espejo = self.navigation == DesktopNavigationTarget::Espejo;
         let canvas = if showing_settings {
             self.settings_view.clone().into_any_element()
+        } else if showing_espejo {
+            self.espejo.clone().into_any_element()
         } else {
             match layout.maximized() {
                 Some(panel) => self.render_panel_stack(
@@ -2847,7 +2963,8 @@ impl Render for Workbench {
                 None => self.render_layout_node(layout.root(), window, cx),
             }
         };
-        let panel_library = (!showing_settings).then(|| self.render_panel_library(cx));
+        let panel_library =
+            (!showing_settings && !showing_espejo).then(|| self.render_panel_library(cx));
         let navigation_dialog = self.render_navigation_dialog(cx);
         let sidebar_is_full = self.navigation_snapshot.sidebar_mode == DesktopSidebarMode::Full;
         let sidebar_selection = self.sidebar_selection.clone();
@@ -2892,9 +3009,7 @@ impl Render for Workbench {
                     .label(if sidebar_is_full { "Espejo" } else { "E" })
                     .w_full()
                     .on_click(cx.listener(|this, _, _, cx| {
-                        this.navigation = DesktopNavigationTarget::Espejo;
-                        this.projection.set_activity("Espejo opened");
-                        cx.notify();
+                        this.open_espejo(EspejoScope::Global, cx);
                     })),
             )
             .child(
@@ -2999,6 +3114,9 @@ impl Render for Workbench {
             })
             .on_action(cx.listener(|this, _: &ShowActivity, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowActivity, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowEspejo, window, cx| {
+                this.dispatch(WorkbenchCommand::ShowEspejo, window, cx);
             }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowSettings, window, cx);
@@ -3188,6 +3306,14 @@ fn project_title(snapshot: &DesktopNavigationSnapshot, id: &str) -> String {
         .find(|project| project.id == id)
         .map(|project| project.name.clone())
         .unwrap_or_else(|| "Project".to_owned())
+}
+
+fn espejo_destination(needs_attention: bool) -> DesktopNavigationTarget {
+    if needs_attention {
+        DesktopNavigationTarget::Activity
+    } else {
+        DesktopNavigationTarget::Conversation
+    }
 }
 
 fn model_options_for(control: &DesktopControlPlane, connection: &str) -> Vec<DesktopModelOption> {
@@ -3389,6 +3515,15 @@ mod tests {
                 DesktopNavigationTarget::Diagnostics
             )),
             DesktopNavigationTarget::Diagnostics
+        );
+    }
+
+    #[test]
+    fn espejo_attention_routes_to_activity_without_over_clearing() {
+        assert_eq!(espejo_destination(true), DesktopNavigationTarget::Activity);
+        assert_eq!(
+            espejo_destination(false),
+            DesktopNavigationTarget::Conversation
         );
     }
 
