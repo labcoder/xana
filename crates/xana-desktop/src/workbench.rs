@@ -1932,7 +1932,9 @@ impl Workbench {
                     match loaded {
                         Ok(preview) => {
                             if let Some(format) = ImageFormat::from_mime_type(&preview.media_type) {
-                                let image = Arc::new(Image::from_bytes(format, preview.bytes.to_vec()));
+                                let image =
+                                    Arc::new(Image::from_bytes(format, preview.bytes.to_vec()));
+                                this.preview_attempted.remove(&preview.artifact_id);
                                 this.projection
                                     .install_image_preview(preview.artifact_id, image);
                             } else {
