@@ -68,7 +68,9 @@ Intel macOS job compiles and tests the Desktop package.
   on provider, tool, filesystem, or shutdown work.
 - Keep stable command IDs in Xana's shared catalog. Native menus, palette rows,
   buttons, and shortcuts must converge on one Desktop dispatcher; unsupported
-  rows stay discoverable with a disabled reason.
+  rows stay discoverable with a disabled reason. A status-only Desktop route
+  must say that lifecycle changes remain in the typed terminal flow; never label
+  navigation as management.
 - Keep single-instance file locks, authenticated loopback forwarding, and
   path resolution in `xana::desktop`. GPUI consumes only the closed
   focus/navigation intent and exact Xana-owned paths.
@@ -80,6 +82,13 @@ Intel macOS job compiles and tests the Desktop package.
 - Keep raw Xana palette values in `design_system.rs`. Feature code consumes
   semantic theme, size, and motion tokens instead of inventing local colors or
   clocks.
+
+`check-desktop-dependencies.ps1` is also an authority gate. The Desktop crate
+has a reviewed direct-dependency allowlist and may not spawn processes, open raw
+network sockets, call provider HTTP clients, or access the credential store.
+Add those capabilities to `xana::desktop` behind a narrow typed adapter. A
+dependency bump must update the allowlist deliberately and re-run license,
+security, accessibility, load, and all four supported source-build targets.
 
 ## Troubleshooting
 

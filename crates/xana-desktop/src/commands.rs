@@ -219,7 +219,12 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
         .or_else(|| runtime_disabled.then(|| "No Run is active.".to_owned()));
     let title = command_title(&descriptor);
     let subtitle = unavailable_reason.map_or_else(
-        || descriptor.summary.to_owned(),
+        || {
+            command_exposure_note(descriptor.id).map_or_else(
+                || descriptor.summary.to_owned(),
+                |note| format!("{} — {note}", descriptor.summary),
+            )
+        },
         |reason| format!("{} — {reason}", descriptor.summary),
     );
     let keywords = descriptor
@@ -241,6 +246,22 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
         item = item.shortcut(shortcut);
     }
     item
+}
+
+fn command_exposure_note(stable_id: &str) -> Option<&'static str> {
+    match stable_id {
+        "skill.manage.v1"
+        | "plugin.manage.v1"
+        | "mcp.manage.v1"
+        | "external_agent.manage.v1"
+        | "image.manage.v1"
+        | "vision.manage.v1"
+        | "outbound.manage.v1"
+        | "operation.reconcile.v1" => Some(
+            "Desktop shows the relevant state here; lifecycle changes remain in Xana's typed terminal management flow in this build.",
+        ),
+        _ => None,
+    }
 }
 
 pub(crate) fn palette_selection(stable_id: &str) -> Option<PaletteSelection> {
@@ -500,5 +521,34 @@ mod tests {
                 SettingsRoute::Reset
             )))
         );
+    }
+
+    #[test]
+    fn status_only_management_routes_disclose_the_terminal_boundary() {
+        for stable_id in [
+            "skill.manage.v1",
+            "plugin.manage.v1",
+            "mcp.manage.v1",
+            "external_agent.manage.v1",
+            "image.manage.v1",
+            "vision.manage.v1",
+            "outbound.manage.v1",
+            "operation.reconcile.v1",
+        ] {
+            let item = palette_items(false)
+                .into_iter()
+                .find(|item| item.id().as_ref() == stable_id)
+                .unwrap_or_else(|| panic!("missing palette row for {stable_id}"));
+            assert!(
+                !item.is_disabled(),
+                "{stable_id} should open its status view"
+            );
+            assert!(
+                item.subtitle_text().is_some_and(|subtitle| {
+                    subtitle.contains("typed terminal management flow")
+                }),
+                "{stable_id} must disclose its status-only Desktop scope"
+            );
+        }
     }
 }

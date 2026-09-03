@@ -220,7 +220,9 @@ infers the process directory nor creates a Project or Conversation. Use
 directly.
 Graphical setup, Settings, connection/model management, Doctor, and recovery are
 available alongside a global/Project Espejo command center. Complete graphical
-rich-content rendering is added by a later M4 ticket.
+rich-content rendering includes sanitized Markdown, selectable code and diff
+content, safe links, bounded static image previews, and typed fallbacks for
+formats without a reviewed native adapter.
 See [using Xana Desktop](docs/user/desktop.md) and
 [Desktop development](docs/contributing/desktop-development.md).
 

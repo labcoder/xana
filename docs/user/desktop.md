@@ -71,6 +71,15 @@ enter Desktop snapshots, controls, logs, or accessibility text. Test and
 refresh are explicit operations; cached facts are labeled rather than
 presented as live observations.
 
+The **Capabilities** view is authoritative status, not a generic configuration
+editor. It distinguishes installed, enabled, available, permitted, selected,
+and containment facts for Skills, Agent Plugins, MCP servers, external agents,
+and focused routes. In this build, lifecycle changes for those advanced
+integrations—as well as image-generation routes, outbound-decision history, and
+operation reconciliation—remain in Xana's typed terminal management flow. The
+command palette can open the relevant Desktop status view and labels that
+limitation; it does not imply that navigation changed configuration.
+
 An invalid, incompatible, or interrupted configuration opens **Diagnose and
 recover**, not setup. Doctor remains read-only. A repair, migration, or reset
 first produces an exact review plan and requires a separate commit. Migration

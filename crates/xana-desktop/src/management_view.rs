@@ -573,7 +573,7 @@ impl ManagementView {
                 .gap(tokens.spacing.md)
                 .child(section_heading(
                     "What can Xana do here?",
-                    "Availability, permission, and selection are deliberately separate.",
+                    "Availability, permission, and selection are deliberately separate. This view is authoritative status; advanced integration lifecycle changes remain in Xana's typed terminal management flow in this build.",
                     cx,
                 ))
                 .child(format!(

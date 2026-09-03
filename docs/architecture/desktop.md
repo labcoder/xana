@@ -186,6 +186,15 @@ domain commands rather than being flattened into generic key/value writes.
 Credential snapshots carry state and authority identity only; stored values and
 length-derived masks never cross into presentation.
 
+Desktop's focused mutation controls currently cover connections, credentials,
+models, Profiles, Projects, permissions, resource policy, Workbench preferences,
+repair, migration, and reset. Skills, Agent Plugins, MCP servers, external
+agents, focused routes, image generation, outbound-decision history, and
+operation reconciliation are projected as typed capability or diagnostic state,
+but their lifecycle mutations remain in Xana's typed terminal management flow.
+Palette rows that open those status views disclose that boundary; navigation is
+not presented as a completed mutation workflow.
+
 Missing configuration enters graphical setup. Invalid, incompatible, or
 interrupted state enters a separate maintenance surface. Doctor snapshots are
 read-only; repairs, migration, and reset each require an exact reviewed plan
@@ -321,6 +330,10 @@ external URLs and paths remain unavailable.
 The workspace lockfile pins `gpui-ai`, the matching `gpui-component` family,
 and one Zed/GPUI source revision. `default-members = ["."]` keeps an ordinary
 `cargo build` on the root CLI/TUI package. CI verifies that the root package has
-no GPUI dependency and that Desktop resolves one coordinated GPUI source
-family. Upgrades are isolated dependency changes with source/changelog review
-and cross-platform validation.
+no GPUI dependency, that Desktop resolves one coordinated GPUI source family,
+and that Desktop has only the reviewed direct production dependencies. A
+source-level authority gate rejects process spawning, raw networking, direct
+provider HTTP clients, and credential-store access in the GPUI presentation
+crate; those effects must remain behind typed `xana::desktop` adapters. Upgrades
+are isolated dependency changes with source/changelog, license, authority,
+accessibility, load, and cross-platform validation.
