@@ -1046,6 +1046,39 @@ impl Bridge {
                 self.publish_command_result(command_id, result.map(|_| ()))
                     .await?;
             }
+            BridgeCommandValue::SaveArtifact {
+                artifact_id,
+                destination,
+            } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    &state.snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Save(destination),
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
+            }
+            BridgeCommandValue::RevealArtifact { artifact_id } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    &state.snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Reveal,
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
+            }
+            BridgeCommandValue::OpenArtifact { artifact_id } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    &state.snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Open,
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
+            }
             BridgeCommandValue::Submit {
                 operation_id,
                 input,

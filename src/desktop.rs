@@ -182,6 +182,108 @@ impl DesktopAttachmentService {
             .map(DesktopAttachment::from_image)
             .map_err(|error| DesktopError::new(DesktopErrorCode::StateInvalid, error))
     }
+
+    fn save_artifact(
+        &self,
+        artifact: &crate::artifact::ArtifactRecord,
+        destination: &std::path::Path,
+    ) -> Result<(), DesktopError> {
+        if !destination.is_absolute() || destination.file_name().is_none() {
+            return Err(DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                "artifact export requires an absolute file destination",
+            ));
+        }
+        self.store
+            .copy_verified_create_new(
+                artifact,
+                destination,
+                crate::resource::MAX_RESOURCE_SOURCE_BYTES,
+            )
+            .map_err(|error| {
+                DesktopError::new(
+                    DesktopErrorCode::StateInvalid,
+                    format!("could not save verified artifact copy: {error}"),
+                )
+            })
+    }
+
+    fn launch_artifact(
+        &self,
+        artifact: &crate::artifact::ArtifactRecord,
+        action: crate::artifact_action::ExternalArtifactAction,
+    ) -> Result<(), DesktopError> {
+        crate::artifact_action::launch_verified(
+            &self.store,
+            artifact,
+            crate::resource::MAX_RESOURCE_SOURCE_BYTES,
+            action,
+        )
+        .map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("could not launch verified artifact action: {error}"),
+            )
+        })
+    }
+}
+
+fn artifact_record_for_id(
+    snapshot: &ClientSnapshot,
+    artifact_id: &str,
+) -> Result<crate::artifact::ArtifactRecord, DesktopError> {
+    snapshot
+        .conversation
+        .iter()
+        .rev()
+        .flat_map(|message| message.content.iter().rev())
+        .find_map(|block| match block {
+            crate::message::ContentBlock::Image(image)
+                if image.artifact.reference.id.to_string() == artifact_id =>
+            {
+                Some(image.artifact.clone())
+            }
+            _ => None,
+        })
+        .ok_or_else(|| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("artifact {artifact_id} is not present in the bounded Conversation"),
+            )
+        })
+}
+
+enum DesktopArtifactCommand {
+    Save(PathBuf),
+    Reveal,
+    Open,
+}
+
+async fn perform_artifact_command(
+    service: DesktopAttachmentService,
+    snapshot: &ClientSnapshot,
+    artifact_id: &str,
+    command: DesktopArtifactCommand,
+) -> Result<(), DesktopError> {
+    let artifact = artifact_record_for_id(snapshot, artifact_id)?;
+    tokio::task::spawn_blocking(move || match command {
+        DesktopArtifactCommand::Save(destination) => service.save_artifact(&artifact, &destination),
+        DesktopArtifactCommand::Reveal => service.launch_artifact(
+            &artifact,
+            crate::artifact_action::ExternalArtifactAction::Reveal,
+        ),
+        DesktopArtifactCommand::Open => service.launch_artifact(
+            &artifact,
+            crate::artifact_action::ExternalArtifactAction::Open,
+        ),
+    })
+    .await
+    .map_err(|error| {
+        DesktopError::new(
+            DesktopErrorCode::RuntimeCrashed,
+            format!("Desktop artifact worker stopped: {error}"),
+        )
+    })?
 }
 
 /// Authority held by one Desktop frontend attachment.
@@ -1032,6 +1134,50 @@ impl DesktopClient {
         self.artifacts.clone()
     }
 
+    /// Saves a verified copy to an explicit path selected by the native UI.
+    pub fn save_artifact(
+        &self,
+        artifact_id: impl Into<String>,
+        destination: impl Into<PathBuf>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::SaveArtifact {
+            artifact_id: artifact_id.into(),
+            destination: destination.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Reveals one verified artifact in the platform file manager.
+    pub fn reveal_artifact(
+        &self,
+        artifact_id: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::RevealArtifact {
+            artifact_id: artifact_id.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Opens one verified artifact with the platform default application.
+    pub fn open_artifact(
+        &self,
+        artifact_id: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::OpenArtifact {
+            artifact_id: artifact_id.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
     pub fn submit(&self, input: impl Into<String>) -> Result<DesktopCommandReceipt, DesktopError> {
         self.submit_with_attachments_and_workspace_collision_acknowledgement(
             input,
@@ -1581,6 +1727,16 @@ enum BridgeCommandValue {
         external_approved: bool,
     },
     StageClipboardImage,
+    SaveArtifact {
+        artifact_id: String,
+        destination: PathBuf,
+    },
+    RevealArtifact {
+        artifact_id: String,
+    },
+    OpenArtifact {
+        artifact_id: String,
+    },
     Clear,
     Interrupt {
         operation_id: DesktopOperationId,
@@ -2383,6 +2539,42 @@ impl Bridge {
                 }
                 self.publish_command_result(command_id, result.map(|_| ()))
                     .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::SaveArtifact {
+                artifact_id,
+                destination,
+            } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Save(destination),
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::RevealArtifact { artifact_id } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Reveal,
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
+            BridgeCommandValue::OpenArtifact { artifact_id } => {
+                let result = perform_artifact_command(
+                    attachments.clone(),
+                    snapshot,
+                    &artifact_id,
+                    DesktopArtifactCommand::Open,
+                )
+                .await;
+                self.publish_command_result(command_id, result).await?;
                 Ok(None)
             }
             BridgeCommandValue::Shutdown => {
@@ -3461,6 +3653,48 @@ mod tests {
         let debug = format!("{attachment:?}");
         assert!(!debug.contains(&workspace.display().to_string()));
         assert!(!debug.contains("content_hash"));
+    }
+
+    #[test]
+    fn desktop_artifact_export_requires_a_visible_resource_and_preserves_bytes() {
+        use image::{ExtendedColorType, ImageEncoder as _, codecs::png::PngEncoder};
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let image_path = workspace.join("image.png");
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&[0; 4], 1, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+        std::fs::write(&image_path, &png).unwrap();
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let service = attachment_service(&paths, &workspace);
+        let image = service.stage_path("image.png", false).unwrap().into_image();
+        let artifact_id = image.artifact.reference.id.to_string();
+        let snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: crate::identity::SessionId::new(),
+                connection: "fixture".to_owned(),
+                execution_owner: "native".to_owned(),
+                model: "fixture".to_owned(),
+                reasoning_effort: None,
+                host_location: crate::frontend::semantic::HostLocationV1::Embedded,
+                approval_policy: "ask".to_owned(),
+                children: Vec::new(),
+                resource_policy: crate::resource::ResourcePolicyV1::default(),
+            },
+            vec![Message {
+                role: Role::User,
+                content: vec![crate::message::ContentBlock::Image(image)],
+            }],
+        );
+
+        let artifact = artifact_record_for_id(&snapshot, &artifact_id).unwrap();
+        let destination = directory.path().join("saved.png");
+        service.save_artifact(&artifact, &destination).unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), png);
+        assert!(artifact_record_for_id(&snapshot, "not-visible").is_err());
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::{
     workspace_host::{ActiveRootLease, ConversationRef, WorkspaceHost},
 };
 use anyhow::{Context, Result};
-use std::{collections::HashSet, io};
+use std::collections::HashSet;
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
@@ -595,11 +595,16 @@ pub(super) fn apply_artifact_action(
         ArtifactAction::Save => save_artifact_copy(state, store, workspace, &record)?,
         ArtifactAction::InsertReference => state.insert_artifact_reference(&record),
         ArtifactAction::Reveal | ArtifactAction::Open => {
-            let path = store
-                .verified_path(&record, crate::artifact::MAX_ARTIFACT_BYTES)
-                .context("could not verify artifact before opening it")?;
-            open_artifact_path(&path, action == ArtifactAction::Reveal)
-                .context("could not start the OS artifact action")?;
+            crate::artifact_action::launch_verified(
+                store,
+                &record,
+                crate::artifact::MAX_ARTIFACT_BYTES,
+                if action == ArtifactAction::Reveal {
+                    crate::artifact_action::ExternalArtifactAction::Reveal
+                } else {
+                    crate::artifact_action::ExternalArtifactAction::Open
+                },
+            )?;
             state.set_status(if action == ArtifactAction::Reveal {
                 "Artifact revealed in the OS file manager"
             } else {
@@ -616,11 +621,6 @@ fn save_artifact_copy(
     workspace: &std::path::Path,
     record: &crate::artifact::ArtifactRecord,
 ) -> Result<()> {
-    use std::io::{Read as _, Write as _};
-
-    let source = store
-        .verified_path(record, crate::artifact::MAX_ARTIFACT_BYTES)
-        .context("could not verify artifact before saving it")?;
     let directory = workspace.join("xana-artifacts");
     std::fs::create_dir_all(&directory).with_context(|| {
         format!(
@@ -628,52 +628,21 @@ fn save_artifact_copy(
             directory.display()
         )
     })?;
-    let extension = artifact_extension(&record.media_type);
+    let extension = crate::artifact_action::extension_for_media_type(&record.media_type);
     let destination = directory.join(format!("{}.{extension}", record.reference.id));
-    let mut output = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&destination)
+    store
+        .copy_verified_create_new(record, &destination, crate::artifact::MAX_ARTIFACT_BYTES)
         .with_context(|| {
             format!(
-                "could not create {}; existing exports are never overwritten",
+                "could not create verified artifact copy at {}; existing exports are never overwritten",
                 destination.display()
             )
         })?;
-    let mut input = std::fs::File::open(&source)
-        .with_context(|| format!("could not open verified artifact {}", source.display()))?;
-    let mut bounded = (&mut input).take(crate::artifact::MAX_ARTIFACT_BYTES as u64 + 1);
-    let copied = std::io::copy(&mut bounded, &mut output)
-        .context("could not copy verified artifact bytes")?;
-    if copied != record.byte_len {
-        let _ = std::fs::remove_file(&destination);
-        anyhow::bail!(
-            "saved artifact length changed (expected {}, copied {copied})",
-            record.byte_len
-        );
-    }
-    output.flush().context("could not flush artifact export")?;
     state.set_status(format!(
         "Saved verified artifact copy to {}",
         destination.display()
     ));
     Ok(())
-}
-
-fn artifact_extension(media_type: &str) -> &'static str {
-    match media_type {
-        "image/png" => "png",
-        "image/jpeg" => "jpg",
-        "image/gif" => "gif",
-        "image/svg+xml" => "svg",
-        "audio/mpeg" => "mp3",
-        "audio/wav" | "audio/x-wav" => "wav",
-        "video/mp4" => "mp4",
-        "video/webm" => "webm",
-        "application/json" => "json",
-        "text/plain" => "txt",
-        _ => "bin",
-    }
 }
 
 fn copy_text(state: &mut TuiState, clipboard: &mut clipboard::Clipboard, text: String) {
@@ -684,39 +653,6 @@ fn copy_text(state: &mut TuiState, clipboard: &mut clipboard::Clipboard, text: S
         )),
         Err(error) => state.set_status(error),
     }
-}
-
-fn open_artifact_path(path: &std::path::Path, reveal: bool) -> io::Result<()> {
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("explorer.exe");
-        if reveal {
-            command.arg(format!("/select,{}", path.display()));
-        } else {
-            command.arg(path);
-        }
-        command
-    };
-    #[cfg(target_os = "macos")]
-    let mut command = {
-        let mut command = std::process::Command::new("open");
-        if reveal {
-            command.arg("-R");
-        }
-        command.arg(path);
-        command
-    };
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let mut command = {
-        let mut command = std::process::Command::new("xdg-open");
-        command.arg(if reveal {
-            path.parent().unwrap_or(path)
-        } else {
-            path
-        });
-        command
-    };
-    command.spawn().map(|_| ())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -233,6 +233,12 @@ impl DesktopResource {
             .unwrap_or("application/octet-stream")
     }
 
+    pub fn suggested_file_name(&self) -> String {
+        let short = self.artifact_id.get(..8).unwrap_or(&self.artifact_id);
+        let extension = crate::artifact_action::extension_for_media_type(self.media_type());
+        format!("xana-{short}.{extension}")
+    }
+
     pub fn supports_inline_preview(&self) -> bool {
         self.kind == DesktopResourceKind::StaticRaster
             && self.validation == DesktopResourceValidation::Accepted

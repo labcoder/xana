@@ -117,6 +117,7 @@ pub(crate) struct Workbench {
     recoverable_submissions: HashMap<xana::desktop::DesktopOperationId, (String, QueuedSubmission)>,
     recoverable_order: VecDeque<xana::desktop::DesktopOperationId>,
     pending_attachment_commands: HashMap<u64, String>,
+    pending_artifact_commands: HashMap<u64, &'static str>,
     preview_attempted: HashSet<String>,
     selected_artifact: Option<String>,
     sidebar: Entity<SidebarNav>,
@@ -341,6 +342,7 @@ impl Workbench {
             recoverable_submissions: HashMap::new(),
             recoverable_order: VecDeque::new(),
             pending_attachment_commands: HashMap::new(),
+            pending_artifact_commands: HashMap::new(),
             preview_attempted: HashSet::new(),
             selected_artifact: None,
             sidebar,
@@ -756,6 +758,85 @@ impl Workbench {
                 Err(error) => self.projection.fail(error.message),
             }
         }
+    }
+
+    fn save_artifact(
+        &mut self,
+        artifact_id: String,
+        suggested_name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let directory = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let selection = cx.prompt_for_new_path(&directory, Some(&suggested_name));
+        cx.spawn_in(window, async move |this, cx| {
+            let destination = match selection.await {
+                Ok(Ok(Some(path))) => path,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Could not choose an artifact destination: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Artifact destination picker stopped: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+            };
+            _ = this.update_in(cx, |this, window, cx| {
+                match this.runtime.save_artifact(artifact_id, destination) {
+                    Ok(receipt) => {
+                        this.pending_artifact_commands
+                            .insert(receipt.command_id, "Artifact copy saved");
+                        this.projection
+                            .set_activity("Verifying and saving artifact copy…");
+                    }
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn reveal_artifact(
+        &mut self,
+        artifact_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match self.runtime.reveal_artifact(artifact_id) {
+            Ok(receipt) => {
+                self.pending_artifact_commands
+                    .insert(receipt.command_id, "Artifact revealed in the file manager");
+                self.projection
+                    .set_activity("Verifying artifact before reveal…");
+            }
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn open_artifact(&mut self, artifact_id: String, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runtime.open_artifact(artifact_id) {
+            Ok(receipt) => {
+                self.pending_artifact_commands.insert(
+                    receipt.command_id,
+                    "Artifact opened with the default application",
+                );
+                self.projection
+                    .set_activity("Verifying artifact before open…");
+            }
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
     }
 
     fn stage_dropped_paths(
@@ -1523,6 +1604,16 @@ impl Workbench {
                                     "Runtime rejected the attachment".to_owned()
                                 }),
                             );
+                        }
+                    } else if let Some(success) = self.pending_artifact_commands.remove(&command_id)
+                    {
+                        if accepted {
+                            self.projection.set_activity(success);
+                        } else {
+                            self.projection
+                                .fail(error.map(|error| error.message).unwrap_or_else(|| {
+                                    "Runtime rejected the artifact action".to_owned()
+                                }));
                         }
                     } else if let Some((conversation, submission, operation_id)) =
                         self.pending_submissions.remove(&command_id)
@@ -2811,7 +2902,11 @@ impl Workbench {
                     reason,
                 ))
         });
-        let artifact_id = resource.artifact_id.clone();
+        let copy_artifact_id = resource.artifact_id.clone();
+        let save_artifact_id = resource.artifact_id.clone();
+        let reveal_artifact_id = resource.artifact_id.clone();
+        let open_artifact_id = resource.artifact_id.clone();
+        let suggested_name = resource.suggested_file_name();
         v_flex()
             .min_h_0()
             .gap(tokens.spacing.sm)
@@ -2834,15 +2929,46 @@ impl Workbench {
                     .child(lineage),
             )
             .child(
-                h_flex().child(
-                    Button::new(format!("copy-artifact-{artifact_id}"))
-                        .label("Copy reference")
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(artifact_id.clone()));
-                            this.projection.set_activity("Artifact reference copied");
-                            this.sync_components(window, cx);
-                        })),
-                ),
+                h_flex()
+                    .gap(tokens.spacing.xs)
+                    .flex_wrap()
+                    .child(
+                        Button::new(format!("copy-artifact-{copy_artifact_id}"))
+                            .label("Copy reference")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copy_artifact_id.clone(),
+                                ));
+                                this.projection.set_activity("Artifact reference copied");
+                                this.sync_components(window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("save-artifact-{save_artifact_id}"))
+                            .label("Save copy…")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.save_artifact(
+                                    save_artifact_id.clone(),
+                                    suggested_name.clone(),
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("reveal-artifact-{reveal_artifact_id}"))
+                            .label("Reveal")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.reveal_artifact(reveal_artifact_id.clone(), window, cx);
+                            })),
+                    )
+                    .child(
+                        Button::new(format!("open-artifact-{open_artifact_id}"))
+                            .label("Open")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_artifact(open_artifact_id.clone(), window, cx);
+                            })),
+                    ),
             )
             .child(
                 v_flex()

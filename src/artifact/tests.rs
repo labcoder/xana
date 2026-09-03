@@ -66,6 +66,47 @@ fn bounded_reads_verify_length_and_digest() {
 }
 
 #[test]
+fn verified_copy_is_streamed_and_never_overwrites() {
+    let directory = tempdir().expect("artifact tempdir");
+    let store = ArtifactStore::new(directory.path().join("store"));
+    let (artifact, _) = store
+        .put(b"verified export", "text/plain", PrincipalId::new())
+        .expect("put artifact");
+    let destination = directory.path().join("export.txt");
+
+    store
+        .copy_verified_create_new(&artifact, &destination, MAX_ARTIFACT_BYTES)
+        .expect("copy artifact");
+    assert_eq!(fs::read(&destination).unwrap(), b"verified export");
+    assert!(matches!(
+        store.copy_verified_create_new(&artifact, &destination, MAX_ARTIFACT_BYTES),
+        Err(ArtifactError::Io { source, .. }) if source.kind() == io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(fs::read(&destination).unwrap(), b"verified export");
+}
+
+#[test]
+fn failed_verified_copy_removes_only_its_partial_destination() {
+    let directory = tempdir().expect("artifact tempdir");
+    let store = ArtifactStore::new(directory.path().join("store"));
+    let (artifact, _) = store
+        .put(b"original bytes", "text/plain", PrincipalId::new())
+        .expect("put artifact");
+    fs::write(
+        store.path_for(&artifact.reference.content_hash),
+        b"tampered bytes",
+    )
+    .unwrap();
+    let destination = directory.path().join("partial.txt");
+
+    assert!(matches!(
+        store.copy_verified_create_new(&artifact, &destination, MAX_ARTIFACT_BYTES),
+        Err(ArtifactError::CorruptContent { .. })
+    ));
+    assert!(!destination.exists());
+}
+
+#[test]
 fn publishing_leaves_no_partial_temporary_file() {
     let directory = tempdir().expect("artifact tempdir");
     let store = ArtifactStore::new(directory.path().to_owned());

@@ -363,6 +363,133 @@ impl ArtifactStore {
         Ok(self.path_for(&artifact.reference.content_hash))
     }
 
+    /// Streams one verified immutable artifact into a new caller-selected file.
+    ///
+    /// The destination is never overwritten. Xana hashes the complete source
+    /// while copying, checks both path identities after I/O, and removes only
+    /// the partial file created by this call if verification fails.
+    pub(crate) fn copy_verified_create_new(
+        &self,
+        artifact: &ArtifactRecord,
+        destination: &Path,
+        max_bytes: usize,
+    ) -> Result<(), ArtifactError> {
+        if max_bytes == 0 || max_bytes > MAX_RESOURCE_SOURCE_BYTES {
+            return Err(ArtifactError::InvalidLimit {
+                value: max_bytes,
+                ceiling: MAX_RESOURCE_SOURCE_BYTES,
+            });
+        }
+        let declared = usize::try_from(artifact.byte_len).map_err(|_| ArtifactError::TooLarge {
+            actual: usize::MAX,
+            limit: max_bytes,
+        })?;
+        if declared > max_bytes {
+            return Err(ArtifactError::TooLarge {
+                actual: declared,
+                limit: max_bytes,
+            });
+        }
+
+        let source_path = self.path_for(&artifact.reference.content_hash);
+        let source_metadata =
+            fs::symlink_metadata(&source_path).map_err(|source| ArtifactError::Io {
+                path: source_path.clone(),
+                source,
+            })?;
+        if source_metadata.file_type().is_symlink() || !source_metadata.file_type().is_file() {
+            return Err(ArtifactError::NotRegular { path: source_path });
+        }
+        let mut input = fs::File::open(&source_path).map_err(|source| ArtifactError::Io {
+            path: source_path.clone(),
+            source,
+        })?;
+        let source_identity = artifact_file_identity(&input, &source_path)?;
+        if input
+            .metadata()
+            .map_err(|source| ArtifactError::Io {
+                path: source_path.clone(),
+                source,
+            })?
+            .len()
+            != artifact.byte_len
+        {
+            return Err(ArtifactError::CorruptContent { path: source_path });
+        }
+
+        let mut output = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(destination)
+            .map_err(|source| ArtifactError::Io {
+                path: destination.to_owned(),
+                source,
+            })?;
+        let destination_identity = artifact_file_identity(&output, destination)?;
+        let result =
+            (|| {
+                let mut actual = 0_u64;
+                let mut hasher = blake3::Hasher::new();
+                let mut chunk = [0_u8; 16 * 1024];
+                loop {
+                    let read = input.read(&mut chunk).map_err(|source| ArtifactError::Io {
+                        path: source_path.clone(),
+                        source,
+                    })?;
+                    if read == 0 {
+                        break;
+                    }
+                    actual = actual.checked_add(read as u64).ok_or(
+                        ArtifactError::ArithmeticOverflow("artifact copy byte count"),
+                    )?;
+                    if actual > max_bytes as u64 {
+                        return Err(ArtifactError::TooLarge {
+                            actual: usize::try_from(actual).unwrap_or(usize::MAX),
+                            limit: max_bytes,
+                        });
+                    }
+                    hasher.update(&chunk[..read]);
+                    output
+                        .write_all(&chunk[..read])
+                        .map_err(|source| ArtifactError::Io {
+                            path: destination.to_owned(),
+                            source,
+                        })?;
+                }
+                output.flush().map_err(|source| ArtifactError::Io {
+                    path: destination.to_owned(),
+                    source,
+                })?;
+                if actual != artifact.byte_len
+                    || hasher.finalize().to_hex().as_str()
+                        != artifact.reference.content_hash.as_str()
+                {
+                    return Err(ArtifactError::CorruptContent {
+                        path: source_path.clone(),
+                    });
+                }
+                if artifact_path_identity(&source_path)? != source_identity {
+                    return Err(ArtifactError::ChangedDuringRead {
+                        path: source_path.clone(),
+                    });
+                }
+                if artifact_path_identity(destination)? != destination_identity {
+                    return Err(ArtifactError::ChangedDuringRead {
+                        path: destination.to_owned(),
+                    });
+                }
+                Ok(())
+            })();
+        drop(output);
+        if result.is_err()
+            && artifact_path_identity(destination)
+                .is_ok_and(|identity| identity == destination_identity)
+        {
+            let _ = fs::remove_file(destination);
+        }
+        result
+    }
+
     /// Removes only unlocked staging files created by [`Self::put_bounded`].
     ///
     /// Published artifacts are immutable hash-named files. A process loss can

@@ -9,6 +9,7 @@ mod a2a;
 mod agent;
 mod app;
 mod artifact;
+mod artifact_action;
 mod bounded_file;
 mod capability;
 mod cli;
