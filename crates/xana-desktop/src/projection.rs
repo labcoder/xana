@@ -1096,7 +1096,15 @@ mod tests {
 
         let messages = projection.messages();
         assert_eq!(messages.len(), 513);
-        assert_eq!(messages.last().unwrap().content().text().len(), 10_000);
+        assert_eq!(
+            messages
+                .last()
+                .expect("stream projection should append one message")
+                .content()
+                .text()
+                .len(),
+            10_000
+        );
 
         assert!(projection.apply(DesktopObservation {
             version: xana::desktop::PROTOCOL_VERSION,
@@ -1113,10 +1121,22 @@ mod tests {
         let messages = projection.messages();
         assert_eq!(messages.len(), 513);
         assert_eq!(
-            messages.last().unwrap().id().as_ref(),
+            messages
+                .last()
+                .expect("authoritative final should remain projected")
+                .id()
+                .as_ref(),
             "authoritative-final"
         );
-        assert_eq!(messages.last().unwrap().content().text().len(), 10_000);
+        assert_eq!(
+            messages
+                .last()
+                .expect("authoritative final should remain projected")
+                .content()
+                .text()
+                .len(),
+            10_000
+        );
     }
 
     #[test]
