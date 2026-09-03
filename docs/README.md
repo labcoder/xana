@@ -68,7 +68,11 @@ engineering contracts used to change it.
   native close/notification/external-open adapters, and owner-only checks.
 - [M4 Desktop Conversation evidence](development/m4-desktop-conversation-evidence.md)
   records native/managed Conversation, isolated composer, Activity, attachment,
-  transition, and recovery behavior.
+  selection, queue, transition, and recovery behavior.
+- [M4 graphical semantic-parity evidence](development/m4-graphical-semantic-parity-evidence.md)
+  records cross-surface command and content conformance, explicit Desktop
+  exposure, advanced-integration surface limits, and the presentation authority
+  gate.
 - [M4 Desktop Espejo evidence](development/m4-desktop-espejo-evidence.md)
   records bounded global/Project supervision, attention grouping, redacted
   notices, and exact navigation.
