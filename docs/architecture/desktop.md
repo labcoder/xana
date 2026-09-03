@@ -144,8 +144,9 @@ flowchart LR
 
 The GPUI package receives:
 
-- bounded message projections and artifact identifiers, never artifact bytes
-  or backing paths;
+- bounded typed message projections and artifact identifiers; a private
+  capability-scoped reader may return re-verified bytes for an eligible static
+  raster preview, but never an artifact-store handle or backing path;
 - opaque operation and permission identifiers;
 - typed commands, command receipts, semantic errors, snapshots, and ordered
   observations; and
@@ -223,6 +224,25 @@ focus, virtual-list scroll, and follow-tail state while Xana separately retains
 draft text, staged attachment references, and queued turns by stable
 Conversation identity. Eviction drops only inactive presentation state; it can
 never move input or authority to another Conversation.
+
+The Desktop projection preserves bounded text, Markdown, code, table, diff,
+math, link, resource, and unknown parts. Code, table, and diff parts become
+selectable Markdown structures understood by `gpui-ai`; math uses an explicit
+LaTeX-source fallback because the pinned stack has no production formula
+renderer. Before model-authored Markdown reaches the clickable component,
+Desktop reparses it and removes raw HTML/MDX, all remote-image syntax,
+credential-bearing or fragment URLs, and schemes other than absolute HTTP(S).
+
+Resource cards retain declared and detected media types, validation, lineage,
+and per-operation capability facts. A private `DesktopArtifactReader` repeats
+the immutable artifact's length/digest and policy checks before returning bytes
+for accepted PNG, JPEG, or WebP previews. The Workbench attempts at most eight
+such previews totaling 20 MiB; pixel and edge limits remain policy-owned.
+Animated images, SVG, Lottie, audio, video, binary, unknown, rejected, missing,
+or oversized resources stay typed cards. Desktop therefore advertises neither
+audio/video playback nor rich math. Activating a card opens the Artifacts panel;
+the current action copies only the opaque reference. Future open, save, and
+reveal actions must use typed runtime commands and native reviewed dialogs.
 
 The runtime—not GPUI—validates picker, drag/drop, and clipboard image inputs and
 returns typed staged-attachment projections. Submission, interruption,

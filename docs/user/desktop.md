@@ -156,6 +156,31 @@ input. **Regenerate** and edit actions copy text into Message for review and do
 not mutate immutable history. Interrupt targets the exact active Run. Clear,
 new, archive, branch, retry, and follow-up remain distinct lifecycle actions.
 
+## Rich content and artifacts
+
+Conversation renders bounded Markdown, fenced code, tables, and diffs through
+the selectable `gpui-ai` transcript. Display math remains readable as bounded
+LaTeX source; Desktop does not yet advertise a native formula renderer. Model
+authored markup is untrusted: raw HTML and executable markup are escaped,
+non-HTTP(S) or credential-bearing links are removed, and Markdown image syntax
+never loads a remote resource. A safe HTTPS link is still an explicit click;
+showing the message performs no network request.
+
+Xana resources appear as typed attachment cards. An accepted immutable static
+PNG, JPEG, or WebP may gain a thumbnail only after the runtime re-verifies its
+complete length and content digest and checks the configured byte, pixel, and
+edge limits. At most eight previews totaling 20 MiB are attempted at once.
+Animated raster, SVG, Lottie, audio, video, unknown, rejected, oversized, or
+deleted resources keep a metadata card instead of being decoded optimistically.
+Desktop currently advertises neither native audio/video playback nor rich math.
+
+Activate a card to open **Artifacts**. The panel shows declared and detected
+media types separately, validation state, source/derivative lineage, and the
+source, freshness, selection, and authorization of each operation capability.
+It can copy the opaque artifact reference; it never exposes the backing path.
+Open, save, and reveal remain available through the terminal `/artifact`
+workflow until their Desktop runtime-mediated dialogs are implemented.
+
 Activity shows owner-qualified reasoning summaries, tools, approvals, child and
 integration work, progress, execution facts, usage freshness, receipts, and
 terminal failures. Approval cards carry exact runtime-issued identity and offer

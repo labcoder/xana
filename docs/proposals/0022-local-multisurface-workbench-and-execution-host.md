@@ -53,15 +53,21 @@ capabilities, exact-generation takeover confirmation, pending-approval
 exclusion, typed stale-controller errors, ordered audit projection, and
 independent controllers across Conversations. The loopback protocol and
 Desktop embedded boundary both use it; Desktop gates every mutating command and
-expires authority before clean shutdown. The execution host also owns an
+expires authority before clean shutdown. Its retained `gpui-ai` transcript now
+preserves bounded typed Markdown, code, table, diff, link, math-source, and
+resource projections. Desktop sanitizes clickable Markdown independently and
+uses a private re-verifying reader for bounded accepted PNG/JPEG/WebP
+thumbnails; all unsupported media remains a typed metadata card with honest
+capability facts. The execution host also owns an
 explicit bounded shutdown reducer, typed global notices, exact interruption
 receipts, and fail-closed owned-execution proof. Startup extends the M3
 Diagnostics authority with idempotent cleanup of only unlocked Xana artifact
 staging files. A shared notification policy emits fixed redacted candidates
 only while unfocused/minimized and is configurable by attention kind; native OS
-delivery and last-window presentation remain M4-15. Specialized TUI and
-Desktop renderers and the Workbench remain future M4 work, so this proposal
-remains Accepted rather than Implemented.
+delivery and last-window presentation remain M4-15. The specialized TUI and
+Desktop renderers and the Desktop Workbench now exist, while cross-surface
+conformance, performance/cross-platform evidence, and owner closeout remain M4
+work. This proposal therefore remains Accepted rather than Implemented.
 
 ## 1. Official local surfaces and authority
 

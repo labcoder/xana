@@ -207,6 +207,15 @@ renderer may omit optional richness only when it supplies the safe fallback.
 Rendering cannot fetch remote content, disclose an attachment, grant a
 capability, or acknowledge attention as a side effect.
 
+The Desktop adapter preserves typed content and applies a second
+renderer-specific safety pass before handing Markdown to `gpui-ai`. It strips
+raw executable markup, remote images, and unsafe links, and it obtains eligible
+static-raster bytes only through a private re-verifying capability. Its bounded
+thumbnail tier does not imply provider input, playback, transformation, or
+external-open authority. Math, audio/video, animated, and unknown resources
+remain explicit source or metadata fallbacks until an implemented adapter can
+truthfully advertise the richer operation.
+
 ## Typed command catalog
 
 `command_catalog` is the application-owned inventory of user intent shared by
