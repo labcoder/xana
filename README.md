@@ -22,7 +22,7 @@ sandbox, and conversation history.
 
 | Area | Support |
 | --- | --- |
-| Interfaces | Adaptive full-screen TUI, append-only terminal, and JSON/text one-shot output |
+| Interfaces | Source-built native GPUI Desktop with graphical setup/settings/recovery, adaptive full-screen TUI, append-only terminal, and JSON/text one-shot output |
 | Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
 | Native tools | Bounded workspace discovery/search, paged reads, explicit file creation, atomic exact edits, timed commands, text/CSV extraction, bundled Xana docs, and reviewed public-HTTPS text fetch |
 | State | Durable native sessions with lossless history, resumable round-budget boundaries, and bounded compaction; Codex thread handles, immutable artifacts, projects, and named profiles |

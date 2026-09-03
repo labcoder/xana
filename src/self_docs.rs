@@ -181,6 +181,14 @@ static SETTINGS_TOPICS: &[&str] = &[
     "tui",
     "safety",
 ];
+static DESKTOP_TOPICS: &[&str] = &[
+    "desktop",
+    "gpui",
+    "settings",
+    "setup",
+    "workbench",
+    "diagnostics",
+];
 static ARCH_TOPICS: &[&str] = &["architecture", "runtime", "boundaries"];
 static MODEL_TOPICS: &[&str] = &["models", "providers", "credentials", "codex"];
 static ORCHESTRATION_TOPICS: &[&str] = &["agents", "delegation", "orchestration", "routes"];
@@ -294,6 +302,15 @@ static ENTRIES: &[BundledDoc] = &[
         status: DocStatus::Shipped,
         topics: DIAGNOSTIC_TOPICS,
         body: include_str!("../docs/user/diagnostics.md"),
+    },
+    BundledDoc {
+        id: "user.desktop",
+        title: "Xana Desktop",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: DESKTOP_TOPICS,
+        body: include_str!("../docs/user/desktop.md"),
     },
     BundledDoc {
         id: "user.installation",

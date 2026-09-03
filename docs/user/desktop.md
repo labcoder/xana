@@ -26,10 +26,11 @@ To open the current repository directly while developing, name it explicitly:
 cargo run --locked -p xana-desktop -- --workspace .
 ```
 
-The current Desktop slice supports native conversational providers and a
-persistent Project/Conversation sidebar. Managed Codex presentation, complete
-graphical management forms, multiple windows, and installation as a packaged
-application remain unavailable.
+The current Desktop supports native conversational providers, a persistent
+Project/Conversation sidebar, graphical first-run setup, staged Settings, and
+focused management and recovery views. Managed Codex conversation
+presentation, multiple windows, and installation as a packaged application
+remain unavailable.
 
 `--catalog` opens the provider-free component review surface. `--open
 conversation` and `--open activity` focus a named part of an already-running
@@ -45,6 +46,39 @@ Launch destinations are a closed list. A workspace path is accepted only from
 the primary process's explicit `--workspace` option or native folder picker;
 Xana never forwards a URL, path, prompt, command line, or credential to an
 already-running process.
+
+## Setup, Settings, and management
+
+When configuration is missing, Desktop opens graphical setup before starting a
+workspace runtime. Choose **Start with one connection**, **Full customize**, or
+**Blank**. Connection setup validates the endpoint or managed executable and
+credential/account state, refreshes the live model catalog, and only then
+validates the selected model. The review is redacted and the runtime owns the
+same atomic configuration transaction used by terminal setup.
+
+Settings has twelve stable sections: Overview, Appearance, Notifications,
+Connections, Profiles, Workbench, Permissions, Execution, Attachments and
+media, Diagnostics, Capabilities, and Advanced. Ordinary scalar changes stay
+in one process-local draft until Review and Apply. The review names source,
+scope, effect timing, validation findings, and the exact durable owners being
+changed. Discard writes nothing; a concurrent change stops the commit and
+offers reload instead of overwriting another writer.
+
+Focused graphical managers cover connection declaration and health, catalog
+refresh and model selection, credential replace/remove/login, Projects,
+Profiles, capability readiness, permission rules, media resource limits,
+notification preferences, and Workbench defaults. Stored secret values never
+enter Desktop snapshots, controls, logs, or accessibility text. Test and
+refresh are explicit operations; cached facts are labeled rather than
+presented as live observations.
+
+An invalid, incompatible, or interrupted configuration opens **Diagnose and
+recover**, not setup. Doctor remains read-only. A repair, migration, or reset
+first produces an exact review plan and requires a separate commit. Migration
+retains recovery copies, reset lists preserved state and confirms credential
+deletion separately, and the bounded support export contains metadata only.
+These operations are also available from Settings and through the equivalent
+terminal commands.
 
 ## Projects and Conversations
 
@@ -169,7 +203,8 @@ arbitrary URL or filesystem path from the command palette.
 ## Troubleshooting
 
 - `configuration_unavailable`: run `cargo run --locked -- setup` with the same
-  `XANA_HOME`.
+  `XANA_HOME`, or use Desktop's Diagnose and recover view when the configuration
+  is invalid, incompatible, or interrupted.
 - `instance_unavailable`: the existing Desktop did not respond to authenticated
   forwarding. Close a hung process and retry; do not manually reuse the
   endpoint or capability from the descriptor.

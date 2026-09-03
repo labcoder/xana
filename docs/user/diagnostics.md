@@ -23,6 +23,14 @@ creates a new file, never overwrites one, reparses only known record schemas,
 runs a second secret-shaped scan, and produces at most 8 MiB. Review the JSON
 before sharing it.
 
+Xana Desktop exposes the same read-only diagnosis in **Diagnose and recover**
+and from the Diagnostics section of Settings. Findings are grouped as Healthy,
+Attention, Blocked, or Informational and name their evidence and scope. Repair
+is a separate exact-plan operation; opening Doctor does not contact providers
+or mutate state. Migration, reset, and bounded metadata-only support export
+also require their own preview and explicit action. Reset confirms filesystem
+state and OS credential deletion separately.
+
 ## Configuration and bounds
 
 ```toml

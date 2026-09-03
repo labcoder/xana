@@ -1151,8 +1151,9 @@ The `settings` module is the deep post-setup configuration seam. It owns a
 stable secret-free catalog, effective/default/source/target/effect metadata,
 bounded value parsing, transactional drafts, complete config/presentation
 validation, optimistic revision checks, the shared config lock, exact config
-backup, coordinated atomic replacement, and rollback. CLI and Ratatui settings
-surfaces are adapters over that interface; neither parses nor writes TOML.
+backup, coordinated atomic replacement, and rollback. CLI, Ratatui, and native
+Desktop settings surfaces are adapters over that interface; none parses or
+writes TOML.
 Ordinary scalar preferences are exposed directly. Connections, credentials,
 model selection, profile/project lifecycle, permission-rule collections,
 Skills, Agent Plugins, MCP/A2A, focused routes, and recovery stay in their deep
@@ -1166,6 +1167,16 @@ native or managed foreground owner, restores the terminal, and returns through
 the application restart loop. Machine-local presentation can apply while the
 same conversation resumes; global defaults classified as new-conversation
 state never rewrite an active immutable snapshot.
+
+Desktop projects the same catalog and draft transaction into twelve responsive
+sections, then routes connections, credentials, model selection, Projects,
+Profiles, permissions, capabilities, media limits, Workbench preferences, and
+maintenance to focused typed managers. Missing configuration enters graphical
+setup. Invalid, incompatible, or interrupted state enters a distinct graphical
+maintenance surface whose Doctor view is read-only; repair, migration, reset,
+and support export each retain their exact planning, confirmation, redaction,
+backup, revision, and receipt boundaries. Stored credential values never enter
+the Desktop projection.
 
 Full Custom Setup extends that staged transaction across shell, permission
 rules, logical capabilities, exact profiles/routes, orchestration limits, and

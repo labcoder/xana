@@ -2,11 +2,12 @@
 
 > Audience: People installing, configuring, or using Xana.
 
-`xana settings` is the ordinary place to understand and change Xana after
-initial setup. It presents global runtime defaults and machine-local terminal
-preferences in one workspace without pretending they are one file. The same
-typed settings interface powers the full-screen browser, scriptable `xana
-config` commands, and `/settings` from chat.
+`xana settings` is the ordinary terminal place to understand and change Xana
+after initial setup. It presents global runtime defaults and machine-local
+presentation preferences in one workspace without pretending they are one
+file. The same typed settings interface powers the full-screen browser,
+scriptable `xana config` commands, `/settings` from chat, and Xana Desktop's
+graphical Settings workspace.
 
 Connections, credentials, model catalogs, profile lifecycle, projects,
 permission-rule collections, Skills, Agent Plugins, MCP servers, external
@@ -39,7 +40,7 @@ list --json` when a program needs a stable document.
 
 ## What the workspace shows
 
-The browser has nine stable sections:
+The terminal browser has nine stable sections:
 
 | Section | Ordinary contents |
 |---|---|
@@ -67,6 +68,28 @@ file:
 No stored key, environment-secret value, or credential-store handle enters a
 settings snapshot or JSON result. Connection summaries contain kind/count and
 readiness-oriented facts only.
+
+## Graphical Settings in Xana Desktop
+
+Desktop presents the same runtime-owned catalog and transaction through a
+responsive twelve-section workspace. It separates Notifications, Connections,
+Profiles, Workbench, Attachments and media, and Capabilities into their own
+navigation destinations while keeping the terminal catalog's stable setting
+keys and focused-manager commands.
+
+The graphical workflow is **stage → review → apply**. A draft is bounded and
+process-local. Review groups changes by durable owner and shows before/after
+display values, source, target scope, effect timing, warnings, and recovery
+facts. Apply returns an authoritative receipt; failures keep the draft when it
+is safe to retry. A revision mismatch requires reload rather than a generic
+TOML merge.
+
+Focused graphical managers provide connection test/refresh, searchable model
+selection, credential actions, Project/Profile operations, permission-rule
+editing, capability inspection, media hard/soft-limit validation, Workbench
+default/reset, Doctor, migration, reset, and support export. They call typed
+Rust commands; the UI never reads configuration or credential files directly.
+Unknown setting kinds and semantic codes remain visible and read-only.
 
 ## Full-screen workflow
 

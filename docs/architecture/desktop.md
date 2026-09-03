@@ -137,6 +137,48 @@ URLs, session writers, or tool registries. Runtime and durable state remain
 authoritative; Desktop state is a controlled projection with optimistic input
 only until the authoritative final arrives.
 
+## Configuration and recovery control plane
+
+Graphical setup, Settings, focused managers, and maintenance views are adapters
+over runtime-owned typed commands. `src/desktop/management` owns bounded
+snapshots, drafts, previews, revisions, exact repair/reset plans, and receipts.
+The GPUI package owns selection, layout, focus, local draft presentation, and
+semantic copy; it never parses or writes `config.toml`, private records, model
+catalogs, layout files, or credentials.
+
+```mermaid
+flowchart LR
+    UI["GPUI setup / Settings / manager"] -->|"typed intent + base revision"| M["desktop management adapter"]
+    M --> V["shared domain validation and planning"]
+    V --> T["configuration transaction / focused store"]
+    T -->|"bounded receipt + fresh snapshot"| M
+    M --> UI
+    CRED["OS credential authority"] -->|"state and operation result only"| M
+```
+
+Scalar configuration and presentation preferences use one bounded staged draft
+with redacted preview, complete-record validation, optimistic revision check,
+atomic replacement, rollback, and an authoritative receipt. Connections,
+credentials, model catalogs, Profiles, Projects, permission rules, capability
+readiness, media resource policy, and Workbench defaults retain their focused
+domain commands rather than being flattened into generic key/value writes.
+Credential snapshots carry state and authority identity only; stored values and
+length-derived masks never cross into presentation.
+
+Missing configuration enters graphical setup. Invalid, incompatible, or
+interrupted state enters a separate maintenance surface. Doctor snapshots are
+read-only; repairs, migration, and reset each require an exact reviewed plan
+whose revision is checked again at execution. Migration reuses the existing
+backup and interrupted-transaction recovery boundary. Reset enumerates exact
+targets and preserved state and treats OS credential deletion as a separate
+confirmation. Support exports are bounded metadata-only projections.
+
+Settings exposes twelve stable presentation sections and preserves unknown
+kinds/codes as inspectable read-only rows. Wide layouts use rail, form, and
+inspector panes; compact layouts stack the same semantic controls. Search and
+large model catalogs filter retained stable identities without moving policy or
+discovery into the render path.
+
 ## Presentation system
 
 Desktop initializes `gpui-ai` once, applies one Xana-owned semantic visual

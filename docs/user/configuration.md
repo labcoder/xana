@@ -25,6 +25,13 @@ catalog is available through `xana config list|get|explain|set|reset`; complex
 connection, credential, profile, rule, integration, and recovery work remains
 in its focused typed manager.
 
+Xana Desktop provides graphical adapters for the same setup, staged Settings,
+focused connection/model/credential, Project/Profile, permission, capability,
+media, Workbench, Doctor, migration, reset, and support-export commands. The
+Desktop never reads configuration or secret stores directly. Missing state
+opens setup; invalid, incompatible, or interrupted state opens Diagnose and
+recover so setup is not mistaken for diagnosis.
+
 ## Start and Quick Setup
 
 ```bash
