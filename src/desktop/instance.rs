@@ -9,7 +9,7 @@ use crate::{bounded_file, paths::XanaPaths};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    io::{self, Read as _, Write as _},
+    io::{self, Write as _},
     net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
@@ -466,16 +466,29 @@ fn write_descriptor(path: &Path, descriptor: &InstanceDescriptor) -> Result<(), 
         .map_err(|error| instance_io("could not install the Desktop instance descriptor", error))
 }
 
-fn read_bounded(stream: &mut TcpStream) -> io::Result<Vec<u8>> {
+fn read_bounded(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    stream
-        .take((MAX_FORWARD_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_FORWARD_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Desktop forwarding payload exceeds its byte bound",
-        ));
+    let mut chunk = [0_u8; 4096];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                if bytes.len().saturating_add(read) > MAX_FORWARD_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Desktop forwarding payload exceeds its byte bound",
+                    ));
+                }
+                bytes.extend_from_slice(&chunk[..read]);
+            }
+            // Windows can report a reset after the peer has written its complete
+            // bounded response and closed. Preserve the received frame; its JSON
+            // decoder still rejects a partial or hostile payload.
+            Err(error) if error.kind() == io::ErrorKind::ConnectionReset && !bytes.is_empty() => {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
     }
     Ok(bytes)
 }
@@ -513,6 +526,7 @@ fn protect_open_file(_file: &fs::File) -> io::Result<()> {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::io::Cursor;
     use std::sync::Barrier;
 
     fn launch(root: &Path) -> DesktopLaunch {
@@ -661,6 +675,34 @@ mod tests {
             .expect("bounded rejection response");
         assert!(!response.accepted);
         assert!(primary.try_next().is_none());
+    }
+
+    #[test]
+    fn bounded_reader_preserves_a_complete_frame_before_windows_reset() {
+        struct ResetAfterFrame {
+            frame: Cursor<Vec<u8>>,
+        }
+
+        impl io::Read for ResetAfterFrame {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                let read = self.frame.read(buffer)?;
+                if read == 0 {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionReset,
+                        "fixture peer reset",
+                    ))
+                } else {
+                    Ok(read)
+                }
+            }
+        }
+
+        let expected = br#"{"version":1,"accepted":false}"#.to_vec();
+        let mut reader = ResetAfterFrame {
+            frame: Cursor::new(expected.clone()),
+        };
+
+        assert_eq!(read_bounded(&mut reader).unwrap(), expected);
     }
 
     #[test]
