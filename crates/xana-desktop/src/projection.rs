@@ -6,11 +6,11 @@ use gpui_ai::prelude::{
 };
 use std::{collections::HashMap, sync::Arc};
 use xana::desktop::{
-    DesktopActivityItem, DesktopContent, DesktopContentValue, DesktopConversationFacts,
-    DesktopEvent, DesktopHostEvent, DesktopHostObservation, DesktopMessage, DesktopObservation,
-    DesktopOperationId, DesktopOperationState, DesktopPermissionId, DesktopResource,
-    DesktopResourceKind, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
-    NotificationPolicy,
+    DesktopActivityItem, DesktopAuthority, DesktopContent, DesktopContentValue,
+    DesktopConversationFacts, DesktopEvent, DesktopHostEvent, DesktopHostObservation,
+    DesktopMessage, DesktopObservation, DesktopOperationId, DesktopOperationState,
+    DesktopPermissionId, DesktopResource, DesktopResourceKind, DesktopRole,
+    DesktopRoundBudgetSuspension, DesktopSnapshot, NotificationPolicy,
 };
 
 const MAX_INLINE_PREVIEWS: usize = 8;
@@ -43,6 +43,8 @@ pub(crate) struct PendingApproval {
 
 /// Xana Desktop owns this state; `gpui-ai` receives immutable snapshots.
 pub(crate) struct ConversationProjection {
+    authority: DesktopAuthority,
+    attached_to_foreground_host: bool,
     connection: String,
     execution_owner: String,
     model: String,
@@ -68,6 +70,8 @@ pub(crate) struct ConversationProjection {
 impl ConversationProjection {
     pub(crate) fn from_snapshot(snapshot: &DesktopSnapshot) -> Self {
         Self {
+            authority: snapshot.authority,
+            attached_to_foreground_host: snapshot.attached_to_foreground_host,
             connection: snapshot.connection.clone(),
             execution_owner: snapshot.execution_owner.clone(),
             model: snapshot.model.clone(),
@@ -320,6 +324,22 @@ impl ConversationProjection {
 
     pub(crate) fn connection(&self) -> &str {
         &self.connection
+    }
+
+    pub(crate) fn authority(&self) -> DesktopAuthority {
+        self.authority
+    }
+
+    pub(crate) fn attached_to_foreground_host(&self) -> bool {
+        self.attached_to_foreground_host
+    }
+
+    pub(crate) fn can_start_conversation(&self) -> bool {
+        !self.attached_to_foreground_host
+            && matches!(
+                self.authority,
+                DesktopAuthority::Controller | DesktopAuthority::Owner
+            )
     }
 
     pub(crate) fn model(&self) -> &str {
@@ -923,6 +943,8 @@ mod tests {
         DesktopSnapshot {
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 0,
+            authority: xana::desktop::DesktopAuthority::Owner,
+            attached_to_foreground_host: false,
             session_id: "session".to_owned(),
             connection: "ollama".to_owned(),
             execution_owner: "native".to_owned(),

@@ -9,7 +9,7 @@ mod transport;
 
 use crate::{
     app::ChatHeader,
-    frontend::{ClientSnapshotSeed, EmbeddedClient},
+    frontend::{ClientSnapshot, ClientSnapshotSeed, EmbeddedClient},
     native_runtime::RuntimeHandle,
     workspace_host::{ConversationRef, WorkspaceHost},
 };
@@ -22,9 +22,19 @@ pub(crate) use descriptor::{
     DescriptorHealth, inspect_health as inspect_descriptor_health,
     remove_stale as remove_stale_descriptor,
 };
-pub(crate) use protocol::HostSnapshotSeed;
+#[cfg(test)]
+pub(crate) use execution::{FakeExecutionEvent, fake_execution};
+#[cfg(test)]
+pub(crate) use protocol::{
+    ConversationOwner as LocalConversationOwner, HostConversation as LocalHostConversation,
+};
+pub(crate) use protocol::{
+    HostEvent as LocalHostEvent, HostObservation as LocalHostObservation,
+    HostSnapshot as LocalHostSnapshot, HostSnapshotSeed, ManagedApprovalDecision,
+};
 pub(crate) use transport::{
-    ControlledExecution, LocalHostError, LocalHostServer, connect_observer, reconnect_controller,
+    AttachedObserver, ControlledExecution, LocalHostError, LocalHostServer, connect_observer,
+    reconnect_controller,
 };
 
 pub(crate) async fn run_native_host(
@@ -96,6 +106,21 @@ pub(crate) async fn run_managed_host(
     let workspace_host = Arc::new(workspace_host);
     let seed = HostSnapshotSeed::from_workspace(&workspace_host.snapshot()?);
     let artifacts = config.artifact_store.clone();
+    let mut frontend_snapshot = ClientSnapshot::initial(
+        ClientSnapshotSeed {
+            session_id: crate::identity::SessionId::new(),
+            connection: config.connection.clone(),
+            execution_owner: "managed_codex".to_owned(),
+            model: config.model.clone(),
+            reasoning_effort: config.selection.reasoning_effort.clone(),
+            host_location: crate::frontend::semantic::HostLocationV1::Loopback,
+            approval_policy: "on-request".to_owned(),
+            children: Vec::new(),
+            resource_policy: config.resource_policy.clone(),
+        },
+        Vec::new(),
+    );
+    frontend_snapshot.semantic.conversation_id = conversation.conversation_id();
     let driver = crate::managed_execution::ManagedTuiDriver::start(
         server,
         models,
@@ -112,7 +137,7 @@ pub(crate) async fn run_managed_host(
         seed,
         ControlledExecution::new(
             conversation.to_string(),
-            None,
+            Some(frontend_snapshot),
             Some(artifacts),
             move |hub| execution::spawn_managed_execution(driver, hub),
         ),

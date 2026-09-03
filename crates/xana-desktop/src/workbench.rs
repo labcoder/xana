@@ -210,7 +210,15 @@ impl Workbench {
 
         let command_search = cx.new(|cx| CommandSearch::new("xana-command-palette", window, cx));
         command_search.update(cx, |search, cx| {
-            search.set_items(commands::palette_items(projection.is_running()), window, cx);
+            search.set_items(
+                commands::palette_items(
+                    projection.authority(),
+                    projection.attached_to_foreground_host(),
+                    projection.is_running(),
+                ),
+                window,
+                cx,
+            );
         });
 
         let sidebar = cx.new(|cx| {
@@ -1880,7 +1888,11 @@ impl Workbench {
         });
         self.command_search.update(cx, |search, cx| {
             search.set_items(
-                commands::palette_items(self.projection.is_running()),
+                commands::palette_items(
+                    self.projection.authority(),
+                    self.projection.attached_to_foreground_host(),
+                    self.projection.is_running(),
+                ),
                 window,
                 cx,
             );
@@ -3444,6 +3456,7 @@ impl Render for Workbench {
                 Button::new("sidebar-new-conversation")
                     .label(if sidebar_is_full { "New" } else { "+" })
                     .accessibility_label("New Conversation")
+                    .disabled(!self.projection.can_start_conversation())
                     .w_full()
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.dispatch(WorkbenchCommand::NewConversation, window, cx);

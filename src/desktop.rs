@@ -5,6 +5,7 @@
 //! and typed intent; provider adapters, credentials, tools, paths, and runtime
 //! ownership stay in this package.
 
+mod attached;
 mod content;
 mod conversation;
 mod instance;
@@ -653,6 +654,10 @@ enum DesktopPermissionTarget {
         operation_id: OperationId,
         request_id: u64,
     },
+    AttachedManaged {
+        operation_id: OperationId,
+        approval_id: uuid::Uuid,
+    },
 }
 
 impl DesktopPermissionId {
@@ -670,10 +675,18 @@ impl DesktopPermissionId {
         })
     }
 
+    fn attached_managed(operation_id: OperationId, approval_id: uuid::Uuid) -> Self {
+        Self(DesktopPermissionTarget::AttachedManaged {
+            operation_id,
+            approval_id,
+        })
+    }
+
     fn operation_id(self) -> OperationId {
         match self.0 {
             DesktopPermissionTarget::Native { operation_id, .. }
-            | DesktopPermissionTarget::Managed { operation_id, .. } => operation_id,
+            | DesktopPermissionTarget::Managed { operation_id, .. }
+            | DesktopPermissionTarget::AttachedManaged { operation_id, .. } => operation_id,
         }
     }
 }
@@ -689,6 +702,10 @@ impl fmt::Display for DesktopPermissionId {
                 operation_id,
                 request_id,
             } => write!(output, "managed:{operation_id}:{request_id}"),
+            DesktopPermissionTarget::AttachedManaged {
+                operation_id,
+                approval_id,
+            } => write!(output, "attached-managed:{operation_id}:{approval_id}"),
         }
     }
 }
@@ -835,6 +852,8 @@ pub struct DesktopCommandReceipt {
 pub struct DesktopSnapshot {
     pub version: u16,
     pub sequence: u64,
+    pub authority: DesktopAuthority,
+    pub attached_to_foreground_host: bool,
     pub session_id: String,
     pub connection: String,
     pub execution_owner: String,
@@ -1999,13 +2018,41 @@ fn run_backend(
         .enable_all()
         .build()
         .map_err(|error| anyhow::anyhow!("could not create Desktop async runtime: {error}"))?;
-    runtime.block_on(crate::app::run_desktop(
-        paths,
-        workspace,
-        conversation,
-        force_new,
-        bridge,
-    ))
+    runtime.block_on(async {
+        if let Some(observer) = attached::connect_if_active(&paths, &workspace)
+            .await
+            .map_err(anyhow::Error::new)?
+        {
+            attached::serve(bridge, &paths, &workspace, observer)
+                .await
+                .map(|_| ())
+                .map_err(anyhow::Error::new)
+        } else {
+            let launch = crate::app::run_desktop(
+                paths.clone(),
+                workspace.clone(),
+                conversation,
+                force_new,
+                bridge.clone(),
+            )
+            .await;
+            match launch {
+                Ok(()) => Ok(()),
+                Err(original) => {
+                    // Close the discovery/start race without ever replacing an
+                    // active descriptor or starting a second workspace owner.
+                    match attached::connect_if_active(&paths, &workspace).await {
+                        Ok(Some(observer)) => attached::serve(bridge, &paths, &workspace, observer)
+                            .await
+                            .map(|_| ())
+                            .map_err(anyhow::Error::new),
+                        Ok(None) => Err(original),
+                        Err(error) => Err(anyhow::Error::new(error)),
+                    }
+                }
+            }
+        }
+    })
 }
 
 pub(crate) async fn run_native(
@@ -3143,9 +3190,76 @@ fn project_snapshot(
     layout: &DesktopResolvedLayout,
     settings: &DesktopSettingsSnapshot,
 ) -> DesktopSnapshot {
+    let profile = host.attached.as_ref().and_then(|selected| {
+        host.conversations
+            .iter()
+            .find(|candidate| &candidate.conversation == selected)
+            .and_then(|candidate| candidate.profile.clone())
+    });
+    let mut projected = project_frontend_snapshot(
+        snapshot,
+        DesktopAuthority::Owner,
+        false,
+        notification_policy,
+        navigation,
+        layout,
+        settings,
+        profile,
+    );
+    projected.host_sequence = host.sequence;
+    projected.hosted_workspace_count = host.workspaces.len();
+    projected.hosted_conversation_count = host.conversations.len();
+    projected.hosted_conversations = host
+        .conversations
+        .iter()
+        .map(|conversation| DesktopHostedConversation {
+            conversation: conversation.conversation.to_string(),
+            workspace_id: conversation.workspace_id.clone(),
+            connection: conversation.connection.clone(),
+            model: conversation.model.clone(),
+            profile: conversation.profile.clone(),
+            permission_mode: conversation.permission_mode.clone(),
+            state: project_conversation_state(conversation.state),
+            active_operation: conversation.active_operation.map(DesktopOperationId),
+            pending_approvals: conversation.pending_approvals,
+            activity_count: conversation.activity_count,
+            last_outcome: conversation
+                .last_outcome
+                .map(|outcome| format!("{outcome:?}").to_ascii_lowercase()),
+            controller: conversation.controller.as_ref().map(project_controller),
+        })
+        .collect();
+    projected.attached_conversation = host.attached.as_ref().map(ToString::to_string);
+    projected.controllers = host
+        .conversations
+        .iter()
+        .filter_map(|conversation| conversation.controller.as_ref().map(project_controller))
+        .collect();
+    projected.host_lifecycle = format!("{:?}", host.lifecycle).to_ascii_lowercase();
+    projected.global_notices = host
+        .global_notices
+        .iter()
+        .map(project_global_notice)
+        .collect();
+    projected
+}
+
+#[allow(clippy::too_many_arguments)]
+fn project_frontend_snapshot(
+    snapshot: &ClientSnapshot,
+    authority: DesktopAuthority,
+    attached_to_foreground_host: bool,
+    notification_policy: &NotificationPolicy,
+    navigation: &DesktopNavigationSnapshot,
+    layout: &DesktopResolvedLayout,
+    settings: &DesktopSettingsSnapshot,
+    profile: Option<String>,
+) -> DesktopSnapshot {
     DesktopSnapshot {
         version: snapshot.version,
         sequence: snapshot.sequence,
+        authority,
+        attached_to_foreground_host,
         session_id: snapshot.session_id.to_string(),
         connection: snapshot.connection.clone(),
         execution_owner: snapshot.execution_owner.clone(),
@@ -3172,49 +3286,18 @@ fn project_snapshot(
             .collect(),
         activity_count: snapshot.activity_count,
         artifact_count: snapshot.artifact_count,
-        host_sequence: host.sequence,
-        hosted_workspace_count: host.workspaces.len(),
-        hosted_conversation_count: host.conversations.len(),
-        hosted_conversations: host
-            .conversations
-            .iter()
-            .map(|conversation| DesktopHostedConversation {
-                conversation: conversation.conversation.to_string(),
-                workspace_id: conversation.workspace_id.clone(),
-                connection: conversation.connection.clone(),
-                model: conversation.model.clone(),
-                profile: conversation.profile.clone(),
-                permission_mode: conversation.permission_mode.clone(),
-                state: project_conversation_state(conversation.state),
-                active_operation: conversation.active_operation.map(DesktopOperationId),
-                pending_approvals: conversation.pending_approvals,
-                activity_count: conversation.activity_count,
-                last_outcome: conversation
-                    .last_outcome
-                    .map(|outcome| format!("{outcome:?}").to_ascii_lowercase()),
-                controller: conversation.controller.as_ref().map(project_controller),
-            })
-            .collect(),
-        attached_conversation: host.attached.as_ref().map(ToString::to_string),
-        controllers: host
-            .conversations
-            .iter()
-            .filter_map(|conversation| conversation.controller.as_ref().map(project_controller))
-            .collect(),
-        host_lifecycle: format!("{:?}", host.lifecycle).to_ascii_lowercase(),
-        global_notices: host
-            .global_notices
-            .iter()
-            .map(project_global_notice)
-            .collect(),
+        host_sequence: 0,
+        hosted_workspace_count: 0,
+        hosted_conversation_count: 0,
+        hosted_conversations: Vec::new(),
+        attached_conversation: None,
+        controllers: Vec::new(),
+        host_lifecycle: "running".to_owned(),
+        global_notices: Vec::new(),
         navigation: navigation.clone(),
         layout: layout.clone(),
         settings: settings.clone(),
-        conversation_facts: conversation::project_conversation_facts(
-            snapshot,
-            host,
-            host.attached.as_ref(),
-        ),
+        conversation_facts: conversation::project_conversation_facts(snapshot, profile),
     }
 }
 
@@ -3604,6 +3687,9 @@ fn validate_desktop_attachments(
 }
 
 fn classify_backend_error(error: &anyhow::Error) -> DesktopError {
+    if let Some(error) = error.downcast_ref::<DesktopError>() {
+        return error.clone();
+    }
     let message = format!("{error:#}");
     let code = if message.contains("not initialized") || message.contains("config") {
         DesktopErrorCode::ConfigurationUnavailable

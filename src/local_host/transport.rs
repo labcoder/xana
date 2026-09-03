@@ -957,6 +957,38 @@ impl AttachedObserver {
         }
     }
 
+    pub(crate) async fn decide_managed_approval(
+        &mut self,
+        approval_id: uuid::Uuid,
+        decision: super::protocol::ManagedApprovalDecision,
+    ) -> Result<(), LocalHostError> {
+        let request_id = super::protocol::ControlRequestId::new();
+        self.send_client_frame(&ClientFrame::DecideManagedApproval {
+            request_id,
+            approval_id,
+            decision,
+        })
+        .await?;
+        loop {
+            match self.read_server_frame().await? {
+                ServerFrame::ControlResult(result) if result.request_id == request_id => {
+                    return if result.accepted {
+                        Ok(())
+                    } else {
+                        Err(LocalHostError::Invalid(result.reason.unwrap_or_else(
+                            || "managed approval was rejected".to_owned(),
+                        )))
+                    };
+                }
+                ServerFrame::Observation(observation) => self.buffer_observation(observation)?,
+                ServerFrame::ProtocolError { message, .. } => {
+                    return Err(LocalHostError::Invalid(message));
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub(crate) async fn get_artifact(
         &mut self,
         artifact_id: crate::identity::ArtifactId,

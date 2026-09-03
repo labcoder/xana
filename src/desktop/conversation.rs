@@ -6,7 +6,6 @@
 
 use crate::{
     a2a::ExternalAgentActivityKind,
-    execution_host::ExecutionHostSnapshot,
     frontend::{
         ClientEvent, ClientSnapshot,
         semantic::{
@@ -22,7 +21,6 @@ use crate::{
     operation::{InvocationOutcome, InvocationTarget},
     orchestration::{ChildActivity, ChildLifecycle},
     prompt::PromptPlanLedger,
-    workspace_host::ConversationRef,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -223,15 +221,8 @@ pub struct DesktopConversationFacts {
 
 pub(super) fn project_conversation_facts(
     snapshot: &ClientSnapshot,
-    host: &ExecutionHostSnapshot,
-    conversation: Option<&ConversationRef>,
+    profile: Option<String>,
 ) -> DesktopConversationFacts {
-    let profile = conversation.and_then(|selected| {
-        host.conversations
-            .iter()
-            .find(|candidate| &candidate.conversation == selected)
-            .and_then(|candidate| candidate.profile.clone())
-    });
     DesktopConversationFacts {
         profile,
         activity: snapshot

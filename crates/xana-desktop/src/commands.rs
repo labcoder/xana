@@ -192,16 +192,26 @@ fn native_menus() -> Vec<Menu> {
     ]
 }
 
-pub(crate) fn palette_items(run_active: bool) -> Vec<CommandSearchItem> {
-    desktop_commands(DesktopAuthority::Owner, true)
+pub(crate) fn palette_items(
+    authority: DesktopAuthority,
+    attached_to_foreground_host: bool,
+    run_active: bool,
+) -> Vec<CommandSearchItem> {
+    desktop_commands(authority, true)
         .into_iter()
-        .map(|descriptor| palette_item(descriptor, run_active))
+        .map(|descriptor| palette_item(descriptor, attached_to_foreground_host, run_active))
         .collect()
 }
 
-fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> CommandSearchItem {
+fn palette_item(
+    descriptor: DesktopCommandDescriptor,
+    attached_to_foreground_host: bool,
+    run_active: bool,
+) -> CommandSearchItem {
     let exposure = command_exposure(descriptor.id);
     let runtime_disabled = descriptor.id == INTERRUPT_ID && !run_active;
+    let attached_lifecycle_disabled =
+        attached_to_foreground_host && descriptor.id == "conversation.new.v1";
     let unavailable_reason = descriptor
         .unavailable_reason
         .map(str::to_owned)
@@ -209,6 +219,12 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
             exposure.and_then(|exposure| match exposure {
                 CommandExposure::Select(_) => None,
                 CommandExposure::Contextual(reason) => Some(reason.to_owned()),
+            })
+        })
+        .or_else(|| {
+            attached_lifecycle_disabled.then(|| {
+                "The foreground host owns Conversation creation; return to its owning surface."
+                    .to_owned()
             })
         })
         .or_else(|| {
@@ -237,7 +253,8 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
         .collect::<Vec<_>>();
     let disabled = !descriptor.available
         || !matches!(exposure, Some(CommandExposure::Select(_)))
-        || runtime_disabled;
+        || runtime_disabled
+        || attached_lifecycle_disabled;
     let mut item = CommandSearchItem::new(descriptor.id, title)
         .subtitle(subtitle)
         .keywords(keywords)
@@ -404,7 +421,7 @@ mod tests {
     #[test]
     fn every_desktop_command_has_one_palette_row() {
         let descriptors = desktop_commands(DesktopAuthority::Owner, true);
-        let items = palette_items(false);
+        let items = palette_items(DesktopAuthority::Owner, false, false);
         assert_eq!(items.len(), descriptors.len());
         assert_eq!(
             items
@@ -472,7 +489,7 @@ mod tests {
 
     #[test]
     fn contextual_commands_name_the_real_control_instead_of_future_work() {
-        let items = palette_items(false);
+        let items = palette_items(DesktopAuthority::Owner, false, false);
         let attachment = items
             .iter()
             .find(|item| item.id().as_ref() == "turn.attachment.stage.v1")
@@ -535,7 +552,7 @@ mod tests {
             "outbound.manage.v1",
             "operation.reconcile.v1",
         ] {
-            let item = palette_items(false)
+            let item = palette_items(DesktopAuthority::Owner, false, false)
                 .into_iter()
                 .find(|item| item.id().as_ref() == stable_id)
                 .unwrap_or_else(|| panic!("missing palette row for {stable_id}"));
