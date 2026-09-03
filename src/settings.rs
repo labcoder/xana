@@ -904,6 +904,14 @@ fn profile_entries(
             SettingValue::summary(format!("{} configured", registry.routes.len())),
         )
         .action("xana route list"),
+        SettingEntry::new(
+            "projects.manage",
+            SettingsSection::Profiles,
+            "Projects",
+            "Create, inspect, archive, and forget local workspace organization without changing workspace files.",
+            SettingValue::summary("Managed in the Projects workspace"),
+        )
+        .action("xana project list"),
     ]
 }
 
@@ -1191,6 +1199,14 @@ fn diagnostic_entries(
 
 fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
     vec![
+        SettingEntry::new(
+            "capabilities.manage",
+            SettingsSection::Integrations,
+            "What can Xana do here?",
+            "Distinguish installed, enabled, available, permitted, selected, and contained capability state.",
+            SettingValue::summary("Deterministic local projection"),
+        )
+        .action("xana capabilities"),
         SettingEntry::new(
             "integrations.plugins",
             SettingsSection::Integrations,

@@ -4,6 +4,7 @@
 //! draft, validation, and persistence truth remains behind typed Rust clients.
 
 use crate::connection_manager::{ConnectionManager, ConnectionManagerEvent};
+use crate::management_view::{ManagementTab, ManagementView, ManagementViewEvent};
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, Role,
@@ -75,8 +76,13 @@ pub(crate) struct SettingsView {
     review_open: bool,
     busy_label: Option<String>,
     error: Option<String>,
-    focused_manager: Option<Entity<ConnectionManager>>,
+    focused_manager: Option<FocusedManager>,
     _subscriptions: Vec<Subscription>,
+}
+
+enum FocusedManager {
+    Connections(Entity<ConnectionManager>),
+    Management(Entity<ManagementView>),
 }
 
 impl SettingsView {
@@ -143,27 +149,60 @@ impl SettingsView {
     }
 
     fn open_focused_manager(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
-        if action != "connections.manage" {
-            self.error = Some(format!(
-                "The {action} focused workflow is scheduled in the next M4-19 manager slice."
-            ));
-            cx.notify();
-            return;
+        match action {
+            "xana connection list" | "xana model list" => {
+                let manager = cx.new(|cx| ConnectionManager::new(self.control.clone(), window, cx));
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &ConnectionManagerEvent, _, cx| {
+                        if matches!(event, ConnectionManagerEvent::Close) {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::Connections(manager));
+                self.error = None;
+            }
+            "xana profile list"
+            | "xana route list"
+            | "xana project list"
+            | "xana capabilities"
+            | "xana plugin list"
+            | "xana mcp list"
+            | "xana external-agent list"
+            | "xana image list" => {
+                let tab = if action == "xana project list" {
+                    ManagementTab::Projects
+                } else if action == "xana profile list" || action == "xana route list" {
+                    ManagementTab::Profiles
+                } else {
+                    ManagementTab::Capabilities
+                };
+                let manager =
+                    cx.new(|cx| ManagementView::new(self.control.clone(), tab, window, cx));
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &ManagementViewEvent, _, cx| {
+                        if matches!(event, ManagementViewEvent::Close) {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::Management(manager));
+                self.error = None;
+            }
+            _ => {
+                self.error = Some(format!(
+                    "The {action} workflow is not available in Xana Desktop yet."
+                ));
+            }
         }
-        let manager = cx.new(|cx| ConnectionManager::new(self.control.clone(), window, cx));
-        let subscription = cx.subscribe_in(
-            &manager,
-            window,
-            |this, _, event: &ConnectionManagerEvent, _, cx| {
-                if matches!(event, ConnectionManagerEvent::Close) {
-                    this.focused_manager = None;
-                    cx.notify();
-                }
-            },
-        );
-        self._subscriptions.push(subscription);
-        self.focused_manager = Some(manager);
-        self.error = None;
         cx.notify();
     }
 
@@ -998,7 +1037,10 @@ impl EventEmitter<SettingsViewEvent> for SettingsView {}
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if let Some(manager) = &self.focused_manager {
-            return manager.clone().into_any_element();
+            return match manager {
+                FocusedManager::Connections(manager) => manager.clone().into_any_element(),
+                FocusedManager::Management(manager) => manager.clone().into_any_element(),
+            };
         }
         let width = f32::from(window.viewport_size().width);
         let compact = width < MEDIUM_WINDOW_PX;

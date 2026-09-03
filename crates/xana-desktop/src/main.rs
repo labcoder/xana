@@ -7,6 +7,7 @@ mod connection_actions;
 mod connection_manager;
 mod design_system;
 mod localization;
+mod management_view;
 mod projection;
 mod settings_view;
 mod setup_view;

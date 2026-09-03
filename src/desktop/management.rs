@@ -4,9 +4,15 @@
 //! discovery, secret handling, validation, and durable mutation stay here.
 
 mod actions;
+mod entities;
 
 pub use actions::{
     DesktopConnectionMutationReceipt, DesktopConnectionRemovalPlan, DesktopManagedLogin,
+};
+pub use entities::{
+    DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopEntityMutationReceipt,
+    DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
+    DesktopProjectSummary,
 };
 
 use super::{DesktopError, DesktopErrorCode};
