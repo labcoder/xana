@@ -76,6 +76,7 @@ use crate::{
     },
     paths::XanaPaths,
     permission::{ControllerDecision, PermissionRequest, PermissionScope},
+    vision::{ImageAttachment, ImageIngestor, ImageLimits},
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use std::{
@@ -115,6 +116,7 @@ struct NativeCommandContext<'a> {
     layout: &'a mut DesktopResolvedLayout,
     layout_store: &'a layout::DesktopLayoutStore,
     settings: &'a mut settings::DesktopSettingsState,
+    attachments: &'a DesktopAttachmentService,
 }
 
 struct NativeFrontendState {
@@ -123,6 +125,44 @@ struct NativeFrontendState {
     layout: DesktopResolvedLayout,
     layout_store: layout::DesktopLayoutStore,
     settings: settings::DesktopSettingsState,
+    attachments: DesktopAttachmentService,
+}
+
+#[derive(Clone)]
+struct DesktopAttachmentService {
+    workspace: PathBuf,
+    store: crate::artifact::ArtifactStore,
+    ingestor: ImageIngestor,
+    owner: crate::identity::PrincipalId,
+}
+
+impl DesktopAttachmentService {
+    fn stage_path(
+        &self,
+        source_path: &str,
+        external_approved: bool,
+    ) -> Result<DesktopAttachment, DesktopError> {
+        let attachment = if external_approved {
+            self.ingestor
+                .ingest_approved_dropped_path(&self.workspace, source_path, self.owner)
+        } else {
+            self.ingestor
+                .ingest_dropped_path(&self.workspace, source_path, self.owner)
+        }
+        .map_err(|error| {
+            DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("could not stage image attachment: {error}"),
+            )
+        })?;
+        Ok(DesktopAttachment::from_image(attachment))
+    }
+
+    fn stage_clipboard(&self) -> Result<DesktopAttachment, DesktopError> {
+        crate::vision::ingest_clipboard_image(self.store.clone(), self.owner)
+            .map(DesktopAttachment::from_image)
+            .map_err(|error| DesktopError::new(DesktopErrorCode::StateInvalid, error))
+    }
 }
 
 /// Authority held by one Desktop frontend attachment.
@@ -466,6 +506,60 @@ pub struct DesktopRoundBudgetSuspension {
     pub can_continue: bool,
 }
 
+/// An immutable image staged by Xana for one Desktop draft.
+///
+/// The filesystem path and artifact integrity record remain private to the
+/// runtime package. Desktop presentation code can retain and return this
+/// capability token, but cannot use it to read arbitrary files.
+#[derive(Clone, PartialEq, Eq)]
+pub struct DesktopAttachment {
+    pub id: String,
+    pub name: String,
+    pub media_type: String,
+    pub byte_len: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    image: ImageAttachment,
+}
+
+impl fmt::Debug for DesktopAttachment {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DesktopAttachment")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .field("media_type", &self.media_type)
+            .field("byte_len", &self.byte_len)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+impl DesktopAttachment {
+    fn from_image(image: ImageAttachment) -> Self {
+        let name = std::path::Path::new(&image.source_path)
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .filter(|name| !name.is_empty())
+            .unwrap_or("image")
+            .to_owned();
+        Self {
+            id: image.image.artifact.reference.id.to_string(),
+            name,
+            media_type: image.image.media_type.clone(),
+            byte_len: image.image.byte_len,
+            width: image.image.width,
+            height: image.image.height,
+            image,
+        }
+    }
+
+    fn into_image(self) -> crate::vision::ImageRef {
+        self.image.image
+    }
+}
+
 /// One accepted application-side command enqueue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DesktopCommandReceipt {
@@ -701,6 +795,10 @@ pub enum DesktopUpdate {
     Settings(DesktopSettingsSnapshot),
     SettingsDraft(Option<DesktopSettingsDraftSnapshot>),
     SettingsReceipt(DesktopSettingsReceipt),
+    AttachmentStaged {
+        command_id: u64,
+        attachment: DesktopAttachment,
+    },
     Observation(DesktopObservation),
     HostObservation(DesktopHostObservation),
     CommandResult {
@@ -841,7 +939,24 @@ impl DesktopClient {
     }
 
     pub fn submit(&self, input: impl Into<String>) -> Result<DesktopCommandReceipt, DesktopError> {
-        self.submit_with_workspace_collision_acknowledgement(input, false)
+        self.submit_with_attachments_and_workspace_collision_acknowledgement(
+            input,
+            Vec::new(),
+            false,
+        )
+    }
+
+    /// Submits one turn with immutable attachments previously staged by Xana.
+    pub fn submit_with_attachments(
+        &self,
+        input: impl Into<String>,
+        attachments: Vec<DesktopAttachment>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.submit_with_attachments_and_workspace_collision_acknowledgement(
+            input,
+            attachments,
+            false,
+        )
     }
 
     /// Submits a turn while explicitly acknowledging concurrent writes in the
@@ -851,16 +966,56 @@ impl DesktopClient {
         input: impl Into<String>,
         acknowledge: bool,
     ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.submit_with_attachments_and_workspace_collision_acknowledgement(
+            input,
+            Vec::new(),
+            acknowledge,
+        )
+    }
+
+    /// Submits a turn with staged images and an explicit write-collision decision.
+    pub fn submit_with_attachments_and_workspace_collision_acknowledgement(
+        &self,
+        input: impl Into<String>,
+        attachments: Vec<DesktopAttachment>,
+        acknowledge: bool,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
         let operation_id = DesktopOperationId(OperationId::new());
         let command_id = self.enqueue(BridgeCommandValue::Submit {
             operation_id,
             input: input.into(),
+            attachments,
             acknowledge_workspace_write_collision: acknowledge,
         })?;
         Ok(DesktopCommandReceipt {
             command_id,
             operation_id: Some(operation_id),
         })
+    }
+
+    /// Asks Xana to validate and ingest one user-selected image path.
+    pub fn stage_image(
+        &self,
+        path: impl Into<PathBuf>,
+        external_approved: bool,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::StageImage {
+            path: path.into(),
+            external_approved,
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
+    /// Asks Xana to ingest the current native clipboard image.
+    pub fn stage_clipboard_image(&self) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::StageClipboardImage)
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
     }
 
     pub fn clear(&self) -> Result<DesktopCommandReceipt, DesktopError> {
@@ -1297,8 +1452,14 @@ enum BridgeCommandValue {
     Submit {
         operation_id: DesktopOperationId,
         input: String,
+        attachments: Vec<DesktopAttachment>,
         acknowledge_workspace_write_collision: bool,
     },
+    StageImage {
+        path: PathBuf,
+        external_approved: bool,
+    },
+    StageClipboardImage,
     Clear,
     Interrupt {
         operation_id: DesktopOperationId,
@@ -1448,6 +1609,13 @@ pub(crate) async fn run_native(
     let layout = layout_store.resolve(&conversation.to_string());
     let settings =
         settings::DesktopSettingsState::open(crate::settings::SettingsManager::new(paths))?;
+    let attachment_store = header.artifact_store.clone();
+    let attachments = DesktopAttachmentService {
+        workspace: header.workspace_root.clone(),
+        store: attachment_store.clone(),
+        ingestor: ImageIngestor::new(attachment_store, ImageLimits::default()),
+        owner: header.owner,
+    };
     execution_host.register(
         workspace_host,
         ConversationRegistration::new(
@@ -1471,6 +1639,7 @@ pub(crate) async fn run_native(
                 layout,
                 layout_store,
                 settings,
+                attachments,
             },
         )
         .await?;
@@ -1504,6 +1673,7 @@ impl Bridge {
             mut layout,
             layout_store,
             mut settings,
+            attachments,
         } = frontend;
         let mut commands = self.commands.lock().await;
         let (owner, mut observer) = client.into_parts();
@@ -1577,6 +1747,7 @@ impl Bridge {
                                 layout: &mut layout,
                                 layout_store: &layout_store,
                                 settings: &mut settings,
+                                attachments: &attachments,
                             },
                         )
                         .await?;
@@ -1695,6 +1866,7 @@ impl Bridge {
             layout,
             layout_store,
             settings,
+            attachments,
         } = context;
         let command_id = command.command_id;
         if !matches!(
@@ -2044,6 +2216,55 @@ impl Bridge {
                     .await?;
                 Ok(None)
             }
+            BridgeCommandValue::StageImage {
+                path,
+                external_approved,
+            } => {
+                let service = attachments.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    service.stage_path(&path.to_string_lossy(), external_approved)
+                })
+                .await
+                .map_err(|error| {
+                    DesktopError::new(
+                        DesktopErrorCode::RuntimeCrashed,
+                        format!("Desktop attachment worker stopped: {error}"),
+                    )
+                })
+                .and_then(std::convert::identity);
+                if let Ok(attachment) = &result {
+                    self.publish_critical(DesktopUpdate::AttachmentStaged {
+                        command_id,
+                        attachment: attachment.clone(),
+                    })
+                    .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
+            BridgeCommandValue::StageClipboardImage => {
+                let service = attachments.clone();
+                let result = tokio::task::spawn_blocking(move || service.stage_clipboard())
+                    .await
+                    .map_err(|error| {
+                        DesktopError::new(
+                            DesktopErrorCode::RuntimeCrashed,
+                            format!("Desktop clipboard worker stopped: {error}"),
+                        )
+                    })
+                    .and_then(std::convert::identity);
+                if let Ok(attachment) = &result {
+                    self.publish_critical(DesktopUpdate::AttachmentStaged {
+                        command_id,
+                        attachment: attachment.clone(),
+                    })
+                    .await?;
+                }
+                self.publish_command_result(command_id, result.map(|_| ()))
+                    .await?;
+                Ok(None)
+            }
             BridgeCommandValue::Shutdown => {
                 execution_host.request_shutdown().map_err(host_error)?;
                 let result = owner
@@ -2067,6 +2288,7 @@ impl Bridge {
             BridgeCommandValue::Submit {
                 operation_id,
                 input,
+                attachments,
                 acknowledge_workspace_write_collision,
             } => {
                 if active_run.is_some() {
@@ -2098,11 +2320,30 @@ impl Bridge {
                         return Ok(None);
                     }
                 };
-                let result = owner
-                    .send(ClientCommand::new(RuntimeCommand::SubmitTurn {
+                let images = match validate_desktop_attachments(attachments) {
+                    Ok(images) => images,
+                    Err(error) => {
+                        execution_host
+                            .finish_run(run, Err(error.message.clone()))
+                            .map_err(host_error)?;
+                        self.publish_command_result(command_id, Err(error)).await?;
+                        return Ok(None);
+                    }
+                };
+                let runtime_command = if images.is_empty() {
+                    RuntimeCommand::SubmitTurn {
                         operation_id: operation_id.0,
                         input,
-                    }))
+                    }
+                } else {
+                    RuntimeCommand::SubmitTurnWithImages {
+                        operation_id: operation_id.0,
+                        input,
+                        images,
+                    }
+                };
+                let result = owner
+                    .send(ClientCommand::new(runtime_command))
                     .await
                     .map_err(|_| {
                         DesktopError::new(
@@ -2806,6 +3047,44 @@ fn permission_scope_label(scope: &PermissionScope) -> String {
     }
 }
 
+fn validate_desktop_attachments(
+    attachments: Vec<DesktopAttachment>,
+) -> Result<Vec<crate::vision::ImageRef>, DesktopError> {
+    if attachments.len() > crate::vision::MAX_IMAGES_PER_TURN {
+        return Err(DesktopError::new(
+            DesktopErrorCode::StateInvalid,
+            format!(
+                "turn has {} images; limit is {}",
+                attachments.len(),
+                crate::vision::MAX_IMAGES_PER_TURN
+            ),
+        ));
+    }
+    let mut ids = std::collections::HashSet::new();
+    let mut byte_len = 0_u64;
+    let mut images = Vec::with_capacity(attachments.len());
+    for attachment in attachments {
+        if !ids.insert(attachment.id.clone()) {
+            return Err(DesktopError::new(
+                DesktopErrorCode::StateInvalid,
+                format!("attachment {} appears more than once", attachment.id),
+            ));
+        }
+        byte_len = byte_len.saturating_add(attachment.byte_len);
+        images.push(attachment.into_image());
+    }
+    if byte_len > crate::vision::MAX_IMAGE_BYTES_PER_TURN {
+        return Err(DesktopError::new(
+            DesktopErrorCode::StateInvalid,
+            format!(
+                "turn images total {byte_len} bytes; limit is {}",
+                crate::vision::MAX_IMAGE_BYTES_PER_TURN
+            ),
+        ));
+    }
+    Ok(images)
+}
+
 fn classify_backend_error(error: &anyhow::Error) -> DesktopError {
     let message = format!("{error:#}");
     let code = if message.contains("not initialized") || message.contains("config") {
@@ -2962,6 +3241,19 @@ mod tests {
             .expect("open Desktop settings")
     }
 
+    fn attachment_service(
+        paths: &XanaPaths,
+        workspace: &std::path::Path,
+    ) -> DesktopAttachmentService {
+        let store = crate::artifact::ArtifactStore::new(paths.data_dir().join("artifacts"));
+        DesktopAttachmentService {
+            workspace: workspace.to_owned(),
+            store: store.clone(),
+            ingestor: ImageIngestor::new(store, ImageLimits::default()),
+            owner: crate::identity::PrincipalId::new(),
+        }
+    }
+
     fn bridge_channels() -> BridgeChannels {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
@@ -2989,6 +3281,56 @@ mod tests {
             projected.content,
             vec![DesktopContent::Text("bounded answer".to_owned())]
         );
+    }
+
+    #[test]
+    fn desktop_attachment_staging_returns_only_bounded_presentation_metadata() {
+        use image::{ExtendedColorType, ImageEncoder as _, codecs::png::PngEncoder};
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let image_path = workspace.join("private-name.png");
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&[0; 8], 2, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+        std::fs::write(&image_path, png).unwrap();
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+
+        let attachment = attachment_service(&paths, &workspace)
+            .stage_path("private-name.png", false)
+            .unwrap();
+
+        assert_eq!(attachment.name, "private-name.png");
+        assert_eq!(attachment.media_type, "image/png");
+        assert_eq!((attachment.width, attachment.height), (Some(2), Some(1)));
+        let debug = format!("{attachment:?}");
+        assert!(!debug.contains(&workspace.display().to_string()));
+        assert!(!debug.contains("content_hash"));
+    }
+
+    #[test]
+    fn desktop_submission_rejects_duplicate_attachment_capabilities() {
+        use image::{ExtendedColorType, ImageEncoder as _, codecs::png::PngEncoder};
+
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let image_path = workspace.join("image.png");
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&[0; 4], 1, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+        std::fs::write(&image_path, png).unwrap();
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let attachment = attachment_service(&paths, &workspace)
+            .stage_path("image.png", false)
+            .unwrap();
+
+        let error = validate_desktop_attachments(vec![attachment.clone(), attachment]).unwrap_err();
+        assert_eq!(error.code, DesktopErrorCode::StateInvalid);
+        assert!(error.message.contains("more than once"));
     }
 
     #[test]
@@ -3091,6 +3433,7 @@ mod tests {
                 layout,
                 layout_store,
                 settings,
+                attachments: attachment_service(&paths, &workspace),
             },
         ));
 
@@ -3113,6 +3456,7 @@ mod tests {
                 value: BridgeCommandValue::Submit {
                     operation_id,
                     input: "hello".to_owned(),
+                    attachments: Vec::new(),
                     acknowledge_workspace_write_collision: false,
                 },
             })
@@ -3208,6 +3552,7 @@ mod tests {
                 layout,
                 layout_store,
                 settings,
+                attachments: attachment_service(&paths, &workspace),
             },
         ));
         let initial = startup
@@ -3353,6 +3698,7 @@ mod tests {
                 layout,
                 layout_store,
                 settings,
+                attachments: attachment_service(&paths, &workspace),
             },
         ));
         startup

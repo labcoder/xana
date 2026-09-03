@@ -250,6 +250,7 @@ impl From<crate::artifact::ArtifactError> for ImageError {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct ImageIngestor {
     store: ArtifactStore,
     limits: ImageLimits,

@@ -7,6 +7,7 @@ use crate::{
         QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
         ShowCommandPalette, ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
     },
+    composer::{ComposerStore, QueuedSubmission},
     design_system,
     projection::ConversationProjection,
     settings_view::{SettingsView, SettingsViewEvent},
@@ -16,9 +17,10 @@ use gpui::{
     Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
-    Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState, ProgressState,
-    PromptBar, PromptBarEvent, SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavPresentation,
-    SidebarSection, StatusBadge, StatusTone, Suggestion,
+    Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState,
+    MessageQueue, ProgressState, PromptBar, PromptBarEvent, PromptModel, QueueEvent, QueuedMessage,
+    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavPresentation, SidebarSection,
+    StatusBadge, StatusTone, Suggestion,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName,
@@ -30,11 +32,16 @@ use gpui_component::{
     scroll::ScrollableElement as _,
     v_flex, v_resizable,
 };
-use std::{collections::HashSet, fs, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    sync::Arc,
+    time::Duration,
+};
 use xana::desktop::{
-    AttentionKind, AttentionSignal, ClientFocus, DesktopClient, DesktopCommandReceipt,
-    DesktopControlPlane, DesktopConversationState, DesktopDockPlacement, DesktopEvent,
-    DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
+    AttentionKind, AttentionSignal, ClientFocus, DesktopAttachment, DesktopClient,
+    DesktopCommandReceipt, DesktopControlPlane, DesktopConversationState, DesktopDockPlacement,
+    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
     DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
     DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
     DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
@@ -77,6 +84,17 @@ pub(crate) struct Workbench {
     navigation_input: Entity<InputState>,
     navigation: DesktopNavigationTarget,
     chat: Entity<Chat>,
+    prompt: Entity<PromptBar>,
+    composer: ComposerStore,
+    pending_submissions: HashMap<
+        u64,
+        (
+            String,
+            QueuedSubmission,
+            Option<xana::desktop::DesktopOperationId>,
+        ),
+    >,
+    pending_attachment_commands: HashMap<u64, String>,
     sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
     settings_view: Entity<SettingsView>,
@@ -85,6 +103,7 @@ pub(crate) struct Workbench {
     close_prompt_open: bool,
     notifications: NotificationPlanner,
     _chat_subscription: Subscription,
+    _prompt_subscription: Subscription,
     _sidebar_subscription: Subscription,
     _command_subscription: Subscription,
     _settings_subscription: Subscription,
@@ -124,12 +143,31 @@ impl Workbench {
         {
             projection.fail(error.message);
         }
+        let active_conversation = runtime
+            .initial_snapshot()
+            .attached_conversation
+            .clone()
+            .or_else(|| navigation_snapshot.selected_conversation.clone())
+            .unwrap_or_else(|| runtime.initial_snapshot().session_id.clone());
+        let composer = ComposerStore::new(active_conversation);
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
             prompt.set_progress(ProgressState::Pending, cx);
+            prompt.set_models(
+                [
+                    PromptModel::new(projection.model().to_owned(), projection.model().to_owned())
+                        .provider(projection.connection().to_owned()),
+                ],
+                cx,
+            );
         });
 
-        let chat = cx.new(|cx| Chat::new("xana-conversation", prompt, window, cx));
+        // `gpui-ai::Chat` currently requires a PromptBar. Xana mounts one
+        // inert, hidden instance so Chat can own only the virtual transcript;
+        // the one interactive retained composer lives in the Message panel.
+        let transcript_prompt =
+            cx.new(|cx| PromptBar::new("xana-transcript-anchor", window, cx).hidden());
+        let chat = cx.new(|cx| Chat::new("xana-conversation", transcript_prompt, window, cx));
         chat.update(cx, |chat, cx| {
             chat.set_welcome(
                 Some(
@@ -170,6 +208,13 @@ impl Workbench {
             cx.subscribe_in(&chat, window, |this, _, event: &ChatEvent, window, cx| {
                 this.handle_chat_event(event, window, cx);
             });
+        let prompt_subscription = cx.subscribe_in(
+            &prompt,
+            window,
+            |this, _, event: &PromptBarEvent, window, cx| {
+                this.handle_prompt_event(event, window, cx);
+            },
+        );
         let command_subscription = cx.subscribe_in(
             &command_search,
             window,
@@ -230,6 +275,10 @@ impl Workbench {
             navigation_input,
             navigation,
             chat,
+            prompt,
+            composer,
+            pending_submissions: HashMap::new(),
+            pending_attachment_commands: HashMap::new(),
             sidebar,
             command_search,
             settings_view,
@@ -238,6 +287,7 @@ impl Workbench {
             close_prompt_open: false,
             notifications: NotificationPlanner::new(),
             _chat_subscription: chat_subscription,
+            _prompt_subscription: prompt_subscription,
             _sidebar_subscription: sidebar_subscription,
             _command_subscription: command_subscription,
             _settings_subscription: settings_subscription,
@@ -252,29 +302,197 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         match event {
-            ChatEvent::Prompt(PromptBarEvent::Submit { submission, .. }) => {
-                let input = submission.text().to_string();
-                match self.runtime.submit(input.clone()) {
-                    Ok(receipt) => {
-                        if let Some(operation_id) = receipt.operation_id {
-                            self.projection.append_user(operation_id, input);
-                        }
-                    }
-                    Err(error) => self.projection.fail(error.message),
-                }
-                self.sync_components(window, cx);
-            }
             ChatEvent::SuggestionSelected { suggestion_id }
                 if suggestion_id.as_ref() == "capabilities" =>
             {
-                self.chat.update(cx, |chat, cx| {
-                    chat.prompt_bar().update(cx, |prompt, cx| {
-                        prompt.set_draft("What can Xana do?", window, cx);
-                    });
+                self.prompt.update(cx, |prompt, cx| {
+                    prompt.set_draft("What can Xana do?", window, cx);
                 });
             }
             _ => {}
         }
+    }
+
+    fn handle_prompt_event(
+        &mut self,
+        event: &PromptBarEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            PromptBarEvent::DraftChanged { draft, .. } => {
+                if let Err(reason) = self.composer.set_draft(draft.to_string()) {
+                    self.projection.fail(reason);
+                }
+            }
+            PromptBarEvent::Submit { submission, .. } => {
+                let text = submission.text().to_string();
+                let attachments = self.composer.take_attachments();
+                self.composer.clear_draft();
+                let queued = self.composer.submission(text, attachments);
+                if self.projection.is_running() {
+                    match self.composer.queue(queued) {
+                        Ok(()) => self
+                            .projection
+                            .set_activity("Follow-up queued for this Conversation"),
+                        Err(reason) => self.projection.fail(reason),
+                    }
+                } else {
+                    self.submit_composer_submission(queued);
+                }
+            }
+            PromptBarEvent::CancelRequested { .. } => {
+                if let Some(operation_id) = self.projection.active_operation()
+                    && let Err(error) = self.runtime.interrupt(operation_id)
+                {
+                    self.projection.fail(error.message);
+                }
+                self.sync_components(window, cx);
+                return;
+            }
+            PromptBarEvent::AttachRequested { .. } => {
+                self.choose_attachments(window, cx);
+                return;
+            }
+            PromptBarEvent::AttachmentRemoved { attachment_id, .. } => {
+                self.composer.remove_attachment(attachment_id.as_ref());
+            }
+            PromptBarEvent::ModelChanged { model_id, .. } => {
+                if model_id.as_ref() != self.projection.model() {
+                    self.projection.fail(
+                        "Changing models from the composer requires an owner-correct transition; open Settings to review it.",
+                    );
+                }
+            }
+            PromptBarEvent::MentionSelected { .. }
+            | PromptBarEvent::CommandSelected { .. }
+            | PromptBarEvent::EnhanceRequested { .. } => {}
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn submit_composer_submission(&mut self, submission: QueuedSubmission) {
+        let conversation = self.composer.active_key().to_owned();
+        let text = submission.text.clone();
+        match self
+            .runtime
+            .submit_with_attachments(text.clone(), submission.attachments.clone())
+        {
+            Ok(receipt) => {
+                self.pending_submissions.insert(
+                    receipt.command_id,
+                    (conversation, submission, receipt.operation_id),
+                );
+                if let Some(operation_id) = receipt.operation_id {
+                    self.projection.append_user(operation_id, text);
+                }
+            }
+            Err(error) => {
+                self.composer.restore_submission(submission);
+                self.projection.fail(error.message);
+            }
+        }
+    }
+
+    fn choose_attachments(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selection = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Choose one or more images for this Xana turn".into()),
+        });
+        let conversation = self.composer.active_key().to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let paths = match selection.await {
+                Ok(Ok(Some(paths))) => paths,
+                Ok(Ok(None)) => return,
+                Ok(Err(error)) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Could not choose an attachment: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+                Err(error) => {
+                    _ = this.update_in(cx, |this, window, cx| {
+                        this.projection
+                            .fail(format!("Attachment picker stopped: {error}"));
+                        this.sync_components(window, cx);
+                    });
+                    return;
+                }
+            };
+            _ = this.update_in(cx, |this, window, cx| {
+                for path in paths {
+                    match this.runtime.stage_image(path, true) {
+                        Ok(receipt) => {
+                            this.pending_attachment_commands
+                                .insert(receipt.command_id, conversation.clone());
+                            this.projection.set_activity("Validating image attachment…");
+                        }
+                        Err(error) => this.projection.fail(error.message),
+                    }
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn stage_clipboard_image(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runtime.stage_clipboard_image() {
+            Ok(receipt) => {
+                self.pending_attachment_commands
+                    .insert(receipt.command_id, self.composer.active_key().to_owned());
+                self.projection.set_activity("Validating clipboard image…");
+            }
+            Err(error) => self.projection.fail(error.message),
+        }
+        self.sync_components(window, cx);
+    }
+
+    fn handle_queue_event(
+        &mut self,
+        event: &QueueEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            QueueEvent::Removed { id } => {
+                self.composer.remove_queued(id.as_ref());
+            }
+            QueueEvent::SentNow { id } => {
+                if let Some(submission) = self.composer.take_queued(id.as_ref()) {
+                    if self.projection.is_running() {
+                        let _ = self.composer.queue(submission);
+                        self.projection.set_activity(
+                            "The active Run must finish or be cancelled before this follow-up can send",
+                        );
+                    } else {
+                        self.submit_composer_submission(submission);
+                    }
+                }
+            }
+            QueueEvent::MovedUp { id } => {
+                self.composer.move_queued(id.as_ref(), true);
+            }
+            QueueEvent::MovedDown { id } => {
+                self.composer.move_queued(id.as_ref(), false);
+            }
+            QueueEvent::EditRequested { id } => {
+                if let Some(submission) = self.composer.take_queued(id.as_ref()) {
+                    let draft = submission.text.clone();
+                    self.composer.restore_submission(submission);
+                    self.prompt.update(cx, |prompt, cx| {
+                        prompt.set_draft(draft, window, cx);
+                        prompt.focus(window, cx);
+                    });
+                }
+            }
+            QueueEvent::Cleared => self.composer.clear_queue(),
+        }
+        self.sync_components(window, cx);
     }
 
     fn handle_settings_event(
@@ -783,6 +1001,12 @@ impl Workbench {
                         .selected_conversation
                         .clone()
                         .map(SidebarSelection::Conversation);
+                    let conversation = snapshot
+                        .attached_conversation
+                        .clone()
+                        .or_else(|| snapshot.navigation.selected_conversation.clone())
+                        .unwrap_or_else(|| snapshot.session_id.clone());
+                    self.composer.switch_to(conversation);
                     self.projection.replace_snapshot(&snapshot);
                 }
                 DesktopUpdate::Navigation(navigation) => {
@@ -814,6 +1038,19 @@ impl Workbench {
                         settings.clear_operation_state(cx);
                     });
                 }
+                DesktopUpdate::AttachmentStaged {
+                    command_id,
+                    attachment,
+                } => {
+                    if let Some(conversation) = self.pending_attachment_commands.get(&command_id) {
+                        if self.composer.stage_for(conversation, attachment) {
+                            self.projection.set_activity("Image attachment is ready");
+                        } else {
+                            self.projection
+                                .set_activity("Image attachment was already staged");
+                        }
+                    }
+                }
                 DesktopUpdate::Observation(observation) => {
                     if !self.projection.apply(observation)
                         && let Err(error) = self.runtime.request_snapshot()
@@ -844,6 +1081,32 @@ impl Workbench {
                                 settings.set_error(message, cx);
                             });
                         }
+                    } else if self
+                        .pending_attachment_commands
+                        .remove(&command_id)
+                        .is_some()
+                    {
+                        if !accepted {
+                            self.projection.fail(
+                                error.map(|error| error.message).unwrap_or_else(|| {
+                                    "Runtime rejected the attachment".to_owned()
+                                }),
+                            );
+                        }
+                    } else if let Some((conversation, submission, operation_id)) =
+                        self.pending_submissions.remove(&command_id)
+                    {
+                        if !accepted {
+                            if let Some(operation_id) = operation_id {
+                                self.projection.reject_user(operation_id);
+                            }
+                            self.composer
+                                .restore_submission_for(&conversation, submission);
+                            self.projection
+                                .fail(error.map(|error| error.message).unwrap_or_else(|| {
+                                    "Runtime rejected the submitted message".to_owned()
+                                }));
+                        }
                     } else if !accepted {
                         self.projection.fail(
                             error.map(|error| error.message).unwrap_or_else(|| {
@@ -870,6 +1133,12 @@ impl Workbench {
                     }
                     keep_running = false;
                 }
+            }
+        }
+        if keep_running && !self.projection.is_running() && self.pending_submissions.is_empty() {
+            if let Some(submission) = self.composer.pop_queued() {
+                self.submit_composer_submission(submission);
+                changed = true;
             }
         }
         if changed {
@@ -991,9 +1260,25 @@ impl Workbench {
         };
         self.chat.update(cx, |chat, cx| {
             chat.set_messages(messages, window, cx);
-            chat.prompt_bar().update(cx, |prompt, cx| {
-                prompt.set_progress(progress, cx);
-            });
+        });
+        let composer = self.composer.current().clone();
+        let prompt_attachments = composer
+            .attachments
+            .iter()
+            .map(prompt_attachment)
+            .collect::<Vec<_>>();
+        self.prompt.update(cx, |prompt, cx| {
+            prompt.set_progress(progress, cx);
+            prompt.set_draft(composer.draft, window, cx);
+            prompt.set_attachments(prompt_attachments, cx);
+            prompt.set_models(
+                [PromptModel::new(
+                    self.projection.model().to_owned(),
+                    self.projection.model().to_owned(),
+                )
+                .provider(self.projection.connection().to_owned())],
+                cx,
+            );
         });
         self.command_search.update(cx, |search, cx| {
             search.set_items(
@@ -1525,19 +1810,10 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let tokens = cx.theme().semantic_tokens();
         match panel {
             DesktopPanelId::Conversation => self.chat.clone().into_any_element(),
             DesktopPanelId::Activity => self.render_activity_panel(window, cx),
-            DesktopPanelId::Message => v_flex()
-                .size_full()
-                .justify_center()
-                .items_center()
-                .p(tokens.spacing.lg)
-                .text_sm()
-                .text_color(cx.theme().muted_foreground)
-                .child("The retained composer remains attached to Conversation until M4-17A.")
-                .into_any_element(),
+            DesktopPanelId::Message => self.render_message_panel(window, cx),
             DesktopPanelId::Summary => self.placeholder_panel(
                 "Summary",
                 format!(
@@ -1569,6 +1845,64 @@ impl Workbench {
                 cx,
             ),
         }
+    }
+
+    fn render_message_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let tokens = cx.theme().semantic_tokens();
+        let queue = self
+            .composer
+            .current()
+            .queue
+            .iter()
+            .map(|submission| {
+                let attachment_count = submission.attachments.len();
+                let note = if attachment_count == 0 {
+                    "after the active Run".to_owned()
+                } else {
+                    format!(
+                        "after the active Run · {attachment_count} attachment{}",
+                        if attachment_count == 1 { "" } else { "s" }
+                    )
+                };
+                QueuedMessage::new(submission.id.clone(), submission.text.clone()).note(note)
+            })
+            .collect::<Vec<_>>();
+        let workbench = cx.weak_entity();
+        let clipboard_workbench = cx.weak_entity();
+        v_flex()
+            .size_full()
+            .min_h_0()
+            .gap(tokens.spacing.sm)
+            .p(tokens.spacing.sm)
+            .when(!queue.is_empty(), |panel| {
+                panel.child(
+                    div().max_h(rems(12.)).overflow_y_scrollbar().child(
+                        MessageQueue::new("xana-message-queue")
+                            .items(queue)
+                            .editable(true)
+                            .on_event(move |event, window, cx| {
+                                _ = workbench.update(cx, |this, cx| {
+                                    this.handle_queue_event(event, window, cx);
+                                });
+                            }),
+                    ),
+                )
+            })
+            .child(
+                h_flex().justify_end().child(
+                    Button::new("xana-paste-clipboard-image")
+                        .compact()
+                        .label("Paste clipboard image")
+                        .tooltip("Stage the image currently on the native clipboard")
+                        .on_click(move |_, window, cx| {
+                            _ = clipboard_workbench.update(cx, |this, cx| {
+                                this.stage_clipboard_image(window, cx);
+                            });
+                        }),
+                ),
+            )
+            .child(div().w_full().flex_none().child(self.prompt.clone()))
+            .into_any_element()
     }
 
     fn render_activity_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -2188,6 +2522,17 @@ impl Render for Workbench {
             })
             .when_some(navigation_dialog, |root, dialog| root.child(dialog))
     }
+}
+
+fn prompt_attachment(attachment: &DesktopAttachment) -> Attachment {
+    let detail = attachment
+        .width
+        .zip(attachment.height)
+        .map(|(width, height)| format!("{width}×{height}"))
+        .unwrap_or_else(|| attachment.media_type.clone());
+    Attachment::new(attachment.id.clone(), attachment.name.clone())
+        .size_bytes(attachment.byte_len)
+        .detail(detail)
 }
 
 fn sidebar_sections(snapshot: &DesktopNavigationSnapshot) -> Vec<SidebarSection> {

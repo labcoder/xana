@@ -80,6 +80,14 @@ impl ConversationProjection {
         self.failure = None;
     }
 
+    pub(crate) fn reject_user(&mut self, operation_id: DesktopOperationId) {
+        let id = format!("desktop-user-{operation_id}");
+        self.messages.retain(|message| message.id != id);
+        if self.active_operation == Some(operation_id) {
+            self.active_operation = None;
+        }
+    }
+
     /// Applies one observation. `false` means the caller must request a snapshot.
     pub(crate) fn apply(&mut self, observation: DesktopObservation) -> bool {
         if observation.sequence != self.sequence.saturating_add(1) {

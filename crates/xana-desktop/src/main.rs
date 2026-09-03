@@ -3,6 +3,7 @@
 mod catalog;
 mod commands;
 mod component_inventory;
+mod composer;
 mod connection_actions;
 mod connection_manager;
 mod design_system;
