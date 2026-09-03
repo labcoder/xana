@@ -20,6 +20,8 @@ pub(crate) use content::{
     AttachmentPolicySnapshotV1, AttachmentProvenanceV1, AttachmentV1, CapabilityFactV1,
     ContentPartV1, DisclosureReceiptV1, ResourceOperationV1,
 };
+#[cfg(test)]
+pub(crate) use event::SubmissionOriginV1;
 pub(crate) use event::{DecodedSemanticEventV1, SemanticEventEnvelopeV1, SemanticEventV1};
 pub(crate) use projection::{
     ContentActionV1, ContentProjectionTierV1, LinkPreviewCacheStatusV1, LinkPreviewCardV1,

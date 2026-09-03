@@ -5,6 +5,8 @@
 //! concerns. The embedded adapter is the reference transport; later transport
 //! projections must preserve these semantics rather than invent another API.
 
+#[cfg(test)]
+mod conformance_tests;
 mod embedded;
 mod managed;
 mod protocol;
