@@ -2772,14 +2772,29 @@ impl Workbench {
             },
         );
         let capability_lines = resource.capabilities.iter().map(|capability| {
+            let reason = capability
+                .reason_code
+                .as_deref()
+                .map(|value| format!(" · reason {value}"))
+                .unwrap_or_default();
+            let effective_limit = capability
+                .effective_max_source_bytes
+                .map(|value| format!(" · max source {value} bytes"))
+                .unwrap_or_default();
+            let max_age = capability.max_age_millis.map_or_else(
+                || "non-expiring".to_owned(),
+                |value| format!("max age {value} ms"),
+            );
             div()
                 .text_xs()
                 .text_color(cx.theme().muted_foreground)
                 .child(format!(
-                    "{:?}: {:?} · source {:?} · selected {} · authorized {}{}{}",
+                    "{:?}: {:?} · source {:?} · observed {} ms · {} · selected {} · authorized {}{}{}{}{}",
                     capability.operation,
                     capability.availability,
                     capability.source,
+                    capability.observed_at_unix_millis,
+                    max_age,
                     capability.selected,
                     capability.authorized,
                     capability
@@ -2792,6 +2807,8 @@ impl Workbench {
                         .as_deref()
                         .map(|value| format!(" · model {value}"))
                         .unwrap_or_default(),
+                    effective_limit,
+                    reason,
                 ))
         });
         let artifact_id = resource.artifact_id.clone();
