@@ -116,7 +116,6 @@ impl ResourceIngestor {
 #[derive(Debug)]
 pub(crate) enum ResourceIngestError {
     OutsideWorkspace,
-    TooLarge { actual: usize, limit: usize },
     Path(LocalResourcePathError),
     Artifact(ArtifactError),
     Inspection(ResourceInspectionError),
@@ -128,12 +127,6 @@ impl fmt::Display for ResourceIngestError {
         match self {
             Self::OutsideWorkspace => {
                 formatter.write_str("resource resolves outside the launch workspace")
-            }
-            Self::TooLarge { actual, limit } => {
-                write!(
-                    formatter,
-                    "resource is {actual} bytes; staging limit is {limit}"
-                )
             }
             Self::Path(error) => error.fmt(formatter),
             Self::Artifact(error) => error.fmt(formatter),

@@ -106,14 +106,12 @@ impl ConversationProjection {
         let previews = std::mem::take(&mut self.image_previews);
         *self = Self::from_snapshot(snapshot);
         self.image_previews = previews;
-        let referenced = self
-            .messages
-            .iter()
-            .flat_map(|message| &message.resources)
-            .map(|resource| resource.artifact_id.as_str())
-            .collect::<std::collections::HashSet<_>>();
-        self.image_previews
-            .retain(|artifact_id, _| referenced.contains(artifact_id.as_str()));
+        let admitted = self
+            .preview_window_ids()
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        retain_admitted_previews(&mut self.image_previews, &admitted);
     }
 
     pub(crate) fn append_user(&mut self, operation_id: DesktopOperationId, text: String) {
@@ -343,41 +341,44 @@ impl ConversationProjection {
     /// concurrent-preview budget. The runtime reader enforces per-resource
     /// policy again before any bytes cross the boundary.
     pub(crate) fn pending_preview_resources(&self) -> Vec<DesktopResource> {
-        let mut selected = Vec::new();
-        let mut bytes = 0_u64;
-        for resource in self
-            .messages
+        let admitted = self
+            .preview_window_ids()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
+        self.messages
             .iter()
             .rev()
             .flat_map(|message| message.resources.iter().rev())
-        {
-            if selected.len() == MAX_INLINE_PREVIEWS
-                || self.image_previews.contains_key(&resource.artifact_id)
-                || !resource.supports_inline_preview()
-            {
-                continue;
-            }
-            let Some(next_bytes) = bytes.checked_add(resource.byte_len) else {
-                continue;
-            };
-            if next_bytes > MAX_INLINE_PREVIEW_BYTES {
-                continue;
-            }
-            bytes = next_bytes;
-            selected.push(resource.clone());
-        }
-        selected
+            .filter(|resource| {
+                admitted.contains(resource.artifact_id.as_str())
+                    && !self.image_previews.contains_key(&resource.artifact_id)
+            })
+            .cloned()
+            .collect()
     }
 
     pub(crate) fn install_image_preview(&mut self, artifact_id: String, image: Arc<Image>) {
-        if self.messages.iter().any(|message| {
-            message
-                .resources
-                .iter()
-                .any(|resource| resource.artifact_id == artifact_id)
-        }) {
+        if self
+            .preview_window_ids()
+            .into_iter()
+            .any(|candidate| candidate == artifact_id)
+        {
             self.image_previews.insert(artifact_id, image);
         }
+    }
+
+    fn preview_window_ids(&self) -> Vec<&str> {
+        select_preview_window(
+            self.messages
+                .iter()
+                .rev()
+                .flat_map(|message| message.resources.iter().rev())
+                .map(|resource| PreviewFact {
+                    id: resource.artifact_id.as_str(),
+                    bytes: resource.byte_len,
+                    eligible: resource.supports_inline_preview(),
+                }),
+        )
     }
 
     pub(crate) fn resource(&self, artifact_id: &str) -> Option<&DesktopResource> {
@@ -558,6 +559,39 @@ impl ConversationProjection {
             self.conversation_facts.activity.push(activity);
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewFact<'a> {
+    id: &'a str,
+    bytes: u64,
+    eligible: bool,
+}
+
+fn select_preview_window<'a>(facts: impl IntoIterator<Item = PreviewFact<'a>>) -> Vec<&'a str> {
+    let mut selected = Vec::with_capacity(MAX_INLINE_PREVIEWS);
+    let mut bytes = 0_u64;
+    for fact in facts {
+        if selected.len() == MAX_INLINE_PREVIEWS || !fact.eligible || selected.contains(&fact.id) {
+            continue;
+        }
+        let Some(next_bytes) = bytes.checked_add(fact.bytes) else {
+            continue;
+        };
+        if next_bytes > MAX_INLINE_PREVIEW_BYTES {
+            continue;
+        }
+        bytes = next_bytes;
+        selected.push(fact.id);
+    }
+    selected
+}
+
+fn retain_admitted_previews<T>(
+    previews: &mut HashMap<String, T>,
+    admitted: &std::collections::HashSet<String>,
+) {
+    previews.retain(|artifact_id, _| admitted.contains(artifact_id));
 }
 
 fn project_message(message: &DesktopMessage) -> ProjectedMessage {
@@ -1146,5 +1180,63 @@ mod tests {
             DesktopActivityState::Completed
         );
         assert_eq!(projection.latest_activity(), "Done");
+    }
+
+    #[test]
+    fn preview_window_is_newest_first_unique_and_bounded_by_count_and_bytes() {
+        let ids = (0..20)
+            .map(|index| format!("resource-{index}"))
+            .collect::<Vec<_>>();
+        let facts = ids.iter().enumerate().rev().map(|(index, id)| PreviewFact {
+            id,
+            bytes: if index == 18 {
+                MAX_INLINE_PREVIEW_BYTES + 1
+            } else {
+                1024
+            },
+            eligible: index != 17,
+        });
+
+        let selected = select_preview_window(facts);
+
+        assert_eq!(selected.len(), MAX_INLINE_PREVIEWS);
+        assert_eq!(selected[0], "resource-19");
+        assert!(!selected.contains(&"resource-18"));
+        assert!(!selected.contains(&"resource-17"));
+        assert_eq!(selected.last().copied(), Some("resource-10"));
+    }
+
+    #[test]
+    fn preview_window_rejects_overflow_and_duplicate_accounting() {
+        let selected = select_preview_window([
+            PreviewFact {
+                id: "same",
+                bytes: MAX_INLINE_PREVIEW_BYTES,
+                eligible: true,
+            },
+            PreviewFact {
+                id: "same",
+                bytes: MAX_INLINE_PREVIEW_BYTES,
+                eligible: true,
+            },
+            PreviewFact {
+                id: "overflow",
+                bytes: u64::MAX,
+                eligible: true,
+            },
+        ]);
+
+        assert_eq!(selected, ["same"]);
+    }
+
+    #[test]
+    fn cache_eviction_keeps_only_the_current_preview_window() {
+        let mut cache =
+            HashMap::from([("retained".to_owned(), 1_u8), ("evicted".to_owned(), 2_u8)]);
+        let admitted = std::collections::HashSet::from(["retained".to_owned(), "new".to_owned()]);
+
+        retain_admitted_previews(&mut cache, &admitted);
+
+        assert_eq!(cache, HashMap::from([("retained".to_owned(), 1_u8)]));
     }
 }
