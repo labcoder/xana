@@ -1,14 +1,18 @@
 # Espejo
 
-> Audience: People supervising local Xana work in the full-screen terminal UI.
+> Audience: People supervising local Xana work in the full-screen terminal UI or native Desktop.
 
-Espejo is Xana's bounded work-and-attention perspective. Open it from the TUI
-with `/espejo` or `/espejo global`; use `/espejo project` to restrict the view to
-the selected Conversation's Project. `Ungrouped` is a real Project scope.
+Espejo is Xana's bounded work-and-attention perspective. In Desktop, choose
+**Espejo** in the fixed sidebar, the View menu, or the command palette. In the
+TUI, use `/espejo` or `/espejo global`; `/espejo project` restricts the view to
+the selected Conversation's Project. `Ungrouped` remains first-class rather
+than being assigned to an invented Project.
 
-The word **global** currently means every retained Conversation in the current
-local workspace snapshot. It does not imply another machine, a remote service,
-or an account-wide scheduler. Remote supervision is outside Milestone 4.
+In Desktop, **global** means the bounded set of Conversations registered with
+the current local application host across its workspaces. In the TUI it means
+the current local workspace snapshot. Neither meaning implies another machine,
+a remote service, or an account-wide scheduler. Remote supervision is outside
+Milestone 4.
 
 ## What the view shows
 
@@ -17,21 +21,29 @@ with text and markers so color is never the only signal. It also reports recent
 completed Activity, the workspace-host state, the active root process when one
 is known, and a workspace collision when another Conversation owns that root.
 
-The Work list is capped at 512 projected Conversations. Its selected Evidence
-pane identifies the Conversation, Project, execution owner, connection, model,
-retained record count, current Run, queued input, waiting approvals, observed
-tool/child/artifact Activity, and available usage facts. Missing optional facts
-stay explicit: if the current adapter has no measured performance or semantic
-completion receipt, Espejo says `unavailable` rather than deriving one from a
-spinner or completed Activity. Xana does not render an empty `Coming up`
-section before scheduled work exists.
+The terminal Work list is capped at 512 projected Conversations. Desktop uses
+the host's bounded navigation and execution snapshots and groups cards under
+**Needs you**, **In motion**, **Blocked or failed**, **Recently completed**, and
+**Idle**. A card identifies Project/Ungrouped placement, workspace, execution
+owner, connection/model/Profile, Run or last outcome, permission mode,
+controller state, queued input, approvals, and observed Activity count. Open the
+exact Conversation for its detailed Activity, artifacts, usage, and completion
+receipt; Espejo does not fabricate those facts when the global host projection
+does not carry them.
 
-Espejo is a projection, not an execution owner. Enter previews the selected
-Conversation and returns to the conversation screen; use the Conversation
-picker or `/conversation attach ID` for an ownership transition. Previewing one
-item acknowledges only the relevant viewed/error marker, never all attention.
+Missing optional facts stay explicit. If an adapter has no measured
+performance, semantic receipt, or observer fact, Espejo says it is unavailable
+rather than deriving one from a spinner. Xana does not render an empty
+`Coming up` section before scheduled work exists.
 
-## Navigation
+Espejo is a projection, not an execution owner. In Desktop, opening an ordinary
+card attaches the exact Conversation and returns to Conversation; a Needs-you
+card routes to its Activity and approval controls. In the TUI, Enter previews
+the selected Conversation and returns to Conversation; use the Conversation
+picker or `/conversation attach ID` for an ownership transition. Navigation
+does not grant controller authority or clear unrelated attention.
+
+## Terminal navigation
 
 | Input | Result |
 |---|---|
@@ -44,6 +56,20 @@ item acknowledges only the relevant viewed/error marker, never all attention.
 | `D` | Run the existing redacted Diagnostics/doctor flow. |
 | Ctrl+P | Open the shared command palette. |
 | Esc | Return to the Conversation screen. |
+
+## Desktop navigation
+
+- Use the global and selected-Project scope buttons plus the state filters; only
+  the card collection scrolls.
+- Activate a card to open its exact Conversation. Needs-you cards open Activity
+  so the runtime-issued approval or failure remains actionable.
+- Redacted process-wide notices appear above the groups. **Open Diagnostics**
+  opens the existing Diagnostics settings section; detailed Conversation errors
+  stay in that Conversation's Activity.
+- Native notifications focus the existing Desktop instance and route to the
+  relevant Conversation, Activity, or redacted Espejo/Diagnostics path.
+- **Back to Conversation** leaves host work untouched. Observers can inspect and
+  navigate, while runtime commands continue to enforce controller authority.
 
 At wide sizes, Work and Evidence appear side by side. Medium and narrow layouts
 stack them. Below 42 columns by 12 rows, the view fails softly with an exact

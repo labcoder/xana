@@ -69,13 +69,16 @@ engineering contracts used to change it.
 - [M4 Desktop Conversation evidence](development/m4-desktop-conversation-evidence.md)
   records native/managed Conversation, isolated composer, Activity, attachment,
   transition, and recovery behavior.
+- [M4 Desktop Espejo evidence](development/m4-desktop-espejo-evidence.md)
+  records bounded global/Project supervision, attention grouping, redacted
+  notices, and exact navigation.
 - [Permissions](user/permissions.md) explains deny/ask/allow policy, scoped
   session grants, controller decisions, and the lack of containment.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,
   bounded compaction, immutable artifacts, inspection, corruption handling,
   and backup limits.
-- [Espejo](user/espejo.md) explains the bounded current-workspace attention
-  perspective, its evidence limits, and terminal navigation.
+- [Espejo](user/espejo.md) explains bounded terminal and Desktop attention
+  perspectives, their evidence limits, and exact navigation.
 - [Projects](user/projects.md) explains optional local project identity,
   lifecycle, Ungrouped conversations, membership, and continuation review.
 - [Agent Skills](user/skills.md) explains standards-compatible discovery,

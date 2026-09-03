@@ -92,8 +92,7 @@ selected.
 Use the sidebar's collapse control to switch between full and mini modes. That
 presentation choice survives restart. Missing or identity-changed Project
 workspaces remain visible with a status badge instead of disappearing. Espejo
-and Settings remain fixed at the bottom; their complete workspaces arrive in
-later M4 slices.
+and Settings remain fixed at the bottom.
 
 Rename, archive/unarchive, move/ungroup, branch-at-point, and destructive
 confirmation controls are available from the contextual **Actions** menu or by
@@ -163,6 +162,14 @@ terminal failures. Approval cards carry exact runtime-issued identity and offer
 allow-once, allow-session-scope, and deny; hiding or moving Activity does not
 grant authority. The status bar continues to surface outstanding attention.
 
+Espejo is a screen-level command center over the same bounded runtime-owned
+facts. Global scope covers the current local application host; Project scope
+excludes other Projects. Filters and groups separate Needs-you, in-motion,
+blocked/failed, recently completed, and idle Conversations. Cards expose
+owner-qualified execution, controller, queue, approval, and Activity summaries,
+then navigate to the exact Conversation or its actionable Activity. Redacted
+host notices link to Diagnostics. Espejo has no scheduler or `Coming up` fiction.
+
 ## Menus, palette, and shortcuts
 
 Desktop uses conventional application, File, Edit, View, Conversation,
@@ -216,7 +223,7 @@ produce native notifications for approvals, questions, completions, failures,
 controller loss, and host failures. Notification text is fixed and redacted:
 it never includes prompts, model output, reasoning, filenames, tool arguments,
 or credentials. Activating a notification focuses Xana and routes attention to
-the Conversation or Activity as the currently implemented views allow. See
+the exact Conversation, Activity, or redacted Espejo/Diagnostics path. See
 [Logs and crash diagnostics](diagnostics.md) for configuration examples.
 
 ## Native external actions

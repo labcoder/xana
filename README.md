@@ -219,8 +219,8 @@ infers the process directory nor creates a Project or Conversation. Use
 `--workspace .` during repository development to open the current directory
 directly.
 Graphical setup, Settings, connection/model management, Doctor, and recovery are
-available. Espejo and complete rich-content rendering are added by later M4
-tickets.
+available alongside a global/Project Espejo command center. Complete graphical
+rich-content rendering is added by a later M4 ticket.
 See [using Xana Desktop](docs/user/desktop.md) and
 [Desktop development](docs/contributing/desktop-development.md).
 

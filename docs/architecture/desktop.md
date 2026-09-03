@@ -121,6 +121,25 @@ adapter delivers them only while unfocused, and activation focuses the existing
 window. Notification payloads contain no prompt, output, reasoning, filename,
 tool argument, or credential and cannot become state authority.
 
+Desktop Espejo is a retained feature entity over the host and navigation
+snapshots, not a second coordinator. Its pure projection joins Conversation
+placement with bounded host state and application-owned queued-input counts,
+then classifies cards into Needs-you, in-motion, blocked/failed, completed, or
+idle groups. Snapshot replacement remains authoritative; ordered host events
+only keep the view current between replacements. The feature owns filter and
+scope presentation state and emits typed navigation events back to Workbench.
+It cannot approve, submit, cancel, access artifacts, or infer detailed usage.
+
+```mermaid
+flowchart LR
+    HOST["Execution-host snapshot + ordered events"] --> E["Retained Espejo projection"]
+    NAV["Project / Conversation navigation snapshot"] --> E
+    Q["Bounded per-Conversation queue counts"] --> E
+    E --> UI["Global or Project groups and filters"]
+    UI -->|"typed exact identity"| W["Workbench navigation"]
+    W --> C["Conversation / Activity / Diagnostics"]
+```
+
 ## Authority boundary
 
 The GPUI package receives:
