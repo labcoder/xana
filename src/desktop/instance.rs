@@ -24,7 +24,7 @@ use uuid::Uuid;
 use zeroize::Zeroize as _;
 
 const DESCRIPTOR_VERSION: u16 = 1;
-const FORWARD_PROTOCOL_VERSION: u16 = 1;
+const FORWARD_PROTOCOL_VERSION: u16 = 2;
 const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024;
 const MAX_FORWARD_BYTES: usize = 4 * 1024;
 const FORWARD_CAPACITY: usize = 16;
@@ -333,7 +333,7 @@ fn handle_connection(
 ) {
     let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
     let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
-    let request = read_bounded(&mut stream).and_then(|bytes| {
+    let request = read_frame(&mut stream).and_then(|bytes| {
         serde_json::from_slice::<ForwardRequest>(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
     });
@@ -352,8 +352,7 @@ fn handle_connection(
         accepted,
     };
     if let Ok(bytes) = serde_json::to_vec(&response) {
-        let _ = stream.write_all(&bytes);
-        let _ = stream.flush();
+        let _ = write_frame(&mut stream, &bytes);
     }
 }
 
@@ -405,11 +404,9 @@ fn forward(
             "Desktop launch intent exceeds its byte bound",
         ));
     }
-    stream
-        .write_all(&bytes)
-        .and_then(|()| stream.shutdown(Shutdown::Write))
+    write_frame(&mut stream, &bytes)
         .map_err(|error| instance_io("could not forward the Desktop launch intent", error))?;
-    let response = read_bounded(&mut stream)
+    let response = read_frame(&mut stream)
         .and_then(|bytes| {
             serde_json::from_slice::<ForwardResponse>(&bytes)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
@@ -488,30 +485,36 @@ fn write_descriptor(path: &Path, descriptor: &InstanceDescriptor) -> Result<(), 
         .map_err(|error| instance_io("could not install the Desktop instance descriptor", error))
 }
 
-fn read_bounded(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    let mut chunk = [0_u8; 4096];
-    loop {
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(read) => {
-                if bytes.len().saturating_add(read) > MAX_FORWARD_BYTES {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "Desktop forwarding payload exceeds its byte bound",
-                    ));
-                }
-                bytes.extend_from_slice(&chunk[..read]);
-            }
-            // Windows can report a reset after the peer has written its complete
-            // bounded response and closed. Preserve the received frame; its JSON
-            // decoder still rejects a partial or hostile payload.
-            Err(error) if error.kind() == io::ErrorKind::ConnectionReset && !bytes.is_empty() => {
-                break;
-            }
-            Err(error) => return Err(error),
-        }
+fn write_frame(writer: &mut impl io::Write, bytes: &[u8]) -> io::Result<()> {
+    if bytes.is_empty() || bytes.len() > MAX_FORWARD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Desktop forwarding payload exceeds its byte bound",
+        ));
     }
+    let length = u32::try_from(bytes.len()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Desktop forwarding payload length is not representable",
+        )
+    })?;
+    writer.write_all(&length.to_be_bytes())?;
+    writer.write_all(bytes)?;
+    writer.flush()
+}
+
+fn read_frame(reader: &mut impl io::Read) -> io::Result<Vec<u8>> {
+    let mut length = [0_u8; std::mem::size_of::<u32>()];
+    reader.read_exact(&mut length)?;
+    let length = u32::from_be_bytes(length) as usize;
+    if length == 0 || length > MAX_FORWARD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "Desktop forwarding payload exceeds its byte bound",
+        ));
+    }
+    let mut bytes = vec![0_u8; length];
+    reader.read_exact(&mut bytes)?;
     Ok(bytes)
 }
 
@@ -683,44 +686,34 @@ mod tests {
             panic!("first launch must own the instance")
         };
         let mut stream = TcpStream::connect_timeout(&primary.endpoint, IO_TIMEOUT).unwrap();
-        stream
-            .write_all(
-                br#"{"version":1,"capability":"wrong","intent":{"kind":"focus"},"command":"rm"}"#,
-            )
-            .unwrap();
-        stream.shutdown(Shutdown::Write).unwrap();
-        let response: ForwardResponse = serde_json::from_slice(&read_bounded(&mut stream).unwrap())
+        write_frame(
+            &mut stream,
+            br#"{"version":2,"capability":"wrong","intent":{"kind":"focus"},"command":"rm"}"#,
+        )
+        .unwrap();
+        let response: ForwardResponse = serde_json::from_slice(&read_frame(&mut stream).unwrap())
             .expect("bounded rejection response");
         assert!(!response.accepted);
         assert!(primary.try_next().is_none());
     }
 
     #[test]
-    fn bounded_reader_preserves_a_complete_frame_before_windows_reset() {
-        struct ResetAfterFrame {
-            frame: Cursor<Vec<u8>>,
-        }
-
-        impl io::Read for ResetAfterFrame {
-            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-                let read = self.frame.read(buffer)?;
-                if read == 0 {
-                    Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        "fixture peer reset",
-                    ))
-                } else {
-                    Ok(read)
-                }
-            }
-        }
-
+    fn framed_reader_requires_one_complete_bounded_body() {
         let expected = br#"{"version":1,"accepted":false}"#.to_vec();
-        let mut reader = ResetAfterFrame {
-            frame: Cursor::new(expected.clone()),
-        };
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &expected).unwrap();
+        assert_eq!(read_frame(&mut Cursor::new(&frame)).unwrap(), expected);
 
-        assert_eq!(read_bounded(&mut reader).unwrap(), expected);
+        let truncated = &frame[..frame.len() - 1];
+        assert_eq!(
+            read_frame(&mut Cursor::new(truncated)).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        let oversized = u32::try_from(MAX_FORWARD_BYTES + 1).unwrap().to_be_bytes();
+        assert_eq!(
+            read_frame(&mut Cursor::new(oversized)).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
