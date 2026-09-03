@@ -5,6 +5,7 @@
 
 mod actions;
 mod entities;
+mod permissions;
 
 pub use actions::{
     DesktopConnectionMutationReceipt, DesktopConnectionRemovalPlan, DesktopManagedLogin,
@@ -13,6 +14,10 @@ pub use entities::{
     DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopEntityMutationReceipt,
     DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
     DesktopProjectSummary,
+};
+pub use permissions::{
+    DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionPreview,
+    DesktopPermissionRuleDraft, DesktopPermissionRuleSummary, DesktopPermissionSnapshot,
 };
 
 use super::{DesktopError, DesktopErrorCode};

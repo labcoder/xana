@@ -8,6 +8,7 @@ mod connection_manager;
 mod design_system;
 mod localization;
 mod management_view;
+mod permission_view;
 mod projection;
 mod settings_view;
 mod setup_view;

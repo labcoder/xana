@@ -5,6 +5,7 @@
 
 use crate::connection_manager::{ConnectionManager, ConnectionManagerEvent};
 use crate::management_view::{ManagementTab, ManagementView, ManagementViewEvent};
+use crate::permission_view::{PermissionView, PermissionViewEvent};
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, Role,
@@ -83,6 +84,7 @@ pub(crate) struct SettingsView {
 enum FocusedManager {
     Connections(Entity<ConnectionManager>),
     Management(Entity<ManagementView>),
+    Permissions(Entity<PermissionView>),
 }
 
 impl SettingsView {
@@ -195,6 +197,22 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Management(manager));
+                self.error = None;
+            }
+            "xana setup --section permissions-shell" => {
+                let manager = cx.new(|cx| PermissionView::new(self.control.clone(), window, cx));
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &PermissionViewEvent, _, cx| {
+                        if matches!(event, PermissionViewEvent::Close) {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::Permissions(manager));
                 self.error = None;
             }
             _ => {
@@ -1040,6 +1058,7 @@ impl Render for SettingsView {
             return match manager {
                 FocusedManager::Connections(manager) => manager.clone().into_any_element(),
                 FocusedManager::Management(manager) => manager.clone().into_any_element(),
+                FocusedManager::Permissions(manager) => manager.clone().into_any_element(),
             };
         }
         let width = f32::from(window.viewport_size().width);

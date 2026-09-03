@@ -25,7 +25,9 @@ pub use management::{
     DesktopConnectionRemovalPlan, DesktopConnectionSnapshot, DesktopControlPlane,
     DesktopCredentialInput, DesktopCredentialState, DesktopEntityMutationReceipt,
     DesktopExecutionKind, DesktopManagedLogin, DesktopManagementSnapshot, DesktopModelOption,
-    DesktopPermissionMode, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
+    DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionMode,
+    DesktopPermissionPreview, DesktopPermissionRuleDraft, DesktopPermissionRuleSummary,
+    DesktopPermissionSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
     DesktopProjectSummary, DesktopProviderKind, DesktopSecret, DesktopSetupDraft, DesktopSetupMode,
     DesktopSetupReceipt, DesktopSetupSnapshot,
 };

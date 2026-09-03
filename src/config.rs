@@ -1073,6 +1073,70 @@ impl XanaConfig {
         Ok(registry_from_document(document))
     }
 
+    pub(crate) fn upsert_permission_rule(
+        path: &Path,
+        rule: PermissionRule,
+    ) -> Result<(), ConfigError> {
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        let mut rules = transaction.registry.permission_rules.clone();
+        if let Some(existing) = rules.iter_mut().find(|existing| existing.id == rule.id) {
+            *existing = rule.clone();
+        } else {
+            rules.push(rule.clone());
+        }
+        PermissionPolicy::validate_rules(&rules).map_err(ConfigError::InvalidPermissionPolicy)?;
+
+        let document = transaction.document_mut();
+        let item = document
+            .entry("permission_rules")
+            .or_insert(toml_edit::Item::ArrayOfTables(
+                toml_edit::ArrayOfTables::new(),
+            ));
+        if item.as_array().is_some_and(toml_edit::Array::is_empty) {
+            *item = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        }
+        let entries = item.as_array_of_tables_mut().ok_or_else(|| {
+            ConfigError::Edit("permission_rules must be an array of tables".into())
+        })?;
+        let existing_index = {
+            let mut entries = entries.iter();
+            entries.position(|entry| {
+                entry.get("id").and_then(toml_edit::Item::as_str) == Some(rule.id.as_str())
+            })
+        };
+        if let Some(index) = existing_index {
+            entries.replace(index, permission_rule_table(&rule));
+        } else {
+            entries.push(permission_rule_table(&rule));
+        }
+        transaction.commit(true)
+    }
+
+    pub(crate) fn remove_permission_rule(path: &Path, id: &str) -> Result<(), ConfigError> {
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        if !transaction
+            .registry
+            .permission_rules
+            .iter()
+            .any(|rule| rule.id == id)
+        {
+            return Err(ConfigError::Edit(format!("unknown permission rule {id:?}")));
+        }
+        let entries = transaction
+            .document_mut()
+            .get_mut("permission_rules")
+            .and_then(toml_edit::Item::as_array_of_tables_mut)
+            .ok_or_else(|| {
+                ConfigError::Edit("permission_rules must be an array of tables".into())
+            })?;
+        let index = entries
+            .iter()
+            .position(|entry| entry.get("id").and_then(toml_edit::Item::as_str) == Some(id))
+            .ok_or_else(|| ConfigError::Edit(format!("permission rule {id:?} is unavailable")))?;
+        entries.remove(index);
+        transaction.commit(true)
+    }
+
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
         let mut transaction = ConfigEditTransaction::begin(path)?;
         let (registry, document) = transaction.parts();
@@ -1672,6 +1736,35 @@ impl XanaConfig {
         }
         transaction.commit(false)
     }
+}
+
+fn permission_rule_table(rule: &PermissionRule) -> toml_edit::Table {
+    let mut table = toml_edit::Table::new();
+    table["id"] = toml_edit::value(rule.id.clone());
+    table["decision"] = toml_edit::value(match rule.decision {
+        PolicyDecision::Deny => "deny",
+        PolicyDecision::Ask => "ask",
+        PolicyDecision::Allow => "allow",
+    });
+    if let Some(tool) = &rule.tool {
+        table["tool"] = toml_edit::value(tool.clone());
+    }
+    if let Some(effect) = rule.effect {
+        table["effect"] = toml_edit::value(match effect {
+            crate::tool::EffectClass::Read => "read",
+            crate::tool::EffectClass::Write => "write",
+            crate::tool::EffectClass::Execute => "execute",
+            crate::tool::EffectClass::Network => "network",
+            crate::tool::EffectClass::External => "external",
+        });
+    }
+    if let Some(workspace) = &rule.workspace {
+        table["workspace"] = toml_edit::value(workspace.to_string_lossy().into_owned());
+    }
+    if let Some(command) = &rule.command {
+        table["command"] = toml_edit::value(command.clone());
+    }
+    table
 }
 
 /// Cross-process transaction lock shared by every configuration writer.
