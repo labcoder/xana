@@ -530,6 +530,21 @@ impl DesktopPermissionId {
     }
 }
 
+impl fmt::Display for DesktopPermissionId {
+    fn fmt(&self, output: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0 {
+            DesktopPermissionTarget::Native {
+                operation_id,
+                invocation_id,
+            } => write!(output, "native:{operation_id}:{invocation_id}"),
+            DesktopPermissionTarget::Managed {
+                operation_id,
+                request_id,
+            } => write!(output, "managed:{operation_id}:{request_id}"),
+        }
+    }
+}
+
 /// Opaque identity for one exact round-budget suspension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DesktopRoundBudgetId(RoundBudgetId);
@@ -629,6 +644,7 @@ pub struct DesktopSnapshot {
     pub conversation_truncated: bool,
     pub active_operation: Option<DesktopOperationId>,
     pub pending_approval_count: usize,
+    pub pending_approvals: Vec<DesktopPendingApproval>,
     pub activity_count: usize,
     pub artifact_count: usize,
     pub host_sequence: u64,
@@ -642,6 +658,15 @@ pub struct DesktopSnapshot {
     pub layout: DesktopResolvedLayout,
     pub settings: DesktopSettingsSnapshot,
     pub conversation_facts: DesktopConversationFacts,
+}
+
+/// One presentation-safe approval gate that survives projection resync.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopPendingApproval {
+    pub id: DesktopPermissionId,
+    pub tool: String,
+    pub effect: String,
+    pub scope: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2690,6 +2715,16 @@ fn project_snapshot(
         conversation_truncated: snapshot.conversation_truncated,
         active_operation: snapshot.active_operation.map(DesktopOperationId),
         pending_approval_count: snapshot.pending_approval_count,
+        pending_approvals: snapshot
+            .pending_approvals
+            .iter()
+            .map(|approval| DesktopPendingApproval {
+                id: DesktopPermissionId::native(approval.operation_id, approval.invocation_id),
+                tool: approval.tool_name.clone(),
+                effect: format!("{:?}", approval.effect_class).to_ascii_lowercase(),
+                scope: permission_scope_label(&approval.scope),
+            })
+            .collect(),
         activity_count: snapshot.activity_count,
         artifact_count: snapshot.artifact_count,
         host_sequence: host.sequence,

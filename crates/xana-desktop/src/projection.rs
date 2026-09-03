@@ -5,8 +5,8 @@ use std::collections::HashMap;
 use xana::desktop::{
     DesktopActivityItem, DesktopContent, DesktopConversationFacts, DesktopEvent, DesktopHostEvent,
     DesktopHostObservation, DesktopMessage, DesktopObservation, DesktopOperationId,
-    DesktopOperationState, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
-    NotificationPolicy,
+    DesktopOperationState, DesktopPermissionId, DesktopRole, DesktopRoundBudgetSuspension,
+    DesktopSnapshot, NotificationPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,14 @@ enum MessageLifecycle {
     Failed(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingApproval {
+    pub(crate) id: DesktopPermissionId,
+    pub(crate) tool: String,
+    pub(crate) effect: String,
+    pub(crate) scope: String,
+}
+
 /// Xana Desktop owns this state; `gpui-ai` receives immutable snapshots.
 pub(crate) struct ConversationProjection {
     connection: String,
@@ -36,6 +44,7 @@ pub(crate) struct ConversationProjection {
     pending_round_budget: Option<DesktopRoundBudgetSuspension>,
     notification_policy: NotificationPolicy,
     pending_approval_count: usize,
+    pending_approvals: Vec<PendingApproval>,
     host_lifecycle: String,
     global_notice_count: usize,
     conversation_facts: DesktopConversationFacts,
@@ -56,6 +65,16 @@ impl ConversationProjection {
             pending_round_budget: None,
             notification_policy: snapshot.notification_policy.clone(),
             pending_approval_count: snapshot.pending_approval_count,
+            pending_approvals: snapshot
+                .pending_approvals
+                .iter()
+                .map(|approval| PendingApproval {
+                    id: approval.id,
+                    tool: approval.tool.clone(),
+                    effect: approval.effect.clone(),
+                    scope: approval.scope.clone(),
+                })
+                .collect(),
             host_lifecycle: snapshot.host_lifecycle.clone(),
             global_notice_count: snapshot.global_notices.len(),
             conversation_facts: snapshot.conversation_facts.clone(),
@@ -130,12 +149,38 @@ impl ConversationProjection {
                 operation_id,
                 message,
             } => self.replace_stream_with_final(operation_id, message),
-            DesktopEvent::PermissionRequired { tool, .. } => {
-                self.pending_approval_count = self.pending_approval_count.saturating_add(1);
+            DesktopEvent::PermissionRequired {
+                permission_id,
+                tool,
+                effect,
+                scope,
+            } => {
+                if let Some(existing) = self
+                    .pending_approvals
+                    .iter_mut()
+                    .find(|approval| approval.id == permission_id)
+                {
+                    *existing = PendingApproval {
+                        id: permission_id,
+                        tool: tool.clone(),
+                        effect,
+                        scope,
+                    };
+                } else {
+                    self.pending_approvals.push(PendingApproval {
+                        id: permission_id,
+                        tool: tool.clone(),
+                        effect,
+                        scope,
+                    });
+                }
+                self.pending_approval_count = self.pending_approvals.len();
                 self.latest_activity = format!("Approval required for {tool}");
             }
-            DesktopEvent::PermissionResolved { .. } => {
-                self.pending_approval_count = self.pending_approval_count.saturating_sub(1);
+            DesktopEvent::PermissionResolved { permission_id } => {
+                self.pending_approvals
+                    .retain(|approval| approval.id != permission_id);
+                self.pending_approval_count = self.pending_approvals.len();
                 self.latest_activity = "Approval resolved".to_owned();
             }
             DesktopEvent::RoundBudgetReached(suspension) => {
@@ -259,6 +304,10 @@ impl ConversationProjection {
 
     pub(crate) fn pending_approval_count(&self) -> usize {
         self.pending_approval_count
+    }
+
+    pub(crate) fn pending_approvals(&self) -> &[PendingApproval] {
+        &self.pending_approvals
     }
 
     pub(crate) fn host_lifecycle(&self) -> &str {
@@ -440,6 +489,7 @@ mod tests {
             conversation_truncated: false,
             active_operation: None,
             pending_approval_count: 0,
+            pending_approvals: Vec::new(),
             activity_count: 0,
             artifact_count: 0,
             host_sequence: 0,

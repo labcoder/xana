@@ -158,6 +158,21 @@ impl ManagedDesktopState {
         snapshot.session_id.clone_from(&self.thread_id);
         snapshot.active_operation = self.active_operation.map(DesktopOperationId);
         snapshot.pending_approval_count = self.pending_approvals.len();
+        snapshot.pending_approvals = self
+            .pending_approvals
+            .iter()
+            .filter_map(|(request_id, pending)| {
+                let operation_id = self.active_operation?;
+                Some(project_managed_approval(
+                    operation_id,
+                    *request_id,
+                    &pending.request,
+                ))
+            })
+            .collect();
+        snapshot
+            .pending_approvals
+            .sort_by_key(|approval| approval.id.to_string());
         snapshot.activity_count = self.facts.activity.len();
         snapshot.conversation_facts = self.facts.clone();
         snapshot
@@ -1177,27 +1192,16 @@ impl Bridge {
                 };
                 let request_id = state.next_approval_id;
                 state.next_approval_id = state.next_approval_id.saturating_add(1);
-                let tool = request
-                    .command
-                    .clone()
-                    .unwrap_or_else(|| request.method.clone());
-                let effect = request
-                    .reason
-                    .clone()
-                    .unwrap_or_else(|| request.method.clone());
-                let scope = request
-                    .cwd
-                    .clone()
-                    .unwrap_or_else(|| "managed runtime scope".to_owned());
+                let approval = project_managed_approval(operation_id, request_id, &request);
                 state
                     .pending_approvals
                     .insert(request_id, PendingApproval { request, reply });
                 self.publish_critical(DesktopUpdate::Observation(state.observation(
                     DesktopEvent::PermissionRequired {
-                        permission_id: DesktopPermissionId::managed(operation_id, request_id),
-                        tool: bounded_text(tool, MAX_PUBLIC_TEXT_BYTES),
-                        effect: bounded_text(effect, MAX_PUBLIC_TEXT_BYTES),
-                        scope: bounded_text(scope, MAX_PUBLIC_TEXT_BYTES),
+                        permission_id: approval.id,
+                        tool: approval.tool,
+                        effect: approval.effect,
+                        scope: approval.scope,
                     },
                 )))
                 .await?;
@@ -1253,6 +1257,37 @@ impl Bridge {
             .require_controller(&controller.conversation, controller.client_id)
             .map_err(host_error)?;
         Ok(())
+    }
+}
+
+fn project_managed_approval(
+    operation_id: OperationId,
+    request_id: u64,
+    request: &ApprovalRequest,
+) -> DesktopPendingApproval {
+    DesktopPendingApproval {
+        id: DesktopPermissionId::managed(operation_id, request_id),
+        tool: bounded_text(
+            request
+                .command
+                .clone()
+                .unwrap_or_else(|| request.method.clone()),
+            MAX_PUBLIC_TEXT_BYTES,
+        ),
+        effect: bounded_text(
+            request
+                .reason
+                .clone()
+                .unwrap_or_else(|| request.method.clone()),
+            MAX_PUBLIC_TEXT_BYTES,
+        ),
+        scope: bounded_text(
+            request
+                .cwd
+                .clone()
+                .unwrap_or_else(|| "managed runtime scope".to_owned()),
+            MAX_PUBLIC_TEXT_BYTES,
+        ),
     }
 }
 

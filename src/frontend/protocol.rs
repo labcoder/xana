@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 6;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 7;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -396,6 +396,8 @@ pub(crate) struct ClientSnapshot {
     pub(crate) active_operation: Option<OperationId>,
     pub(crate) children: Vec<ChildSnapshot>,
     pub(crate) pending_approval_count: usize,
+    #[serde(default)]
+    pub(crate) pending_approvals: Vec<PendingPermissionProjection>,
     pub(crate) activity_count: usize,
     pub(crate) artifact_count: usize,
     /// Frontend-neutral M4 semantics. Legacy provider-neutral messages remain
@@ -406,6 +408,15 @@ pub(crate) struct ClientSnapshot {
     /// a dedicated context-budget event family.
     #[serde(default)]
     pub(crate) prompt_plans: Vec<(OperationId, PromptPlanLedger)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct PendingPermissionProjection {
+    pub(crate) operation_id: OperationId,
+    pub(crate) invocation_id: ToolInvocationId,
+    pub(crate) tool_name: String,
+    pub(crate) effect_class: crate::tool::EffectClass,
+    pub(crate) scope: crate::permission::PermissionScope,
 }
 
 #[derive(Debug, Clone)]
@@ -452,6 +463,7 @@ impl ClientSnapshot {
                 .map(ChildSnapshot::from)
                 .collect(),
             pending_approval_count: 0,
+            pending_approvals: Vec::new(),
             activity_count: 0,
             artifact_count,
             semantic: SemanticSnapshotV1 {
@@ -521,6 +533,8 @@ impl ClientSnapshot {
                     self.conversation_truncated = false;
                     self.active_operation = None;
                     self.artifact_count = 0;
+                    self.pending_approval_count = 0;
+                    self.pending_approvals.clear();
                     self.semantic.content.clear();
                     self.semantic.authoritative_finals.clear();
                     self.semantic.usage.clear();
@@ -531,11 +545,33 @@ impl ClientSnapshot {
                 AgentEvent::ToolFinished { result, .. } => {
                     append_semantic_content(&mut self.semantic, normalize_message(result));
                 }
-                AgentEvent::PermissionRequested { .. } => {
-                    self.pending_approval_count = self.pending_approval_count.saturating_add(1);
+                AgentEvent::PermissionRequested { request } => {
+                    let projection = PendingPermissionProjection {
+                        operation_id: request.operation_id,
+                        invocation_id: request.invocation_id,
+                        tool_name: bounded_text(
+                            request.tool_name.clone(),
+                            MAX_OMISSION_LABEL_BYTES,
+                        ),
+                        effect_class: request.effect_class,
+                        scope: request.scope.clone(),
+                    };
+                    if let Some(existing) = self.pending_approvals.iter_mut().find(|candidate| {
+                        candidate.operation_id == projection.operation_id
+                            && candidate.invocation_id == projection.invocation_id
+                    }) {
+                        *existing = projection;
+                    } else if self.pending_approvals.len() < 32 {
+                        self.pending_approvals.push(projection);
+                    }
+                    self.pending_approval_count = self.pending_approvals.len();
                 }
-                AgentEvent::PermissionAudited { .. } => {
-                    self.pending_approval_count = self.pending_approval_count.saturating_sub(1);
+                AgentEvent::PermissionAudited { fact } => {
+                    self.pending_approvals.retain(|candidate| {
+                        candidate.operation_id != fact.request.operation_id
+                            || candidate.invocation_id != fact.request.invocation_id
+                    });
+                    self.pending_approval_count = self.pending_approvals.len();
                 }
                 AgentEvent::ChildListSnapshot { children } => {
                     self.children = children.iter().take(64).map(ChildSnapshot::from).collect();
@@ -1034,6 +1070,64 @@ mod tests {
         assert!(!json.contains("also-secret"));
         assert!(json.contains("[REDACTED]"));
         assert!(json.contains("README.md"));
+    }
+
+    #[test]
+    fn snapshot_retains_only_safe_pending_approval_identity_and_scope() {
+        let operation_id = OperationId::new();
+        let invocation_id = ToolInvocationId::new();
+        let request = PermissionRequest {
+            operation_id,
+            invocation_id,
+            tool_name: "write_file".to_owned(),
+            effect_class: EffectClass::Write,
+            final_arguments: serde_json::json!({"secret": "must-not-enter-snapshot"}),
+            scope: crate::permission::PermissionScope::WorkspacePath {
+                canonical_path: std::path::PathBuf::from("workspace/README.md"),
+            },
+            outbound_review: None,
+        };
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::PermissionRequested {
+                request: request.clone(),
+            }),
+            1,
+        );
+
+        assert_eq!(snapshot.pending_approval_count, 1);
+        assert_eq!(snapshot.pending_approvals[0].invocation_id, invocation_id);
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert!(!encoded.contains("must-not-enter-snapshot"));
+        assert!(encoded.contains("README.md"));
+
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::PermissionAudited {
+                fact: crate::permission::PermissionAuditFact {
+                    request,
+                    policy_evaluation: crate::permission::PolicyDecision::Ask,
+                    controller_decision: Some(crate::permission::ControllerDecision::Deny),
+                    effective: crate::permission::PolicyDecision::Deny,
+                },
+            }),
+            2,
+        );
+        assert!(snapshot.pending_approvals.is_empty());
+        assert_eq!(snapshot.pending_approval_count, 0);
     }
 
     #[test]

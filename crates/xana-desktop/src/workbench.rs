@@ -17,10 +17,10 @@ use gpui::{
     Render, Role, Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
-    Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch, CommandSearchEvent, LoadingState,
-    MessageQueue, ProgressState, PromptBar, PromptBarEvent, PromptModel, QueueEvent, QueuedMessage,
-    SidebarNav, SidebarNavEvent, SidebarNavItem, SidebarNavPresentation, SidebarSection,
-    StatusBadge, StatusTone, Suggestion,
+    ApprovalCard, ApprovalEvent, Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch,
+    CommandSearchEvent, LoadingState, MessageQueue, ProgressState, PromptBar, PromptBarEvent,
+    PromptModel, QueueEvent, QueuedMessage, SidebarNav, SidebarNavEvent, SidebarNavItem,
+    SidebarNavPresentation, SidebarSection, StatusBadge, StatusTone, Suggestion,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName,
@@ -1992,6 +1992,37 @@ impl Workbench {
             .iter()
             .map(|activity| render_activity_item(activity, cx))
             .collect::<Vec<_>>();
+        let approval_cards = self
+            .projection
+            .pending_approvals()
+            .iter()
+            .map(|approval| {
+                let permission_id = approval.id;
+                ApprovalCard::new(
+                    format!("desktop-approval-{permission_id}"),
+                    format!("Allow {}?", approval.tool),
+                )
+                .description(format!(
+                    "{}\nScope: {}\nThis decision applies once to the current Run.",
+                    approval.effect, approval.scope
+                ))
+                .approve_label("Allow once")
+                .reject_label("Deny")
+                .on_event(cx.listener(move |this, event: &ApprovalEvent, window, cx| {
+                    let allow_once = matches!(event, ApprovalEvent::Approved { .. });
+                    match this.runtime.decide_permission(permission_id, allow_once) {
+                        Ok(_) => this.projection.set_activity(if allow_once {
+                            "Sending one-time approval…"
+                        } else {
+                            "Sending denial…"
+                        }),
+                        Err(error) => this.projection.fail(error.message),
+                    }
+                    this.sync_components(window, cx);
+                }))
+                .into_any_element()
+            })
+            .collect::<Vec<_>>();
         let completion = facts.completions.last().map(|receipt| {
             let checks_passed = receipt.checks.iter().filter(|check| check.passed).count();
             v_flex()
@@ -2076,7 +2107,7 @@ impl Workbench {
                     .min_h_0()
                     .gap(tokens.spacing.sm)
                     .overflow_y_scrollbar()
-                    .when(activity_items.is_empty(), |list| {
+                    .when(approval_cards.is_empty() && activity_items.is_empty(), |list| {
                         list.child(
                             div()
                                 .text_sm()
@@ -2084,6 +2115,7 @@ impl Workbench {
                                 .child("No detailed Activity has been recorded for this Conversation yet."),
                         )
                     })
+                    .children(approval_cards)
                     .children(activity_items),
             )
             .into_any_element()

@@ -932,7 +932,7 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 6
+staged images, and an ordered follow-up queue. Frontend protocol version 7
 retains version 5's stable semantic command identifiers and adds frozen host
 location and approval-policy facts so native and managed Runs can publish
 authoritative execution facts and deterministic completion receipts. One application-owned catalog now
