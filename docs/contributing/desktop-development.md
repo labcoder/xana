@@ -53,6 +53,19 @@ cargo test --locked --workspace --all-targets --all-features
 pwsh ./scripts/check-desktop-dependencies.ps1
 ```
 
+Before an M4 release candidate, capture the deterministic release-profile
+projection baseline separately from manual paint and process measurements:
+
+```bash
+pwsh ./scripts/measure-m4-interface.ps1
+```
+
+The generated record stays under `target/`. It deliberately does not turn
+machine-sensitive wall-clock values into shared-CI assertions or describe data
+projection time as GPUI paint time. Copy reviewed results into the milestone
+evidence record together with hardware, display, GPU/backend, power mode,
+window scale, and native-versus-virtualized facts.
+
 The supported source-build targets are Windows x64, Linux x64 glibc, macOS
 ARM64, and macOS Intel. The primary CI matrix covers the first three; a bounded
 Intel macOS job compiles and tests the Desktop package.

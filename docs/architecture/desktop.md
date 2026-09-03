@@ -234,6 +234,14 @@ draft text, staged attachment references, and queued turns by stable
 Conversation identity. Eviction drops only inactive presentation state; it can
 never move input or authority to another Conversation.
 
+The embedded runtime publishes into a bounded 256-update channel and wakes GPUI
+through a coalescing signal that contains no data or authority. The Workbench
+drains at most 64 typed updates in one UI batch, continues immediately when a
+batch saturates, and otherwise sleeps until the next runtime or same-instance
+launch signal. There is no periodic runtime poll or settled repaint clock.
+Initial transcript projection retains a recent contiguous suffix of at most
+512 messages and 2 MiB; the durable Conversation remains authoritative.
+
 The Desktop projection preserves bounded text, Markdown, code, table, diff,
 math, link, resource, and unknown parts. Code, table, and diff parts become
 selectable Markdown structures understood by `gpui-ai`; math uses an explicit
@@ -245,8 +253,9 @@ credential-bearing or fragment URLs, and schemes other than absolute HTTP(S).
 Resource cards retain declared and detected media types, validation, lineage,
 and per-operation capability facts. A private `DesktopArtifactReader` repeats
 the immutable artifact's length/digest and policy checks before returning bytes
-for accepted PNG, JPEG, or WebP previews. The Workbench attempts at most eight
-such previews totaling 20 MiB; pixel and edge limits remain policy-owned.
+for accepted PNG, JPEG, or WebP previews. The Workbench admits only the newest
+eight eligible previews totaling at most 20 MiB. Snapshot replacement evicts
+decoded entries outside that window; pixel and edge limits remain policy-owned.
 Animated images, SVG, Lottie, audio, video, binary, unknown, rejected, missing,
 or oversized resources stay typed cards. Desktop therefore advertises neither
 audio/video playback nor rich math. Activating a card opens the Artifacts panel;

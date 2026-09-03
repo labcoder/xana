@@ -181,7 +181,8 @@ showing the message performs no network request.
 Xana resources appear as typed attachment cards. An accepted immutable static
 PNG, JPEG, or WebP may gain a thumbnail only after the runtime re-verifies its
 complete length and content digest and checks the configured byte, pixel, and
-edge limits. At most eight previews totaling 20 MiB are attempted at once.
+edge limits. Only the newest eight eligible previews totaling at most 20 MiB
+remain admitted; older previews fall back to their typed cards.
 Animated raster, SVG, Lottie, audio, video, unknown, rejected, oversized, or
 deleted resources keep a metadata card instead of being decoded optimistically.
 Desktop currently advertises neither native audio/video playback nor rich math.

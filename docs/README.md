@@ -73,6 +73,10 @@ engineering contracts used to change it.
   records cross-surface command and content conformance, explicit Desktop
   exposure, advanced-integration surface limits, and the presentation authority
   gate.
+- [M4 interface hardening evidence](development/m4-interface-hardening-evidence.md)
+  records event-driven scheduling, transcript and media resource bounds,
+  release-profile probes, security and accessibility gates, and the remaining
+  reference-system and owner checks.
 - [M4 Desktop Espejo evidence](development/m4-desktop-espejo-evidence.md)
   records bounded global/Project supervision, attention grouping, redacted
   notices, and exact navigation.
