@@ -3,10 +3,10 @@
 use crate::{
     commands::{
         self, ArchiveSelectedProject, BranchSelectedConversation, ClearConversation, InterruptRun,
-        MinimizeWindow, MoveSelectedConversation, OpenConfigurationFile, OpenDocumentation,
-        QuitXana, RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
-        ShowCommandPalette, ShowEspejo, ShowSettings, UngroupSelectedConversation,
-        WorkbenchCommand,
+        MinimizeWindow, MoveSelectedConversation, NewConversation, OpenConfigurationFile,
+        OpenDocumentation, PaletteDestination, PaletteSelection, QuitXana, RenameSelectedProject,
+        RestoreSelectedProject, RevealLogs, ShowActivity, ShowCommandPalette, ShowEspejo,
+        ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
     },
     composer::{ComposerStore, QueuedSubmission},
     design_system,
@@ -1138,10 +1138,10 @@ impl Workbench {
     ) {
         match event {
             CommandSearchEvent::Selected { item_id, .. } => {
-                let selected = WorkbenchCommand::from_stable_id(item_id.as_ref());
+                let selected = commands::palette_selection(item_id.as_ref());
                 self.dismiss_palette(window, cx);
-                if let Some(command) = selected {
-                    self.dispatch(command, window, cx);
+                if let Some(selection) = selected {
+                    self.dispatch_palette_selection(selection, window, cx);
                 }
             }
             CommandSearchEvent::Dismissed { .. } => self.dismiss_palette(window, cx),
@@ -3218,6 +3218,39 @@ impl Workbench {
             }
             WorkbenchCommand::ShowEspejo => self.open_espejo(EspejoScope::Global, cx),
             WorkbenchCommand::ShowSettings => self.open_settings(window, cx),
+            WorkbenchCommand::NewConversation => {
+                match self.runtime.new_conversation(self.selected_project.clone()) {
+                    Ok(_) => self.projection.set_activity("Creating a new Conversation…"),
+                    Err(error) => self.projection.fail(error.message),
+                }
+                self.sync_components(window, cx);
+            }
+        }
+    }
+
+    fn dispatch_palette_selection(
+        &mut self,
+        selection: PaletteSelection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match selection {
+            PaletteSelection::Dispatch(command) => self.dispatch(command, window, cx),
+            PaletteSelection::Navigate(PaletteDestination::Conversation) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                self.sync_components(window, cx);
+            }
+            PaletteSelection::Navigate(PaletteDestination::Activity) => {
+                self.navigation = DesktopNavigationTarget::Activity;
+                self.projection.set_activity("Activity opened");
+                cx.notify();
+            }
+            PaletteSelection::Navigate(PaletteDestination::Settings(route)) => {
+                self.open_settings(window, cx);
+                self.settings_view.update(cx, |settings, cx| {
+                    settings.open_route(route, window, cx);
+                });
+            }
         }
     }
 
@@ -3485,6 +3518,9 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowSettings, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
+                this.dispatch(WorkbenchCommand::NewConversation, window, cx);
             }))
             .on_action(cx.listener(|this, _: &RenameSelectedProject, window, cx| {
                 this.open_project_rename(window, cx);

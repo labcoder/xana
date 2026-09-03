@@ -97,6 +97,25 @@ enum FocusedManager {
     WorkbenchPreferences(Entity<WorkbenchPreferencesView>),
 }
 
+/// A presentation-only route into one of Settings' typed managers.
+///
+/// The stable command catalog owns intent; this enum prevents command-palette
+/// and settings-row navigation from depending on executable-looking strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsRoute {
+    Section(DesktopSettingsSection),
+    Connections,
+    Profiles,
+    Projects,
+    Capabilities,
+    Permissions,
+    ResourcePolicy,
+    WorkbenchPreferences,
+    Doctor,
+    Migration,
+    Reset,
+}
+
 impl SettingsView {
     pub(crate) fn new(
         control: DesktopControlPlane,
@@ -161,8 +180,29 @@ impl SettingsView {
     }
 
     fn open_focused_manager(&mut self, action: &str, window: &mut Window, cx: &mut Context<Self>) {
-        match action {
-            "xana connection list" | "xana model list" => {
+        let Some(route) = settings_route_for_action(action) else {
+            self.error = Some(format!(
+                "The {action} workflow is not available in Xana Desktop yet."
+            ));
+            cx.notify();
+            return;
+        };
+        self.open_route(route, window, cx);
+    }
+
+    pub(crate) fn open_route(
+        &mut self,
+        route: SettingsRoute,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let SettingsRoute::Section(section) = route {
+            self.open_section(section, window, cx);
+            return;
+        }
+        match route {
+            SettingsRoute::Connections => {
+                self.selected_section = DesktopSettingsSection::Connections;
                 let manager = cx.new(|cx| ConnectionManager::new(self.control.clone(), window, cx));
                 let subscription = cx.subscribe_in(
                     &manager,
@@ -178,20 +218,17 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::Connections(manager));
                 self.error = None;
             }
-            "xana profile list"
-            | "xana route list"
-            | "xana project list"
-            | "xana capabilities"
-            | "xana plugin list"
-            | "xana mcp list"
-            | "xana external-agent list"
-            | "xana image list" => {
-                let tab = if action == "xana project list" {
-                    ManagementTab::Projects
-                } else if action == "xana profile list" || action == "xana route list" {
-                    ManagementTab::Profiles
-                } else {
-                    ManagementTab::Capabilities
+            SettingsRoute::Profiles | SettingsRoute::Projects | SettingsRoute::Capabilities => {
+                let tab = match route {
+                    SettingsRoute::Profiles => ManagementTab::Profiles,
+                    SettingsRoute::Projects => ManagementTab::Projects,
+                    SettingsRoute::Capabilities => ManagementTab::Capabilities,
+                    _ => unreachable!("route was narrowed by the match arm"),
+                };
+                self.selected_section = match tab {
+                    ManagementTab::Profiles => DesktopSettingsSection::Profiles,
+                    ManagementTab::Projects => DesktopSettingsSection::Workbench,
+                    ManagementTab::Capabilities => DesktopSettingsSection::Capabilities,
                 };
                 let manager =
                     cx.new(|cx| ManagementView::new(self.control.clone(), tab, window, cx));
@@ -209,7 +246,8 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::Management(manager));
                 self.error = None;
             }
-            "xana setup --section permissions-shell" => {
+            SettingsRoute::Permissions => {
+                self.selected_section = DesktopSettingsSection::Permissions;
                 let manager = cx.new(|cx| PermissionView::new(self.control.clone(), window, cx));
                 let subscription = cx.subscribe_in(
                     &manager,
@@ -225,7 +263,8 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::Permissions(manager));
                 self.error = None;
             }
-            "xana resource policy" => {
+            SettingsRoute::ResourcePolicy => {
+                self.selected_section = DesktopSettingsSection::AttachmentsMedia;
                 let manager =
                     cx.new(|cx| ResourcePolicyView::new(self.control.clone(), window, cx));
                 let subscription = cx.subscribe_in(
@@ -242,7 +281,8 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::ResourcePolicy(manager));
                 self.error = None;
             }
-            "xana desktop layout" => {
+            SettingsRoute::WorkbenchPreferences => {
+                self.selected_section = DesktopSettingsSection::Workbench;
                 let manager = cx.new(|_| WorkbenchPreferencesView::new(self.control.clone()));
                 let subscription = cx.subscribe_in(
                     &manager,
@@ -258,14 +298,27 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::WorkbenchPreferences(manager));
                 self.error = None;
             }
-            "xana doctor" | "xana config migrate" | "xana reset" => {
-                let tab = match action {
-                    "xana config migrate" => MaintenanceTab::Migration,
-                    "xana reset" => MaintenanceTab::Reset,
-                    _ => MaintenanceTab::Doctor,
+            SettingsRoute::Doctor | SettingsRoute::Migration | SettingsRoute::Reset => {
+                self.selected_section = match route {
+                    SettingsRoute::Doctor => DesktopSettingsSection::Diagnostics,
+                    SettingsRoute::Migration | SettingsRoute::Reset => {
+                        DesktopSettingsSection::Advanced
+                    }
+                    _ => unreachable!("route was narrowed by the match arm"),
+                };
+                let tab = match route {
+                    SettingsRoute::Migration => MaintenanceTab::Migration,
+                    SettingsRoute::Reset => MaintenanceTab::Reset,
+                    SettingsRoute::Doctor => MaintenanceTab::Doctor,
+                    _ => unreachable!("route was narrowed by the match arm"),
                 };
                 let manager = cx.new(|cx| {
-                    MaintenanceView::new(self.control.clone(), tab, action == "xana doctor", cx)
+                    MaintenanceView::new(
+                        self.control.clone(),
+                        tab,
+                        route == SettingsRoute::Doctor,
+                        cx,
+                    )
                 });
                 let subscription = cx.subscribe_in(
                     &manager,
@@ -286,11 +339,7 @@ impl SettingsView {
                 self.focused_manager = Some(FocusedManager::Maintenance(manager));
                 self.error = None;
             }
-            _ => {
-                self.error = Some(format!(
-                    "The {action} workflow is not available in Xana Desktop yet."
-                ));
-            }
+            SettingsRoute::Section(_) => unreachable!("section routes return before this match"),
         }
         cx.notify();
     }
@@ -1311,6 +1360,26 @@ fn receipt_recovery_summary(receipt: &DesktopSettingsReceipt) -> String {
         DesktopSettingsBackup::Created => "configuration backup created",
     };
     format!("{owners} · {backup} · atomic rollback on failure")
+}
+
+fn settings_route_for_action(action: &str) -> Option<SettingsRoute> {
+    Some(match action {
+        "xana connection list" | "xana model list" => SettingsRoute::Connections,
+        "xana profile list" | "xana route list" => SettingsRoute::Profiles,
+        "xana project list" => SettingsRoute::Projects,
+        "xana capabilities"
+        | "xana plugin list"
+        | "xana mcp list"
+        | "xana external-agent list"
+        | "xana image list" => SettingsRoute::Capabilities,
+        "xana setup --section permissions-shell" => SettingsRoute::Permissions,
+        "xana resource policy" => SettingsRoute::ResourcePolicy,
+        "xana desktop layout" => SettingsRoute::WorkbenchPreferences,
+        "xana doctor" => SettingsRoute::Doctor,
+        "xana config migrate" => SettingsRoute::Migration,
+        "xana reset" => SettingsRoute::Reset,
+        _ => return None,
+    })
 }
 
 #[cfg(test)]

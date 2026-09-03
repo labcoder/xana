@@ -4,12 +4,16 @@
 //! Desktop labels, shortcuts, and the small set of handlers implemented by the
 //! current workbench slice.
 
+use crate::settings_view::SettingsRoute;
+
 #[cfg(target_os = "macos")]
 use gpui::SystemMenuType;
 use gpui::{App, KeyBinding, Menu, MenuItem, OsAction, actions};
 use gpui_ai::prelude::CommandSearchItem;
 use gpui_component::input::{Copy, Cut, Paste, Redo, SelectAll, Undo};
-use xana::desktop::{DesktopAuthority, DesktopCommandDescriptor, desktop_commands};
+use xana::desktop::{
+    DesktopAuthority, DesktopCommandDescriptor, DesktopSettingsSection, desktop_commands,
+};
 
 pub(crate) const WORKBENCH_KEY_CONTEXT: &str = "XanaWorkbench";
 
@@ -62,6 +66,7 @@ pub(crate) enum WorkbenchCommand {
     ShowActivity,
     ShowEspejo,
     ShowSettings,
+    NewConversation,
 }
 
 impl WorkbenchCommand {
@@ -78,6 +83,7 @@ impl WorkbenchCommand {
             Self::ShowActivity => ACTIVITY_ID,
             Self::ShowEspejo => ESPEJO_ID,
             Self::ShowSettings => SETTINGS_ID,
+            Self::NewConversation => "conversation.new.v1",
         }
     }
 
@@ -94,9 +100,29 @@ impl WorkbenchCommand {
             ACTIVITY_ID => Self::ShowActivity,
             ESPEJO_ID => Self::ShowEspejo,
             SETTINGS_ID => Self::ShowSettings,
+            "conversation.new.v1" => Self::NewConversation,
             _ => return None,
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaletteDestination {
+    Conversation,
+    Activity,
+    Settings(SettingsRoute),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PaletteSelection {
+    Dispatch(WorkbenchCommand),
+    Navigate(PaletteDestination),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandExposure {
+    Select(PaletteSelection),
+    Contextual(&'static str),
 }
 
 pub(crate) fn install(cx: &mut App) {
@@ -133,7 +159,7 @@ fn native_menus() -> Vec<Menu> {
     vec![
         Menu::new("Xana").items(application_items),
         Menu::new("File").items([
-            MenuItem::action("New Conversation", NewConversation).disabled(true),
+            MenuItem::action("New Conversation", NewConversation),
             MenuItem::separator(),
             MenuItem::action("Quit Xana", QuitXana),
         ]),
@@ -153,7 +179,7 @@ fn native_menus() -> Vec<Menu> {
             MenuItem::action("Settings…", ShowSettings),
         ]),
         Menu::new("Conversation").items([
-            MenuItem::action("New Conversation", NewConversation).disabled(true),
+            MenuItem::action("New Conversation", NewConversation),
             MenuItem::action("Clear Conversation", ClearConversation),
             MenuItem::action("Interrupt Run", InterruptRun),
         ]),
@@ -173,15 +199,21 @@ pub(crate) fn palette_items(run_active: bool) -> Vec<CommandSearchItem> {
 }
 
 fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> CommandSearchItem {
-    let implementation = WorkbenchCommand::from_stable_id(descriptor.id);
+    let exposure = command_exposure(descriptor.id);
     let runtime_disabled = descriptor.id == INTERRUPT_ID && !run_active;
     let unavailable_reason = descriptor
         .unavailable_reason
         .map(str::to_owned)
         .or_else(|| {
-            implementation
+            exposure.and_then(|exposure| match exposure {
+                CommandExposure::Select(_) => None,
+                CommandExposure::Contextual(reason) => Some(reason.to_owned()),
+            })
+        })
+        .or_else(|| {
+            exposure
                 .is_none()
-                .then(|| "Available in a later Milestone 4 Desktop slice.".to_owned())
+                .then(|| "No Desktop exposure is registered.".to_owned())
         })
         .or_else(|| runtime_disabled.then(|| "No Run is active.".to_owned()));
     let title = command_title(&descriptor);
@@ -197,7 +229,9 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let disabled = !descriptor.available || implementation.is_none() || runtime_disabled;
+    let disabled = !descriptor.available
+        || !matches!(exposure, Some(CommandExposure::Select(_)))
+        || runtime_disabled;
     let mut item = CommandSearchItem::new(descriptor.id, title)
         .subtitle(subtitle)
         .keywords(keywords)
@@ -206,6 +240,117 @@ fn palette_item(descriptor: DesktopCommandDescriptor, run_active: bool) -> Comma
         item = item.shortcut(shortcut);
     }
     item
+}
+
+pub(crate) fn palette_selection(stable_id: &str) -> Option<PaletteSelection> {
+    match command_exposure(stable_id) {
+        Some(CommandExposure::Select(selection)) => Some(selection),
+        Some(CommandExposure::Contextual(_)) | None => None,
+    }
+}
+
+fn command_exposure(stable_id: &str) -> Option<CommandExposure> {
+    use CommandExposure::{Contextual, Select};
+    use PaletteDestination::{Activity, Conversation, Settings};
+    use PaletteSelection::{Dispatch, Navigate};
+
+    Some(match stable_id {
+        COMMAND_PALETTE_ID => Select(Dispatch(WorkbenchCommand::ShowCommandPalette)),
+        QUIT_ID => Select(Dispatch(WorkbenchCommand::Quit)),
+        MINIMIZE_ID => Select(Dispatch(WorkbenchCommand::Minimize)),
+        DOCUMENTATION_ID => Select(Dispatch(WorkbenchCommand::OpenDocumentation)),
+        CONFIGURATION_FILE_ID => Select(Dispatch(WorkbenchCommand::OpenConfigurationFile)),
+        LOGS_ID => Select(Dispatch(WorkbenchCommand::RevealLogs)),
+        CLEAR_ID => Select(Dispatch(WorkbenchCommand::ClearConversation)),
+        INTERRUPT_ID => Select(Dispatch(WorkbenchCommand::InterruptRun)),
+        ACTIVITY_ID => Select(Dispatch(WorkbenchCommand::ShowActivity)),
+        ESPEJO_ID => Select(Dispatch(WorkbenchCommand::ShowEspejo)),
+        SETTINGS_ID => Select(Dispatch(WorkbenchCommand::ShowSettings)),
+        "conversation.new.v1" => Select(Dispatch(WorkbenchCommand::NewConversation)),
+
+        "presentation.activity.auto.v1" | "presentation.activity.hide.v1" => {
+            Select(Navigate(Activity))
+        }
+        "capability.report.v1" => Select(Navigate(Settings(SettingsRoute::Capabilities))),
+        "diagnostics.doctor.v1" => Select(Navigate(Settings(SettingsRoute::Doctor))),
+        "presentation.layout.manage.v1" => {
+            Select(Navigate(Settings(SettingsRoute::WorkbenchPreferences)))
+        }
+        "model.select.v1" | "connection.manage.v1" | "integration.connect.v1" => {
+            Select(Navigate(Settings(SettingsRoute::Connections)))
+        }
+        "profile.manage.v1" | "route.inspect.v1" => {
+            Select(Navigate(Settings(SettingsRoute::Profiles)))
+        }
+        "project.manage.v1" => Select(Navigate(Settings(SettingsRoute::Projects))),
+        "skill.manage.v1"
+        | "plugin.manage.v1"
+        | "mcp.manage.v1"
+        | "external_agent.manage.v1"
+        | "image.manage.v1" => Select(Navigate(Settings(SettingsRoute::Capabilities))),
+        "vision.manage.v1" => Select(Navigate(Settings(SettingsRoute::Section(
+            DesktopSettingsSection::AttachmentsMedia,
+        )))),
+        "setup.run.v1" => Select(Navigate(Settings(SettingsRoute::Section(
+            DesktopSettingsSection::Overview,
+        )))),
+        "configuration.reset.v1" => Select(Navigate(Settings(SettingsRoute::Reset))),
+        "configuration.inspect.v1" => Select(Navigate(Settings(SettingsRoute::Section(
+            DesktopSettingsSection::Overview,
+        )))),
+        "outbound.manage.v1" => Select(Navigate(Settings(SettingsRoute::Permissions))),
+        "operation.reconcile.v1" => Select(Navigate(Settings(SettingsRoute::Doctor))),
+
+        "artifact.inspect.v1" => Contextual(
+            "Use Inspect, Save, Reveal, or Open on the exact artifact card in Conversation.",
+        ),
+        "approval.decide.v1" => {
+            Contextual("Use the exact pending approval card in Conversation or Activity.")
+        }
+        "turn.attachment.stage.v1" => {
+            Contextual("Use Add resources or the attachment tray beside the composer.")
+        }
+        "conversation.compact.v1" => Contextual(
+            "Compaction is runtime-directed; inspect the prompt ledger in Conversation details.",
+        ),
+        "child.list.v1" | "child.inspect.v1" | "child.cancel.v1" => Select(Navigate(Activity)),
+        "run.continue.v1" => {
+            Contextual("Use Continue on the exact suspended Run card in Conversation.")
+        }
+        "presentation.composer.newline.v1"
+        | "presentation.composer.submit.v1"
+        | "presentation.composer.insert_newline.v1" => Contextual(
+            "Use the composer control or Settings → Appearance for submit/newline behavior.",
+        ),
+        "presentation.header.hide.v1" | "presentation.header.show.v1" => {
+            Contextual("Desktop uses native window chrome rather than the terminal header panel.")
+        }
+        "help.contextual.v1" => Select(Navigate(Conversation)),
+        "followup.list.v1" | "followup.edit.v1" | "followup.remove.v1" => {
+            Contextual("Use the follow-up queue attached to the Conversation composer.")
+        }
+        "model.reasoning.select.v1" => {
+            Contextual("Use the model and reasoning controls in the Conversation composer.")
+        }
+        "turn.submit.v1" => Contextual("Type in the Conversation composer and choose Send."),
+        "conversation.list.v1"
+        | "conversation.search.v1"
+        | "conversation.continue.v1"
+        | "conversation.preview.v1"
+        | "conversation.attach.v1"
+        | "presentation.conversation_list.hide.v1"
+        | "presentation.conversation_list.show.v1" => Select(Navigate(Conversation)),
+        "conversation.archive.v1" => {
+            Contextual("Use the selected managed Conversation's context menu.")
+        }
+        "usage.inspect.v1" => Select(Navigate(Activity)),
+        "run.steer.v1" => Contextual("Use Send now or Queue on the active Run's composer."),
+        "run.stop.v1" | "run.resume.v1" => {
+            Contextual("Use the exact active, interrupted, or suspended Run card.")
+        }
+        "application.shutdown.v1" => Select(Dispatch(WorkbenchCommand::Quit)),
+        _ => return None,
+    })
 }
 
 fn command_title(descriptor: &DesktopCommandDescriptor) -> String {
@@ -263,6 +408,7 @@ mod tests {
             WorkbenchCommand::ShowActivity,
             WorkbenchCommand::ShowEspejo,
             WorkbenchCommand::ShowSettings,
+            WorkbenchCommand::NewConversation,
         ] {
             assert_eq!(
                 WorkbenchCommand::from_stable_id(command.stable_id()),
@@ -292,23 +438,66 @@ mod tests {
     }
 
     #[test]
-    fn future_commands_are_visible_but_disabled() {
+    fn every_desktop_command_has_an_explicit_exposure() {
+        for descriptor in desktop_commands(DesktopAuthority::Owner, true) {
+            assert!(
+                command_exposure(descriptor.id).is_some(),
+                "{} has no Desktop exposure",
+                descriptor.id
+            );
+        }
+    }
+
+    #[test]
+    fn contextual_commands_name_the_real_control_instead_of_future_work() {
         let items = palette_items(false);
+        let attachment = items
+            .iter()
+            .find(|item| item.id().as_ref() == "turn.attachment.stage.v1")
+            .expect("attachment command");
+        assert!(attachment.is_disabled());
+        assert!(
+            attachment
+                .subtitle_text()
+                .is_some_and(|subtitle| subtitle.contains("Add resources"))
+        );
+        assert!(items.iter().all(|item| {
+            item.subtitle_text()
+                .is_none_or(|subtitle| !subtitle.contains("later Milestone 4"))
+        }));
+
         let new_conversation = items
             .iter()
             .find(|item| item.id().as_ref() == "conversation.new.v1")
             .expect("conversation command");
-        assert!(new_conversation.is_disabled());
-        assert!(
-            new_conversation
-                .subtitle_text()
-                .is_some_and(|subtitle| subtitle.contains("later Milestone 4"))
-        );
+        assert!(!new_conversation.is_disabled());
 
         let espejo = items
             .iter()
             .find(|item| item.id().as_ref() == ESPEJO_ID)
             .expect("Espejo command");
         assert!(!espejo.is_disabled());
+    }
+
+    #[test]
+    fn management_commands_route_to_typed_settings_destinations() {
+        assert_eq!(
+            palette_selection("connection.manage.v1"),
+            Some(PaletteSelection::Navigate(PaletteDestination::Settings(
+                SettingsRoute::Connections
+            )))
+        );
+        assert_eq!(
+            palette_selection("project.manage.v1"),
+            Some(PaletteSelection::Navigate(PaletteDestination::Settings(
+                SettingsRoute::Projects
+            )))
+        );
+        assert_eq!(
+            palette_selection("configuration.reset.v1"),
+            Some(PaletteSelection::Navigate(PaletteDestination::Settings(
+                SettingsRoute::Reset
+            )))
+        );
     }
 }
