@@ -241,11 +241,16 @@ such previews totaling 20 MiB; pixel and edge limits remain policy-owned.
 Animated images, SVG, Lottie, audio, video, binary, unknown, rejected, missing,
 or oversized resources stay typed cards. Desktop therefore advertises neither
 audio/video playback nor rich math. Activating a card opens the Artifacts panel;
-the current action copies only the opaque reference. Future open, save, and
-reveal actions must use typed runtime commands and native reviewed dialogs.
+copy is a presentation action, while open, save, and reveal use typed runtime
+commands. Save accepts only an explicit native-dialog destination and streams a
+fully verified copy without overwrite. Open and reveal re-verify the complete
+artifact before passing only its owned store path to the fixed platform action.
 
-The runtime—not GPUI—validates picker, drag/drop, and clipboard image inputs and
-returns typed staged-attachment projections. Submission, interruption,
+The runtime—not GPUI—validates picker and drag/drop resources plus clipboard
+image inputs and returns typed staged-attachment projections. A resource whose
+selected route has no verified input adapter remains retained with an explicit
+unsupported fact; submitting it is rejected before provider disclosure.
+Submission, interruption,
 permission decisions, retries, and managed selection changes all carry exact
 command or Operation identity. Managed model/reasoning changes wait for the
 app-server actor's acknowledgment and affect later turns without replacing the

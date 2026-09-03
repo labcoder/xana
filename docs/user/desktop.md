@@ -137,12 +137,15 @@ bounded UI entity per recent Conversation, so draft text, cursor/selection,
 focus, transcript scroll, staged attachments, and queued follow-ups do not leak
 into another Conversation.
 
-The attachment picker accepts multiple images. You can also drag image files
+The attachment picker accepts multiple local resources. You can also drag files
 onto Message or use **Clipboard image**; every path or clipboard payload is
-validated by the runtime before it becomes part of a turn. While a Run is
-active, a new submission becomes a visible queued follow-up. Current native and
-managed owners do not advertise same-turn steering, so Xana says so rather than
-silently treating a follow-up as a steer.
+validated by the runtime before it becomes part of a draft. Validated
+PNG/JPEG/GIF images can be submitted only when the selected route supports image
+input. Other media remains an explicit `retained only` card, and submission
+fails with an actionable explanation rather than disclosing it to a provider.
+While a Run is active, a new submission becomes a visible queued follow-up.
+Current native and managed owners do not advertise same-turn steering, so Xana
+says so rather than silently treating a follow-up as a steer.
 
 The model menu is populated from the selected connection's runtime-owned model
 catalog. Managed Codex model and reasoning controls apply to later turns only
@@ -177,9 +180,11 @@ Desktop currently advertises neither native audio/video playback nor rich math.
 Activate a card to open **Artifacts**. The panel shows declared and detected
 media types separately, validation state, source/derivative lineage, and the
 source, freshness, selection, and authorization of each operation capability.
-It can copy the opaque artifact reference; it never exposes the backing path.
-Open, save, and reveal remain available through the terminal `/artifact`
-workflow until their Desktop runtime-mediated dialogs are implemented.
+It can copy the opaque artifact reference, save a verified copy through the
+native file picker, reveal the verified retained artifact, or open it with the
+platform default application. These explicit actions return to the runtime for
+complete digest and file-identity verification; save never overwrites an
+existing destination. The card never exposes the backing store path.
 
 Activity shows owner-qualified reasoning summaries, tools, approvals, child and
 integration work, progress, execution facts, usage freshness, receipts, and

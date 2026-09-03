@@ -75,6 +75,9 @@ the immutable store, and retains only a bounded signature probe in memory.
 Current provider routes send only validated PNG/JPEG/GIF inputs to an exact
 image-capable model. Other resource kinds retain metadata and artifact actions,
 but fail closed before provider disclosure until a compatible route exists.
+Desktop applies the same admission contract to its picker and drag/drop paths.
+Unsupported route inputs remain visible as `retained only` draft cards, so a
+failed submission can be corrected without reacquiring the local resource.
 
 Use `/artifact ARTIFACT_ID` for an artifact already visible in the bounded
 conversation view. The action card offers:
@@ -87,9 +90,11 @@ conversation view. The action card offers:
 Nothing opens automatically during rendering, selection, resize, or preview.
 Before a bounded range, reveal, or open, Xana re-verifies the complete
 content-addressed file's length and digest and rejects a symlink, non-regular
-file, or replacement. Local-host range requests name an opaque artifact ID and
-offset, never a path, and retain at most 64 KiB. Missing, corrupt, oversized,
-inaccessible, or non-UTF-8 content produces a bounded error.
+file, or replacement. Desktop save uses a native destination picker and streams
+a verified, create-new copy; it never overwrites an existing path. Local-host
+range requests name an opaque artifact ID and offset, never a path, and retain
+at most 64 KiB. Missing, corrupt, oversized, inaccessible, or non-UTF-8 content
+produces a bounded error.
 
 The current terminal surface does not copy artifacts through OSC 52. “Insert
 reference” keeps artifact operations visible and portable. A separate explicit
