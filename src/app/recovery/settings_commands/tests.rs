@@ -1,7 +1,10 @@
 use super::*;
 use crate::{
     cli::{Cli, Command, ConfigCommand},
-    config::{InitialConfig, InitialConnection, PermissionMode, XanaConfig},
+    config::{
+        CredentialReference, InitialConfig, InitialConnection, PermissionMode, ProviderKind,
+        XanaConfig,
+    },
     shell::ShellConfig,
 };
 use clap::Parser as _;
@@ -13,9 +16,13 @@ fn fixture() -> (TempDir, XanaPaths) {
     let paths = XanaPaths::resolve(Some(OsString::from(directory.path())))
         .expect("absolute temporary Xana home");
     let rendered = XanaConfig::render_initial(InitialConfig {
-        connection: InitialConnection::Ollama {
-            name: "ollama".to_owned(),
-            base_url: "http://localhost:11434/v1".to_owned(),
+        connection: InitialConnection::Native {
+            name: "openrouter".to_owned(),
+            kind: ProviderKind::OpenRouter,
+            base_url: None,
+            credential: Some(CredentialReference::Stored {
+                id: "private-secret-reference".to_owned(),
+            }),
         },
         model: "qwen3:1.7b".to_owned(),
         max_tool_rounds: 12,
@@ -66,7 +73,7 @@ fn list_json_has_a_version_and_no_credential_material() {
             .as_array()
             .is_some_and(|rows| !rows.is_empty())
     );
-    assert!(!encoded.contains("credential"));
+    assert!(!encoded.contains("private-secret-reference"));
 }
 
 #[test]

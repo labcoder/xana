@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    config::{InitialConfig, InitialConnection, PermissionMode},
+    config::{CredentialReference, InitialConfig, InitialConnection, PermissionMode, ProviderKind},
     shell::ShellConfig,
 };
 use std::{ffi::OsString, fs};
@@ -11,9 +11,13 @@ fn fixture() -> (TempDir, XanaPaths) {
     let paths = XanaPaths::resolve(Some(OsString::from(directory.path())))
         .expect("absolute temporary Xana home");
     let rendered = XanaConfig::render_initial(InitialConfig {
-        connection: InitialConnection::Ollama {
-            name: "ollama".to_owned(),
-            base_url: "http://localhost:11434/v1".to_owned(),
+        connection: InitialConnection::Native {
+            name: "openrouter".to_owned(),
+            kind: ProviderKind::OpenRouter,
+            base_url: None,
+            credential: Some(CredentialReference::Stored {
+                id: "private-secret-reference".to_owned(),
+            }),
         },
         model: "qwen3:1.7b".to_owned(),
         max_tool_rounds: 12,
@@ -39,7 +43,7 @@ fn snapshot_exposes_stable_keys_without_configuration_secrets() {
     assert!(snapshot.entry(NOTIFICATIONS_COMPLETIONS).is_some());
     assert!(snapshot.entry("connections.manage").is_some());
     assert!(encoded.contains("qwen3:1.7b"));
-    assert!(!encoded.contains("credential"));
+    assert!(!encoded.contains("private-secret-reference"));
     assert_eq!(snapshot.revision.len(), 16);
 }
 
