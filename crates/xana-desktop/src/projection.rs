@@ -15,6 +15,7 @@ use xana::desktop::{
 
 const MAX_INLINE_PREVIEWS: usize = 8;
 const MAX_INLINE_PREVIEW_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_INLINE_PREVIEW_DECODED_BYTES: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectedMessage {
@@ -376,6 +377,7 @@ impl ConversationProjection {
                 .map(|resource| PreviewFact {
                     id: resource.artifact_id.as_str(),
                     bytes: resource.byte_len,
+                    decoded_bytes: estimated_rgba_bytes(resource),
                     eligible: resource.supports_inline_preview(),
                 }),
         )
@@ -565,26 +567,43 @@ impl ConversationProjection {
 struct PreviewFact<'a> {
     id: &'a str,
     bytes: u64,
+    decoded_bytes: Option<u64>,
     eligible: bool,
 }
 
 fn select_preview_window<'a>(facts: impl IntoIterator<Item = PreviewFact<'a>>) -> Vec<&'a str> {
     let mut selected = Vec::with_capacity(MAX_INLINE_PREVIEWS);
     let mut bytes = 0_u64;
+    let mut decoded_bytes = 0_u64;
     for fact in facts {
         if selected.len() == MAX_INLINE_PREVIEWS || !fact.eligible || selected.contains(&fact.id) {
             continue;
         }
+        let Some(fact_decoded_bytes) = fact.decoded_bytes else {
+            continue;
+        };
         let Some(next_bytes) = bytes.checked_add(fact.bytes) else {
             continue;
         };
-        if next_bytes > MAX_INLINE_PREVIEW_BYTES {
+        let Some(next_decoded_bytes) = decoded_bytes.checked_add(fact_decoded_bytes) else {
+            continue;
+        };
+        if next_bytes > MAX_INLINE_PREVIEW_BYTES
+            || next_decoded_bytes > MAX_INLINE_PREVIEW_DECODED_BYTES
+        {
             continue;
         }
         bytes = next_bytes;
+        decoded_bytes = next_decoded_bytes;
         selected.push(fact.id);
     }
     selected
+}
+
+fn estimated_rgba_bytes(resource: &DesktopResource) -> Option<u64> {
+    u64::from(resource.metadata.width?)
+        .checked_mul(u64::from(resource.metadata.height?))?
+        .checked_mul(4)
 }
 
 fn retain_admitted_previews<T>(
@@ -1330,6 +1349,7 @@ mod tests {
             } else {
                 1024
             },
+            decoded_bytes: Some(1024 * 1024),
             eligible: index != 17,
         });
 
@@ -1348,21 +1368,56 @@ mod tests {
             PreviewFact {
                 id: "same",
                 bytes: MAX_INLINE_PREVIEW_BYTES,
+                decoded_bytes: Some(MAX_INLINE_PREVIEW_DECODED_BYTES),
                 eligible: true,
             },
             PreviewFact {
                 id: "same",
                 bytes: MAX_INLINE_PREVIEW_BYTES,
+                decoded_bytes: Some(MAX_INLINE_PREVIEW_DECODED_BYTES),
                 eligible: true,
             },
             PreviewFact {
                 id: "overflow",
                 bytes: u64::MAX,
+                decoded_bytes: Some(u64::MAX),
                 eligible: true,
             },
         ]);
 
         assert_eq!(selected, ["same"]);
+    }
+
+    #[test]
+    fn preview_window_bounds_estimated_decoded_bytes_and_requires_dimensions() {
+        let selected = select_preview_window([
+            PreviewFact {
+                id: "4k",
+                bytes: 1024,
+                decoded_bytes: Some(3840 * 2160 * 4),
+                eligible: true,
+            },
+            PreviewFact {
+                id: "would-exceed-budget",
+                bytes: 1024,
+                decoded_bytes: Some(1024 * 1024),
+                eligible: true,
+            },
+            PreviewFact {
+                id: "unknown-dimensions",
+                bytes: 1024,
+                decoded_bytes: None,
+                eligible: true,
+            },
+            PreviewFact {
+                id: "small",
+                bytes: 1024,
+                decoded_bytes: Some(64 * 64 * 4),
+                eligible: true,
+            },
+        ]);
+
+        assert_eq!(selected, ["4k", "small"]);
     }
 
     #[test]
