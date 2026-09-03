@@ -39,9 +39,10 @@ use std::{
     time::Duration,
 };
 use xana::desktop::{
-    AttentionKind, AttentionSignal, ClientFocus, DesktopAttachment, DesktopClient,
-    DesktopCommandReceipt, DesktopControlPlane, DesktopConversationState, DesktopDockPlacement,
-    DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
+    AttentionKind, AttentionSignal, ClientFocus, DesktopActivityItem, DesktopActivityOwner,
+    DesktopActivityState, DesktopAttachment, DesktopClient, DesktopCommandReceipt,
+    DesktopControlPlane, DesktopConversationState, DesktopDockPlacement, DesktopEvent,
+    DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
     DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopPanelId,
     DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
     DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
@@ -1135,11 +1136,13 @@ impl Workbench {
                 }
             }
         }
-        if keep_running && !self.projection.is_running() && self.pending_submissions.is_empty() {
-            if let Some(submission) = self.composer.pop_queued() {
-                self.submit_composer_submission(submission);
-                changed = true;
-            }
+        if keep_running
+            && !self.projection.is_running()
+            && self.pending_submissions.is_empty()
+            && let Some(submission) = self.composer.pop_queued()
+        {
+            self.submit_composer_submission(submission);
+            changed = true;
         }
         if changed {
             self.sync_components(window, cx);
@@ -1907,6 +1910,7 @@ impl Workbench {
 
     fn render_activity_panel(&self, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let tokens = cx.theme().semantic_tokens();
+        let facts = self.projection.conversation_facts();
         let status = if self.projection.failure().is_some() {
             StatusBadge::new("activity-runtime-status", "Needs attention")
                 .tone(StatusTone::Danger)
@@ -1950,8 +1954,84 @@ impl Workbench {
                             })),
                     )
             });
+        let profile = facts.profile.as_deref().unwrap_or("Unspecified");
+        let execution = facts.execution.last();
+        let execution_summary = execution.map_or_else(
+            || {
+                format!(
+                    "{} · embedded · authority unavailable",
+                    self.projection.connection()
+                )
+            },
+            |execution| {
+                format!(
+                    "{} · {} · {} · approvals {}",
+                    execution.owner,
+                    execution.host_location,
+                    execution.workspace_authority,
+                    execution.approval_policy
+                )
+            },
+        );
+        let prompt_summary = facts
+            .prompt_ledger
+            .estimated_input_tokens
+            .zip(facts.prompt_ledger.input_budget_tokens)
+            .map_or_else(
+                || {
+                    facts
+                        .prompt_ledger
+                        .unavailable_reason
+                        .clone()
+                        .unwrap_or_else(|| "Prompt ledger unavailable".to_owned())
+                },
+                |(used, budget)| format!("Prompt estimate {used} / {budget} input tokens"),
+            );
+        let activity_items = facts
+            .activity
+            .iter()
+            .map(|activity| render_activity_item(activity, cx))
+            .collect::<Vec<_>>();
+        let completion = facts.completions.last().map(|receipt| {
+            let checks_passed = receipt.checks.iter().filter(|check| check.passed).count();
+            v_flex()
+                .gap(tokens.spacing.xs)
+                .p(tokens.spacing.sm)
+                .border_1()
+                .border_color(cx.theme().border)
+                .rounded(tokens.radius.md)
+                .child(
+                    h_flex()
+                        .justify_between()
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child("Latest receipt"),
+                        )
+                        .child(
+                            StatusBadge::new("latest-completion-status", receipt.status.clone())
+                                .tone(if receipt.status == "completed" {
+                                    StatusTone::Success
+                                } else {
+                                    StatusTone::Danger
+                                }),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(format!(
+                            "Run {} · {checks_passed}/{} checks · {} artifact(s)",
+                            receipt.operation_id,
+                            receipt.checks.len(),
+                            receipt.artifact_ids.len()
+                        )),
+                )
+        });
         v_flex()
             .size_full()
+            .min_h_0()
             .gap(tokens.spacing.md)
             .p(tokens.spacing.lg)
             .child(status)
@@ -1962,6 +2042,50 @@ impl Workbench {
                     .child(self.projection.latest_activity().to_owned()),
             )
             .when_some(round_controls, |panel, controls| panel.child(controls))
+            .child(
+                v_flex()
+                    .gap(tokens.spacing.xs)
+                    .p(tokens.spacing.sm)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(tokens.radius.md)
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(format!("Profile: {profile}")),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(execution_summary),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(prompt_summary),
+                    ),
+            )
+            .when_some(completion, |panel, receipt| panel.child(receipt))
+            .child(
+                v_flex()
+                    .id("activity-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .gap(tokens.spacing.sm)
+                    .overflow_y_scrollbar()
+                    .when(activity_items.is_empty(), |list| {
+                        list.child(
+                            div()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No detailed Activity has been recorded for this Conversation yet."),
+                        )
+                    })
+                    .children(activity_items),
+            )
             .into_any_element()
     }
 
@@ -2655,6 +2779,91 @@ fn navigation_for_intent(intent: DesktopLaunchIntent) -> DesktopNavigationTarget
         DesktopLaunchIntent::Focus => DesktopNavigationTarget::Conversation,
         DesktopLaunchIntent::Navigate(target) => target,
     }
+}
+
+fn render_activity_item(activity: &DesktopActivityItem, cx: &mut Context<Workbench>) -> AnyElement {
+    let tokens = cx.theme().semantic_tokens();
+    let owner = match &activity.owner {
+        DesktopActivityOwner::XanaRoot => "Xana root".to_owned(),
+        DesktopActivityOwner::NativeChild { agent_id } => {
+            format!("Native child {}", short_identity(agent_id))
+        }
+        DesktopActivityOwner::Managed { runtime } => format!("Managed {runtime}"),
+        DesktopActivityOwner::Mcp { server } => format!("MCP {server}"),
+        DesktopActivityOwner::A2a { agent } => format!("A2A {agent}"),
+    };
+    let (state, tone) = match activity.state {
+        DesktopActivityState::Queued => ("Queued", StatusTone::Neutral),
+        DesktopActivityState::Working => ("Working", StatusTone::Info),
+        DesktopActivityState::Waiting => ("Needs you", StatusTone::Warning),
+        DesktopActivityState::Completed => ("Completed", StatusTone::Success),
+        DesktopActivityState::Failed => ("Failed", StatusTone::Danger),
+        DesktopActivityState::Cancelled => ("Cancelled", StatusTone::Neutral),
+    };
+    let indentation = if activity.parent_id.is_some() {
+        tokens.spacing.lg
+    } else {
+        gpui::Pixels::ZERO
+    };
+    v_flex()
+        .ml(indentation)
+        .gap(tokens.spacing.xs)
+        .p(tokens.spacing.sm)
+        .border_1()
+        .border_color(cx.theme().border)
+        .rounded(tokens.radius.md)
+        .child(
+            h_flex()
+                .justify_between()
+                .gap(tokens.spacing.sm)
+                .child(
+                    v_flex()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child(humanize_semantic_code(&activity.summary_code)),
+                        )
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(owner),
+                        ),
+                )
+                .child(
+                    StatusBadge::new(format!("activity-status-{}", activity.id), state).tone(tone),
+                ),
+        )
+        .when_some(activity.disclosed_text.clone(), |card, detail| {
+            card.child(
+                div()
+                    .text_sm()
+                    .font_family(cx.theme().mono_font_family.clone())
+                    .text_color(cx.theme().muted_foreground)
+                    .child(detail),
+            )
+        })
+        .into_any_element()
+}
+
+fn humanize_semantic_code(code: &str) -> String {
+    let mut label = code
+        .split(['.', '_'])
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if label.is_empty() {
+        return "Activity".to_owned();
+    }
+    let first = label.remove(0).to_uppercase().to_string();
+    label.insert_str(0, &first);
+    label
+}
+
+fn short_identity(identity: &str) -> &str {
+    identity.get(..8).unwrap_or(identity)
 }
 
 fn notification_destination(destination: NotificationDestination) -> &'static str {

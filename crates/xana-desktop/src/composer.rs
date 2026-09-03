@@ -222,14 +222,22 @@ mod tests {
     #[test]
     fn drafts_and_queues_never_cross_conversations() {
         let mut store = ComposerStore::new("conversation-a");
-        store.set_draft("draft a").unwrap();
+        store.set_draft("draft a").expect("bounded fixture draft");
         let queued = store.submission("follow a", Vec::new());
-        store.queue(queued).unwrap();
+        store.queue(queued).expect("bounded fixture queue");
 
         assert!(store.switch_to("conversation-b").draft.is_empty());
-        store.set_draft("draft b").unwrap();
+        store.set_draft("draft b").expect("bounded fixture draft");
         assert_eq!(store.switch_to("conversation-a").draft, "draft a");
-        assert_eq!(store.current().queue.front().unwrap().text, "follow a");
+        assert_eq!(
+            store
+                .current()
+                .queue
+                .front()
+                .expect("queued fixture remains")
+                .text,
+            "follow a"
+        );
         assert_eq!(store.switch_to("conversation-b").draft, "draft b");
         assert!(store.current().queue.is_empty());
     }
@@ -241,11 +249,14 @@ mod tests {
         let first_id = first.id.clone();
         let second = store.submission("second", Vec::new());
         let second_id = second.id.clone();
-        store.queue(first).unwrap();
-        store.queue(second).unwrap();
+        store.queue(first).expect("first bounded fixture");
+        store.queue(second).expect("second bounded fixture");
 
         assert!(store.move_queued(&second_id, true));
-        assert_eq!(store.pop_queued().unwrap().id, second_id);
+        assert_eq!(
+            store.pop_queued().expect("reordered fixture remains").id,
+            second_id
+        );
         assert!(store.remove_queued(&first_id));
         assert!(store.current().queue.is_empty());
     }

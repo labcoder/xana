@@ -5,11 +5,19 @@
 //! and typed intent; provider adapters, credentials, tools, paths, and runtime
 //! ownership stay in this package.
 
+mod conversation;
 mod instance;
 mod layout;
 mod management;
 mod navigation;
 mod settings;
+
+pub use conversation::{
+    DesktopActivityDisclosure, DesktopActivityItem, DesktopActivityOwner, DesktopActivityState,
+    DesktopAvailability, DesktopCompletionCheck, DesktopCompletionReceipt,
+    DesktopConversationFacts, DesktopExecutionFact, DesktopFactAuthority, DesktopFactFreshness,
+    DesktopFactSource, DesktopPromptLedger, DesktopRunCapability, DesktopUsageFact,
+};
 
 pub use instance::{
     DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
@@ -594,6 +602,7 @@ pub struct DesktopSnapshot {
     pub navigation: DesktopNavigationSnapshot,
     pub layout: DesktopResolvedLayout,
     pub settings: DesktopSettingsSnapshot,
+    pub conversation_facts: DesktopConversationFacts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -774,6 +783,7 @@ pub enum DesktopEvent {
     Activity {
         label: String,
     },
+    ActivityUpserted(DesktopActivityItem),
     Error(DesktopError),
 }
 
@@ -2657,6 +2667,11 @@ fn project_snapshot(
         navigation: navigation.clone(),
         layout: layout.clone(),
         settings: settings.clone(),
+        conversation_facts: conversation::project_conversation_facts(
+            snapshot,
+            host,
+            host.attached.as_ref(),
+        ),
     }
 }
 
@@ -2854,6 +2869,9 @@ fn project_message(id: String, message: &Message) -> DesktopMessage {
 }
 
 fn project_event(event: &ClientEvent, session_id: &crate::identity::SessionId) -> DesktopEvent {
+    if let Some(activity) = conversation::project_live_activity(event) {
+        return DesktopEvent::ActivityUpserted(activity);
+    }
     match event {
         ClientEvent::Runtime(event) => match event.as_ref() {
             AgentEvent::OperationStateChanged {

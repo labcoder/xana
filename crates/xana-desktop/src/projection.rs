@@ -3,9 +3,10 @@
 use gpui_ai::prelude::{ChatMessage, ChatRole, MessageActions, StreamedContent};
 use std::collections::HashMap;
 use xana::desktop::{
-    DesktopContent, DesktopEvent, DesktopHostEvent, DesktopHostObservation, DesktopMessage,
-    DesktopObservation, DesktopOperationId, DesktopOperationState, DesktopRole,
-    DesktopRoundBudgetSuspension, DesktopSnapshot, NotificationPolicy,
+    DesktopActivityItem, DesktopContent, DesktopConversationFacts, DesktopEvent, DesktopHostEvent,
+    DesktopHostObservation, DesktopMessage, DesktopObservation, DesktopOperationId,
+    DesktopOperationState, DesktopRole, DesktopRoundBudgetSuspension, DesktopSnapshot,
+    NotificationPolicy,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +38,7 @@ pub(crate) struct ConversationProjection {
     pending_approval_count: usize,
     host_lifecycle: String,
     global_notice_count: usize,
+    conversation_facts: DesktopConversationFacts,
     latest_activity: String,
     failure: Option<String>,
 }
@@ -56,6 +58,7 @@ impl ConversationProjection {
             pending_approval_count: snapshot.pending_approval_count,
             host_lifecycle: snapshot.host_lifecycle.clone(),
             global_notice_count: snapshot.global_notices.len(),
+            conversation_facts: snapshot.conversation_facts.clone(),
             latest_activity: format!(
                 "{} / {} · session {}",
                 snapshot.connection, snapshot.model, snapshot.session_id
@@ -172,6 +175,9 @@ impl ConversationProjection {
                 self.latest_activity = "Conversation cleared".to_owned();
             }
             DesktopEvent::Activity { label } => self.latest_activity = label,
+            DesktopEvent::ActivityUpserted(activity) => {
+                self.upsert_activity(activity);
+            }
             DesktopEvent::Error(error) => {
                 self.failure = Some(error.message.clone());
                 self.latest_activity = error.message;
@@ -271,6 +277,10 @@ impl ConversationProjection {
         &self.latest_activity
     }
 
+    pub(crate) fn conversation_facts(&self) -> &DesktopConversationFacts {
+        &self.conversation_facts
+    }
+
     pub(crate) fn set_activity(&mut self, activity: impl Into<String>) {
         self.latest_activity = activity.into();
     }
@@ -329,6 +339,23 @@ impl ConversationProjection {
             message.lifecycle = failure
                 .map(MessageLifecycle::Failed)
                 .unwrap_or(MessageLifecycle::Complete);
+        }
+    }
+
+    fn upsert_activity(&mut self, activity: DesktopActivityItem) {
+        self.latest_activity = activity
+            .disclosed_text
+            .clone()
+            .unwrap_or_else(|| activity.summary_code.clone());
+        if let Some(existing) = self
+            .conversation_facts
+            .activity
+            .iter_mut()
+            .find(|candidate| candidate.id == activity.id)
+        {
+            *existing = activity;
+        } else {
+            self.conversation_facts.activity.push(activity);
         }
     }
 }
@@ -394,7 +421,10 @@ fn operation_label(state: DesktopOperationState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use xana::desktop::{DesktopError, DesktopErrorCode};
+    use xana::desktop::{
+        DesktopActivityDisclosure, DesktopActivityOwner, DesktopActivityState, DesktopError,
+        DesktopErrorCode, DesktopFactFreshness, DesktopFactSource,
+    };
 
     fn empty_snapshot() -> DesktopSnapshot {
         DesktopSnapshot {
@@ -433,6 +463,25 @@ mod tests {
                 warnings: Vec::new(),
                 entries: Vec::new(),
                 truncated: false,
+            },
+            conversation_facts: xana::desktop::DesktopConversationFacts {
+                profile: Some("default".to_owned()),
+                activity: Vec::new(),
+                execution: Vec::new(),
+                usage: Vec::new(),
+                completions: Vec::new(),
+                capabilities: Vec::new(),
+                prompt_ledger: xana::desktop::DesktopPromptLedger {
+                    operation_id: None,
+                    estimated_input_tokens: None,
+                    input_budget_tokens: None,
+                    context_window_tokens: None,
+                    context_window_source: None,
+                    attachment_count: None,
+                    attachment_bytes: None,
+                    omitted_source_count: None,
+                    unavailable_reason: Some("not observed".to_owned()),
+                },
             },
         }
     }
@@ -494,5 +543,52 @@ mod tests {
         projection.fail(error.message.clone());
 
         assert_eq!(projection.failure(), Some("runtime stopped"));
+    }
+
+    #[test]
+    fn activity_updates_replace_by_stable_identity() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        let activity = |state, detail: &str| DesktopActivityItem {
+            id: "tool-1".to_owned(),
+            parent_id: None,
+            operation_id: Some("run-1".to_owned()),
+            owner: DesktopActivityOwner::XanaRoot,
+            state,
+            summary_code: "tool.state".to_owned(),
+            summary_parameters: Vec::new(),
+            disclosed_text: Some(detail.to_owned()),
+            disclosure: DesktopActivityDisclosure::Summary,
+            source: DesktopFactSource::Runtime,
+            freshness: DesktopFactFreshness {
+                observed_at_unix_millis: 1,
+                max_age_millis: None,
+            },
+            started_at_unix_millis: Some(1),
+            finished_at_unix_millis: None,
+        };
+
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 1,
+            event: DesktopEvent::ActivityUpserted(activity(
+                DesktopActivityState::Working,
+                "Running",
+            )),
+        }));
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 2,
+            event: DesktopEvent::ActivityUpserted(activity(
+                DesktopActivityState::Completed,
+                "Done",
+            )),
+        }));
+
+        assert_eq!(projection.conversation_facts().activity.len(), 1);
+        assert_eq!(
+            projection.conversation_facts().activity[0].state,
+            DesktopActivityState::Completed
+        );
+        assert_eq!(projection.latest_activity(), "Done");
     }
 }
