@@ -24,7 +24,7 @@ mod workbench_preferences_view;
 use catalog::ComponentCatalog;
 use gpui::{App, AppContext as _, Styled as _, WindowOptions};
 use gpui_component::{ActiveTheme as _, Root};
-use shell::DesktopShell;
+use shell::{DesktopShell, DesktopShellLaunch};
 use std::{env, ffi::OsString, path::PathBuf, process::ExitCode};
 use workbench::Workbench;
 use xana::desktop::{
@@ -88,17 +88,7 @@ fn main() -> ExitCode {
                         }
                         LaunchSurface::Launcher(launcher) => {
                             window.set_window_title(APPLICATION_NAME);
-                            let shell = cx.new(|cx| {
-                                DesktopShell::new(
-                                    launcher.launch,
-                                    launcher.instance,
-                                    launcher.native_paths,
-                                    launcher.catalog,
-                                    launcher.initial_intent,
-                                    window,
-                                    cx,
-                                )
-                            });
+                            let shell = cx.new(|cx| DesktopShell::new(*launcher, window, cx));
                             cx.new(|cx| Root::new(shell, window, cx).bg(cx.theme().background))
                         }
                     },
@@ -134,16 +124,8 @@ fn main() -> ExitCode {
 
 enum LaunchSurface {
     Catalog,
-    Launcher(Box<LauncherLaunch>),
+    Launcher(Box<DesktopShellLaunch>),
     Workbench(Box<WorkbenchLaunch>),
-}
-
-struct LauncherLaunch {
-    launch: DesktopLaunch,
-    instance: DesktopInstanceLease,
-    native_paths: DesktopNativePaths,
-    catalog: xana::desktop::DesktopLaunchCatalog,
-    initial_intent: DesktopLaunchIntent,
 }
 
 struct WorkbenchLaunch {
@@ -192,13 +174,17 @@ fn prepare_surface(
     };
     if cold {
         let catalog = launch.launch_catalog()?;
-        return Ok(Some(LaunchSurface::Launcher(Box::new(LauncherLaunch {
-            launch,
-            instance,
-            native_paths,
-            catalog,
-            initial_intent,
-        }))));
+        let setup_snapshot = launch.control_plane()?.setup_snapshot()?;
+        return Ok(Some(LaunchSurface::Launcher(Box::new(
+            DesktopShellLaunch {
+                launch,
+                instance,
+                native_paths,
+                catalog,
+                setup_snapshot,
+                initial_intent,
+            },
+        ))));
     }
     let control = launch.control_plane()?;
     let runtime = DesktopClient::launch(launch)?;

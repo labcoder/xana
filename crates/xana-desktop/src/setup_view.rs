@@ -62,6 +62,7 @@ pub(crate) struct SetupView {
 impl SetupView {
     pub(crate) fn new(
         control: DesktopControlPlane,
+        snapshot: Result<DesktopSetupSnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -97,7 +98,7 @@ impl SetupView {
         })
         .collect();
         Self {
-            snapshot: control.setup_snapshot().map_err(|error| error.message),
+            snapshot,
             control,
             step: SetupStep::ChooseMode,
             mode: DesktopSetupMode::StartWithConnection,

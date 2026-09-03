@@ -73,6 +73,12 @@ enum NavigationDialog {
     MoveConversation { conversation_id: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativePathAction {
+    OpenConfiguration,
+    RevealLogs,
+}
+
 struct RetainedConversationUi {
     chat: Entity<Chat>,
     prompt: Entity<PromptBar>,
@@ -179,7 +185,7 @@ impl Workbench {
             .or_else(|| navigation_snapshot.selected_conversation.clone())
             .unwrap_or_else(|| runtime.initial_snapshot().session_id.clone());
         let composer = ComposerStore::new(active_conversation.clone());
-        let model_options = model_options_for(&control, projection.connection());
+        let model_options = Vec::new();
         let prompt = cx.new(|cx| PromptBar::new("xana-composer", window, cx));
         prompt.update(cx, |prompt, cx| {
             prompt.set_progress(ProgressState::Pending, cx);
@@ -387,8 +393,74 @@ impl Workbench {
             _runtime_driver: runtime_driver,
             _instance_driver: instance_driver,
         };
+        workbench.refresh_model_options(window, cx);
         workbench.schedule_image_previews(window, cx);
         workbench
+    }
+
+    fn refresh_model_options(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let control = self.control.clone();
+        let connection = self.projection.connection().to_owned();
+        cx.spawn_in(window, async move |this, cx| {
+            let requested_connection = connection.clone();
+            let models = cx
+                .background_executor()
+                .spawn(async move { model_options_for(&control, &connection) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                if this.projection.connection() == requested_connection {
+                    this.model_options = models;
+                    this.sync_components(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn dispatch_native_path_action(
+        &mut self,
+        action: NativePathAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = match action {
+            NativePathAction::OpenConfiguration => self.native_paths.config_file.clone(),
+            NativePathAction::RevealLogs => self.native_paths.logs_directory.clone(),
+        };
+        let inspected_path = path.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let available = cx
+                .background_executor()
+                .spawn(async move {
+                    match action {
+                        NativePathAction::OpenConfiguration => {
+                            trusted_regular_file(&inspected_path)
+                        }
+                        NativePathAction::RevealLogs => trusted_directory(&inspected_path),
+                    }
+                })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                if available {
+                    match action {
+                        NativePathAction::OpenConfiguration => cx.open_with_system(&path),
+                        NativePathAction::RevealLogs => cx.reveal_path(&path),
+                    }
+                } else {
+                    let message = match action {
+                        NativePathAction::OpenConfiguration => {
+                            "Xana's configuration file is unavailable; run setup or Diagnostics."
+                        }
+                        NativePathAction::RevealLogs => {
+                            "Xana's logs directory is unavailable; run Diagnostics."
+                        }
+                    };
+                    this.projection.fail(message);
+                    this.sync_components(window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     fn activate_conversation_ui(
@@ -639,6 +711,7 @@ impl Workbench {
         }
 
         let connection = self.projection.connection().to_owned();
+        let control = self.control.clone();
         let answer = window.prompt(
             PromptLevel::Warning,
             "Start a new Conversation with this model?",
@@ -655,8 +728,16 @@ impl Workbench {
                 });
                 return;
             }
+            let connection_for_control = connection.clone();
+            let model_for_control = model.clone();
+            let selected = cx
+                .background_executor()
+                .spawn(async move {
+                    control.select_model(&connection_for_control, &model_for_control, None)
+                })
+                .await;
             _ = this.update_in(cx, |this, window, cx| {
-                match this.control.select_model(&connection, &model, None) {
+                match selected {
                     Ok(receipt) if receipt.requires_new_conversation => {
                         match this.runtime.new_conversation(this.selected_project.clone()) {
                             Ok(_) => this.projection.set_activity(format!(
@@ -1568,8 +1649,7 @@ impl Workbench {
                         .unwrap_or_else(|| snapshot.session_id.clone());
                     self.composer.switch_to(conversation.clone());
                     self.projection.replace_snapshot(&snapshot);
-                    self.model_options =
-                        model_options_for(&self.control, self.projection.connection());
+                    self.refresh_model_options(window, cx);
                     self.activate_conversation_ui(&conversation, window, cx);
                 }
                 DesktopUpdate::Navigation(navigation) => {
@@ -3256,23 +3336,10 @@ impl Workbench {
                 }
             }
             WorkbenchCommand::OpenConfigurationFile => {
-                if trusted_regular_file(&self.native_paths.config_file) {
-                    cx.open_with_system(&self.native_paths.config_file);
-                } else {
-                    self.projection.fail(
-                        "Xana's configuration file is unavailable; run setup or Diagnostics.",
-                    );
-                    self.sync_components(window, cx);
-                }
+                self.dispatch_native_path_action(NativePathAction::OpenConfiguration, window, cx);
             }
             WorkbenchCommand::RevealLogs => {
-                if trusted_directory(&self.native_paths.logs_directory) {
-                    cx.reveal_path(&self.native_paths.logs_directory);
-                } else {
-                    self.projection
-                        .fail("Xana's logs directory is unavailable; run Diagnostics.");
-                    self.sync_components(window, cx);
-                }
+                self.dispatch_native_path_action(NativePathAction::RevealLogs, window, cx);
             }
             WorkbenchCommand::ClearConversation => {
                 if let Err(error) = self.runtime.clear() {

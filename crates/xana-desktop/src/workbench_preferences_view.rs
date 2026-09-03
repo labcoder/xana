@@ -29,8 +29,10 @@ pub(crate) struct WorkbenchPreferencesView {
 }
 
 impl WorkbenchPreferencesView {
-    pub(crate) fn new(control: DesktopControlPlane) -> Self {
-        let snapshot = control.workbench_preference_snapshot();
+    pub(crate) fn new(
+        control: DesktopControlPlane,
+        snapshot: DesktopWorkbenchPreferenceSnapshot,
+    ) -> Self {
         Self {
             control,
             snapshot,
@@ -53,14 +55,18 @@ impl WorkbenchPreferencesView {
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.restore_builtin_workbench_layout() })
+                .spawn(async move {
+                    let receipt = control.restore_builtin_workbench_layout()?;
+                    let snapshot = control.workbench_preference_snapshot();
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = false;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot)) => {
                         this.receipt = Some(receipt);
-                        this.snapshot = this.control.workbench_preference_snapshot();
+                        this.snapshot = snapshot;
                     }
                     Err(error) => this.error = Some(error.message),
                 }

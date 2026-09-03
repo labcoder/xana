@@ -61,11 +61,11 @@ impl ManagementView {
     pub(crate) fn new(
         control: DesktopControlPlane,
         tab: ManagementTab,
+        snapshot: Result<DesktopManagementSnapshot, String>,
+        capabilities: Result<DesktopCapabilitySnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let snapshot = control.management_snapshot().map_err(|error| error.message);
-        let capabilities = control.capability_snapshot().map_err(|error| error.message);
         let selected_profile = snapshot
             .as_ref()
             .ok()
@@ -132,15 +132,13 @@ impl ManagementView {
         }
     }
 
-    fn reload(&mut self) {
-        self.snapshot = self
-            .control
-            .management_snapshot()
-            .map_err(|error| error.message);
-        self.capabilities = self
-            .control
-            .capability_snapshot()
-            .map_err(|error| error.message);
+    fn apply_snapshots(
+        &mut self,
+        snapshot: Result<DesktopManagementSnapshot, String>,
+        capabilities: Result<DesktopCapabilitySnapshot, String>,
+    ) {
+        self.snapshot = snapshot;
+        self.capabilities = capabilities;
         if let Ok(snapshot) = &self.snapshot {
             if self.selected_profile.as_ref().is_none_or(|selected| {
                 !snapshot
@@ -282,14 +280,19 @@ impl ManagementView {
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { operation(control) })
+                .spawn(async move {
+                    let receipt = operation(control.clone())?;
+                    let snapshot = control.management_snapshot()?;
+                    let capabilities = control.capability_snapshot()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot, capabilities))
+                })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot, capabilities)) => {
                         this.receipt = Some(receipt);
-                        this.reload();
+                        this.apply_snapshots(Ok(snapshot), Ok(capabilities));
                     }
                     Err(error) => this.error = Some(error.message),
                 }

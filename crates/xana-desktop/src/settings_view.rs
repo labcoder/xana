@@ -12,7 +12,7 @@ use crate::workbench_preferences_view::{WorkbenchPreferencesEvent, WorkbenchPref
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, Role,
-    Subscription, Window, div, prelude::*, rems,
+    Subscription, Task, Window, div, prelude::*, rems,
 };
 use gpui_component::{
     ActiveTheme as _, Disableable as _, IconName, Selectable as _,
@@ -24,10 +24,13 @@ use gpui_component::{
     v_flex,
 };
 use xana::desktop::{
-    DesktopControlPlane, DesktopSettingEffect, DesktopSettingEntry, DesktopSettingSource,
-    DesktopSettingTarget, DesktopSettingsBackup, DesktopSettingsDraftId,
-    DesktopSettingsDraftSnapshot, DesktopSettingsOwner, DesktopSettingsReceipt,
-    DesktopSettingsSection, DesktopSettingsSnapshot,
+    DesktopCapabilitySnapshot, DesktopConnectionSnapshot, DesktopControlPlane,
+    DesktopDiagnosticsSnapshot, DesktopManagementSnapshot, DesktopMigrationSnapshot,
+    DesktopPermissionSnapshot, DesktopResourcePolicySnapshot, DesktopSettingEffect,
+    DesktopSettingEntry, DesktopSettingSource, DesktopSettingTarget, DesktopSettingsBackup,
+    DesktopSettingsDraftId, DesktopSettingsDraftSnapshot, DesktopSettingsOwner,
+    DesktopSettingsReceipt, DesktopSettingsSection, DesktopSettingsSnapshot,
+    DesktopWorkbenchPreferenceSnapshot,
 };
 
 const WIDE_WINDOW_PX: f32 = 1_180.;
@@ -83,8 +86,10 @@ pub(crate) struct SettingsView {
     editor_key: Option<String>,
     review_open: bool,
     busy_label: Option<String>,
+    manager_loading: Option<String>,
     error: Option<String>,
     focused_manager: Option<FocusedManager>,
+    _manager_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -95,6 +100,24 @@ enum FocusedManager {
     Permissions(Entity<PermissionView>),
     ResourcePolicy(Entity<ResourcePolicyView>),
     WorkbenchPreferences(Entity<WorkbenchPreferencesView>),
+}
+
+enum LoadedManager {
+    Connections(Result<DesktopConnectionSnapshot, String>),
+    Management {
+        tab: ManagementTab,
+        snapshot: Result<DesktopManagementSnapshot, String>,
+        capabilities: Result<DesktopCapabilitySnapshot, String>,
+    },
+    Permissions(Result<DesktopPermissionSnapshot, String>),
+    ResourcePolicy(Result<DesktopResourcePolicySnapshot, String>),
+    WorkbenchPreferences(DesktopWorkbenchPreferenceSnapshot),
+    Maintenance {
+        tab: MaintenanceTab,
+        diagnose_on_open: bool,
+        migration: Result<DesktopMigrationSnapshot, String>,
+        diagnostics: Result<DesktopDiagnosticsSnapshot, String>,
+    },
 }
 
 /// A presentation-only route into one of Settings' typed managers.
@@ -173,8 +196,10 @@ impl SettingsView {
             value_editor,
             review_open: false,
             busy_label: None,
+            manager_loading: None,
             error: None,
             focused_manager: None,
+            _manager_task: None,
             _subscriptions: subscriptions,
         }
     }
@@ -200,10 +225,38 @@ impl SettingsView {
             self.open_section(section, window, cx);
             return;
         }
-        match route {
-            SettingsRoute::Connections => {
-                self.selected_section = DesktopSettingsSection::Connections;
-                let manager = cx.new(|cx| ConnectionManager::new(self.control.clone(), window, cx));
+        if self.manager_loading.is_some() {
+            return;
+        }
+        self.selected_section = section_for_route(route);
+        self.focused_manager = None;
+        self.error = None;
+        self.manager_loading = Some(format!("Loading {}…", manager_label(route)));
+        let control = self.control.clone();
+        self._manager_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let loaded = cx
+                .background_executor()
+                .spawn(async move { load_manager(control, route) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.manager_loading = None;
+                this.install_manager(loaded, window, cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn install_manager(
+        &mut self,
+        loaded: LoadedManager,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match loaded {
+            LoadedManager::Connections(snapshot) => {
+                let control = self.control.clone();
+                let manager = cx.new(|cx| ConnectionManager::new(control, snapshot, window, cx));
                 let subscription = cx.subscribe_in(
                     &manager,
                     window,
@@ -216,22 +269,16 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Connections(manager));
-                self.error = None;
             }
-            SettingsRoute::Profiles | SettingsRoute::Projects | SettingsRoute::Capabilities => {
-                let tab = match route {
-                    SettingsRoute::Profiles => ManagementTab::Profiles,
-                    SettingsRoute::Projects => ManagementTab::Projects,
-                    SettingsRoute::Capabilities => ManagementTab::Capabilities,
-                    _ => unreachable!("route was narrowed by the match arm"),
-                };
-                self.selected_section = match tab {
-                    ManagementTab::Profiles => DesktopSettingsSection::Profiles,
-                    ManagementTab::Projects => DesktopSettingsSection::Workbench,
-                    ManagementTab::Capabilities => DesktopSettingsSection::Capabilities,
-                };
-                let manager =
-                    cx.new(|cx| ManagementView::new(self.control.clone(), tab, window, cx));
+            LoadedManager::Management {
+                tab,
+                snapshot,
+                capabilities,
+            } => {
+                let control = self.control.clone();
+                let manager = cx.new(|cx| {
+                    ManagementView::new(control, tab, snapshot, capabilities, window, cx)
+                });
                 let subscription = cx.subscribe_in(
                     &manager,
                     window,
@@ -244,11 +291,10 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Management(manager));
-                self.error = None;
             }
-            SettingsRoute::Permissions => {
-                self.selected_section = DesktopSettingsSection::Permissions;
-                let manager = cx.new(|cx| PermissionView::new(self.control.clone(), window, cx));
+            LoadedManager::Permissions(snapshot) => {
+                let control = self.control.clone();
+                let manager = cx.new(|cx| PermissionView::new(control, snapshot, window, cx));
                 let subscription = cx.subscribe_in(
                     &manager,
                     window,
@@ -261,12 +307,10 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Permissions(manager));
-                self.error = None;
             }
-            SettingsRoute::ResourcePolicy => {
-                self.selected_section = DesktopSettingsSection::AttachmentsMedia;
-                let manager =
-                    cx.new(|cx| ResourcePolicyView::new(self.control.clone(), window, cx));
+            LoadedManager::ResourcePolicy(snapshot) => {
+                let control = self.control.clone();
+                let manager = cx.new(|cx| ResourcePolicyView::new(control, snapshot, window, cx));
                 let subscription = cx.subscribe_in(
                     &manager,
                     window,
@@ -279,11 +323,10 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::ResourcePolicy(manager));
-                self.error = None;
             }
-            SettingsRoute::WorkbenchPreferences => {
-                self.selected_section = DesktopSettingsSection::Workbench;
-                let manager = cx.new(|_| WorkbenchPreferencesView::new(self.control.clone()));
+            LoadedManager::WorkbenchPreferences(snapshot) => {
+                let control = self.control.clone();
+                let manager = cx.new(|_| WorkbenchPreferencesView::new(control, snapshot));
                 let subscription = cx.subscribe_in(
                     &manager,
                     window,
@@ -296,29 +339,16 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::WorkbenchPreferences(manager));
-                self.error = None;
             }
-            SettingsRoute::Doctor | SettingsRoute::Migration | SettingsRoute::Reset => {
-                self.selected_section = match route {
-                    SettingsRoute::Doctor => DesktopSettingsSection::Diagnostics,
-                    SettingsRoute::Migration | SettingsRoute::Reset => {
-                        DesktopSettingsSection::Advanced
-                    }
-                    _ => unreachable!("route was narrowed by the match arm"),
-                };
-                let tab = match route {
-                    SettingsRoute::Migration => MaintenanceTab::Migration,
-                    SettingsRoute::Reset => MaintenanceTab::Reset,
-                    SettingsRoute::Doctor => MaintenanceTab::Doctor,
-                    _ => unreachable!("route was narrowed by the match arm"),
-                };
+            LoadedManager::Maintenance {
+                tab,
+                diagnose_on_open,
+                migration,
+                diagnostics,
+            } => {
+                let control = self.control.clone();
                 let manager = cx.new(|cx| {
-                    MaintenanceView::new(
-                        self.control.clone(),
-                        tab,
-                        route == SettingsRoute::Doctor,
-                        cx,
-                    )
+                    MaintenanceView::new(control, tab, migration, diagnostics, diagnose_on_open, cx)
                 });
                 let subscription = cx.subscribe_in(
                     &manager,
@@ -337,11 +367,8 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Maintenance(manager));
-                self.error = None;
             }
-            SettingsRoute::Section(_) => unreachable!("section routes return before this match"),
         }
-        cx.notify();
     }
 
     pub(crate) fn set_state(
@@ -408,6 +435,8 @@ impl SettingsView {
         cx: &mut Context<Self>,
     ) {
         self.selected_section = section;
+        self._manager_task = None;
+        self.manager_loading = None;
         self.selected_key = self
             .snapshot
             .entries_in(section)
@@ -1023,22 +1052,25 @@ impl SettingsView {
                     .into_any_element(),
             );
         }
-        self.busy_label.as_ref().map(|label| {
-            h_flex()
-                .w_full()
-                .flex_none()
-                .gap(tokens.spacing.sm)
-                .px(tokens.spacing.lg)
-                .py(tokens.spacing.sm)
-                .bg(cx.theme().accent.opacity(0.24))
-                .child("Working")
-                .child(
-                    div()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(label.clone()),
-                )
-                .into_any_element()
-        })
+        self.busy_label
+            .as_ref()
+            .or(self.manager_loading.as_ref())
+            .map(|label| {
+                h_flex()
+                    .w_full()
+                    .flex_none()
+                    .gap(tokens.spacing.sm)
+                    .px(tokens.spacing.lg)
+                    .py(tokens.spacing.sm)
+                    .bg(cx.theme().accent.opacity(0.24))
+                    .child("Working")
+                    .child(
+                        div()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(label.clone()),
+                    )
+                    .into_any_element()
+            })
     }
 
     fn render_review_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -1195,6 +1227,87 @@ impl SettingsView {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+fn section_for_route(route: SettingsRoute) -> DesktopSettingsSection {
+    match route {
+        SettingsRoute::Connections => DesktopSettingsSection::Connections,
+        SettingsRoute::Profiles => DesktopSettingsSection::Profiles,
+        SettingsRoute::Projects | SettingsRoute::WorkbenchPreferences => {
+            DesktopSettingsSection::Workbench
+        }
+        SettingsRoute::Capabilities => DesktopSettingsSection::Capabilities,
+        SettingsRoute::Permissions => DesktopSettingsSection::Permissions,
+        SettingsRoute::ResourcePolicy => DesktopSettingsSection::AttachmentsMedia,
+        SettingsRoute::Doctor => DesktopSettingsSection::Diagnostics,
+        SettingsRoute::Migration | SettingsRoute::Reset => DesktopSettingsSection::Advanced,
+        SettingsRoute::Section(section) => section,
+    }
+}
+
+fn manager_label(route: SettingsRoute) -> &'static str {
+    match route {
+        SettingsRoute::Connections => "connections",
+        SettingsRoute::Profiles => "Profiles",
+        SettingsRoute::Projects => "Projects",
+        SettingsRoute::Capabilities => "capabilities",
+        SettingsRoute::Permissions => "permissions",
+        SettingsRoute::ResourcePolicy => "resource policy",
+        SettingsRoute::WorkbenchPreferences => "Workbench preferences",
+        SettingsRoute::Doctor => "Doctor",
+        SettingsRoute::Migration => "migration state",
+        SettingsRoute::Reset => "reset controls",
+        SettingsRoute::Section(_) => "settings",
+    }
+}
+
+fn load_manager(control: DesktopControlPlane, route: SettingsRoute) -> LoadedManager {
+    match route {
+        SettingsRoute::Connections => {
+            LoadedManager::Connections(control.connections().map_err(|error| error.message))
+        }
+        SettingsRoute::Profiles | SettingsRoute::Projects | SettingsRoute::Capabilities => {
+            let tab = match route {
+                SettingsRoute::Profiles => ManagementTab::Profiles,
+                SettingsRoute::Projects => ManagementTab::Projects,
+                SettingsRoute::Capabilities => ManagementTab::Capabilities,
+                _ => unreachable!("route was narrowed by the match arm"),
+            };
+            LoadedManager::Management {
+                tab,
+                snapshot: control.management_snapshot().map_err(|error| error.message),
+                capabilities: control.capability_snapshot().map_err(|error| error.message),
+            }
+        }
+        SettingsRoute::Permissions => {
+            LoadedManager::Permissions(control.permission_snapshot().map_err(|error| error.message))
+        }
+        SettingsRoute::ResourcePolicy => LoadedManager::ResourcePolicy(
+            control
+                .resource_policy_snapshot()
+                .map_err(|error| error.message),
+        ),
+        SettingsRoute::WorkbenchPreferences => {
+            LoadedManager::WorkbenchPreferences(control.workbench_preference_snapshot())
+        }
+        SettingsRoute::Doctor | SettingsRoute::Migration | SettingsRoute::Reset => {
+            let tab = match route {
+                SettingsRoute::Doctor => MaintenanceTab::Doctor,
+                SettingsRoute::Migration => MaintenanceTab::Migration,
+                SettingsRoute::Reset => MaintenanceTab::Reset,
+                _ => unreachable!("route was narrowed by the match arm"),
+            };
+            LoadedManager::Maintenance {
+                tab,
+                diagnose_on_open: route == SettingsRoute::Doctor,
+                migration: control.migration_snapshot().map_err(|error| error.message),
+                diagnostics: control
+                    .diagnostics_snapshot()
+                    .map_err(|error| error.message),
+            }
+        }
+        SettingsRoute::Section(_) => unreachable!("section routes are not managers"),
     }
 }
 

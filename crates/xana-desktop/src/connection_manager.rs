@@ -47,10 +47,10 @@ pub(crate) struct ConnectionManager {
 impl ConnectionManager {
     pub(crate) fn new(
         control: DesktopControlPlane,
+        snapshot: Result<DesktopConnectionSnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let snapshot = control.connections().map_err(|error| error.message);
         let selected_connection = snapshot
             .as_ref()
             .ok()
@@ -90,12 +90,7 @@ impl ConnectionManager {
                 window,
                 |this, _, event: &ConnectionActionsEvent, window, cx| {
                     if matches!(event, ConnectionActionsEvent::Changed) {
-                        let previous = this.selected_connection.clone();
-                        this.reload();
-                        if this.selected_connection != previous {
-                            this.rebuild_actions(window, cx);
-                        }
-                        cx.notify();
+                        this.reload(window, cx);
                     }
                 },
             ));
@@ -127,12 +122,7 @@ impl ConnectionManager {
                 window,
                 |this, _, event: &ConnectionActionsEvent, window, cx| {
                     if matches!(event, ConnectionActionsEvent::Changed) {
-                        let previous = this.selected_connection.clone();
-                        this.reload();
-                        if this.selected_connection != previous {
-                            this.rebuild_actions(window, cx);
-                        }
-                        cx.notify();
+                        this.reload(window, cx);
                     }
                 },
             );
@@ -154,8 +144,8 @@ impl ConnectionManager {
         cx.notify();
     }
 
-    fn reload(&mut self) {
-        self.snapshot = self.control.connections().map_err(|error| error.message);
+    fn apply_snapshot(&mut self, snapshot: Result<DesktopConnectionSnapshot, String>) {
+        self.snapshot = snapshot;
         if let Ok(snapshot) = &self.snapshot
             && self.selected_connection.as_deref().is_none_or(|selected| {
                 !snapshot
@@ -173,6 +163,28 @@ impl ConnectionManager {
         }
     }
 
+    fn reload(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy.is_some() {
+            return;
+        }
+        let control = self.control.clone();
+        self.busy = Some("Reloading connections…".to_owned());
+        self.error = None;
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
+            let snapshot = cx
+                .background_executor()
+                .spawn(async move { control.connections().map_err(|error| error.message) })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.busy = None;
+                this.apply_snapshot(snapshot);
+                this.rebuild_actions(window, cx);
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
     fn selected(&self) -> Option<&DesktopConnection> {
         let selected = self.selected_connection.as_deref()?;
         self.snapshot
@@ -184,29 +196,46 @@ impl ConnectionManager {
     }
 
     fn open_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let setup = cx.new(|cx| SetupView::new(self.control.clone(), window, cx));
-        let subscription = cx.subscribe_in(
-            &setup,
-            window,
-            |this, _, event: &SetupViewEvent, window, cx| match event {
-                SetupViewEvent::Cancel => {
-                    this.setup = None;
-                    cx.notify();
-                }
-                SetupViewEvent::Completed { receipt, .. } => {
-                    this.setup_receipt = Some(format!(
-                        "{} · {} model(s) discovered",
-                        receipt.semantic_code, receipt.discovered_model_count
-                    ));
-                    this.setup = None;
-                    this.reload();
-                    this.rebuild_actions(window, cx);
-                    cx.notify();
-                }
-            },
-        );
-        self._subscriptions.push(subscription);
-        self.setup = Some(setup);
+        if self.busy.is_some() {
+            return;
+        }
+        let control = self.control.clone();
+        self.busy = Some("Loading setup…".to_owned());
+        self.error = None;
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
+            let snapshot = cx
+                .background_executor()
+                .spawn({
+                    let control = control.clone();
+                    async move { control.setup_snapshot().map_err(|error| error.message) }
+                })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.busy = None;
+                let setup = cx.new(|cx| SetupView::new(control, snapshot, window, cx));
+                let subscription = cx.subscribe_in(
+                    &setup,
+                    window,
+                    |this, _, event: &SetupViewEvent, window, cx| match event {
+                        SetupViewEvent::Cancel => {
+                            this.setup = None;
+                            cx.notify();
+                        }
+                        SetupViewEvent::Completed { receipt, .. } => {
+                            this.setup_receipt = Some(format!(
+                                "{} · {} model(s) discovered",
+                                receipt.semantic_code, receipt.discovered_model_count
+                            ));
+                            this.setup = None;
+                            this.reload(window, cx);
+                        }
+                    },
+                );
+                this._subscriptions.push(subscription);
+                this.setup = Some(setup);
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -238,7 +267,7 @@ impl ConnectionManager {
         cx.notify();
     }
 
-    fn refresh_selected(&mut self, cx: &mut Context<Self>) {
+    fn refresh_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(connection) = self.selected_connection.clone() else {
             return;
         };
@@ -249,17 +278,22 @@ impl ConnectionManager {
         self.error = None;
         self.receipt = None;
         let control = self.control.clone();
-        self._task = Some(cx.spawn(async move |this, cx| {
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.refresh_connection(&connection).await })
+                .spawn(async move {
+                    let receipt = control.refresh_connection(&connection).await?;
+                    let snapshot = control.connections()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
-            _ = this.update(cx, |this, cx| {
+            _ = this.update_in(cx, |this, window, cx| {
                 this.busy = None;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot)) => {
                         this.receipt = Some(receipt);
-                        this.reload();
+                        this.apply_snapshot(Ok(snapshot));
+                        this.rebuild_actions(window, cx);
                     }
                     Err(error) => this.error = Some(error.message),
                 }
@@ -269,24 +303,44 @@ impl ConnectionManager {
         cx.notify();
     }
 
-    fn select_model(&mut self, cx: &mut Context<Self>) {
+    fn select_model(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (Some(connection), Some(model)) = (
             self.selected_connection.clone(),
             self.selected_model.clone(),
         ) else {
             return;
         };
-        match self.control.select_model(&connection, &model, None) {
-            Ok(receipt) => {
-                self.setup_receipt = Some(format!(
-                    "{} · applies to new Conversations",
-                    receipt.semantic_code
-                ));
-                self.error = None;
-                self.reload();
-            }
-            Err(error) => self.error = Some(error.message),
+        if self.busy.is_some() {
+            return;
         }
+        let control = self.control.clone();
+        self.busy = Some(format!("Selecting {model}…"));
+        self.error = None;
+        self._task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let receipt = control.select_model(&connection, &model, None)?;
+                    let snapshot = control.connections()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.busy = None;
+                match result {
+                    Ok((receipt, snapshot)) => {
+                        this.setup_receipt = Some(format!(
+                            "{} · applies to new Conversations",
+                            receipt.semantic_code
+                        ));
+                        this.apply_snapshot(Ok(snapshot));
+                        this.rebuild_actions(window, cx);
+                    }
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -399,9 +453,9 @@ impl ConnectionManager {
                                     .compact()
                                     .label("Refresh models")
                                     .disabled(self.busy.is_some())
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.refresh_selected(cx)),
-                                    ),
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.refresh_selected(window, cx)
+                                    })),
                             ),
                     ),
             )
@@ -432,7 +486,7 @@ impl ConnectionManager {
                     .label("Use selected model for new Conversations")
                     .primary()
                     .disabled(self.selected_model.is_none() || self.busy.is_some())
-                    .on_click(cx.listener(|this, _, _, cx| this.select_model(cx))),
+                    .on_click(cx.listener(|this, _, window, cx| this.select_model(window, cx))),
             )
             .when_some(self.actions.as_ref(), |content, actions| {
                 content.child(

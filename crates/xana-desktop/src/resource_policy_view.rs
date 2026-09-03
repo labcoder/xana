@@ -39,12 +39,10 @@ pub(crate) struct ResourcePolicyView {
 impl ResourcePolicyView {
     pub(crate) fn new(
         control: DesktopControlPlane,
+        snapshot: Result<DesktopResourcePolicySnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let snapshot = control
-            .resource_policy_snapshot()
-            .map_err(|error| error.message);
         let selected_key = snapshot
             .as_ref()
             .ok()
@@ -191,17 +189,18 @@ impl ResourcePolicyView {
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.save_resource_policy(draft) })
+                .spawn(async move {
+                    let receipt = control.save_resource_policy(draft)?;
+                    let snapshot = control.resource_policy_snapshot()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot)) => {
                         this.receipt = Some(receipt);
-                        this.snapshot = this
-                            .control
-                            .resource_policy_snapshot()
-                            .map_err(|error| error.message);
+                        this.snapshot = Ok(snapshot);
                         this.draft.values.clear();
                         this.preview = None;
                     }

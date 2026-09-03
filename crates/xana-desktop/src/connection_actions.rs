@@ -143,7 +143,10 @@ impl ConnectionActions {
         self.busy = Some("Waiting for Codex authorization…".into());
         self.error = None;
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result = login.complete().await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { login.complete().await })
+                .await;
             _ = this.update(cx, |this, cx| this.finish(result, cx));
         }));
         cx.notify();
@@ -156,24 +159,40 @@ impl ConnectionActions {
         self.busy = Some("Cancelling the vendor-owned login attempt…".into());
         self.error = None;
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result = login.cancel().await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { login.cancel().await })
+                .await;
             _ = this.update(cx, |this, cx| this.finish(result, cx));
         }));
         cx.notify();
     }
 
     fn prepare_removal(&mut self, cx: &mut Context<Self>) {
-        match self
-            .control
-            .connection_removal_plan(&self.connection.id, Vec::new())
-        {
-            Ok(plan) => {
-                self.removal_plan = Some(plan);
-                self.confirmation = Some(Confirmation::RemoveConnection);
-                self.error = None;
-            }
-            Err(error) => self.error = Some(error.message),
+        if self.busy.is_some() {
+            return;
         }
+        let control = self.control.clone();
+        let connection = self.connection.id.clone();
+        self.busy = Some("Inspecting the exact connection removal impact…".into());
+        self.error = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { control.connection_removal_plan(&connection, Vec::new()) })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.busy = None;
+                match result {
+                    Ok(plan) => {
+                        this.removal_plan = Some(plan);
+                        this.confirmation = Some(Confirmation::RemoveConnection);
+                    }
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -195,23 +214,32 @@ impl ConnectionActions {
         let connection = self.connection.id.clone();
         let removal_plan = self.removal_plan.take();
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result: Result<DesktopConnectionMutationReceipt, String> = match confirmation {
-                Confirmation::DeleteCredential => control
-                    .delete_credential(&connection)
-                    .map_err(|error| error.message),
-                Confirmation::LogoutManaged => control
-                    .logout_managed(&connection)
-                    .await
-                    .map_err(|error| error.message),
-                Confirmation::RemoveConnection => removal_plan
-                    .as_ref()
-                    .ok_or_else(|| "the reviewed removal plan is unavailable".to_owned())
-                    .and_then(|plan| {
-                        control
-                            .remove_connection(plan)
-                            .map_err(|error| error.message)
-                    }),
-            };
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let result: Result<DesktopConnectionMutationReceipt, String> =
+                        match confirmation {
+                            Confirmation::DeleteCredential => control
+                                .delete_credential(&connection)
+                                .map_err(|error| error.message),
+                            Confirmation::LogoutManaged => control
+                                .logout_managed(&connection)
+                                .await
+                                .map_err(|error| error.message),
+                            Confirmation::RemoveConnection => removal_plan
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    "the reviewed removal plan is unavailable".to_owned()
+                                })
+                                .and_then(|plan| {
+                                    control
+                                        .remove_connection(plan)
+                                        .map_err(|error| error.message)
+                                }),
+                        };
+                    result
+                })
+                .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {

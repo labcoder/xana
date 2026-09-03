@@ -45,10 +45,10 @@ pub(crate) struct PermissionView {
 impl PermissionView {
     pub(crate) fn new(
         control: DesktopControlPlane,
+        snapshot: Result<DesktopPermissionSnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let snapshot = control.permission_snapshot().map_err(|error| error.message);
         let id = input(window, cx, "Rule id");
         let tool = input(window, cx, "Tool name (optional)");
         let workspace = input(window, cx, "Relative workspace path (optional)");
@@ -85,11 +85,8 @@ impl PermissionView {
         }
     }
 
-    fn reload(&mut self) {
-        self.snapshot = self
-            .control
-            .permission_snapshot()
-            .map_err(|error| error.message);
+    fn apply_snapshot(&mut self, snapshot: Result<DesktopPermissionSnapshot, String>) {
+        self.snapshot = snapshot;
     }
 
     fn draft(&self, cx: &Context<Self>) -> DesktopPermissionRuleDraft {
@@ -180,16 +177,20 @@ impl PermissionView {
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.save_permission_rule(draft) })
+                .spawn(async move {
+                    let receipt = control.save_permission_rule(draft)?;
+                    let snapshot = control.permission_snapshot()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot)) => {
                         this.selected_rule = Some(receipt.subject.clone());
                         this.receipt = Some(receipt);
                         this.preview = None;
-                        this.reload();
+                        this.apply_snapshot(Ok(snapshot));
                     }
                     Err(error) => this.error = Some(error.message),
                 }
@@ -210,13 +211,17 @@ impl PermissionView {
         self._task = Some(cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.remove_permission_rule(&id) })
+                .spawn(async move {
+                    let receipt = control.remove_permission_rule(&id)?;
+                    let snapshot = control.permission_snapshot()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
             _ = this.update_in(cx, |this, window, cx| {
                 this.busy = None;
                 match result {
-                    Ok(receipt) => {
-                        this.reload();
+                    Ok((receipt, snapshot)) => {
+                        this.apply_snapshot(Ok(snapshot));
                         this.clear_form(window, cx);
                         this.receipt = Some(receipt);
                     }

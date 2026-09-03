@@ -18,8 +18,9 @@ use gpui_component::{
 };
 use std::path::PathBuf;
 use xana::desktop::{
-    DesktopClient, DesktopControlPlane, DesktopInstanceLease, DesktopLaunch, DesktopLaunchCatalog,
-    DesktopLaunchChoice, DesktopLaunchChoiceKind, DesktopLaunchIntent, DesktopNativePaths,
+    DesktopClient, DesktopControlPlane, DesktopDiagnosticsSnapshot, DesktopInstanceLease,
+    DesktopLaunch, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
+    DesktopLaunchIntent, DesktopMigrationSnapshot, DesktopNativePaths, DesktopSetupSnapshot,
 };
 
 enum ShellSurface {
@@ -27,6 +28,15 @@ enum ShellSurface {
     Setup(Entity<SetupView>),
     Maintenance(Entity<MaintenanceView>),
     Workbench(Entity<Workbench>),
+}
+
+pub(crate) struct DesktopShellLaunch {
+    pub(crate) launch: DesktopLaunch,
+    pub(crate) instance: DesktopInstanceLease,
+    pub(crate) native_paths: DesktopNativePaths,
+    pub(crate) catalog: DesktopLaunchCatalog,
+    pub(crate) setup_snapshot: DesktopSetupSnapshot,
+    pub(crate) initial_intent: DesktopLaunchIntent,
 }
 
 /// Keeps the process-global instance lease alive while no workspace is selected.
@@ -46,20 +56,20 @@ pub(crate) struct DesktopShell {
 
 impl DesktopShell {
     pub(crate) fn new(
-        launch: DesktopLaunch,
-        instance: DesktopInstanceLease,
-        native_paths: DesktopNativePaths,
-        catalog: DesktopLaunchCatalog,
-        initial_intent: DesktopLaunchIntent,
+        launch: DesktopShellLaunch,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let DesktopShellLaunch {
+            launch,
+            instance,
+            native_paths,
+            catalog,
+            setup_snapshot,
+            initial_intent,
+        } = launch;
         let control = launch.control_plane();
-        let intentionally_blank = control
-            .as_ref()
-            .ok()
-            .and_then(|control| control.setup_snapshot().ok())
-            .is_some_and(|snapshot| snapshot.intentionally_blank);
+        let intentionally_blank = setup_snapshot.intentionally_blank;
         let requires_setup = catalog.configuration_state == "missing" && !intentionally_blank;
         let requires_recovery = matches!(
             catalog.configuration_state.as_str(),
@@ -80,14 +90,11 @@ impl DesktopShell {
         };
         if requires_setup {
             match control {
-                Ok(control) => shell.open_setup(control, window, cx),
+                Ok(control) => shell.open_setup(control, Ok(setup_snapshot), window, cx),
                 Err(error) => shell.error = Some(error.message),
             }
         } else if requires_recovery {
-            match control {
-                Ok(control) => shell.open_maintenance(control, window, cx),
-                Err(error) => shell.error = Some(error.message),
-            }
+            shell.start_maintenance(window, cx);
         }
         shell
     }
@@ -95,10 +102,11 @@ impl DesktopShell {
     fn open_setup(
         &mut self,
         control: DesktopControlPlane,
+        snapshot: Result<DesktopSetupSnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let setup = cx.new(|cx| SetupView::new(control, window, cx));
+        let setup = cx.new(|cx| SetupView::new(control, snapshot, window, cx));
         let subscription = cx.subscribe_in(
             &setup,
             window,
@@ -134,38 +142,61 @@ impl DesktopShell {
     }
 
     fn start_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.launch.control_plane() {
-            Ok(control) => self.open_setup(control, window, cx),
-            Err(error) => {
-                self.error = Some(error.message);
-                cx.notify();
-            }
+        if self.opening {
+            return;
         }
+        let launch = self.launch.clone();
+        self.opening = true;
+        self.error = None;
+        self._opening_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let control = launch.control_plane()?;
+                    let snapshot = control.setup_snapshot().map_err(|error| error.message);
+                    Ok::<_, xana::desktop::DesktopError>((control, snapshot))
+                })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.opening = false;
+                match result {
+                    Ok((control, snapshot)) => this.open_setup(control, snapshot, window, cx),
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
     }
 
     fn open_maintenance(
         &mut self,
         control: DesktopControlPlane,
+        migration: Result<DesktopMigrationSnapshot, String>,
+        diagnostics: Result<DesktopDiagnosticsSnapshot, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let maintenance =
-            cx.new(|cx| MaintenanceView::new(control, MaintenanceTab::Doctor, true, cx));
+        let maintenance = cx.new(|cx| {
+            MaintenanceView::new(
+                control,
+                MaintenanceTab::Doctor,
+                migration,
+                diagnostics,
+                true,
+                cx,
+            )
+        });
         let subscription = cx.subscribe_in(
             &maintenance,
             window,
-            |this, _, event: &MaintenanceViewEvent, _, cx| match event {
+            |this, _, event: &MaintenanceViewEvent, window, cx| match event {
                 MaintenanceViewEvent::Close => {
                     this.surface = ShellSurface::Launcher;
                     cx.notify();
                 }
                 MaintenanceViewEvent::ConfigurationChanged => {
-                    if let Ok(control) = this.launch.control_plane()
-                        && let Ok(snapshot) = control.setup_snapshot()
-                    {
-                        this.catalog.configuration_state = snapshot.configuration_state;
-                    }
-                    cx.notify();
+                    this.refresh_configuration_state(window, cx);
                 }
             },
         );
@@ -175,13 +206,57 @@ impl DesktopShell {
     }
 
     fn start_maintenance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.launch.control_plane() {
-            Ok(control) => self.open_maintenance(control, window, cx),
-            Err(error) => {
-                self.error = Some(error.message);
-                cx.notify();
-            }
+        if self.opening {
+            return;
         }
+        let launch = self.launch.clone();
+        self.opening = true;
+        self.error = None;
+        self._opening_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    let control = launch.control_plane()?;
+                    let migration = control.migration_snapshot().map_err(|error| error.message);
+                    let diagnostics = control
+                        .diagnostics_snapshot()
+                        .map_err(|error| error.message);
+                    Ok::<_, xana::desktop::DesktopError>((control, migration, diagnostics))
+                })
+                .await;
+            _ = this.update_in(cx, |this, window, cx| {
+                this.opening = false;
+                match result {
+                    Ok((control, migration, diagnostics)) => {
+                        this.open_maintenance(control, migration, diagnostics, window, cx);
+                    }
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+
+    fn refresh_configuration_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let launch = self.launch.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { launch.control_plane()?.setup_snapshot() })
+                .await;
+            _ = this.update_in(cx, |this, _, cx| {
+                match result {
+                    Ok(snapshot) => {
+                        this.catalog.configuration_state = snapshot.configuration_state;
+                        this.error = None;
+                    }
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn choose_catalog_item(

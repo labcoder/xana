@@ -80,13 +80,11 @@ impl MaintenanceView {
     pub(crate) fn new(
         control: DesktopControlPlane,
         selected_tab: MaintenanceTab,
+        migration: Result<DesktopMigrationSnapshot, String>,
+        diagnostics: Result<DesktopDiagnosticsSnapshot, String>,
         diagnose_on_open: bool,
         cx: &mut Context<Self>,
     ) -> Self {
-        let migration = control.migration_snapshot().map_err(|error| error.message);
-        let diagnostics = control
-            .diagnostics_snapshot()
-            .map_err(|error| error.message);
         let mut view = Self {
             control,
             selected_tab,
@@ -127,7 +125,10 @@ impl MaintenanceView {
         self.receipt = None;
         self.repair_reviewed = false;
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result = control.doctor_snapshot(probe_connections).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { control.doctor_snapshot(probe_connections).await })
+                .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 match result {
@@ -150,7 +151,10 @@ impl MaintenanceView {
         self.busy = Some("Applying reviewed deterministic repairs…".to_owned());
         self.error = None;
         self._task = Some(cx.spawn(async move |this, cx| {
-            let result = control.apply_doctor_repairs(&reviewed).await;
+            let result = cx
+                .background_executor()
+                .spawn(async move { control.apply_doctor_repairs(&reviewed).await })
+                .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 this.repair_reviewed = false;
@@ -177,13 +181,25 @@ impl MaintenanceView {
     }
 
     fn refresh_migration(&mut self, cx: &mut Context<Self>) {
-        self.migration = self
-            .control
-            .migration_snapshot()
-            .map_err(|error| error.message);
+        if self.busy.is_some() {
+            return;
+        }
+        let control = self.control.clone();
+        self.busy = Some("Inspecting migration state…".to_owned());
         self.migration_reviewed = false;
         self.error = None;
         self.receipt = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { control.migration_snapshot() })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.busy = None;
+                this.migration = result.map_err(|error| error.message);
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -201,13 +217,17 @@ impl MaintenanceView {
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.apply_migration(&reviewed) })
+                .spawn(async move {
+                    let receipt = control.apply_migration(&reviewed)?;
+                    let snapshot = control.migration_snapshot()?;
+                    Ok::<_, xana::desktop::DesktopError>((receipt, snapshot))
+                })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
                 this.migration_reviewed = false;
                 match result {
-                    Ok(receipt) => {
+                    Ok((receipt, snapshot)) => {
                         this.receipt = Some(format!(
                             "{} · backup {} · {} private record(s) initialized · {} migrated",
                             receipt.semantic_code,
@@ -215,10 +235,7 @@ impl MaintenanceView {
                             receipt.initialized_private_records,
                             receipt.migrated_private_records
                         ));
-                        this.migration = this
-                            .control
-                            .migration_snapshot()
-                            .map_err(|error| error.message);
+                        this.migration = Ok(snapshot);
                         cx.emit(MaintenanceViewEvent::ConfigurationChanged);
                     }
                     Err(error) => this.error = Some(error.message),
@@ -316,12 +333,24 @@ impl MaintenanceView {
     }
 
     fn refresh_diagnostics(&mut self, cx: &mut Context<Self>) {
-        self.diagnostics = self
-            .control
-            .diagnostics_snapshot()
-            .map_err(|error| error.message);
+        if self.busy.is_some() {
+            return;
+        }
+        let control = self.control.clone();
+        self.busy = Some("Refreshing diagnostics…".to_owned());
         self.error = None;
         self.receipt = None;
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { control.diagnostics_snapshot() })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.busy = None;
+                this.diagnostics = result.map_err(|error| error.message);
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
