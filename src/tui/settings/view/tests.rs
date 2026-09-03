@@ -83,7 +83,7 @@ fn narrow_layout_uses_a_section_carousel_and_stacked_detail() {
 
     let rendered = draw(54, 24, &state);
 
-    assert!(rendered.contains("Diagnostics  7/9  < > sections"));
+    assert!(rendered.contains("Diagnostics  10/12  < > sections"));
     assert!(rendered.contains("Diagnostic logging"));
     assert!(rendered.contains("Details"));
     assert!(rendered.contains("^S apply"));

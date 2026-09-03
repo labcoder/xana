@@ -59,26 +59,32 @@ const NOTIFICATIONS_HOST_FAILURES: &str = "notifications.host_failures";
 pub(crate) enum SettingsSection {
     Overview,
     Appearance,
+    Notifications,
     Connections,
     Profiles,
+    Workbench,
     Permissions,
     Execution,
+    AttachmentsMedia,
     Diagnostics,
-    Integrations,
+    Capabilities,
     Advanced,
 }
 
 impl SettingsSection {
-    pub(crate) const fn all() -> [Self; 9] {
+    pub(crate) const fn all() -> [Self; 12] {
         [
             Self::Overview,
             Self::Appearance,
+            Self::Notifications,
             Self::Connections,
             Self::Profiles,
+            Self::Workbench,
             Self::Permissions,
             Self::Execution,
+            Self::AttachmentsMedia,
             Self::Diagnostics,
-            Self::Integrations,
+            Self::Capabilities,
             Self::Advanced,
         ]
     }
@@ -87,12 +93,15 @@ impl SettingsSection {
         match self {
             Self::Overview => "overview",
             Self::Appearance => "appearance",
+            Self::Notifications => "notifications",
             Self::Connections => "connections",
             Self::Profiles => "profiles",
+            Self::Workbench => "workbench",
             Self::Permissions => "permissions",
             Self::Execution => "execution",
+            Self::AttachmentsMedia => "attachments_media",
             Self::Diagnostics => "diagnostics",
-            Self::Integrations => "integrations",
+            Self::Capabilities => "capabilities",
             Self::Advanced => "advanced",
         }
     }
@@ -101,12 +110,15 @@ impl SettingsSection {
         match self {
             Self::Overview => "Overview",
             Self::Appearance => "Appearance",
+            Self::Notifications => "Notifications",
             Self::Connections => "Connections & Models",
             Self::Profiles => "Profiles & Routes",
+            Self::Workbench => "Projects & Workbench",
             Self::Permissions => "Permissions",
             Self::Execution => "Execution",
+            Self::AttachmentsMedia => "Attachments & Media",
             Self::Diagnostics => "Diagnostics",
-            Self::Integrations => "Integrations",
+            Self::Capabilities => "Capabilities",
             Self::Advanced => "Advanced",
         }
     }
@@ -119,8 +131,12 @@ impl SettingsSection {
                     (section, normalized.as_str()),
                     (Self::Connections, "models")
                         | (Self::Profiles, "routes")
+                        | (Self::Workbench, "projects")
                         | (Self::Permissions, "safety")
                         | (Self::Execution, "shell")
+                        | (Self::AttachmentsMedia, "media")
+                        | (Self::AttachmentsMedia, "attachments")
+                        | (Self::Capabilities, "integrations")
                 )
         })
     }
@@ -692,10 +708,13 @@ fn build_snapshot(
     );
 
     entries.extend(appearance_entries(&preferences, preference_source));
+    entries.extend(notification_entries(&registry, &document));
     entries.extend(connection_entries(&registry));
     entries.extend(profile_entries(&registry, &document));
+    entries.extend(workbench_entries());
     entries.extend(permission_entries(&registry));
     entries.extend(execution_entries(&registry, &resolved, &document));
+    entries.extend(resource_entries(&registry));
     entries.extend(diagnostic_entries(&registry, &document));
     entries.extend(integration_entries(&registry));
     entries.extend(advanced_entries(paths));
@@ -904,14 +923,27 @@ fn profile_entries(
             SettingValue::summary(format!("{} configured", registry.routes.len())),
         )
         .action("xana route list"),
+    ]
+}
+
+fn workbench_entries() -> Vec<SettingEntry> {
+    vec![
         SettingEntry::new(
             "projects.manage",
-            SettingsSection::Profiles,
+            SettingsSection::Workbench,
             "Projects",
             "Create, inspect, archive, and forget local workspace organization without changing workspace files.",
             SettingValue::summary("Managed in the Projects workspace"),
         )
         .action("xana project list"),
+        SettingEntry::new(
+            "workbench.layout",
+            SettingsSection::Workbench,
+            "Workbench layout",
+            "Inspect the user-wide default, restore Xana's built-in layout, and understand per-Conversation precedence.",
+            SettingValue::summary("Conversation, user default, then built-in recovery"),
+        )
+        .action("xana desktop layout"),
     ]
 }
 
@@ -1014,7 +1046,7 @@ fn diagnostic_entries(
     let diagnostics = &registry.diagnostics;
     let target = SettingTarget::GlobalConfiguration;
     let effect = SettingEffect::NextLaunch;
-    let mut entries = vec![
+    vec![
         SettingEntry::new(
             DIAGNOSTICS_ENABLED,
             SettingsSection::Diagnostics,
@@ -1131,8 +1163,23 @@ fn diagnostic_entries(
             SettingValue::summary("Read-only by default"),
         )
         .action("xana doctor"),
-    ];
+    ]
+}
+
+fn notification_entries(
+    registry: &ConnectionRegistry,
+    document: &toml_edit::DocumentMut,
+) -> Vec<SettingEntry> {
+    let mut entries = vec![SettingEntry::new(
+        "notifications.os_delivery",
+        SettingsSection::Notifications,
+        "Operating-system delivery",
+        "Xana asks the desktop host to deliver privacy-safe notifications; operating-system permission is resolved when delivery is attempted.",
+        SettingValue::summary("Host mediated · permission state resolved at delivery"),
+    )];
     let notifications = &registry.notifications;
+    let target = SettingTarget::GlobalConfiguration;
+    let effect = SettingEffect::NextLaunch;
     for (key, title, description, value) in [
         (
             NOTIFICATIONS_ENABLED,
@@ -1180,7 +1227,7 @@ fn diagnostic_entries(
         entries.push(
             SettingEntry::new(
                 key,
-                SettingsSection::Diagnostics,
+                SettingsSection::Notifications,
                 title,
                 description,
                 SettingValue::scalar(value.to_string()),
@@ -1197,11 +1244,37 @@ fn diagnostic_entries(
     entries
 }
 
+fn resource_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
+    vec![
+        SettingEntry::new(
+            "resources.manage",
+            SettingsSection::AttachmentsMedia,
+            "Resource admission limits",
+            "Edit every cross-resource and per-kind soft limit with immutable ceiling and dependency validation.",
+            SettingValue::summary(format!(
+                "{} resources · {} total source bytes · {} transform job(s)",
+                registry.resources.max_resources_per_turn,
+                format_bytes(registry.resources.max_total_source_bytes),
+                registry.resources.max_active_jobs
+            )),
+        )
+        .action("xana resource policy"),
+        SettingEntry::new(
+            "resources.capabilities",
+            SettingsSection::AttachmentsMedia,
+            "Media capability and fallback",
+            "Inspect acquisition, preview, provider input, and fallback state without treating unknown as unsupported.",
+            SettingValue::summary("Resolved per resource, route, provider, and platform"),
+        )
+        .action("xana capabilities"),
+    ]
+}
+
 fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
     vec![
         SettingEntry::new(
             "capabilities.manage",
-            SettingsSection::Integrations,
+            SettingsSection::Capabilities,
             "What can Xana do here?",
             "Distinguish installed, enabled, available, permitted, selected, and contained capability state.",
             SettingValue::summary("Deterministic local projection"),
@@ -1209,7 +1282,7 @@ fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
         .action("xana capabilities"),
         SettingEntry::new(
             "integrations.plugins",
-            SettingsSection::Integrations,
+            SettingsSection::Capabilities,
             "Agent Plugins",
             "Review, install, enable, update, roll back, and remove exact package revisions.",
             SettingValue::summary(format!("{} declared", registry.plugins.len())),
@@ -1217,7 +1290,7 @@ fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
         .action("xana plugin list"),
         SettingEntry::new(
             "integrations.mcp",
-            SettingsSection::Integrations,
+            SettingsSection::Capabilities,
             "MCP servers",
             "Configure and inspect profile-allowlisted MCP servers and primitives.",
             SettingValue::summary(format!("{} configured", registry.mcp_servers.len())),
@@ -1225,7 +1298,7 @@ fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
         .action("xana mcp list"),
         SettingEntry::new(
             "integrations.external_agents",
-            SettingsSection::Integrations,
+            SettingsSection::Capabilities,
             "External agents",
             "Refresh, review, trust, and delegate to exact A2A identities.",
             SettingValue::summary(format!("{} configured", registry.external_agents.len())),
@@ -1233,7 +1306,7 @@ fn integration_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
         .action("xana external-agent list"),
         SettingEntry::new(
             "integrations.focused_routes",
-            SettingsSection::Integrations,
+            SettingsSection::Capabilities,
             "Image and vision routes",
             "Manage focused service connections separately from conversational providers.",
             SettingValue::summary(format!("{} configured", registry.service_routes.len())),

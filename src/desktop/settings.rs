@@ -39,12 +39,15 @@ pub struct DesktopLocalizedText {
 pub enum DesktopSettingsSection {
     Overview,
     Appearance,
+    Notifications,
     Connections,
     Profiles,
+    Workbench,
     Permissions,
     Execution,
+    AttachmentsMedia,
     Diagnostics,
-    Integrations,
+    Capabilities,
     Advanced,
 }
 
@@ -53,12 +56,15 @@ impl DesktopSettingsSection {
         match self {
             Self::Overview => "overview",
             Self::Appearance => "appearance",
+            Self::Notifications => "notifications",
             Self::Connections => "connections",
             Self::Profiles => "profiles",
+            Self::Workbench => "workbench",
             Self::Permissions => "permissions",
             Self::Execution => "execution",
+            Self::AttachmentsMedia => "attachments_media",
             Self::Diagnostics => "diagnostics",
-            Self::Integrations => "integrations",
+            Self::Capabilities => "capabilities",
             Self::Advanced => "advanced",
         }
     }
@@ -67,12 +73,15 @@ impl DesktopSettingsSection {
         match self {
             Self::Overview => "Overview",
             Self::Appearance => "Appearance",
+            Self::Notifications => "Notifications",
             Self::Connections => "Connections & Models",
             Self::Profiles => "Profiles & Routes",
+            Self::Workbench => "Projects & Workbench",
             Self::Permissions => "Permissions",
             Self::Execution => "Execution",
+            Self::AttachmentsMedia => "Attachments & Media",
             Self::Diagnostics => "Diagnostics",
-            Self::Integrations => "Integrations",
+            Self::Capabilities => "Capabilities",
             Self::Advanced => "Advanced",
         }
     }
@@ -458,12 +467,15 @@ fn project_section(section: SettingsSection) -> DesktopSettingsSection {
     match section {
         SettingsSection::Overview => DesktopSettingsSection::Overview,
         SettingsSection::Appearance => DesktopSettingsSection::Appearance,
+        SettingsSection::Notifications => DesktopSettingsSection::Notifications,
         SettingsSection::Connections => DesktopSettingsSection::Connections,
         SettingsSection::Profiles => DesktopSettingsSection::Profiles,
+        SettingsSection::Workbench => DesktopSettingsSection::Workbench,
         SettingsSection::Permissions => DesktopSettingsSection::Permissions,
         SettingsSection::Execution => DesktopSettingsSection::Execution,
+        SettingsSection::AttachmentsMedia => DesktopSettingsSection::AttachmentsMedia,
         SettingsSection::Diagnostics => DesktopSettingsSection::Diagnostics,
-        SettingsSection::Integrations => DesktopSettingsSection::Integrations,
+        SettingsSection::Capabilities => DesktopSettingsSection::Capabilities,
         SettingsSection::Advanced => DesktopSettingsSection::Advanced,
     }
 }

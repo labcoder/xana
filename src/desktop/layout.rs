@@ -407,7 +407,7 @@ impl DesktopLayoutStore {
         DesktopWorkbenchLayout::from_inert_toml(input)
     }
 
-    fn resolve_default(&self, warning: Option<String>) -> DesktopResolvedLayout {
+    pub(super) fn resolve_default(&self, warning: Option<String>) -> DesktopResolvedLayout {
         match self.read(&self.root.join("default.toml")) {
             Ok(Some(layout)) => DesktopResolvedLayout {
                 layout,

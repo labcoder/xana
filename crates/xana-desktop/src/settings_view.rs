@@ -6,6 +6,8 @@
 use crate::connection_manager::{ConnectionManager, ConnectionManagerEvent};
 use crate::management_view::{ManagementTab, ManagementView, ManagementViewEvent};
 use crate::permission_view::{PermissionView, PermissionViewEvent};
+use crate::resource_policy_view::{ResourcePolicyView, ResourcePolicyViewEvent};
+use crate::workbench_preferences_view::{WorkbenchPreferencesEvent, WorkbenchPreferencesView};
 
 use gpui::{
     AnyElement, App, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render, Role,
@@ -30,15 +32,18 @@ use xana::desktop::{
 const WIDE_WINDOW_PX: f32 = 1_180.;
 const MEDIUM_WINDOW_PX: f32 = 880.;
 
-const SECTIONS: [DesktopSettingsSection; 9] = [
+const SECTIONS: [DesktopSettingsSection; 12] = [
     DesktopSettingsSection::Overview,
     DesktopSettingsSection::Appearance,
+    DesktopSettingsSection::Notifications,
     DesktopSettingsSection::Connections,
     DesktopSettingsSection::Profiles,
+    DesktopSettingsSection::Workbench,
     DesktopSettingsSection::Permissions,
     DesktopSettingsSection::Execution,
+    DesktopSettingsSection::AttachmentsMedia,
     DesktopSettingsSection::Diagnostics,
-    DesktopSettingsSection::Integrations,
+    DesktopSettingsSection::Capabilities,
     DesktopSettingsSection::Advanced,
 ];
 
@@ -85,6 +90,8 @@ enum FocusedManager {
     Connections(Entity<ConnectionManager>),
     Management(Entity<ManagementView>),
     Permissions(Entity<PermissionView>),
+    ResourcePolicy(Entity<ResourcePolicyView>),
+    WorkbenchPreferences(Entity<WorkbenchPreferencesView>),
 }
 
 impl SettingsView {
@@ -213,6 +220,39 @@ impl SettingsView {
                 );
                 self._subscriptions.push(subscription);
                 self.focused_manager = Some(FocusedManager::Permissions(manager));
+                self.error = None;
+            }
+            "xana resource policy" => {
+                let manager =
+                    cx.new(|cx| ResourcePolicyView::new(self.control.clone(), window, cx));
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &ResourcePolicyViewEvent, _, cx| {
+                        if matches!(event, ResourcePolicyViewEvent::Close) {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::ResourcePolicy(manager));
+                self.error = None;
+            }
+            "xana desktop layout" => {
+                let manager = cx.new(|_| WorkbenchPreferencesView::new(self.control.clone()));
+                let subscription = cx.subscribe_in(
+                    &manager,
+                    window,
+                    |this, _, event: &WorkbenchPreferencesEvent, _, cx| {
+                        if matches!(event, WorkbenchPreferencesEvent::Close) {
+                            this.focused_manager = None;
+                            cx.notify();
+                        }
+                    },
+                );
+                self._subscriptions.push(subscription);
+                self.focused_manager = Some(FocusedManager::WorkbenchPreferences(manager));
                 self.error = None;
             }
             _ => {
@@ -1059,6 +1099,8 @@ impl Render for SettingsView {
                 FocusedManager::Connections(manager) => manager.clone().into_any_element(),
                 FocusedManager::Management(manager) => manager.clone().into_any_element(),
                 FocusedManager::Permissions(manager) => manager.clone().into_any_element(),
+                FocusedManager::ResourcePolicy(manager) => manager.clone().into_any_element(),
+                FocusedManager::WorkbenchPreferences(manager) => manager.clone().into_any_element(),
             };
         }
         let width = f32::from(window.viewport_size().width);

@@ -6,6 +6,8 @@
 mod actions;
 mod entities;
 mod permissions;
+mod resources;
+mod workbench;
 
 pub use actions::{
     DesktopConnectionMutationReceipt, DesktopConnectionRemovalPlan, DesktopManagedLogin,
@@ -19,6 +21,11 @@ pub use permissions::{
     DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionPreview,
     DesktopPermissionRuleDraft, DesktopPermissionRuleSummary, DesktopPermissionSnapshot,
 };
+pub use resources::{
+    DesktopResourceLimit, DesktopResourcePolicyDraft, DesktopResourcePolicyPreview,
+    DesktopResourcePolicySnapshot,
+};
+pub use workbench::DesktopWorkbenchPreferenceSnapshot;
 
 use super::{DesktopError, DesktopErrorCode};
 use crate::{

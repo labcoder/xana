@@ -28,8 +28,10 @@ pub use management::{
     DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionMode,
     DesktopPermissionPreview, DesktopPermissionRuleDraft, DesktopPermissionRuleSummary,
     DesktopPermissionSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
-    DesktopProjectSummary, DesktopProviderKind, DesktopSecret, DesktopSetupDraft, DesktopSetupMode,
-    DesktopSetupReceipt, DesktopSetupSnapshot,
+    DesktopProjectSummary, DesktopProviderKind, DesktopResourceLimit, DesktopResourcePolicyDraft,
+    DesktopResourcePolicyPreview, DesktopResourcePolicySnapshot, DesktopSecret, DesktopSetupDraft,
+    DesktopSetupMode, DesktopSetupReceipt, DesktopSetupSnapshot,
+    DesktopWorkbenchPreferenceSnapshot,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,

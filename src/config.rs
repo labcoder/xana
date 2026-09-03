@@ -1137,6 +1137,22 @@ impl XanaConfig {
         transaction.commit(true)
     }
 
+    pub(crate) fn set_resource_policy(
+        path: &Path,
+        policy: ResourcePolicyV1,
+    ) -> Result<(), ConfigError> {
+        policy
+            .validate()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let rendered = toml::to_string_pretty(&policy).map_err(ConfigError::Encode)?;
+        let rendered = rendered
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        transaction.document_mut()["resources"] = toml_edit::Item::Table(rendered.into_table());
+        transaction.commit(true)
+    }
+
     pub(crate) fn remove_connection(path: &Path, id: &str) -> Result<(), ConfigError> {
         let mut transaction = ConfigEditTransaction::begin(path)?;
         let (registry, document) = transaction.parts();

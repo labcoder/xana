@@ -10,10 +10,12 @@ mod localization;
 mod management_view;
 mod permission_view;
 mod projection;
+mod resource_policy_view;
 mod settings_view;
 mod setup_view;
 mod shell;
 mod workbench;
+mod workbench_preferences_view;
 
 use catalog::ComponentCatalog;
 use gpui::{App, AppContext as _, Styled as _, WindowOptions};
