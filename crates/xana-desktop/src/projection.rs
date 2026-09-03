@@ -1068,6 +1068,114 @@ mod tests {
     }
 
     #[test]
+    fn ten_thousand_deltas_converge_without_partial_retransmission() {
+        let mut snapshot = empty_snapshot();
+        snapshot.conversation = (0..512)
+            .map(|index| DesktopMessage {
+                id: format!("history-{index}"),
+                role: if index % 2 == 0 {
+                    DesktopRole::User
+                } else {
+                    DesktopRole::Assistant
+                },
+                content: vec![text_content(&format!("history {index}"))],
+            })
+            .collect();
+        let mut projection = ConversationProjection::from_snapshot(&snapshot);
+        let operation_id = DesktopOperationId::new();
+        for sequence in 1..=10_000 {
+            assert!(projection.apply(DesktopObservation {
+                version: xana::desktop::PROTOCOL_VERSION,
+                sequence,
+                event: DesktopEvent::AssistantDelta {
+                    operation_id,
+                    text: "x".to_owned(),
+                },
+            }));
+        }
+
+        let messages = projection.messages();
+        assert_eq!(messages.len(), 513);
+        assert_eq!(messages.last().unwrap().content().text().len(), 10_000);
+
+        assert!(projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 10_001,
+            event: DesktopEvent::MessageFinal {
+                operation_id,
+                message: DesktopMessage {
+                    id: "authoritative-final".to_owned(),
+                    role: DesktopRole::Assistant,
+                    content: vec![text_content(&"x".repeat(10_000))],
+                },
+            },
+        }));
+        let messages = projection.messages();
+        assert_eq!(messages.len(), 513);
+        assert_eq!(
+            messages.last().unwrap().id().as_ref(),
+            "authoritative-final"
+        );
+        assert_eq!(messages.last().unwrap().content().text().len(), 10_000);
+    }
+
+    #[test]
+    #[ignore = "manual release-profile M4 projection measurement; GPUI paint requires reference-system observation"]
+    fn m4_reference_desktop_projection_probe() {
+        let mut snapshot = empty_snapshot();
+        snapshot.conversation = (0..512)
+            .map(|index| DesktopMessage {
+                id: format!("history-{index}"),
+                role: if index % 2 == 0 {
+                    DesktopRole::User
+                } else {
+                    DesktopRole::Assistant
+                },
+                content: vec![text_content(&format!(
+                    "history {index}: {}",
+                    "x".repeat(128)
+                ))],
+            })
+            .collect();
+        let mut projection = ConversationProjection::from_snapshot(&snapshot);
+        let operation_id = DesktopOperationId::new();
+        let mut batches = Vec::with_capacity(157);
+        let mut sequence = 0_u64;
+        for _ in 0..157 {
+            let started = std::time::Instant::now();
+            for _ in 0..64 {
+                sequence += 1;
+                assert!(projection.apply(DesktopObservation {
+                    version: xana::desktop::PROTOCOL_VERSION,
+                    sequence,
+                    event: DesktopEvent::AssistantDelta {
+                        operation_id,
+                        text: "x".to_owned(),
+                    },
+                }));
+            }
+            let projected = projection.messages();
+            std::hint::black_box(projected);
+            batches.push(started.elapsed());
+        }
+        batches.sort_unstable();
+        let p95 = batches[(batches.len() * 95 / 100).min(batches.len() - 1)];
+        let p99 = batches[(batches.len() * 99 / 100).min(batches.len() - 1)];
+        let messages = projection.messages();
+
+        println!(
+            "m4_desktop_projection source_messages=512 streamed_deltas={sequence} retained_messages={} projected_text_bytes={} batch_size=64 p95_us={} p99_us={}",
+            messages.len(),
+            messages
+                .iter()
+                .map(|message| message.content().text().len())
+                .sum::<usize>(),
+            p95.as_micros(),
+            p99.as_micros(),
+        );
+    }
+
+    #[test]
     fn terminal_failure_marks_the_authoritative_message_retryable() {
         let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
         let operation_id = DesktopOperationId::new();

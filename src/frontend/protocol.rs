@@ -880,15 +880,27 @@ pub(crate) struct ClientObservation {
 
 fn bounded_history(history: Vec<Message>) -> (Vec<Message>, bool) {
     let original_len = history.len();
-    let start = original_len.saturating_sub(MAX_SNAPSHOT_MESSAGES);
-    let mut retained = history.into_iter().skip(start).collect::<Vec<_>>();
-    let mut truncated = start > 0;
-    while !retained.is_empty()
-        && serde_json::to_vec(&retained).map_or(true, |encoded| encoded.len() > MAX_SNAPSHOT_BYTES)
-    {
-        retained.remove(0);
-        truncated = true;
+    let mut retained = Vec::with_capacity(original_len.min(MAX_SNAPSHOT_MESSAGES));
+    let mut encoded_bytes = 2_usize; // JSON array brackets.
+    for message in history.into_iter().rev().take(MAX_SNAPSHOT_MESSAGES) {
+        let Ok(encoded) = serde_json::to_vec(&message) else {
+            break;
+        };
+        let separator = usize::from(!retained.is_empty());
+        let Some(next_bytes) = encoded_bytes
+            .checked_add(separator)
+            .and_then(|value| value.checked_add(encoded.len()))
+        else {
+            break;
+        };
+        if next_bytes > MAX_SNAPSHOT_BYTES {
+            break;
+        }
+        encoded_bytes = next_bytes;
+        retained.push(message);
     }
+    retained.reverse();
+    let truncated = retained.len() < original_len;
     (retained, truncated)
 }
 
@@ -957,6 +969,51 @@ mod tests {
             Some(ContentBlock::Text(text)) if text == "message 9488"
         ));
         assert!(serde_json::to_vec(&bounded).unwrap().len() <= MAX_SNAPSHOT_BYTES);
+    }
+
+    #[test]
+    fn byte_bounding_keeps_a_contiguous_recent_suffix_without_quadratic_removal() {
+        let history = (0..MAX_SNAPSHOT_MESSAGES)
+            .map(|index| Message::text(Role::User, format!("{index}:{}", "x".repeat(8 * 1024))))
+            .collect::<Vec<_>>();
+
+        let (bounded, truncated) = bounded_history(history);
+
+        assert!(truncated);
+        assert!(!bounded.is_empty());
+        assert!(bounded.len() < MAX_SNAPSHOT_MESSAGES);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() <= MAX_SNAPSHOT_BYTES);
+        assert!(matches!(
+            bounded.last().and_then(|message| message.content.first()),
+            Some(ContentBlock::Text(text)) if text.starts_with("511:")
+        ));
+    }
+
+    #[test]
+    #[ignore = "manual release-profile M4 projection measurement; wall-clock thresholds do not belong in shared CI"]
+    fn m4_reference_snapshot_projection_probe() {
+        let fixture = (0..10_000)
+            .map(|index| Message::text(Role::User, format!("message {index}: {}", "x".repeat(128))))
+            .collect::<Vec<_>>();
+        let mut samples = Vec::with_capacity(31);
+        let mut retained = 0;
+        let mut encoded = 0;
+        for _ in 0..31 {
+            let started = std::time::Instant::now();
+            let (bounded, _) = bounded_history(fixture.clone());
+            samples.push(started.elapsed());
+            retained = bounded.len();
+            encoded = serde_json::to_vec(&bounded).unwrap().len();
+        }
+        samples.sort_unstable();
+        let p95 = samples[(samples.len() * 95 / 100).min(samples.len() - 1)];
+        let p99 = samples[(samples.len() * 99 / 100).min(samples.len() - 1)];
+
+        println!(
+            "m4_snapshot_projection source_messages=10000 retained_messages={retained} encoded_bytes={encoded} p95_us={} p99_us={}",
+            p95.as_micros(),
+            p99.as_micros(),
+        );
     }
 
     #[test]
