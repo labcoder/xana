@@ -47,6 +47,7 @@ actions!(
         RenameSelectedProject,
         ArchiveSelectedProject,
         RestoreSelectedProject,
+        ArchiveSelectedConversation,
         MoveSelectedConversation,
         UngroupSelectedConversation,
         BranchSelectedConversation,

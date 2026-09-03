@@ -805,6 +805,27 @@ impl Bridge {
                     Err(error) => self.publish_command_result(command_id, Err(error)).await?,
                 }
             }
+            BridgeCommandValue::ArchiveManagedConversation { conversation_id } => {
+                let result = navigation_store
+                    .archive_managed_conversation(&conversation_id)
+                    .and_then(|archived| {
+                        if archived {
+                            Ok(())
+                        } else {
+                            Err(DesktopError::new(
+                                DesktopErrorCode::StateInvalid,
+                                format!("Conversation {conversation_id} was already absent"),
+                            ))
+                        }
+                    });
+                if result.is_ok() {
+                    *navigation =
+                        navigation_store.snapshot(Some(&state.conversation.to_string()))?;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+            }
             BridgeCommandValue::RenameProject { project_id, name } => {
                 let result = navigation_store.rename_project(&project_id, &name);
                 if result.is_ok() {

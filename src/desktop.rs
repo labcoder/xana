@@ -1488,6 +1488,23 @@ impl DesktopClient {
             })
     }
 
+    /// Archives one inactive managed Conversation handle locally.
+    ///
+    /// Provider-owned history is never deleted, and native Conversations are
+    /// immutable retained history rather than archiveable handles.
+    pub fn archive_managed_conversation(
+        &self,
+        conversation_id: impl Into<String>,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::ArchiveManagedConversation {
+            conversation_id: conversation_id.into(),
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: None,
+        })
+    }
+
     /// Renames one Xana Project through the shared Project store.
     pub fn rename_project(
         &self,
@@ -1856,6 +1873,9 @@ enum BridgeCommandValue {
     },
     NewConversation {
         project_id: Option<String>,
+    },
+    ArchiveManagedConversation {
+        conversation_id: String,
     },
     RenameProject {
         project_id: String,
@@ -2338,6 +2358,28 @@ impl Bridge {
                     cleanup,
                     ChatExit::DesktopNewConversation { workspace },
                 )))
+            }
+            BridgeCommandValue::ArchiveManagedConversation { conversation_id } => {
+                let result = navigation_store
+                    .archive_managed_conversation(&conversation_id)
+                    .and_then(|archived| {
+                        if archived {
+                            Ok(())
+                        } else {
+                            Err(DesktopError::new(
+                                DesktopErrorCode::StateInvalid,
+                                format!("Conversation {conversation_id} was already absent"),
+                            ))
+                        }
+                    });
+                if result.is_ok() {
+                    *navigation =
+                        navigation_store.snapshot(Some(&controller.conversation.to_string()))?;
+                    self.publish_critical(DesktopUpdate::Navigation(navigation.clone()))
+                        .await?;
+                }
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
             }
             BridgeCommandValue::RenameProject { project_id, name } => {
                 let result = navigation_store.rename_project(&project_id, &name);

@@ -2,11 +2,12 @@
 
 use crate::{
     commands::{
-        self, ArchiveSelectedProject, BranchSelectedConversation, ClearConversation, InterruptRun,
-        MinimizeWindow, MoveSelectedConversation, NewConversation, OpenConfigurationFile,
-        OpenDocumentation, PaletteDestination, PaletteSelection, QuitXana, RenameSelectedProject,
-        RestoreSelectedProject, RevealLogs, ShowActivity, ShowCommandPalette, ShowEspejo,
-        ShowSettings, UngroupSelectedConversation, WorkbenchCommand,
+        self, ArchiveSelectedConversation, ArchiveSelectedProject, BranchSelectedConversation,
+        ClearConversation, InterruptRun, MinimizeWindow, MoveSelectedConversation, NewConversation,
+        OpenConfigurationFile, OpenDocumentation, PaletteDestination, PaletteSelection, QuitXana,
+        RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
+        ShowCommandPalette, ShowEspejo, ShowSettings, UngroupSelectedConversation,
+        WorkbenchCommand,
     },
     composer::{ComposerStore, QueuedSubmission},
     design_system,
@@ -46,12 +47,13 @@ use xana::desktop::{
     DesktopActivityState, DesktopArtifactReader, DesktopAttachment, DesktopClient,
     DesktopCommandReceipt, DesktopControlPlane, DesktopConversationState, DesktopDockPlacement,
     DesktopEvent, DesktopHostEvent, DesktopInstanceLease, DesktopLaunchIntent, DesktopLayoutNode,
-    DesktopModelOption, DesktopNativePaths, DesktopNavigationSnapshot, DesktopNavigationTarget,
-    DesktopOperationState, DesktopPanelId, DesktopResource, DesktopResourceValidation,
-    DesktopRoundBudgetSuspension, DesktopSettingsDraftSnapshot, DesktopSettingsReceipt,
-    DesktopSettingsSection, DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis,
-    DesktopUpdate, DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice,
-    LastWindowEffect, NotificationDestination, NotificationPlanner, last_window_effect,
+    DesktopModelOption, DesktopNativePaths, DesktopNavigationConversationState,
+    DesktopNavigationSnapshot, DesktopNavigationTarget, DesktopOperationState, DesktopPanelId,
+    DesktopResource, DesktopResourceValidation, DesktopRoundBudgetSuspension,
+    DesktopSettingsDraftSnapshot, DesktopSettingsReceipt, DesktopSettingsSection,
+    DesktopSettingsSnapshot, DesktopSidebarMode, DesktopSplitAxis, DesktopUpdate,
+    DesktopWorkbenchLayout, DesktopWorkspaceStatus, LastWindowChoice, LastWindowEffect,
+    NotificationDestination, NotificationPlanner, last_window_effect,
 };
 
 const UPDATE_INTERVAL: Duration = Duration::from_millis(16);
@@ -1307,6 +1309,41 @@ impl Workbench {
             Err(error) => self.projection.fail(error.message),
         }
         self.sync_components(window, cx);
+    }
+
+    fn archive_selected_conversation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(SidebarSelection::Conversation(conversation_id)) = self.sidebar_selection.clone()
+        else {
+            self.projection
+                .fail("Select an inactive managed Conversation before choosing Archive.");
+            self.sync_components(window, cx);
+            return;
+        };
+        let title = conversation_title(&self.navigation_snapshot, &conversation_id);
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            "Archive this managed Conversation?",
+            Some(&format!(
+                "Remove {title} from Xana's local active list. Provider-owned history is not deleted."
+            )),
+            &["Archive local handle", "Cancel"],
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            _ = this.update_in(cx, |this, window, cx| {
+                match this.runtime.archive_managed_conversation(conversation_id) {
+                    Ok(_) => this
+                        .projection
+                        .set_activity("Archiving managed Conversation handle…"),
+                    Err(error) => this.projection.fail(error.message),
+                }
+                this.sync_components(window, cx);
+            });
+        })
+        .detach();
     }
 
     fn open_conversation_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -3542,6 +3579,11 @@ impl Render for Workbench {
                 }),
             )
             .on_action(
+                cx.listener(|this, _: &ArchiveSelectedConversation, window, cx| {
+                    this.archive_selected_conversation(window, cx);
+                }),
+            )
+            .on_action(
                 cx.listener(|this, _: &BranchSelectedConversation, window, cx| {
                     this.branch_selected_conversation(window, cx);
                 }),
@@ -3646,6 +3688,9 @@ fn navigation_menu(
             let branchable = conversation
                 .and_then(|item| item.branch_point.as_ref())
                 .is_some();
+            let archiveable = conversation.is_some_and(|item| {
+                item.owner == "managed" && item.state == DesktopNavigationConversationState::Idle
+            });
             menu.label(conversation.map_or("Selected Conversation", |item| item.title.as_str()))
                 .menu(
                     "Move or continue in Project…",
@@ -3660,6 +3705,11 @@ fn navigation_menu(
                     "Branch at latest committed point…",
                     Box::new(BranchSelectedConversation),
                     !branchable,
+                )
+                .menu_with_disabled(
+                    "Archive managed handle…",
+                    Box::new(ArchiveSelectedConversation),
+                    !archiveable,
                 )
         }
         None => menu.label("Select a Project or Conversation"),

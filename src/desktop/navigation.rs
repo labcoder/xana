@@ -535,6 +535,13 @@ impl DesktopNavigationStore {
         Ok(())
     }
 
+    pub(super) fn archive_managed_conversation(&self, id: &str) -> Result<bool, DesktopError> {
+        let destination = self.require_conversation(id)?;
+        WorkspaceHost::open(self.paths.data_dir(), &destination.workspace)
+            .and_then(|host| host.archive_managed_conversation(&destination.conversation))
+            .map_err(navigation_error)
+    }
+
     pub(super) fn move_conversation(
         &self,
         id: &str,
@@ -1150,6 +1157,39 @@ mod tests {
 
         assert_eq!(destination.workspace, workspace);
         assert_eq!(destination.conversation, expected);
+    }
+
+    #[test]
+    fn managed_archive_removes_only_the_inactive_local_handle() {
+        let (_directory, paths, workspace) = fixture();
+        let conversation_id = ConversationId::new();
+        let mut managed = ManagedThreadStore::open(paths.data_dir(), "codex", &workspace).unwrap();
+        managed
+            .set_thread(
+                Some(conversation_id),
+                Some("thread-for-desktop".to_owned()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        drop(managed);
+        let conversation = ConversationRef::Managed {
+            conversation_id,
+            connection: "codex".to_owned(),
+            thread_id: "thread-for-desktop".to_owned(),
+        };
+        let store = DesktopNavigationStore::open(&paths, &workspace).unwrap();
+
+        assert!(
+            store
+                .archive_managed_conversation(&conversation.to_string())
+                .unwrap()
+        );
+        assert!(
+            store
+                .resolve_conversation(&conversation.to_string())
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
