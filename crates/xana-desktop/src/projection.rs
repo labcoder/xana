@@ -1139,11 +1139,13 @@ mod tests {
             .collect();
         let mut projection = ConversationProjection::from_snapshot(&snapshot);
         let operation_id = DesktopOperationId::new();
-        let mut batches = Vec::with_capacity(157);
+        const STREAMED_DELTAS: u64 = 10_000;
+        const BATCH_SIZE: u64 = 64;
+        let mut batches = Vec::with_capacity(STREAMED_DELTAS.div_ceil(BATCH_SIZE) as usize);
         let mut sequence = 0_u64;
-        for _ in 0..157 {
+        while sequence < STREAMED_DELTAS {
             let started = std::time::Instant::now();
-            for _ in 0..64 {
+            for _ in 0..(STREAMED_DELTAS - sequence).min(BATCH_SIZE) {
                 sequence += 1;
                 assert!(projection.apply(DesktopObservation {
                     version: xana::desktop::PROTOCOL_VERSION,
@@ -1164,7 +1166,13 @@ mod tests {
         let messages = projection.messages();
 
         println!(
-            "m4_desktop_projection source_messages=512 streamed_deltas={sequence} retained_messages={} projected_text_bytes={} batch_size=64 p95_us={} p99_us={}",
+            concat!(
+                "m4_metric {{\"name\":\"desktop_projection\",",
+                "\"source_messages\":512,\"streamed_deltas\":{},",
+                "\"retained_messages\":{},\"projected_text_bytes\":{},",
+                "\"batch_size\":64,\"p95_us\":{},\"p99_us\":{}}}"
+            ),
+            sequence,
             messages.len(),
             messages
                 .iter()

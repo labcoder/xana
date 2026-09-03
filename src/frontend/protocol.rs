@@ -1010,7 +1010,13 @@ mod tests {
         let p99 = samples[(samples.len() * 99 / 100).min(samples.len() - 1)];
 
         println!(
-            "m4_snapshot_projection source_messages=10000 retained_messages={retained} encoded_bytes={encoded} p95_us={} p99_us={}",
+            concat!(
+                "m4_metric {{\"name\":\"snapshot_projection\",",
+                "\"source_messages\":10000,\"retained_messages\":{},",
+                "\"encoded_bytes\":{},\"p95_us\":{},\"p99_us\":{}}}"
+            ),
+            retained,
+            encoded,
             p95.as_micros(),
             p99.as_micros(),
         );
