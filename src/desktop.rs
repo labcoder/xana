@@ -100,6 +100,7 @@ use crate::{
     workspace_host::{ConversationRef, WorkspaceHost},
 };
 use std::{
+    collections::VecDeque,
     ffi::OsString,
     fmt,
     path::PathBuf,
@@ -114,8 +115,8 @@ pub const PROTOCOL_VERSION: u16 = FRONTEND_PROTOCOL_VERSION;
 
 const COMMAND_CAPACITY: usize = 32;
 const UPDATE_CAPACITY: usize = 256;
+const DEFERRED_CRITICAL_CAPACITY: usize = 64;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
-const CRITICAL_UPDATE_GRACE: Duration = Duration::from_secs(5);
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PUBLIC_TEXT_BYTES: usize = 256 * 1024;
 
@@ -569,7 +570,6 @@ pub enum DesktopErrorCode {
     CommandRejected,
     RuntimeUnavailable,
     RuntimeCrashed,
-    ObserverStalled,
     UnsupportedExecutionOwner,
 }
 
@@ -587,7 +587,6 @@ impl DesktopErrorCode {
             Self::CommandRejected => "command_rejected",
             Self::RuntimeUnavailable => "runtime_unavailable",
             Self::RuntimeCrashed => "runtime_crashed",
-            Self::ObserverStalled => "observer_stalled",
             Self::UnsupportedExecutionOwner => "unsupported_execution_owner",
         }
     }
@@ -1183,6 +1182,7 @@ impl DesktopClient {
             update_signal: update_signal.clone(),
             startup: startup.clone(),
             notification_policy: NotificationPolicy::default(),
+            deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
         };
         let failure_updates = updates.clone();
         let failure_signal = update_signal.clone();
@@ -1872,6 +1872,14 @@ pub(crate) struct Bridge {
     update_signal: DesktopWakeSignal,
     startup: StartupSignal,
     notification_policy: NotificationPolicy,
+    deferred: Arc<Mutex<DeferredDelivery>>,
+}
+
+#[derive(Default)]
+struct DeferredDelivery {
+    queue: VecDeque<DesktopUpdate>,
+    flushing: bool,
+    resync_required: bool,
 }
 
 #[derive(Debug)]
@@ -3101,20 +3109,132 @@ impl Bridge {
     }
 
     async fn publish_critical(&self, update: DesktopUpdate) -> Result<(), DesktopError> {
-        match tokio::time::timeout(CRITICAL_UPDATE_GRACE, self.updates.send(update)).await {
-            Ok(Ok(())) => {
+        match self.updates.try_send(update) {
+            Ok(()) => {
                 self.update_signal.wake();
                 Ok(())
             }
-            Ok(Err(_)) => Err(DesktopError::new(
+            Err(mpsc::error::TrySendError::Full(update)) => self.defer_critical(update),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(DesktopError::new(
                 DesktopErrorCode::RuntimeUnavailable,
                 "Desktop projection detached",
             )),
-            Err(_) => Err(DesktopError::new(
-                DesktopErrorCode::ObserverStalled,
-                "Desktop did not receive a critical update within 5 seconds",
-            )),
         }
+    }
+
+    fn defer_critical(&self, update: DesktopUpdate) -> Result<(), DesktopError> {
+        let mut delivery = self.deferred.lock().map_err(|_| {
+            DesktopError::new(
+                DesktopErrorCode::RuntimeUnavailable,
+                "Desktop delivery state is unavailable",
+            )
+        })?;
+        queue_deferred_update(&mut delivery, update);
+        if delivery.flushing {
+            return Ok(());
+        }
+        delivery.flushing = true;
+        drop(delivery);
+
+        let updates = self.updates.clone();
+        let signal = self.update_signal.clone();
+        let deferred = Arc::clone(&self.deferred);
+        tokio::spawn(async move {
+            flush_deferred_updates(updates, signal, deferred).await;
+        });
+        Ok(())
+    }
+}
+
+fn queue_deferred_update(delivery: &mut DeferredDelivery, update: DesktopUpdate) {
+    if matches!(update, DesktopUpdate::Snapshot(_)) {
+        delivery.queue.retain(is_priority_update);
+        delivery.resync_required = false;
+        delivery.queue.push_back(update);
+        return;
+    }
+    if let Some(existing) = delivery
+        .queue
+        .iter_mut()
+        .rev()
+        .find(|queued| same_replaceable_state(queued, &update))
+    {
+        *existing = update;
+        return;
+    }
+    if delivery.queue.len() < DEFERRED_CRITICAL_CAPACITY {
+        delivery.queue.push_back(update);
+        return;
+    }
+    if is_priority_update(&update)
+        && let Some(position) = delivery
+            .queue
+            .iter()
+            .position(|queued| !is_priority_update(queued))
+    {
+        delivery.queue.remove(position);
+        delivery.queue.push_back(update);
+        delivery.resync_required = true;
+        return;
+    }
+    delivery.resync_required = true;
+}
+
+fn same_replaceable_state(left: &DesktopUpdate, right: &DesktopUpdate) -> bool {
+    matches!(
+        (left, right),
+        (DesktopUpdate::Navigation(_), DesktopUpdate::Navigation(_))
+            | (DesktopUpdate::Layout(_), DesktopUpdate::Layout(_))
+            | (DesktopUpdate::Settings(_), DesktopUpdate::Settings(_))
+            | (
+                DesktopUpdate::SettingsDraft(_),
+                DesktopUpdate::SettingsDraft(_)
+            )
+    )
+}
+
+fn is_priority_update(update: &DesktopUpdate) -> bool {
+    matches!(
+        update,
+        DesktopUpdate::CommandResult { .. } | DesktopUpdate::BackendStopped { .. }
+    )
+}
+
+async fn flush_deferred_updates(
+    updates: mpsc::Sender<DesktopUpdate>,
+    signal: DesktopWakeSignal,
+    deferred: Arc<Mutex<DeferredDelivery>>,
+) {
+    loop {
+        let next = {
+            let Ok(mut delivery) = deferred.lock() else {
+                return;
+            };
+            if let Some(update) = delivery.queue.pop_front() {
+                Some(update)
+            } else if delivery.resync_required {
+                delivery.resync_required = false;
+                Some(DesktopUpdate::ResyncRequired {
+                    expected_sequence: 0,
+                    received_sequence: 0,
+                })
+            } else {
+                delivery.flushing = false;
+                None
+            }
+        };
+        let Some(update) = next else {
+            return;
+        };
+        if updates.send(update).await.is_err() {
+            if let Ok(mut delivery) = deferred.lock() {
+                delivery.queue.clear();
+                delivery.resync_required = false;
+                delivery.flushing = false;
+            }
+            return;
+        }
+        signal.wake();
     }
 }
 
@@ -3870,6 +3990,7 @@ mod tests {
                 update_signal: DesktopWakeSignal::default(),
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
+                deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
             },
             command_sender,
             update_receiver,
@@ -3901,6 +4022,48 @@ mod tests {
                 accepted: true,
                 error: None,
             })
+        ));
+    }
+
+    #[tokio::test]
+    async fn stalled_projection_defers_critical_updates_without_blocking_the_runtime() {
+        let (bridge, _, mut updates, _) = bridge_channels();
+        for sequence in 0..UPDATE_CAPACITY {
+            bridge
+                .updates
+                .try_send(DesktopUpdate::ResyncRequired {
+                    expected_sequence: sequence as u64,
+                    received_sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+
+        tokio::time::timeout(
+            Duration::from_millis(100),
+            bridge.publish_critical(DesktopUpdate::CommandResult {
+                command_id: 19,
+                accepted: true,
+                error: None,
+            }),
+        )
+        .await
+        .expect("critical delivery must not wait for a paused presentation")
+        .unwrap();
+
+        for _ in 0..UPDATE_CAPACITY {
+            updates.recv().await.unwrap();
+        }
+        let deferred = tokio::time::timeout(Duration::from_secs(1), updates.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            deferred,
+            DesktopUpdate::CommandResult {
+                command_id: 19,
+                accepted: true,
+                ..
+            }
         ));
     }
 
@@ -4246,6 +4409,129 @@ mod tests {
                 .iter()
                 .all(|conversation| conversation.controller.is_none())
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn paused_desktop_projection_does_not_interrupt_active_runtime_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let (client, conversation) = scripted_client(&workspace);
+        let host = execution_host(directory.path(), &workspace, &conversation);
+        let inspection = host.clone();
+        let (bridge, commands, mut updates, startup) = bridge_channels();
+        for sequence in 0..UPDATE_CAPACITY {
+            bridge
+                .updates
+                .try_send(DesktopUpdate::ResyncRequired {
+                    expected_sequence: sequence as u64,
+                    received_sequence: sequence as u64,
+                })
+                .unwrap();
+        }
+        let paths = XanaPaths::resolve(Some(directory.path().into())).unwrap();
+        let navigation_store =
+            navigation::DesktopNavigationStore::open(&paths, &workspace).unwrap();
+        let layout_store = layout::DesktopLayoutStore::open(&paths);
+        let layout = layout_store.resolve(&conversation.to_string());
+        let settings = settings_state(&paths);
+        let runtime = tokio::spawn(bridge.serve_native(
+            client,
+            host,
+            conversation.clone(),
+            NotificationPolicy::default(),
+            DesktopFrontendState {
+                navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                navigation_store,
+                layout,
+                layout_store,
+                settings,
+                attachments: attachment_service(&paths, &workspace),
+            },
+        ));
+        startup
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+
+        let operation_id = DesktopOperationId::new();
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 1,
+                value: BridgeCommandValue::Submit {
+                    operation_id,
+                    input: "hello".to_owned(),
+                    attachments: Vec::new(),
+                    acknowledge_workspace_write_collision: false,
+                },
+            })
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if inspection
+                    .snapshot()
+                    .unwrap()
+                    .conversations
+                    .iter()
+                    .any(|candidate| {
+                        candidate.conversation == conversation
+                            && candidate.state
+                                == crate::execution_host::HostedConversationState::Completed
+                    })
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("runtime must complete while the Desktop receiver is paused");
+
+        for _ in 0..UPDATE_CAPACITY {
+            updates.recv().await.unwrap();
+        }
+        let mut accepted = false;
+        let mut final_received = false;
+        let mut completed = false;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !(accepted && final_received && completed) {
+                match updates.recv().await.unwrap() {
+                    DesktopUpdate::CommandResult {
+                        command_id: 1,
+                        accepted: true,
+                        ..
+                    } => accepted = true,
+                    DesktopUpdate::Observation(DesktopObservation {
+                        event: DesktopEvent::MessageFinal { .. },
+                        ..
+                    }) => final_received = true,
+                    DesktopUpdate::Observation(DesktopObservation {
+                        event:
+                            DesktopEvent::OperationState {
+                                state: DesktopOperationState::Completed,
+                                ..
+                            },
+                        ..
+                    }) => completed = true,
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("deferred critical updates must converge after the receiver resumes");
+
+        commands
+            .send(BridgeCommand {
+                version: PROTOCOL_VERSION,
+                command_id: 2,
+                value: BridgeCommandValue::Shutdown,
+            })
+            .await
+            .unwrap();
+        runtime.await.unwrap().unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]

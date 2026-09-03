@@ -939,6 +939,7 @@ mod tests {
                 update_signal: DesktopWakeSignal::default(),
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
+                deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
             },
             command_sender,
             update_receiver,
