@@ -850,17 +850,7 @@ fn display_owner(owner: &str) -> String {
 }
 
 fn humanize_semantic_code(code: &str) -> String {
-    let mut label = code
-        .split(['.', '_'])
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if label.is_empty() {
-        return "Unavailable".to_owned();
-    }
-    let first = label.remove(0).to_uppercase().to_string();
-    label.insert_str(0, &first);
-    label
+    crate::localization::semantic_code_label(code, "Unavailable")
 }
 
 fn short_identity(identity: &str) -> &str {

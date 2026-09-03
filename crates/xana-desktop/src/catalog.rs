@@ -620,16 +620,12 @@ fn catalog_sidebar() -> [SidebarSection; 2] {
                 SidebarNavItem::new("previews", "Previews"),
             ]),
         ]),
-        SidebarSection::new("system", "System").items([
-            SidebarNavItem::new("connections", "Connections"),
-            SidebarNavItem::new("unavailable", "Remote controller")
-                .badge("Unavailable")
-                .disabled(true),
-        ]),
+        SidebarSection::new("system", "System")
+            .items([SidebarNavItem::new("connections", "Connections")]),
     ]
 }
 
-fn catalog_commands() -> [CommandSearchItem; 4] {
+fn catalog_commands() -> [CommandSearchItem; 3] {
     [
         CommandSearchItem::new("new-conversation", "New conversation")
             .subtitle("Create a local Xana conversation")
@@ -642,9 +638,6 @@ fn catalog_commands() -> [CommandSearchItem; 4] {
         CommandSearchItem::new("inspect-receipt", "Inspect latest receipt")
             .subtitle("Open the durable operation receipt")
             .keywords(["recovery", "operation"]),
-        CommandSearchItem::new("remote-controller", "Connect remote controller")
-            .subtitle("Unavailable in Milestone 4")
-            .disabled(true),
     ]
 }
 

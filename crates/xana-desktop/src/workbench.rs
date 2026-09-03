@@ -3443,18 +3443,16 @@ impl Render for Workbench {
             .child(
                 Button::new("sidebar-new-conversation")
                     .label(if sidebar_is_full { "New" } else { "+" })
+                    .accessibility_label("New Conversation")
                     .w_full()
                     .on_click(cx.listener(|this, _, window, cx| {
-                        match this.runtime.new_conversation(this.selected_project.clone()) {
-                            Ok(_) => this.projection.set_activity("Creating a new Conversation…"),
-                            Err(error) => this.projection.fail(error.message),
-                        }
-                        this.sync_components(window, cx);
+                        this.dispatch(WorkbenchCommand::NewConversation, window, cx);
                     })),
             )
             .child(
                 Button::new("sidebar-navigation-actions")
                     .label(if sidebar_is_full { "Actions…" } else { "…" })
+                    .accessibility_label("Selected item actions")
                     .disabled(sidebar_selection.is_none())
                     .dropdown_menu(move |menu, _, _| {
                         navigation_menu(menu, sidebar_selection.clone(), &menu_snapshot)
@@ -3470,17 +3468,19 @@ impl Render for Workbench {
             .child(
                 Button::new("open-espejo")
                     .label(if sidebar_is_full { "Espejo" } else { "E" })
+                    .accessibility_label("Open Espejo")
                     .w_full()
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.open_espejo(EspejoScope::Global, cx);
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.dispatch(WorkbenchCommand::ShowEspejo, window, cx);
                     })),
             )
             .child(
                 Button::new("open-settings")
                     .label(if sidebar_is_full { "Settings" } else { "S" })
+                    .accessibility_label("Open Settings")
                     .w_full()
                     .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_settings(window, cx);
+                        this.dispatch(WorkbenchCommand::ShowSettings, window, cx);
                     })),
             );
         let sidebar = v_flex()
@@ -3941,17 +3941,7 @@ fn render_activity_item(activity: &DesktopActivityItem, cx: &mut Context<Workben
 }
 
 fn humanize_semantic_code(code: &str) -> String {
-    let mut label = code
-        .split(['.', '_'])
-        .filter(|word| !word.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ");
-    if label.is_empty() {
-        return "Activity".to_owned();
-    }
-    let first = label.remove(0).to_uppercase().to_string();
-    label.insert_str(0, &first);
-    label
+    crate::localization::semantic_code_label(code, "Activity")
 }
 
 fn short_identity(identity: &str) -> &str {
