@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 9;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 10;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;

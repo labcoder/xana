@@ -141,6 +141,7 @@ fn layer_kind_name(kind: PromptLayerKind) -> &'static str {
         PromptLayerKind::ProjectInstructions => "project_instructions",
         PromptLayerKind::SkillInstructions => "skill_instructions",
         PromptLayerKind::CompactedHistory => "compacted_history",
+        PromptLayerKind::ParentHandoff => "parent_handoff",
     }
 }
 

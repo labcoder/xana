@@ -457,6 +457,14 @@ impl Agent {
 
         for _ in 0..round_limit {
             let request_messages = prompt.messages_for_request(messages)?;
+            if let Some(ledger) = prompt.ledger(messages) {
+                // Tool results change the tail within a turn. Report each
+                // actual request, not only the pre-tool submission estimate.
+                let _ = events.send(AgentEvent::PromptPlanUpdated {
+                    operation_id,
+                    ledger,
+                });
+            }
             let step_id = StepId::new();
             delta_sink.begin_request();
             let assistant = self

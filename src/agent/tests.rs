@@ -426,8 +426,21 @@ async fn prompt_prefix_remains_stable_across_streamed_tool_rounds() {
         },
     ];
     let (provider, requests) = ScriptedChatTransport::new(responses);
-    let agent = make_agent(provider, workspace.path(), 3);
-    let (operation_id, permissions, events, _receiver) = operation_services();
+    let mut agent = make_agent(provider, workspace.path(), 3);
+    agent.prompt.budget_plan = Some(
+        crate::prompt::PromptBudgetPlan::derive(
+            &crate::prompt::PromptBudgetPolicy::default(),
+            crate::prompt::ModelBudgetFacts {
+                connection: "test".into(),
+                model: "model".into(),
+                context_tokens: None,
+                max_output_tokens: None,
+                reasoning: false,
+            },
+        )
+        .unwrap(),
+    );
+    let (operation_id, permissions, events, mut receiver) = operation_services();
     let mut history = vec![Message::text(Role::User, "read")];
 
     agent
@@ -442,6 +455,18 @@ async fn prompt_prefix_remains_stable_across_streamed_tool_rounds() {
     assert_eq!(requests[0][0], requests[1][0]);
     assert_eq!(requests[0][0].role, Role::System);
     assert!(requests[1].len() > requests[0].len());
+    let mut ledgers = Vec::new();
+    while let Ok(event) = receiver.try_recv() {
+        if let AgentEvent::PromptPlanUpdated { ledger, .. } = event {
+            ledgers.push(ledger);
+        }
+    }
+    assert_eq!(
+        ledgers.len(),
+        requests.len(),
+        "account every provider request including tool rounds"
+    );
+    assert!(ledgers[1].estimated_input_tokens > ledgers[0].estimated_input_tokens);
 }
 
 #[tokio::test]

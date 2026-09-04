@@ -3,6 +3,7 @@
 //! The application edge supplies every dynamic input. Assembly freezes one
 //! byte-stable system message for an agent; providers only serialize it.
 
+mod accounting;
 mod budget;
 mod render;
 
@@ -22,8 +23,7 @@ use crate::{
 
 pub(crate) use render::estimate_message_tokens;
 use render::{
-    estimate_image_tokens, estimate_tool_schema_tokens, refresh_layer_costs, render_layers,
-    trim_outer_blank_lines,
+    estimate_tool_schema_tokens, refresh_layer_costs, render_layers, trim_outer_blank_lines,
 };
 use std::{collections::HashSet, error::Error, fmt, path::PathBuf};
 
@@ -50,6 +50,7 @@ pub(crate) enum PromptLayerKind {
     ProjectInstructions,
     SkillInstructions,
     CompactedHistory,
+    ParentHandoff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,86 +124,6 @@ impl PromptSnapshot {
         messages.push(self.system_message.clone());
         messages.extend_from_slice(history);
         Ok(messages)
-    }
-
-    pub(crate) fn ledger(&self, history: &[Message]) -> Option<PromptPlanLedger> {
-        let budget = self.budget_plan.clone()?;
-        let attachment_count = history
-            .iter()
-            .flat_map(|message| &message.content)
-            .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
-            .count();
-        let attachment_bytes = history
-            .iter()
-            .flat_map(|message| &message.content)
-            .filter_map(|block| match block {
-                crate::message::ContentBlock::Image(image) => Some(image.byte_len),
-                _ => None,
-            })
-            .fold(0_u64, u64::saturating_add);
-        let attachment_tokens = history
-            .iter()
-            .flat_map(|message| &message.content)
-            .filter_map(|block| match block {
-                crate::message::ContentBlock::Image(image) => Some(estimate_image_tokens(image)),
-                _ => None,
-            })
-            .fold(0_usize, usize::saturating_add);
-        let history_tokens = history
-            .iter()
-            .map(estimate_message_tokens)
-            .fold(0_usize, usize::saturating_add);
-        let compacted_tokens = self
-            .layers
-            .iter()
-            .filter(|layer| layer.kind == PromptLayerKind::CompactedHistory)
-            .map(|layer| layer.estimated_tokens)
-            .fold(0_usize, usize::saturating_add);
-        let instructions = self.system_tokens.saturating_sub(compacted_tokens);
-        let recent_history = history_tokens.saturating_sub(attachment_tokens);
-        let categories = vec![
-            PromptLedgerCategory {
-                kind: PromptLedgerCategoryKind::Instructions,
-                estimated_tokens: instructions,
-            },
-            PromptLedgerCategory {
-                kind: PromptLedgerCategoryKind::ToolDefinitions,
-                estimated_tokens: self.tool_schema_tokens,
-            },
-            PromptLedgerCategory {
-                kind: PromptLedgerCategoryKind::CompactedHistory,
-                estimated_tokens: compacted_tokens,
-            },
-            PromptLedgerCategory {
-                kind: PromptLedgerCategoryKind::RecentHistory,
-                estimated_tokens: recent_history,
-            },
-            PromptLedgerCategory {
-                kind: PromptLedgerCategoryKind::Attachments,
-                estimated_tokens: attachment_tokens,
-            },
-        ];
-
-        Some(PromptPlanLedger {
-            version: PROMPT_LEDGER_VERSION,
-            budget,
-            categories,
-            estimated_input_tokens: self
-                .system_tokens
-                .saturating_add(self.tool_schema_tokens)
-                .saturating_add(history_tokens),
-            attachment_count,
-            attachment_bytes,
-            omitted_source_ids: self
-                .context_plan
-                .omitted_sources
-                .iter()
-                .take(64)
-                .map(|id| id.as_str().to_owned())
-                .collect(),
-            cache_read: CacheObservation::Unavailable,
-            cache_write: CacheObservation::Unavailable,
-        })
     }
 }
 
@@ -304,6 +225,9 @@ pub(crate) enum PromptError {
     RequiredLayersExceedBudget {
         required_tokens: usize,
         total_tokens: usize,
+    },
+    RequiredSourceIncomplete {
+        source_id: String,
     },
     HistoryExceedsBudget {
         system_tokens: usize,
@@ -486,6 +410,24 @@ fn assemble_snapshot_with_compaction(
     let planned = planner
         .plan(fixed_system_tokens + tool_schema_tokens)
         .map_err(PromptError::Context)?;
+    // Authored instructions are not optional evidence previews. A truncated
+    // sentence can reverse a rule; reject rather than quietly weaken policy.
+    for source in inputs.project_sources.iter().filter(|source| {
+        matches!(
+            source.provenance.origin,
+            SourceOrigin::ProjectFile | SourceOrigin::Skill
+        )
+    }) {
+        if !planned
+            .selected
+            .iter()
+            .any(|selected| selected.source_id == source.id && !selected.truncated)
+        {
+            return Err(PromptError::RequiredSourceIncomplete {
+                source_id: source.id.as_str().to_owned(),
+            });
+        }
+    }
     let mut context_plan = ContextPlan {
         selected: Vec::new(),
         used_tokens: 0,
@@ -494,10 +436,10 @@ fn assemble_snapshot_with_compaction(
 
     for preview in planned.selected {
         let project_layer = layer(
-            if preview.provenance.origin == SourceOrigin::Skill {
-                PromptLayerKind::SkillInstructions
-            } else {
-                PromptLayerKind::ProjectInstructions
+            match preview.provenance.origin {
+                SourceOrigin::Skill => PromptLayerKind::SkillInstructions,
+                SourceOrigin::ParentHandoff => PromptLayerKind::ParentHandoff,
+                _ => PromptLayerKind::ProjectInstructions,
             },
             preview.source_id.as_str(),
             preview.provenance.clone(),
@@ -518,6 +460,14 @@ fn assemble_snapshot_with_compaction(
             context_plan.selected.push(preview);
         } else {
             layers.pop();
+            if matches!(
+                preview.provenance.origin,
+                SourceOrigin::ProjectFile | SourceOrigin::Skill
+            ) {
+                return Err(PromptError::RequiredSourceIncomplete {
+                    source_id: preview.source_id.as_str().to_owned(),
+                });
+            }
             context_plan.omitted_sources.push(preview.source_id);
         }
     }
@@ -616,6 +566,10 @@ impl fmt::Display for PromptError {
                 write!(f, "invalid product documentation hint: {reason}")
             }
             Self::DuplicateSourceId { id } => write!(f, "prompt source id {id:?} is duplicated"),
+            Self::RequiredSourceIncomplete { source_id } => write!(
+                f,
+                "required instruction source {source_id:?} cannot fit completely; shorten it or increase its source/context budget before retrying (no instructions were silently omitted)"
+            ),
             Self::RequiredLayersExceedBudget {
                 required_tokens,
                 total_tokens,
@@ -647,6 +601,7 @@ impl Error for PromptError {
             Self::InvalidEnvironment { .. }
             | Self::InvalidProductDocumentation { .. }
             | Self::DuplicateSourceId { .. }
+            | Self::RequiredSourceIncomplete { .. }
             | Self::RequiredLayersExceedBudget { .. }
             | Self::HistoryExceedsBudget { .. }
             | Self::SystemRoleInHistory => None,

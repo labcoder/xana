@@ -1643,6 +1643,40 @@ fn project_context_versions_refresh_only_on_change_and_old_bytes_remain_material
 }
 
 #[test]
+fn durable_project_instructions_reach_the_compiler_completely_and_views_share_unicode_accounting() {
+    let directory = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let text = format!("{}\nNever publish secrets.", "🦀 words 中\n".repeat(1800));
+    fs::write(workspace.path().join("AGENTS.md"), &text).unwrap();
+    let mut session =
+        DurableSession::create(directory.path(), workspace.path().canonicalize().unwrap()).unwrap();
+    let sources = session.refresh_project_context().unwrap();
+    assert_eq!(
+        sources[0].content, text,
+        "late safety instructions must not disappear in a durable view"
+    );
+    let key = session.restored().named_context["project:AGENTS.md"];
+    let context = &session.restored().contexts[&key];
+    let (preview, hash) = session
+        .materialize(
+            context,
+            &ViewSelector::Full,
+            MaterializationBudget {
+                max_bytes: 10,
+                max_estimated_tokens: 5,
+            },
+        )
+        .unwrap();
+    assert!(!preview.is_empty());
+    assert!(preview.len() <= 10);
+    assert!(crate::context::estimate_tokens(&preview) <= 5);
+    assert_eq!(
+        hash,
+        crate::artifact::ContentHash::for_bytes(preview.as_bytes())
+    );
+}
+
+#[test]
 fn an_unstarted_created_session_can_be_rolled_back_exactly() {
     let directory = tempdir().expect("Xana data tempdir");
     let session_id = SessionId::new();

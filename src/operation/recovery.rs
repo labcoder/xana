@@ -233,8 +233,12 @@ fn append_recovery_result(
         | InvocationOutcome::Interrupted { .. } => None,
     };
     session.append_record(SessionRecord::InvocationResultAppended { result })?;
-    if let Some(output) = completed {
-        session.append_record(super::named_tool_output(intent, output))?;
+    if let Some(output) = &completed {
+        session.append_record(super::named_tool_output(intent, output.clone()))?;
+    }
+    let mut tool_result = tool_result;
+    if let Some(output) = &completed {
+        tool_result.output = super::output::for_model(tool_result.output, output);
     }
     session.append_message(Message::tool_result(tool_result))?;
     Ok(())

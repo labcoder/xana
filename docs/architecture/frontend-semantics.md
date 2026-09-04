@@ -5,7 +5,8 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 9 retains version 5's stable command-semantic
+facts. Protocol version 10 adds versioned, classified prompt accounting and
+retains version 5's stable command-semantic
 identifiers, version 7's execution and completion facts, version 8's Desktop
 Conversation controls, and version 9's Espejo and host-supervision projection
 over the surface-neutral semantic layer for content, resources, activity,

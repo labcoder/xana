@@ -162,14 +162,14 @@ fn literal_search_preserves_line_order_and_match_cap() {
 #[test]
 fn unicode_preview_never_splits_a_scalar_value() {
     let preview = preview(
-        &source("project:unicode", "é🦀漢字-more", 1),
+        &source("project:unicode", "é🦀漢字-more", 9),
         PreviewSelector::Head,
     )
     .expect("Unicode preview");
 
     assert_eq!(preview.text, "é🦀漢");
     assert!(preview.truncated);
-    assert_eq!(preview.estimated_tokens, 1);
+    assert_eq!(preview.estimated_tokens, 9);
 }
 
 #[test]
@@ -250,7 +250,7 @@ fn selection_is_deterministic_and_never_exceeds_budget() {
         },
         Case {
             name: "Unicode scalar boundary",
-            budget: 1,
+            budget: 12,
             source_sizes: &[3, 3],
             expected_ids: &["project:0"],
             expected_omitted: &["project:1"],

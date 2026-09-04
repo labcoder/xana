@@ -43,6 +43,19 @@ already observed. It is not an account-balance refresh. Missing facts remain
 explicitly unavailable, and process-local counters are never labeled as
 durable Conversation totals.
 
+Native prompt accounting is refreshed for each model request, including after
+tool results. It separates instructions, runtime facts, handoff, tool schemas,
+tool evidence, recent/compacted history, and attachments. Memory and retrieval
+slots are currently empty. Output/reasoning reserves are not sent input.
+The versioned text heuristic is not a provider tokenizer; cache read/write
+facts remain unavailable unless supplied separately by the provider.
+
+Large successful tool outputs stored as immutable artifacts enter subsequent
+requests as a bounded preview plus their exact artifact reference. `/artifact ID`
+lets you inspect that retained output. The preview is explicitly incomplete;
+it does not mean the original output was deleted or that an action should be
+repeated. Small inline results remain unchanged.
+
 Plain mode supports the same `/usage compact` and `/usage details` forms. The
 detailed append-only report prints the bounded execution facts, prompt plan,
 and completion receipts already retained by that client. Private

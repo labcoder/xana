@@ -1,4 +1,5 @@
 use super::*;
+mod compiler;
 use crate::{
     context::{ContextSource, TransientSourceId},
     message::{ContentBlock, ToolCall, ToolResult},
@@ -476,7 +477,7 @@ fn prompt_plan_ledger_is_bounded_categorical_and_never_copies_prompt_text() {
 
     assert_eq!(ledger.version, PROMPT_LEDGER_VERSION);
     assert_eq!(ledger.budget, plan);
-    assert_eq!(ledger.categories.len(), 5);
+    assert_eq!(ledger.categories.len(), 10);
     assert!(ledger.estimated_input_tokens > 0);
     assert_eq!(ledger.cache_read, CacheObservation::Unavailable);
     assert_eq!(ledger.cache_write, CacheObservation::Unavailable);

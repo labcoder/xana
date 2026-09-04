@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
 
-pub(crate) const PROMPT_LEDGER_VERSION: u16 = 1;
+pub(crate) const PROMPT_LEDGER_VERSION: u16 = 2;
 pub(crate) const HARD_CONTEXT_CEILING_TOKENS: usize = 1_000_000;
 const MIN_USABLE_CONTEXT_TOKENS: usize = 2_048;
 
@@ -272,9 +272,14 @@ impl PromptBudgetPlan {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PromptLedgerCategoryKind {
     Instructions,
+    RuntimeFacts,
+    ParentHandoff,
+    PersonalMemory,
+    RetrievedEvidence,
     ToolDefinitions,
     CompactedHistory,
     RecentHistory,
+    ToolEvidence,
     Attachments,
 }
 
@@ -295,6 +300,7 @@ pub(crate) enum CacheObservation {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PromptPlanLedger {
     pub(crate) version: u16,
+    pub(crate) estimator: TokenEstimateSource,
     pub(crate) budget: PromptBudgetPlan,
     pub(crate) categories: Vec<PromptLedgerCategory>,
     pub(crate) estimated_input_tokens: usize,
@@ -303,6 +309,13 @@ pub(crate) struct PromptPlanLedger {
     pub(crate) omitted_source_ids: Vec<String>,
     pub(crate) cache_read: CacheObservation,
     pub(crate) cache_write: CacheObservation,
+}
+
+/// No provider-exact tokenizer or cache-hit observation is available here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TokenEstimateSource {
+    Utf8HeuristicV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

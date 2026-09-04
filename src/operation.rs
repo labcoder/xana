@@ -1,5 +1,6 @@
 //! Durable tool-invocation records, execution ordering, and recovery planning.
 
+mod output;
 mod recovery;
 
 pub(crate) use recovery::{RecoveryAction, execute_recovery, plan_recovery};
@@ -312,7 +313,10 @@ impl<'a> OperationExecutor<'a> {
                         .store_json(Value::String(output.clone()))
                         .await?;
                     (
-                        ToolResult::success(planned.call_id.clone(), output),
+                        ToolResult::success(
+                            planned.call_id.clone(),
+                            output::for_model(output, &value),
+                        ),
                         InvocationOutcome::Completed { output: value },
                     )
                 }

@@ -9,7 +9,7 @@ mod source;
 
 use std::{collections::HashSet, error::Error, fmt, io, path::PathBuf, string::FromUtf8Error};
 
-pub(crate) use preview::{canonical_text, estimate_tokens, preview};
+pub(crate) use preview::{bounded_text, canonical_text, estimate_tokens, preview};
 #[cfg(test)]
 pub(crate) use source::load_project_sources;
 pub(crate) use source::{

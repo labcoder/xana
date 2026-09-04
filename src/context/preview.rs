@@ -4,11 +4,20 @@ use super::{ContextError, ContextPreview, ContextSource, PreviewSelector};
 
 const CHARS_PER_ESTIMATED_TOKEN: usize = 3;
 
-/// Estimates input tokens as one token per three Unicode scalar values,
-/// rounded up. It intentionally errs above the common four-character rule and
-/// is not a provider tokenizer.
+/// ASCII uses the existing three-byte heuristic. Non-ASCII is charged at one
+/// token per UTF-8 byte so CJK, combining marks and emoji cannot receive the
+/// English compression discount. This is an estimate, not a provider tokenizer
+/// or a guaranteed upper bound for an unknown model.
 pub(crate) fn estimate_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(CHARS_PER_ESTIMATED_TOKEN)
+    text.bytes()
+        .fold(0_usize, |units, byte| {
+            units.saturating_add(if byte.is_ascii() {
+                1
+            } else {
+                CHARS_PER_ESTIMATED_TOKEN
+            })
+        })
+        .div_ceil(CHARS_PER_ESTIMATED_TOKEN)
 }
 
 pub(crate) fn preview(
@@ -85,9 +94,25 @@ pub(crate) fn canonical_text(text: &str) -> String {
 }
 
 fn bound_to_tokens(text: &str, max_tokens: usize) -> (String, bool) {
-    let max_chars = max_tokens.saturating_mul(CHARS_PER_ESTIMATED_TOKEN);
-    let mut chars = text.chars();
-    let selected = chars.by_ref().take(max_chars).collect::<String>();
-    let truncated = chars.next().is_some();
-    (selected, truncated)
+    let bounded = bounded_text(text, text.len(), max_tokens);
+    (bounded.to_owned(), bounded.len() < text.len())
+}
+
+/// Shared budget rule for transient previews and durable context views.
+pub(crate) fn bounded_text(text: &str, max_bytes: usize, max_tokens: usize) -> &str {
+    let text = &text[..text.floor_char_boundary(text.len().min(max_bytes))];
+    let max_units = max_tokens.saturating_mul(CHARS_PER_ESTIMATED_TOKEN);
+    let mut used = 0_usize;
+    for (offset, character) in text.char_indices() {
+        let units = if character.is_ascii() {
+            1
+        } else {
+            character.len_utf8() * CHARS_PER_ESTIMATED_TOKEN
+        };
+        used = used.saturating_add(units);
+        if used > max_units {
+            return &text[..offset];
+        }
+    }
+    text
 }

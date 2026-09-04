@@ -39,8 +39,10 @@ const MAX_INSPECTED_ENTRY_IDS: usize = 128;
 const PROJECT_INSTRUCTIONS: &str = crate::context::PROJECT_INSTRUCTIONS;
 const MAX_PROJECT_SOURCE_BYTES: usize = crate::context::MAX_PROJECT_SOURCE_BYTES;
 const PROJECT_VIEW_BUDGET: MaterializationBudget = MaterializationBudget {
-    max_bytes: 16 * 1024,
-    max_estimated_tokens: 1_024,
+    // Authored instructions cannot be clipped before the compiler sees them.
+    // The model-aware request budget decides whether this complete source fits.
+    max_bytes: MAX_PROJECT_SOURCE_BYTES,
+    max_estimated_tokens: MAX_PROJECT_SOURCE_BYTES,
 };
 
 pub(crate) struct DurableSession {
@@ -814,14 +816,8 @@ fn select_text(source: &str, selector: &ViewSelector) -> Result<String> {
 }
 
 fn bound_text(text: &str, budget: MaterializationBudget) -> String {
-    let max_chars = budget.max_estimated_tokens.saturating_mul(3);
-    let mut output = String::new();
-    for character in text.chars().take(max_chars) {
-        if output.len() + character.len_utf8() > budget.max_bytes {
-            break;
-        }
-        output.push(character);
-    }
+    let output = crate::context::bounded_text(text, budget.max_bytes, budget.max_estimated_tokens)
+        .to_owned();
     debug_assert!(output.len() <= budget.max_bytes);
     debug_assert!(estimate_tokens(&output) <= budget.max_estimated_tokens);
     output

@@ -624,7 +624,9 @@ byte-stable across supported platforms. The labels are prompt structure, not a
 security boundary.
 
 Root `AGENTS.md` is optional, must be a non-symlink regular UTF-8 file no larger
-than 64 KiB, and has independent 16 KiB and 1,024-estimated-token view limits.
+than 64 KiB. Its complete bounded contents reach prompt assembly; there is no
+silent 1,024-token head preview of an instruction file. If required instructions
+do not fit the model-aware request budget, submission fails before provider I/O.
 Its discovery does not walk parents or nested directories and ignores
 `XANA.md`. A separate `SkillCatalog` indexes bounded Agent Skills metadata from
 user `.agents/skills/`, workspace `.agents/skills/`, and enabled-plugin sources;
@@ -639,14 +641,24 @@ only narrow it. Missing metadata uses the documented conservative 32,768-token
 fallback, while contradictory limits fail rather than overclaim capacity.
 Output, reasoning, tool, and retained-conversation reserves are derived before
 rendered system layers, exact tool schemas, selected previews, actual history,
-tool results, and attachments are charged. The text estimator uses one token
-per three Unicode scalar values, rounded up; image blocks reserve a
+tool results, and attachments are charged. The versioned UTF-8 heuristic charges
+ASCII at one token per three bytes and non-ASCII at one per UTF-8 byte, rounded
+up; this deliberately avoids applying English compression to CJK or emoji.
+Image blocks reserve a
 provider-neutral, pixel-based conservative estimate instead of a textual
 placeholder. Neither estimate is a provider tokenizer. Over-budget required
 input or history fails before provider I/O. A bounded, redacted prompt-plan
 ledger reports category estimates, reserves, omissions, attachment counts and
 bytes, and unavailable provider cache observations without copying prompt
-content. Range and literal-search previews remain bounded, Unicode-safe, and
+content. It updates at every provider request, including tool rounds, and
+separates runtime facts, parent handoff, tool evidence, and conversation content.
+Personal-memory and retrieved-evidence slots currently remain zero: their
+future producers are not implemented. Output/reasoning reserves remain in the
+budget, not misreported as sent input. Authored instructions must fit completely
+or assembly rejects the request; optional evidence can still be omitted with
+an explicit source ID. These estimates are neither a guaranteed token bound
+for an unknown tokenizer nor evidence of a provider cache hit.
+Range and literal-search previews remain bounded, Unicode-safe, and
 provenance-bearing.
 
 Prompt-layer ids are transient to one snapshot. Durable `ContextRecord`s carry
@@ -933,7 +945,7 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 9
+staged images, and an ordered follow-up queue. Frontend protocol version 10
 retains version 5's stable semantic command identifiers, version 7's frozen
 execution/completion facts, and version 8's Desktop Conversation controls, then
 adds Espejo and host-supervision projection. Native and managed Runs publish
