@@ -57,6 +57,14 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
+      - name: Install Linux Desktop build dependencies
+        id: desktop-deps
+        if: ${{ runner.os == 'Linux' }}
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libfontconfig1-dev
+
       - name: Report execution environment
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
@@ -67,7 +75,7 @@ jobs:
         run: cargo fmt --all --check
 
       - name: Run Clippy
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' && (runner.os != 'Linux' || steps.desktop-deps.outcome == 'success') }}
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Verify Desktop dependency boundary
@@ -84,7 +92,7 @@ jobs:
         run: cargo test --locked --workspace --all-targets --no-default-features ${{ matrix.test_args }}
 
       - name: Check Linux workspace test targets
-        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' && steps.desktop-deps.outcome == 'success' }}
         run: |
           cargo check --locked --workspace --all-targets --all-features
           cargo check --locked --workspace --all-targets --no-default-features

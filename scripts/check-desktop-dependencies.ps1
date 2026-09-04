@@ -67,7 +67,8 @@ try {
     }
     $gpuiRoots = @(
         $gpuiTree -split "`r?`n" |
-            Where-Object { $_ -match '^gpui v' }
+            Where-Object { $_ -match '^gpui v' } |
+            Sort-Object -Unique
     )
     if ($gpuiRoots.Count -ne 1) {
         throw "expected exactly one GPUI root, found $($gpuiRoots.Count)"

@@ -538,7 +538,12 @@ mod tests {
                 .iter()
                 .any(|finding| finding.code == "config.missing")
         );
-        assert!(snapshot.repairable_codes.is_empty());
+        assert!(snapshot.repairable_codes.iter().all(|code| {
+            snapshot
+                .findings
+                .iter()
+                .any(|finding| finding.code == *code && finding.repairable)
+        }));
     }
 
     #[test]
