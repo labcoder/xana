@@ -210,8 +210,12 @@ but their lifecycle mutations remain in Xana's typed terminal management flow.
 Palette rows that open those status views disclose that boundary; navigation is
 not presented as a completed mutation workflow.
 
-Missing configuration enters graphical setup. Invalid, incompatible, or
-interrupted state enters a separate maintenance surface. Doctor snapshots are
+Missing configuration enters graphical setup. Invalid, incompatible,
+migratable, or interrupted state enters a separate maintenance surface. Cold
+launch determines that recovery requirement before decoding Project and recent
+Conversation state, and returns an empty navigation catalog while recovery is
+required; older private records therefore cannot prevent the maintenance
+surface from rendering. Doctor snapshots are
 read-only; repairs, migration, and reset each require an exact reviewed plan
 whose revision is checked again at execution. Migration reuses the existing
 backup and interrupted-transaction recovery boundary. Reset enumerates exact

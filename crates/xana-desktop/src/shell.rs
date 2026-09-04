@@ -71,10 +71,11 @@ impl DesktopShell {
         let control = launch.control_plane();
         let intentionally_blank = setup_snapshot.intentionally_blank;
         let requires_setup = catalog.configuration_state == "missing" && !intentionally_blank;
-        let requires_recovery = matches!(
-            catalog.configuration_state.as_str(),
-            "invalid" | "incompatible" | "indeterminate"
-        );
+        let requires_recovery = catalog.recovery_required
+            || matches!(
+                catalog.configuration_state.as_str(),
+                "invalid" | "incompatible" | "indeterminate"
+            );
         let mut shell = Self {
             launch,
             instance: Some(instance),
@@ -196,7 +197,7 @@ impl DesktopShell {
                     cx.notify();
                 }
                 MaintenanceViewEvent::ConfigurationChanged => {
-                    this.refresh_configuration_state(window, cx);
+                    this.refresh_launch_catalog(window, cx);
                 }
             },
         );
@@ -238,17 +239,17 @@ impl DesktopShell {
         cx.notify();
     }
 
-    fn refresh_configuration_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn refresh_launch_catalog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let launch = self.launch.clone();
         cx.spawn_in(window, async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { launch.control_plane()?.setup_snapshot() })
+                .spawn(async move { launch.launch_catalog() })
                 .await;
             _ = this.update_in(cx, |this, _, cx| {
                 match result {
-                    Ok(snapshot) => {
-                        this.catalog.configuration_state = snapshot.configuration_state;
+                    Ok(catalog) => {
+                        this.catalog = catalog;
                         this.error = None;
                     }
                     Err(error) => this.error = Some(error.message),

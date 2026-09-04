@@ -88,9 +88,12 @@ operation reconciliation—remain in Xana's typed terminal management flow. The
 command palette can open the relevant Desktop status view and labels that
 limitation; it does not imply that navigation changed configuration.
 
-An invalid, incompatible, or interrupted configuration opens **Diagnose and
-recover**, not setup. Doctor remains read-only. A repair, migration, or reset
-first produces an exact review plan and requires a separate commit. Migration
+An invalid, incompatible, or interrupted configuration or private-state record
+opens **Diagnose and recover**, not setup. Cold launch checks recovery status
+before it reads Project or recent-Conversation records, so a supported older
+record version can never prevent the recovery window from opening. Doctor
+remains read-only. A repair, migration, or reset first produces an exact review
+plan and requires a separate commit. Migration
 retains recovery copies, reset lists preserved state and confirms credential
 deletion separately, and the bounded support export contains metadata only.
 These operations are also available from Settings and through the equivalent
@@ -290,8 +293,8 @@ arbitrary URL or filesystem path from the command palette.
 ## Troubleshooting
 
 - `configuration_unavailable`: run `cargo run --locked -- setup` with the same
-  `XANA_HOME`, or use Desktop's Diagnose and recover view when the configuration
-  is invalid, incompatible, or interrupted.
+  `XANA_HOME`, or use Desktop's Diagnose and recover view when configuration or
+  private state is invalid, incompatible, migratable, or interrupted.
 - `instance_unavailable`: the existing Desktop did not respond to authenticated
   forwarding. Close a hung process and retry; do not manually reuse the
   endpoint or capability from the descriptor.

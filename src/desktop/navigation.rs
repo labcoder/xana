@@ -9,7 +9,10 @@ use crate::{
     managed::thread_store::ManagedThreadStore,
     message::{ContentBlock, Role},
     paths::XanaPaths,
-    private_state::ProjectLifecycle,
+    private_state::{
+        PrivateRecordStatus, ProjectLifecycle, inspect_interoperable_records,
+        private_migration_pending,
+    },
     project::{Project, ProjectStore, WorkspaceStatus},
     project_continuation::{ProjectContinuationReceipt, ProjectContinuationService},
     session::DurableSession,
@@ -147,6 +150,8 @@ pub struct DesktopLaunchChoice {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopLaunchCatalog {
     pub configuration_state: String,
+    /// Whether cold launch must open recovery before reading private product state.
+    pub recovery_required: bool,
     pub projects: Vec<DesktopLaunchChoice>,
     pub recent: Vec<DesktopLaunchChoice>,
 }
@@ -232,6 +237,30 @@ struct ProjectConversationProjection {
 
 impl DesktopNavigationStore {
     pub(super) fn launch_catalog(paths: &XanaPaths) -> Result<DesktopLaunchCatalog, DesktopError> {
+        let configuration = ConfigReadiness::inspect(paths.config_file());
+        let recovery_required = matches!(
+            configuration,
+            ConfigReadiness::Invalid
+                | ConfigReadiness::Incompatible
+                | ConfigReadiness::Indeterminate
+        ) || private_migration_pending(paths).unwrap_or(true)
+            || inspect_interoperable_records(paths)
+                .into_iter()
+                .any(|record| {
+                    !matches!(
+                        record.status,
+                        PrivateRecordStatus::Healthy | PrivateRecordStatus::Missing
+                    )
+                });
+        if configuration != ConfigReadiness::Healthy || recovery_required {
+            return Ok(DesktopLaunchCatalog {
+                configuration_state: configuration.as_str().to_owned(),
+                recovery_required,
+                projects: Vec::new(),
+                recent: Vec::new(),
+            });
+        }
+
         let preference_file = paths
             .data_dir()
             .join("frontend")
@@ -304,9 +333,8 @@ impl DesktopNavigationStore {
         }
 
         Ok(DesktopLaunchCatalog {
-            configuration_state: ConfigReadiness::inspect(paths.config_file())
-                .as_str()
-                .to_owned(),
+            configuration_state: configuration.as_str().to_owned(),
+            recovery_required,
             projects: project_choices,
             recent,
         })
@@ -1079,6 +1107,7 @@ mod tests {
         let catalog = DesktopNavigationStore::launch_catalog(&paths).unwrap();
 
         assert_eq!(catalog.configuration_state, "missing");
+        assert!(!catalog.recovery_required);
         assert!(catalog.projects.is_empty());
         assert!(catalog.recent.is_empty());
         assert!(!paths.data_dir().exists());
@@ -1107,6 +1136,7 @@ mod tests {
         let catalog = DesktopNavigationStore::launch_catalog(&paths).unwrap();
 
         assert_eq!(catalog.configuration_state, "healthy");
+        assert!(!catalog.recovery_required);
         assert_eq!(catalog.projects.len(), 1);
         assert_eq!(catalog.projects[0].id, format!("project:{}", project.id));
         assert_eq!(catalog.projects[0].kind, DesktopLaunchChoiceKind::Project);
@@ -1117,6 +1147,23 @@ mod tests {
             DesktopLaunchChoiceKind::Conversation
         );
         assert_eq!(catalog.recent[0].target.conversation, Some(conversation));
+    }
+
+    #[test]
+    fn cold_catalog_defers_private_state_reads_to_recovery() {
+        let (_directory, paths, _workspace) = fixture();
+        let project_file = paths.projects_file();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(&project_file).unwrap()).unwrap();
+        legacy["version"] = serde_json::Value::from(1);
+        fs::write(&project_file, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let catalog = DesktopNavigationStore::launch_catalog(&paths).unwrap();
+
+        assert_eq!(catalog.configuration_state, "healthy");
+        assert!(catalog.recovery_required);
+        assert!(catalog.projects.is_empty());
+        assert!(catalog.recent.is_empty());
     }
 
     #[test]
