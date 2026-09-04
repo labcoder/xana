@@ -267,8 +267,6 @@ fn own(
         endpoint,
         capability: capability.clone(),
     };
-    write_descriptor(&descriptor_path, &descriptor)?;
-
     let (sender, receiver) = mpsc::sync_channel(FORWARD_CAPACITY);
     let update_signal = DesktopWakeSignal::default();
     let stopping = Arc::new(AtomicBool::new(false));
@@ -294,6 +292,16 @@ fn own(
                 format!("could not start Desktop instance forwarding: {error}"),
             )
         })?;
+    if let Err(error) = write_descriptor(&descriptor_path, &descriptor) {
+        stopping.store(true, Ordering::Release);
+        if let Ok(stream) = TcpStream::connect_timeout(&endpoint, IO_TIMEOUT) {
+            let _ = stream.shutdown(Shutdown::Write);
+        }
+        let _ = listener_thread.join();
+        let mut capability = capability;
+        capability.zeroize();
+        return Err(error);
+    }
 
     Ok(DesktopInstanceClaim::Primary(DesktopInstanceLease {
         descriptor_path,
