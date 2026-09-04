@@ -9520,7 +9520,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "xana"
-version = "0.6.5"
+version = "0.7.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -9567,7 +9567,7 @@ dependencies = [
 
 [[package]]
 name = "xana-desktop"
-version = "0.6.5"
+version = "0.7.0"
 dependencies = [
  "gpui",
  "gpui-ai",
