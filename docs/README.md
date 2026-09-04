@@ -193,6 +193,10 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   from conversational providers. Architecture and User Documentation own the
   shipped contract.
 - [Accepted local multi-surface Workbench and execution host](proposals/0022-local-multisurface-workbench-and-execution-host.md)
+- [Accepted scoped personal memory and bounded context](proposals/0023-scoped-personal-memory-and-context.md)
+- [Accepted encrypted managed content and recovery](proposals/0024-encrypted-managed-content-and-recovery.md)
+- [Accepted durable local autonomy and retained work](proposals/0025-durable-local-autonomy-and-retained-work.md)
+- [Accepted bounded local browser authority](proposals/0026-bounded-local-browser-authority.md)
   defines the prescriptive native Desktop, deferred-browser, execution-host,
   controller/observer, typed-content, Workbench, Espejo, lifecycle, and
   non-split-brain contracts. The owner selected native GPUI with `gpui-ai` as

@@ -250,9 +250,9 @@ bounded ordered event suffix. A retained cursor receives only later events; an
 evicted or otherwise unprovable cursor receives a fresh snapshot. Slow clients
 cannot make the host retain or retransmit an unbounded cumulative history.
 Host restart reconstructs durable Conversation owners as idle and never
-replays an interrupted Run. The current Desktop bridge consumes this contract
-for one walking-skeleton Conversation; multi-Conversation navigation remains a
-frontend workflow, not missing backend identity or concurrency semantics.
+replays an interrupted Run. Desktop consumes this contract for persistent
+multi-Conversation navigation, attaching as controller or observer to the
+selected Conversation without transferring runtime ownership into the view.
 
 Host lifecycle is an explicit `running → draining → persisting → closing →
 stopped` reducer. Draining closes admission before cancellation and returns the
@@ -2052,12 +2052,16 @@ tests live under `tests/`.
 
 ## Deliberate absences
 
-Xana has no Xana-owned sandbox, background runtime, durable event replay,
+Xana has no Xana-owned sandbox, durable autonomous scheduler, durable event replay,
 persistent grants,
 remote controller authentication, general context service, nested
-project-instruction or skill discovery, prompt compaction, artifact/session
+project-instruction or skill discovery, model-assisted semantic compaction, artifact/session
 garbage collection, automatic/background operation replay, generalized
 idempotency, provider continuation after reconciliation, power-loss
 durability, or crash-safe edit protocol. Session
 grants live only in the foreground process. These absences are implementation
-facts, not predictions about which proposals will be accepted.
+facts, not predictions about which proposals will be accepted. Model-aware
+prompt budgets, deterministic artifact-backed compaction checkpoints, and
+local foreground/embedded execution-host coordination already exist. They do
+not yet provide automatic personal memory, encrypted managed content, or
+restartable scheduled work.

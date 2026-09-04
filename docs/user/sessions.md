@@ -332,8 +332,12 @@ useful only while the corresponding Codex-owned thread remains available to
 the same Codex account/home and workspace identity. Otherwise resume fails
 visibly and `/clear` starts a new thread.
 
-There is no native-session deletion, vendor-thread deletion, garbage
-collection, portable-workspace rewrite, durable session grant, invocation
-auto-replay, or database migration tool yet. Explicit conservative operation
+There is no dedicated per-Conversation native-history deletion or vendor-thread
+deletion command. Archiving hides a Conversation without deleting its history;
+the broader confirmed reset workflow can remove Xana-owned session state.
+There is no automatic garbage collection, portable-workspace rewrite, durable
+session grant, invocation auto-replay, or encrypted database migration yet.
+`xana config migrate` reviews supported private-record schema migrations; it is
+not a Conversation database conversion. Explicit conservative operation
 recovery is described separately. Unknown future record versions and artifact
 hash mismatches fail visibly.

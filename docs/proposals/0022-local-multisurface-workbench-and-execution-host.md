@@ -70,14 +70,16 @@ only while unfocused/minimized and is configurable by attention kind; native OS
 delivery, activation routing, single-instance forwarding, and reviewed
 last-window behavior are implemented. The specialized TUI and Desktop
 renderers, Desktop Workbench, Espejo, graphical management, and attach-or-own
-adapter now exist. Cross-platform reference-system measurements, manual
-accessibility evidence, and owner closeout remain open M4 gates. This proposal
-therefore remains Accepted rather than Implemented.
+adapter now exist. The owner accepted the functional Desktop slice and closed
+M4. Visual polish, final accessibility evidence, frame-rate promotion and local
+web are explicitly deferred to M10; they are not recorded as verified. This
+broader proposal remains Accepted with the implemented subset described here,
+rather than implying that deferred interface maturity is already complete.
 
 ## 1. Official local surfaces and authority
 
 Plain mode and the terminal UI are current official Xana surfaces. Native
-Desktop is the accepted next official surface. A later local browser client may
+Desktop is an implemented official surface. A later local browser client may
 join them only through a separate implementation decision. These surfaces share
 domain meaning but may use different presentations. Desktop and any later local
 browser are private local clients, not a public API, remote control plane,
@@ -130,8 +132,8 @@ unclaimed controller lease, otherwise remains an observer, and never starts a
 competing writer after successful discovery. Persistent multi-Conversation
 navigation, Workbench layouts, lifecycle, notifications, Espejo, settings,
 rich content, and typed fallback presentation are implemented. This remains
-partial implementation evidence until M4's platform, accessibility, and owner
-gates close; it is not a status change for the proposal as a whole.
+partial implementation evidence for the proposal as a whole; M4 functional
+closeout does not complete the explicitly deferred M10 interface-quality work.
 
 ## 2. Attach or own without split brain
 
