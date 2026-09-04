@@ -98,6 +98,7 @@ pub(super) fn plan(
         || pattern.contains('\\')
         || pattern.split('/').any(|component| component == "..")
         || Path::new(pattern).is_absolute()
+        || has_windows_drive_prefix(pattern)
     {
         return Err(DiscoveryError::InvalidPattern);
     }
@@ -125,6 +126,11 @@ pub(super) fn plan(
         matcher,
         max_depth,
     })
+}
+
+fn has_windows_drive_prefix(pattern: &str) -> bool {
+    let bytes = pattern.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 pub(super) fn visit(
@@ -258,10 +264,13 @@ mod tests {
     fn hostile_patterns_fail_before_workspace_io() {
         let missing = PathBuf::from("missing-workspace");
         for pattern in ["", "../*.rs", "C:/absolute/*", "bad\\pattern"] {
-            assert!(matches!(
-                plan(".".into(), pattern, 8, &missing),
-                Err(DiscoveryError::InvalidPattern)
-            ));
+            assert!(
+                matches!(
+                    plan(".".into(), pattern, 8, &missing),
+                    Err(DiscoveryError::InvalidPattern)
+                ),
+                "pattern {pattern:?} reached workspace I/O"
+            );
         }
     }
 
