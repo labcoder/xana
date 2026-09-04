@@ -228,6 +228,15 @@ Desktop uses conventional application, File, Edit, View, Conversation,
 Window, and Help menus. Edit actions are native text actions. Menus, buttons,
 shortcuts, and the command palette dispatch the same stable command IDs.
 
+For local performance diagnosis, **View → Cycle Frame Performance HUD** cycles
+GPUI's built-in overlay through hidden, current-frame-time, and detailed modes.
+Reset its bounded sample window immediately before a scenario, then use **Copy
+Frame Performance Snapshot** to copy draw, input-to-present, animated
+presentation-interval, and effective-FPS percentiles. The overlay is diagnostic
+evidence, not a benchmark result: compositor load, power state, refresh rate,
+and other foreground applications affect the observation. It schedules no
+periodic Xana repaint while hidden.
+
 Open the searchable command palette with `Cmd/Ctrl+Shift+P`. It includes every
 Desktop-projected command from Xana's shared registry. Commands whose required
 authority, configuration, active Run, or Desktop view is unavailable remain

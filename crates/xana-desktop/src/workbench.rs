@@ -3,11 +3,12 @@
 use crate::{
     commands::{
         self, ArchiveSelectedConversation, ArchiveSelectedProject, BranchSelectedConversation,
-        ClearConversation, InterruptRun, MinimizeWindow, MoveSelectedConversation, NewConversation,
-        OpenConfigurationFile, OpenDocumentation, PaletteDestination, PaletteSelection, QuitXana,
-        RenameSelectedProject, RestoreSelectedProject, RevealLogs, ShowActivity,
-        ShowCommandPalette, ShowEspejo, ShowSettings, UngroupSelectedConversation,
-        WorkbenchCommand,
+        ClearConversation, CopyFramePerformance, InterruptRun, MinimizeWindow,
+        MoveSelectedConversation, NewConversation, OpenConfigurationFile, OpenDocumentation,
+        PaletteDestination, PaletteSelection, QuitXana, RenameSelectedProject,
+        ResetFramePerformance, RestoreSelectedProject, RevealLogs, ShowActivity,
+        ShowCommandPalette, ShowEspejo, ShowSettings, ToggleFramePerformance,
+        UngroupSelectedConversation, WorkbenchCommand,
     },
     composer::{ComposerStore, QueuedSubmission},
     design_system,
@@ -16,9 +17,9 @@ use crate::{
     settings_view::{SettingsView, SettingsViewEvent},
 };
 use gpui::{
-    AnyElement, ClipboardItem, Context, Entity, ExternalPaths, Image, ImageFormat, IntoElement,
-    ParentElement as _, PathPromptOptions, PromptLevel, Render, Role, Subscription,
-    SystemNotification, Task, Window, div, prelude::*, px, rems,
+    AnyElement, ClipboardItem, Context, DebugFrameOverlayMode, Entity, ExternalPaths, Image,
+    ImageFormat, IntoElement, ParentElement as _, PathPromptOptions, PromptLevel, Render, Role,
+    Subscription, SystemNotification, Task, Window, div, prelude::*, px, rems,
 };
 use gpui_ai::prelude::{
     ApprovalCard, ApprovalEvent, Attachment, Chat, ChatEvent, ChatWelcome, CommandSearch,
@@ -3362,6 +3363,75 @@ impl Workbench {
             }
             WorkbenchCommand::ShowEspejo => self.open_espejo(EspejoScope::Global, cx),
             WorkbenchCommand::ShowSettings => self.open_settings(window, cx),
+            WorkbenchCommand::ToggleFramePerformance => {
+                window.cycle_debug_frame_overlay_mode();
+                let mode = match window.debug_frame_overlay_mode() {
+                    DebugFrameOverlayMode::Hidden => "hidden",
+                    DebugFrameOverlayMode::Minimal => "current frame time",
+                    DebugFrameOverlayMode::Full => "detailed frame statistics",
+                };
+                self.projection
+                    .set_activity(format!("Frame performance HUD: {mode}"));
+                self.sync_components(window, cx);
+            }
+            WorkbenchCommand::ResetFramePerformance => {
+                window.reset_debug_frame_overlay_stats();
+                self.projection
+                    .set_activity("Frame performance statistics reset");
+                self.sync_components(window, cx);
+            }
+            WorkbenchCommand::CopyFramePerformance => {
+                let snapshot = window.frame_duration_snapshot();
+                macro_rules! row {
+                    ($label:expr, $histogram:expr) => {{
+                        let histogram = &$histogram;
+                        if histogram.is_empty() {
+                            format!("{}: no samples", $label)
+                        } else {
+                            let milliseconds = |quantile| {
+                                histogram.value_at_quantile(quantile) as f64 / 1_000_000.0
+                            };
+                            format!(
+                                "{}: {} samples; p50 {:.2} ms; p95 {:.2} ms; p99 {:.2} ms; max {:.2} ms",
+                                $label,
+                                histogram.len(),
+                                milliseconds(0.50),
+                                milliseconds(0.95),
+                                milliseconds(0.99),
+                                histogram.max() as f64 / 1_000_000.0,
+                            )
+                        }
+                    }};
+                }
+                let interval = &snapshot.present_interval_histogram;
+                let effective_fps = if interval.is_empty() {
+                    "effective FPS: no animation samples".to_owned()
+                } else {
+                    let p50 = interval.value_at_quantile(0.50);
+                    let p95 = interval.value_at_quantile(0.95);
+                    let fps = |nanos: u64| 1_000_000_000.0 / nanos.max(1) as f64;
+                    format!(
+                        "effective FPS: median {:.1}; 5% low {:.1}",
+                        fps(p50),
+                        fps(p95)
+                    )
+                };
+                let report = [
+                    "Xana Desktop frame performance".to_owned(),
+                    row!("draw", snapshot.draw_duration_histogram),
+                    row!(
+                        "input dirty-to-present",
+                        snapshot.dirty_to_present_histogram
+                    ),
+                    row!("animated presentation interval", interval),
+                    effective_fps,
+                ]
+                .join("\n");
+                cx.write_to_clipboard(ClipboardItem::new_string(report));
+                self.projection
+                    .set_activity("Copied bounded frame performance statistics");
+                self.sync_components(window, cx);
+            }
             WorkbenchCommand::NewConversation => {
                 match self.runtime.new_conversation(self.selected_project.clone()) {
                     Ok(_) => self.projection.set_activity("Creating a new Conversation…"),
@@ -3663,6 +3733,15 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &ShowSettings, window, cx| {
                 this.dispatch(WorkbenchCommand::ShowSettings, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleFramePerformance, window, cx| {
+                this.dispatch(WorkbenchCommand::ToggleFramePerformance, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ResetFramePerformance, window, cx| {
+                this.dispatch(WorkbenchCommand::ResetFramePerformance, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CopyFramePerformance, window, cx| {
+                this.dispatch(WorkbenchCommand::CopyFramePerformance, window, cx);
             }))
             .on_action(cx.listener(|this, _: &NewConversation, window, cx| {
                 this.dispatch(WorkbenchCommand::NewConversation, window, cx);

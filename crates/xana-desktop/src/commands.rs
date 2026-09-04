@@ -28,6 +28,9 @@ pub(crate) const INTERRUPT_ID: &str = "run.interrupt.v1";
 pub(crate) const ACTIVITY_ID: &str = "presentation.activity.show.v1";
 pub(crate) const ESPEJO_ID: &str = "espejo.open.v1";
 pub(crate) const SETTINGS_ID: &str = "settings.open.v1";
+pub(crate) const FRAME_PERFORMANCE_TOGGLE_ID: &str = "debug.frame_performance.toggle.v1";
+pub(crate) const FRAME_PERFORMANCE_RESET_ID: &str = "debug.frame_performance.reset.v1";
+pub(crate) const FRAME_PERFORMANCE_COPY_ID: &str = "debug.frame_performance.copy.v1";
 
 actions!(
     xana_desktop,
@@ -43,6 +46,9 @@ actions!(
         ShowActivity,
         ShowEspejo,
         ShowSettings,
+        ToggleFramePerformance,
+        ResetFramePerformance,
+        CopyFramePerformance,
         NewConversation,
         RenameSelectedProject,
         ArchiveSelectedProject,
@@ -67,6 +73,9 @@ pub(crate) enum WorkbenchCommand {
     ShowActivity,
     ShowEspejo,
     ShowSettings,
+    ToggleFramePerformance,
+    ResetFramePerformance,
+    CopyFramePerformance,
     NewConversation,
 }
 
@@ -84,6 +93,9 @@ impl WorkbenchCommand {
             Self::ShowActivity => ACTIVITY_ID,
             Self::ShowEspejo => ESPEJO_ID,
             Self::ShowSettings => SETTINGS_ID,
+            Self::ToggleFramePerformance => FRAME_PERFORMANCE_TOGGLE_ID,
+            Self::ResetFramePerformance => FRAME_PERFORMANCE_RESET_ID,
+            Self::CopyFramePerformance => FRAME_PERFORMANCE_COPY_ID,
             Self::NewConversation => "conversation.new.v1",
         }
     }
@@ -101,6 +113,9 @@ impl WorkbenchCommand {
             ACTIVITY_ID => Self::ShowActivity,
             ESPEJO_ID => Self::ShowEspejo,
             SETTINGS_ID => Self::ShowSettings,
+            FRAME_PERFORMANCE_TOGGLE_ID => Self::ToggleFramePerformance,
+            FRAME_PERFORMANCE_RESET_ID => Self::ResetFramePerformance,
+            FRAME_PERFORMANCE_COPY_ID => Self::CopyFramePerformance,
             "conversation.new.v1" => Self::NewConversation,
             _ => return None,
         })
@@ -178,6 +193,10 @@ fn native_menus() -> Vec<Menu> {
             MenuItem::action("Activity", ShowActivity),
             MenuItem::action("Espejo", ShowEspejo),
             MenuItem::action("Settings…", ShowSettings),
+            MenuItem::separator(),
+            MenuItem::action("Cycle Frame Performance HUD", ToggleFramePerformance),
+            MenuItem::action("Copy Frame Performance Snapshot", CopyFramePerformance),
+            MenuItem::action("Reset Frame Performance Statistics", ResetFramePerformance),
         ]),
         Menu::new("Conversation").items([
             MenuItem::action("New Conversation", NewConversation),
@@ -197,10 +216,22 @@ pub(crate) fn palette_items(
     attached_to_foreground_host: bool,
     run_active: bool,
 ) -> Vec<CommandSearchItem> {
-    desktop_commands(authority, true)
+    let mut items = desktop_commands(authority, true)
         .into_iter()
         .map(|descriptor| palette_item(descriptor, attached_to_foreground_host, run_active))
-        .collect()
+        .collect::<Vec<_>>();
+    items.extend([
+        CommandSearchItem::new(FRAME_PERFORMANCE_TOGGLE_ID, "debug frame performance")
+            .subtitle("Cycle the GPUI frame-time HUD through hidden, current, and detailed modes")
+            .keywords(["fps", "frame", "performance", "debug"]),
+        CommandSearchItem::new(FRAME_PERFORMANCE_COPY_ID, "debug frame performance copy")
+            .subtitle("Copy bounded draw, presentation, and effective FPS statistics")
+            .keywords(["fps", "frame", "performance", "copy"]),
+        CommandSearchItem::new(FRAME_PERFORMANCE_RESET_ID, "debug frame performance reset")
+            .subtitle("Clear retained frame-performance samples before a new observation")
+            .keywords(["fps", "frame", "performance", "reset"]),
+    ]);
+    items
 }
 
 fn palette_item(
@@ -305,6 +336,9 @@ fn command_exposure(stable_id: &str) -> Option<CommandExposure> {
         ACTIVITY_ID => Select(Dispatch(WorkbenchCommand::ShowActivity)),
         ESPEJO_ID => Select(Dispatch(WorkbenchCommand::ShowEspejo)),
         SETTINGS_ID => Select(Dispatch(WorkbenchCommand::ShowSettings)),
+        FRAME_PERFORMANCE_TOGGLE_ID => Select(Dispatch(WorkbenchCommand::ToggleFramePerformance)),
+        FRAME_PERFORMANCE_RESET_ID => Select(Dispatch(WorkbenchCommand::ResetFramePerformance)),
+        FRAME_PERFORMANCE_COPY_ID => Select(Dispatch(WorkbenchCommand::CopyFramePerformance)),
         "conversation.new.v1" => Select(Dispatch(WorkbenchCommand::NewConversation)),
 
         "presentation.activity.auto.v1" | "presentation.activity.hide.v1" => {
@@ -422,7 +456,7 @@ mod tests {
     fn every_desktop_command_has_one_palette_row() {
         let descriptors = desktop_commands(DesktopAuthority::Owner, true);
         let items = palette_items(DesktopAuthority::Owner, false, false);
-        assert_eq!(items.len(), descriptors.len());
+        assert_eq!(items.len(), descriptors.len() + 3);
         assert_eq!(
             items
                 .iter()
@@ -447,6 +481,9 @@ mod tests {
             WorkbenchCommand::ShowActivity,
             WorkbenchCommand::ShowEspejo,
             WorkbenchCommand::ShowSettings,
+            WorkbenchCommand::ToggleFramePerformance,
+            WorkbenchCommand::ResetFramePerformance,
+            WorkbenchCommand::CopyFramePerformance,
             WorkbenchCommand::NewConversation,
         ] {
             assert_eq!(

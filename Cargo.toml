@@ -11,7 +11,7 @@ license = "MIT"
 repository = "https://github.com/labcoder/xana"
 
 [workspace.dependencies]
-gpui = { git = "https://github.com/zed-industries/zed" }
+gpui = { git = "https://github.com/zed-industries/zed", features = ["profiler"] }
 gpui-ai = { git = "https://github.com/labcoder/gpui-ai", rev = "40ec5cf4e8b28f94b8fbbb4cb2f90d177c946039" }
 gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "5cb094628d27acbd557a1c22fd830417a702f0e5" }
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "5cb094628d27acbd557a1c22fd830417a702f0e5" }

@@ -302,6 +302,14 @@ regenerate copy text into the composer and never rewrite history.
 before runtime launch. It exercises the same visual globals and real pinned
 components but has no provider, credential, filesystem, or tool authority.
 
+The Desktop enables GPUI's bounded profiler and exposes its native frame-time
+HUD, statistics reset, and clipboard snapshot as explicit View/debug commands.
+Snapshots report draw, dirty-to-present, animated presentation intervals, and
+effective-FPS percentiles without promoting local compositor conditions to a
+product guarantee. The hidden HUD installs no application repaint loop; normal
+Desktop rendering remains driven by input, component animation, and typed
+runtime wake signals.
+
 The shared command registry supplies stable semantic IDs, authority, and
 availability. Desktop supplies native labels, a bounded essential shortcut
 set, conventional menus, and a retained searchable palette. Every invocation
