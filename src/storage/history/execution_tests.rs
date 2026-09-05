@@ -434,6 +434,9 @@ fn protected_execution_resource_probe() {
         .unwrap();
     assert!([10_000, 100_000].contains(&count));
     let directory = tempfile::tempdir().unwrap();
+    // Identify only this owned synthetic home if the opt-in probe is interrupted;
+    // recovery material stays in memory and is never logged or persisted here.
+    println!("fixture_directory={}", directory.path().display());
     let paths =
         crate::paths::XanaPaths::resolve(Some(directory.path().as_os_str().to_owned())).unwrap();
     let identity = RecoveryIdentity::generate();
