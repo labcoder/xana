@@ -18,6 +18,11 @@ on Windows x64, macOS ARM64/Intel and Linux x64 glibc. No silent download or
 browser launch at ordinary startup. If required gates fail, record a no-go and
 compare a smaller alternative; language or README claims are not proof.
 
+Native macOS/Linux runs are deferred until integrated release acceptance and
+do not block Windows-first implementation. This changes validation timing only:
+local transport, containment, cancellation, no-replay and lifecycle failures
+still prevent adopting an unsafe adapter. Unrun native checks are not passes.
+
 ## Authority and isolation
 
 The adapter exposes typed operations, never arbitrary eval/CDP/Python/shell flags.
