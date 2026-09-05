@@ -66,4 +66,3 @@ requires deliberate user intent and a clear disclosed destination.
 records the privacy/recovery tradeoff. Current JSONL history, artifacts and
 private records are not yet application-encrypted. This proposal does not
 retroactively change that fact or authorize migration of an existing home.
-

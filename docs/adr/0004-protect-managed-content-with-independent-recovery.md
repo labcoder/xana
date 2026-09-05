@@ -34,4 +34,3 @@ usable keys. Backups and restore obey forgetting exclusions; external copies
 and OS/vendor stores remain explicit exceptions, not erased by policy wording.
 
 See the [accepted storage contract](../proposals/0024-encrypted-managed-content-and-recovery.md).
-

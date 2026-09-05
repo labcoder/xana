@@ -75,4 +75,3 @@ Durable autonomous scheduling, restart-safe accounting and retained-worker
 continuations do not yet exist. Remote hosts, tenancy, messaging and universal
 computer control are not included. Prove restart, cancellation, duplicate events,
 clock changes, forgotten sources and unknown-effect recovery before promotion.
-

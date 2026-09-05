@@ -53,4 +53,3 @@ and useful public-site checks; cross-compilation is not runtime proof.
 Current web_fetch is bounded HTTP retrieval, not browser control. This accepted
 contract does not claim the first-party browser adapter exists. Protected
 storage/accounting and demonstrated transport safety gate production integration.
-
