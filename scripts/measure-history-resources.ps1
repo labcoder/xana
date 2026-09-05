@@ -51,8 +51,13 @@ try {
     if ($taskProcess.ExitCode -ne 0 -or $taskOutput -notmatch "production_fixture messages=$Messages ") {
         throw "The isolated history probe did not pass; logs: $taskLogs"
     }
+    $taskProfileOnly = $taskOutput.Contains('verification_profile_only=true backup_restore_not_measured=true')
+    if (-not $taskProfileOnly -and $taskOutput -notmatch "protected_restore messages=$Messages ") {
+        throw "The history probe omitted required restore evidence; logs: $taskLogs"
+    }
     [ordered]@{
         scenario = 'protected-backend-test-process-not-gui'
+        complete_resource_probe = -not $taskProfileOnly
         messages = $Messages
         peak_rss_bytes = $taskPeakRss
         sampled_cpu_seconds = $taskCpuSeconds

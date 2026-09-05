@@ -512,6 +512,10 @@ fn protected_execution_resource_probe() {
                 "immutable_verification messages={count} elapsed_ms={}",
                 timer.elapsed().as_millis()
             );
+            if std::env::var_os("XANA_HISTORY_VERIFY_PROFILE_ONLY").is_some() {
+                println!("verification_profile_only=true backup_restore_not_measured=true");
+                return;
+            }
             let timer = Instant::now();
             let backup = home
                 .backup(

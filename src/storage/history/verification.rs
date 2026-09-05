@@ -74,8 +74,11 @@ impl ProtectedStore {
         &self,
         id: SessionId,
         objects: &HashMap<&str, u64>,
+        #[cfg(test)] timed: bool,
     ) -> Result<()> {
         self.with_database(|db| {
+            #[cfg(test)]
+            let mut timing = crate::storage::verification::VerifyTiming::new(timed);
             let tx = db.connection.transaction()?;
             let expected: (usize, usize, String, String, Option<String>) = tx.query_row(
                 "SELECT revision,bytes,root_thread,workspace,head FROM native_sessions WHERE id=?1", [id.to_string()],
@@ -109,8 +112,16 @@ impl ProtectedStore {
                     let state = crate::session::hydration::decode(snapshot_body)?;
                     ensure!(state.session_id == id, "execution snapshot belongs to another Conversation");
                 }
+                #[cfg(test)]
+                let started = timing.start();
                 verify_subjects(&tx, &record, sequence)?;
+                #[cfg(test)]
+                timing.record("subjects", started);
+                #[cfg(test)]
+                let started = timing.start();
                 super::constraints::validate_registration_before(&tx, id, &record.record, Some(sequence))?;
+                #[cfg(test)]
+                timing.record("registration_constraints", started);
                 match &record.record {
                     SessionRecord::SessionCreated {thread_id, workspace_root} => ensure!(sequence == 0 && thread_id.to_string() == expected.2 && workspace_root.to_str() == Some(expected.3.as_str()), "Conversation creation metadata differs"),
                     _ if sequence == 0 => anyhow::bail!("immutable Conversation lacks its creation record"),
@@ -176,8 +187,16 @@ impl ProtectedStore {
                     }
                     SessionRecord::ConversationCompacted {checkpoint} => {
                         ensure!(checkpoint.version == crate::session::COMPACTION_CHECKPOINT_VERSION && checkpoint.budget.is_valid_checkpoint_plan(), "historical compaction version or budget differs");
+                        #[cfg(test)]
+                        let started = timing.start();
                         verify_compaction_position(&tx,id,checkpoint,head.as_deref().map(str::parse).transpose()?,sequence)?;
+                        #[cfg(test)]
+                        timing.record("compaction_position", started);
+                        #[cfg(test)]
+                        let started = timing.start();
                         let proof = historical_proof(&tx,id,checkpoint,sequence)?;
+                        #[cfg(test)]
+                        timing.record("compaction_source_proof", started);
                         ensure!(proof.matches(id,checkpoint) && crate::session::compaction::validate_summary(&checkpoint.summary,checkpoint.budget.summary_max_bytes), "historical compaction source or summary differs");
                         ensure!(checkpoint.semantic.as_ref().is_none_or(|provenance| provenance.valid_for(&checkpoint.summary)), "semantic compaction provenance differs");
                     }
@@ -191,7 +210,14 @@ impl ProtectedStore {
                 let actual = tx.query_row(&format!("SELECT COUNT(*) FROM {table} WHERE session=?1"), [id.to_string()], |r| read_usize(r,0))?;
                 ensure!(actual == count, "Conversation index inventory differs");
             }
+            #[cfg(test)]
+            let started = timing.start();
             verify_active_path(&tx,id,head.as_deref())?;
+            #[cfg(test)]
+            {
+                timing.record("active_path", started);
+                timing.report("immutable_history");
+            }
             Ok(())
         })
     }
