@@ -113,7 +113,11 @@ A private, nonserialized hash accumulator advances only newly retired originals
 after matching the prior checkpoint; the first compaction after resume streams
 the old prefix once. Offline verification streams original records, subject
 projections and digest links, validates historical operation/child transitions,
-and authenticates old compaction sources even after branch/clear. Current-schema
+and authenticates old compaction sources even after branch/clear. Offline
+verification reuses one transaction-local verified original-prefix accumulator
+only for an exact predecessor and source-end boundary; clear/rewind/branch or
+an unmatched predecessor require a fresh proof, and inconsistent ancestry fails
+closed. This adds no schema, API or persisted digest cache. Current-schema
 backup/restore use this bounded verification; old recovery snapshots retain their
 original read-only bounded verification path. These are storage/execution bounds,
 not a claim about native GUI FPS or process RSS.
