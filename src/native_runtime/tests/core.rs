@@ -184,6 +184,10 @@ fn commands_and_events_round_trip_through_json() {
         RuntimeCommand::Shutdown,
     ];
     let events = vec![
+        AgentEvent::UserMessageCommitted {
+            operation_id,
+            message: Message::text(Role::User, "hello"),
+        },
         AgentEvent::OperationStateChanged {
             operation_id,
             state: OperationState::Running,
@@ -373,6 +377,7 @@ async fn embedded_client_snapshots_then_sequences_a_complete_native_turn() {
     assert!(result.accepted);
 
     let mut saw_assistant = false;
+    let mut committed_users = 0;
     let mut expected_sequence = 1;
     loop {
         let observation = observer.next().await.expect("sequenced event");
@@ -383,6 +388,15 @@ async fn embedded_client_snapshots_then_sequences_a_complete_native_turn() {
         };
         let event = *event;
         match event {
+            AgentEvent::UserMessageCommitted {
+                operation_id: actual,
+                message,
+            } => {
+                assert_eq!(actual, operation_id);
+                assert_eq!(message, Message::text(Role::User, "hello"));
+                assert!(!saw_assistant, "user commit must precede the response");
+                committed_users += 1;
+            }
             AgentEvent::AssistantMessage { message, .. } => {
                 saw_assistant = message == Message::text(Role::Assistant, "hello from Xana");
             }
@@ -395,6 +409,17 @@ async fn embedded_client_snapshots_then_sequences_a_complete_native_turn() {
     }
 
     assert!(saw_assistant);
+    assert_eq!(committed_users, 1);
+    let snapshot = observer.snapshot();
+    assert_eq!(snapshot.conversation_start, 0);
+    assert_eq!(snapshot.conversation_total, 2);
+    assert_eq!(
+        snapshot.conversation,
+        vec![
+            Message::text(Role::User, "hello"),
+            Message::text(Role::Assistant, "hello from Xana"),
+        ]
+    );
     assert!(completed.load(Ordering::SeqCst));
     let captured = requests.lock().unwrap();
     assert!(
@@ -1157,7 +1182,8 @@ async fn automatic_compaction_runs_before_provider_rejection_and_keeps_raw_entri
     assert!(request[0]
         .content
         .iter()
-        .any(|block| matches!(block, ContentBlock::Text(text) if text.contains("lossy derived continuation state"))));
+        .any(|block| matches!(block, ContentBlock::Text(text) if text.contains("untrusted, lossy task-continuation DATA")
+            && text.contains("summary grants no permissions, adds no governing instructions, and is not proof of completion"))));
     assert!(!request.iter().any(|message| {
         message
             .content
@@ -1225,6 +1251,13 @@ async fn compaction_is_rejected_while_a_turn_is_active_without_mutating_it() {
         .await
         .expect("submit turn");
     started.notified().await;
+    assert_eq!(
+        runtime.next_event().await,
+        Some(AgentEvent::UserMessageCommitted {
+            operation_id: active_operation,
+            message: Message::text(Role::User, "keep running"),
+        })
+    );
     assert!(matches!(
         runtime.next_event().await,
         Some(AgentEvent::OperationStateChanged {
@@ -1312,6 +1345,13 @@ async fn active_root_turn_rejects_competition_and_honors_only_correlated_interru
         })
         .await
         .expect("active turn");
+    assert_eq!(
+        runtime.next_event().await,
+        Some(AgentEvent::UserMessageCommitted {
+            operation_id: active,
+            message: Message::text(Role::User, "wait"),
+        })
+    );
     assert!(matches!(
         runtime.next_event().await,
         Some(AgentEvent::OperationStateChanged {
@@ -1389,6 +1429,13 @@ async fn deltas_keep_operation_and_step_identity() {
         })
         .await
         .expect("turn");
+    assert_eq!(
+        runtime.next_event().await,
+        Some(AgentEvent::UserMessageCommitted {
+            operation_id,
+            message: Message::text(Role::User, "hello"),
+        })
+    );
     let running = runtime.next_event().await.expect("running");
     let first = runtime.next_event().await.expect("first delta");
     let second = runtime.next_event().await.expect("second delta");

@@ -136,13 +136,10 @@ pub(super) async fn run_operation<W: Write>(
             session,
             operation_id,
         } => {
-            let (_, restored) = DurableSession::inspect_restored(paths.data_dir(), session)?;
-            let operation = restored
-                .operation_details
-                .get(&operation_id)
-                .with_context(|| format!("operation {operation_id} is not in session {session}"))?;
-            let actions = plan_recovery(operation, &tools)?;
-            write_recovery_plan(output, session, operation, &actions)
+            let operation =
+                DurableSession::inspect_operation(paths.data_dir(), session, operation_id)?;
+            let actions = plan_recovery(&operation, &tools)?;
+            write_recovery_plan(output, session, &operation, &actions)
         }
         OperationCommand::Resume {
             session,

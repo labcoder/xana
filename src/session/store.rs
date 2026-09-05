@@ -96,28 +96,6 @@ impl SessionStore {
         legacy::LegacyStore::inspect_bytes(&bytes)
     }
 
-    pub(crate) fn resume_protected(
-        home: ProtectedStore,
-        id: SessionId,
-        loaded: &LoadedSession,
-    ) -> Result<Self, SessionError> {
-        let writer = home.session_writer(id).map_err(protected_error)?;
-        let current = Self::inspect_protected(&home, id)?;
-        if current.inspected_hash != loaded.inspected_hash {
-            return Err(SessionError::ChangedAfterInspection {
-                path: home.database_path(),
-            });
-        }
-        Ok(Self::Protected {
-            path: home.database_path(),
-            home,
-            id,
-            revision: current.records.len(),
-            _writer: writer,
-            writable: true,
-        })
-    }
-
     pub(crate) fn protected_home(&self) -> Option<&ProtectedStore> {
         match self {
             Self::Protected { home, .. } => Some(home),
@@ -125,7 +103,67 @@ impl SessionStore {
         }
     }
 
+    /// Acquire the writer before observing the revision or execution checkpoint.
+    pub(super) fn open_protected(
+        home: ProtectedStore,
+        id: SessionId,
+    ) -> Result<Self, SessionError> {
+        let writer = home.session_writer(id).map_err(protected_error)?;
+        let revision = home.history_metadata(id).map_err(protected_error)?.revision;
+        Ok(Self::Protected {
+            path: home.database_path(),
+            home,
+            id,
+            revision,
+            _writer: writer,
+            writable: true,
+        })
+    }
+
+    pub(super) fn protected_revision(&self) -> Option<usize> {
+        match self {
+            Self::Protected { revision, .. } => Some(*revision),
+            Self::Legacy(_) => None,
+        }
+    }
+
+    pub(super) fn branch_protected(
+        home: ProtectedStore,
+        source: SessionId,
+        point: crate::identity::ConversationEntryId,
+        target: SessionId,
+    ) -> Result<(Self, crate::session::RestoredSession), SessionError> {
+        let writer = home.session_writer(target).map_err(protected_error)?;
+        let state = home
+            .branch_history(source, point, target, crate::identity::ThreadId::new())
+            .map_err(protected_error)?;
+        let revision = home
+            .history_metadata(target)
+            .map_err(protected_error)?
+            .revision;
+        Ok((
+            Self::Protected {
+                path: home.database_path(),
+                home,
+                id: target,
+                revision,
+                _writer: writer,
+                writable: true,
+            },
+            state,
+        ))
+    }
+
+    #[cfg(test)]
     pub(crate) fn append(&mut self, record: &RecordEnvelope) -> Result<(), SessionError> {
+        self.append_guarded(record, None)
+    }
+
+    pub(crate) fn append_guarded(
+        &mut self,
+        record: &RecordEnvelope,
+        privacy_generation: Option<u64>,
+    ) -> Result<(), SessionError> {
         match self {
             Self::Legacy(store) => store.append(record),
             Self::Protected {
@@ -139,7 +177,12 @@ impl SessionStore {
                 if !*writable {
                     return Err(SessionError::WriterPoisoned { path: path.clone() });
                 }
-                if let Err(error) = home.append_history(*id, *revision, record) {
+                let result = match privacy_generation {
+                    Some(generation) => home
+                        .append_history_if_privacy_generation(*id, *revision, record, generation),
+                    None => home.append_history(*id, *revision, record),
+                };
+                if let Err(error) = result {
                     *writable = false;
                     return Err(protected_error(error));
                 }

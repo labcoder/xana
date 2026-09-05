@@ -4,7 +4,10 @@
 //! are data, never instructions or permission grants. Automatic extraction and
 //! model prompt selection are separate consumers of the eligibility contract.
 
+mod forgetting;
+pub(crate) mod learning;
 mod natural;
+mod selection;
 #[cfg(test)]
 mod tests;
 
@@ -19,7 +22,9 @@ use std::{
 };
 use uuid::Uuid;
 
+pub use forgetting::{SourceDeletionPreview, SourceDeletionReceipt};
 pub(crate) use natural::parse_natural;
+pub(crate) use selection::MemorySelection;
 pub(crate) const PAGE_SIZE: usize = 64;
 pub(crate) const RECORD_BYTES: usize = 8192;
 
@@ -63,7 +68,7 @@ impl FromStr for MemoryScope {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub(crate) struct MemoryContext {
     pub(crate) conversation: Option<Uuid>,
     pub(crate) profile: Option<Uuid>,
@@ -213,6 +218,12 @@ pub enum MemoryEdit {
         confirm: bool,
     },
     Disable,
+    /// Invalidate this fact and automatic reuse of its originating conversation.
+    Forget,
+    /// A fresh owner request can restore the fact, never the suppressed source.
+    Restore {
+        confirm: bool,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -228,11 +239,16 @@ pub struct MemoryControlEdit {
 pub(crate) struct MemoryOwner {
     pub(crate) store: ProtectedStore,
     pub(crate) context: MemoryContext,
+    pub(crate) learner: Option<std::sync::Arc<learning::LearningWorker>>,
 }
 
 impl MemoryOwner {
     pub(crate) fn new(store: ProtectedStore, context: MemoryContext) -> Self {
-        Self { store, context }
+        Self {
+            store,
+            context,
+            learner: None,
+        }
     }
     pub(crate) fn remember(
         &self,

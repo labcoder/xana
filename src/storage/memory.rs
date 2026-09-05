@@ -7,6 +7,37 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::{io::Write, path::Path};
 use uuid::Uuid;
 
+impl ProtectedStore {
+    pub(crate) fn record_memory_handoff(
+        &self,
+        conversation: Uuid,
+        generation: u64,
+        use_enabled: bool,
+        ids: &[Uuid],
+    ) -> Result<()> {
+        ensure!(ids.len() <= 1024, "memory receipt exceeds its bound");
+        self.with_database(|db| {
+            let tx=db.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current=tx.query_row("SELECT revision FROM privacy_generation WHERE singleton=1",[],|r|super::database::read_u64(r,0))?;
+            ensure!(current==generation,"Memory changed before dispatch; retry the turn");
+            ensure!(super::forgetting::source_allowed(&tx,conversation)?,"This Conversation contains a forgotten source; start a new Conversation");
+            let key=format!("memory/handoff/{conversation}");
+            let stored:Option<(usize,Option<Vec<u8>>)>=tx.query_row("SELECT length(body),CASE WHEN length(body)<=131072 THEN body END FROM documents WHERE name=?1",[&key],|r|Ok((super::database::read_usize(r,0)?,r.get(1)?))).optional()?;
+            let mut seen:Vec<Uuid>=match stored {
+                Some((length,bytes))=>{ensure!(length<=128*1024,"memory receipt exceeds read bound");serde_json::from_slice(&bytes.context("invalid memory receipt")?)?},
+                None=>Vec::new(),
+            };
+            ensure!(seen.len()<=1024,"memory receipt exceeds identity bound");
+            for id in &seen {ensure!(get(&tx,*id)?.state!=MemoryState::Forgotten,"A previously sent memory was forgotten; start a new Conversation");}
+            for id in ids {if !seen.contains(id) {seen.push(*id);}}
+            ensure!(seen.len()<=1024,"This Conversation reached its bounded memory handoff history; start a new Conversation");
+            ensure!(seen.is_empty() || use_enabled,"Memory use is disabled but this Conversation already received memory; start a new Conversation");
+            if !seen.is_empty() {tx.execute("INSERT INTO documents(name,revision,body) VALUES(?1,1,?2) ON CONFLICT(name) DO UPDATE SET revision=revision+1,body=excluded.body",params![key,serde_json::to_vec(&seen)?])?;}
+            tx.commit()?;Ok(())
+        })
+    }
+}
+
 pub(super) const SCHEMA: &str = "
 CREATE TABLE memory_entries(sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL CHECK(revision > 0), scope TEXT NOT NULL, body BLOB NOT NULL);
 CREATE INDEX memory_scope_page ON memory_entries(scope,sequence);
@@ -61,7 +92,7 @@ fn indexed_record(row: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<Memor
     Ok(record)
 }
 
-fn get(db: &Connection, id: Uuid) -> Result<MemoryRecord> {
+pub(super) fn get(db: &Connection, id: Uuid) -> Result<MemoryRecord> {
     let record = db
         .query_row(
             "SELECT body,id,revision,scope FROM memory_entries WHERE id=?1",
@@ -74,7 +105,7 @@ fn get(db: &Connection, id: Uuid) -> Result<MemoryRecord> {
     Ok(record)
 }
 
-fn controls(db: &Connection, scope: MemoryScope) -> Result<MemoryControls> {
+pub(super) fn controls(db: &Connection, scope: MemoryScope) -> Result<MemoryControls> {
     let stored = db.query_row("SELECT revision,use_enabled,learning_enabled,no_memory FROM memory_controls WHERE scope=?1", [scope.to_string()], |r| Ok((super::database::read_u64(r,0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
     Ok(match stored {
         Some((revision, use_enabled, learning_enabled, no_memory)) => MemoryControls {
@@ -120,6 +151,7 @@ impl ProtectedStore {
             let tx = db.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let old = get(&tx, id)?;
             ensure!(old.revision == revision, "memory changed since inspection; refresh before applying this edit");
+            ensure!(old.state != MemoryState::Forgotten || matches!(edit, MemoryEdit::Restore { confirm: true }), "forgotten memory requires an explicit confirmed restore; old text cannot reactivate it");
             let mut record = old.clone();
             record.revision = record.revision.checked_add(1).context("memory revision exhausted")?;
             origin.at_unix_seconds = origin.at_unix_seconds.max(old.changed.at_unix_seconds);
@@ -128,12 +160,22 @@ impl ProtectedStore {
                 MemoryEdit::Correct { statement, valid_until_unix_seconds } => { record.statement=statement; record.valid_until_unix_seconds=valid_until_unix_seconds; record.state=MemoryState::Active; record.claim=MemoryClaim::Stated; },
                 MemoryEdit::Scope { target, confirm } => { ensure!(target == old.scope || confirm, "changing memory scope requires explicit confirmation"); record.scope=target; },
                 MemoryEdit::Disable => record.state=MemoryState::Stale,
+                MemoryEdit::Forget => {
+                    super::forgetting::suppress(&tx, &old, &record.changed)?;
+                    record.state = MemoryState::Forgotten;
+                },
+                MemoryEdit::Restore { confirm } => {
+                    ensure!(confirm && old.state == MemoryState::Forgotten, "restoring a forgotten fact requires explicit confirmation");
+                    record.state = MemoryState::Active;
+                    super::forgetting::restore_fact(&tx, id)?;
+                },
             }
             let bytes = encode(&record)?;
             let mut historical = old;
             historical.state = MemoryState::Superseded;
             tx.execute("INSERT INTO memory_revisions(id,revision,body) VALUES(?1,?2,?3)", params![id.to_string(),i64::try_from(revision)?,encode(&historical)?])?;
             ensure!(tx.execute("UPDATE memory_entries SET revision=?2,scope=?3,body=?4 WHERE id=?1 AND revision=?5", params![id.to_string(),i64::try_from(record.revision)?,record.scope.to_string(),bytes,i64::try_from(revision)?])? == 1, "memory revision conflict");
+            super::forgetting::advance_generation(&tx)?;
             tx.commit()?;
             Ok(record)
         })
@@ -174,6 +216,7 @@ impl ProtectedStore {
                 if let Some(value)=edit.learning_enabled {current.learning_enabled=value;}
                 if let Some(value)=edit.no_memory {current.no_memory=value;}
                 tx.execute("INSERT INTO memory_controls VALUES(?1,?2,?3,?4,?5) ON CONFLICT(scope) DO UPDATE SET revision=excluded.revision,use_enabled=excluded.use_enabled,learning_enabled=excluded.learning_enabled,no_memory=excluded.no_memory", params![current.scope.to_string(),i64::try_from(current.revision)?,current.use_enabled,current.learning_enabled,current.no_memory])?;
+                super::forgetting::advance_generation(&tx)?;
             }
             tx.commit()?;
             Ok(current)
@@ -187,14 +230,7 @@ impl ProtectedStore {
     ) -> Result<EligibleMemory> {
         self.with_database(|db| {
             let tx = db.connection.transaction()?;
-            let gated = tx
-                .query_row(
-                    "SELECT 1 FROM documents WHERE name='restore/review-required'",
-                    [],
-                    |_| Ok(()),
-                )
-                .optional()?
-                .is_some();
+            let gated = super::forgetting::memory_review_required(&tx)?;
             let scopes = context.scopes();
             let mut use_enabled = !gated;
             let mut learning_enabled = !gated;

@@ -159,7 +159,9 @@ instead of guessing replay. Observers receive correlated rejections and
 bounded audit events without crossing the runtime command lane. One client may
 explicitly acquire the hosted Conversation's controller lease; acquisition,
 renewal, reconnect, release, expiry, and takeover update the same snapshot/event
-sequence. Protocol 4 snapshots expose the non-secret controller identity,
+sequence. Protocol 6 adds authoritative committed-user observations so newly
+attached clients retain the same bounded conversation and absolute positions
+as the sender. Protocol 5 snapshots introduced the non-secret controller identity,
 lease generation, connected/reconnecting state, takeover state, disconnect
 reason, and remaining reconnect grace. A takeover confirmation binds the exact
 observed controller identity and generation. The first competing confirmation
@@ -196,7 +198,7 @@ Client isolation is structural: at most 32 client tasks exist, each has a
 deadline. Queue overflow or transport failure removes only that subscriber.
 The authenticated artifact adapter indexes at most 512 immutable records found
 in visible frontend messages and semantic resource/attachment events. Protocol
-4 lookup accepts `ArtifactId` plus a byte offset, never a path, streams the full
+5 lookup accepts `ArtifactId` plus a byte offset, never a path, streams the full
 content through digest and file-identity verification, and retains at most one
 64 KiB range. The result reports exact range offset, total length, and whether
 more bytes follow. A symlink, non-regular file, replacement race, length
@@ -209,6 +211,53 @@ the native owner enters runtime/child structured shutdown; dropping a managed
 driver drops the `kill_on_drop` app-server child. Descriptor cleanup is tied to
 the verified host-generation lease, so stale PID metadata is diagnostic only
 and never process-kill authority.
+
+### Detached host and scheduled work
+
+`autonomy` owns the typed, owner-authored job, schedule, budget, expiry and
+receipt lifecycle. `storage::autonomy` persists it in SQLCipher with immediate
+transactions, revision checks, indexed due/active-job lookups and bounded
+payload reads. A task owns its own inspectable Conversation and an exact
+workspace/Project/Profile/route/permission snapshot. Neither a focused client
+nor learned text supplies its authority. The initial actions are local reminder
+receipts and native tasks under an explicit read-only capability ceiling.
+Managed execution and arbitrary effect tools are not supported by this path.
+
+`app::autonomy_commands` composes protected custody and typed controls shared
+by CLI, terminal/TUI commands and Desktop's Schedules panel. Explicit start
+launches a detached CLI process; a spawn receipt is not a readiness receipt.
+`autonomy::host` reuses authenticated loopback discovery, keyed by protected-home
+filesystem identity. It retains the discovery lease until scheduled execution
+has drained, so detaching every observer cannot create another scheduler or
+allow a competing process to recover a live occurrence. Client control remains
+separate from schedule authority; the background native runtime has no human
+controller and rejects new permission questions and owner-only memory commands.
+
+The protected-home background lease serializes scheduled runs and maintenance.
+Foreground intent is held for an active operation, not an idle client, and
+preempts background work before competing for the workspace root. Native
+shutdown first requests acknowledgement, then aborts and joins its retained
+worker on timeout; workspace/background leases remain held through that join
+and the terminal receipt. Cancellation cannot establish that a remote request
+stopped computing or charging. A claimed occurrence without a terminal receipt
+recovers as Unknown/NeedsYou and is never automatically replayed.
+
+One-shot times are absolute instants; daily times retain a bundled IANA zone.
+The calendar selects the earlier repeated wall-clock time, advances a missing
+time to the first valid instant and coalesces missed days into one evaluation.
+Task admission retains the compiled job/day/queue ceilings and intersects lower
+owner usage limits. A stop-policy transaction records the exact active job;
+the owning host adds its bounded attached-client snapshot at acknowledgement.
+That impact receipt names affected work without turning a stop request into an
+unsupported completion or key-sealing claim.
+
+`autonomy::startup` separately manages explicit, home-specific per-user login
+registration: Windows HKCU Run, macOS LaunchAgents and Linux XDG autostart.
+Typed arguments contain the executable and home identity, never task bodies or
+credentials. Registration edits revoke protected startup permission first and
+grant it last; OS registration and SQLCipher cannot be one transaction.
+Available post-login keys remain required. See [durable schedules](../user/durable-schedules.md)
+for exact controls, limits and unsupported profiles.
 
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
@@ -652,8 +701,9 @@ ledger reports category estimates, reserves, omissions, attachment counts and
 bytes, and unavailable provider cache observations without copying prompt
 content. It updates at every provider request, including tool rounds, and
 separates runtime facts, parent handoff, tool evidence, and conversation content.
-Personal-memory and retrieved-evidence slots currently remain zero: their
-future producers are not implemented. Output/reasoning reserves remain in the
+Personal-memory selections now occupy their separately bounded data-only slot;
+retrieved evidence is accounted through its materialized source/tool content.
+Output/reasoning reserves remain in the
 budget, not misreported as sent input. Authored instructions must fit completely
 or assembly rejects the request; optional evidence can still be omitted with
 an explicit source ID. These estimates are neither a guaranteed token bound
@@ -684,7 +734,7 @@ Root context refresh occurs only when a new turn is accepted. Unchanged bytes
 reuse the version; changed bytes append one artifact/context version; a missing
 live source does not erase the prior version. Opening or inspecting a session
 does not read live project files. When estimated native input crosses the
-configured threshold, Xana synchronously commits a lossy continuation
+configured threshold, Xana commits a lossy continuation
 checkpoint before provider I/O, then sends that structured summary plus a
 verbatim recent tail. `/compact` requests the same boundary while idle. A
 checkpoint records its predecessor, operation and reason, exact source entry
@@ -694,6 +744,19 @@ it. Repeated compaction summarizes only the newly retired span; source history
 is never edited or deleted. Managed runtimes continue to own their context and
 report Xana compaction as unavailable. The bounded catalog and `xana_docs`
 tool are included in the resolved production tool snapshot.
+
+The deterministic extractor remains the default. An explicitly evaluated and
+enabled exact native connection/model may perform one bounded no-tool semantic
+helper request before checkpoint commit. Preparation and commit retain the
+source digest/range and check protected privacy generation; the protected append
+checks generation and source exclusions in the same transaction as the write.
+Helper output is derived task data, not instructions, authority or completion
+evidence. Failure retains the deterministic candidate when source policy still
+allows it; cancellation or changed source/privacy state leaves the previous
+checkpoint intact. Optional semantic provenance binds the exact helper route,
+evaluation and summary digest. The forty-case evaluator separates mocked
+contract tests from real-route opt-in quality measurements, and does not enable
+a helper merely because fixtures pass. See [semantic compaction](../user/semantic-compaction.md).
 
 Image attachments are reference-based and artifact-backed; see
 [Image input and media resolution](vision.md). OpenAI-compatible and Anthropic
@@ -957,10 +1020,12 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 10
+staged images, and an ordered follow-up queue. Frontend protocol version 11
 retains version 5's stable semantic command identifiers, version 7's frozen
 execution/completion facts, and version 8's Desktop Conversation controls, then
-adds Espejo and host-supervision projection. Native and managed Runs publish
+retains Espejo/host supervision and classified prompt accounting, and adds
+committed native user messages with bounded history positions for reconnect.
+Native and managed Runs publish
 authoritative execution facts and deterministic completion receipts. One
 application-owned catalog now
 projects command names, aliases, argument shapes, authority, availability,
@@ -2050,6 +2115,10 @@ The application modules establish responsibility and I/O boundaries:
   that authority back into their existing owners.
 - `native_runtime` and `identity` own foreground state, typed commands and events,
   correlated permission control, and semantic work identifiers.
+- `autonomy` owns durable task scope, calendar and receipt policy, detached-host
+  lifecycle and explicit login registration. Its runner composes the existing
+  native runtime under a read-only unattended ceiling; `storage::autonomy`
+  owns job/policy transactions. It does not add a general event replay engine.
 - `orchestration` owns exact route resolution, immutable child configuration,
   queued owner-neutral supervision, cancellation/inspection, durable
   handle/report types, native child composition, and the crate-private managed
@@ -2090,22 +2159,27 @@ tests live under `tests/`.
 
 ## Deliberate absences
 
-Xana has no Xana-owned sandbox, durable autonomous scheduler, durable event replay,
-persistent grants,
+Xana has no Xana-owned sandbox, general durable external event replay,
+general persistent tool-session grants,
 remote controller authentication, general context service, nested
-project-instruction or skill discovery, model-assisted semantic compaction, artifact/session
+project-instruction or skill discovery, artifact/session
 garbage collection, automatic/background operation replay, generalized
 idempotency, provider continuation after reconciliation, power-loss
 durability, or crash-safe edit protocol. Session
 grants live only in the foreground process. These absences are implementation
 facts, not predictions about which proposals will be accepted. Model-aware
 prompt budgets, deterministic artifact-backed compaction checkpoints, and
-local foreground/embedded execution-host coordination already exist. They do
-not yet provide automatic personal memory or restartable scheduled work.
-Explicit [personal-memory owner controls](../user/personal-memory.md) now share
+local foreground/embedded execution-host coordination already exist. Xana also
+provides scoped personal learning/context and explicit bounded local schedules;
+these are not general autonomous effect replay. [Personal-memory owner controls](../user/personal-memory.md) share
 typed scoped records, checked corrections, independent use/learning/no-memory
 flags and private exports through the [protected store](protected-storage.md).
-They do not add an automatic extractor or inject memory into model prompts.
+The owner-input extractor uses an explicitly authorized native helper, shared
+background limits, current source/consent checks and conservative activation.
+Native and managed turns receive bounded current data without a bridge-agent
+call. The detached host and [durable schedules](../user/durable-schedules.md)
+retain exact task authority and expose cancellation/unknown outcomes; they do
+not borrow an idle frontend's current Conversation or implicit credentials.
 Fresh homes can opt into [protected storage](protected-storage.md): SQLCipher
 owns Conversation records and private catalogs, and age protects immutable
 artifact objects. Existing homes still use the legacy backend until explicitly

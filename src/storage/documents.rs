@@ -6,20 +6,7 @@ use rusqlite::{OptionalExtension, params};
 
 impl ProtectedStore {
     pub(crate) fn document(&self, name: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
-        validate_name(name)?;
-        self.with_database(|db| {
-            let selected: Option<(usize, Option<Vec<u8>>)> = db.connection.query_row(
-                "SELECT length(body), CASE WHEN length(body)<=?2 THEN body END FROM documents WHERE name=?1",
-                params![name, i64::try_from(max_bytes)?], |row| Ok((read_usize(row, 0)?, row.get(1)?))).optional()?;
-            let Some((length, body)) = selected else {
-                return Ok(None);
-            };
-            ensure!(
-                length <= max_bytes,
-                "protected document exceeds its read limit"
-            );
-            Ok(body)
-        })
+        self.with_database(|db| read(&db.connection, name, max_bytes))
     }
 
     pub(crate) fn set_document(&self, name: &str, bytes: &[u8], max_bytes: usize) -> Result<()> {
@@ -70,4 +57,24 @@ fn validate_name(name: &str) -> Result<()> {
         "invalid managed document name"
     );
     Ok(())
+}
+
+/// Transaction-local bounded read for multi-record privacy decisions.
+pub(super) fn read(
+    db: &rusqlite::Connection,
+    name: &str,
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>> {
+    validate_name(name)?;
+    let selected:Option<(usize,Option<Vec<u8>>)>=db.query_row(
+        "SELECT length(body),CASE WHEN length(body)<=?2 THEN body END FROM documents WHERE name=?1",
+        params![name,i64::try_from(max_bytes)?],|r|Ok((read_usize(r,0)?,r.get(1)?))).optional()?;
+    let Some((length, body)) = selected else {
+        return Ok(None);
+    };
+    ensure!(
+        length <= max_bytes,
+        "protected document exceeds its read limit"
+    );
+    Ok(body)
 }

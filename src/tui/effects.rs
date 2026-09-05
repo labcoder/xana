@@ -758,7 +758,10 @@ pub(super) async fn dispatch_effect(
                     return Ok(None);
                 }
             }
-            let lease = match workspace_host.acquire_root(conversation.clone()) {
+            let lease = match workspace_host
+                .acquire_foreground_root(conversation.clone())
+                .await
+            {
                 Ok(lease) => lease,
                 Err(error) => {
                     state.restore_submission(
@@ -1051,7 +1054,10 @@ pub(super) async fn dispatch_effect(
             let mut lease = None;
             if action == crate::native_runtime::RoundBudgetAction::Continue && active_root.is_none()
             {
-                match workspace_host.acquire_root(conversation.clone()) {
+                match workspace_host
+                    .acquire_foreground_root(conversation.clone())
+                    .await
+                {
                     Ok(acquired) => lease = Some(acquired),
                     Err(error) => {
                         state.set_status(format!("could not continue turn: {error}"));

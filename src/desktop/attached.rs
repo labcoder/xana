@@ -377,12 +377,17 @@ async fn apply_observation(
 ) -> Result<(), DesktopError> {
     state.host.sequence = observation.sequence;
     match observation.event {
+        LocalHostEvent::ScheduledJobsChanged { jobs } => {
+            state.host.scheduled_jobs = jobs;
+        }
         LocalHostEvent::Frontend(event) => {
             let sequence = state.next_sequence();
             state.frontend.apply(&event, sequence);
             let projected = DesktopObservation {
                 version: FRONTEND_PROTOCOL_VERSION,
                 sequence,
+                conversation_start: state.frontend.conversation_start,
+                conversation_total: state.frontend.conversation_total,
                 event: project_event(
                     &event,
                     &state.frontend.session_id,
@@ -525,6 +530,8 @@ async fn publish_event(
             DesktopUpdate::Observation(DesktopObservation {
                 version: FRONTEND_PROTOCOL_VERSION,
                 sequence,
+                conversation_start: state.frontend.conversation_start,
+                conversation_total: state.frontend.conversation_total,
                 event,
             }),
             false,

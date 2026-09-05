@@ -84,7 +84,7 @@ impl ProtectedStore {
             if admission.class == WorkClass::Background {
                 ensure!(day_calls < policy.daily_requests - policy.foreground_request_reserve, "foreground request headroom is reserved");
                 let (_, job_tokens) = counter(&tx, "job", &admission.job)?;
-                ensure!(fits(background_tokens, Some(policy.background_daily_tokens)) && fits(job_tokens, Some(policy.background_job_tokens)), "background usage allowance exhausted; work remains pending");
+                ensure!(fits(background_tokens, Some(policy.background_daily_tokens.min(32_768))) && fits(job_tokens, Some(policy.background_job_tokens.min(crate::autonomy::JOB_TOKENS))), "background usage allowance exhausted; work remains pending");
                 ensure!(!tx.prepare("SELECT 1 FROM documents WHERE name='restore/review-required'")?.exists([])?, "restored background authority requires review");
             }
             tx.execute("INSERT INTO usage_requests(id,operation,root,job,day,background,charge,admission) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",

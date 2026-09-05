@@ -435,6 +435,7 @@ async fn run_once(
         review.push(format!("Reasoning    {effort}"));
     }
     review.push(format!("Permissions  {}", draft.permission_mode.as_str()));
+    review.push(crate::memory::learning::DISCLOSURE.into());
     review.push(format!("Config       {}", paths.config_file().display()));
     for effect in &customization.effects {
         review.push(format!("Applies      {effect}"));

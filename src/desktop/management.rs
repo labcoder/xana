@@ -4,10 +4,16 @@
 //! discovery, secret handling, validation, and durable mutation stay here.
 
 mod accounting;
+mod autonomy;
+pub use autonomy::{
+    DesktopAutonomySnapshot, DesktopHostEdit, DesktopScheduleEdit, DesktopScheduledTask,
+    DesktopTaskDraft, DesktopTaskPreview,
+};
 mod memory;
 pub use memory::{
     DesktopMemoryMutation, DesktopMemorySnapshot, MemoryClaim, MemoryControlEdit, MemoryControls,
-    MemoryEdit, MemoryPage, MemoryRecord, MemoryScope, MemoryState,
+    MemoryEdit, MemoryPage, MemoryRecord, MemoryScope, MemoryState, SourceDeletionPreview,
+    SourceDeletionReceipt,
 };
 mod actions;
 mod entities;

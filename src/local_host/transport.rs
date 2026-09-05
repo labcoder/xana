@@ -130,7 +130,6 @@ pub(crate) struct LocalHostServer {
 }
 
 impl LocalHostServer {
-    #[cfg(test)]
     pub(crate) async fn bind(
         runtime_root: &Path,
         workspace: &Path,
@@ -139,6 +138,10 @@ impl LocalHostServer {
         seed: HostSnapshotSeed,
     ) -> Result<Self, LocalHostError> {
         Self::bind_inner(runtime_root, workspace, bind, port, seed, None).await
+    }
+
+    pub(crate) fn autonomy_publisher(&self) -> AutonomyPublisher {
+        AutonomyPublisher(self.hub.clone())
     }
 
     pub(crate) async fn bind_controlled(
@@ -235,6 +238,12 @@ impl LocalHostServer {
     }
 
     pub(crate) async fn run(self) -> Result<(), LocalHostError> {
+        self.run_borrowed().await
+    }
+
+    /// An outer structured owner can retain discovery through the shutdown of
+    /// work that is not controlled by this passive observer transport.
+    pub(crate) async fn run_borrowed(&self) -> Result<(), LocalHostError> {
         let mut clients = JoinSet::new();
         loop {
             tokio::select! {
@@ -310,6 +319,21 @@ impl LocalHostServer {
             ));
         }
         Ok(())
+    }
+}
+
+/// Restricted observer publication; this handle cannot control Conversations.
+pub(crate) struct AutonomyPublisher(ObservationHub);
+impl AutonomyPublisher {
+    pub(crate) fn stop_clients(&self) -> Result<crate::autonomy::host::StopClients, String> {
+        self.0.stop_clients()
+    }
+
+    pub(crate) fn publish(
+        &self,
+        jobs: Vec<crate::autonomy::host::JobSummary>,
+    ) -> Result<(), String> {
+        self.0.replace_scheduled(jobs)
     }
 }
 

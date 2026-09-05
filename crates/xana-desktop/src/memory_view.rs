@@ -15,7 +15,7 @@ use gpui_component::{
 };
 use xana::desktop::{
     DesktopControlPlane, DesktopMemoryMutation, MemoryControlEdit, MemoryControls, MemoryEdit,
-    MemoryRecord, MemoryScope,
+    MemoryRecord, MemoryScope, MemoryState, SourceDeletionPreview,
 };
 
 #[derive(Clone)]
@@ -39,6 +39,8 @@ enum EditAction {
     Correct,
     Move,
     Disable,
+    Forget,
+    Restore,
     Controls,
 }
 
@@ -60,6 +62,9 @@ pub(crate) struct MemoryView {
     no_memory: bool,
     confirm_scope: bool,
     restore_review_required: bool,
+    learning_status: String,
+    deletion: Option<SourceDeletionPreview>,
+    confirm_delete: bool,
     status: String,
     busy: bool,
     task: Option<Task<()>>,
@@ -114,6 +119,9 @@ impl MemoryView {
             no_memory: false,
             confirm_scope: false,
             restore_review_required: false,
+            learning_status:"Learning status appears after Refresh".into(),
+            deletion: None,
+            confirm_delete: false,
             status: "Refresh to inspect protected personal memory. No provider call. Automatic learning and prompt selection are separate features.".into(),
             busy: false,
             task: None,
@@ -197,6 +205,7 @@ impl MemoryView {
         cx: &mut Context<Self>,
     ) {
         self.restore_review_required = snapshot.restore_review_required;
+        self.learning_status = snapshot.learning_status;
         self.loaded_scope = Some(snapshot.controls.scope.clone());
         self.use_enabled = snapshot.controls.use_enabled;
         self.learning_enabled = snapshot.controls.learning_enabled;
@@ -205,6 +214,8 @@ impl MemoryView {
         self.records = snapshot.page.records;
         self.next_after = snapshot.page.next_after;
         self.selected = None;
+        self.deletion = None;
+        self.confirm_delete = false;
         self.confirm_scope = false;
         self.detail
             .update(cx, |input, cx| input.set_value("", window, cx));
@@ -229,7 +240,7 @@ impl MemoryView {
             state.set_items(SearchableVec::new(choices), window, cx)
         });
         self.status = format!(
-            "{} record(s) in this page. Inspect a record to correct, disable or move it. Disabling is not robust forgetting.",
+            "{} record(s) in this page. Forget blocks automatic reuse; source deletion is a separate reviewed action.",
             self.records.len()
         );
     }
@@ -251,6 +262,8 @@ impl MemoryView {
         });
         self.detail.update(cx,|input,cx|input.set_value(format!("ID: {}\nRevision: {} · {:?} · {:?}\nScope: {}\nCreated: {} · Changed: {}\nOwner request: {}\nOrigin Conversation: {:?}",row.id,row.revision,row.state,row.claim,row.scope,row.created.at_unix_seconds,row.changed.at_unix_seconds,row.changed.owner_request,row.created.conversation),window,cx));
         self.selected = Some(row);
+        self.deletion = None;
+        self.confirm_delete = false;
         self.confirm_scope = false;
         cx.notify();
     }
@@ -308,6 +321,8 @@ impl MemoryView {
                 confirm: self.confirm_scope,
             },
             EditAction::Disable => MemoryEdit::Disable,
+            EditAction::Forget => MemoryEdit::Forget,
+            EditAction::Restore => MemoryEdit::Restore { confirm: true },
             _ => unreachable!("creation and controls returned above"),
         };
         Ok(DesktopMemoryMutation::Revise {
@@ -384,12 +399,65 @@ impl MemoryView {
         }));
         cx.notify();
     }
+    fn source_action(&mut self, delete: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let conversation = self
+            .selected
+            .as_ref()
+            .and_then(|row| row.created.conversation);
+        let Some(conversation) = conversation else {
+            self.status = "The inspected memory has no source Conversation".into();
+            cx.notify();
+            return;
+        };
+        let review = if delete {
+            let Some(preview) = &self.deletion else {
+                return;
+            };
+            if !self.confirm_delete || preview.conversation != conversation {
+                return;
+            }
+            Some(preview.review.clone())
+        } else {
+            None
+        };
+        self.busy = true;
+        let control = self.control.clone();
+        self.task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = cx.background_executor().spawn(async move {
+                if let Some(review) = review {
+                    control.delete_personal_memory_source(conversation, &review).map(|receipt| (None, format!("Deleted {} history records; receipt {}. Shared artifacts and external copies retained.", receipt.deleted_records, receipt.receipt)))
+                } else {
+                    control.personal_memory_source_preview(conversation).map(|preview| {
+                        let text = format!("Review deletion of {}: {} records, {} bytes. {}", preview.conversation, preview.records, preview.bytes, preview.notice);
+                        (Some(preview), text)
+                    })
+                }
+            }).await;
+            _ = this.update_in(cx, |this, _, cx| {
+                this.busy = false;
+                this.confirm_delete = false;
+                match result {
+                    Ok((preview, text)) => { this.deletion = preview; this.status = text; }
+                    Err(error) => { this.deletion = None; this.status = error.message; }
+                }
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
 }
 
 impl Render for MemoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = cx.theme().semantic_tokens();
         let selected = self.selected.is_some();
+        let forgotten = self
+            .selected
+            .as_ref()
+            .is_some_and(|row| row.state == MemoryState::Forgotten);
         let records = self.records.iter().map(|row| {
             let row = row.clone();
             Button::new(format!("memory-{}", row.id))
@@ -404,16 +472,28 @@ impl Render for MemoryView {
                 )
         });
         let actions = [
-            (EditAction::Remember, "Remember in named scope"),
-            (EditAction::Correct, "Correct selected"),
-            (EditAction::Disable, "Disable selected"),
+            (EditAction::Remember, "remember", "Remember in named scope"),
+            (EditAction::Correct, "correct", "Correct selected"),
+            (EditAction::Disable, "disable", "Disable selected"),
+            (EditAction::Forget, "forget", "Forget selected"),
+            (
+                EditAction::Restore,
+                "restore",
+                "Explicitly restore selected fact",
+            ),
         ]
         .into_iter()
-        .enumerate()
-        .map(|(i, (action, label))| {
-            Button::new(format!("memory-edit-{i}"))
+        .map(|(action, id, label)| {
+            Button::new(format!("memory-edit-{id}"))
                 .label(label)
-                .disabled(self.busy || (!matches!(action, EditAction::Remember) && !selected))
+                .disabled(
+                    self.busy
+                        || match action {
+                            EditAction::Remember => false,
+                            EditAction::Restore => !forgotten,
+                            _ => !selected || forgotten,
+                        },
+                )
                 .on_click(cx.listener(move |this, _, window, cx| this.save(action, window, cx)))
         });
         let navigation = h_flex()
@@ -444,7 +524,7 @@ impl Render for MemoryView {
             .child(Checkbox::new("memory-use").label("Allow memory use").checked(self.use_enabled)
                 .disabled(self.busy || self.controls.is_none())
                 .on_click(cx.listener(|this, value, _, cx| { this.use_enabled = *value; cx.notify(); })))
-            .child(Checkbox::new("memory-learn").label("Allow future authorized automatic learning (not running yet)")
+            .child(Checkbox::new("memory-learn").label("Allow automatic personal learning through the authorized helper")
                 .checked(self.learning_enabled).disabled(self.busy || self.controls.is_none())
                 .on_click(cx.listener(|this, value, _, cx| { this.learning_enabled = *value; cx.notify(); })))
             .child(Checkbox::new("memory-none").label("No memory in this scope").checked(self.no_memory)
@@ -455,6 +535,9 @@ impl Render for MemoryView {
                 .on_click(cx.listener(|this, _, window, cx| this.save(EditAction::Controls, window, cx))));
         let content = v_flex().p(tokens.spacing.md).gap(tokens.spacing.sm)
             .child("Personal memory — explicit owner controls")
+            .child("Automatic learning uses bounded batches of eligible user statements, independently of memory use. An exact native helper route must be authorized; otherwise work remains pending. No ambient computer monitoring.")
+            .child(self.learning_status.clone())
+            .child("Helper controls: xana memory learning-status / learning-route / process. Refresh shows the latest receipt and candidate count.")
             .child("Scope to browse or target: select below, then Refresh to browse. A selected record stays available for an explicit Move.")
             .child(Select::new(&self.choices).disabled(self.busy))
             .child(Input::new(&self.scope).disabled(self.busy))
@@ -467,12 +550,25 @@ impl Render for MemoryView {
             .child("Valid until (optional UTC Unix timestamp)")
             .child(Input::new(&self.expires).disabled(self.busy))
             .child(h_flex().gap_2().flex_wrap().children(actions))
+            .child("Forgetting retains inspectable history but blocks automatic reuse of its originating conversations. Restoring a fact does not restore that source eligibility.")
+            .child(Button::new("memory-source-preview").label("Review source history deletion…")
+                .disabled(self.busy || self.selected.as_ref().and_then(|row| row.created.conversation).is_none())
+                .on_click(cx.listener(|this, _, window, cx| this.source_action(false, window, cx))))
+            .when_some(self.deletion.as_ref(), |view, preview| {
+                view.child(format!("Delete Conversation {}: {} records / {} bytes. {}", preview.conversation, preview.records, preview.bytes, preview.notice))
+                    .child(Checkbox::new("memory-delete-confirm").label("I reviewed this exact history deletion; it cannot be undone here")
+                        .checked(self.confirm_delete).disabled(self.busy)
+                        .on_click(cx.listener(|this, value, _, cx| { this.confirm_delete = *value; cx.notify(); })))
+                    .child(Button::new("memory-source-delete").label("Delete reviewed source history")
+                        .disabled(self.busy || !self.confirm_delete)
+                        .on_click(cx.listener(|this, _, window, cx| this.source_action(true, window, cx))))
+            })
             .child(Checkbox::new("memory-confirm-scope")
                 .label("I explicitly approve moving the selected record to the named scope")
                 .checked(self.confirm_scope).disabled(self.busy || !selected)
                 .on_click(cx.listener(|this, value, _, cx| { this.confirm_scope = *value; cx.notify(); })))
             .child(Button::new("memory-move").label("Move selected to named scope")
-                .disabled(self.busy || !selected || !self.confirm_scope)
+                .disabled(self.busy || !selected || forgotten || !self.confirm_scope)
                 .on_click(cx.listener(|this, _, window, cx| this.save(EditAction::Move, window, cx))))
             .child(controls);
         v_flex()

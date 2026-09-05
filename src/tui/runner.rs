@@ -573,7 +573,11 @@ impl NativeOwner<'_> {
         decision: Option<crate::outbound::OutboundApprovalDecision>,
         state: &mut TuiState,
     ) -> Result<Option<ChatExit>> {
-        let lease = match self.workspace_host.acquire_root(self.conversation.clone()) {
+        let lease = match self
+            .workspace_host
+            .acquire_foreground_root(self.conversation.clone())
+            .await
+        {
             Ok(lease) => lease,
             Err(error) => {
                 state.restore_submission(
@@ -794,6 +798,7 @@ pub(crate) async fn run_native(
     )?;
     state.install_composer_history(history.entries, history.warning);
 
+    state.disclose_learning();
     let (vision_sender, vision_events) = mpsc::channel(1);
     run(
         prepared,
@@ -865,6 +870,7 @@ pub(crate) async fn run_managed(
         crate::terminal_productivity::ComposerHistoryStore::open(&prepared.paths, &workspace)?;
     state.install_composer_history(history.entries, history.warning);
 
+    state.disclose_learning();
     run(
         prepared,
         state,

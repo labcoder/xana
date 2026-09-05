@@ -64,6 +64,104 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn current_memory_handoff_uses_two_real_turns_across_model_change_and_no_bridge() {
+    use crate::{
+        memory::{MemoryContext, MemoryEdit, MemoryOwner, MemoryScope},
+        storage::{ProtectedStore, RecoveryIdentity, TestCustody},
+    };
+    let fixture = Fixture::new();
+    let home = ProtectedStore::initialize(
+        &fixture.directory.path().join("protected-memory"),
+        &RecoveryIdentity::generate(),
+        &TestCustody::default(),
+    )
+    .unwrap();
+    let conversation = crate::identity::ConversationId::new();
+    let owner = MemoryOwner::new(
+        home,
+        MemoryContext {
+            conversation: Some(conversation.to_string().parse().unwrap()),
+            profile: Some(uuid::Uuid::new_v4()),
+            project: None,
+        },
+    );
+    let fact = owner
+        .remember(
+            MemoryScope::User,
+            "MANAGED_OLD_CANARY prefer examples".into(),
+            None,
+        )
+        .unwrap();
+    owner
+        .remember(
+            MemoryScope::Profile(uuid::Uuid::new_v4()),
+            "OTHER_PROFILE_CANARY".into(),
+            None,
+        )
+        .unwrap();
+    let mut server=fixture.spawn(
+        "READ \"method\":\"turn/start\"\nHAS MANAGED_OLD_CANARY\nLACKS OTHER_PROFILE_CANARY\nHAS \"model\":\"fixture-one\"\nHAS \"threadId\":\"thread-one\"\n\
+         SEND {\"id\":2,\"result\":{\"turn\":{\"id\":\"turn-one\"}}}\n\
+         SEND {\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-one\",\"turn\":{\"id\":\"turn-one\",\"status\":\"completed\"}}}\n\
+         READ \"method\":\"turn/start\"\nHAS MANAGED_NEW_CANARY\nLACKS MANAGED_OLD_CANARY\nLACKS OTHER_PROFILE_CANARY\nHAS \"model\":\"fixture-two\"\nHAS \"threadId\":\"thread-one\"\n\
+         SEND {\"id\":3,\"result\":{\"turn\":{\"id\":\"turn-two\"}}}\n\
+         SEND {\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-one\",\"turn\":{\"id\":\"turn-two\",\"status\":\"completed\"}}}\n"
+    ).await;
+    for model in ["fixture-one", "fixture-two"] {
+        if model == "fixture-two" {
+            owner
+                .revise(
+                    fact.id,
+                    fact.revision,
+                    MemoryEdit::Correct {
+                        statement: "MANAGED_NEW_CANARY prefer diagrams".into(),
+                        valid_until_unix_seconds: None,
+                    },
+                )
+                .unwrap();
+        }
+        let text = crate::managed_execution::prepare_memory_for_test(
+            Some(&owner),
+            conversation,
+            "What do I prefer?",
+        )
+        .await
+        .unwrap();
+        server
+            .run_turn(
+                "thread-one",
+                model,
+                &ManagedTurnOptions {
+                    reasoning_effort: Some("medium".into()),
+                    reasoning_summary: None,
+                },
+                ManagedTurnInput {
+                    text,
+                    image_urls: Vec::new(),
+                },
+                &mut TestHandler::default(),
+            )
+            .await
+            .unwrap();
+    }
+    let row = owner.record(fact.id).unwrap();
+    owner
+        .revise(row.id, row.revision, MemoryEdit::Forget)
+        .unwrap();
+    assert!(
+        crate::managed_execution::prepare_memory_for_test(
+            Some(&owner),
+            conversation,
+            "Another request"
+        )
+        .await
+        .is_err()
+    );
+    server.shutdown().await.unwrap();
+    fixture.assert_complete();
+}
+
+#[tokio::test]
 async fn durable_managed_admission_counts_outer_turns_not_cumulative_thread_usage() {
     use crate::{
         storage::{ProtectedStore, RecoveryIdentity, TestCustody},

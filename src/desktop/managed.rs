@@ -344,6 +344,8 @@ impl ManagedDesktopState {
         DesktopObservation {
             version: FRONTEND_PROTOCOL_VERSION,
             sequence: self.desktop_sequence,
+            conversation_start: self.snapshot.conversation_start,
+            conversation_total: self.snapshot.conversation_total,
             event,
         }
     }
@@ -1119,16 +1121,19 @@ impl Bridge {
                     .await?;
                     return Ok(None);
                 }
-                let run = match execution_host.begin_run(
-                    &controller.conversation,
-                    operation_id.0,
-                    RunAccess::WorkspaceWrite,
-                    if acknowledge_workspace_write_collision {
-                        WriteCollisionDecision::Acknowledge
-                    } else {
-                        WriteCollisionDecision::Reject
-                    },
-                ) {
+                let run = match execution_host
+                    .begin_foreground_run(
+                        &controller.conversation,
+                        operation_id.0,
+                        RunAccess::WorkspaceWrite,
+                        if acknowledge_workspace_write_collision {
+                            WriteCollisionDecision::Acknowledge
+                        } else {
+                            WriteCollisionDecision::Reject
+                        },
+                    )
+                    .await
+                {
                     Ok(run) => run,
                     Err(error) => {
                         self.publish_command_result(command_id, Err(host_error(error)))

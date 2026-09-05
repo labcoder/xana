@@ -225,6 +225,7 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }
         | AgentEvent::AssistantMessage { .. }
+        | AgentEvent::UserMessageCommitted { .. }
         | AgentEvent::UsageObserved { .. }
         | AgentEvent::ConversationCleared
         | AgentEvent::CompactionStarted { .. }

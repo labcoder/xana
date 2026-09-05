@@ -10,6 +10,10 @@ use crate::{
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
 mod memory;
+mod recall;
+pub(crate) use recall::{NotesCommand, RecallArgs, RecallCommand};
+mod autonomy;
+pub(crate) use autonomy::{AutonomyArgs, AutonomyCommand, CreateTask, HostCommand};
 pub(crate) use memory::{MemoryArgs, MemoryCommand};
 use std::{net::IpAddr, path::PathBuf};
 
@@ -221,6 +225,10 @@ pub(crate) enum Command {
     Usage(UsageArgs),
     /// Inspect and control scoped personal memory locally.
     Memory(MemoryArgs),
+    /// Search cited Project evidence and manage explicitly selected notes.
+    Recall(RecallArgs),
+    /// Durable schedules and explicit detached local host controls.
+    Autonomy(AutonomyArgs),
     /// Inspect or change this protected home's shared admission policy.
     Budget(BudgetArgs),
     /// Inspect, initialize, lock or recover Xana-managed encrypted storage.
@@ -1402,6 +1410,22 @@ pub(crate) struct SessionArgs {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum SessionCommand {
+    /// Compare a no-tool native helper on forty synthetic compaction cases.
+    EvaluateCompaction {
+        #[arg(long)]
+        connection: String,
+        #[arg(long)]
+        model: String,
+        /// Explicitly authorize these synthetic requests through the exact route.
+        #[arg(long)]
+        yes: bool,
+        /// Enable the exact helper for native compaction only if all quality gates pass.
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        /// Revoke an existing helper approval without calling any provider.
+        #[arg(long)]
+        disable: bool,
+    },
     /// List bounded conversations for the canonical current workspace.
     List,
     /// Search bounded retained transcript text for one exact Conversation.

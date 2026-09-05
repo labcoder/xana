@@ -96,6 +96,7 @@ pub(crate) struct Agent {
     boundary_observer: Arc<dyn BoundaryObserver>,
     telemetry: Arc<dyn RuntimeTelemetry>,
     usage_budget: Option<crate::usage_budget::UsageBudget>,
+    semantic_compaction: Option<crate::session::compaction::semantic::HelperPolicy>,
 }
 
 pub(crate) struct AgentTurnResult {
@@ -291,6 +292,41 @@ impl UsageCounter {
 }
 
 impl Agent {
+    pub(crate) fn with_semantic_compaction(
+        mut self,
+        policy: Option<crate::session::compaction::semantic::HelperPolicy>,
+    ) -> Self {
+        self.semantic_compaction = policy;
+        self
+    }
+
+    pub(crate) fn semantic_compaction_enabled(&self) -> bool {
+        self.semantic_compaction.is_some()
+    }
+
+    pub(crate) async fn enrich_compaction(
+        &self,
+        candidate: &mut crate::session::CompactionCandidate,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<bool> {
+        let Some(policy) = &self.semantic_compaction else {
+            return Ok(false);
+        };
+        let budget = self
+            .usage_budget
+            .as_ref()
+            .context("semantic helper requires durable usage accounting")?;
+        crate::session::compaction::semantic::enrich(
+            candidate,
+            self.provider.as_ref(),
+            budget,
+            policy,
+            cancellation,
+        )
+        .await?;
+        Ok(true)
+    }
+
     pub(crate) fn with_parent_usage(mut self, parent: OperationId) -> Result<Self> {
         self.usage_budget = self
             .usage_budget
@@ -323,6 +359,7 @@ impl Agent {
             output_recorder: None,
             telemetry: Arc::new(NoopRuntimeTelemetry),
             usage_budget: None,
+            semantic_compaction: None,
         }
     }
 

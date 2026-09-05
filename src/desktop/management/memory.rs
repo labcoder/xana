@@ -2,7 +2,7 @@
 use super::{DesktopControlPlane, DesktopError, control_error};
 pub use crate::memory::{
     MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit, MemoryPage, MemoryRecord,
-    MemoryScope, MemoryState,
+    MemoryScope, MemoryState, SourceDeletionPreview, SourceDeletionReceipt,
 };
 use crate::{
     memory::{MemoryContext, MemoryOwner},
@@ -12,6 +12,7 @@ use std::path::Path;
 use uuid::Uuid;
 
 pub struct DesktopMemorySnapshot {
+    pub learning_status: String,
     pub page: MemoryPage,
     pub controls: MemoryControls,
     pub scope_options: Vec<(String, String)>,
@@ -54,9 +55,8 @@ impl DesktopControlPlane {
         let owner = self.personal_memory_owner()?;
         let restore_review_required = owner
             .store
-            .document("restore/review-required", 4096)
-            .map_err(control_error)?
-            .is_some();
+            .memory_requires_review()
+            .map_err(control_error)?;
         let page = owner.page(Some(&scope), after).map_err(control_error)?;
         let controls = owner
             .controls(scope.clone(), MemoryControlEdit::default())
@@ -82,6 +82,10 @@ impl DesktopControlPlane {
             scope_options.push((scope.to_string(), scope.to_string()));
         }
         Ok(DesktopMemorySnapshot {
+            learning_status: serde_json::to_string(
+                &owner.store.learning_status().map_err(control_error)?,
+            )
+            .map_err(control_error)?,
             page,
             controls,
             scope_options,
@@ -103,6 +107,23 @@ impl DesktopControlPlane {
             .export(Some(&scope), path)
             .map_err(control_error)
     }
+    pub fn personal_memory_source_preview(
+        &self,
+        conversation: Uuid,
+    ) -> Result<SourceDeletionPreview, DesktopError> {
+        self.personal_memory_owner()?
+            .deletion_preview(conversation)
+            .map_err(control_error)
+    }
+    pub fn delete_personal_memory_source(
+        &self,
+        conversation: Uuid,
+        review: &str,
+    ) -> Result<SourceDeletionReceipt, DesktopError> {
+        self.personal_memory_owner()?
+            .delete_source(conversation, review)
+            .map_err(control_error)
+    }
 }
 
 fn apply(owner: &MemoryOwner, request: DesktopMemoryMutation) -> anyhow::Result<String> {
@@ -120,9 +141,14 @@ fn apply(owner: &MemoryOwner, request: DesktopMemoryMutation) -> anyhow::Result<
         }
         DesktopMemoryMutation::Revise { id, revision, edit } => {
             let record = owner.revise(id, revision, edit)?;
+            let notice = if record.state == MemoryState::Forgotten {
+                "Forgotten; originating conversations are excluded from automatic reuse. Raw history and provider copies are separate."
+            } else {
+                "Changes apply on the next eligible read/turn without restarting work. Restoring a fact does not reauthorize excluded history."
+            };
             format!(
-                "Updated {} to revision {} in {}. Eligible on the next read/turn, without restarting work.",
-                record.id, record.revision, record.scope
+                "Updated {} to revision {} in {}. {notice}",
+                record.id, record.revision, record.scope,
             )
         }
         DesktopMemoryMutation::Controls { scope, edit } => {

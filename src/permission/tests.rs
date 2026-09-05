@@ -68,6 +68,37 @@ fn configured_default_applies_when_no_rule_matches() {
 }
 
 #[test]
+fn unattended_ceiling_denies_external_reads_and_effects_even_under_allow() {
+    let workspace = tempdir().unwrap();
+    let policy = policy(PolicyDecision::Allow, vec![], workspace.path()).workspace_reads_only();
+    let grants = policy::SessionGrants::default();
+    let local = workspace_request(workspace.path());
+    assert_eq!(
+        policy.explain(&local).winning_decision,
+        PolicyDecision::Allow
+    );
+    assert!(matches!(
+        policy.evaluate(&local, &grants),
+        Evaluation::AllowedByPolicy { .. }
+    ));
+    let external = request(PermissionScope::ExternalPath {
+        canonical_path: workspace.path().join("outside"),
+    });
+    let mut effect = local;
+    effect.effect_class = EffectClass::Write;
+    for request in [external, effect] {
+        assert_eq!(
+            policy.explain(&request).winning_decision,
+            PolicyDecision::Deny
+        );
+        assert!(matches!(
+            policy.evaluate(&request, &grants),
+            Evaluation::Denied { .. }
+        ));
+    }
+}
+
+#[test]
 fn embedded_product_documentation_does_not_prompt_under_the_ask_default() {
     let workspace = tempdir().expect("workspace");
     let mut docs = request(PermissionScope::BuiltInResource {

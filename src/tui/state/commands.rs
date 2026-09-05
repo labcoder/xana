@@ -1362,13 +1362,16 @@ impl TuiState {
             | CommandId::Diagnostics
             | CommandId::Layout
             | CommandId::Outbound
+            | CommandId::Recall
             | CommandId::Route
             | CommandId::Serve => {
                 self.status =
                     "This catalog action is not directly invokable on the current TUI".to_owned();
                 UpdateEffect::None
             }
-            CommandId::Storage | CommandId::Budget | CommandId::Memory => UpdateEffect::None, // Routed through suspended_chat_control.
+            CommandId::Storage | CommandId::Budget | CommandId::Memory | CommandId::Autonomy => {
+                UpdateEffect::None
+            } // Routed through suspended_chat_control.
         }
     }
 

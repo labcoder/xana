@@ -124,11 +124,12 @@ pub(super) fn run_command(
                             "native continuation source must be a session UUID: {error}"
                         )
                     })?;
-                let (_, restored) = DurableSession::inspect_restored(paths.data_dir(), source_id)?;
-                if restored.workspace_root.canonicalize()? != source_workspace.canonicalize()? {
+                let source_root =
+                    DurableSession::inspect_workspace_root(paths.data_dir(), source_id)?;
+                if source_root.canonicalize()? != source_workspace.canonicalize()? {
                     bail!(
                         "source session belongs to {}; --source-workspace resolved to {}",
-                        restored.workspace_root.display(),
+                        source_root.display(),
                         source_workspace.display()
                     );
                 }

@@ -123,6 +123,10 @@ pub(crate) struct RoundBudgetDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
+    UserMessageCommitted {
+        operation_id: OperationId,
+        message: Message,
+    },
     OperationStateChanged {
         operation_id: OperationId,
         state: OperationState,

@@ -117,15 +117,31 @@ fn apply_with(
                 .saturating_add(32 * 1024 * 1024),
         "not enough space for verified restore; existing home preserved"
     );
-    let _owner = lock_prior(paths.data_dir(), plan.replaces_store)?;
+    // When restoring this home's own backup, keep the current exclusion ledger
+    // readable under an exclusive owner lease until it has reached the stage.
+    // A foreign/unavailable prior key must not silently discard later forgetting.
+    let prior_store = if plan.replaces_store.is_some() {
+        let prior = ProtectedStore::open_recovery(paths.data_dir(), identity, false)
+            .context("unlock the current home with compatible recovery material before replacing it; forgetting exclusions must be reconciled")?;
+        prior.with_database(|db| db.exclusive())?;
+        Some(prior)
+    } else {
+        None
+    };
     let source = ProtectedStore::open_recovery(snapshot, identity, false)?;
     let id = Uuid::new_v4();
     let stage = sibling(paths.data_dir(), id, "restore-prepared");
     fs::create_dir(&stage)?;
     source.snapshot_into(&stage, plan.bytes.saturating_add(16 * 1024 * 1024))?;
     drop(source);
-    let staged = ProtectedStore::recover(&stage, identity)?;
+    let staged = ProtectedStore::prepare_restored_schema(&stage, identity)?;
+    // Recovery snapshots are normally read-only with respect to schema; this
+    // prepared canonical replacement is explicitly upgraded under its lease.
+    if let Some(prior) = &prior_store {
+        staged.reconcile_exclusions_from(prior)?;
+    }
     staged.set_document("restore/review-required", b"Current forgetting exclusions and grant/job authority require review. Recall, learning and automation remain inactive; new foreground work also requires the separate restored-usage review.", 4096)?;
+    staged.remove_document("restore/memory-reviewed")?;
     staged.set_document("usage/restore-review-required", b"Usage after the snapshot is unknown. Explicitly review admission policy before dispatch; restoring does not reset vendor bills or quotas.", 4096)?;
     staged.with_database(|db| db.checkpoint())?;
     drop(staged);
@@ -142,7 +158,7 @@ fn apply_with(
     )?;
     fault("restore-journal")?;
     super::migration::fence_config(paths)?;
-    drop(_owner);
+    drop(prior_store);
     finish(paths, identity, &journal, &fault)
 }
 

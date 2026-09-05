@@ -2,8 +2,10 @@ use super::{
     COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, CompactionError, CompactionReason,
     CompactionSummary, ConversationEntry, ConversationPage, LoadedSession, NativeBranchLineage,
     PromptContinuation, RecordEnvelope, RestoredSession, SessionRecord, SessionStore,
-    apply_validated, reduce, validate_envelope,
+    apply_validated, reduce, validate_envelope_with_compaction_proof,
 };
+mod inspection;
+mod protected;
 use crate::{
     artifact::{ArtifactStore, ContentHash},
     context::{
@@ -53,6 +55,12 @@ pub(crate) struct DurableSession {
     artifacts: ArtifactStore,
     agent_id: AgentId,
     owner: PrincipalId,
+    // Protected journals retain an execution projection, not an ever-growing
+    // copy of every committed record; legacy files keep their existing bound.
+    execution_bytes: usize,
+    checkpoint_revision: usize,
+    staged_branch_revision: Option<usize>,
+    compaction_prefix: Option<super::compaction::CompactionPrefixAccumulator>,
 }
 
 #[derive(Debug, Clone)]
@@ -65,7 +73,10 @@ pub(crate) struct SessionSummary {
     pub(crate) artifact_count: usize,
     pub(crate) artifact_bytes: u64,
     pub(crate) context_versions: Vec<(ContextId, u64)>,
+    pub(crate) context_version_count: usize,
     pub(crate) children: Vec<ChildInspection>,
+    pub(crate) child_count: usize,
+    pub(crate) bounded_details: bool,
     pub(crate) compaction_count: usize,
     pub(crate) compactions: Vec<CompactionCheckpoint>,
     pub(crate) branch: Option<NativeBranchLineage>,
@@ -89,6 +100,16 @@ pub(crate) struct NativeConversationHandle {
 }
 
 impl DurableSession {
+    /// Workspace-only routing checks must not hydrate a retained transcript.
+    pub(crate) fn inspect_workspace_root(
+        data_dir: &Path,
+        id: SessionId,
+    ) -> anyhow::Result<PathBuf> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Ok(home.history_metadata(id)?.workspace);
+        }
+        Ok(Self::inspect_restored(data_dir, id)?.1.workspace_root)
+    }
     pub(crate) fn create_protected(
         home: crate::storage::ProtectedStore,
         workspace_root: PathBuf,
@@ -110,13 +131,24 @@ impl DurableSession {
         home: crate::storage::ProtectedStore,
         session_id: SessionId,
     ) -> Result<(Self, SessionSummary)> {
-        let loaded = SessionStore::inspect_protected(&home, session_id)?;
-        let summary = summary_from_loaded(&home.database_path(), &loaded)?;
-        let store = SessionStore::resume_protected(home.clone(), session_id, &loaded)?;
-        Ok((
-            Self::from_open_store(home.data_dir(), store, loaded.records)?,
-            summary,
-        ))
+        let store = SessionStore::open_protected(home.clone(), session_id)?;
+        let (restored, revision) = protected::restore_execution(&home, session_id)?;
+        let summary = protected::execution_summary(&home, &restored, revision)?;
+        let mut session = Self {
+            store,
+            records: Vec::new(),
+            record_ids: HashSet::new(),
+            restored,
+            artifacts: ArtifactStore::protected(home),
+            agent_id: AgentId::for_session(session_id),
+            owner: PrincipalId::new(),
+            execution_bytes: 0,
+            checkpoint_revision: revision,
+            staged_branch_revision: None,
+            compaction_prefix: None,
+        };
+        session.checkpoint_execution()?;
+        Ok((session, summary))
     }
 
     pub(crate) fn inspect_protected(
@@ -162,6 +194,9 @@ impl DurableSession {
         source_session_id: SessionId,
         source_entry_id: ConversationEntryId,
     ) -> Result<(Self, NativeBranchReceipt)> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Self::branch_protected(home, source_session_id, source_entry_id);
+        }
         let (_, source) = Self::inspect_restored(data_dir, source_session_id)
             .context("could not inspect branch source")?;
         let source_path = source
@@ -260,6 +295,11 @@ impl DurableSession {
     }
 
     pub(crate) fn discard_staged_branch(self) -> Result<()> {
+        if self.staged_branch_revision.is_some()
+            && self.staged_branch_revision == self.store.protected_revision()
+        {
+            return remove_staged_session(self, "branch target");
+        }
         let valid_creation = matches!(
             self.records.first().map(|record| &record.record),
             Some(SessionRecord::SessionCreated { .. })
@@ -313,7 +353,8 @@ impl DurableSession {
 
     pub(crate) fn inspect(data_dir: &Path, session_id: SessionId) -> Result<SessionSummary> {
         if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
-            return Self::inspect_protected(&home, session_id).map(|(summary, _)| summary);
+            let (state, revision) = protected::restore_execution(&home, session_id)?;
+            return protected::execution_summary(&home, &state, revision);
         }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
@@ -450,7 +491,7 @@ impl DurableSession {
             Some(home) => ArtifactStore::protected(home.clone()),
             None => ArtifactStore::new(data_dir.join("artifacts")),
         };
-        Ok(Self {
+        let mut session = Self {
             store,
             records,
             record_ids,
@@ -458,7 +499,15 @@ impl DurableSession {
             artifacts,
             agent_id,
             owner: PrincipalId::new(),
-        })
+            execution_bytes: 0,
+            checkpoint_revision: 0,
+            staged_branch_revision: None,
+            compaction_prefix: None,
+        };
+        if session.store.protected_home().is_some() {
+            session.checkpoint_execution()?;
+        }
+        Ok(session)
     }
 
     pub(crate) fn session_id(&self) -> SessionId {
@@ -496,9 +545,31 @@ impl DurableSession {
     }
 
     pub(crate) fn conversation(&self) -> Result<Vec<Message>> {
+        anyhow::ensure!(
+            self.restored.archived_prefix.is_none(),
+            "full Conversation history requires the paged history interface"
+        );
         self.restored
             .conversation_path()
             .context("could not restore conversation path")
+    }
+
+    pub(crate) fn initial_conversation_page(&self) -> Result<ConversationPage> {
+        if let Some(home) = self.store.protected_home() {
+            return home.history_page(self.session_id(), None, None, 128);
+        }
+        let messages = self.conversation()?;
+        Ok(ConversationPage {
+            total: messages.len(),
+            messages,
+            start: 0,
+            has_older: false,
+        })
+    }
+
+    pub(crate) fn retained_pressure(&self) -> bool {
+        self.store.protected_home().is_some()
+            && (self.restored.entries.len() >= 1024 || self.execution_bytes >= 8 * 1024 * 1024)
     }
 
     pub(crate) fn prompt_continuation(&self) -> Result<PromptContinuation> {
@@ -511,9 +582,9 @@ impl DurableSession {
             .active_compaction()
             .context("could not resolve active compaction checkpoint")?
             .cloned();
-        let start = checkpoint
-            .as_ref()
-            .map_or(0, |checkpoint| checkpoint.source_entry_count);
+        let start = checkpoint.as_ref().map_or(0, |checkpoint| {
+            checkpoint.source_entry_count - self.restored.retained_offset()
+        });
         Ok(PromptContinuation {
             history: path[start..]
                 .iter()
@@ -523,12 +594,32 @@ impl DurableSession {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn compact_conversation(
         &mut self,
         operation_id: OperationId,
         reason: CompactionReason,
         budget: &PromptBudgetPlan,
     ) -> Result<CompactionCheckpoint> {
+        let candidate = self.prepare_compaction(operation_id, reason, budget)?;
+        self.commit_compaction(candidate)
+    }
+
+    pub(crate) fn prepare_compaction(
+        &self,
+        operation_id: OperationId,
+        reason: CompactionReason,
+        budget: &PromptBudgetPlan,
+    ) -> Result<super::CompactionCandidate> {
+        let privacy_generation = if let Some(home) = self.store.protected_home() {
+            anyhow::ensure!(
+                home.source_eligible(self.session_id().to_string().parse()?)?,
+                "compaction source is excluded by forgetting or restore policy; raw history remains inspectable"
+            );
+            Some(home.privacy_generation()?)
+        } else {
+            None
+        };
         let path = self
             .restored
             .conversation_entry_path()
@@ -544,9 +635,10 @@ impl DurableSession {
             .active_compaction()
             .context("could not resolve prior compaction checkpoint")?
             .cloned();
+        let offset = self.restored.retained_offset();
         let incremental_start = previous
             .as_ref()
-            .map_or(0, |checkpoint| checkpoint.source_entry_count);
+            .map_or(0, |checkpoint| checkpoint.source_entry_count - offset);
         if retained_start <= incremental_start {
             return Err(CompactionError::NothingToCompact.into());
         }
@@ -557,29 +649,107 @@ impl DurableSession {
                 .map(|entry| &entry.message),
             budget.summary_max_bytes,
         );
+        let source_entry_count = offset
+            .checked_add(retained_start)
+            .context("compaction source count exceeds supported history size")?;
+        let cached = self.compaction_prefix.as_ref().filter(|prefix| {
+            previous
+                .as_ref()
+                .is_some_and(|checkpoint| prefix.matches(self.session_id(), checkpoint))
+        });
+        let source_proof = if let Some(prefix) = cached {
+            let mut builder = super::compaction::CompactionSourceProofBuilder::from_prefix(
+                prefix,
+                source_entry_count,
+            )?;
+            for entry in &path[incremental_start..=retained_start] {
+                builder.push(entry.id, &entry.message)?;
+            }
+            Some(builder.finish()?)
+        } else if offset > 0 {
+            Some(
+                self.store
+                    .protected_home()
+                    .context("archived compaction sources require protected history")?
+                    .active_prefix_proof(self.session_id(), source_entry_count)?,
+            )
+        } else {
+            let mut builder = super::compaction::CompactionSourceProofBuilder::new(
+                self.session_id(),
+                source_entry_count,
+            );
+            for entry in &path[..=retained_start] {
+                builder.push(entry.id, &entry.message)?;
+            }
+            Some(builder.finish()?)
+        };
         let checkpoint = CompactionCheckpoint {
             version: COMPACTION_CHECKPOINT_VERSION,
             id: CompactionId::new(),
             operation_id,
             previous_checkpoint: previous.as_ref().map(|checkpoint| checkpoint.id),
             reason,
-            source_start: path[0].id,
-            source_end: path[retained_start - 1].id,
-            source_entry_count: retained_start,
-            source_digest: super::compaction::source_digest(
-                path[..retained_start]
-                    .iter()
-                    .map(|entry| (entry.id, &entry.message)),
+            source_start: source_proof
+                .as_ref()
+                .map_or(path[0].id, |proof| proof.start()),
+            source_end: source_proof
+                .as_ref()
+                .map_or(path[retained_start - 1].id, |proof| proof.end()),
+            source_entry_count,
+            source_digest: source_proof.as_ref().map_or_else(
+                || {
+                    super::compaction::source_digest(
+                        path[..retained_start]
+                            .iter()
+                            .map(|entry| (entry.id, &entry.message)),
+                    )
+                },
+                |proof| proof.digest().to_owned(),
             ),
-            retained_tail_start: path[retained_start].id,
+            retained_tail_start: source_proof
+                .as_ref()
+                .map_or(path[retained_start].id, |proof| proof.tail()),
             summary,
             budget: budget.clone(),
+            semantic: None,
         };
-        // Release immutable borrows before the append mutates the reducer.
-        let _ = path;
-        self.append(SessionRecord::ConversationCompacted {
-            checkpoint: checkpoint.clone(),
-        })?;
+        let helper_messages = super::compaction::semantic::source_messages(
+            previous.as_ref().map(|checkpoint| &checkpoint.summary),
+            &messages[incremental_start..retained_start],
+        );
+        Ok(super::CompactionCandidate {
+            checkpoint,
+            helper_messages,
+            privacy_generation,
+            source_proof,
+        })
+    }
+
+    pub(crate) fn commit_compaction(
+        &mut self,
+        candidate: super::CompactionCandidate,
+    ) -> Result<CompactionCheckpoint> {
+        if let Some(home) = self.store.protected_home() {
+            anyhow::ensure!(
+                home.source_eligible(self.session_id().to_string().parse()?)?
+                    && candidate.privacy_generation == Some(home.privacy_generation()?),
+                "compaction source eligibility changed; retry after reviewing current privacy controls"
+            );
+        }
+        let checkpoint = candidate.checkpoint;
+        // append validates the current immutable source range/digest and prior
+        // checkpoint before writing; a stale asynchronous result cannot win.
+        self.append_guarded(
+            SessionRecord::ConversationCompacted {
+                checkpoint: checkpoint.clone(),
+            },
+            candidate.privacy_generation,
+            candidate.source_proof.as_ref(),
+        )?;
+        self.compaction_prefix = candidate
+            .source_proof
+            .as_ref()
+            .map(|proof| proof.accumulator());
         Ok(checkpoint)
     }
 
@@ -615,12 +785,40 @@ impl DurableSession {
         }
     }
 
+    pub(crate) fn inspect_stored_artifact(
+        &self,
+        value: &DurableValueRef,
+    ) -> Result<Option<crate::artifact::ArtifactRecord>> {
+        if let Some(artifact) = self.stored_artifact(value) {
+            return Ok(Some(artifact));
+        }
+        let (Some(home), DurableValueRef::Artifact(reference)) =
+            (self.store.protected_home(), value)
+        else {
+            return Ok(None);
+        };
+        let records = home.history_records_for(
+            self.session_id(),
+            crate::storage::HistorySubject::Artifact(reference.id),
+        )?;
+        anyhow::ensure!(
+            records.len() <= 1,
+            "artifact identity is duplicated in history"
+        );
+        Ok(records.into_iter().find_map(|record| match record.record {
+            SessionRecord::ArtifactRegistered { artifact } if artifact.reference == *reference => {
+                Some(artifact)
+            }
+            _ => None,
+        }))
+    }
+
     pub(crate) fn store_tool_output(
         &mut self,
         value: serde_json::Value,
     ) -> Result<(DurableValueRef, Option<crate::artifact::ArtifactRecord>)> {
         let stored = self.store_json_value(value)?;
-        let artifact = self.stored_artifact(&stored);
+        let artifact = self.inspect_stored_artifact(&stored)?;
         Ok((stored, artifact))
     }
 
@@ -701,6 +899,7 @@ impl DurableSession {
     }
 
     pub(crate) fn clear_conversation(&mut self) -> Result<()> {
+        self.compaction_prefix = None;
         self.append(SessionRecord::ThreadHeadMoved {
             thread_id: self.restored.thread_id,
             head: None,
@@ -795,13 +994,11 @@ impl DurableSession {
             bail!("context materialization budgets must be nonzero");
         }
         let artifact = self
-            .restored
-            .artifacts
-            .get(&context.artifact.id)
+            .inspect_stored_artifact(&DurableValueRef::Artifact(context.artifact.clone()))?
             .context("context references an unknown artifact")?;
         let bytes = self
             .artifacts
-            .read_bounded(artifact, MAX_PROJECT_SOURCE_BYTES)
+            .read_bounded(&artifact, MAX_PROJECT_SOURCE_BYTES)
             .context("could not read context artifact")?;
         let source = canonical_text(
             std::str::from_utf8(&bytes).context("context artifact is not valid UTF-8")?,
@@ -813,20 +1010,62 @@ impl DurableSession {
     }
 
     fn append(&mut self, record: SessionRecord) -> Result<()> {
+        self.append_guarded(record, None, None)
+    }
+
+    fn append_guarded(
+        &mut self,
+        record: SessionRecord,
+        privacy_generation: Option<u64>,
+        source_proof: Option<&super::compaction::CompactionSourceProof>,
+    ) -> Result<()> {
         let envelope = RecordEnvelope::new(self.store.session_id(), record);
-        validate_envelope(
+        self.preflight_execution(&envelope)?;
+        validate_envelope_with_compaction_proof(
             &self.restored,
             &self.record_ids,
             &envelope,
-            self.records.len(),
+            self.store
+                .protected_revision()
+                .unwrap_or(self.records.len()),
+            source_proof,
         )
         .context("new session record failed validation")?;
         self.store
-            .append(&envelope)
+            .append_guarded(&envelope, privacy_generation)
             .context("could not append durable session record")?;
         apply_validated(&mut self.restored, &envelope.record);
-        self.record_ids.insert(envelope.record_id);
-        self.records.push(envelope);
+        if self.store.protected_home().is_some() {
+            self.execution_bytes = self
+                .execution_bytes
+                .saturating_add(serde_json::to_vec(&envelope)?.len().saturating_mul(4));
+            // Creation/branch rollback is only available before the first append.
+            self.records.clear();
+            self.record_ids.clear();
+            self.staged_branch_revision = None;
+            let immediate = matches!(
+                envelope.record,
+                SessionRecord::ConversationCompacted { .. }
+                    | SessionRecord::ThreadHeadMoved { head: None, .. }
+            );
+            if immediate {
+                super::hydration::archive_compacted_prefix(&mut self.restored)?;
+                super::hydration::trim_inactive_objects(&mut self.restored);
+            }
+            if immediate
+                || self
+                    .store
+                    .protected_revision()
+                    .unwrap_or(0)
+                    .saturating_sub(self.checkpoint_revision)
+                    >= 64
+            {
+                self.checkpoint_execution()?;
+            }
+        } else {
+            self.record_ids.insert(envelope.record_id);
+            self.records.push(envelope);
+        }
         Ok(())
     }
 
@@ -877,6 +1116,9 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
             .map(|artifact| artifact.byte_len)
             .sum(),
         context_versions,
+        context_version_count: restored.contexts.len(),
+        child_count: restored.children.len(),
+        bounded_details: false,
         children: restored
             .children
             .values()

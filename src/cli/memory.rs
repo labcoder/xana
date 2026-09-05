@@ -23,6 +23,26 @@ impl From<Toggle> for bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum MemoryCommand {
+    /// Inspect bounded pending learning, route and last receipt; no provider call.
+    LearningStatus,
+    /// Authorize one exact native helper connection/model for personal processing.
+    LearningRoute {
+        #[arg(long)]
+        connection: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        confirm: bool,
+        #[arg(long)]
+        disable: bool,
+    },
+    /// Process one bounded pending batch using the separately authorized helper.
+    Process,
+    /// Preview restored-memory eligibility separately from automation review.
+    ReviewRestore {
+        #[arg(long)]
+        review: Option<String>,
+    },
     /// Inspect a bounded page, including inactive records; never calls a model.
     List {
         #[arg(long)]
@@ -69,6 +89,27 @@ pub(crate) enum MemoryCommand {
         id: Uuid,
         #[arg(long)]
         revision: u64,
+    },
+    /// Forget an exact fact and exclude its sources from automatic reuse.
+    Forget {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Explicitly restore a forgotten fact, not its excluded source history.
+    Restore {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+        #[arg(long)]
+        confirm: bool,
+    },
+    /// Preview deletion of one inactive native Conversation's source history.
+    DeleteSource {
+        conversation: Uuid,
+        /// Apply only the exact reviewed preview; omit for a read-only preview.
+        #[arg(long)]
+        review: Option<String>,
     },
     /// Inspect or edit use, automatic-learning permission and no-memory independently.
     Controls {

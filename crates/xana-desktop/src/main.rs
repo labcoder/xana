@@ -1,6 +1,7 @@
 //! Native process composition for Xana Desktop.
 
 mod accounting_view;
+mod autonomy_view;
 mod catalog;
 mod commands;
 mod component_inventory;

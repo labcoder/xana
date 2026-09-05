@@ -547,6 +547,7 @@ impl SetupView {
                     .unwrap_or_else(|| "Not selected".to_owned()),
             ),
             ("Permissions", self.permission.id().to_owned()),
+            ("Personal memory", "Automatic learning is disclosed and optional; disable learning independently in Memory controls. Without an explicitly authorized native helper, sources stay pending. No ambient computer monitoring.".into()),
             (
                 "Credential",
                 if self.provider.uses_managed_account() {

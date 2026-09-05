@@ -39,6 +39,7 @@ pub(crate) enum SourceOrigin {
     Skill,
     ParentHandoff,
     CompactionCheckpoint,
+    PersonalMemory,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +48,7 @@ pub(crate) enum TrustClass {
     Runtime,
     Project,
     Skill,
+    Data,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

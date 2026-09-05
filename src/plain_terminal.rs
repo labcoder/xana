@@ -266,7 +266,7 @@ impl<W: Write> EventRenderer<W> {
                 self.finish_stream()?;
                 render_permission_request(&mut self.output, request, &self.presentation)?;
             }
-            AgentEvent::PermissionAudited { .. } => {}
+            AgentEvent::PermissionAudited { .. } | AgentEvent::UserMessageCommitted { .. } => {}
             AgentEvent::InvocationIntentCommitted { .. }
             | AgentEvent::InvocationResultCommitted { .. } => {}
             AgentEvent::ToolFinished { .. } => {
@@ -754,7 +754,8 @@ pub(crate) async fn run_chat(
     let mut renderer = EventRenderer::new(stdout.lock(), header.presentation);
     if let Some(suspension) = &header.round_budget_suspension {
         let root_lease = workspace_host
-            .acquire_root(conversation.clone())
+            .acquire_foreground_root(conversation.clone())
+            .await
             .context("could not resume the suspended native turn")?;
         let result = render_operation(&mut runtime, &mut renderer, suspension.operation_id).await;
         drop(root_lease);
@@ -1255,7 +1256,10 @@ pub(crate) async fn run_chat(
                             images: turn_images,
                         }
                     };
-                    let root_lease = match workspace_host.acquire_root(conversation.clone()) {
+                    let root_lease = match workspace_host
+                        .acquire_foreground_root(conversation.clone())
+                        .await
+                    {
                         Ok(lease) => lease,
                         Err(error) => {
                             println!("xana> could not start turn: {error}");
@@ -1307,7 +1311,8 @@ pub(crate) async fn run_one_shot(
         .expect("composed native one-shot has a Conversation identity");
     let mut client = embedded_client(runtime, header);
     let _root_lease = workspace_host
-        .acquire_root(conversation)
+        .acquire_foreground_root(conversation)
+        .await
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let operation_id = OperationId::new();
     client

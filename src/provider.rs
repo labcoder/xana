@@ -8,6 +8,7 @@ use futures::future::BoxFuture;
 use std::{error::Error, fmt};
 
 pub(crate) mod anthropic;
+pub(crate) mod helper;
 pub(crate) mod openai_compat;
 
 /// The provider-neutral generation boundary used by Xana's native agent loop.

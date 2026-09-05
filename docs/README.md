@@ -28,6 +28,13 @@ engineering contracts used to change it.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, model-aware input budgets,
   durable native compaction, and instruction boundaries.
+- [Evaluated semantic compaction](user/semantic-compaction.md) explains explicit
+  helper evaluation/opt-in, exact-route approval, bounds, and safe fallback.
+- [Project evidence and selected notes](user/project-recall.md) explains scoped
+  source-cited local recall, bounded refresh, editable notes, and separate
+  provider-disclosure grants.
+- [Durable local schedules](user/durable-schedules.md) explains explicit jobs,
+  supervision, admission, and restart behavior.
 - [M4 native context and compaction evidence](development/m4-native-context-compaction-evidence.md)
   records the redacted budget, prompt-size, checkpoint-size, recovery, and
   managed-runtime baseline used to validate that boundary.
@@ -183,6 +190,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   describes native providers, Codex delegation, catalogs, model/reasoning
   selection, typed activity, opaque managed-thread resumption, and credential
   ownership.
+- [Project and selected-knowledge recall](architecture/recall.md) describes
+  exact scope, encrypted lexical indexes, original-source validation, and
+  the separation from personal memory and provider disclosure.
 - [Design Principles](principles.md) defines the durable constraints future
   work follows unless they are explicitly reconsidered.
 - [Proposals](proposals/) contains particular future designs and their

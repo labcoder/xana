@@ -285,6 +285,11 @@ Any child whose durable prefix ends before a terminal report is shown as an
 explicit read-only `Interrupted` projection. Inspection neither appends that
 projection nor replays provider or tool work.
 
+For protected Conversations, aggregate artifact/context/child/checkpoint counts
+cover the complete journal, while context and child details are explicitly a
+bounded execution preview. Older operation inspection loads the selected exact
+operation and its evidence without loading the entire Conversation.
+
 ## Crash and corruption behavior
 
 Each append first validates that the record is a legal next state and that the
@@ -316,8 +321,21 @@ An unfinished intent does not prove that its effect did not happen. Normal
 explicit workflow in [Operation recovery](operations.md) to inspect or
 reconcile it.
 
-Current load limits are 256 KiB per record, 10,000 records, and 16 MiB per
-session. Artifact registrations accept at most 4 MiB. Root `AGENTS.md` input is
+Legacy JSONL and explicit full-journal inspection retain limits of 256 KiB per
+record, 10,000 records and 16 MiB per session. Protected Conversations retain up
+to 1,000,000 records / 1 GiB, independently of their bounded execution cache:
+at most 2,048 entries / 16 MiB plus bounded transcript pages. Compacted originals
+remain available through history paging; compaction is not deletion. If an
+unfinished operation or its required context cannot fit, Xana refuses further
+growth rather than dropping evidence or persisting an unresumable turn.
+Branching an old protected entry requires a verified checkpoint with a bounded
+continuation at that point; unavailable bounded continuation is an explicit
+error, not a truncated branch. Forgotten source history cannot be reused by
+branching. See [protected storage](protected-storage.md) for its transactional
+checkpoint, backup and recovery workflow; the JSONL crash details above apply
+only to the legacy backend.
+
+Artifact registrations accept at most 4 MiB. Root `AGENTS.md` input is
 at most 64 KiB; its complete bounded source must fit the request budget rather
 than silently losing later instructions. Compaction summaries default to 16 KiB and remain
 subject to both their configured safe ceiling and the per-record limit.
@@ -333,6 +351,17 @@ saved messages. Scrolling an inspected native history to either end loads the
 adjacent saved page when one exists. These are view limits, not deletion. They do not
 raise the legacy journal's record/size limits above.
 
+Desktop's transcript toolbar offers **Older**, **Newer**, and **Live** for native
+Conversations (Ctrl/Command+Alt+Up, Down, and End). Saved pages contain at most
+128 messages / 2 MiB and remain separate from the live Run and composer draft.
+They are copy-only views: resource metadata remains readable without exposing
+live resource action buttons. Submitting or dispatching queued input returns
+to Live under the existing controller authority. New output continues updating
+the live tail in the background; switching Conversation, clearing, or resyncing
+discards an outstanding saved-page request. Appends preserve saved page cursors,
+but a changed ancestry requires returning to Live and reopening history.
+Managed vendor-owned history is not exposed through the native saved-page API.
+
 ## Backup expectations and limits
 
 Stop Xana before copying a session and its referenced `artifacts/` directory.
@@ -345,12 +374,15 @@ useful only while the corresponding Codex-owned thread remains available to
 the same Codex account/home and workspace identity. Otherwise resume fails
 visibly and `/clear` starts a new thread.
 
-There is no dedicated per-Conversation native-history deletion or vendor-thread
-deletion command. Archiving hides a Conversation without deleting its history;
-the broader confirmed reset workflow can remove Xana-owned session state.
-There is no automatic garbage collection, portable-workspace rewrite, durable
-session grant, invocation auto-replay, or encrypted database migration yet.
-`xana config migrate` reviews supported private-record schema migrations; it is
-not a Conversation database conversion. Explicit conservative operation
+Protected native histories support separately reviewed source deletion through
+[`xana memory delete-source`](personal-memory.md); shared artifacts are retained.
+There is no vendor-thread deletion command. Archiving hides a Conversation
+without deleting its history; the broader confirmed reset workflow can remove
+Xana-owned session state. Protected-home migration and backups are documented in
+[protected storage](protected-storage.md); do not copy a live database manually.
+There is no automatic artifact garbage collection, portable-workspace rewrite,
+general durable session grant, or invocation auto-replay.
+`xana config migrate` reviews supported private-record schema migrations;
+protected storage uses its own explicit review workflow. Conservative operation
 recovery is described separately. Unknown future record versions and artifact
 hash mismatches fail visibly.

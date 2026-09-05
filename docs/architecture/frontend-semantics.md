@@ -5,7 +5,8 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 10 adds versioned, classified prompt accounting and
+facts. Protocol version 11 adds committed native user messages and exact bounded
+history positions for reconnecting observers; version 10 added classified prompt accounting and
 retains version 5's stable command-semantic
 identifiers, version 7's execution and completion facts, version 8's Desktop
 Conversation controls, and version 9's Espejo and host-supervision projection
@@ -43,6 +44,15 @@ semantic delta applies only at the next exact sequence. Duplicates are ignored;
 an unprovable gap stops delta application until a fresh validated snapshot is
 installed. Authoritative final content replaces ambiguity from progress
 deltas. Snapshot and event payloads are capped at 2 MiB and 1 MiB respectively.
+
+Native user entries are observed only after the owner commits them, before the
+corresponding running state. The sender deduplicates its optimistic echo by
+operation identity; passive and reconnecting clients receive the same committed
+input. Bounded native snapshots carry absolute history start/total positions,
+advance them for user, assistant and tool messages, and reset them on clear.
+Oversized committed-message observations retain an explicit omission placeholder
+and position, without raising payload limits or treating a missing body as an
+empty message. Replaceable progress observations never add history positions.
 
 Unknown event versions and kinds remain bounded, inspectable values. They do
 not become commands or capabilities. Unknown content parts use the same rule.
@@ -273,6 +283,16 @@ protocol. A future speech adapter must submit an ordinary authenticated command
 and consume authoritative content/activity through the same boundary.
 
 ## Source ownership
+
+Desktop exposes bounded saved-history requests through a read-only reader,
+separate from command/controller authority. Its native page cursors bind a
+selected Conversation generation to an immutable active-path prefix, preserving
+adjacency across appends and rejecting rewritten ancestry. Protected reads use
+one indexed SQLite snapshot without restoring the full journal; the legacy
+compatibility path retains its existing full-inspection cap. Snapshot and
+observation absolute positions come from the source projection, not rendered
+row counts. Desktop retains a separate live projection and draft while a
+background, generation-fenced saved page is visible.
 
 - `resource` owns artifact-backed resource identity, validation, defaults,
   immutable ceilings, policy narrowing, turn admission, and bounded signature

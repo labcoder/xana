@@ -32,6 +32,41 @@ pub(crate) struct Subscription {
 }
 
 impl ObservationHub {
+    pub(crate) fn stop_clients(&self) -> Result<crate::autonomy::host::StopClients, String> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
+        if state.subscribers.len() > 32 {
+            return Err("stop client snapshot exceeds the host client bound".into());
+        }
+        let mut identities = state.subscribers.keys().copied().collect::<Vec<_>>();
+        identities.sort_unstable();
+        Ok(crate::autonomy::host::StopClients {
+            host_id: state.snapshot.host_id,
+            host_generation: state.snapshot.host_generation,
+            count: identities.len(),
+            identities,
+        })
+    }
+
+    pub(crate) fn replace_scheduled(
+        &self,
+        jobs: Vec<crate::autonomy::host::JobSummary>,
+    ) -> Result<(), String> {
+        if jobs.len() > crate::autonomy::PAGE_SIZE {
+            return Err("schedule projection exceeds page bound".into());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "local-host observation lock was poisoned".to_owned())?;
+        if state.snapshot.scheduled_jobs != jobs {
+            state.snapshot.scheduled_jobs = jobs.clone();
+            publish_locked(&mut state, HostEvent::ScheduledJobsChanged { jobs });
+        }
+        Ok(())
+    }
     #[cfg(test)]
     pub(crate) fn new(snapshot: HostSnapshot) -> Self {
         Self::with_artifacts(snapshot, None)

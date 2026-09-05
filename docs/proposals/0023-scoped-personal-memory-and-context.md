@@ -120,9 +120,31 @@ explicit owner memory controls now persist scoped stated facts, immutable
 revision history, temporal eligibility, independent use/learning/no-memory
 flags and safe readable exports. CLI/plain/TUI/Desktop share the same governed
 backend and direct owner-input grammar. See [personal memory](../user/personal-memory.md).
-Corrections apply to the next eligible read; they do not yet enable automatic
-prompt selection. The remainder stays accepted future work:
-automatic memory, semantic processing and cross-Conversation recall remain future
-work. Optional embeddings, graph stores,
+Corrections apply to next-turn selection. Bounded automatic learning now uses
+explicit native helper approval, deterministic ordinary-statement activation,
+inactive ambiguous/inferred candidates and source/consent fences; sensitive
+suggestions are not copied without explicit retention permission. Forgetting
+persists suppression, separates reviewed native source deletion, and reconciles
+known later exclusions on restore. Supported managed text handoff includes
+current scoped records without an extra turn and makes no vendor erasure claim.
+The general governed-candidate workflow and remaining integrated quality/native
+platform evidence are not inferred complete by these slices. Optional embeddings, graph stores,
 RLM kernels, external memory vendors and automatic policy/Skill refinement are
 not required. User and Architecture docs describe only implemented slices.
+
+Native semantic compaction now has a bounded no-tool helper, exact-route
+evaluation/explicit opt-in, durable usage, source/privacy commit checks and safe
+fallback. No route is promoted by mocked tests; its separate real-model quality
+measurement and owner assessment remain required before enabling it. See
+[evaluated semantic compaction](../user/semantic-compaction.md).
+
+Project task recall and selected Markdown/text knowledge now use the existing
+protected database's bounded lexical index, exact original references/hashes,
+current Project/frozen-Profile scope, explicit broader inclusion and separate
+notes-disclosure grants. History and registered text artifacts refresh
+incrementally; selected files remain ordinary editable originals. Rebuild and
+source deletion discard derived index state without deleting unrelated notes.
+Existing native branches inherit ancestor quarantine for automatic reuse.
+See [implemented recall architecture](../architecture/recall.md) and
+[owner controls](../user/project-recall.md); broad embedding/media ingestion
+and general managed-agent tool bridging remain outside this implementation.

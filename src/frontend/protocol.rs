@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 10;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 11;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -393,6 +393,12 @@ pub(crate) struct ClientSnapshot {
     pub(crate) approval_policy: String,
     pub(crate) conversation: Vec<Message>,
     pub(crate) conversation_truncated: bool,
+    /// Absolute active-path position; a bounded snapshot never masquerades as
+    /// the whole durable transcript.
+    #[serde(default)]
+    pub(crate) conversation_start: usize,
+    #[serde(default)]
+    pub(crate) conversation_total: usize,
     pub(crate) active_operation: Option<OperationId>,
     pub(crate) children: Vec<ChildSnapshot>,
     pub(crate) pending_approval_count: usize,
@@ -433,8 +439,40 @@ pub(crate) struct ClientSnapshotSeed {
 }
 
 impl ClientSnapshot {
+    fn append_conversation_message(&mut self, message: &Message) {
+        self.conversation_total = self.conversation_total.saturating_add(1);
+        let mut conversation = std::mem::take(&mut self.conversation);
+        conversation.push(message.clone());
+        let (conversation, truncated) = bounded_history(conversation);
+        self.conversation = conversation;
+        self.conversation_start = self
+            .conversation_total
+            .saturating_sub(self.conversation.len());
+        self.conversation_truncated |= truncated || self.conversation_start > 0;
+        self.artifact_count = self
+            .conversation
+            .iter()
+            .flat_map(Message::artifacts)
+            .count();
+    }
+    pub(crate) fn initial_page(
+        seed: ClientSnapshotSeed,
+        page: crate::session::ConversationPage,
+    ) -> Self {
+        let supplied = page.messages.len();
+        let mut snapshot = Self::initial(seed, page.messages);
+        snapshot.conversation_start = page
+            .start
+            .saturating_add(supplied.saturating_sub(snapshot.conversation.len()));
+        snapshot.conversation_total = page.total;
+        snapshot.conversation_truncated |= page.has_older || snapshot.conversation_start > 0;
+        snapshot
+    }
+
     pub(crate) fn initial(seed: ClientSnapshotSeed, history: Vec<Message>) -> Self {
+        let conversation_total = history.len();
         let (conversation, conversation_truncated) = bounded_history(history);
+        let conversation_start = conversation_total.saturating_sub(conversation.len());
         let artifact_count = conversation
             .iter()
             .flat_map(crate::message::Message::artifacts)
@@ -454,6 +492,8 @@ impl ClientSnapshot {
             approval_policy: bounded_text(seed.approval_policy, MAX_OMISSION_LABEL_BYTES),
             conversation,
             conversation_truncated,
+            conversation_start,
+            conversation_total,
             active_operation: None,
             children: seed
                 .children
@@ -484,6 +524,10 @@ impl ClientSnapshot {
         }
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::UserMessageCommitted { message, .. } => {
+                    append_semantic_content(&mut self.semantic, normalize_message(message));
+                    self.append_conversation_message(message);
+                }
                 AgentEvent::OperationStateChanged {
                     operation_id,
                     state: crate::native_runtime::OperationState::Running,
@@ -515,19 +559,12 @@ impl ClientSnapshot {
                             .insert(*operation_id, parts);
                         bound_authoritative_finals(&mut self.semantic, *operation_id);
                     }
-                    let mut conversation = std::mem::take(&mut self.conversation);
-                    conversation.push(message.clone());
-                    let (conversation, truncated) = bounded_history(conversation);
-                    self.conversation = conversation;
-                    self.conversation_truncated |= truncated;
-                    self.artifact_count = self
-                        .conversation
-                        .iter()
-                        .flat_map(crate::message::Message::artifacts)
-                        .count();
+                    self.append_conversation_message(message);
                 }
                 AgentEvent::ConversationCleared => {
                     self.conversation.clear();
+                    self.conversation_start = 0;
+                    self.conversation_total = 0;
                     self.conversation_truncated = false;
                     self.active_operation = None;
                     self.artifact_count = 0;
@@ -542,16 +579,7 @@ impl ClientSnapshot {
                 }
                 AgentEvent::ToolFinished { result, .. } => {
                     append_semantic_content(&mut self.semantic, normalize_message(result));
-                    let mut conversation = std::mem::take(&mut self.conversation);
-                    conversation.push(result.clone());
-                    let (conversation, truncated) = bounded_history(conversation);
-                    self.conversation = conversation;
-                    self.conversation_truncated |= truncated;
-                    self.artifact_count = self
-                        .conversation
-                        .iter()
-                        .flat_map(crate::message::Message::artifacts)
-                        .count();
+                    self.append_conversation_message(result);
                 }
                 AgentEvent::PermissionRequested { request } => {
                     let projection = PendingPermissionProjection {
@@ -641,7 +669,23 @@ impl ClientSnapshot {
                 }
                 self.activity_count = self.activity_count.saturating_add(1);
             }
-            ClientEvent::Managed(_) | ClientEvent::PayloadOmitted { .. } => {
+            ClientEvent::PayloadOmitted { kind, .. } => {
+                let role = match kind.as_str() {
+                    "committed user message" => Some(crate::message::Role::User),
+                    "assistant message" => Some(crate::message::Role::Assistant),
+                    "tool result" => Some(crate::message::Role::Tool),
+                    _ => None,
+                };
+                if let Some(role) = role {
+                    self.append_conversation_message(&Message::text(
+                        role,
+                        "[Message omitted from this live view: payload exceeds the observation limit; inspect the saved Conversation.]",
+                    ));
+                    self.conversation_truncated = true;
+                }
+                self.activity_count = self.activity_count.saturating_add(1);
+            }
+            ClientEvent::Managed(_) => {
                 self.activity_count = self.activity_count.saturating_add(1);
             }
         }
@@ -927,6 +971,7 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 
 fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
+        AgentEvent::UserMessageCommitted { .. } => "committed user message",
         AgentEvent::OperationStateChanged { .. } => "operation state",
         AgentEvent::AssistantTextDelta { .. } => "assistant delta",
         AgentEvent::ProviderReasoningDelta { .. } => "provider reasoning delta",
@@ -1045,6 +1090,44 @@ mod tests {
                 limit: MAX_EVENT_BYTES,
             } if kind == "command rejection" && encoded_bytes > MAX_EVENT_BYTES
         ));
+    }
+
+    #[test]
+    fn omitted_committed_messages_preserve_positions_without_retaining_payloads() {
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "fixture".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            Vec::new(),
+        );
+        let oversized = ClientEvent::bounded(AgentEvent::UserMessageCommitted {
+            operation_id: OperationId::new(),
+            message: Message::text(Role::User, "x".repeat(MAX_EVENT_BYTES + 1)),
+        });
+        assert!(matches!(oversized, ClientEvent::PayloadOmitted { .. }));
+        snapshot.apply(&oversized, 1);
+        assert_eq!(snapshot.conversation_total, 1);
+        assert_eq!(snapshot.conversation_start, 0);
+        assert_eq!(snapshot.conversation.len(), 1);
+        assert!(snapshot.conversation_truncated);
+        assert!(serde_json::to_vec(&snapshot.conversation).unwrap().len() < 512);
+        snapshot.apply(
+            &ClientEvent::PayloadOmitted {
+                kind: "assistant delta".into(),
+                encoded_bytes: MAX_EVENT_BYTES + 1,
+                limit: MAX_EVENT_BYTES,
+            },
+            2,
+        );
+        assert_eq!(snapshot.conversation_total, 1);
     }
 
     #[test]
@@ -1331,6 +1414,91 @@ mod tests {
         snapshot.apply(&ClientEvent::bounded(AgentEvent::ConversationCleared), 2);
         assert!(snapshot.semantic.content.is_empty());
         assert!(snapshot.semantic.authoritative_finals.is_empty());
+    }
+
+    #[test]
+    fn committed_messages_keep_absolute_tail_positions_for_late_attach_and_clear() {
+        let mut snapshot = ClientSnapshot::initial_page(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "fixture".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
+                children: Vec::new(),
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            crate::session::ConversationPage {
+                messages: (1000..1128)
+                    .map(|index| Message::text(Role::User, format!("old-{index}")))
+                    .collect(),
+                start: 1000,
+                total: 1128,
+                has_older: true,
+            },
+        );
+        let operation_id = OperationId::new();
+        let user = Message::text(Role::User, "current input");
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::UserMessageCommitted {
+                operation_id,
+                message: user.clone(),
+            }),
+            1,
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::AssistantMessage {
+                operation_id,
+                message: Message::text(Role::Assistant, "response"),
+            }),
+            2,
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::ToolFinished {
+                operation_id,
+                invocation_id: ToolInvocationId::new(),
+                result: Message::text(Role::Tool, "evidence"),
+            }),
+            3,
+        );
+        assert_eq!(
+            (snapshot.conversation_start, snapshot.conversation_total),
+            (1000, 1131)
+        );
+        let attached: ClientSnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(
+            attached
+                .conversation
+                .iter()
+                .filter(|message| **message == user)
+                .count(),
+            1
+        );
+        assert!(!attached.semantic.authoritative_finals[&operation_id].is_empty());
+        for index in 0..600 {
+            snapshot.apply(
+                &ClientEvent::bounded(AgentEvent::UserMessageCommitted {
+                    operation_id: OperationId::new(),
+                    message: Message::text(Role::User, format!("next-{index}")),
+                }),
+                index + 4,
+            );
+        }
+        assert_eq!(snapshot.conversation_total, 1731);
+        assert_eq!(
+            snapshot.conversation_start + snapshot.conversation.len(),
+            1731
+        );
+        assert!(snapshot.conversation.len() <= 512 && snapshot.conversation_truncated);
+        snapshot.apply(&ClientEvent::bounded(AgentEvent::ConversationCleared), 605);
+        assert_eq!(
+            (snapshot.conversation_start, snapshot.conversation_total),
+            (0, 0)
+        );
+        assert!(snapshot.conversation.is_empty() && !snapshot.conversation_truncated);
     }
 
     #[test]

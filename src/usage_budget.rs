@@ -179,6 +179,12 @@ pub(crate) struct UsageBudget {
 }
 
 impl UsageBudget {
+    pub(crate) async fn foreground_helper_lease(
+        &self,
+        cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<crate::storage::ForegroundJobLease> {
+        self.store.foreground_job_lease(cancellation).await
+    }
     pub(crate) fn new(
         store: ProtectedStore,
         root: String,
@@ -206,6 +212,13 @@ impl UsageBudget {
 
     pub(crate) fn with_facts(mut self, facts: DispatchFacts) -> Self {
         self.facts = facts;
+        self
+    }
+
+    /// Detached work keeps one durable occurrence budget across every request.
+    pub(crate) fn background(mut self, job: String) -> Self {
+        self.class = WorkClass::Background;
+        self.job = Some(job);
         self
     }
 

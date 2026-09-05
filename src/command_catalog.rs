@@ -15,6 +15,7 @@ pub(crate) enum CommandAction {
     Approval,
     Artifact,
     Attach,
+    Autonomy,
     Budget,
     Capabilities,
     Child,
@@ -43,6 +44,7 @@ pub(crate) enum CommandAction {
     Project,
     Queue,
     Quit,
+    Recall,
     Reasoning,
     Reset,
     Route,
@@ -210,6 +212,7 @@ impl CommandSpec {
             "presentation.conversation_list.show.v1" => "view show",
             "profile.manage.v1"
             | "memory.manage.v1"
+            | "autonomy.manage.v1"
             | "project.manage.v1"
             | "skill.manage.v1"
             | "plugin.manage.v1"
@@ -351,6 +354,40 @@ macro_rules! command {
 /// M3-exit command inventory plus the M4 attach/preview and Espejo semantics.
 /// Broad management families deliberately retain their runtime-owned parsers.
 pub(crate) const COMMANDS: &[CommandSpec] = &[
+    command!(
+        "recall.manage.v1",
+        Recall,
+        "recall",
+        &[],
+        "--conversation ID search|refresh|rebuild|include|notes ...",
+        "Search scoped local evidence or manage selected notes",
+        ArgumentSchema::Required("recall_options"),
+        Owner,
+        Noninteractive,
+        ExactScope,
+        Configure,
+        CLI_ONLY,
+        false,
+        true,
+        true
+    ),
+    command!(
+        "autonomy.manage.v1",
+        Autonomy,
+        "autonomy",
+        &[],
+        "list|show|create|pause|resume|cancel|receipts|host ...",
+        "Control durable schedules and the opt-in detached local host",
+        ArgumentSchema::Optional("autonomy_options"),
+        Owner,
+        Any,
+        None,
+        Configure,
+        CLI_AND_CHAT,
+        true,
+        true,
+        false
+    ),
     command!(
         "memory.manage.v1",
         Memory,
@@ -1605,6 +1642,7 @@ pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &
         "storage.manage.v1" => Some(("storage", "status")),
         "budget.manage.v1" => Some(("budget", "")),
         "memory.manage.v1" => Some(("memory", "list")),
+        "autonomy.manage.v1" => Some(("autonomy", "list")),
         "usage.ledger.v1" => Some(("usage", "ledger")),
         "operation.reconcile.v1" => Some(("operation", "")),
         "route.inspect.v1" => Some(("route", "list")),

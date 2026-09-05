@@ -204,6 +204,23 @@ impl ConversationProjection {
                 operation_id,
                 message,
             } => self.replace_stream_with_final(operation_id, message),
+            DesktopEvent::UserMessageCommitted {
+                operation_id,
+                message,
+            } => {
+                self.cached_messages.take();
+                let optimistic = format!("desktop-user-{operation_id}");
+                let projected = project_message(&message);
+                if let Some(existing) = self
+                    .messages
+                    .iter_mut()
+                    .find(|row| row.id == optimistic || row.id == projected.id)
+                {
+                    *existing = projected;
+                } else {
+                    self.messages.push_back(projected);
+                }
+            }
             DesktopEvent::ToolResult { message, activity } => {
                 self.cached_messages.take();
                 let projected = project_message(&message);
@@ -359,6 +376,29 @@ impl ConversationProjection {
                 .collect::<Vec<_>>()
                 .into()
         }))
+    }
+
+    /// Saved pages offer copying only; they never inherit live retry/edit authority.
+    pub(crate) fn saved_messages(messages: &[DesktopMessage]) -> Arc<[ChatMessage]> {
+        messages
+            .iter()
+            .map(|message| {
+                ChatMessage::new(
+                    message.id.clone(),
+                    project_role(message.role),
+                    StreamedContent::done(
+                        message
+                            .content
+                            .iter()
+                            .map(project_content)
+                            .collect::<Vec<_>>()
+                            .join("\n\n"),
+                    ),
+                )
+                .actions(MessageActions::none().copy(true))
+            })
+            .collect::<Vec<_>>()
+            .into()
     }
 
     pub(crate) fn history_omitted(&self) -> bool {
@@ -988,6 +1028,8 @@ mod tests {
 
     fn empty_snapshot() -> DesktopSnapshot {
         DesktopSnapshot {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 0,
             authority: xana::desktop::DesktopAuthority::Owner,
@@ -1115,6 +1157,8 @@ mod tests {
         let operation_id = DesktopOperationId::new();
 
         assert!(!projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::OperationState {
@@ -1126,10 +1170,23 @@ mod tests {
     }
 
     #[test]
+    fn saved_history_messages_keep_content_without_live_mutation_actions() {
+        let rows = ConversationProjection::saved_messages(&[DesktopMessage {
+            id: "old-input".into(),
+            role: DesktopRole::User,
+            content: vec![text_content("retained owner input")],
+        }]);
+        assert_eq!(rows[0].content().text(), "retained owner input");
+        assert_eq!(rows[0].message_actions(), MessageActions::none().copy(true));
+    }
+
+    #[test]
     fn progressive_delta_is_replaced_by_authoritative_final() {
         let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
         let operation_id = DesktopOperationId::new();
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::AssistantDelta {
@@ -1138,6 +1195,8 @@ mod tests {
             },
         }));
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::MessageFinal {
@@ -1154,6 +1213,69 @@ mod tests {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].id().as_ref(), "final");
         assert_eq!(messages[0].content().text(), "Hello");
+    }
+
+    #[test]
+    fn committed_user_input_converges_for_sender_observer_and_reattach() {
+        let operation_id = DesktopOperationId::new();
+        let committed = DesktopMessage {
+            id: format!("conversation:{operation_id}:user"),
+            role: DesktopRole::User,
+            content: vec![text_content("same owner input")],
+        };
+        let event = |sequence| DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence,
+            event: DesktopEvent::UserMessageCommitted {
+                operation_id,
+                message: committed.clone(),
+            },
+        };
+        let mut sender = ConversationProjection::from_snapshot(&empty_snapshot());
+        sender.append_user(operation_id, "same owner input".into());
+        let mut observer = ConversationProjection::from_snapshot(&empty_snapshot());
+        assert!(sender.apply(event(1)));
+        assert!(observer.apply(event(1)));
+        for projection in [&sender, &observer] {
+            let rows = projection.messages();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id().as_ref(), committed.id);
+            assert_eq!(rows[0].content().text(), "same owner input");
+        }
+        // Retried transport facts deduplicate by identity, not source text.
+        assert!(sender.apply(event(2)));
+        assert_eq!(sender.messages().len(), 1);
+        let next_operation = DesktopOperationId::new();
+        sender.append_user(next_operation, "same owner input".into());
+        assert!(sender.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 3,
+            event: DesktopEvent::UserMessageCommitted {
+                operation_id: next_operation,
+                message: DesktopMessage {
+                    id: format!("conversation:{next_operation}:user"),
+                    ..committed.clone()
+                },
+            },
+        }));
+        assert_eq!(sender.messages().len(), 2);
+        let mut snapshot = empty_snapshot();
+        snapshot.sequence = 1;
+        snapshot.conversation.push(committed);
+        observer.replace_snapshot(&snapshot);
+        assert_eq!(observer.messages().len(), 1);
+        assert_eq!(
+            observer
+                .messages
+                .front()
+                .expect("reattached snapshot retains the committed owner input")
+                .role,
+            ChatRole::User
+        );
     }
 
     #[test]
@@ -1174,6 +1296,8 @@ mod tests {
         let operation_id = DesktopOperationId::new();
         for sequence in 1..=10_000 {
             assert!(projection.apply(DesktopObservation {
+                conversation_start: 0,
+                conversation_total: 0,
                 version: xana::desktop::PROTOCOL_VERSION,
                 sequence,
                 event: DesktopEvent::AssistantDelta {
@@ -1197,6 +1321,8 @@ mod tests {
         );
 
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 10_001,
             event: DesktopEvent::MessageFinal {
@@ -1258,6 +1384,8 @@ mod tests {
             for _ in 0..(STREAMED_DELTAS - sequence).min(BATCH_SIZE) {
                 sequence += 1;
                 assert!(projection.apply(DesktopObservation {
+                    conversation_start: 0,
+                    conversation_total: 0,
                     version: xana::desktop::PROTOCOL_VERSION,
                     sequence,
                     event: DesktopEvent::AssistantDelta {
@@ -1324,6 +1452,8 @@ mod tests {
                 for sequence in 1..=64 {
                     let started = std::time::Instant::now();
                     projection.apply(DesktopObservation {
+                        conversation_start: 0,
+                        conversation_total: 0,
                         version: xana::desktop::PROTOCOL_VERSION,
                         sequence,
                         event: DesktopEvent::AssistantDelta {
@@ -1387,6 +1517,8 @@ mod tests {
         projection.append_user(DesktopOperationId::new(), "question".into());
         let first = projection.messages();
         projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::Activity {
@@ -1395,6 +1527,8 @@ mod tests {
         });
         assert!(Arc::ptr_eq(&first, &projection.messages()));
         projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::AssistantDelta {
@@ -1416,6 +1550,8 @@ mod tests {
         let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
         let operation_id = DesktopOperationId::new();
         projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::AssistantDelta {
@@ -1424,6 +1560,8 @@ mod tests {
             },
         });
         projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::ToolResult {
@@ -1437,6 +1575,8 @@ mod tests {
         });
         assert_eq!(projection.messages().len(), 2);
         projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 3,
             event: DesktopEvent::MessageFinal {
@@ -1459,6 +1599,8 @@ mod tests {
         let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
         let operation_id = DesktopOperationId::new();
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::MessageFinal {
@@ -1471,6 +1613,8 @@ mod tests {
             },
         }));
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::OperationState {
@@ -1496,6 +1640,8 @@ mod tests {
         snapshot.execution_owner = "managed_codex".to_owned();
         let mut projection = ConversationProjection::from_snapshot(&snapshot);
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::ExecutionSelectionChanged {
@@ -1545,6 +1691,8 @@ mod tests {
         };
 
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 1,
             event: DesktopEvent::ActivityUpserted(activity(
@@ -1553,6 +1701,8 @@ mod tests {
             )),
         }));
         assert!(projection.apply(DesktopObservation {
+            conversation_start: 0,
+            conversation_total: 0,
             version: xana::desktop::PROTOCOL_VERSION,
             sequence: 2,
             event: DesktopEvent::ActivityUpserted(activity(

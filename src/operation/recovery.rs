@@ -44,7 +44,7 @@ where
 {
     let cleanup = DeferredCleanup::default();
     let operation = session
-        .restored_operation(operation_id)
+        .inspect_stored_operation(operation_id)?
         .context("operation does not exist in this session")?;
     let actions = plan_recovery(&operation, tools)?;
     for action in &actions {
@@ -239,7 +239,7 @@ fn append_recovery_result(
     let mut tool_result = tool_result;
     if let Some(output) = &completed {
         tool_result.output = super::output::for_model(tool_result.output, output);
-        tool_result.artifact = session.stored_artifact(output).map(Box::new);
+        tool_result.artifact = session.inspect_stored_artifact(output)?.map(Box::new);
     }
     session.append_message(Message::tool_result(tool_result))?;
     Ok(())

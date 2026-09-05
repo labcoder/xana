@@ -37,6 +37,7 @@ impl PromptSnapshot {
             let kind = match layer.kind {
                 PromptLayerKind::Environment | PromptLayerKind::Surface => Category::RuntimeFacts,
                 PromptLayerKind::CompactedHistory => Category::CompactedHistory,
+                PromptLayerKind::PersonalMemory => Category::PersonalMemory,
                 PromptLayerKind::ParentHandoff => Category::ParentHandoff,
                 _ => Category::Instructions,
             };

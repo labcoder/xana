@@ -10,6 +10,7 @@ mod agent;
 mod app;
 mod artifact;
 mod artifact_action;
+mod autonomy;
 mod bounded_file;
 mod capability;
 mod cli;
@@ -61,6 +62,7 @@ mod project;
 mod project_continuation;
 mod prompt;
 mod provider;
+mod recall;
 mod reset;
 mod resource;
 mod self_docs;
@@ -95,8 +97,20 @@ fn run_cli(cli: Cli) -> Result<()> {
 
 fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
     app::one_shot::preflight(&mut cli)?;
-    let paths = XanaPaths::resolve(std::env::var_os("XANA_HOME"))
-        .context("could not resolve Xana paths")?;
+    let home = match &cli.command {
+        Some(cli::Command::Autonomy(cli::AutonomyArgs {
+            command:
+                cli::AutonomyCommand::Host {
+                    command:
+                        cli::HostCommand::Run {
+                            from_startup: true,
+                            home,
+                        },
+                },
+        })) => home.as_ref().map(|path| path.as_os_str().to_owned()),
+        _ => std::env::var_os("XANA_HOME"),
+    };
+    let paths = XanaPaths::resolve(home).context("could not resolve Xana paths")?;
     let diagnostics_read_only = match &cli.command {
         Some(
             cli::Command::Doctor(_)

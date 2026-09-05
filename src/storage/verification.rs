@@ -27,6 +27,19 @@ impl ProtectedStore {
         })?;
         for id in sessions {
             let id: SessionId = id.parse()?;
+            let version: u32 = self.with_database(|db| {
+                Ok(db
+                    .connection
+                    .query_row("SELECT version FROM store_identity", [], |r| r.get(0))?)
+            })?;
+            if version >= 7 {
+                self.verify_immutable_history(id, &lengths)?;
+                self.verify_historical_transitions(id)?;
+                crate::session::DurableSession::inspect_execution_protected(self, id)?;
+                continue;
+            }
+            // Recovery snapshots keep their historical schema read-only; old
+            // journals retain their original bounded full-reduction contract.
             let loaded = SessionStore::inspect_protected(self, id)?;
             let restored = crate::session::reduce(&loaded.records)?;
             for artifact in restored.artifacts.values() {

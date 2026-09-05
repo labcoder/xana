@@ -1,5 +1,6 @@
 use super::compaction::{
-    COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, source_digest, validate_summary,
+    COMPACTION_CHECKPOINT_VERSION, CompactionCheckpoint, CompactionSourceProof, source_digest,
+    validate_summary,
 };
 use super::record::{
     ConversationEntry, NativeBranchLineage, RecordEnvelope, SESSION_RECORD_VERSION, SessionRecord,
@@ -27,7 +28,7 @@ use std::{
     path::PathBuf,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RestoredSession {
     pub(crate) session_id: SessionId,
     pub(crate) thread_id: ThreadId,
@@ -38,6 +39,7 @@ pub(crate) struct RestoredSession {
     pub(crate) operations: BTreeMap<OperationId, OperationState>,
     pub(crate) audits: Vec<PermissionAuditFact>,
     pub(crate) artifacts: BTreeMap<ArtifactId, ArtifactRecord>,
+    #[serde(with = "super::hydration::context_map")]
     pub(crate) contexts: BTreeMap<(ContextId, u64), ContextRecord>,
     pub(crate) views: BTreeMap<ContextViewId, ContextViewRecord>,
     pub(crate) named_context: BTreeMap<String, (ContextId, u64)>,
@@ -47,9 +49,12 @@ pub(crate) struct RestoredSession {
         BTreeMap<OrchestrationPlanId, crate::orchestration::OrchestrationPlanStart>,
     pub(crate) children: BTreeMap<AgentId, RestoredChild>,
     pub(crate) compactions: Vec<CompactionCheckpoint>,
+    /// Verified immutable prefix no longer retained as in-memory message bodies.
+    #[serde(default)]
+    pub(crate) archived_prefix: Option<CompactionCheckpoint>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RestoredChild {
     pub(crate) handle: AgentHandleSnapshot,
     pub(crate) report: Option<ChildReport>,
@@ -80,7 +85,7 @@ impl RestoredChild {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RestoredOperation {
     pub(crate) operation_id: OperationId,
     pub(crate) thread_id: ThreadId,
@@ -126,6 +131,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         orchestration_plans: BTreeMap::new(),
         children: BTreeMap::new(),
         compactions: Vec::new(),
+        archived_prefix: None,
     };
     let mut record_ids = HashSet::new();
 
@@ -147,6 +153,16 @@ pub(crate) fn validate_envelope(
     record_ids: &HashSet<RecordId>,
     envelope: &RecordEnvelope,
     index: usize,
+) -> Result<(), ReductionError> {
+    validate_envelope_with_compaction_proof(state, record_ids, envelope, index, None)
+}
+
+pub(crate) fn validate_envelope_with_compaction_proof(
+    state: &RestoredSession,
+    record_ids: &HashSet<RecordId>,
+    envelope: &RecordEnvelope,
+    index: usize,
+    source_proof: Option<&CompactionSourceProof>,
 ) -> Result<(), ReductionError> {
     if envelope.version != SESSION_RECORD_VERSION {
         return Err(ReductionError::UnsupportedVersion(envelope.version));
@@ -607,7 +623,7 @@ pub(crate) fn validate_envelope(
             }
         }
         SessionRecord::ConversationCompacted { checkpoint } => {
-            validate_compaction_checkpoint(state, checkpoint)
+            validate_compaction_checkpoint(state, checkpoint, source_proof)
         }
     }
 }
@@ -823,6 +839,7 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
 fn validate_compaction_checkpoint(
     state: &RestoredSession,
     checkpoint: &CompactionCheckpoint,
+    source_proof: Option<&CompactionSourceProof>,
 ) -> Result<(), ReductionError> {
     let previous = state
         .active_compaction()
@@ -830,6 +847,10 @@ fn validate_compaction_checkpoint(
             compaction: checkpoint.id,
         })?;
     if checkpoint.version != COMPACTION_CHECKPOINT_VERSION
+        || checkpoint
+            .semantic
+            .as_ref()
+            .is_some_and(|provenance| !provenance.valid_for(&checkpoint.summary))
         || checkpoint.source_entry_count == 0
         || checkpoint.source_digest.len() != 64
         || !checkpoint
@@ -853,22 +874,39 @@ fn validate_compaction_checkpoint(
         .map_err(|_| ReductionError::InvalidCompaction {
             compaction: checkpoint.id,
         })?;
-    if checkpoint.source_entry_count >= path.len() {
+    let offset = state.retained_offset();
+    let Some(retained_count) = checkpoint.source_entry_count.checked_sub(offset) else {
+        return Err(ReductionError::InvalidCompaction {
+            compaction: checkpoint.id,
+        });
+    };
+    if retained_count == 0 || retained_count >= path.len() {
         return Err(ReductionError::InvalidCompaction {
             compaction: checkpoint.id,
         });
     }
-    let source = &path[..checkpoint.source_entry_count];
-    let valid = source
-        .first()
-        .is_some_and(|entry| entry.id == checkpoint.source_start)
-        && source
-            .last()
-            .is_some_and(|entry| entry.id == checkpoint.source_end)
-        && path[checkpoint.source_entry_count].id == checkpoint.retained_tail_start
-        && source_digest(source.iter().map(|entry| (entry.id, &entry.message)))
-            == checkpoint.source_digest
-        && validate_summary(&checkpoint.summary, checkpoint.budget.summary_max_bytes);
+    let source = &path[..retained_count];
+    let valid = if offset == 0 {
+        source
+            .first()
+            .is_some_and(|entry| entry.id == checkpoint.source_start)
+            && source
+                .last()
+                .is_some_and(|entry| entry.id == checkpoint.source_end)
+            && path[retained_count].id == checkpoint.retained_tail_start
+            && source_digest(source.iter().map(|entry| (entry.id, &entry.message)))
+                == checkpoint.source_digest
+    } else {
+        source_proof.is_some_and(|proof| proof.matches(state.session_id, checkpoint))
+            && state
+                .archived_prefix
+                .as_ref()
+                .is_some_and(|prefix| prefix.source_start == checkpoint.source_start)
+            && source
+                .last()
+                .is_some_and(|entry| entry.id == checkpoint.source_end)
+            && path[retained_count].id == checkpoint.retained_tail_start
+    } && validate_summary(&checkpoint.summary, checkpoint.budget.summary_max_bytes);
     valid
         .then_some(())
         .ok_or(ReductionError::InvalidCompaction {
@@ -1029,6 +1067,13 @@ impl RestoredSession {
         let mut cursor = self.head;
         let mut seen = HashSet::new();
         while let Some(id) = cursor {
+            if self
+                .archived_prefix
+                .as_ref()
+                .is_some_and(|prefix| prefix.source_end == id)
+            {
+                break;
+            }
             if !seen.insert(id) {
                 return Err(ReductionError::CyclicConversation { entry: id });
             }
@@ -1055,18 +1100,43 @@ impl RestoredSession {
         &self,
     ) -> Result<Option<&CompactionCheckpoint>, ReductionError> {
         let path = self.conversation_entry_path()?;
+        let offset = self.retained_offset();
         Ok(self.compactions.iter().rev().find(|checkpoint| {
-            checkpoint.source_entry_count < path.len()
+            let Some(index) = checkpoint.source_entry_count.checked_sub(offset) else {
+                return false;
+            };
+            index < path.len()
+                && (if offset == 0 {
+                    path.first()
+                        .is_some_and(|entry| entry.id == checkpoint.source_start)
+                } else {
+                    self.archived_prefix
+                        .as_ref()
+                        .is_some_and(|prefix| prefix.source_start == checkpoint.source_start)
+                })
+                && (if index == 0 {
+                    self.archived_prefix
+                        .as_ref()
+                        .is_some_and(|prefix| prefix.source_end == checkpoint.source_end)
+                } else {
+                    path.get(index - 1)
+                        .is_some_and(|entry| entry.id == checkpoint.source_end)
+                })
                 && path
-                    .first()
-                    .is_some_and(|entry| entry.id == checkpoint.source_start)
-                && path
-                    .get(checkpoint.source_entry_count.saturating_sub(1))
-                    .is_some_and(|entry| entry.id == checkpoint.source_end)
-                && path
-                    .get(checkpoint.source_entry_count)
+                    .get(index)
                     .is_some_and(|entry| entry.id == checkpoint.retained_tail_start)
         }))
+    }
+
+    pub(crate) fn retained_offset(&self) -> usize {
+        let Some(prefix) = &self.archived_prefix else {
+            return 0;
+        };
+        self.conversation_entry_path()
+            .ok()
+            .and_then(|path| path.first().map(|entry| entry.parent))
+            .filter(|parent| *parent == Some(prefix.source_end))
+            .map_or(0, |_| prefix.source_entry_count)
     }
 
     fn validate_conversation_path(&self) -> Result<(), ReductionError> {
@@ -1078,9 +1148,14 @@ impl RestoredSession {
             return Ok(());
         };
         let path = self.conversation_entry_path()?;
-        if path.len() < branch.shared_entry_count
+        let offset = self.retained_offset();
+        if branch.shared_entry_count <= offset {
+            return Ok(());
+        }
+        let shared = branch.shared_entry_count - offset;
+        if path.len() < shared
             || path
-                .get(branch.shared_entry_count - 1)
+                .get(shared - 1)
                 .is_none_or(|entry| entry.id != branch.source_entry_id)
         {
             return Err(ReductionError::InvalidBranchHistory);

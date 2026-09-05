@@ -427,6 +427,39 @@ impl ExecutionHost {
         Ok(())
     }
 
+    pub(crate) async fn begin_foreground_run(
+        &self,
+        conversation: &ConversationRef,
+        operation_id: OperationId,
+        access: RunAccess,
+        collision: WriteCollisionDecision,
+    ) -> Result<HostedRun, ExecutionHostError> {
+        let foreground = {
+            let state = self.lock()?;
+            let slot = state
+                .conversations
+                .get(conversation)
+                .ok_or_else(|| ExecutionHostError::UnknownConversation(conversation.clone()))?;
+            state
+                .workspaces
+                .get(&slot.workspace_id)
+                .ok_or_else(|| ExecutionHostError::State("workspace registry diverged".into()))?
+                .host
+                .foreground_intent()?
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match self.begin_run(conversation, operation_id, access, collision) {
+                Err(ExecutionHostError::Workspace(WorkspaceHostError::Busy(_)))
+                    if foreground.is_some() && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                }
+                result => return result,
+            }
+        }
+    }
+
     pub(crate) fn begin_run(
         &self,
         conversation: &ConversationRef,

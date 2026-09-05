@@ -4,24 +4,36 @@ use super::*;
 impl Runtime {
     pub(super) async fn run_memory_control(&mut self, operation_id: OperationId, input: String) {
         let user = Message::text(Role::User, input.clone());
-        if let Some(session) = &mut self.session {
-            let accepted = (|| -> anyhow::Result<()> {
-                let entry_id = session.append_message(user.clone())?;
-                session.append_record(SessionRecord::OperationAccepted {
-                    operation_id,
-                    thread_id: session.thread_id(),
-                    input_entry_id: entry_id,
-                })?;
-                Ok(())
-            })();
-            if let Err(error) = accepted {
-                self.emit(AgentEvent::CommandRejected {
-                    reason: format!("Could not persist memory control: {error:#}"),
-                });
-                return;
+        let entry = if let Some(session) = &mut self.session {
+            match session.append_message(user.clone()) {
+                Ok(entry) => Some(entry),
+                Err(error) => {
+                    self.emit(AgentEvent::CommandRejected {
+                        reason: format!("Could not persist memory control: {error:#}"),
+                    });
+                    return;
+                }
             }
+        } else {
+            None
+        };
+        self.history.push(user.clone());
+        self.emit(AgentEvent::UserMessageCommitted {
+            operation_id,
+            message: user,
+        });
+        if let (Some(session), Some(entry)) = (&mut self.session, entry)
+            && let Err(error) = session.append_record(SessionRecord::OperationAccepted {
+                operation_id,
+                thread_id: session.thread_id(),
+                input_entry_id: entry,
+            })
+        {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!("Could not persist memory control: {error:#}"),
+            });
+            return;
         }
-        self.history.push(user);
         self.emit(AgentEvent::OperationStateChanged {
             operation_id,
             state: OperationState::Running,

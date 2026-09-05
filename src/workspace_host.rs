@@ -194,6 +194,25 @@ pub(crate) struct WorkspaceHost {
 
 impl WorkspaceHost {
     pub(crate) fn open(data_root: &Path, workspace: &Path) -> Result<Self, WorkspaceHostError> {
+        let protected = crate::storage::ProtectedStore::configured(data_root)
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?;
+        Self::open_inner(data_root, workspace, protected)
+    }
+
+    /// An already-owned protected home keeps key revocation and workspace
+    /// exclusion in the same lifecycle; composition never reopens ambient keys.
+    pub(crate) fn open_protected(
+        store: crate::storage::ProtectedStore,
+        workspace: &Path,
+    ) -> Result<Self, WorkspaceHostError> {
+        Self::open_inner(store.data_dir(), workspace, Some(store.clone()))
+    }
+
+    fn open_inner(
+        data_root: &Path,
+        workspace: &Path,
+        protected: Option<crate::storage::ProtectedStore>,
+    ) -> Result<Self, WorkspaceHostError> {
         let identity =
             WorkspaceIdentity::resolve(workspace).map_err(|source| WorkspaceHostError::Io {
                 path: workspace.to_owned(),
@@ -207,8 +226,7 @@ impl WorkspaceHost {
             source,
         })?;
         Ok(Self {
-            protected: crate::storage::ProtectedStore::configured(data_root)
-                .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?,
+            protected,
             data_root: data_root.to_owned(),
             workspace,
             workspace_id: workspace_id.clone(),
@@ -228,6 +246,50 @@ impl WorkspaceHost {
     }
 
     pub(crate) fn acquire_root(
+        &self,
+        conversation: ConversationRef,
+    ) -> Result<ActiveRootLease, WorkspaceHostError> {
+        let foreground = self.foreground_intent()?;
+        let mut lease = self.acquire_background_root(conversation)?;
+        lease.foreground = foreground;
+        Ok(lease)
+    }
+
+    pub(crate) fn foreground_intent(
+        &self,
+    ) -> Result<Option<crate::storage::ForegroundLease>, WorkspaceHostError> {
+        self.protected
+            .as_ref()
+            .map(|store| store.foreground_lease())
+            .transpose()
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))
+    }
+
+    /// Announce foreground intent before testing the workspace lock. A prior
+    /// background owner retains that lock until cancellation and join finish.
+    pub(crate) async fn acquire_foreground_root(
+        &self,
+        conversation: ConversationRef,
+    ) -> Result<ActiveRootLease, WorkspaceHostError> {
+        let foreground = self.foreground_intent()?;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match self.acquire_background_root(conversation.clone()) {
+                Ok(mut lease) => {
+                    lease.foreground = foreground;
+                    return Ok(lease);
+                }
+                Err(WorkspaceHostError::Busy(_))
+                    if foreground.is_some() && tokio::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    pub(crate) fn acquire_background_root(
         &self,
         conversation: ConversationRef,
     ) -> Result<ActiveRootLease, WorkspaceHostError> {
@@ -276,6 +338,7 @@ impl WorkspaceHost {
             WorkspaceHostError::Invalid("host ownership lock was poisoned".into())
         })? = Some(conversation);
         Ok(ActiveRootLease {
+            foreground: None,
             protected: self.protected.clone(),
             lock: Some(lock),
             descriptor_path: self.descriptor_path.clone(),
@@ -497,6 +560,7 @@ impl WorkspaceHost {
 }
 
 pub(crate) struct ActiveRootLease {
+    foreground: Option<crate::storage::ForegroundLease>,
     protected: Option<crate::storage::ProtectedStore>,
     lock: Option<fs::File>,
     descriptor_path: PathBuf,

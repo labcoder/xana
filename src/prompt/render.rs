@@ -141,6 +141,7 @@ fn layer_kind_name(kind: PromptLayerKind) -> &'static str {
         PromptLayerKind::ProjectInstructions => "project_instructions",
         PromptLayerKind::SkillInstructions => "skill_instructions",
         PromptLayerKind::CompactedHistory => "compacted_history",
+        PromptLayerKind::PersonalMemory => "personal_memory",
         PromptLayerKind::ParentHandoff => "parent_handoff",
     }
 }
@@ -151,6 +152,7 @@ fn trust_name(trust: TrustClass) -> &'static str {
         TrustClass::Runtime => "runtime",
         TrustClass::Project => "project",
         TrustClass::Skill => "skill",
+        TrustClass::Data => "untrusted_data",
     }
 }
 
@@ -164,6 +166,7 @@ fn origin_name(origin: SourceOrigin) -> &'static str {
         SourceOrigin::Skill => "skill",
         SourceOrigin::ParentHandoff => "parent_handoff",
         SourceOrigin::CompactionCheckpoint => "compaction_checkpoint",
+        SourceOrigin::PersonalMemory => "personal_memory",
     }
 }
 

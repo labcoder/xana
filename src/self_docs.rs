@@ -484,6 +484,60 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/web-fetch.md"),
     },
     BundledDoc {
+        id: "user.protected-storage",
+        title: "Protected storage, migration and recovery",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["storage", "encryption", "recovery", "privacy"],
+        body: include_str!("../docs/user/protected-storage.md"),
+    },
+    BundledDoc {
+        id: "user.usage-budgets",
+        title: "Durable usage and shared budgets",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["usage", "budgets", "tokens", "automation"],
+        body: include_str!("../docs/user/usage-budgets.md"),
+    },
+    BundledDoc {
+        id: "user.personal-memory",
+        title: "Personal memory and learning controls",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["memory", "learning", "forgetting", "privacy"],
+        body: include_str!("../docs/user/personal-memory.md"),
+    },
+    BundledDoc {
+        id: "user.semantic-compaction",
+        title: "Bounded semantic compaction",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["compaction", "context", "memory"],
+        body: include_str!("../docs/user/semantic-compaction.md"),
+    },
+    BundledDoc {
+        id: "user.project-recall",
+        title: "Project recall and selected notes",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["recall", "projects", "notes", "memory"],
+        body: include_str!("../docs/user/project-recall.md"),
+    },
+    BundledDoc {
+        id: "user.durable-schedules",
+        title: "Detached host and durable schedules",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["automation", "schedules", "host", "background"],
+        body: include_str!("../docs/user/durable-schedules.md"),
+    },
+    BundledDoc {
         id: "proposal.media",
         title: "Media and document services",
         audience: CONTRIBUTOR_AUDIENCE,
@@ -540,6 +594,36 @@ mod tests {
         assert!(doc.truncated);
         for id in ["../README.md", "/tmp/x", "unknown"] {
             assert_eq!(catalog.read(id, None), Err(DocReadError::UnknownId));
+        }
+    }
+
+    #[test]
+    fn shipped_memory_and_background_controls_are_discoverable_without_checkout_paths() {
+        let catalog = default_catalog();
+        for (topic, id) in [
+            ("memory", "user.personal-memory"),
+            ("recall", "user.project-recall"),
+            ("compaction", "user.semantic-compaction"),
+            ("schedules", "user.durable-schedules"),
+            ("encryption", "user.protected-storage"),
+            ("budgets", "user.usage-budgets"),
+        ] {
+            let summaries = catalog.list(Some(topic));
+            assert!(
+                summaries
+                    .iter()
+                    .any(|doc| doc.id == id && doc.status == DocStatus::Shipped)
+            );
+            let page = catalog
+                .read(
+                    id,
+                    Some(DocRange {
+                        start: 0,
+                        max_bytes: 256,
+                    }),
+                )
+                .unwrap();
+            assert!(!page.text.is_empty() && page.text.len() <= 256);
         }
     }
 }

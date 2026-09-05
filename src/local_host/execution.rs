@@ -447,7 +447,10 @@ async fn execute_native_command(
     }
     let starts_turn = matches!(command.value, ClientCommandValue::SubmitTurn { .. });
     if starts_turn && state.root_lease.is_none() {
-        match workspace_host.acquire_root(conversation.clone()) {
+        match workspace_host
+            .acquire_foreground_root(conversation.clone())
+            .await
+        {
             Ok(lease) => state.root_lease = Some(lease),
             Err(error) => return ClientCommandResult::rejected(command.id, error.to_string()),
         }

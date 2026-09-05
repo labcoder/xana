@@ -843,6 +843,21 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         return Err(error).context("could not freeze the Conversation Profile");
     }
     let workspace_root = session.workspace_root().to_owned();
+    if let Some(store) = artifact_store.protected_home() {
+        tools
+            .register(crate::recall::RecallTool {
+                owner: crate::recall::RecallOwner {
+                    store: store.clone(),
+                    paths: paths.clone(),
+                    conversation: session.session_id(),
+                },
+                route: crate::session::compaction::semantic::route_digest(
+                    &selected_connection,
+                    &model,
+                ),
+            })
+            .context("could not register bounded Project recall")?;
+    }
     let artifact_owner = session.artifact_owner();
     crate::a2a::activate_profile_delegation_tools(
         &child_registry,
@@ -961,9 +976,11 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let prompt = prompt_assembler
         .assemble(&[])
         .context("could not assemble Xana base prompt")?;
-    let context_report = ContextPlanReport::render(&prompt.context_plan)
+    let mut context_report = ContextPlanReport::render(&prompt.context_plan)
         .as_str()
         .to_owned();
+    context_report.push('\n');
+    context_report.push_str(crate::memory::learning::DISCLOSURE);
     let agent = Agent::new(
         provider,
         tools,
@@ -972,6 +989,11 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         max_tool_rounds,
     )
     .with_runtime_telemetry(crate::diagnostics::runtime_telemetry())
+    .with_semantic_compaction(super::sessions::semantic_policy(
+        paths,
+        &selected_connection,
+        &model,
+    )?)
     .with_usage_budget(super::usage_commands::compose_budget(
         paths,
         session.session_id().to_string(),
@@ -1293,7 +1315,10 @@ pub(super) async fn run_chat_control_command<W: Write>(
         .command;
     match command {
         Some(cli::Command::Budget(args)) => super::usage_commands::budget(args, paths, output),
-        Some(cli::Command::Memory(args)) => super::memory_commands::run(args, paths, output),
+        Some(cli::Command::Memory(args)) => super::memory_commands::run(args, paths, output).await,
+        Some(cli::Command::Autonomy(args)) => {
+            super::autonomy_commands::control(args, paths, output)
+        }
         Some(cli::Command::Usage(args)) => super::usage_commands::run(args, paths, output).await,
         Some(cli::Command::Storage(args)) => {
             super::storage_commands::run(&args.command, paths, output)

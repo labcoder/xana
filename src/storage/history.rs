@@ -1,6 +1,22 @@
 //! Encrypted native journals and a small ancestry index, not another reducer.
 
+mod branch;
+mod checkpoint;
+mod constraints;
+mod inventory;
+mod path_index;
 mod reader;
+mod subjects;
+mod verification;
+
+#[cfg(test)]
+mod execution_tests;
+#[cfg(test)]
+mod tests;
+
+pub(super) use path_index::{PATH_SCHEMA, migrate_path_index};
+pub(crate) use subjects::HistorySubject;
+pub(super) use subjects::{EXECUTION_SCHEMA, migrate_execution_index};
 
 use super::ProtectedStore;
 use super::database::{read_u64, read_usize};
@@ -13,6 +29,11 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+
+// Durable retention is separate from per-object reads and execution hydration.
+// Legacy JSONL/full-inspection safety limits above remain unchanged.
+pub(super) const MAX_PROTECTED_RECORDS: usize = 1_000_000;
+const MAX_PROTECTED_BYTES: usize = 1024 * 1024 * 1024;
 
 pub(super) const SCHEMA: &str = "
 CREATE TABLE native_sessions(
@@ -30,6 +51,16 @@ CREATE INDEX native_workspace ON native_sessions(workspace,modified);
 ";
 
 impl ProtectedStore {
+    pub(crate) fn history_exists(&self, id: SessionId) -> Result<bool> {
+        self.with_database(|db| {
+            Ok(db.connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM native_sessions WHERE id=?1)",
+                [id.to_string()],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     pub(crate) fn create_history(&self, records: &[RecordEnvelope]) -> Result<()> {
         let first = records
             .first()
@@ -71,10 +102,45 @@ impl ProtectedStore {
         revision: usize,
         record: &RecordEnvelope,
     ) -> Result<()> {
+        self.append_history_checked(id, revision, record, None)
+    }
+
+    /// Commit a derived record only while the exact captured privacy policy is current.
+    pub(crate) fn append_history_if_privacy_generation(
+        &self,
+        id: SessionId,
+        revision: usize,
+        record: &RecordEnvelope,
+        generation: u64,
+    ) -> Result<()> {
+        self.append_history_checked(id, revision, record, Some(generation))
+    }
+
+    fn append_history_checked(
+        &self,
+        id: SessionId,
+        revision: usize,
+        record: &RecordEnvelope,
+        generation: Option<u64>,
+    ) -> Result<()> {
         self.with_database(|db| {
             let tx = db
                 .connection
                 .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            if let Some(generation) = generation {
+                let current = tx.query_row(
+                    "SELECT revision FROM privacy_generation WHERE singleton=1",
+                    [],
+                    |row| read_u64(row, 0),
+                )?;
+                let review_required = super::forgetting::memory_review_required(&tx)?;
+                ensure!(
+                    current == generation
+                        && !review_required
+                        && super::forgetting::source_allowed(&tx, id.to_string().parse()?)?,
+                    "compaction source eligibility changed before commit"
+                );
+            }
             let (actual, bytes): (usize, usize) = tx.query_row(
                 "SELECT revision,bytes FROM native_sessions WHERE id=?1",
                 [id.to_string()],
@@ -157,7 +223,7 @@ fn append(
         "native record identity or version differs"
     );
     ensure!(
-        revision < MAX_SESSION_RECORDS,
+        revision < MAX_PROTECTED_RECORDS,
         "native history exceeds the supported record bound"
     );
     let body = serde_json::to_vec(record)?;
@@ -166,9 +232,10 @@ fn append(
         .and_then(|n| n.checked_add(1))
         .context("native history size overflow")?;
     ensure!(
-        body.len() <= MAX_RECORD_BYTES && next_bytes <= MAX_SESSION_BYTES,
+        body.len() <= MAX_RECORD_BYTES && next_bytes <= MAX_PROTECTED_BYTES,
         "native history exceeds byte bounds"
     );
+    constraints::validate_registration(tx, id, &record.record)?;
     tx.execute(
         "INSERT INTO native_records VALUES(?1,?2,?3,?4)",
         params![
@@ -178,6 +245,7 @@ fn append(
             body
         ],
     )?;
+    subjects::index_record(tx, record, revision, &body)?;
     match &record.record {
         SessionRecord::ConversationEntryAppended { entry } => {
             tx.execute(
@@ -191,6 +259,16 @@ fn append(
             )?;
         }
         SessionRecord::ThreadHeadMoved { thread_id, head } => {
+            let root: String = tx.query_row(
+                "SELECT root_thread FROM native_sessions WHERE id=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )?;
+            ensure!(
+                root == thread_id.to_string(),
+                "Conversation head targets another thread"
+            );
+            path_index::move_head(tx, id, head.map(|head| head.to_string()))?;
             tx.execute(
                 "UPDATE native_sessions SET head=?1 WHERE id=?2 AND root_thread=?3",
                 params![

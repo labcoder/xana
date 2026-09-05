@@ -8,6 +8,7 @@
 mod attached;
 mod content;
 mod conversation;
+mod history;
 mod instance;
 mod layout;
 mod managed;
@@ -28,6 +29,9 @@ pub use conversation::{
     DesktopConversationFacts, DesktopExecutionFact, DesktopFactAuthority, DesktopFactFreshness,
     DesktopFactSource, DesktopPromptLedger, DesktopRunCapability, DesktopUsageFact,
 };
+pub use history::{
+    DesktopHistoryCursor, DesktopHistoryPage, DesktopHistoryReader, DesktopHistoryRequest,
+};
 
 pub use instance::{
     DesktopInstanceClaim, DesktopInstanceLease, DesktopLaunchIntent, DesktopNativePaths,
@@ -38,13 +42,14 @@ pub use layout::{
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use management::{
-    DesktopBudgetEdit, DesktopBudgetField, DesktopBudgetSetting, DesktopCapabilityFact,
-    DesktopCapabilitySnapshot, DesktopConnection, DesktopConnectionMutationReceipt,
-    DesktopConnectionOperationReceipt, DesktopConnectionRemovalPlan, DesktopConnectionSnapshot,
-    DesktopControlPlane, DesktopCredentialInput, DesktopCredentialState, DesktopDiagnosticEntry,
+    DesktopAutonomySnapshot, DesktopBudgetEdit, DesktopBudgetField, DesktopBudgetSetting,
+    DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopConnection,
+    DesktopConnectionMutationReceipt, DesktopConnectionOperationReceipt,
+    DesktopConnectionRemovalPlan, DesktopConnectionSnapshot, DesktopControlPlane,
+    DesktopCredentialInput, DesktopCredentialState, DesktopDiagnosticEntry,
     DesktopDiagnosticsSnapshot, DesktopDoctorFinding, DesktopDoctorRepairReceipt,
     DesktopDoctorRepairResult, DesktopDoctorSeverity, DesktopDoctorSnapshot,
-    DesktopEntityMutationReceipt, DesktopExecutionKind, DesktopManagedLogin,
+    DesktopEntityMutationReceipt, DesktopExecutionKind, DesktopHostEdit, DesktopManagedLogin,
     DesktopManagementSnapshot, DesktopMemoryMutation, DesktopMemorySnapshot,
     DesktopMigrationReceipt, DesktopMigrationSnapshot, DesktopModelOption,
     DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionMode,
@@ -53,10 +58,11 @@ pub use management::{
     DesktopProfileSummary, DesktopProjectDraft, DesktopProjectSummary, DesktopProviderKind,
     DesktopResetPlan, DesktopResetReceipt, DesktopResetScope, DesktopResetTarget,
     DesktopResourceLimit, DesktopResourcePolicyDraft, DesktopResourcePolicyPreview,
-    DesktopResourcePolicySnapshot, DesktopSecret, DesktopSetupDraft, DesktopSetupMode,
-    DesktopSetupReceipt, DesktopSetupSnapshot, DesktopUsagePage,
-    DesktopWorkbenchPreferenceSnapshot, MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit,
-    MemoryPage, MemoryRecord, MemoryScope, MemoryState,
+    DesktopResourcePolicySnapshot, DesktopScheduleEdit, DesktopScheduledTask, DesktopSecret,
+    DesktopSetupDraft, DesktopSetupMode, DesktopSetupReceipt, DesktopSetupSnapshot,
+    DesktopTaskDraft, DesktopTaskPreview, DesktopUsagePage, DesktopWorkbenchPreferenceSnapshot,
+    MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit, MemoryPage, MemoryRecord,
+    MemoryScope, MemoryState, SourceDeletionPreview, SourceDeletionReceipt,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
@@ -858,6 +864,8 @@ pub struct DesktopSnapshot {
     pub notification_policy: NotificationPolicy,
     pub conversation: Vec<DesktopMessage>,
     pub conversation_truncated: bool,
+    pub conversation_start: usize,
+    pub conversation_total: usize,
     pub active_operation: Option<DesktopOperationId>,
     pub pending_approval_count: usize,
     pub pending_approvals: Vec<DesktopPendingApproval>,
@@ -921,6 +929,8 @@ pub enum DesktopOperationState {
 pub struct DesktopObservation {
     pub version: u16,
     pub sequence: u64,
+    pub conversation_start: usize,
+    pub conversation_total: usize,
     pub event: DesktopEvent,
 }
 
@@ -1040,6 +1050,11 @@ pub enum DesktopEvent {
         operation_id: DesktopOperationId,
         message: DesktopMessage,
     },
+    /// Durable owner input, distinct from both optimistic echo and assistant final.
+    UserMessageCommitted {
+        operation_id: DesktopOperationId,
+        message: DesktopMessage,
+    },
     /// Tool evidence is not an assistant final and must not consume its stream.
     ToolResult {
         message: DesktopMessage,
@@ -1123,6 +1138,7 @@ pub struct DesktopClient {
     backend_done: std_mpsc::Receiver<()>,
     initial_snapshot: DesktopSnapshot,
     artifacts: DesktopArtifactReader,
+    history: DesktopHistoryReader,
 }
 
 /// A coalescing, executor-independent wake signal for newly queued Desktop work.
@@ -1169,11 +1185,17 @@ impl DesktopClient {
                 format!("could not resolve Xana paths: {error}"),
             )
         })?;
-        let artifacts = DesktopArtifactReader::new(
+        let artifact_store =
             crate::artifact::ArtifactStore::open(paths.data_dir()).map_err(|error| {
                 DesktopError::new(DesktopErrorCode::StateInvalid, error.to_string())
-            })?,
+            })?;
+        let history = DesktopHistoryReader::new(
+            artifact_store.protected_home(),
+            paths.data_dir().to_owned(),
+            workspace.clone(),
+            paths.config_file().to_owned(),
         );
+        let artifacts = DesktopArtifactReader::new(artifact_store);
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
         let update_signal = DesktopWakeSignal::default();
@@ -1260,6 +1282,7 @@ impl DesktopClient {
                 ),
             ));
         }
+        history.select(Some(&initial_snapshot));
         Ok(Self {
             commands,
             updates: update_receiver,
@@ -1269,6 +1292,7 @@ impl DesktopClient {
             backend_done: done_receiver,
             initial_snapshot,
             artifacts,
+            history,
         })
     }
 
@@ -1285,6 +1309,11 @@ impl DesktopClient {
     /// Returns a bounded reader that accepts only runtime-projected resources.
     pub fn artifact_reader(&self) -> DesktopArtifactReader {
         self.artifacts.clone()
+    }
+
+    /// A read-only bounded history capability for background loading.
+    pub fn history_reader(&self) -> DesktopHistoryReader {
+        self.history.clone()
     }
 
     /// Saves a verified copy to an explicit path selected by the native UI.
@@ -1770,7 +1799,14 @@ impl DesktopClient {
     /// Drains one already-delivered update without blocking GPUI's render thread.
     pub fn try_next(&mut self) -> Result<Option<DesktopUpdate>, DesktopError> {
         match self.updates.try_recv() {
-            Ok(update) => Ok(Some(update)),
+            Ok(update) => {
+                match &update {
+                    DesktopUpdate::Snapshot(snapshot) => self.history.select(Some(snapshot)),
+                    DesktopUpdate::BackendStopped { .. } => self.history.select(None),
+                    _ => {}
+                }
+                Ok(Some(update))
+            }
             Err(mpsc::error::TryRecvError::Empty) => Ok(None),
             Err(mpsc::error::TryRecvError::Disconnected) => Err(DesktopError::new(
                 DesktopErrorCode::RuntimeUnavailable,
@@ -2297,6 +2333,8 @@ impl Bridge {
                     let projected = DesktopObservation {
                         version: observation.version,
                         sequence: observation.sequence,
+                        conversation_start: snapshot.conversation_start,
+                        conversation_total: snapshot.conversation_total,
                         event: project_event(
                             &observation.event,
                             &snapshot.session_id,
@@ -2847,16 +2885,18 @@ impl Bridge {
                     .await?;
                     return Ok(None);
                 }
-                let run = execution_host.begin_run(
-                    &controller.conversation,
-                    operation_id.0,
-                    RunAccess::WorkspaceWrite,
-                    if acknowledge_workspace_write_collision {
-                        WriteCollisionDecision::Acknowledge
-                    } else {
-                        WriteCollisionDecision::Reject
-                    },
-                );
+                let run = execution_host
+                    .begin_foreground_run(
+                        &controller.conversation,
+                        operation_id.0,
+                        RunAccess::WorkspaceWrite,
+                        if acknowledge_workspace_write_collision {
+                            WriteCollisionDecision::Acknowledge
+                        } else {
+                            WriteCollisionDecision::Reject
+                        },
+                    )
+                    .await;
                 let run = match run {
                     Ok(run) => run,
                     Err(error) => {
@@ -3001,12 +3041,15 @@ impl Bridge {
             } => {
                 let mut acquired = None;
                 if action == RoundBudgetAction::Continue && active_run.is_none() {
-                    match execution_host.begin_run(
-                        &controller.conversation,
-                        operation_id.0,
-                        RunAccess::WorkspaceWrite,
-                        WriteCollisionDecision::Reject,
-                    ) {
+                    match execution_host
+                        .begin_foreground_run(
+                            &controller.conversation,
+                            operation_id.0,
+                            RunAccess::WorkspaceWrite,
+                            WriteCollisionDecision::Reject,
+                        )
+                        .await
+                    {
                         Ok(run) => acquired = Some(run),
                         Err(error) => {
                             self.publish_command_result(command_id, Err(host_error(error)))
@@ -3396,6 +3439,8 @@ fn project_frontend_snapshot(
             &snapshot.semantic.attachment_policy.configured,
         ),
         conversation_truncated: snapshot.conversation_truncated,
+        conversation_start: snapshot.conversation_start,
+        conversation_total: snapshot.conversation_total,
         active_operation: snapshot.active_operation.map(DesktopOperationId),
         pending_approval_count: snapshot.pending_approval_count,
         pending_approvals: snapshot
@@ -3634,6 +3679,17 @@ fn project_event(
                     resource_policy,
                 ),
             },
+            AgentEvent::UserMessageCommitted {
+                operation_id,
+                message,
+            } => DesktopEvent::UserMessageCommitted {
+                operation_id: DesktopOperationId(*operation_id),
+                message: content::project_message(
+                    format!("{session_id}:{operation_id}:user"),
+                    message,
+                    resource_policy,
+                ),
+            },
             AgentEvent::UsageObserved {
                 operation_id,
                 usage,
@@ -3859,6 +3915,36 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn committed_user_input_projects_as_a_distinct_durable_desktop_event() {
+        let operation_id = crate::identity::OperationId::new();
+        let session_id = crate::identity::SessionId::new();
+        let message =
+            crate::message::Message::text(crate::message::Role::User, "synthetic owner input");
+        let event = crate::frontend::ClientEvent::Runtime(Box::new(
+            crate::native_runtime::AgentEvent::UserMessageCommitted {
+                operation_id,
+                message,
+            },
+        ));
+        let projected = super::project_event(
+            &event,
+            &session_id,
+            &crate::resource::ResourcePolicyV1::default(),
+        );
+        let super::DesktopEvent::UserMessageCommitted {
+            operation_id: projected_operation,
+            message,
+        } = projected
+        else {
+            panic!("committed user input must not become an assistant final or activity label")
+        };
+        assert_eq!(projected_operation, super::DesktopOperationId(operation_id));
+        assert_eq!(message.role, super::DesktopRole::User);
+        assert_eq!(message.id, format!("{session_id}:{operation_id}:user"));
+        assert_eq!(message.content[0].fallback_text, "synthetic owner input");
+    }
+
     use super::*;
     use crate::{
         agent::Agent,

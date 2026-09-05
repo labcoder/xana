@@ -4,6 +4,7 @@
 //! current directory. It validates those inputs and passes owned configuration
 //! inward; it does not put frontend or process-global concerns into `Agent`.
 
+pub(crate) mod autonomy_commands;
 mod capabilities;
 mod chat;
 mod chat_contract;
@@ -21,6 +22,7 @@ mod outbound_commands;
 mod plugins;
 mod profiles;
 mod projects;
+mod recall_commands;
 mod recovery;
 mod sessions;
 mod skills;
@@ -104,13 +106,17 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             .map(|_| ())
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
+        Some(Command::Autonomy(args)) => autonomy_commands::run(args, &paths).await,
+        Some(Command::Recall(args)) => recall_commands::run(args, &paths).await,
         Some(Command::Storage(args)) => {
             storage_commands::run(&args.command, &paths, &mut io::stdout().lock())
         }
         Some(Command::Budget(args)) => {
             usage_commands::budget(args, &paths, &mut io::stdout().lock())
         }
-        Some(Command::Memory(args)) => memory_commands::run(args, &paths, &mut std::io::stdout()),
+        Some(Command::Memory(args)) => {
+            memory_commands::run(args, &paths, &mut std::io::stdout()).await
+        }
         Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
         Some(Command::Attach(args)) => hosting::run_attach(&args, &paths).await,
         Some(Command::Setup(args)) => {
@@ -192,6 +198,25 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             }
         }
         Some(Command::Session(args)) => match args.command {
+            SessionCommand::EvaluateCompaction {
+                connection,
+                model,
+                yes,
+                enable,
+                disable,
+            } => {
+                let stdout = io::stdout();
+                sessions::evaluate_compaction(
+                    &paths,
+                    &connection,
+                    &model,
+                    yes,
+                    enable,
+                    disable,
+                    &mut stdout.lock(),
+                )
+                .await
+            }
             SessionCommand::New => {
                 ensure_setup(&paths).await?;
                 let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;

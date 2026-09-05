@@ -180,6 +180,45 @@ fn memory_cli_preserves_expiry_checks_revisions_and_exports_without_provider_con
     let exported: serde_json::Value =
         serde_json::from_slice(&std::fs::read(export).unwrap()).unwrap();
     assert_eq!(exported["records"][0]["statement"], "Permanent preference");
+    let forgotten = command()
+        .args(["memory", "forget", id, "--revision", "4"])
+        .output()
+        .unwrap();
+    assert_success(&forgotten);
+    let record: serde_json::Value = serde_json::from_slice(&forgotten.stdout).unwrap();
+    assert_eq!(record["state"], "forgotten");
+    assert!(
+        !command()
+            .args(["memory", "restore", id, "--revision", "5"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let restored = command()
+        .args(["memory", "restore", id, "--revision", "5", "--confirm"])
+        .output()
+        .unwrap();
+    assert_success(&restored);
+    let record: serde_json::Value = serde_json::from_slice(&restored.stdout).unwrap();
+    assert_eq!(record["state"], "active");
+    let status = command()
+        .args(["memory", "learning-status"])
+        .output()
+        .unwrap();
+    assert_success(&status);
+    let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert!(status["route"].is_null());
+    assert_eq!(status["pending"], 0);
+    assert!(
+        !command()
+            .args(["memory", "process"])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "missing helper fails visibly without requiring a provider for local controls"
+    );
     // A protected home does not silently unlock without custody/recovery authority.
     assert!(
         !xana(&home)

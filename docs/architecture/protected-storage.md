@@ -73,10 +73,50 @@ exclusive home lease. Lock first drops requesting clones' usable key/connection;
 if any independent owner remains it reports failure, not Locked. Frontends must
 stop work and release content projections before this final operation.
 
-Native records retain their original parser/reducer and size/record limits.
-Encrypted ancestry metadata permits bounded message-page selection without
-loading every body, but full execution restore still has the existing bounded
-history limit. This is not the future unbounded-history/retained-worker design.
+Native records retain their original parser/reducer and 256 KiB record limit.
+Legacy JSONL and explicit full-journal inspection retain their 10,000-record /
+16 MiB caps. Protected durable retention is separately bounded at 1,000,000
+records / 1 GiB per Conversation; this is not the amount loaded into execution.
+Schema 5 maintains encrypted active-path positions in the same
+transaction as each head change. Normal advancement appends one index row;
+rewind removes a suffix, and a non-prefix branch rebuilds positions through
+constant-memory ancestry traversal. Strictly decreasing record sequence rejects
+cycles and forward references without collecting every entry ID.
+
+Message-page reads hold one SQLite read transaction and fetch at most 128
+records/2 MiB directly by position, validating the active head, contiguous
+positions, parent links and decoded identities. They no longer materialize the
+whole ancestry index before selecting a page. Exclusive schema upgrade builds
+the index; read-only recovery inspection never migrates.
+
+Schema 7 adds typed historical subjects, a cumulative original-record digest and
+one bounded execution checkpoint per Conversation. `DurableSession` retains at
+most 2,048 message entries and 16 MiB of encoded execution state, keeping exact
+unfinished operations and their dependencies. Completed operations and verified
+compacted prefixes leave the resident cache, not the canonical journal. Every
+64 records and at compaction/clear boundaries, a revision-fenced transaction
+binds the checkpoint body to its original-journal prefix. Resume reads that
+checkpoint and a bounded exact suffix. Missing checkpoints use the old bounded
+reducer path; corrupt or oversized state fails closed.
+
+Complete-history APIs never silently return a suffix. Frontends receive explicit
+page positions/totals; selected old operations, artifacts and context versions
+use identity-checked indexed inspection. Historical object responses have their
+own count/byte bounds. Large branching streams original entries and referenced
+artifacts into an atomic new journal, retaining lineage and a compatible verified
+checkpoint; a point without a sufficiently bounded continuation is refused.
+Forgotten-source quarantine also blocks branching, so copying text cannot make
+it newly eligible for memory or recall.
+
+Compaction digests remain hashes of original messages, not previous summaries.
+A private, nonserialized hash accumulator advances only newly retired originals
+after matching the prior checkpoint; the first compaction after resume streams
+the old prefix once. Offline verification streams original records, subject
+projections and digest links, validates historical operation/child transitions,
+and authenticates old compaction sources even after branch/clear. Current-schema
+backup/restore use this bounded verification; old recovery snapshots retain their
+original read-only bounded verification path. These are storage/execution bounds,
+not a claim about native GUI FPS or process RSS.
 
 Artifacts use opaque UUID filenames, an encrypted content-hash manifest and
 standard age streaming encryption. Whole-object authentication, length/hash and
@@ -112,3 +152,28 @@ ordinary files untouched and retaining the prior encrypted generation. A
 durable review-required marker blocks current memory eligibility and prevents future automation services from
 treating restored eligibility/grants as current authority. There is no automatic
 effect replay, deletion of plaintext legacy copies, or secure-erasure promise.
+
+## Personal context and derived work
+
+`memory` owns scoped records, deterministic next-turn selection and incremental
+owner-input learning; `storage::memory`, `storage::forgetting` and
+`storage::learning` own the corresponding encrypted transactions. Model helpers
+can propose data but cannot commit permissions, broaden scope or override
+source/consent revisions. Learning routes are exact native connection/model
+approvals. A shared process-level background lease serializes maintenance and
+scheduled work; foreground intent preempts it before acquiring a competing
+workspace owner.
+
+Forgetting increments a privacy generation, records statement suppression and
+quarantines originating Conversations. Selection and extraction recheck that
+generation at commit; supported Codex handoff records selected IDs without a
+bridge turn. The prompt layer is data with bounded token accounting, never new
+instructions. A previously disclosed forgotten fact requires a fresh
+Conversation because native/vendor history cannot be claimed erased.
+
+Explicit native source deletion checks a revision-bound preview and an inactive
+writer, while retaining shared artifacts. Restore reconciles known later
+exclusions from a compatible prior home. A separate reviewed-memory marker can
+enable current eligible context without clearing restored automation or usage
+gates. See [personal memory](../user/personal-memory.md) for the exact controls,
+initial automatic-activation policy and residual-copy limits.

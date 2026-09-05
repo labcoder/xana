@@ -28,7 +28,8 @@ use crate::{
     permission::{PermissionBroker, PermissionBrokerHandle, PermissionPolicy},
     prompt::{PromptAssembler, PromptSnapshot},
     session::{
-        CompactionCheckpoint, CompactionError, CompactionReason, DurableSession, SessionRecord,
+        CompactionCheckpoint, CompactionError, CompactionReason, ConversationPage, DurableSession,
+        SessionRecord,
     },
     tool::DeferredCleanup,
 };
@@ -44,9 +45,11 @@ const COMMAND_CAPACITY: usize = 16;
 const MAX_ROOT_TOOL_ROUNDS: usize = 256;
 
 pub(crate) struct RuntimeHandle {
+    runtime_task: Option<JoinHandle<()>>,
+    owned_tasks: tokio_util::task::TaskTracker,
     commands: mpsc::Sender<RuntimeCommand>,
     events: mpsc::UnboundedReceiver<AgentEvent>,
-    initial_history: Vec<Message>,
+    initial_history: ConversationPage,
     exit: watch::Receiver<Option<RuntimeExit>>,
 }
 
@@ -58,6 +61,11 @@ pub(crate) enum RuntimeExit {
 }
 
 struct Runtime {
+    memory_maintenance: Option<JoinHandle<()>>,
+    automatic_learning: bool,
+    owned_tasks: tokio_util::task::TaskTracker,
+    stop_after_compaction: bool,
+    compaction_cancelled: bool,
     memory: Option<crate::memory::MemoryOwner>,
     agent: Arc<Agent>,
     history: Vec<Message>,
@@ -100,11 +108,12 @@ struct OperationCompletion {
 }
 
 struct RuntimeSeed {
+    automatic_learning: bool,
     memory: Option<crate::memory::MemoryOwner>,
     session: Option<DurableSession>,
     prompt_assembler: Option<PromptAssembler>,
     history: Vec<Message>,
-    initial_history: Vec<Message>,
+    initial_history: ConversationPage,
     compaction_checkpoint: Option<CompactionCheckpoint>,
     suspended_round_budget: Option<RoundBudgetSuspension>,
 }
@@ -113,11 +122,17 @@ impl RuntimeSeed {
     #[cfg(test)]
     fn transient() -> Self {
         Self {
+            automatic_learning: true,
             memory: None,
             session: None,
             prompt_assembler: None,
             history: Vec::new(),
-            initial_history: Vec::new(),
+            initial_history: ConversationPage {
+                messages: Vec::new(),
+                start: 0,
+                total: 0,
+                has_older: false,
+            },
             compaction_checkpoint: None,
             suspended_round_budget: None,
         }
@@ -128,12 +143,15 @@ impl RuntimeSeed {
         prompt_assembler: PromptAssembler,
         memory: Option<crate::memory::MemoryOwner>,
     ) -> Result<Self, RuntimeUnavailable> {
-        let initial_history = session.conversation().map_err(|_| RuntimeUnavailable)?;
+        let initial_history = session
+            .initial_conversation_page()
+            .map_err(|_| RuntimeUnavailable)?;
         let continuation = session
             .prompt_continuation()
             .map_err(|_| RuntimeUnavailable)?;
         let suspended_round_budget = session.round_budget_suspension();
         Ok(Self {
+            automatic_learning: true,
             session: Some(session),
             memory,
             prompt_assembler: Some(prompt_assembler),
@@ -146,6 +164,44 @@ impl RuntimeSeed {
 }
 
 impl RuntimeHandle {
+    /// Explicit background composition shares the native durable runtime but
+    /// cannot turn scheduled model output into an automatic memory proposal.
+    pub(crate) fn spawn_persistent_background(
+        agent: Agent,
+        policy: PermissionPolicy,
+        session: DurableSession,
+        prompt_assembler: PromptAssembler,
+        memory: Option<crate::memory::MemoryOwner>,
+    ) -> Result<Self, RuntimeUnavailable> {
+        let mut seed = RuntimeSeed::persistent(session, prompt_assembler, memory)?;
+        seed.automatic_learning = false;
+        Ok(Self::spawn_inner(agent, policy, false, seed, None))
+    }
+
+    /// Bound the normal shutdown handshake, then abort and join only this
+    /// runtime and its tracked worker. False means forced/unknown, not stopped
+    /// before effects. The caller must retain workspace authority until return.
+    pub(crate) async fn shutdown_owned(mut self) -> bool {
+        let Some(mut task) = self.runtime_task.take() else {
+            return false;
+        };
+        let deadline = std::time::Duration::from_secs(8);
+        let graceful = async {
+            let _ = self.send(RuntimeCommand::Shutdown).await;
+            (&mut task).await
+        };
+        let acknowledged = match tokio::time::timeout(deadline, graceful).await {
+            Ok(result) => result.is_ok(),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                false
+            }
+        };
+        self.owned_tasks.close();
+        self.owned_tasks.wait().await;
+        acknowledged
+    }
     #[cfg(test)]
     pub(crate) fn spawn(agent: Agent, policy: PermissionPolicy, controller_present: bool) -> Self {
         Self::spawn_inner(
@@ -202,6 +258,7 @@ impl RuntimeHandle {
         child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
         let RuntimeSeed {
+            automatic_learning,
             memory,
             session,
             prompt_assembler,
@@ -235,7 +292,13 @@ impl RuntimeHandle {
             }
             None => (None, None),
         };
+        let owned_tasks = tokio_util::task::TaskTracker::new();
         let runtime = Runtime {
+            memory_maintenance: None,
+            automatic_learning,
+            owned_tasks: owned_tasks.clone(),
+            stop_after_compaction: false,
+            compaction_cancelled: false,
             memory,
             agent: Arc::new(agent),
             history,
@@ -259,7 +322,7 @@ impl RuntimeHandle {
             child_supervisor,
             child_supervisor_task,
         };
-        tokio::spawn(async move {
+        let runtime_task = tokio::spawn(async move {
             let exit = AssertUnwindSafe(runtime.run())
                 .catch_unwind()
                 .await
@@ -268,6 +331,8 @@ impl RuntimeHandle {
         });
 
         Self {
+            runtime_task: Some(runtime_task),
+            owned_tasks,
             commands: command_sender,
             events: event_receiver,
             initial_history,
@@ -292,10 +357,12 @@ impl RuntimeHandle {
     ) -> (
         Self,
         mpsc::UnboundedReceiver<AgentEvent>,
-        Vec<Message>,
+        ConversationPage,
         watch::Receiver<Option<RuntimeExit>>,
     ) {
         let Self {
+            runtime_task,
+            owned_tasks,
             commands,
             events,
             initial_history,
@@ -304,9 +371,16 @@ impl RuntimeHandle {
         let observer_exit = exit.clone();
         (
             Self {
+                runtime_task,
+                owned_tasks,
                 commands,
                 events: mpsc::unbounded_channel().1,
-                initial_history: Vec::new(),
+                initial_history: ConversationPage {
+                    messages: Vec::new(),
+                    start: 0,
+                    total: 0,
+                    has_older: false,
+                },
                 exit,
             },
             events,
@@ -316,13 +390,31 @@ impl RuntimeHandle {
     }
 }
 
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if let Some(task) = &self.memory_maintenance {
+            task.abort();
+        }
+        self.permissions.controller_lost();
+        if let Some(active) = &self.active {
+            active.task.abort();
+        }
+        if let Some(task) = &self.child_supervisor_task {
+            task.abort();
+        }
+    }
+}
+
 impl Runtime {
     async fn run(mut self) -> RuntimeExit {
+        let mut maintenance = tokio::time::interval(std::time::Duration::from_secs(30));
+        maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         if let Some(suspension) = self.suspended_round_budget.clone() {
             self.emit(AgentEvent::RoundBudgetReached { suspension });
         }
         loop {
             tokio::select! {
+                biased;
                 command = self.commands.recv() => {
                     let Some(command) = command else {
                         self.permissions.controller_lost();
@@ -357,6 +449,13 @@ impl Runtime {
                 command = self.child_commits.recv() => {
                     if let Some(command) = command {
                         self.handle_child_commit(command);
+                    }
+                }
+                _=maintenance.tick(), if self.automatic_learning && self.active.is_none() && self.memory_maintenance.as_ref().is_none_or(JoinHandle::is_finished) => {
+                    if let Some(worker)=self.memory.as_ref().and_then(|owner|owner.learner.clone()) {
+                        self.memory_maintenance=Some(self.owned_tasks.spawn(async move {
+                            let _=worker.process(false,&tokio_util::sync::CancellationToken::new()).await;
+                        }));
                     }
                 }
             }
@@ -409,7 +508,7 @@ impl Runtime {
                         operation_id,
                         reason: CompactionReason::Manual,
                     });
-                    match self.compact_now(operation_id, CompactionReason::Manual) {
+                    match self.compact_now(operation_id, CompactionReason::Manual).await {
                         Ok(checkpoint) => {
                             if let Ok(Some(prompt)) = self.prepare_turn_prompt()
                                 && let Some(ledger) = prompt.ledger(&self.history)
@@ -570,7 +669,12 @@ impl Runtime {
                 return true;
             }
         }
-        false
+        if self.stop_after_compaction {
+            self.permissions.shutdown();
+            self.interrupt_active().await;
+            self.shutdown_children().await;
+        }
+        self.stop_after_compaction
     }
 
     async fn start_turn(
@@ -605,16 +709,39 @@ impl Runtime {
         }
 
         if images.is_empty() && crate::memory::parse_natural(&input).is_some() {
+            if !self.automatic_learning {
+                self.emit(AgentEvent::CommandRejected{reason:"Scheduled work cannot exercise owner-only personal memory controls; return to the owner for review".into()});
+                return;
+            }
             self.run_memory_control(operation_id, input).await;
             return;
         }
+        let _foreground = if self.automatic_learning {
+            match self
+                .memory
+                .as_ref()
+                .map(|owner| owner.store.foreground_lease())
+                .transpose()
+            {
+                Ok(lease) => lease,
+                Err(error) => {
+                    self.emit(AgentEvent::CommandRejected {
+                        reason: format!("Could not acquire foreground priority: {error:#}"),
+                    });
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let query = input.clone();
         let mut content = vec![crate::message::ContentBlock::Text(input)];
         content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
         let user_message = Message {
             role: Role::User,
             content,
         };
-        let mut prompt = match self.prepare_turn_prompt() {
+        let mut prompt = match self.prepare_turn_prompt_for(&query) {
             Ok(prompt) => prompt,
             Err(reason) => {
                 self.emit(AgentEvent::CommandRejected { reason });
@@ -625,16 +752,23 @@ impl Runtime {
             let mut candidate = self.history.clone();
             candidate.push(user_message.clone());
             if let Some(ledger) = snapshot.ledger(&candidate)
-                && ledger.estimated_input_tokens > ledger.budget.compaction_threshold_tokens
+                && (ledger.estimated_input_tokens > ledger.budget.compaction_threshold_tokens
+                    || self
+                        .session
+                        .as_ref()
+                        .is_some_and(DurableSession::retained_pressure))
             {
                 self.emit(AgentEvent::CompactionStarted {
                     operation_id,
                     reason: CompactionReason::AutomaticThreshold,
                 });
-                match self.compact_now(operation_id, CompactionReason::AutomaticThreshold) {
+                match self
+                    .compact_now(operation_id, CompactionReason::AutomaticThreshold)
+                    .await
+                {
                     Ok(checkpoint) => {
                         self.emit(AgentEvent::ConversationCompacted { checkpoint });
-                        prompt = match self.prepare_turn_prompt() {
+                        prompt = match self.prepare_turn_prompt_for(&query) {
                             Ok(prompt) => prompt,
                             Err(reason) => {
                                 self.emit(AgentEvent::CommandRejected { reason });
@@ -642,10 +776,15 @@ impl Runtime {
                             }
                         };
                     }
-                    Err(reason) => self.emit(AgentEvent::CompactionUnavailable {
-                        operation_id,
-                        reason,
-                    }),
+                    Err(reason) => {
+                        self.emit(AgentEvent::CompactionUnavailable {
+                            operation_id,
+                            reason,
+                        });
+                        if self.stop_after_compaction || self.compaction_cancelled {
+                            return;
+                        }
+                    }
                 }
             }
         }
@@ -677,7 +816,24 @@ impl Runtime {
         } else {
             None
         };
-        self.history.push(user_message);
+        if self.automatic_learning
+            && let Some(owner) = &self.memory
+        {
+            let source = input_entry_id
+                .and_then(|id| id.to_string().parse().ok())
+                .unwrap_or_else(uuid::Uuid::new_v4);
+            if let Err(error) = owner.enqueue_user_statement(source, &query) {
+                // Metadata-only operational notice; neither input nor helper output
+                // enters diagnostics. The accepted source remains in raw history.
+                let _=owner.store.set_document("memory/learning-receipt",&serde_json::to_vec(&serde_json::json!({"state":"enqueue_blocked","notice":"Learning could not queue this source; inspect controls, storage and queue capacity. The user Conversation remains available."})).expect("receipt JSON"),4096);
+                drop(error);
+            }
+        }
+        self.history.push(user_message.clone());
+        self.emit(AgentEvent::UserMessageCommitted {
+            operation_id,
+            message: user_message,
+        });
         if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
             if let Err(error) = session.append_record(SessionRecord::OperationAccepted {
                 operation_id,
@@ -738,8 +894,16 @@ impl Runtime {
         let mut history = self.history.clone();
         let cleanup = DeferredCleanup::default();
         let operation_cleanup = cleanup.clone();
-        let task = tokio::spawn(async move {
+        let foreground_store = self
+            .automatic_learning
+            .then(|| self.memory.as_ref().map(|owner| owner.store.clone()))
+            .flatten();
+        let task = self.owned_tasks.spawn(async move {
             let result = AssertUnwindSafe(async {
+                let _foreground = foreground_store
+                    .as_ref()
+                    .map(|store| store.foreground_lease())
+                    .transpose()?;
                 match prompt {
                     Some(prompt) => {
                         agent
@@ -1144,6 +1308,10 @@ impl Runtime {
     }
 
     fn prepare_turn_prompt(&mut self) -> Result<Option<PromptSnapshot>, String> {
+        self.prepare_turn_prompt_for("")
+    }
+
+    fn prepare_turn_prompt_for(&mut self, input: &str) -> Result<Option<PromptSnapshot>, String> {
         let Some(session) = &mut self.session else {
             return Ok(None);
         };
@@ -1154,17 +1322,30 @@ impl Runtime {
             .prompt_assembler
             .as_ref()
             .ok_or_else(|| "persistent runtime has no prompt assembler".to_owned())?;
-        assembler
+        let mut snapshot = assembler
             .assemble_with_compaction(&sources, self.compaction_checkpoint.as_ref())
-            .map(Some)
-            .map_err(|error| format!("could not assemble turn prompt: {error}"))
+            .map_err(|error| format!("could not assemble turn prompt: {error}"))?;
+        if let Some(owner) = &self.memory {
+            let selection = owner
+                .select_for_turn(input, snapshot.budget.total_tokens)
+                .map_err(|error| format!("Memory context unavailable: {error:#}"))?;
+            let (selected, ids) = snapshot.with_personal_memory(&selection);
+            owner
+                .record_selection(&selection, &ids)
+                .map_err(|error| format!("Memory changed before turn admission: {error:#}"))?;
+            snapshot = selected;
+        }
+        Ok(Some(snapshot))
     }
 
-    fn compact_now(
+    async fn compact_now(
         &mut self,
         operation_id: OperationId,
         reason: CompactionReason,
     ) -> Result<CompactionCheckpoint, String> {
+        // Failure to establish or revalidate source authority stops automatic
+        // dispatch; only NothingToCompact may continue to the normal budget gate.
+        self.compaction_cancelled = true;
         let budget = self
             .prompt_assembler
             .as_ref()
@@ -1174,20 +1355,62 @@ impl Runtime {
                 "managed or transient runtime owns context; Xana compaction is unavailable"
                     .to_owned()
             })?;
-        let session = self.session.as_mut().ok_or_else(|| {
+        let session = self.session.as_ref().ok_or_else(|| {
             "managed or transient runtime owns context; Xana compaction is unavailable".to_owned()
         })?;
-        let checkpoint = session
-            .compact_conversation(operation_id, reason, &budget)
+        let mut candidate = session
+            .prepare_compaction(operation_id, reason, &budget)
             .map_err(|error| {
                 if error.downcast_ref::<CompactionError>()
                     == Some(&CompactionError::NothingToCompact)
                 {
+                    self.compaction_cancelled = false;
                     "conversation has no complete older turn to compact".to_owned()
                 } else {
                     format!("could not commit durable compaction checkpoint: {error:#}")
                 }
             })?;
+        self.compaction_cancelled = false;
+        if self.agent.semantic_compaction_enabled() {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let agent = self.agent.clone();
+            let enrichment = agent.enrich_compaction(&mut candidate, &cancellation);
+            tokio::pin!(enrichment);
+            loop {
+                tokio::select! {
+                    biased;
+                    command = self.commands.recv() => match command {
+                        Some(RuntimeCommand::InterruptOperation { operation_id: interrupted }) if interrupted == operation_id => {
+                            self.compaction_cancelled = true;
+                            cancellation.cancel();
+                            let _ = enrichment.await;
+                            return Err("compaction cancelled; the previous checkpoint and raw history are unchanged".into());
+                        }
+                        Some(RuntimeCommand::Shutdown) | None => {
+                            self.stop_after_compaction = true;
+                            cancellation.cancel();
+                            let _ = enrichment.await;
+                            return Err("compaction stopped; the previous checkpoint and raw history are unchanged".into());
+                        }
+                        Some(_) => self.emit(AgentEvent::CommandRejected { reason: "compaction is active; wait or cancel before changing this Conversation".into() }),
+                    },
+                    result = &mut enrichment => {
+                        if result.is_err() {
+                            self.emit(AgentEvent::CompactionUnavailable { operation_id, reason: "semantic helper unavailable, failed, or exceeded its allowance; using the deterministic checkpoint".into() });
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        let session = self
+            .session
+            .as_mut()
+            .expect("compaction session remains owned");
+        let checkpoint = session.commit_compaction(candidate).map_err(|error| {
+            self.compaction_cancelled = true;
+            format!("could not commit compaction after source revalidation: {error:#}")
+        })?;
         let continuation = session
             .prompt_continuation()
             .map_err(|error| format!("could not restore compacted continuation: {error:#}"))?;

@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeSet, error::Error, fmt};
 
+#[cfg(test)]
+mod archive_tests;
+pub(crate) mod evaluation;
+pub(crate) mod semantic;
+
 pub(crate) const COMPACTION_CHECKPOINT_VERSION: u16 = 1;
 const MAX_SUMMARY_ITEMS: usize = 16;
 const MAX_ITEM_BYTES: usize = 512;
@@ -156,6 +161,177 @@ pub(crate) struct CompactionCheckpoint {
     pub(crate) retained_tail_start: ConversationEntryId,
     pub(crate) summary: CompactionSummary,
     pub(crate) budget: PromptBudgetPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) semantic: Option<semantic::SemanticProvenance>,
+}
+
+/// Prepared without changing the active checkpoint; committing revalidates the
+/// immutable source range against the sole writer's current state.
+pub(crate) struct CompactionCandidate {
+    pub(crate) checkpoint: CompactionCheckpoint,
+    pub(crate) helper_messages: Option<Vec<Message>>,
+    pub(crate) privacy_generation: Option<u64>,
+    pub(crate) source_proof: Option<CompactionSourceProof>,
+}
+
+/// Constructed only by hashing original entries, never by trusting a summary
+/// or deserializing a caller-supplied digest.
+pub(crate) struct CompactionSourceProof {
+    session: crate::identity::SessionId,
+    count: usize,
+    start: ConversationEntryId,
+    end: ConversationEntryId,
+    tail: ConversationEntryId,
+    digest: String,
+    hasher: blake3::Hasher,
+}
+
+/// Ephemeral original-byte hash state; never loaded from a summary or disk.
+pub(crate) struct CompactionPrefixAccumulator {
+    session: crate::identity::SessionId,
+    count: usize,
+    start: ConversationEntryId,
+    end: ConversationEntryId,
+    digest: String,
+    hasher: blake3::Hasher,
+}
+impl CompactionPrefixAccumulator {
+    pub(crate) fn matches(
+        &self,
+        session: crate::identity::SessionId,
+        checkpoint: &CompactionCheckpoint,
+    ) -> bool {
+        self.session == session
+            && self.count == checkpoint.source_entry_count
+            && self.start == checkpoint.source_start
+            && self.end == checkpoint.source_end
+            && self.digest == checkpoint.source_digest
+    }
+}
+
+impl CompactionSourceProof {
+    pub(crate) fn accumulator(&self) -> CompactionPrefixAccumulator {
+        CompactionPrefixAccumulator {
+            session: self.session,
+            count: self.count,
+            start: self.start,
+            end: self.end,
+            digest: self.digest.clone(),
+            hasher: self.hasher.clone(),
+        }
+    }
+    pub(crate) fn matches(
+        &self,
+        session: crate::identity::SessionId,
+        checkpoint: &CompactionCheckpoint,
+    ) -> bool {
+        self.session == session
+            && self.count == checkpoint.source_entry_count
+            && self.start == checkpoint.source_start
+            && self.end == checkpoint.source_end
+            && self.tail == checkpoint.retained_tail_start
+            && self.digest == checkpoint.source_digest
+    }
+
+    pub(crate) fn start(&self) -> ConversationEntryId {
+        self.start
+    }
+    pub(crate) fn end(&self) -> ConversationEntryId {
+        self.end
+    }
+    pub(crate) fn tail(&self) -> ConversationEntryId {
+        self.tail
+    }
+    pub(crate) fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
+pub(crate) struct CompactionSourceProofBuilder {
+    session: crate::identity::SessionId,
+    count: usize,
+    seen: usize,
+    start: Option<ConversationEntryId>,
+    end: Option<ConversationEntryId>,
+    tail: Option<ConversationEntryId>,
+    hasher: blake3::Hasher,
+}
+
+impl CompactionSourceProofBuilder {
+    pub(crate) fn from_prefix(
+        prefix: &CompactionPrefixAccumulator,
+        source_count: usize,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            source_count > prefix.count,
+            "compaction prefix must advance"
+        );
+        Ok(Self {
+            session: prefix.session,
+            count: source_count,
+            seen: prefix.count,
+            start: Some(prefix.start),
+            end: Some(prefix.end),
+            tail: None,
+            hasher: prefix.hasher.clone(),
+        })
+    }
+    pub(crate) fn new(session: crate::identity::SessionId, source_count: usize) -> Self {
+        Self {
+            session,
+            count: source_count,
+            seen: 0,
+            start: None,
+            end: None,
+            tail: None,
+            hasher: blake3::Hasher::new(),
+        }
+    }
+
+    pub(crate) fn push(
+        &mut self,
+        id: ConversationEntryId,
+        message: &Message,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.count > 0 && self.seen <= self.count,
+            "compaction proof source range exceeds declared count"
+        );
+        if self.seen == self.count {
+            self.tail = Some(id);
+        } else {
+            self.start.get_or_insert(id);
+            self.end = Some(id);
+            hash_entry(&mut self.hasher, id, message);
+        }
+        self.seen = self
+            .seen
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("compaction source count overflow"))?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(self) -> anyhow::Result<CompactionSourceProof> {
+        anyhow::ensure!(
+            self.count > 0 && self.seen.checked_sub(1) == Some(self.count),
+            "compaction proof source range is incomplete"
+        );
+        Ok(CompactionSourceProof {
+            session: self.session,
+            count: self.count,
+            start: self
+                .start
+                .ok_or_else(|| anyhow::anyhow!("missing source start"))?,
+            end: self
+                .end
+                .ok_or_else(|| anyhow::anyhow!("missing source end"))?,
+            tail: self
+                .tail
+                .ok_or_else(|| anyhow::anyhow!("missing retained tail"))?,
+            digest: self.hasher.finalize().to_hex().to_string(),
+            hasher: self.hasher,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,14 +372,18 @@ pub(crate) fn source_digest<'a>(
 ) -> String {
     let mut hasher = blake3::Hasher::new();
     for (id, message) in entries {
-        let id = id.to_string();
-        hasher.update(&(id.len() as u64).to_le_bytes());
-        hasher.update(id.as_bytes());
-        let encoded = serde_json::to_vec(message).expect("Message serialization is infallible");
-        hasher.update(&(encoded.len() as u64).to_le_bytes());
-        hasher.update(&encoded);
+        hash_entry(&mut hasher, id, message);
     }
     hasher.finalize().to_hex().to_string()
+}
+
+fn hash_entry(hasher: &mut blake3::Hasher, id: ConversationEntryId, message: &Message) {
+    let id = id.to_string();
+    hasher.update(&(id.len() as u64).to_le_bytes());
+    hasher.update(id.as_bytes());
+    let encoded = serde_json::to_vec(message).expect("Message serialization is infallible");
+    hasher.update(&(encoded.len() as u64).to_le_bytes());
+    hasher.update(&encoded);
 }
 
 pub(crate) fn validate_summary(summary: &CompactionSummary, max_bytes: usize) -> bool {

@@ -49,7 +49,7 @@ pub(crate) struct EmbeddedClient {
 impl EmbeddedClient {
     pub(crate) fn from_runtime(runtime: RuntimeHandle, seed: ClientSnapshotSeed) -> Self {
         let (runtime, events, history, runtime_exit) = runtime.into_frontend_parts();
-        let snapshot = ClientSnapshot::initial(seed, history);
+        let snapshot = ClientSnapshot::initial_page(seed, history);
         let (observations, observation_receiver) = mpsc::channel(OBSERVATION_CAPACITY);
         let sequence = Arc::new(AtomicU64::new(snapshot.sequence));
         let forwarder = tokio::spawn(forward_observations(

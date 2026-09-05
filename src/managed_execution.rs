@@ -4,7 +4,10 @@
 //! conversation, one-shot, activity, and TUI-driver projections around it.
 
 mod activity;
+mod memory_context;
 mod memory_controls;
+#[cfg(test)]
+pub(crate) use memory_context::prepare as prepare_memory_for_test;
 use memory_controls::local_memory_reply;
 mod tui_driver;
 
@@ -174,6 +177,7 @@ pub(crate) async fn run_codex_chat(
             .map_or_else(|| "provider default".into(), |value| value.to_string())
     );
     println!("workspace: {}", config.workspace.display());
+    println!("{}", crate::memory::learning::DISCLOSURE);
     if let ManagedThreadState::NeedsResume {
         thread_id,
         identity_is_current,
@@ -199,6 +203,7 @@ pub(crate) async fn run_codex_chat(
     let ingestor = ImageIngestor::new(config.artifact_store.clone(), ImageLimits::default());
 
     let mut exit = ChatExit::Quit;
+    let mut memory_maintenance = None;
     loop {
         let line = match editor.readline("you> ") {
             Ok(line) => line,
@@ -458,7 +463,10 @@ pub(crate) async fn run_codex_chat(
             }
         };
 
-        let root_lease = match workspace_host.acquire_root(conversation.clone()) {
+        let root_lease = match workspace_host
+            .acquire_foreground_root(conversation.clone())
+            .await
+        {
             Ok(lease) => lease,
             Err(error) => {
                 println!("xana> could not start turn: {error}");
@@ -491,6 +499,20 @@ pub(crate) async fn run_codex_chat(
             thread.conversation_id().to_string(),
             crate::identity::OperationId::new(),
         );
+        let _foreground = memory_context::foreground(config.memory.as_ref())?;
+        let managed_input =
+            match memory_context::prepare(config.memory.as_ref(), thread.conversation_id(), input)
+                .await
+            {
+                Ok(text) => text,
+                Err(error) => {
+                    for attachment in attachments {
+                        pending.push(attachment);
+                    }
+                    println!("xana> {error}");
+                    continue;
+                }
+            };
         let result = server
             .run_turn(
                 &loaded_thread_id,
@@ -500,7 +522,7 @@ pub(crate) async fn run_codex_chat(
                     reasoning_summary: selection.reasoning_summary,
                 },
                 ManagedTurnInput {
-                    text: input.to_owned(),
+                    text: managed_input,
                     image_urls,
                 },
                 &mut handler,
@@ -508,6 +530,8 @@ pub(crate) async fn run_codex_chat(
             .await;
         handler.finish_stream()?;
         last_activity = handler.into_retained();
+        drop(_foreground);
+        memory_context::maintain(config.memory.as_ref(), &mut memory_maintenance);
         match result {
             Ok(result) => {
                 if !last_activity.assistant_streamed && !result.final_text.is_empty() {
@@ -649,8 +673,15 @@ async fn run_codex_one_shot_inner(
         .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
 
     let _root_lease = workspace_host
-        .acquire_root(request.conversation)
+        .acquire_foreground_root(request.conversation)
+        .await
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+    let _foreground = memory_context::foreground(config.memory.as_ref())
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+    let managed_input =
+        memory_context::prepare(config.memory.as_ref(), conversation_id, &request.input)
+            .await
+            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
     let turn = server
         .run_turn(
             &thread_id,
@@ -660,7 +691,7 @@ async fn run_codex_one_shot_inner(
                 reasoning_summary: selection.reasoning_summary,
             },
             ManagedTurnInput {
-                text: request.input,
+                text: managed_input,
                 image_urls: Vec::new(),
             },
             &mut handler,

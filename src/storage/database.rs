@@ -41,13 +41,19 @@ impl Database {
         transaction.execute_batch("
             CREATE TABLE store_identity(id TEXT PRIMARY KEY, version INTEGER NOT NULL);
             CREATE TABLE documents(name TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0), body BLOB NOT NULL);
-            PRAGMA user_version=3;")?;
+            PRAGMA user_version=9;")?;
         transaction.execute_batch(super::history::SCHEMA)?;
+        transaction.execute_batch(super::history::PATH_SCHEMA)?;
+        transaction.execute_batch(super::history::EXECUTION_SCHEMA)?;
         transaction.execute_batch(super::usage::SCHEMA)?;
         transaction.execute_batch(super::memory::SCHEMA)?;
+        transaction.execute_batch(super::forgetting::SCHEMA)?;
+        transaction.execute_batch(super::autonomy::SCHEMA)?;
+        transaction.execute_batch(super::learning::SCHEMA)?;
+        transaction.execute_batch(super::recall::SCHEMA)?;
         transaction.execute_batch("CREATE TABLE encrypted_artifacts(hash TEXT PRIMARY KEY, file_id TEXT NOT NULL UNIQUE, length INTEGER NOT NULL);")?;
         transaction.execute(
-            "INSERT INTO store_identity VALUES (?1, 3)",
+            "INSERT INTO store_identity VALUES (?1, 9)",
             [id.to_string()],
         )?;
         transaction.commit()?;
@@ -72,7 +78,7 @@ impl Database {
             })
             .context("protected database could not be authenticated; no plaintext fallback")?;
         ensure!(
-            actual == id.to_string() && (1..=3).contains(&version),
+            actual == id.to_string() && (1..=9).contains(&version),
             "protected database identity or version differs"
         );
         Ok(Self {
@@ -88,7 +94,7 @@ impl Database {
         let version: u32 =
             self.connection
                 .query_row("SELECT version FROM store_identity", [], |r| r.get(0))?;
-        if version < 3 {
+        if version < 9 {
             self.exclusive()?;
             let tx = self
                 .connection
@@ -100,8 +106,26 @@ impl Database {
             }
             if current < 3 {
                 tx.execute_batch(super::memory::SCHEMA)?;
-                tx.execute_batch("UPDATE store_identity SET version=3; PRAGMA user_version=3;")?;
             }
+            if current < 4 {
+                tx.execute_batch(super::forgetting::SCHEMA)?;
+            }
+            if current < 5 {
+                super::history::migrate_path_index(&tx)?;
+            }
+            if current < 6 {
+                tx.execute_batch(super::autonomy::SCHEMA)?;
+            }
+            if current < 7 {
+                super::history::migrate_execution_index(&tx)?;
+            }
+            if current < 8 {
+                tx.execute_batch(super::learning::SCHEMA)?;
+            }
+            if current < 9 {
+                tx.execute_batch(super::recall::SCHEMA)?;
+            }
+            tx.execute_batch("UPDATE store_identity SET version=9; PRAGMA user_version=9;")?;
             tx.commit()?;
             // Close the connection while still exclusive. The caller must reopen
             // through lifecycle checks; downgrading a live lease has a lock gap.

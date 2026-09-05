@@ -21,24 +21,158 @@ pub(super) fn compose(
         .membership(conversation)?
         .map(|id| id.to_string().parse())
         .transpose()?;
-    Ok(Some(MemoryOwner::new(
+    let mut owner = MemoryOwner::new(
         store.clone(),
         MemoryContext {
             conversation: Some(conversation.parse()?),
             profile: Some(profile),
             project,
         },
+    );
+    owner.learner = learning_worker(paths, &owner.store)?;
+    Ok(Some(owner))
+}
+
+pub(super) fn learning_worker(
+    paths: &XanaPaths,
+    store: &ProtectedStore,
+) -> Result<Option<std::sync::Arc<crate::memory::learning::LearningWorker>>> {
+    let Some(route) = store.learning_status()?.route else {
+        return Ok(None);
+    };
+    let registry = crate::config::XanaConfig::load_registry_from(paths.config_file())?;
+    let Some(connection) = registry.connections.get(&route.connection) else {
+        return Ok(None);
+    };
+    if connection.kind == crate::config::ProviderKind::Codex
+        || route.digest
+            != crate::session::compaction::semantic::route_digest(connection, &route.model)
+    {
+        return Ok(None);
+    }
+    let Ok((provider, _)) = crate::orchestration::compose_native_provider(
+        connection,
+        &route.model,
+        crate::artifact::ArtifactStore::protected(store.clone()),
+        true,
+    ) else {
+        store.set_document("memory/learning-receipt",br#"{"state":"pending_route","notice":"The configured learning helper is unavailable; offline memory controls and chat remain usable."}"#,4096)?;
+        return Ok(None);
+    };
+    Ok(Some(std::sync::Arc::new(
+        crate::memory::learning::LearningWorker {
+            store: store.clone(),
+            route,
+            provider: provider.into(),
+            validate_route: live_learning_route(paths.config_file().to_path_buf()),
+        },
     )))
 }
 
-pub(super) fn run<W: Write>(args: MemoryArgs, paths: &XanaPaths, output: &mut W) -> Result<()> {
+fn live_learning_route(
+    path: std::path::PathBuf,
+) -> std::sync::Arc<crate::memory::learning::LearningRouteValidator> {
+    std::sync::Arc::new(move |route| {
+        let registry = crate::config::XanaConfig::load_registry_from(&path)?;
+        let connection = registry
+            .connections
+            .get(&route.connection)
+            .context("learning helper connection is no longer configured")?;
+        anyhow::ensure!(
+            connection.kind != crate::config::ProviderKind::Codex
+                && route.digest
+                    == crate::session::compaction::semantic::route_digest(connection, &route.model),
+            "learning helper endpoint, credentials or configuration changed; authorize its route again"
+        );
+        Ok(())
+    })
+}
+
+pub(super) async fn run<W: Write>(
+    args: MemoryArgs,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
     let store=ProtectedStore::configured(paths.data_dir())?.context("Personal memory requires protected storage; inspect xana storage status. No plaintext memory was created")?;
     let owner = MemoryOwner::new(store, MemoryContext::default());
     let value = match args.command {
+        MemoryCommand::ReviewRestore { review } => {
+            owner.store.review_restored_memory(review.as_deref())?
+        }
+        MemoryCommand::LearningStatus => serde_json::to_value(owner.store.learning_status()?)?,
+        MemoryCommand::LearningRoute {
+            connection,
+            model,
+            confirm,
+            disable,
+        } => {
+            anyhow::ensure!(
+                confirm,
+                "--confirm authorizes learning input disclosure to this exact native helper route; it does not enable managed helpers"
+            );
+            if disable {
+                owner.store.remove_document("memory/learning-route")?;
+                serde_json::json!({"state":"disabled","notice":"Queued sources remain private and pending; scope controls independently disable learning."})
+            } else {
+                let registry = crate::config::XanaConfig::load_registry_from(paths.config_file())?;
+                let config = registry
+                    .connections
+                    .get(&connection)
+                    .context("unknown learning helper connection")?;
+                anyhow::ensure!(
+                    config.kind != crate::config::ProviderKind::Codex,
+                    "managed subscription-only learning is unsupported; select a native helper"
+                );
+                anyhow::ensure!(
+                    !model.trim().is_empty()
+                        && model.len() <= 256
+                        && !model.chars().any(char::is_control),
+                    "invalid helper model"
+                );
+                let route = crate::memory::learning::LearningRoute {
+                    connection,
+                    model: model.clone(),
+                    digest: crate::session::compaction::semantic::route_digest(config, &model),
+                };
+                owner.store.set_document(
+                    "memory/learning-route",
+                    &serde_json::to_vec(&route)?,
+                    4096,
+                )?;
+                serde_json::json!({"route":route,"disclosure":crate::memory::learning::DISCLOSURE,"next":"New runtime launches process batches while idle; memory process processes one batch now."})
+            }
+        }
+        MemoryCommand::Process => {
+            owner.store.retire_stale_learning()?;
+            let worker=learning_worker(paths,&owner.store)?.context("learning route absent or changed; inspect memory learning-status and explicitly authorize an available native route")?;
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let processing = worker.process(true, &cancellation);
+            tokio::pin!(processing);
+            let count = tokio::select! {
+                result=&mut processing=>result?,
+                _=tokio::signal::ctrl_c()=> {cancellation.cancel();processing.await?},
+            };
+            serde_json::json!({"created":count,"status":owner.store.learning_status()?})
+        }
         MemoryCommand::List { scope, after } => {
             serde_json::to_value(owner.page(scope.as_ref(), after)?)?
         }
         MemoryCommand::Show { id } => serde_json::to_value(owner.record(id)?)?,
+        MemoryCommand::Forget { id, revision } => {
+            serde_json::to_value(owner.revise(id, revision, MemoryEdit::Forget)?)?
+        }
+        MemoryCommand::Restore {
+            id,
+            revision,
+            confirm,
+        } => serde_json::to_value(owner.revise(id, revision, MemoryEdit::Restore { confirm })?)?,
+        MemoryCommand::DeleteSource {
+            conversation,
+            review,
+        } => match review {
+            None => serde_json::to_value(owner.deletion_preview(conversation)?)?,
+            Some(review) => serde_json::to_value(owner.delete_source(conversation, &review)?)?,
+        },
         MemoryCommand::Remember {
             scope,
             text,
@@ -129,4 +263,34 @@ pub(super) fn run<W: Write>(args: MemoryArgs, paths: &XanaPaths, output: &mut W)
     serde_json::to_writer_pretty(&mut *output, &value)?;
     writeln!(output)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod learning_route_tests {
+    use super::*;
+
+    #[test]
+    fn live_guard_rechecks_registry_endpoint_and_connection_existence() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.toml");
+        let input = "version=1\ndefault_profile='default'\npermission_mode='ask'\n[providers.local]\nkind='openai_compat'\nbase_url='http://localhost:11434/v1'\n[profiles.default]\nprovider='local'\nmodel='synthetic'\n";
+        std::fs::write(&path, input).unwrap();
+        let registry = crate::config::XanaConfig::load_registry_from(&path).unwrap();
+        let route = crate::memory::learning::LearningRoute {
+            connection: "local".into(),
+            model: "synthetic".into(),
+            digest: crate::session::compaction::semantic::route_digest(
+                &registry.connections["local"],
+                "synthetic",
+            ),
+        };
+        let validate = live_learning_route(path.clone());
+        validate(&route).unwrap();
+        std::fs::write(&path, input.replace("11434", "11435")).unwrap();
+        assert!(validate(&route).is_err());
+        std::fs::write(&path, input.replace("local", "other")).unwrap();
+        assert!(validate(&route).is_err());
+        std::fs::write(&path, input).unwrap();
+        validate(&route).unwrap();
+    }
 }

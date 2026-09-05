@@ -8,8 +8,15 @@ mod database;
 mod documents;
 mod encrypted_artifacts;
 mod history;
+pub(crate) use history::HistorySubject;
+mod autonomy;
+mod forgetting;
 mod keys;
+mod learning;
 mod memory;
+mod priority;
+mod recall;
+pub(crate) use priority::{ForegroundJobLease, ForegroundLease};
 pub(crate) mod migration;
 mod private_file;
 mod reset;
@@ -75,6 +82,26 @@ impl std::fmt::Debug for ProtectedStore {
 }
 
 impl ProtectedStore {
+    /// Only for an explicitly prepared restore destination, never snapshot inspection.
+    fn prepare_restored_schema(data: &Path, identity: &RecoveryIdentity) -> Result<Self> {
+        for _ in 0..2 {
+            let store = Self::open_recovery(data, identity, false)?;
+            {
+                let mut guard = store
+                    .inner
+                    .open
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("protected owner failed"))?;
+                let database = guard.take().context("protected storage is locked")?;
+                let Some(database) = database.prepare_schema()? else {
+                    continue;
+                };
+                *guard = Some(database);
+            }
+            return Ok(store);
+        }
+        bail!("restore schema changed repeatedly")
+    }
     /// Explicit managed-home selection. An unavailable/locked protected home
     /// is an error, never a reason to select the legacy plaintext backend.
     pub(crate) fn configured(data_dir: &Path) -> Result<Option<Self>> {

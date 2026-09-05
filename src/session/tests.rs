@@ -1454,6 +1454,7 @@ fn corrupt_compaction_digest_is_rejected_before_journal_append() {
             budget.retained_tail_tokens,
         );
         CompactionCheckpoint {
+            semantic: None,
             version: COMPACTION_CHECKPOINT_VERSION,
             id: CompactionId::new(),
             operation_id: OperationId::new(),

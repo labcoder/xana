@@ -716,6 +716,14 @@ impl TuiState {
             workspace_id: String::new(),
             active_host_root: None,
         };
+        state.history_start = snapshot.conversation_start.saturating_add(
+            snapshot
+                .conversation
+                .len()
+                .saturating_sub(state.messages.len()),
+        );
+        state.history_end = snapshot.conversation_total;
+        state.history_has_older = state.history_start > 0;
         if snapshot.conversation_truncated {
             state.push_activity("older conversation content is outside the bounded snapshot");
         }

@@ -29,6 +29,21 @@ impl TuiState {
             std::mem::swap(&mut self.messages, background);
         }
         match event {
+            AgentEvent::UserMessageCommitted {
+                operation_id,
+                message,
+            } => {
+                // Local submission already painted its optimistic echo. A
+                // passive observer has not, and receives the committed input.
+                if self.active_operation != Some(*operation_id) {
+                    let projected = message_projection(message);
+                    self.push_message(MessageKind::User, projected.text);
+                    if let Some(last) = self.messages.back_mut() {
+                        last.document = projected.document;
+                    }
+                    self.bound_tail_window();
+                }
+            }
             AgentEvent::OperationStateChanged {
                 operation_id,
                 state: OperationState::Running,
@@ -474,6 +489,18 @@ impl TuiState {
             self.messages.push_back(final_message);
         }
         self.bound_tail_window();
+    }
+
+    /// Local upgrade/startup disclosure, never a stored user turn or model input.
+    pub(in crate::tui) fn disclose_learning(&mut self) {
+        let notice = crate::memory::learning::DISCLOSURE;
+        if !self
+            .messages
+            .iter()
+            .any(|message| message.kind == MessageKind::System && message.text == notice)
+        {
+            self.push_message(MessageKind::System, notice);
+        }
     }
 
     pub(super) fn push_message(&mut self, kind: MessageKind, text: impl Into<String>) {

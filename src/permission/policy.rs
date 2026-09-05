@@ -29,6 +29,7 @@ pub(crate) struct PolicyExplanation {
 pub(crate) struct PermissionPolicy {
     default: PolicyDecision,
     rules: Vec<PermissionRule>,
+    workspace_reads_only: bool,
 }
 
 impl PermissionPolicy {
@@ -92,7 +93,18 @@ impl PermissionPolicy {
                 );
             }
         }
-        Ok(Self { default, rules })
+        Ok(Self {
+            default,
+            rules,
+            workspace_reads_only: false,
+        })
+    }
+
+    /// A persisted unattended read grant cannot authorize external files or an
+    /// effecting tool even when the user's ordinary interactive policy allows it.
+    pub(crate) fn workspace_reads_only(mut self) -> Self {
+        self.workspace_reads_only = true;
+        self
     }
 
     pub(super) fn evaluate(
@@ -120,6 +132,18 @@ impl PermissionPolicy {
     }
 
     pub(crate) fn explain(&self, request: &PermissionRequest) -> PolicyExplanation {
+        if self.workspace_reads_only
+            && (request.effect_class != EffectClass::Read
+                || !matches!(
+                    request.scope,
+                    PermissionScope::WorkspacePath { .. } | PermissionScope::BuiltInResource { .. }
+                ))
+        {
+            return PolicyExplanation {
+                matched_rule_ids: vec!["unattended-workspace-read-ceiling".into()],
+                winning_decision: PolicyDecision::Deny,
+            };
+        }
         let matching = self
             .rules
             .iter()

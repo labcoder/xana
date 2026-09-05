@@ -10,7 +10,7 @@ use std::fmt;
 use uuid::Uuid;
 use zeroize::Zeroize;
 
-pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 4;
+pub(crate) const LOCAL_HOST_PROTOCOL_VERSION: u16 = 6;
 pub(crate) const MAX_WIRE_BYTES: usize = 1024 * 1024;
 const MAX_CONVERSATIONS: usize = 512;
 const MAX_LABEL_BYTES: usize = 256;
@@ -343,6 +343,8 @@ impl HostSnapshotSeed {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct HostSnapshot {
+    #[serde(default)]
+    pub(crate) scheduled_jobs: Vec<crate::autonomy::host::JobSummary>,
     pub(crate) version: u16,
     pub(crate) sequence: u64,
     pub(crate) host_id: Uuid,
@@ -361,6 +363,7 @@ impl HostSnapshot {
     pub(crate) fn new(host_id: Uuid, host_generation: u64, seed: HostSnapshotSeed) -> Self {
         Self {
             version: LOCAL_HOST_PROTOCOL_VERSION,
+            scheduled_jobs: Vec::new(),
             sequence: 0,
             host_id,
             host_generation,
@@ -435,6 +438,9 @@ impl ManagedApprovalSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub(crate) enum HostEvent {
+    ScheduledJobsChanged {
+        jobs: Vec<crate::autonomy::host::JobSummary>,
+    },
     Frontend(ClientEvent),
     ObserverCommandRejected {
         command: String,

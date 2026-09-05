@@ -68,13 +68,13 @@ impl<'a> ProjectContinuationService<'a> {
             let ConversationRef::Native { session_id } = source else {
                 unreachable!("native owner is only returned for a retained native Conversation")
             };
-            let (_, restored) =
-                DurableSession::inspect_restored(self.paths.data_dir(), *session_id)
+            let source_root =
+                DurableSession::inspect_workspace_root(self.paths.data_dir(), *session_id)
                     .context("could not inspect native continuation source")?;
-            if restored.workspace_root.canonicalize()? != source_workspace.canonicalize()? {
+            if source_root.canonicalize()? != source_workspace.canonicalize()? {
                 bail!(
                     "source Conversation belongs to {}; requested source workspace resolved to {}",
-                    restored.workspace_root.display(),
+                    source_root.display(),
                     source_workspace.display()
                 );
             }

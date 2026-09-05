@@ -8,6 +8,59 @@ use crate::{
 use uuid::Uuid;
 
 #[test]
+fn learning_upgrade_disclosure_is_local_and_does_not_change_saved_cursors_or_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.history_start = 40;
+    state.history_end = 80;
+    state.composer.insert("my unsent draft").unwrap();
+    state.disclose_learning();
+    state.disclose_learning();
+    assert_eq!(
+        state.messages.len(),
+        1,
+        "a continuation does not duplicate the notice"
+    );
+    let notice = state.messages.front().unwrap();
+    assert_eq!(notice.kind, MessageKind::System);
+    assert!(notice.text.contains("explicitly authorized native helper"));
+    assert!(notice.text.contains("--learn off"));
+    assert_eq!((state.history_start, state.history_end), (40, 80));
+    assert!(state.pending_history_entries.is_empty());
+    assert!(state.followups.is_empty());
+    assert_eq!(state.composer.text, "my unsent draft");
+}
+
+#[test]
+fn committed_user_echo_deduplicates_local_input_but_renders_passive_input() {
+    let mut local = TuiState::starting(ComposerPreset::Submit);
+    local.messages.clear();
+    let operation_id = OperationId::new();
+    local.mark_submitted(operation_id, "same question".into());
+    local.apply_runtime(&AgentEvent::UserMessageCommitted {
+        operation_id,
+        message: Message::text(Role::User, "same question"),
+    });
+    assert_eq!(local.messages.len(), 1);
+    let mut observer = TuiState::starting(ComposerPreset::Submit);
+    observer.messages.clear();
+    observer.apply_runtime(&AgentEvent::UserMessageCommitted {
+        operation_id,
+        message: Message::text(Role::User, "same question"),
+    });
+    assert_eq!(observer.messages.len(), 1);
+    assert_eq!(observer.messages.front().unwrap().kind, MessageKind::User);
+    observer.apply_runtime(&AgentEvent::UserMessageCommitted {
+        operation_id: OperationId::new(),
+        message: Message::text(Role::User, "same question"),
+    });
+    assert_eq!(
+        observer.messages.len(),
+        2,
+        "identical content in another turn is not a duplicate"
+    );
+}
+
+#[test]
 fn storage_lock_can_stop_active_work_instead_of_waiting_for_idle() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.busy = true;

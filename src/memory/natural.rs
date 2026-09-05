@@ -15,6 +15,12 @@ pub(crate) enum NaturalIntent {
     Disable {
         id: Uuid,
     },
+    Forget {
+        id: Uuid,
+    },
+    Restore {
+        id: Uuid,
+    },
     Scope {
         id: Uuid,
         target: MemoryScope,
@@ -77,6 +83,23 @@ pub(crate) fn parse_natural(input: &str) -> Option<Result<NaturalIntent>> {
                 .map(|id| NaturalIntent::Disable { id })
                 .map_err(Into::into),
         );
+    }
+    for (prefix, restore) in [("forget memory ", false), ("restore memory ", true)] {
+        if lower.starts_with(prefix) {
+            return Some(
+                input[prefix.len()..]
+                    .trim()
+                    .parse()
+                    .map(|id| {
+                        if restore {
+                            NaturalIntent::Restore { id }
+                        } else {
+                            NaturalIntent::Forget { id }
+                        }
+                    })
+                    .map_err(Into::into),
+            );
+        }
     }
     if lower.starts_with("move memory ") {
         return Some((|| {
@@ -160,6 +183,23 @@ impl MemoryOwner {
                             MemoryEdit::Disable,
                         )?)?,
                         "Disabled for use; retained history is not erased. This is not robust forgetting.",
+                    )
+                }
+                NaturalIntent::Forget { id } => {
+                    let old = self.record(id)?;
+                    let record = self.revise(id, old.revision, MemoryEdit::Forget)?;
+                    (
+                        serde_json::json!({"id":record.id,"revision":record.revision,"state":record.state}),
+                        "Forgotten. Its source Conversation is excluded from automatic learning, recall and compaction; raw history and already disclosed provider context are separate. Start a fresh Conversation to avoid reusing old prompt context.",
+                    )
+                }
+                NaturalIntent::Restore { id } => {
+                    let old = self.record(id)?;
+                    let record =
+                        self.revise(id, old.revision, MemoryEdit::Restore { confirm: true })?;
+                    (
+                        serde_json::json!({"id":record.id,"revision":record.revision,"state":record.state}),
+                        "The explicitly selected fact is restored; old source history remains excluded from automatic processing.",
                     )
                 }
                 NaturalIntent::Scope { id, target } => {

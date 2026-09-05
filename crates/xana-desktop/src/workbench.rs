@@ -1,5 +1,7 @@
 //! Application-owned state and the first real Desktop runtime projection.
 
+mod history;
+
 use crate::{
     commands::{
         self, ArchiveSelectedConversation, ArchiveSelectedProject, BranchSelectedConversation,
@@ -95,6 +97,8 @@ pub(crate) struct Workbench {
     instance: DesktopInstanceLease,
     native_paths: DesktopNativePaths,
     projection: ConversationProjection,
+    history: history::HistoryView,
+    history_task: Option<Task<()>>,
     espejo: Entity<EspejoView>,
     navigation_snapshot: DesktopNavigationSnapshot,
     layout: DesktopWorkbenchLayout,
@@ -133,6 +137,7 @@ pub(crate) struct Workbench {
     settings_view: Entity<SettingsView>,
     accounting_view: Entity<crate::accounting_view::AccountingView>,
     memory_view: Entity<crate::memory_view::MemoryView>,
+    autonomy_view: Entity<crate::autonomy_view::AutonomyView>,
     palette_open: bool,
     shutdown_pending: bool,
     lock_after_shutdown: bool,
@@ -158,6 +163,11 @@ impl Workbench {
     ) -> Self {
         let artifact_reader = runtime.artifact_reader();
         let mut projection = ConversationProjection::from_snapshot(runtime.initial_snapshot());
+        let history = history::HistoryView::new(
+            runtime.initial_snapshot().session_id.clone(),
+            runtime.initial_snapshot().conversation_start,
+            runtime.initial_snapshot().conversation_total,
+        );
         let navigation_snapshot = runtime.initial_snapshot().navigation.clone();
         let layout = runtime.initial_snapshot().layout.layout.clone();
         let settings_snapshot = runtime.initial_snapshot().settings.clone();
@@ -251,6 +261,8 @@ impl Workbench {
             cx.new(|cx| crate::accounting_view::AccountingView::new(control.clone(), window, cx));
         let memory_view =
             cx.new(|cx| crate::memory_view::MemoryView::new(control.clone(), window, cx));
+        let autonomy_view =
+            cx.new(|cx| crate::autonomy_view::AutonomyView::new(control.clone(), window, cx));
         if navigation == DesktopNavigationTarget::Diagnostics {
             settings_view.update(cx, |settings, cx| {
                 settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
@@ -361,6 +373,8 @@ impl Workbench {
             instance,
             native_paths,
             projection,
+            history,
+            history_task: None,
             espejo,
             navigation_snapshot,
             layout,
@@ -392,6 +406,7 @@ impl Workbench {
             settings_view,
             accounting_view,
             memory_view,
+            autonomy_view,
             palette_open: false,
             shutdown_pending: false,
             lock_after_shutdown: false,
@@ -562,6 +577,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.history.is_browsing() {
+            return;
+        }
         match event {
             ChatEvent::Prompt(event) => self.handle_prompt_event(event, window, cx),
             ChatEvent::SuggestionSelected { suggestion_id }
@@ -659,6 +677,10 @@ impl Workbench {
                 }
             }
             PromptBarEvent::Submit { submission, .. } => {
+                if self.history.is_browsing() {
+                    self.history_task = None;
+                    self.history.live();
+                }
                 let text = submission.text().to_string();
                 let attachments = self.composer.take_attachments();
                 self.composer.clear_draft();
@@ -793,6 +815,10 @@ impl Workbench {
     }
 
     fn submit_composer_submission(&mut self, submission: QueuedSubmission) {
+        if self.history.is_browsing() {
+            self.history_task = None;
+            self.history.live();
+        }
         let conversation = self.composer.active_key().to_owned();
         let text = submission.text.clone();
         match self
@@ -1638,6 +1664,12 @@ impl Workbench {
             self.notify_for_update(&update, window, cx);
             match update {
                 DesktopUpdate::Snapshot(snapshot) => {
+                    self.history_task = None;
+                    self.history.reset(
+                        snapshot.session_id.clone(),
+                        snapshot.conversation_start,
+                        snapshot.conversation_total,
+                    );
                     self.espejo.update(cx, |espejo, cx| {
                         espejo.replace_snapshot(&snapshot, cx);
                     });
@@ -1705,6 +1737,10 @@ impl Workbench {
                     }
                 }
                 DesktopUpdate::Observation(observation) => {
+                    let history_start = observation.conversation_start;
+                    let history_total = observation.conversation_total;
+                    let history_cleared =
+                        matches!(&observation.event, DesktopEvent::ConversationCleared);
                     let terminal = match &observation.event {
                         DesktopEvent::OperationState {
                             operation_id,
@@ -1717,9 +1753,14 @@ impl Workbench {
                         }
                         _ => None,
                     };
-                    if !self.projection.apply(observation)
-                        && let Err(error) = self.runtime.request_snapshot()
-                    {
+                    if self.projection.apply(observation) {
+                        if history_cleared {
+                            self.history_task = None;
+                            self.history.clear(history_start, history_total);
+                        } else {
+                            self.history.observe(history_start, history_total);
+                        }
+                    } else if let Err(error) = self.runtime.request_snapshot() {
                         self.projection.fail(error.message);
                     }
                     if let Some((operation_id, DesktopOperationState::Completed)) = terminal {
@@ -1955,7 +1996,10 @@ impl Workbench {
     }
 
     fn sync_components(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let messages = self.projection.messages();
+        let messages = self
+            .history
+            .messages()
+            .unwrap_or_else(|| self.projection.messages());
         let progress = if let Some(failure) = self.projection.failure() {
             ProgressState::Failed(failure.to_owned().into())
         } else if self.projection.is_running() {
@@ -2345,6 +2389,7 @@ impl Workbench {
             DesktopPanelId::Artifacts,
             DesktopPanelId::Usage,
             DesktopPanelId::Memory,
+            DesktopPanelId::Schedules,
             DesktopPanelId::WorkingSet,
         ];
         h_flex()
@@ -2589,7 +2634,7 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         match panel {
-            DesktopPanelId::Conversation => self.chat.clone().into_any_element(),
+            DesktopPanelId::Conversation => self.render_history(cx),
             DesktopPanelId::Activity => self.render_activity_panel(window, cx),
             DesktopPanelId::Message => self.render_message_panel(window, cx),
             DesktopPanelId::Summary => self.placeholder_panel(
@@ -2605,6 +2650,7 @@ impl Workbench {
             DesktopPanelId::Artifacts => self.render_artifacts_panel(cx),
             DesktopPanelId::Usage => self.accounting_view.clone().into_any_element(),
             DesktopPanelId::Memory => self.memory_view.clone().into_any_element(),
+            DesktopPanelId::Schedules => self.autonomy_view.clone().into_any_element(),
             DesktopPanelId::WorkingSet => self.placeholder_panel(
                 "Working Set",
                 "Pin trusted items here without changing their lifecycle.",
@@ -2735,6 +2781,23 @@ impl Workbench {
                     ),
             )
             .when_some(reasoning_controls, |panel, controls| panel.child(controls))
+            .child(
+                v_flex().gap(tokens.spacing.xs)
+                    .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                        "Automatic personal learning is on unless Memory controls opt out. It requires an unlocked protected home and an explicitly authorized native helper; otherwise eligible inputs stay pending. Memory use is separate. No hidden Codex helper or ambient monitoring."
+                    ))
+                    .child(Button::new("composer-memory-controls").compact().label("Memory controls")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.navigation = DesktopNavigationTarget::Conversation;
+                            if !this.layout.panels().contains(&DesktopPanelId::Memory) {
+                                this.reopen_layout_panel(DesktopPanelId::Memory, window, cx);
+                            }
+                            this.activate_layout_panel(DesktopPanelId::Memory, window, cx);
+                        }))),
+            )
+            .when(self.history.is_browsing(), |panel| panel.child(
+                div().text_sm().child("Viewing saved history. Sending a message returns to Live in this Conversation.")
+            ))
             .child(div().w_full().flex_none().child(self.prompt.clone()))
             .into_any_element()
     }
@@ -3521,6 +3584,13 @@ impl Workbench {
                 }
                 self.activate_layout_panel(DesktopPanelId::Memory, window, cx);
             }
+            PaletteSelection::Navigate(PaletteDestination::Schedules) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                if !self.layout.panels().contains(&DesktopPanelId::Schedules) {
+                    self.reopen_layout_panel(DesktopPanelId::Schedules, window, cx);
+                }
+                self.activate_layout_panel(DesktopPanelId::Schedules, window, cx);
+            }
             PaletteSelection::Navigate(PaletteDestination::Settings(route)) => {
                 self.open_settings(window, cx);
                 self.settings_view.update(cx, |settings, cx| {
@@ -3754,6 +3824,15 @@ impl Render for Workbench {
         div()
             .id("xana-workbench")
             .key_context(commands::WORKBENCH_KEY_CONTEXT)
+            .on_action(cx.listener(|this, _: &commands::OlderHistory, window, cx| {
+                this.older_history(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &commands::NewerHistory, window, cx| {
+                this.newer_history(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &commands::LiveHistory, window, cx| {
+                this.live_history(window, cx)
+            }))
             .relative()
             .flex()
             .flex_col()

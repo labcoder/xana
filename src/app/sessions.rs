@@ -29,6 +29,9 @@ pub(super) fn run_command<W: Write>(
     output: &mut W,
 ) -> Result<()> {
     match command {
+        SessionCommand::EvaluateCompaction { .. } => {
+            anyhow::bail!("semantic evaluation requires the asynchronous application route")
+        }
         SessionCommand::New => {
             anyhow::bail!(
                 "session new must be routed through the interactive application lifecycle"
@@ -200,12 +203,18 @@ pub(super) fn run_command<W: Write>(
             writeln!(
                 output,
                 "context versions: {}",
-                summary.context_versions.len()
+                summary.context_version_count
             )?;
             for (context_id, version) in summary.context_versions {
                 writeln!(output, "  {context_id} v{version}")?;
             }
-            writeln!(output, "children: {}", summary.children.len())?;
+            writeln!(output, "children: {}", summary.child_count)?;
+            if summary.bounded_details {
+                writeln!(
+                    output,
+                    "  Details are a bounded execution preview; older evidence remains available through exact object/history inspection."
+                )?;
+            }
             for child in summary.children {
                 let attribution = &child.handle.admission.attribution;
                 writeln!(
@@ -360,6 +369,142 @@ pub(super) fn run_command<W: Write>(
     }
 }
 
+pub(super) fn semantic_policy(
+    paths: &XanaPaths,
+    connection: &crate::config::ConnectionConfig,
+    model: &str,
+) -> Result<Option<crate::session::compaction::semantic::HelperPolicy>> {
+    let Some(store) = crate::storage::ProtectedStore::configured(paths.data_dir())? else {
+        return Ok(None);
+    };
+    match crate::session::compaction::semantic::HelperPolicy::load(
+        &store,
+        &crate::session::compaction::semantic::route_digest(connection, model),
+    ) {
+        Ok(policy) => Ok(policy.map(|policy| {
+            policy.with_route_validator(live_semantic_route(
+                paths.config_file().to_path_buf(),
+                connection.id.clone(),
+                model.to_owned(),
+            ))
+        })),
+        Err(_) => {
+            eprintln!(
+                "xana: semantic helper approval is unavailable or stale; using deterministic compaction until the exact route is re-evaluated"
+            );
+            Ok(None)
+        }
+    }
+}
+
+fn live_semantic_route(
+    path: std::path::PathBuf,
+    connection: String,
+    model: String,
+) -> std::sync::Arc<crate::session::compaction::semantic::RouteValidator> {
+    std::sync::Arc::new(move |expected| {
+        let registry = crate::config::XanaConfig::load_registry_from(&path)?;
+        let current = registry
+            .connections
+            .get(&connection)
+            .context("semantic helper connection is no longer configured")?;
+        anyhow::ensure!(
+            current.kind != crate::config::ProviderKind::Codex
+                && crate::session::compaction::semantic::route_digest(current, &model) == expected,
+            "semantic helper route changed; re-evaluate and authorize the current recipient"
+        );
+        Ok(())
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // One CLI command with explicit disclosure/activation choices.
+pub(super) async fn evaluate_compaction<W: Write>(
+    paths: &XanaPaths,
+    connection: &str,
+    model: &str,
+    yes: bool,
+    enable: bool,
+    disable: bool,
+    output: &mut W,
+) -> Result<()> {
+    use crate::session::compaction::{evaluation, semantic};
+    anyhow::ensure!(
+        yes,
+        "pass --yes to authorize synthetic helper evaluation or approval revocation"
+    );
+    let registry = crate::config::XanaConfig::load_registry_from(paths.config_file())?;
+    let connection = registry
+        .connections
+        .get(connection)
+        .context("unknown compaction helper connection")?;
+    anyhow::ensure!(
+        connection.kind != crate::config::ProviderKind::Codex,
+        "Codex owns managed compaction; select a native helper connection"
+    );
+    anyhow::ensure!(
+        !model.trim().is_empty() && model.len() <= 256 && !model.chars().any(char::is_control),
+        "invalid helper model"
+    );
+    let store = crate::storage::ProtectedStore::configured(paths.data_dir())?
+        .context("semantic evaluation requires protected storage and durable accounting")?;
+    let digest = semantic::route_digest(connection, model);
+    if disable {
+        semantic::HelperPolicy::revoke(&store, &digest)?;
+        writeln!(
+            output,
+            "Semantic helper disabled; native compaction uses the deterministic baseline."
+        )?;
+        return Ok(());
+    }
+    let (provider, _) = crate::orchestration::compose_native_provider(
+        connection,
+        model,
+        crate::artifact::ArtifactStore::protected(store.clone()),
+        true,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let budget = crate::usage_budget::UsageBudget::new(
+        store.clone(),
+        uuid::Uuid::new_v4().to_string(),
+        "semantic-evaluation".into(),
+        semantic::OUTPUT_RESERVE,
+    )
+    .with_facts(crate::usage_budget::DispatchFacts {
+        connection: Some(connection.id.clone()),
+        model: Some(model.into()),
+        owner: Some("semantic-evaluation".into()),
+        ..Default::default()
+    });
+    let cancellation = tokio_util::sync::CancellationToken::new();
+    let report = tokio::select! {
+        result = evaluation::evaluate(provider.as_ref(), &budget, digest.clone(), &cancellation) => result?,
+        _ = tokio::signal::ctrl_c() => {
+            cancellation.cancel();
+            anyhow::bail!("semantic evaluation cancelled; no helper approval changed; unfinished usage remains reserved");
+        }
+    };
+    store.set_document(
+        &format!("compaction/evaluations/{digest}"),
+        &serde_json::to_vec(&report)?,
+        64 * 1024,
+    )?;
+    if enable {
+        semantic::HelperPolicy::approve(&store, digest, &report)?;
+    }
+    serde_json::to_writer_pretty(&mut *output, &report)?;
+    writeln!(
+        output,
+        "\nPromotion gate: {}. Synthetic measured cases are not universal semantic accuracy; review the recorded route and failures. {}",
+        if report.passes() { "PASS" } else { "FAIL" },
+        if enable {
+            "Exact helper enabled for future native launches."
+        } else {
+            "No runtime policy changed; --enable is separate explicit authorization."
+        }
+    )?;
+    Ok(())
+}
+
 fn resolve_conversation(
     conversations: &[crate::workspace_host::ConversationProjection],
     selector: Option<&str>,
@@ -458,4 +603,27 @@ fn message_text(message: &crate::message::Message) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+#[cfg(test)]
+mod semantic_route_tests {
+    use super::*;
+    #[test]
+    fn live_semantic_guard_rechecks_endpoint_and_removed_connection() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("config.toml");
+        let input = "version=1\ndefault_profile='default'\npermission_mode='ask'\n[providers.local]\nkind='openai_compat'\nbase_url='http://localhost:11434/v1'\n[profiles.default]\nprovider='local'\nmodel='synthetic'\n";
+        std::fs::write(&path, input).unwrap();
+        let registry = crate::config::XanaConfig::load_registry_from(&path).unwrap();
+        let digest = crate::session::compaction::semantic::route_digest(
+            &registry.connections["local"],
+            "synthetic",
+        );
+        let validate = live_semantic_route(path.clone(), "local".into(), "synthetic".into());
+        validate(&digest).unwrap();
+        std::fs::write(&path, input.replace("11434", "11435")).unwrap();
+        assert!(validate(&digest).is_err());
+        std::fs::write(&path, input.replace("local", "renamed")).unwrap();
+        assert!(validate(&digest).is_err());
+    }
 }

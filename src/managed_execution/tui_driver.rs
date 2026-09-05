@@ -292,6 +292,7 @@ async fn run_actor(
     active: Arc<Mutex<Option<ActiveTurn>>>,
 ) -> Result<(), CodexError> {
     let mut selection = config.selection.clone();
+    let mut memory_maintenance = None;
     while let Some(command) = commands.recv().await {
         match command {
             ManagedTuiCommand::Submit {
@@ -339,7 +340,10 @@ async fn run_actor(
                     continue;
                 }
                 let lease = if let Some(workspace_host) = workspace_host.as_ref() {
-                    match workspace_host.acquire_root(conversation.clone()) {
+                    match workspace_host
+                        .acquire_foreground_root(conversation.clone())
+                        .await
+                    {
                         Ok(lease) => Some(lease),
                         Err(error) => {
                             send_event(
@@ -419,6 +423,44 @@ async fn run_actor(
                     thread_id: thread_id.clone(),
                 };
                 server.set_usage_identity(thread.conversation_id().to_string(), operation_id);
+                let _foreground = match super::memory_context::foreground(config.memory.as_ref()) {
+                    Ok(lease) => lease,
+                    Err(error) => {
+                        clear_active(&active, operation_id);
+                        send_event(
+                            &events,
+                            ManagedTuiEvent::TurnFinished {
+                                operation_id,
+                                error: Some(error.to_string()),
+                            },
+                        )
+                        .await?;
+                        drop(lease);
+                        continue;
+                    }
+                };
+                let input = match super::memory_context::prepare(
+                    config.memory.as_ref(),
+                    thread.conversation_id(),
+                    &input,
+                )
+                .await
+                {
+                    Ok(text) => text,
+                    Err(error) => {
+                        clear_active(&active, operation_id);
+                        send_event(
+                            &events,
+                            ManagedTuiEvent::TurnFinished {
+                                operation_id,
+                                error: Some(error),
+                            },
+                        )
+                        .await?;
+                        drop(lease);
+                        continue;
+                    }
+                };
                 let result = server
                     .run_turn_cancellable(
                         &thread_id,
@@ -436,6 +478,8 @@ async fn run_actor(
                     )
                     .await;
                 clear_active(&active, operation_id);
+                drop(_foreground);
+                super::memory_context::maintain(config.memory.as_ref(), &mut memory_maintenance);
                 send_event(
                     &events,
                     ManagedTuiEvent::TurnFinished {

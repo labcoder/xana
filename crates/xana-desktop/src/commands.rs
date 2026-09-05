@@ -59,6 +59,9 @@ actions!(
         MoveSelectedConversation,
         UngroupSelectedConversation,
         BranchSelectedConversation,
+        OlderHistory,
+        NewerHistory,
+        LiveHistory,
     ]
 );
 
@@ -133,6 +136,7 @@ pub(crate) enum PaletteDestination {
     Activity,
     Usage,
     Memory,
+    Schedules,
     Settings(SettingsRoute),
 }
 
@@ -150,6 +154,9 @@ enum CommandExposure {
 
 pub(crate) fn install(cx: &mut App) {
     cx.bind_keys([
+        KeyBinding::new("cmd-alt-up", OlderHistory, Some(WORKBENCH_KEY_CONTEXT)),
+        KeyBinding::new("cmd-alt-down", NewerHistory, Some(WORKBENCH_KEY_CONTEXT)),
+        KeyBinding::new("cmd-alt-end", LiveHistory, Some(WORKBENCH_KEY_CONTEXT)),
         KeyBinding::new(
             "cmd-shift-p",
             ShowCommandPalette,
@@ -433,6 +440,7 @@ fn command_exposure(stable_id: &str) -> Option<CommandExposure> {
         "usage.inspect.v1" => Select(Navigate(Activity)),
         "budget.manage.v1" | "usage.ledger.v1" => Select(Navigate(PaletteDestination::Usage)),
         "memory.manage.v1" => Select(Navigate(PaletteDestination::Memory)),
+        "autonomy.manage.v1" => Select(Navigate(PaletteDestination::Schedules)),
         "run.steer.v1" => Contextual("Use Send now or Queue on the active Run's composer."),
         "run.stop.v1" | "run.resume.v1" => {
             Contextual("Use the exact active, interrupted, or suspended Run card.")
