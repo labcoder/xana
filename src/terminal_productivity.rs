@@ -48,6 +48,7 @@ pub(crate) struct HistoryLoad {
 
 #[derive(Debug)]
 pub(crate) struct ComposerHistoryStore {
+    protected: Option<crate::storage::ProtectedStore>,
     path: PathBuf,
     workspace_id: String,
     entries: VecDeque<String>,
@@ -62,6 +63,7 @@ struct HistoryDocument {
 
 impl ComposerHistoryStore {
     pub(crate) fn open(paths: &XanaPaths, workspace: &Path) -> Result<(Self, HistoryLoad)> {
+        let protected = crate::storage::ProtectedStore::configured(paths.data_dir())?;
         let identity = WorkspaceIdentity::resolve(workspace)
             .with_context(|| format!("could not identify workspace {}", workspace.display()))?;
         let workspace_id = identity.collision_key().to_owned();
@@ -70,7 +72,28 @@ impl ComposerHistoryStore {
             .join("frontend")
             .join("composer-history")
             .join(format!("{workspace_id}.json"));
-        let (entries, warning) = match bounded_file::read_to_string(&path, MAX_HISTORY_FILE_BYTES) {
+        let input = if let Some(store) = &protected {
+            store
+                .document(
+                    &format!("frontend/composer-history/{workspace_id}.json"),
+                    MAX_HISTORY_FILE_BYTES,
+                )?
+                .map(|bytes| {
+                    String::from_utf8(bytes).map_err(|error| bounded_file::BoundedReadError::Io {
+                        path: path.clone(),
+                        source: std::io::Error::new(std::io::ErrorKind::InvalidData, error),
+                    })
+                })
+                .unwrap_or_else(|| {
+                    Err(bounded_file::BoundedReadError::Io {
+                        path: path.clone(),
+                        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+                    })
+                })
+        } else {
+            bounded_file::read_to_string(&path, MAX_HISTORY_FILE_BYTES)
+        };
+        let (entries, warning) = match input {
             Ok(input) => match decode_history(&input, &workspace_id) {
                 Ok(entries) => (entries, None),
                 Err(error) => (
@@ -100,6 +123,7 @@ impl ComposerHistoryStore {
         };
         Ok((
             Self {
+                protected,
                 path,
                 workspace_id,
                 entries,
@@ -136,6 +160,13 @@ impl ComposerHistoryStore {
         })?;
         if encoded.len() > MAX_HISTORY_FILE_BYTES {
             bail!("composer history exceeded its encoded storage bound");
+        }
+        if let Some(store) = &self.protected {
+            return store.set_document(
+                &format!("frontend/composer-history/{}.json", self.workspace_id),
+                &encoded,
+                MAX_HISTORY_FILE_BYTES,
+            );
         }
         let mut file = atomic_write_file::AtomicWriteFile::open(&self.path)
             .with_context(|| format!("could not stage {}", self.path.display()))?;

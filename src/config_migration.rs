@@ -380,7 +380,7 @@ mod tests {
             reasoning_effort: None,
         })
         .unwrap()
-        .replacen("version = 4", "# keep this comment\nversion = 3", 1)
+        .replacen("version = 5", "# keep this comment\nversion = 3", 1)
         .into_bytes();
         fs::write(paths.config_file(), &current).unwrap();
         (directory, paths, current)
@@ -397,7 +397,7 @@ mod tests {
         let outcome = plan.apply(&paths).unwrap();
 
         let migrated = fs::read_to_string(paths.config_file()).unwrap();
-        assert!(migrated.contains("# keep this comment\nversion = 4"));
+        assert!(migrated.contains("# keep this comment\nversion = 5"));
         assert_eq!(fs::read(&outcome.backup_path).unwrap(), original);
         assert_eq!(outcome.initialized_private_records, 7);
         assert!(XanaConfig::parse(&migrated).is_ok());

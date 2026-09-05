@@ -30,7 +30,7 @@ impl ContentHash {
         &self.0
     }
 
-    fn parse(value: String) -> Result<Self, &'static str> {
+    pub(crate) fn parse(value: String) -> Result<Self, &'static str> {
         if value.len() != HASH_HEX_LEN
             || !value
                 .bytes()
@@ -68,6 +68,7 @@ pub(crate) struct ArtifactRecord {
 #[derive(Debug, Clone)]
 pub(crate) struct ArtifactStore {
     root: PathBuf,
+    protected: Option<crate::storage::ProtectedStore>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,8 +88,27 @@ pub(crate) struct ArtifactRecoveryReport {
 }
 
 impl ArtifactStore {
+    pub(crate) fn open(data_dir: &Path) -> Result<Self, ArtifactError> {
+        match crate::storage::ProtectedStore::configured(data_dir)
+            .map_err(protected_artifact_error)?
+        {
+            Some(home) => Ok(Self::protected(home)),
+            None => Ok(Self::new(data_dir.join("artifacts"))),
+        }
+    }
+
     pub(crate) fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            protected: None,
+        }
+    }
+
+    pub(crate) fn protected(home: crate::storage::ProtectedStore) -> Self {
+        Self {
+            root: home.data_dir().join("artifacts"),
+            protected: Some(home),
+        }
     }
 
     pub(crate) fn put(
@@ -126,6 +146,24 @@ impl ArtifactStore {
         }
         if media_type.trim().is_empty() {
             return Err(ArtifactError::InvalidMediaType);
+        }
+
+        if let Some(home) = &self.protected {
+            let (content_hash, byte_len, created) = home
+                .put_artifact(&mut &bytes[..], max_bytes, |_| Ok(()))
+                .map_err(protected_artifact_error)?;
+            return Ok((
+                ArtifactRecord {
+                    reference: ArtifactRef {
+                        id: ArtifactId::new(),
+                        content_hash,
+                    },
+                    media_type: media_type.to_owned(),
+                    byte_len,
+                    owner,
+                },
+                created,
+            ));
         }
 
         fs::create_dir_all(&self.root).map_err(|source| ArtifactError::Io {
@@ -212,6 +250,31 @@ impl ArtifactStore {
             return Err(ArtifactError::ChangedDuringRead {
                 path: source_path.to_owned(),
             });
+        }
+
+        if let Some(home) = &self.protected {
+            let (content_hash, byte_len, created) = home
+                .put_artifact(&mut input, max_bytes, |actual| {
+                    anyhow::ensure!(
+                        actual == declared_len
+                            && artifact_path_identity(source_path)? == source_identity,
+                        "artifact source changed during read"
+                    );
+                    Ok(())
+                })
+                .map_err(protected_artifact_error)?;
+            return Ok((
+                ArtifactRecord {
+                    reference: ArtifactRef {
+                        id: ArtifactId::new(),
+                        content_hash,
+                    },
+                    media_type: media_type.to_owned(),
+                    byte_len,
+                    owner,
+                },
+                created,
+            ));
         }
 
         fs::create_dir_all(&self.root).map_err(|source| ArtifactError::Io {
@@ -324,6 +387,16 @@ impl ArtifactStore {
                 limit: max_bytes,
             });
         }
+        if let Some(home) = &self.protected {
+            return home
+                .read_artifact(
+                    &artifact.reference.content_hash,
+                    artifact.byte_len,
+                    0,
+                    declared,
+                )
+                .map_err(protected_artifact_error);
+        }
         let path = self.path_for(&artifact.reference.content_hash);
         let mut file = fs::File::open(&path).map_err(|source| ArtifactError::Io {
             path: path.clone(),
@@ -377,6 +450,22 @@ impl ArtifactStore {
             return Err(ArtifactError::InvalidRange {
                 offset,
                 length: artifact.byte_len,
+            });
+        }
+        if let Some(home) = &self.protected {
+            let bytes = home
+                .read_artifact(
+                    &artifact.reference.content_hash,
+                    artifact.byte_len,
+                    offset,
+                    max_range_bytes,
+                )
+                .map_err(protected_artifact_error)?;
+            return Ok(VerifiedArtifactRange {
+                offset,
+                total_byte_len: artifact.byte_len,
+                truncated_after: offset.saturating_add(bytes.len() as u64) < artifact.byte_len,
+                bytes,
             });
         }
         let path = self.path_for(&artifact.reference.content_hash);
@@ -469,6 +558,12 @@ impl ArtifactStore {
                 limit: max_bytes,
             });
         }
+        if let Some(home) = &self.protected {
+            return home
+                .read_artifact(&reference.content_hash, declared_len, 0, 0)
+                .map(|_| ())
+                .map_err(protected_artifact_error);
+        }
         let path = self.path_for(&reference.content_hash);
         let mut file = fs::File::open(&path).map_err(|source| ArtifactError::Io {
             path: path.clone(),
@@ -513,6 +608,9 @@ impl ArtifactStore {
         artifact: &ArtifactRecord,
         max_bytes: usize,
     ) -> Result<PathBuf, ArtifactError> {
+        if self.protected.is_some() {
+            return Err(ArtifactError::Protected("encrypted artifacts have no plaintext file path; explicitly export to a user-selected destination first".into()));
+        }
         self.verify_reference(&artifact.reference, artifact.byte_len, max_bytes)?;
         Ok(self.path_for(&artifact.reference.content_hash))
     }
@@ -545,6 +643,32 @@ impl ArtifactStore {
             });
         }
 
+        if let Some(home) = &self.protected {
+            let mut output =
+                fs::File::create_new(destination).map_err(|source| ArtifactError::Io {
+                    path: destination.to_owned(),
+                    source,
+                })?;
+            let identity = artifact_file_identity(&output, destination)?;
+            let result = home
+                .export_artifact(
+                    &artifact.reference.content_hash,
+                    artifact.byte_len,
+                    &mut output,
+                )
+                .and_then(|()| Ok(output.sync_all()?))
+                .map_err(protected_artifact_error);
+            drop(output);
+            if artifact_path_identity(destination)? != identity {
+                return Err(ArtifactError::ChangedDuringRead {
+                    path: destination.to_owned(),
+                });
+            }
+            if result.is_err() {
+                let _ = fs::remove_file(destination);
+            }
+            return result;
+        }
         let source_path = self.path_for(&artifact.reference.content_hash);
         let source_metadata =
             fs::symlink_metadata(&source_path).map_err(|source| ArtifactError::Io {
@@ -831,8 +955,13 @@ impl ArtifactStore {
     }
 }
 
+fn protected_artifact_error(error: anyhow::Error) -> ArtifactError {
+    ArtifactError::Protected(format!("{error:#}"))
+}
+
 #[derive(Debug)]
 pub(crate) enum ArtifactError {
+    Protected(String),
     InvalidMediaType,
     InvalidLimit { value: usize, ceiling: usize },
     TooLarge { actual: usize, limit: usize },
@@ -848,6 +977,7 @@ pub(crate) enum ArtifactError {
 impl fmt::Display for ArtifactError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Protected(reason) => write!(formatter, "protected artifact storage: {reason}"),
             Self::InvalidMediaType => write!(formatter, "artifact media type must not be blank"),
             Self::InvalidLimit { value, ceiling } => write!(
                 formatter,
@@ -899,7 +1029,8 @@ impl Error for ArtifactError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
-            Self::InvalidMediaType
+            Self::Protected(_)
+            | Self::InvalidMediaType
             | Self::InvalidLimit { .. }
             | Self::TooLarge { .. }
             | Self::InvalidRange { .. }

@@ -33,7 +33,7 @@ pub(crate) use interoperable::{
     ServiceConnectionDeclaration, ServiceRouteDeclaration,
 };
 
-pub(crate) const CONFIG_VERSION: u32 = 4;
+pub(crate) const CONFIG_VERSION: u32 = 5;
 const MIN_CONFIG_VERSION: u32 = 1;
 const DEFAULT_MAX_TOOL_ROUNDS: usize = 8;
 const MAX_MAX_TOOL_ROUNDS: usize = 64;

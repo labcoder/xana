@@ -36,7 +36,7 @@ pub(crate) async fn run(
         routes,
         egress,
         permission,
-        ArtifactStore::new(paths.data_dir().join("artifacts")),
+        ArtifactStore::open(paths.data_dir())?,
         owner,
     )
     .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);
@@ -115,7 +115,7 @@ pub(crate) async fn run(
             let workspace = std::env::current_dir()
                 .context("could not resolve the current workspace for image ingestion")?;
             let ingestor = ImageIngestor::new(
-                ArtifactStore::new(paths.data_dir().join("artifacts")),
+                ArtifactStore::open(paths.data_dir())?,
                 ImageLimits::default(),
             );
             let mut total = 0_u64;

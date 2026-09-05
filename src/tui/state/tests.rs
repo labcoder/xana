@@ -8,6 +8,20 @@ use crate::{
 use uuid::Uuid;
 
 #[test]
+fn storage_lock_can_stop_active_work_instead_of_waiting_for_idle() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = true;
+    state.composer.insert("/storage lock").unwrap();
+    let effect = state.update_input(InputAction::Submit);
+    assert!(
+        matches!(effect, UpdateEffect::ControlCommand { family, arguments } if family == "storage" && arguments == "lock")
+    );
+    assert!(state.composer.text.is_empty());
+    state.composer.insert("/storage verify").unwrap();
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+}
+
+#[test]
 fn paging_older_history_keeps_the_requested_page_instead_of_evicting_it() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.messages.clear();

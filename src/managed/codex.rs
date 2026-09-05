@@ -34,6 +34,9 @@ const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TURN_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const INTERRUPT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FRAME_BYTES: usize = 2 * 1024 * 1024;
+// Up to 20 MiB of accepted image bytes become ~27 MiB of base64. Keep vendor
+// replies bounded independently; never decrypt attachments into temporary files.
+const MAX_OUTGOING_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_VERSION_OUTPUT_BYTES: usize = 64 * 1024;
 const MAX_EVENT_TEXT_BYTES: usize = 64 * 1024;
 const MAX_TURN_TEXT_BYTES: usize = 2 * 1024 * 1024;
@@ -84,10 +87,20 @@ pub(crate) enum LoginCancellation {
     NotFound,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ManagedTurnInput {
     pub(crate) text: String,
-    pub(crate) local_images: Vec<PathBuf>,
+    pub(crate) image_urls: Vec<String>,
+}
+
+impl std::fmt::Debug for ManagedTurnInput {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output
+            .debug_struct("ManagedTurnInput")
+            .field("text_bytes", &self.text.len())
+            .field("image_count", &self.image_urls.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -362,7 +375,7 @@ where
     async fn send(&mut self, value: &Value) -> Result<(), CodexError> {
         let mut encoded =
             serde_json::to_vec(value).map_err(|error| CodexError::Protocol(error.to_string()))?;
-        if encoded.len() > MAX_FRAME_BYTES {
+        if encoded.len() > MAX_OUTGOING_FRAME_BYTES {
             return Err(CodexError::FrameTooLarge);
         }
         encoded.push(b'\n');
@@ -1200,9 +1213,9 @@ impl CodexAppServer {
         let mut user_input = vec![json!({"type": "text", "text": input.text})];
         user_input.extend(
             input
-                .local_images
+                .image_urls
                 .into_iter()
-                .map(|path| json!({"type": "localImage", "path": path})),
+                .map(|url| json!({"type": "image", "url": url})),
         );
         let params = turn_start_params(thread_id, model, options, user_input);
         let result = match cancellation {

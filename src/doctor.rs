@@ -151,6 +151,7 @@ pub(crate) async fn inspect(
     probe_connections: bool,
 ) -> DoctorReport {
     let mut report = DoctorReport::new();
+    inspect_storage(paths, &mut report);
     inspect_configuration(paths, &mut report);
     inspect_owned_paths(paths, &mut report);
     inspect_diagnostics(paths, &mut report);
@@ -166,8 +167,71 @@ pub(crate) async fn inspect(
     report
 }
 
+fn inspect_storage(paths: &XanaPaths, report: &mut DoctorReport) {
+    use crate::storage::{ProtectedStore, StorageStatus};
+    let (severity, summary, evidence, action): (Severity, &str, String, Option<String>) =
+        match ProtectedStore::status(paths.data_dir()) {
+            Ok(StorageStatus::Legacy) => (
+                Severity::Info,
+                "managed storage is legacy plaintext",
+                "no protected generation is active".into(),
+                Some("xana storage status".into()),
+            ),
+            Ok(StorageStatus::Protected { locked: true, .. }) => (
+                Severity::Info,
+                "managed storage is explicitly locked",
+                "protected operations remain paused".into(),
+                Some("xana storage unlock".into()),
+            ),
+            Ok(StorageStatus::Protected { .. }) => match ProtectedStore::configured(
+                paths.data_dir(),
+            )
+            .and_then(|store| {
+                store.ok_or_else(|| anyhow::anyhow!("store changed during inspection"))
+            })
+            .and_then(|store| store.verify())
+            {
+                Ok(()) => (
+                    Severity::Ok,
+                    "protected storage is available",
+                    "key and encrypted database integrity verified".into(),
+                    None,
+                ),
+                Err(_) => (
+                    Severity::Error,
+                    "protected storage cannot be unlocked or verified",
+                    "no plaintext fallback was attempted".into(),
+                    Some(
+                        "xana storage verify; use independent recovery if custody is unavailable"
+                            .into(),
+                    ),
+                ),
+            },
+            Err(_) => (
+                Severity::Error,
+                "protected storage activation or format is invalid",
+                "do not recreate plaintext data over this home".into(),
+                Some("xana storage status".into()),
+            ),
+        };
+    report.push(Finding::new(
+        "storage.protected",
+        severity,
+        summary,
+        evidence,
+        action,
+    ));
+}
+
+fn protected_home(paths: &XanaPaths) -> bool {
+    matches!(
+        crate::storage::ProtectedStore::status(paths.data_dir()),
+        Ok(crate::storage::StorageStatus::Protected { .. })
+    )
+}
+
 fn inspect_projects(paths: &XanaPaths, report: &mut DoctorReport) {
-    if !paths.projects_file().exists() {
+    if !paths.projects_file().exists() && !protected_home(paths) {
         report.push(Finding::new(
             "project.registry",
             Severity::Info,
@@ -234,7 +298,7 @@ fn inspect_projects(paths: &XanaPaths, report: &mut DoctorReport) {
         )),
         Ok(Some(_)) => match PortableProjectStore::inspect(&workspace) {
             Ok(inspection) => {
-                let binding = if paths.project_bindings_file().exists() {
+                let binding = if paths.project_bindings_file().exists() || protected_home(paths) {
                     read_document::<ProjectBindingsDocument>(&paths.project_bindings_file())
                         .ok()
                         .is_some_and(|bindings| {
@@ -602,7 +666,7 @@ fn inspect_interoperability(paths: &XanaPaths, report: &mut DoctorReport) {
 }
 
 fn inspect_plugins(paths: &XanaPaths, report: &mut DoctorReport) {
-    if !paths.package_state_file().exists() {
+    if !paths.package_state_file().exists() && !protected_home(paths) {
         return;
     }
     match PluginManager::open(paths).list() {

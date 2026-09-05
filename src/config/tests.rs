@@ -1094,7 +1094,7 @@ fn rendered_initial_config_round_trips_through_the_real_loader() {
     assert!(rendered.contains("[context]"));
     assert!(rendered.contains("[resources]"));
     assert!(rendered.contains("fallback_context_tokens = 32768"));
-    assert!(rendered.contains("version = 4"));
+    assert!(rendered.contains("version = 5"));
     assert!(rendered.contains("default_child_route = \"default\""));
     assert!(rendered.contains("connection = \"ollama\""));
     assert!(!rendered.contains("provider = \"ollama\""));

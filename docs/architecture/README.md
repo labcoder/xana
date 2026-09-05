@@ -47,7 +47,7 @@ flowchart TB
     APP --> LOCAL["local_host<br/>authenticated loopback projection"]
     APP --> NATIVE["native_runtime<br/>Xana-owned foreground execution"]
     APP --> MANAGED_EXEC["managed_execution<br/>Xana-facing foreign-loop adapter"]
-    APP --> SESSION["session<br/>durable JSONL owner"]
+    APP --> SESSION["session<br/>durable Conversation owner"]
     SESSION --> ARTIFACTS["immutable artifacts<br/>BLAKE3 paths"]
     SESSION --> CONTEXT["versioned project context"]
     SESSION --> OPERATION["durable operation log<br/>intent + result"]
@@ -2101,5 +2101,8 @@ grants live only in the foreground process. These absences are implementation
 facts, not predictions about which proposals will be accepted. Model-aware
 prompt budgets, deterministic artifact-backed compaction checkpoints, and
 local foreground/embedded execution-host coordination already exist. They do
-not yet provide automatic personal memory, encrypted managed content, or
-restartable scheduled work.
+not yet provide automatic personal memory or restartable scheduled work.
+Fresh homes can opt into [protected storage](protected-storage.md): SQLCipher
+owns Conversation records and private catalogs, and age protects immutable
+artifact objects. Existing homes still use the legacy backend until explicitly
+migrated; the presence of a protected store never permits plaintext fallback.

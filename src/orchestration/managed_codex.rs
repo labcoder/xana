@@ -158,7 +158,7 @@ async fn run_app_server(
             &spec.options,
             ManagedTurnInput {
                 text: spec.task,
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &context.cancellation,
             &mut handler,

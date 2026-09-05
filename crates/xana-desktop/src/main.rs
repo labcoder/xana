@@ -18,6 +18,7 @@ mod resource_policy_view;
 mod settings_view;
 mod setup_view;
 mod shell;
+mod storage_lock;
 mod workbench;
 mod workbench_preferences_view;
 

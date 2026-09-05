@@ -82,7 +82,11 @@ pub(super) fn write_hub(
     writeln!(output, "  image route     xana connect image")?;
     writeln!(output, "  vision route    xana connect vision")?;
     let registry = XanaConfig::load_registry_from(paths.config_file());
-    let plugins = if paths.package_state_file().exists() {
+    let plugins = if paths.package_state_file().exists()
+        || matches!(
+            crate::storage::ProtectedStore::status(paths.data_dir()),
+            Ok(crate::storage::StorageStatus::Protected { .. })
+        ) {
         Some(PluginManager::open(paths).list())
     } else {
         Some(Ok(Vec::new()))

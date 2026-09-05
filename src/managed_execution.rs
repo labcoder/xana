@@ -213,6 +213,18 @@ pub(crate) async fn run_codex_chat(
         if input == "/quit" {
             break;
         }
+        if input == "/storage" || input.starts_with("/storage ") {
+            let arguments = input.strip_prefix("/storage").unwrap_or_default().trim();
+            exit = ChatExit::ControlCommand {
+                family: "storage".into(),
+                arguments: if arguments.is_empty() {
+                    "status".into()
+                } else {
+                    arguments.into()
+                },
+            };
+            break;
+        }
         if input == "/doctor" {
             exit = ChatExit::Doctor(None);
             break;
@@ -420,16 +432,15 @@ pub(crate) async fn run_codex_chat(
             println!("xana> image attachments exceed the 20 MiB per-turn budget");
             continue;
         }
-        let local_images = match attachments
+        let image_urls = match attachments
             .iter()
             .map(|attachment| {
-                config
-                    .artifact_store
-                    .verified_path(
-                        &attachment.image.artifact,
-                        crate::artifact::MAX_ARTIFACT_BYTES,
-                    )
-                    .map_err(anyhow::Error::from)
+                crate::vision::MediaResolver::new(
+                    config.artifact_store.clone(),
+                    crate::artifact::MAX_ARTIFACT_BYTES,
+                )
+                .resolve_openai_data_url(&attachment.image)
+                .map_err(anyhow::Error::from)
             })
             .collect::<Result<Vec<_>>>()
         {
@@ -482,7 +493,7 @@ pub(crate) async fn run_codex_chat(
                 },
                 ManagedTurnInput {
                     text: input.to_owned(),
-                    local_images,
+                    image_urls,
                 },
                 &mut handler,
             )
@@ -631,7 +642,7 @@ async fn run_codex_one_shot_inner(
             },
             ManagedTurnInput {
                 text: request.input,
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &mut handler,
         )

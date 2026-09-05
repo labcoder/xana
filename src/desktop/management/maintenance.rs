@@ -524,7 +524,7 @@ mod tests {
             reasoning_effort: None,
         })
         .unwrap()
-        .replacen("version = 4", "version = 3", 1);
+        .replacen("version = 5", "version = 3", 1);
         fs::write(control.paths.config_file(), text).unwrap();
     }
 

@@ -5,7 +5,9 @@
 `Conversation` is the canonical user-facing term. The older `xana session`,
 `/session`, and `/sessions` spellings remain compatibility aliases; examples in
 this document use `conversation`. On disk, native Conversation journals remain
-stored beneath the historical `sessions/` directory.
+stored beneath the historical `sessions/` directory in legacy homes. Opt-in
+[protected homes](protected-storage.md) retain the same records and IDs inside
+SQLCipher; their artifacts and private metadata are encrypted too.
 
 Xana persists every native-provider chat as one append-only session. Bare
 `xana` and `xana --plain` select the latest compatible inactive session or

@@ -6,6 +6,25 @@ use tokio::sync::Notify;
 mod lifecycle;
 mod turn_control;
 
+#[tokio::test]
+async fn image_payloads_have_a_separate_bounded_outbound_frame_budget() {
+    let mut peer = JsonLinePeer::new(BufReader::new(tokio::io::empty()), sink());
+    peer.send(&json!({"image": "x".repeat(28 * 1024 * 1024)}))
+        .await
+        .unwrap();
+    assert!(matches!(
+        peer.send(&json!({"image": "x".repeat(MAX_OUTGOING_FRAME_BYTES)}))
+            .await,
+        Err(CodexError::FrameTooLarge)
+    ));
+    let input = ManagedTurnInput {
+        text: "private prompt".into(),
+        image_urls: vec!["private image".into()],
+    };
+    let debug = format!("{input:?}");
+    assert!(!debug.contains("private"));
+}
+
 #[derive(Default)]
 struct TestHandler {
     notifications: Vec<ManagedNotification>,

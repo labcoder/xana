@@ -165,6 +165,149 @@ fn init_native(home: &Path, base_url: &str) {
 }
 
 #[test]
+fn protected_home_setup_stream_restart_lock_and_manual_recovery() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("protected-home");
+    let workspace = directory.path().join("ordinary-workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::write(workspace.join("notes.txt"), "ordinary editor source").unwrap();
+    let key = directory.path().join("independent-recovery.key");
+    let create = xana(&home)
+        .args(["storage", "recovery-key", "--output"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&create);
+    let init = xana(&home)
+        .args(["storage", "initialize", "--manual-unlock", "--recovery-key"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&init);
+    let command = || {
+        let mut cmd = xana(&home);
+        cmd.env("XANA_STORAGE_RECOVERY_KEY", &key)
+            .current_dir(&workspace)
+            .stdin(Stdio::null());
+        cmd
+    };
+    let (base_url, server) = fake_chat_server("encrypted answer canary");
+    let setup = command()
+        .args([
+            "init",
+            "--non-interactive",
+            "--kind",
+            "ollama",
+            "--provider-name",
+            "test",
+            "--base-url",
+            &base_url,
+            "--model",
+            "test-model",
+            "--permission-mode",
+            "deny",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&setup);
+    let answer = command()
+        .args([
+            "--print",
+            "encrypted question canary",
+            "--output",
+            "stream-json",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&answer);
+    server.join().unwrap();
+    assert!(String::from_utf8_lossy(&answer.stdout).contains("encrypted answer canary"));
+    assert!(
+        !home.join("data/sessions").exists(),
+        "normal execution must not create a plaintext journal"
+    );
+    assert!(
+        !home.join("data/interoperable/projects.json").exists(),
+        "sensitive catalog stays protected"
+    );
+    let verified = command().args(["storage", "verify"]).output().unwrap();
+    assert_success(&verified);
+    let locked = command().args(["storage", "lock"]).output().unwrap();
+    assert_success(&locked);
+    let denied = command().args(["storage", "verify"]).output().unwrap();
+    assert!(
+        !denied.status.success(),
+        "manual key selection must not implicitly unlock"
+    );
+    let doctor = command()
+        .args(["doctor", "--output", "json"])
+        .output()
+        .unwrap();
+    let report: serde_json::Value =
+        serde_json::from_slice(&doctor.stdout).unwrap_or_else(|error| {
+            panic!(
+                "doctor JSON: {error}; status {}; stderr {}",
+                doctor.status,
+                String::from_utf8_lossy(&doctor.stderr)
+            )
+        });
+    assert!(
+        report["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["code"] == "storage.protected"
+                && finding["summary"].as_str().unwrap().contains("locked"))
+    );
+    let unlocked = command()
+        .args(["storage", "unlock", "--recovery-key"])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&unlocked);
+    assert_success(&command().args(["storage", "verify"]).output().unwrap());
+    assert_success(
+        &command()
+            .args(["config", "migrate", "--apply"])
+            .output()
+            .unwrap(),
+    );
+    let mut pending = vec![home.join("data")];
+    while let Some(path) = pending.pop() {
+        for entry in std::fs::read_dir(path).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                let bytes = std::fs::read(&path).unwrap();
+                for canary in [
+                    b"encrypted question canary".as_slice(),
+                    b"encrypted answer canary",
+                ] {
+                    assert!(
+                        !bytes.windows(canary.len()).any(|part| part == canary),
+                        "plaintext canary in {}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("notes.txt")).unwrap(),
+        "ordinary editor source"
+    );
+    assert_success(
+        &command()
+            .args(["reset", "--scope", "sessions", "--yes"])
+            .output()
+            .unwrap(),
+    );
+    assert_success(&command().args(["storage", "verify"]).output().unwrap());
+    assert!(home.join("data/protected/content.sqlite").is_file());
+}
+
+#[test]
 fn help_runs_without_initializing_xana() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("unused-home");

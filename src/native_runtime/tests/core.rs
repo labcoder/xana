@@ -618,6 +618,187 @@ async fn persistent_runtime_commits_conversation_before_final_events() {
 }
 
 #[tokio::test]
+async fn protected_runtime_streams_committed_history_and_reopens_without_plaintext() {
+    use crate::storage::{ProtectedStore, RecoveryIdentity, TestCustody};
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("ordinary.txt"),
+        "ordinary source stays ordinary",
+    )
+    .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let custody = TestCustody::default();
+    let home =
+        ProtectedStore::initialize(data.path(), &RecoveryIdentity::generate(), &custody).unwrap();
+    let provider = QueueTransport {
+        responses: Mutex::new(
+            vec![Ok(Message::text(
+                Role::Assistant,
+                "protected answer canary",
+            ))]
+            .into(),
+        ),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: Vec::new(),
+    };
+    let (agent, assembler) = persistent_agent(Box::new(provider), workspace_root.clone());
+    let id = crate::identity::SessionId::new();
+    let session =
+        DurableSession::create_protected(home.clone(), workspace_root.clone(), id).unwrap();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root).unwrap();
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler).unwrap();
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "protected question canary".into(),
+        })
+        .await
+        .unwrap();
+    let mut saw_answer = false;
+    loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), runtime.next_event())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            AgentEvent::AssistantMessage { .. } => {
+                let (_, restored) = DurableSession::inspect_protected(&home, id).unwrap();
+                assert_eq!(
+                    restored.conversation_path().unwrap(),
+                    vec![
+                        Message::text(Role::User, "protected question canary"),
+                        Message::text(Role::Assistant, "protected answer canary")
+                    ]
+                );
+                saw_answer = true;
+            }
+            AgentEvent::OperationStateChanged {
+                operation_id: actual,
+                state: OperationState::Finished(OperationOutcome::Completed),
+            } if actual == operation_id => break,
+            _ => {}
+        }
+    }
+    assert!(saw_answer);
+    let page = home.history_page(id, None, None, 1).unwrap();
+    assert_eq!(page.total, 2);
+    assert_eq!(page.start, 1);
+    assert_eq!(
+        page.messages,
+        vec![Message::text(Role::Assistant, "protected answer canary")]
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.path().join("ordinary.txt")).unwrap(),
+        "ordinary source stays ordinary"
+    );
+    for entry in std::fs::read_dir(data.path().join("protected")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_file()
+            && path
+                .extension()
+                .is_some_and(|ext| ext == "sqlite" || ext == "age" || ext == "json")
+        {
+            let bytes = std::fs::read(path).unwrap();
+            assert!(
+                !bytes
+                    .windows(b"protected question canary".len())
+                    .any(|part| part == b"protected question canary")
+            );
+        }
+    }
+    runtime.send(RuntimeCommand::Shutdown).await.unwrap();
+    let (runtime, _events, _history, mut exit) = runtime.into_frontend_parts();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while exit.borrow().is_none() {
+            exit.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    drop(runtime);
+    drop(home);
+    let reopened = ProtectedStore::open(data.path(), &custody).unwrap();
+    let (session, _) = DurableSession::resume_protected(reopened, id).unwrap();
+    assert_eq!(session.conversation().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn protected_active_turn_shutdown_records_interruption_before_lock() {
+    use crate::storage::{ProtectedStore, RecoveryIdentity, TestCustody};
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let custody = TestCustody::default();
+    let home =
+        ProtectedStore::initialize(data.path(), &RecoveryIdentity::generate(), &custody).unwrap();
+    let started = Arc::new(Notify::new());
+    let provider = BlockingTransport {
+        started: started.clone(),
+        release: Arc::new(Notify::new()),
+    };
+    let workspace = workspace.path().canonicalize().unwrap();
+    let (agent, assembler) = persistent_agent(Box::new(provider), workspace.clone());
+    let id = crate::identity::SessionId::new();
+    let session = DurableSession::create_protected(home.clone(), workspace.clone(), id).unwrap();
+    let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace).unwrap();
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler).unwrap();
+    let operation_id = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id,
+            input: "unfinished protected work".into(),
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), started.notified())
+        .await
+        .unwrap();
+    runtime.send(RuntimeCommand::Shutdown).await.unwrap();
+    let suspended = tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = runtime.next_event().await {
+            if matches!(event, AgentEvent::OperationStateChanged {
+                operation_id: actual, state: OperationState::Suspended,
+            } if actual == operation_id)
+            {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .unwrap();
+    assert!(
+        suspended,
+        "accepted work retains an explicit recoverable interruption"
+    );
+    let (runtime, _events, history, mut exit) = runtime.into_frontend_parts();
+    drop(history);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while exit.borrow().is_none() {
+            exit.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+    drop(runtime);
+    home.lock().unwrap();
+    assert!(home.verify().is_err());
+    let reopened = ProtectedStore::unlock(data.path(), &custody).unwrap();
+    let (summary, restored) = DurableSession::inspect_protected(&reopened, id).unwrap();
+    assert_eq!(summary.unfinished.len(), 1);
+    assert!(restored.conversation_path().unwrap().iter().all(|message| {
+        message
+            .content
+            .iter()
+            .all(|block| !matches!(block, ContentBlock::Text(text) if text.contains("released")))
+    }));
+}
+
+#[tokio::test]
 async fn round_budget_suspends_durably_and_continues_the_same_operation() {
     let data = tempdir().expect("Xana data tempdir");
     let workspace = tempdir().expect("workspace tempdir");

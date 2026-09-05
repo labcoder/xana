@@ -851,7 +851,7 @@ impl TuiState {
             crate::command_catalog::suspended_chat_control(command.stable_id)
         {
             self.composer.take();
-            if self.busy {
+            if self.busy && !(family == "storage" && command.arguments.trim() == "lock") {
                 self.status =
                     format!("Wait for or interrupt the active turn before running /{family}");
                 return UpdateEffect::None;
@@ -1368,6 +1368,7 @@ impl TuiState {
                     "This catalog action is not directly invokable on the current TUI".to_owned();
                 UpdateEffect::None
             }
+            CommandId::Storage => UpdateEffect::None, // Routed through suspended_chat_control.
         }
     }
 

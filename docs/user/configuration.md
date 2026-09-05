@@ -710,7 +710,7 @@ profile = "worker"
 
 Version 1, 2, and 3 documents remain readable. Their legacy
 `profiles.<id>.provider` input maps to `connection`; specifying both is an
-error. Explicit migration or the first structured connection edit writes version 4 and the canonical
+error. Explicit migration or the first structured connection edit writes version 5 and the canonical
 key while preserving TOML comments. Model selection is stored separately in
 `data/selection.toml`, so choosing a model does not rewrite `config.toml`. The
 selection document is version 2 and may include non-secret `reasoning_effort`

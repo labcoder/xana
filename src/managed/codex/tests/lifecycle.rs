@@ -187,7 +187,7 @@ async fn incompatible_thread_policy_prevents_a_turn_and_connection_reuse() {
             },
             ManagedTurnInput {
                 text: "must never be sent".to_owned(),
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &CancellationToken::new(),
             &mut handler,
@@ -241,6 +241,9 @@ async fn checked_start_and_resume_preserve_identity_and_run_the_selected_turn() 
                  HAS \"model\":\"model-fixture\"\n\
                  HAS \"effort\":\"xhigh\"\n\
                  HAS \"summary\":\"detailed\"\n\
+                 HAS \"type\":\"image\"\n\
+                 HAS data:image/png;base64,ZmFrZS1waXhlbHM=\n\
+                 LACKS localImage\n\
                  SEND {{\"id\":3,\"result\":{{\"turn\":{{\"id\":\"turn-1\"}}}}}}\n\
                  SEND {{\"method\":\"item/agentMessage/delta\",\"params\":{{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"delta\":\"answer\"}}}}\n\
                  SEND {{\"method\":\"turn/completed\",\"params\":{{\"threadId\":\"thread-1\",\"turn\":{{\"id\":\"turn-1\",\"status\":\"completed\"}}}}}}\n",
@@ -283,7 +286,7 @@ async fn checked_start_and_resume_preserve_identity_and_run_the_selected_turn() 
                 },
                 ManagedTurnInput {
                     text: "answer the fixture".to_owned(),
-                    local_images: Vec::new(),
+                    image_urls: vec!["data:image/png;base64,ZmFrZS1waXhlbHM=".into()],
                 },
                 &mut handler,
             )
@@ -353,7 +356,7 @@ async fn unfinished_rpc_or_invalid_turn_stops_the_child_before_reuse() {
         };
         let input = || ManagedTurnInput {
             text: "fixture".into(),
-            local_images: Vec::new(),
+            image_urls: Vec::new(),
         };
         let result = if method == "account/read" {
             server.account_status().await.map(|_| ())
@@ -468,7 +471,7 @@ async fn unsupported_or_malformed_approval_cannot_authorize_an_active_turn() {
                 },
                 ManagedTurnInput {
                     text: "fixture".into(),
-                    local_images: Vec::new(),
+                    image_urls: Vec::new(),
                 },
                 &mut handler,
             )
@@ -510,7 +513,7 @@ async fn approval_before_turn_acknowledgement_fails_without_prompting() {
             },
             ManagedTurnInput {
                 text: "fixture".into(),
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &CancellationToken::new(),
             &mut handler,
@@ -586,7 +589,7 @@ async fn exact_approval_payload_and_denial_cross_the_subprocess_boundary() {
             },
             ManagedTurnInput {
                 text: "fixture".into(),
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &mut handler,
         )
@@ -630,7 +633,7 @@ async fn duplicate_callback_is_not_presented_or_authorized_twice() {
             },
             ManagedTurnInput {
                 text: "fixture".into(),
-                local_images: Vec::new(),
+                image_urls: Vec::new(),
             },
             &mut handler,
         )

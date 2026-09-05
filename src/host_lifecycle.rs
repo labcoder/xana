@@ -268,7 +268,7 @@ pub(crate) fn recover_startup(
     paths: &XanaPaths,
     stale_exit_markers: usize,
 ) -> Result<StartupRecoveryReport, ArtifactError> {
-    let artifacts = ArtifactStore::new(paths.data_dir().join("artifacts"));
+    let artifacts = ArtifactStore::open(paths.data_dir())?;
     Ok(StartupRecoveryReport {
         stale_exit_markers,
         artifacts: artifacts.reconcile_partials()?,

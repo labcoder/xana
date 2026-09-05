@@ -45,6 +45,7 @@ pub(crate) struct ResetPlan {
     targets: Vec<ResetTarget>,
     credential_ids: Vec<String>,
     workspace_state: Option<PathBuf>,
+    protected_data: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -149,6 +150,22 @@ impl ResetPlan {
         let setup = scopes.contains(&ResetScope::Setup);
         let sessions = scopes.contains(&ResetScope::Sessions);
         let caches = scopes.contains(&ResetScope::Caches);
+        let protected_data = if setup || sessions {
+            match crate::storage::ProtectedStore::status(paths.data_dir())
+                .map_err(|error| ResetError::Credentials(error.to_string()))?
+            {
+                crate::storage::StorageStatus::Legacy => None,
+                _ => Some(paths.data_dir().to_path_buf()),
+            }
+        } else {
+            None
+        };
+        if let Some(data) = &protected_data {
+            candidates.push(ResetTarget {
+                label: "selected protected records (database retained; ciphertext not securely erased)",
+                path: data.join("protected/content.sqlite"),
+            });
+        }
         if setup {
             candidates.extend([
                 ResetTarget {
@@ -247,6 +264,7 @@ impl ResetPlan {
             targets,
             credential_ids,
             workspace_state: (setup || sessions).then(|| paths.data_dir().join("workspace-hosts")),
+            protected_data,
         })
     }
 
@@ -277,6 +295,25 @@ impl ResetPlan {
         self.validate_execution()?;
         let mut removed = Vec::new();
         for target in self.targets {
+            if let Some(data) = &self.protected_data
+                && target.path == data.join("protected/content.sqlite")
+            {
+                crate::storage::ProtectedStore::configured(data)
+                    .and_then(|store| {
+                        store.ok_or_else(|| {
+                            anyhow::anyhow!("protected storage changed since reset review")
+                        })
+                    })
+                    .and_then(|store| {
+                        store.reset_records(
+                            self.scopes.contains(&ResetScope::Sessions),
+                            self.scopes.contains(&ResetScope::Setup),
+                        )
+                    })
+                    .map_err(|error| ResetError::Credentials(error.to_string()))?;
+                removed.push(target);
+                continue;
+            }
             if remove_entry(&target.path)? {
                 removed.push(target);
             }

@@ -89,6 +89,47 @@ pub(crate) struct NativeConversationHandle {
 }
 
 impl DurableSession {
+    pub(crate) fn create_protected(
+        home: crate::storage::ProtectedStore,
+        workspace_root: PathBuf,
+        session_id: SessionId,
+    ) -> Result<Self> {
+        let created = RecordEnvelope::new(
+            session_id,
+            SessionRecord::SessionCreated {
+                thread_id: ThreadId::new(),
+                workspace_root,
+            },
+        );
+        let data_dir = home.data_dir().to_owned();
+        let store = SessionStore::create_protected(home, std::slice::from_ref(&created))?;
+        Self::from_open_store(&data_dir, store, vec![created])
+    }
+
+    pub(crate) fn resume_protected(
+        home: crate::storage::ProtectedStore,
+        session_id: SessionId,
+    ) -> Result<(Self, SessionSummary)> {
+        let loaded = SessionStore::inspect_protected(&home, session_id)?;
+        let summary = summary_from_loaded(&home.database_path(), &loaded)?;
+        let store = SessionStore::resume_protected(home.clone(), session_id, &loaded)?;
+        Ok((
+            Self::from_open_store(home.data_dir(), store, loaded.records)?,
+            summary,
+        ))
+    }
+
+    pub(crate) fn inspect_protected(
+        home: &crate::storage::ProtectedStore,
+        session_id: SessionId,
+    ) -> Result<(SessionSummary, RestoredSession)> {
+        let loaded = SessionStore::inspect_protected(home, session_id)?;
+        Ok((
+            summary_from_loaded(&home.database_path(), &loaded)?,
+            reduce(&loaded.records)?,
+        ))
+    }
+
     pub(crate) fn create(data_dir: &Path, workspace_root: PathBuf) -> Result<Self> {
         Self::create_with_id(data_dir, workspace_root, SessionId::new())
     }
@@ -98,6 +139,9 @@ impl DurableSession {
         workspace_root: PathBuf,
         session_id: SessionId,
     ) -> Result<Self> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Self::create_protected(home, workspace_root, session_id);
+        }
         fs::create_dir_all(data_dir.join("artifacts"))
             .context("could not create durable artifact directory")?;
         let thread_id = ThreadId::new();
@@ -181,10 +225,15 @@ impl DurableSession {
             },
         ));
         reduce(&records).context("could not validate native branch target")?;
-        fs::create_dir_all(data_dir.join("artifacts"))
-            .context("could not create durable artifact directory")?;
-        let store = SessionStore::create_batch(&data_dir.join("sessions"), &records)
-            .context("could not commit native branch target")?;
+        let store = match crate::storage::ProtectedStore::configured(data_dir)? {
+            Some(home) => SessionStore::create_protected(home, &records)?,
+            None => {
+                fs::create_dir_all(data_dir.join("artifacts"))
+                    .context("could not create durable artifact directory")?;
+                SessionStore::create_batch(&data_dir.join("sessions"), &records)
+                    .context("could not commit native branch target")?
+            }
+        };
         let target = Self::from_open_store(data_dir, store, records)?;
         let receipt = NativeBranchReceipt {
             source_session_id,
@@ -249,6 +298,9 @@ impl DurableSession {
     }
 
     pub(crate) fn resume(data_dir: &Path, session_id: SessionId) -> Result<(Self, SessionSummary)> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Self::resume_protected(home, session_id);
+        }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
         let summary = summary_from_loaded(&path, &loaded)?;
@@ -260,6 +312,9 @@ impl DurableSession {
     }
 
     pub(crate) fn inspect(data_dir: &Path, session_id: SessionId) -> Result<SessionSummary> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Self::inspect_protected(&home, session_id).map(|(summary, _)| summary);
+        }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
         summary_from_loaded(&path, &loaded)
@@ -269,6 +324,9 @@ impl DurableSession {
         data_dir: &Path,
         session_id: SessionId,
     ) -> Result<(SessionSummary, RestoredSession)> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return Self::inspect_protected(&home, session_id);
+        }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
         let summary = summary_from_loaded(&path, &loaded)?;
@@ -282,6 +340,9 @@ impl DurableSession {
         before: Option<usize>,
         limit: usize,
     ) -> Result<ConversationPage> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return home.history_page(session_id, before, None, limit);
+        }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         SessionStore::conversation_page(&path, before, limit)
             .context("could not page durable conversation")
@@ -293,6 +354,9 @@ impl DurableSession {
         start: usize,
         limit: usize,
     ) -> Result<ConversationPage> {
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return home.history_page(session_id, None, Some(start), limit);
+        }
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         SessionStore::conversation_page_from(&path, start, limit)
             .context("could not page newer durable conversation")
@@ -313,6 +377,10 @@ impl DurableSession {
         workspace_root: &Path,
     ) -> Result<Vec<NativeConversationHandle>> {
         const MAX_SESSION_FILES: usize = 10_000;
+
+        if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            return home.list_histories(workspace_root);
+        }
 
         let sessions_dir = data_dir.join("sessions");
         let entries = match fs::read_dir(&sessions_dir) {
@@ -378,12 +446,16 @@ impl DurableSession {
         let restored = reduce(&records).context("could not reduce durable session")?;
         let agent_id = AgentId::for_session(restored.session_id);
         let record_ids = records.iter().map(|record| record.record_id).collect();
+        let artifacts = match store.protected_home() {
+            Some(home) => ArtifactStore::protected(home.clone()),
+            None => ArtifactStore::new(data_dir.join("artifacts")),
+        };
         Ok(Self {
             store,
             records,
             record_ids,
             restored,
-            artifacts: ArtifactStore::new(data_dir.join("artifacts")),
+            artifacts,
             agent_id,
             owner: PrincipalId::new(),
         })
@@ -819,6 +891,10 @@ fn summary_from_loaded(path: &Path, loaded: &LoadedSession) -> Result<SessionSum
 }
 
 fn remove_staged_session(session: DurableSession, kind: &str) -> Result<()> {
+    if let Some(home) = session.store.protected_home() {
+        home.discard_history(session.session_id())?;
+        return Ok(());
+    }
     let path = session.store.path().to_owned();
     let lock_path = path.with_extension("jsonl.lock");
     drop(session);

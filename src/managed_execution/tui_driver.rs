@@ -317,16 +317,15 @@ async fn run_actor(
                 } else {
                     None
                 };
-                let local_images = match images
+                let image_urls = match images
                     .iter()
                     .map(|image| {
-                        config
-                            .artifact_store
-                            .verified_path(
-                                &image.image.artifact,
-                                crate::artifact::MAX_ARTIFACT_BYTES,
-                            )
-                            .map_err(anyhow::Error::from)
+                        crate::vision::MediaResolver::new(
+                            config.artifact_store.clone(),
+                            crate::artifact::MAX_ARTIFACT_BYTES,
+                        )
+                        .resolve_openai_data_url(&image.image)
+                        .map_err(anyhow::Error::from)
                     })
                     .collect::<anyhow::Result<Vec<_>>>()
                 {
@@ -390,7 +389,7 @@ async fn run_actor(
                         },
                         ManagedTurnInput {
                             text: input,
-                            local_images,
+                            image_urls,
                         },
                         &cancellation,
                         &mut handler,

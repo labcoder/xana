@@ -51,6 +51,7 @@ pub(crate) enum CommandAction {
     Skill,
     Steer,
     Stop,
+    Storage,
     Usage,
     Vision,
 }
@@ -347,6 +348,23 @@ macro_rules! command {
 /// M3-exit command inventory plus the M4 attach/preview and Espejo semantics.
 /// Broad management families deliberately retain their runtime-owned parsers.
 pub(crate) const COMMANDS: &[CommandSpec] = &[
+    command!(
+        "storage.manage.v1",
+        Storage,
+        "storage",
+        &[],
+        "status|verify|lock|unlock ...",
+        "Inspect protected storage; lock stops this terminal owner and exits",
+        ArgumentSchema::Variants("storage_action"),
+        Owner,
+        Any,
+        None,
+        Control,
+        SurfaceSet::new(true, true, true, false),
+        true,
+        true,
+        false
+    ),
     command!(
         "presentation.activity.auto.v1",
         Activity,
@@ -1530,6 +1548,7 @@ pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &
         "connection.manage.v1" => Some(("connection", "list")),
         "diagnostics.logs.v1" => Some(("logs", "list")),
         "outbound.manage.v1" => Some(("outbound", "list")),
+        "storage.manage.v1" => Some(("storage", "status")),
         "operation.reconcile.v1" => Some(("operation", "")),
         "route.inspect.v1" => Some(("route", "list")),
         "integration.connect.v1" => Some(("connect", "")),

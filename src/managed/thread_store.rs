@@ -113,6 +113,7 @@ struct DecodedManagedDocument {
 }
 
 pub(crate) struct ManagedThreadStore {
+    protected: Option<crate::storage::ProtectedStore>,
     state_path: PathBuf,
     connection: String,
     workspace: PathBuf,
@@ -129,6 +130,8 @@ impl ManagedThreadStore {
         connection: &str,
         workspace: &Path,
     ) -> Result<Self, ManagedThreadStoreError> {
+        let protected =
+            crate::storage::ProtectedStore::configured(data_root).map_err(protected_error)?;
         let workspace = workspace
             .canonicalize()
             .map_err(|source| ManagedThreadStoreError::Io {
@@ -172,7 +175,7 @@ impl ManagedThreadStore {
         }
 
         let (conversation_id, thread_id, identity_version, threads) =
-            match bounded_file::read(&state_path, MAX_DOCUMENT_BYTES) {
+            match read_managed_document(protected.as_ref(), &state_path) {
                 Ok(bytes) => {
                     let decoded = decode_document(&bytes, connection, &workspace)?;
                     (
@@ -199,6 +202,7 @@ impl ManagedThreadStore {
             };
 
         Ok(Self {
+            protected,
             state_path,
             connection: connection.to_owned(),
             workspace,
@@ -332,23 +336,33 @@ impl ManagedThreadStore {
                 "managed thread state exceeds the {MAX_DOCUMENT_BYTES}-byte limit"
             )));
         }
-        let mut file =
-            atomic_write_file::AtomicWriteFile::open(&self.state_path).map_err(|source| {
-                ManagedThreadStoreError::Io {
+        if let Some(store) = &self.protected {
+            store
+                .set_document(
+                    &document_name(&self.state_path)?,
+                    &bytes,
+                    MAX_DOCUMENT_BYTES,
+                )
+                .map_err(protected_error)?;
+        } else {
+            let mut file =
+                atomic_write_file::AtomicWriteFile::open(&self.state_path).map_err(|source| {
+                    ManagedThreadStoreError::Io {
+                        path: self.state_path.clone(),
+                        source,
+                    }
+                })?;
+            file.write_all(&bytes)
+                .map_err(|source| ManagedThreadStoreError::Io {
                     path: self.state_path.clone(),
                     source,
-                }
-            })?;
-        file.write_all(&bytes)
-            .map_err(|source| ManagedThreadStoreError::Io {
-                path: self.state_path.clone(),
-                source,
-            })?;
-        file.commit()
-            .map_err(|source| ManagedThreadStoreError::Io {
-                path: self.state_path.clone(),
-                source,
-            })?;
+                })?;
+            file.commit()
+                .map_err(|source| ManagedThreadStoreError::Io {
+                    path: self.state_path.clone(),
+                    source,
+                })?;
+        }
         self.thread_id = thread_id;
         self.conversation_id = conversation_id;
         self.identity_version = identity_version;
@@ -384,6 +398,41 @@ impl ManagedThreadStore {
                 source,
             })?;
         let directory = data_root.join("managed-threads");
+        if let Some(store) =
+            crate::storage::ProtectedStore::configured(data_root).map_err(protected_error)?
+        {
+            let mut handles = Vec::new();
+            for name in store
+                .document_names("managed-threads/", MAX_STATE_FILES)
+                .map_err(protected_error)?
+            {
+                let Some(bytes) = store
+                    .document(&name, MAX_DOCUMENT_BYTES)
+                    .map_err(protected_error)?
+                else {
+                    continue;
+                };
+                let Ok(decoded) = decode_catalog_document(&bytes, &workspace) else {
+                    continue;
+                };
+                handles.extend(decoded.threads.into_iter().map(|thread| {
+                    ManagedConversationHandle {
+                        conversation_id: thread.conversation_id,
+                        current: decoded.current_thread_id.as_deref()
+                            == Some(thread.thread_id.as_str()),
+                        connection: decoded.connection.clone(),
+                        thread_id: thread.thread_id,
+                    }
+                }));
+            }
+            handles.sort_by(|a, b| {
+                a.connection
+                    .cmp(&b.connection)
+                    .then_with(|| a.thread_id.cmp(&b.thread_id))
+            });
+            handles.truncate(MAX_THREADS);
+            return Ok(handles);
+        }
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -434,6 +483,41 @@ impl ManagedThreadStore {
         handles.truncate(MAX_THREADS);
         Ok(handles)
     }
+}
+
+fn protected_error(error: anyhow::Error) -> ManagedThreadStoreError {
+    ManagedThreadStoreError::Invalid(format!("protected managed handles: {error:#}"))
+}
+
+fn document_name(path: &Path) -> Result<String, ManagedThreadStoreError> {
+    let file = path
+        .file_name()
+        .and_then(|part| part.to_str())
+        .ok_or_else(|| {
+            ManagedThreadStoreError::Invalid("invalid managed handle filename".into())
+        })?;
+    Ok(format!("managed-threads/{file}"))
+}
+
+fn read_managed_document(
+    store: Option<&crate::storage::ProtectedStore>,
+    path: &Path,
+) -> Result<Vec<u8>, bounded_file::BoundedReadError> {
+    if let Some(store) = store {
+        let read = document_name(path)
+            .map_err(|e| anyhow::anyhow!(e))
+            .and_then(|name| store.document(&name, MAX_DOCUMENT_BYTES));
+        return read
+            .map_err(|error| bounded_file::BoundedReadError::Io {
+                path: path.to_owned(),
+                source: io::Error::other(error.to_string()),
+            })?
+            .ok_or_else(|| bounded_file::BoundedReadError::Io {
+                path: path.to_owned(),
+                source: io::Error::from(io::ErrorKind::NotFound),
+            });
+    }
+    bounded_file::read(path, MAX_DOCUMENT_BYTES)
 }
 
 impl Drop for ManagedThreadStore {

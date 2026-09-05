@@ -82,7 +82,7 @@ pub(crate) async fn run(
                 routes.to_vec(),
                 egress.to_vec(),
                 crate::outbound::OutboundGuard::open(paths)?,
-                ArtifactStore::new(paths.data_dir().join("artifacts")),
+                ArtifactStore::open(paths.data_dir())?,
                 PrincipalId::new(),
             )
             .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);

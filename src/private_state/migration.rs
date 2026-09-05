@@ -128,6 +128,19 @@ pub(super) struct MigrationLock {
 
 impl PrivateMigrationPlan {
     pub(crate) fn build(paths: &XanaPaths) -> Result<Self, PrivateStateError> {
+        if matches!(
+            crate::storage::ProtectedStore::status(paths.data_dir())
+                .map_err(|error| PrivateStateError::Invalid(error.to_string()))?,
+            crate::storage::StorageStatus::Protected { .. }
+        ) {
+            // Protected records migrate transactionally with their database,
+            // never through this legacy JSON-file migration/backup mechanism.
+            return Ok(Self {
+                records: Vec::new(),
+                inspections: super::store::inspect_interoperable_records(paths),
+                recovery_pending: false,
+            });
+        }
         let recovery_pending = private_migration_pending(paths)?;
         let records = if recovery_pending {
             Vec::new()

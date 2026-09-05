@@ -315,6 +315,23 @@ pub struct DesktopControlPlane {
 }
 
 impl DesktopControlPlane {
+    /// Lock only after every content-bearing client has been shut down and
+    /// dropped. The store refuses to report a lock while another owner is live.
+    pub fn lock_storage(&self) -> Result<(), DesktopError> {
+        use crate::storage::{ProtectedStore, StorageStatus};
+        if matches!(
+            ProtectedStore::status(self.paths.data_dir()).map_err(control_error)?,
+            StorageStatus::Protected { locked: true, .. }
+        ) {
+            return Ok(());
+        }
+        ProtectedStore::configured(self.paths.data_dir())
+            .map_err(control_error)?
+            .ok_or_else(|| control_error("This home is not protected; no storage was locked"))?
+            .lock()
+            .map_err(control_error)
+    }
+
     pub(super) fn resolve(xana_home: Option<OsString>) -> Result<Self, DesktopError> {
         XanaPaths::resolve(xana_home)
             .map(|paths| Self { paths })

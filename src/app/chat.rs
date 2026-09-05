@@ -439,7 +439,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         .map(crate::skill::ActivatedSkill::prompt_text)
         .collect::<Vec<_>>()
         .join("\n\n");
-    let artifact_store = ArtifactStore::new(paths.data_dir().join("artifacts"));
+    let artifact_store = ArtifactStore::open(paths.data_dir())?;
 
     let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
     debug_assert_eq!(workspace_host.workspace(), workspace_root);
@@ -1080,6 +1080,22 @@ async fn continue_after_chat_exit(
     if exit == ChatExit::Quit {
         return Ok(None);
     }
+    if let ChatExit::ControlCommand { family, arguments } = &exit
+        && family == "storage"
+        && arguments.trim() == "lock"
+    {
+        // The execution owner has finished its bounded shutdown. Drop retained
+        // terminal drafts/selections before releasing keys. A different live
+        // owner still makes the lifecycle lease report busy, never false Locked.
+        drop(tui_continuation);
+        drop(desktop_restart);
+        super::storage_commands::run(
+            &cli::StorageCommand::Lock,
+            paths,
+            &mut std::io::stdout().lock(),
+        )?;
+        return Ok(None);
+    }
     let mut force_new_conversation = matches!(
         exit,
         ChatExit::NewConversation | ChatExit::DesktopNewConversation { .. }
@@ -1218,6 +1234,9 @@ pub(super) async fn run_chat_control_command<W: Write>(
         .map_err(|error| anyhow::anyhow!(error.render().ansi().to_string()))?
         .command;
     match command {
+        Some(cli::Command::Storage(args)) => {
+            super::storage_commands::run(&args.command, paths, output)
+        }
         Some(cli::Command::Project(args)) => {
             super::projects::run_command(args.command, paths, output)
         }

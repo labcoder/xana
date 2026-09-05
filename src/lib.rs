@@ -69,6 +69,7 @@ mod setup;
 mod shell;
 mod skill;
 mod sse;
+mod storage;
 mod telemetry;
 mod terminal_productivity;
 mod tool;
@@ -99,7 +100,8 @@ fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
             cli::Command::Doctor(_)
             | cli::Command::Logs(_)
             | cli::Command::Config(_)
-            | cli::Command::Capabilities(_),
+            | cli::Command::Capabilities(_)
+            | cli::Command::Storage(_),
         ) => true,
         Some(cli::Command::Setup(args)) => args.if_needed || args.dry_run,
         Some(cli::Command::Reset(args)) => args.dry_run,

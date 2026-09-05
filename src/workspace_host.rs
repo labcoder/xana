@@ -182,6 +182,7 @@ impl Error for WorkspaceHostError {
 }
 
 pub(crate) struct WorkspaceHost {
+    protected: Option<crate::storage::ProtectedStore>,
     data_root: PathBuf,
     workspace: PathBuf,
     workspace_id: String,
@@ -206,6 +207,8 @@ impl WorkspaceHost {
             source,
         })?;
         Ok(Self {
+            protected: crate::storage::ProtectedStore::configured(data_root)
+                .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?,
             data_root: data_root.to_owned(),
             workspace,
             workspace_id: workspace_id.clone(),
@@ -263,7 +266,9 @@ impl WorkspaceHost {
             process_id: std::process::id(),
             conversation: conversation.clone(),
         };
-        if let Err(error) = write_descriptor(&self.descriptor_path, &descriptor) {
+        if let Err(error) =
+            write_owned_descriptor(self.protected.as_ref(), &self.descriptor_path, &descriptor)
+        {
             drop(lock);
             return Err(error);
         }
@@ -271,6 +276,7 @@ impl WorkspaceHost {
             WorkspaceHostError::Invalid("host ownership lock was poisoned".into())
         })? = Some(conversation);
         Ok(ActiveRootLease {
+            protected: self.protected.clone(),
             lock: Some(lock),
             descriptor_path: self.descriptor_path.clone(),
             host_id: self.host_id,
@@ -463,7 +469,7 @@ impl WorkspaceHost {
     }
 
     fn read_descriptor(&self) -> Result<Option<ActiveRootDescriptor>, WorkspaceHostError> {
-        let bytes = match bounded_file::read(&self.descriptor_path, MAX_DESCRIPTOR_BYTES) {
+        let bytes = match read_owned_descriptor(self.protected.as_ref(), &self.descriptor_path) {
             Ok(bytes) => bytes,
             Err(bounded_file::BoundedReadError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound =>
@@ -491,6 +497,7 @@ impl WorkspaceHost {
 }
 
 pub(crate) struct ActiveRootLease {
+    protected: Option<crate::storage::ProtectedStore>,
     lock: Option<fs::File>,
     descriptor_path: PathBuf,
     host_id: Uuid,
@@ -499,11 +506,17 @@ pub(crate) struct ActiveRootLease {
 
 impl Drop for ActiveRootLease {
     fn drop(&mut self) {
-        if let Ok(bytes) = bounded_file::read(&self.descriptor_path, MAX_DESCRIPTOR_BYTES)
+        if let Ok(bytes) = read_owned_descriptor(self.protected.as_ref(), &self.descriptor_path)
             && let Ok(descriptor) = serde_json::from_slice::<ActiveRootDescriptor>(&bytes)
             && descriptor.host_id == self.host_id
         {
-            let _ = fs::remove_file(&self.descriptor_path);
+            if let Some(store) = &self.protected {
+                if let Some(name) = descriptor_name(&self.descriptor_path) {
+                    let _ = store.remove_document(&name);
+                }
+            } else {
+                let _ = fs::remove_file(&self.descriptor_path);
+            }
         }
         if let Ok(mut controlled) = self.controlled.lock() {
             *controlled = None;
@@ -570,6 +583,50 @@ fn write_descriptor(
         path: path.to_owned(),
         source,
     })
+}
+
+fn descriptor_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(|name| format!("workspace-hosts/{name}"))
+}
+
+fn read_owned_descriptor(
+    store: Option<&crate::storage::ProtectedStore>,
+    path: &Path,
+) -> Result<Vec<u8>, bounded_file::BoundedReadError> {
+    if let Some(store) = store {
+        let result = descriptor_name(path)
+            .ok_or_else(|| anyhow::anyhow!("invalid descriptor name"))
+            .and_then(|name| store.document(&name, MAX_DESCRIPTOR_BYTES));
+        return result
+            .map_err(|error| bounded_file::BoundedReadError::Io {
+                path: path.to_owned(),
+                source: io::Error::other(error.to_string()),
+            })?
+            .ok_or_else(|| bounded_file::BoundedReadError::Io {
+                path: path.to_owned(),
+                source: io::Error::from(io::ErrorKind::NotFound),
+            });
+    }
+    bounded_file::read(path, MAX_DESCRIPTOR_BYTES)
+}
+
+fn write_owned_descriptor(
+    store: Option<&crate::storage::ProtectedStore>,
+    path: &Path,
+    descriptor: &ActiveRootDescriptor,
+) -> Result<(), WorkspaceHostError> {
+    if let Some(store) = store {
+        let name = descriptor_name(path)
+            .ok_or_else(|| WorkspaceHostError::Invalid("invalid descriptor name".into()))?;
+        let bytes = serde_json::to_vec(descriptor)
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))?;
+        return store
+            .set_document(&name, &bytes, MAX_DESCRIPTOR_BYTES)
+            .map_err(|error| WorkspaceHostError::Invalid(error.to_string()));
+    }
+    write_descriptor(path, descriptor)
 }
 
 fn state_for(

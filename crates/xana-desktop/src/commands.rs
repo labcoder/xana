@@ -19,6 +19,7 @@ pub(crate) const WORKBENCH_KEY_CONTEXT: &str = "XanaWorkbench";
 
 pub(crate) const COMMAND_PALETTE_ID: &str = "application.command_palette.v1";
 pub(crate) const QUIT_ID: &str = "application.quit.v1";
+pub(crate) const LOCK_ID: &str = "storage.lock_and_close.v1";
 pub(crate) const MINIMIZE_ID: &str = "application.window.minimize.v1";
 pub(crate) const DOCUMENTATION_ID: &str = "help.documentation.open.v1";
 pub(crate) const CONFIGURATION_FILE_ID: &str = "configuration.file.open.v1";
@@ -37,6 +38,7 @@ actions!(
     [
         ShowCommandPalette,
         QuitXana,
+        LockStorage,
         MinimizeWindow,
         OpenDocumentation,
         OpenConfigurationFile,
@@ -64,6 +66,7 @@ actions!(
 pub(crate) enum WorkbenchCommand {
     ShowCommandPalette,
     Quit,
+    LockStorage,
     Minimize,
     OpenDocumentation,
     OpenConfigurationFile,
@@ -84,6 +87,7 @@ impl WorkbenchCommand {
         match self {
             Self::ShowCommandPalette => COMMAND_PALETTE_ID,
             Self::Quit => QUIT_ID,
+            Self::LockStorage => LOCK_ID,
             Self::Minimize => MINIMIZE_ID,
             Self::OpenDocumentation => DOCUMENTATION_ID,
             Self::OpenConfigurationFile => CONFIGURATION_FILE_ID,
@@ -104,6 +108,7 @@ impl WorkbenchCommand {
         Some(match id {
             COMMAND_PALETTE_ID => Self::ShowCommandPalette,
             QUIT_ID => Self::Quit,
+            LOCK_ID => Self::LockStorage,
             MINIMIZE_ID => Self::Minimize,
             DOCUMENTATION_ID => Self::OpenDocumentation,
             CONFIGURATION_FILE_ID => Self::OpenConfigurationFile,
@@ -171,6 +176,7 @@ fn native_menus() -> Vec<Menu> {
     #[cfg(target_os = "macos")]
     application_items.push(MenuItem::separator());
     application_items.push(MenuItem::action("Quit Xana", QuitXana));
+    application_items.push(MenuItem::action("Stop Work and Lock Storage", LockStorage));
 
     vec![
         Menu::new("Xana").items(application_items),
@@ -221,6 +227,11 @@ pub(crate) fn palette_items(
         .map(|descriptor| palette_item(descriptor, attached_to_foreground_host, run_active))
         .collect::<Vec<_>>();
     items.extend([
+        CommandSearchItem::new(LOCK_ID, "Stop work and lock storage")
+            .subtitle(
+                "Close all Conversation views and stop work before locking this protected home",
+            )
+            .keywords(["privacy", "lock", "storage"]),
         CommandSearchItem::new(FRAME_PERFORMANCE_TOGGLE_ID, "debug frame performance")
             .subtitle("Cycle the GPUI frame-time HUD through hidden, current, and detailed modes")
             .keywords(["fps", "frame", "performance", "debug"]),
@@ -327,6 +338,7 @@ fn command_exposure(stable_id: &str) -> Option<CommandExposure> {
     Some(match stable_id {
         COMMAND_PALETTE_ID => Select(Dispatch(WorkbenchCommand::ShowCommandPalette)),
         QUIT_ID => Select(Dispatch(WorkbenchCommand::Quit)),
+        LOCK_ID => Select(Dispatch(WorkbenchCommand::LockStorage)),
         MINIMIZE_ID => Select(Dispatch(WorkbenchCommand::Minimize)),
         DOCUMENTATION_ID => Select(Dispatch(WorkbenchCommand::OpenDocumentation)),
         CONFIGURATION_FILE_ID => Select(Dispatch(WorkbenchCommand::OpenConfigurationFile)),
@@ -456,7 +468,7 @@ mod tests {
     fn every_desktop_command_has_one_palette_row() {
         let descriptors = desktop_commands(DesktopAuthority::Owner, true);
         let items = palette_items(DesktopAuthority::Owner, false, false);
-        assert_eq!(items.len(), descriptors.len() + 3);
+        assert_eq!(items.len(), descriptors.len() + 4);
         assert_eq!(
             items
                 .iter()
@@ -472,6 +484,7 @@ mod tests {
         for command in [
             WorkbenchCommand::ShowCommandPalette,
             WorkbenchCommand::Quit,
+            WorkbenchCommand::LockStorage,
             WorkbenchCommand::Minimize,
             WorkbenchCommand::OpenDocumentation,
             WorkbenchCommand::OpenConfigurationFile,
@@ -522,6 +535,19 @@ mod tests {
                 descriptor.id
             );
         }
+    }
+
+    #[test]
+    fn storage_lock_is_an_explicit_stop_work_command() {
+        assert!(matches!(
+            palette_selection(LOCK_ID),
+            Some(PaletteSelection::Dispatch(WorkbenchCommand::LockStorage))
+        ));
+        let item = palette_items(DesktopAuthority::Owner, true, true)
+            .into_iter()
+            .find(|item| item.id().as_ref() == LOCK_ID)
+            .expect("lock remains reachable during work");
+        assert!(!item.is_disabled());
     }
 
     #[test]

@@ -72,6 +72,9 @@ requires deliberate user intent and a clear disclosed destination.
 ## Rationale and implementation
 
 [ADR 0004](../adr/0004-protect-managed-content-with-independent-recovery.md)
-records the privacy/recovery tradeoff. Current JSONL history, artifacts and
-private records are not yet application-encrypted. This proposal does not
-retroactively change that fact or authorize migration of an existing home.
+records the privacy/recovery tradeoff. Fresh opt-in homes now use the
+[protected storage facade](../architecture/protected-storage.md), including
+native records, private metadata, artifacts and explicit lock/recovery controls.
+Legacy homes remain plaintext. Reviewed migration, rolling backups and the
+complete memory/automation integration are still pending, so this proposal
+remains Accepted rather than Implemented. No existing home is migrated implicitly.

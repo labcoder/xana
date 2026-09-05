@@ -23,6 +23,7 @@ mod projects;
 mod recovery;
 mod sessions;
 mod skills;
+mod storage_commands;
 mod usage_commands;
 pub(crate) mod vision;
 mod vision_commands;
@@ -102,6 +103,9 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             .map(|_| ())
         }
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
+        Some(Command::Storage(args)) => {
+            storage_commands::run(&args.command, &paths, &mut io::stdout().lock())
+        }
         Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
         Some(Command::Attach(args)) => hosting::run_attach(&args, &paths).await,
         Some(Command::Setup(args)) => {

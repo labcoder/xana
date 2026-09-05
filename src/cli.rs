@@ -217,6 +217,8 @@ pub(crate) enum Command {
     /// Inspect provider-neutral model, request, quota, and credit observations.
     #[command(display_order = 7)]
     Usage(UsageArgs),
+    /// Inspect, initialize, lock or recover Xana-managed encrypted storage.
+    Storage(StorageArgs),
     /// Report configured, available, selected, and authorized capabilities separately.
     #[command(display_order = 8)]
     Capabilities(CapabilitiesArgs),
@@ -277,6 +279,43 @@ pub(crate) enum Command {
     /// Deprecated compatibility alias for connection login/status/logout.
     #[command(hide = true)]
     Auth(AuthArgs),
+}
+
+#[derive(Debug, Args, PartialEq, Eq)]
+pub(crate) struct StorageArgs {
+    #[command(subcommand)]
+    pub(crate) command: StorageCommand,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum StorageCommand {
+    /// Inspect format and lock state without loading a key.
+    Status,
+    /// Create a new user-held recovery key at an explicit destination.
+    RecoveryKey {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Protect a fresh, empty data home; existing data requires migration.
+    Initialize {
+        #[arg(long)]
+        recovery_key: PathBuf,
+        /// Do not bind OS custody; each launch requires XANA_STORAGE_RECOVERY_KEY.
+        #[arg(long)]
+        manual_unlock: bool,
+    },
+    /// Verify encrypted database integrity without exposing content.
+    Verify,
+    /// Lock an idle store; active hosts must first stop and detach their clients.
+    Lock,
+    /// Explicitly unlock through OS custody or an independent recovery key.
+    Unlock {
+        #[arg(long)]
+        recovery_key: Option<PathBuf>,
+        /// Rebind a recovered key to this machine's OS custody.
+        #[arg(long, requires = "recovery_key")]
+        remember: bool,
+    },
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

@@ -215,7 +215,7 @@ pub(crate) fn ensure_interoperable_records(
 }
 
 pub(crate) fn read_document<T: DeserializeOwned>(path: &Path) -> Result<T, PrivateStateError> {
-    let bytes = bounded_file::read(path, MAX_PRIVATE_RECORD_BYTES).map_err(map_read_error)?;
+    let bytes = read_bytes(path)?;
     let document: T =
         serde_json::from_slice(&bytes).map_err(|error| PrivateStateError::Decode {
             path: path.to_owned(),
@@ -279,6 +279,19 @@ fn ensure_one<T: DeserializeOwned + Serialize>(
 fn rollback_created(paths: &[PathBuf]) -> Result<(), PrivateStateError> {
     let mut failures = Vec::new();
     for path in paths.iter().rev() {
+        match protected_document(path) {
+            Ok(Some((store, name))) => {
+                if let Err(error) = store.remove_document(&name) {
+                    failures.push(error.to_string());
+                }
+                continue;
+            }
+            Err(error) => {
+                failures.push(error.to_string());
+                continue;
+            }
+            Ok(None) => {}
+        }
         match fs::remove_file(path) {
             Ok(()) => {}
             Err(source) if source.kind() == io::ErrorKind::NotFound => {}
@@ -296,7 +309,7 @@ fn rollback_created(paths: &[PathBuf]) -> Result<(), PrivateStateError> {
 }
 
 fn inspect<T: DeserializeOwned>(name: &'static str, path: &Path) -> PrivateRecordInspection {
-    let (version, status) = match bounded_file::read(path, MAX_PRIVATE_RECORD_BYTES) {
+    let (version, status) = match read_bytes(path) {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(value) => {
                 let version = value
@@ -314,14 +327,10 @@ fn inspect<T: DeserializeOwned>(name: &'static str, path: &Path) -> PrivateRecor
             }
             Err(_) => (None, PrivateRecordStatus::Invalid),
         },
-        Err(bounded_file::BoundedReadError::Io { source, .. })
-            if source.kind() == io::ErrorKind::NotFound =>
-        {
+        Err(PrivateStateError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             (None, PrivateRecordStatus::Missing)
         }
-        Err(bounded_file::BoundedReadError::TooLarge { .. }) => {
-            (None, PrivateRecordStatus::Invalid)
-        }
+        Err(PrivateStateError::TooLarge { .. }) => (None, PrivateRecordStatus::Invalid),
         Err(_) => (None, PrivateRecordStatus::Indeterminate),
     };
     PrivateRecordInspection {
@@ -332,6 +341,12 @@ fn inspect<T: DeserializeOwned>(name: &'static str, path: &Path) -> PrivateRecor
 }
 
 fn atomic_write_json<T: Serialize>(path: &Path, document: &T) -> Result<(), PrivateStateError> {
+    if let Some((store, name)) = protected_document(path)? {
+        let bytes = serde_json::to_vec(document).map_err(PrivateStateError::Encode)?;
+        return store
+            .set_document(&name, &bytes, MAX_PRIVATE_RECORD_BYTES)
+            .map_err(protected_error);
+    }
     let parent = path.parent().ok_or_else(|| {
         PrivateStateError::Invalid(format!("{} has no parent directory", path.display()))
     })?;
@@ -364,6 +379,48 @@ fn atomic_write_json<T: Serialize>(path: &Path, document: &T) -> Result<(), Priv
         path: path.to_owned(),
         source,
     })
+}
+
+fn protected_error(error: anyhow::Error) -> PrivateStateError {
+    PrivateStateError::Invalid(format!("protected private state: {error:#}"))
+}
+
+fn protected_document(
+    path: &Path,
+) -> Result<Option<(crate::storage::ProtectedStore, String)>, PrivateStateError> {
+    // This is the interoperable-state facade, not generic filesystem decryption.
+    let Some(parent) = path.parent().filter(|parent| {
+        parent
+            .file_name()
+            .is_some_and(|name| name == "interoperable")
+    }) else {
+        return Ok(None);
+    };
+    let Some(data) = parent.parent() else {
+        return Ok(None);
+    };
+    let Some(store) = crate::storage::ProtectedStore::configured(data).map_err(protected_error)?
+    else {
+        return Ok(None);
+    };
+    let file = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| PrivateStateError::Invalid("invalid private document name".into()))?;
+    Ok(Some((store, format!("interoperable/{file}"))))
+}
+
+fn read_bytes(path: &Path) -> Result<Vec<u8>, PrivateStateError> {
+    if let Some((store, name)) = protected_document(path)? {
+        return store
+            .document(&name, MAX_PRIVATE_RECORD_BYTES)
+            .map_err(protected_error)?
+            .ok_or_else(|| PrivateStateError::Io {
+                path: path.to_owned(),
+                source: io::Error::from(io::ErrorKind::NotFound),
+            });
+    }
+    bounded_file::read(path, MAX_PRIVATE_RECORD_BYTES).map_err(map_read_error)
 }
 
 fn map_read_error(error: bounded_file::BoundedReadError) -> PrivateStateError {

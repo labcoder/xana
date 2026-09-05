@@ -26,6 +26,7 @@ sandbox, and conversation history.
 | Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
 | Native tools | Bounded workspace discovery/search, paged reads, explicit file creation, atomic exact edits, timed commands, text/CSV extraction, bundled Xana docs, and reviewed public-HTTPS text fetch |
 | State | Durable native sessions with lossless history, resumable round-budget boundaries, and bounded compaction; Codex thread handles, immutable artifacts, projects, and named profiles |
+| Privacy | Opt-in [protected storage](docs/user/protected-storage.md) for fresh homes, local OS unlock, independent recovery, and explicit locking |
 | Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
 

@@ -88,6 +88,8 @@ engineering contracts used to change it.
 - [Conversations](user/sessions.md) explains durable history, explicit resume,
   bounded compaction, immutable artifacts, inspection, corruption handling,
   and backup limits.
+- [Protected storage](user/protected-storage.md) explains opt-in encrypted homes,
+  OS unlock, independent recovery, locking, and explicit artifact exports.
 - [Espejo](user/espejo.md) explains bounded terminal and Desktop attention
   perspectives, their evidence limits, and exact navigation.
 - [Projects](user/projects.md) explains optional local project identity,

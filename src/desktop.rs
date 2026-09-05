@@ -1166,9 +1166,11 @@ impl DesktopClient {
                 format!("could not resolve Xana paths: {error}"),
             )
         })?;
-        let artifacts = DesktopArtifactReader::new(crate::artifact::ArtifactStore::new(
-            paths.data_dir().join("artifacts"),
-        ));
+        let artifacts = DesktopArtifactReader::new(
+            crate::artifact::ArtifactStore::open(paths.data_dir()).map_err(|error| {
+                DesktopError::new(DesktopErrorCode::StateInvalid, error.to_string())
+            })?,
+        );
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
         let update_signal = DesktopWakeSignal::default();

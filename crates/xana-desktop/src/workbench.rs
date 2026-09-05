@@ -3,7 +3,7 @@
 use crate::{
     commands::{
         self, ArchiveSelectedConversation, ArchiveSelectedProject, BranchSelectedConversation,
-        ClearConversation, CopyFramePerformance, InterruptRun, MinimizeWindow,
+        ClearConversation, CopyFramePerformance, InterruptRun, LockStorage, MinimizeWindow,
         MoveSelectedConversation, NewConversation, OpenConfigurationFile, OpenDocumentation,
         PaletteDestination, PaletteSelection, QuitXana, RenameSelectedProject,
         ResetFramePerformance, RestoreSelectedProject, RevealLogs, ShowActivity,
@@ -133,6 +133,7 @@ pub(crate) struct Workbench {
     settings_view: Entity<SettingsView>,
     palette_open: bool,
     shutdown_pending: bool,
+    lock_after_shutdown: bool,
     close_prompt_open: bool,
     notifications: NotificationPlanner,
     _sidebar_subscription: Subscription,
@@ -385,6 +386,7 @@ impl Workbench {
             settings_view,
             palette_open: false,
             shutdown_pending: false,
+            lock_after_shutdown: false,
             close_prompt_open: false,
             notifications: NotificationPlanner::new(),
             _sidebar_subscription: sidebar_subscription,
@@ -1805,7 +1807,16 @@ impl Workbench {
                         );
                     }
                     if self.shutdown_pending && expected {
-                        window.remove_window();
+                        if self.lock_after_shutdown {
+                            let control = self.control.clone();
+                            window.replace_root(cx, |window, cx| {
+                                let view =
+                                    cx.new(|cx| crate::storage_lock::StorageLock::new(control, cx));
+                                gpui_component::Root::new(view, window, cx)
+                            });
+                        } else {
+                            window.remove_window();
+                        }
                     }
                     keep_running = false;
                 }
@@ -3339,6 +3350,10 @@ impl Workbench {
             WorkbenchCommand::Quit => {
                 self.request_close(window, cx);
             }
+            WorkbenchCommand::LockStorage => {
+                self.lock_after_shutdown = true;
+                self.begin_shutdown(window, cx);
+            }
             WorkbenchCommand::Minimize => window.minimize_window(),
             WorkbenchCommand::OpenDocumentation => {
                 if documentation_url_is_safe(DOCUMENTATION_URL) {
@@ -3713,6 +3728,9 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, _: &QuitXana, window, cx| {
                 this.dispatch(WorkbenchCommand::Quit, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &LockStorage, window, cx| {
+                this.dispatch(WorkbenchCommand::LockStorage, window, cx);
             }))
             .on_action(cx.listener(|this, _: &MinimizeWindow, window, cx| {
                 this.dispatch(WorkbenchCommand::Minimize, window, cx);

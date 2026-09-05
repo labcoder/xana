@@ -194,7 +194,9 @@ impl AttachedState {
                     )
                 })?
                 .notifications;
-        let store = crate::artifact::ArtifactStore::new(paths.data_dir().join("artifacts"));
+        let store = crate::artifact::ArtifactStore::open(paths.data_dir()).map_err(|error| {
+            DesktopError::new(DesktopErrorCode::StateInvalid, error.to_string())
+        })?;
         let attachments = DesktopAttachmentService {
             workspace: workspace.to_path_buf(),
             store: store.clone(),
