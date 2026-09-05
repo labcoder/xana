@@ -111,6 +111,8 @@ impl TuiState {
                 .min(maximum);
                 if delta.is_negative() && self.history_has_older && self.scroll >= maximum {
                     UpdateEffect::LoadOlder(self.viewed_conversation.clone())
+                } else if delta > 0 && self.scroll == 0 && self.history_newer_start().is_some() {
+                    UpdateEffect::LoadNewer(self.viewed_conversation.clone())
                 } else {
                     UpdateEffect::None
                 }

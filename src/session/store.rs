@@ -50,6 +50,11 @@ struct ConversationEntryIndex {
     line_len: usize,
 }
 
+enum PageAnchor {
+    Before(Option<usize>),
+    From(usize),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TornTailRepair {
     pub(crate) truncate_to: u64,
@@ -272,7 +277,24 @@ impl SessionStore {
         before: Option<usize>,
         limit: usize,
     ) -> Result<ConversationPage, SessionError> {
+        Self::read_conversation_page(path, PageAnchor::Before(before), limit)
+    }
+
+    pub(crate) fn conversation_page_from(
+        path: &Path,
+        start: usize,
+        limit: usize,
+    ) -> Result<ConversationPage, SessionError> {
+        Self::read_conversation_page(path, PageAnchor::From(start), limit)
+    }
+
+    fn read_conversation_page(
+        path: &Path,
+        anchor: PageAnchor,
+        limit: usize,
+    ) -> Result<ConversationPage, SessionError> {
         const MAX_PAGE_MESSAGES: usize = 128;
+        const MAX_PAGE_BYTES: usize = 2 * 1024 * 1024;
         let limit = limit.clamp(1, MAX_PAGE_MESSAGES);
         let file = fs::File::open(path).map_err(|source| SessionError::Io {
             path: path.to_owned(),
@@ -288,13 +310,13 @@ impl SessionStore {
         let mut records = 0_usize;
         loop {
             let mut line = Vec::new();
-            let line_len =
-                reader
-                    .read_until(b'\n', &mut line)
-                    .map_err(|source| SessionError::Io {
-                        path: path.to_owned(),
-                        source,
-                    })?;
+            let line_len = Read::by_ref(&mut reader)
+                .take(MAX_RECORD_BYTES.saturating_add(2) as u64)
+                .read_until(b'\n', &mut line)
+                .map_err(|source| SessionError::Io {
+                    path: path.to_owned(),
+                    source,
+                })?;
             if line_len == 0 {
                 break;
             }
@@ -387,8 +409,38 @@ impl SessionStore {
         }
         chain.reverse();
         let total = chain.len();
-        let end = before.unwrap_or(total).min(total);
-        let start = end.saturating_sub(limit);
+        let mut page_bytes = 0_usize;
+        // Both directions start at the exact adjacent cursor, then stop at the
+        // byte or row budget. A backward query cannot emulate a forward page:
+        // variable-sized rows would make its suffix skip unseen messages.
+        let (start, end) = match anchor {
+            PageAnchor::Before(before) => {
+                let end = before.unwrap_or(total).min(total);
+                let mut start = end;
+                while start > end.saturating_sub(limit) {
+                    let next = chain[start - 1].line_len;
+                    if page_bytes.saturating_add(next) > MAX_PAGE_BYTES {
+                        break;
+                    }
+                    page_bytes += next;
+                    start -= 1;
+                }
+                (start, end)
+            }
+            PageAnchor::From(start) => {
+                let start = start.min(total);
+                let mut end = start;
+                while end < start.saturating_add(limit).min(total) {
+                    let next = chain[end].line_len;
+                    if page_bytes.saturating_add(next) > MAX_PAGE_BYTES {
+                        break;
+                    }
+                    page_bytes += next;
+                    end += 1;
+                }
+                (start, end)
+            }
+        };
         let mut file = reader.into_inner();
         let mut messages = Vec::with_capacity(end - start);
         for entry in &chain[start..end] {
@@ -820,5 +872,84 @@ mod tests {
             older.messages[0].content.as_slice(),
             [ContentBlock::Text(text)] if text == "message 44"
         ));
+    }
+
+    #[test]
+    fn history_page_reader_rejects_an_unterminated_record_without_buffering_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("oversized.jsonl");
+        fs::write(&path, vec![b'x'; MAX_RECORD_BYTES * 8]).unwrap();
+        let error = SessionStore::conversation_page(&path, None, 128).unwrap_err();
+        assert!(
+            matches!(error, SessionError::RecordTooLarge { actual, .. } if actual <= MAX_RECORD_BYTES + 2)
+        );
+    }
+
+    #[test]
+    fn variable_size_pages_bound_total_bytes_and_keep_a_contiguous_cursor() {
+        let directory = tempfile::tempdir().unwrap();
+        let session_id = SessionId::new();
+        let created = creation(session_id);
+        let SessionRecord::SessionCreated { thread_id, .. } = created.record else {
+            unreachable!()
+        };
+        let mut store = SessionStore::create(directory.path(), created).unwrap();
+        let mut parent = None;
+        for index in 0..80 {
+            let id = ConversationEntryId::new();
+            store
+                .append(&RecordEnvelope::new(
+                    session_id,
+                    SessionRecord::ConversationEntryAppended {
+                        entry: ConversationEntry {
+                            id,
+                            parent,
+                            agent_id: AgentId::new(),
+                            message: Message::text(
+                                Role::User,
+                                format!("{index}:{}", "x".repeat(32 * 1024)),
+                            ),
+                        },
+                    },
+                ))
+                .unwrap();
+            parent = Some(id);
+        }
+        store
+            .append(&RecordEnvelope::new(
+                session_id,
+                SessionRecord::ThreadHeadMoved {
+                    thread_id,
+                    head: parent,
+                },
+            ))
+            .unwrap();
+        let page = SessionStore::conversation_page(store.path(), None, 128).unwrap();
+        let bytes: usize = page
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .map(|block| match block {
+                ContentBlock::Text(text) => text.len(),
+                _ => 0,
+            })
+            .sum();
+        assert!(bytes <= 2 * 1024 * 1024);
+        assert!(page.has_older);
+        assert_eq!(page.start + page.messages.len(), 80);
+        let older = SessionStore::conversation_page(store.path(), Some(page.start), 128).unwrap();
+        assert_eq!(older.start + older.messages.len(), page.start);
+        let mut next = 0;
+        while next < 80 {
+            let forward = SessionStore::conversation_page_from(store.path(), next, 128).unwrap();
+            assert_eq!(forward.start, next);
+            assert!(!forward.messages.is_empty());
+            assert!(matches!(
+                forward.messages[0].content.as_slice(),
+                [ContentBlock::Text(text)] if text.starts_with(&format!("{next}:"))
+            ));
+            next += forward.messages.len();
+        }
+        assert_eq!(next, 80);
     }
 }

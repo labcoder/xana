@@ -771,6 +771,11 @@ pub(crate) async fn run_native(
         prepared.preferences.activity.into(),
         conversation.clone(),
     );
+    match workspace_host.conversation_history_page(&conversation, None, 1) {
+        Ok(Some(page)) => state.seed_saved_history_cursor(page.total),
+        Ok(None) => {}
+        Err(error) => state.set_status(format!("Saved history paging is unavailable: {error}")),
+    }
     state.set_inline_image_capability(prepared.inline_images.capability_summary());
     if let Some(continuation) = prepared.continuation.take() {
         state.restore_continuation(continuation);

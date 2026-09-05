@@ -392,6 +392,21 @@ impl WorkspaceHost {
         }
     }
 
+    pub(crate) fn conversation_history_from(
+        &self,
+        conversation: &ConversationRef,
+        start: usize,
+        limit: usize,
+    ) -> Result<Option<crate::session::ConversationPage>, WorkspaceHostError> {
+        if let ConversationRef::Native { session_id } = conversation {
+            DurableSession::conversation_page_from(&self.data_root, *session_id, start, limit)
+                .map(Some)
+                .map_err(|error| WorkspaceHostError::Invalid(error.to_string()))
+        } else {
+            self.conversation_history_page(conversation, None, limit)
+        }
+    }
+
     pub(crate) fn archive_managed_conversation(
         &self,
         conversation: &ConversationRef,

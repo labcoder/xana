@@ -102,6 +102,22 @@ pub(super) struct RichDocument {
 }
 
 impl RichDocument {
+    pub(super) fn retained_bytes(&self) -> usize {
+        self.lines.iter().map(|line| line.text.len()).sum::<usize>()
+            + self
+                .links
+                .iter()
+                .map(|link| link.label.len() + link.target.len())
+                .sum::<usize>()
+            + self
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    artifact.label.len() + artifact.details.iter().map(String::len).sum::<usize>()
+                })
+                .sum::<usize>()
+    }
+
     /// Project already-normalized frontend semantics into inert terminal rows.
     ///
     /// This is deliberately a projection, not another content parser. Markdown

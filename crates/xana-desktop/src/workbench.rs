@@ -212,7 +212,7 @@ impl Workbench {
                 ),
                 cx,
             );
-            chat.set_messages(Arc::from(projection.messages()), window, cx);
+            chat.set_messages(projection.messages(), window, cx);
         });
 
         let command_search = cx.new(|cx| CommandSearch::new("xana-command-palette", window, cx));
@@ -499,7 +499,7 @@ impl Workbench {
                     ),
                     cx,
                 );
-                chat.set_messages(Arc::from(self.projection.messages()), window, cx);
+                chat.set_messages(self.projection.messages(), window, cx);
             });
 
             let chat_subscription =
@@ -1936,7 +1936,7 @@ impl Workbench {
     }
 
     fn sync_components(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let messages = Arc::from(self.projection.messages());
+        let messages = self.projection.messages();
         let progress = if let Some(failure) = self.projection.failure() {
             ProgressState::Failed(failure.to_owned().into())
         } else if self.projection.is_running() {
@@ -2867,6 +2867,10 @@ impl Workbench {
             .gap(tokens.spacing.md)
             .p(tokens.spacing.lg)
             .child(status)
+            .when(self.projection.history_omitted(), |panel| {
+                panel.child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child("Older history is outside this bounded display window; the saved Conversation is unchanged."))
+            })
             .child(
                 div()
                     .text_sm()

@@ -1,10 +1,16 @@
 //! Pure application-owned projection from Xana's Desktop protocol to UI state.
 
+mod window;
+
 use gpui::{Image, SharedString};
 use gpui_ai::prelude::{
     Attachment, AttachmentKind, ChatMessage, ChatRole, MessageActions, StreamedContent,
 };
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    cell::OnceCell,
+    collections::{HashMap, VecDeque},
+    sync::Arc,
+};
 use xana::desktop::{
     DesktopActivityItem, DesktopAuthority, DesktopContent, DesktopContentValue,
     DesktopConversationFacts, DesktopEvent, DesktopHostEvent, DesktopHostObservation,
@@ -50,7 +56,9 @@ pub(crate) struct ConversationProjection {
     model: String,
     reasoning_effort: Option<String>,
     artifact_count: usize,
-    messages: Vec<ProjectedMessage>,
+    messages: VecDeque<ProjectedMessage>,
+    cached_messages: OnceCell<Arc<[ChatMessage]>>,
+    history_omitted: bool,
     image_previews: HashMap<String, Arc<Image>>,
     streams: HashMap<DesktopOperationId, String>,
     message_operations: HashMap<DesktopOperationId, String>,
@@ -69,7 +77,7 @@ pub(crate) struct ConversationProjection {
 
 impl ConversationProjection {
     pub(crate) fn from_snapshot(snapshot: &DesktopSnapshot) -> Self {
-        Self {
+        let mut projection = Self {
             authority: snapshot.authority,
             attached_to_foreground_host: snapshot.attached_to_foreground_host,
             connection: snapshot.connection.clone(),
@@ -78,6 +86,8 @@ impl ConversationProjection {
             reasoning_effort: snapshot.reasoning_effort.clone(),
             artifact_count: snapshot.artifact_count,
             messages: snapshot.conversation.iter().map(project_message).collect(),
+            cached_messages: OnceCell::new(),
+            history_omitted: snapshot.conversation_truncated,
             image_previews: HashMap::new(),
             streams: HashMap::new(),
             message_operations: HashMap::new(),
@@ -104,7 +114,9 @@ impl ConversationProjection {
                 snapshot.connection, snapshot.model, snapshot.session_id
             ),
             failure: None,
-        }
+        };
+        projection.bound_history();
+        projection
     }
 
     pub(crate) fn replace_snapshot(&mut self, snapshot: &DesktopSnapshot) {
@@ -120,7 +132,8 @@ impl ConversationProjection {
     }
 
     pub(crate) fn append_user(&mut self, operation_id: DesktopOperationId, text: String) {
-        self.messages.push(ProjectedMessage {
+        self.cached_messages.take();
+        self.messages.push_back(ProjectedMessage {
             id: format!("desktop-user-{operation_id}"),
             role: ChatRole::User,
             text,
@@ -130,9 +143,11 @@ impl ConversationProjection {
         self.active_operation = Some(operation_id);
         self.latest_activity = "Request queued".to_owned();
         self.failure = None;
+        self.bound_history();
     }
 
     pub(crate) fn reject_user(&mut self, operation_id: DesktopOperationId) {
+        self.cached_messages.take();
         let id = format!("desktop-user-{operation_id}");
         self.messages.retain(|message| message.id != id);
         if self.active_operation == Some(operation_id) {
@@ -190,12 +205,13 @@ impl ConversationProjection {
                 message,
             } => self.replace_stream_with_final(operation_id, message),
             DesktopEvent::ToolResult { message, activity } => {
+                self.cached_messages.take();
                 let projected = project_message(&message);
                 if let Some(existing) = self.messages.iter_mut().find(|row| row.id == projected.id)
                 {
                     *existing = projected;
                 } else {
-                    self.messages.push(projected);
+                    self.messages.push_back(projected);
                 }
                 if let Some(activity) = activity {
                     self.upsert_activity(activity);
@@ -266,7 +282,9 @@ impl ConversationProjection {
                 self.latest_activity = "Usage updated".to_owned();
             }
             DesktopEvent::ConversationCleared => {
+                self.cached_messages.take();
                 self.messages.clear();
+                self.history_omitted = false;
                 self.streams.clear();
                 self.message_operations.clear();
                 self.active_operation = None;
@@ -282,6 +300,7 @@ impl ConversationProjection {
                 self.latest_activity = error.message;
             }
         }
+        self.bound_history();
         true
     }
 
@@ -292,6 +311,7 @@ impl ConversationProjection {
         }
         self.failure = Some(message.clone());
         self.latest_activity = message;
+        self.bound_history();
     }
 
     pub(crate) fn apply_host(&mut self, observation: &DesktopHostObservation) {
@@ -315,24 +335,34 @@ impl ConversationProjection {
         }
     }
 
-    pub(crate) fn messages(&self) -> Vec<ChatMessage> {
-        self.messages
-            .iter()
-            .map(|message| {
-                let content = match &message.lifecycle {
-                    MessageLifecycle::Running => StreamedContent::running(message.text.clone()),
-                    MessageLifecycle::Complete => StreamedContent::done(message.text.clone()),
-                    MessageLifecycle::Failed(reason) => {
-                        StreamedContent::failed(message.text.clone(), reason.clone())
-                    }
-                };
-                ChatMessage::new(message.id.clone(), message.role, content)
-                    .attachments(message.resources.iter().map(|resource| {
-                        project_attachment(resource, self.image_previews.get(&resource.artifact_id))
-                    }))
-                    .actions(MessageActions::for_role(message.role))
-            })
-            .collect()
+    pub(crate) fn messages(&self) -> Arc<[ChatMessage]> {
+        Arc::clone(self.cached_messages.get_or_init(|| {
+            self.messages
+                .iter()
+                .map(|message| {
+                    let content = match &message.lifecycle {
+                        MessageLifecycle::Running => StreamedContent::running(message.text.clone()),
+                        MessageLifecycle::Complete => StreamedContent::done(message.text.clone()),
+                        MessageLifecycle::Failed(reason) => {
+                            StreamedContent::failed(message.text.clone(), reason.clone())
+                        }
+                    };
+                    ChatMessage::new(message.id.clone(), message.role, content)
+                        .attachments(message.resources.iter().map(|resource| {
+                            project_attachment(
+                                resource,
+                                self.image_previews.get(&resource.artifact_id),
+                            )
+                        }))
+                        .actions(MessageActions::for_role(message.role))
+                })
+                .collect::<Vec<_>>()
+                .into()
+        }))
+    }
+
+    pub(crate) fn history_omitted(&self) -> bool {
+        self.history_omitted
     }
 
     pub(crate) fn connection(&self) -> &str {
@@ -397,6 +427,7 @@ impl ConversationProjection {
             .into_iter()
             .any(|candidate| candidate == artifact_id)
         {
+            self.cached_messages.take();
             self.image_previews.insert(artifact_id, image);
         }
     }
@@ -496,24 +527,25 @@ impl ConversationProjection {
             .messages
             .iter()
             .position(|message| message.id == message_id)?;
-        self.messages[..index]
-            .iter()
+        self.messages
+            .range(..index)
             .rev()
             .find(|message| message.role == ChatRole::User)
             .map(|message| message.text.as_str())
     }
 
     fn append_stream(&mut self, operation_id: DesktopOperationId, delta: String) {
+        self.cached_messages.take();
         let id = self
             .streams
             .entry(operation_id)
             .or_insert_with(|| format!("desktop-stream-{operation_id}"))
             .clone();
         if let Some(message) = self.messages.iter_mut().find(|message| message.id == id) {
-            message.text.push_str(&delta);
+            window::append_text(&mut message.text, &delta);
             message.lifecycle = MessageLifecycle::Running;
         } else {
-            self.messages.push(ProjectedMessage {
+            self.messages.push_back(ProjectedMessage {
                 id,
                 role: ChatRole::Assistant,
                 text: delta,
@@ -528,6 +560,7 @@ impl ConversationProjection {
         operation_id: DesktopOperationId,
         message: DesktopMessage,
     ) {
+        self.cached_messages.take();
         if let Some(stream_id) = self.streams.remove(&operation_id)
             && let Some(index) = self
                 .messages
@@ -548,11 +581,12 @@ impl ConversationProjection {
             let projected = project_message(&message);
             self.message_operations
                 .insert(operation_id, projected.id.clone());
-            self.messages.push(projected);
+            self.messages.push_back(projected);
         }
     }
 
     fn finish_stream(&mut self, operation_id: DesktopOperationId, failure: Option<String>) {
+        self.cached_messages.take();
         let id = self
             .streams
             .get(&operation_id)
@@ -568,7 +602,7 @@ impl ConversationProjection {
                 .map(MessageLifecycle::Failed)
                 .unwrap_or(MessageLifecycle::Complete);
         } else if let Some(reason) = failure {
-            self.messages.push(ProjectedMessage {
+            self.messages.push_back(ProjectedMessage {
                 id,
                 role: ChatRole::Assistant,
                 text: "The Run ended before Xana received an assistant response.".to_owned(),
@@ -1150,7 +1184,8 @@ mod tests {
         }
 
         let messages = projection.messages();
-        assert_eq!(messages.len(), 513);
+        assert_eq!(messages.len(), 512);
+        assert!(projection.history_omitted());
         assert_eq!(
             messages
                 .last()
@@ -1174,7 +1209,7 @@ mod tests {
             },
         }));
         let messages = projection.messages();
-        assert_eq!(messages.len(), 513);
+        assert_eq!(messages.len(), 512);
         assert_eq!(
             messages
                 .last()
@@ -1256,6 +1291,167 @@ mod tests {
             p95.as_micros(),
             p99.as_micros(),
         );
+    }
+
+    #[test]
+    #[ignore = "release-profile M6 client-window measurement; not a durable-store or paint benchmark"]
+    fn m6_long_history_projection_probe() {
+        for count in [10_000, 100_000] {
+            for run in 0..5 {
+                let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+                let started = std::time::Instant::now();
+                for index in 0..count {
+                    let text = if index % 251 == 0 {
+                        "🦀中".repeat(4096)
+                    } else {
+                        format!(
+                            "message {index}: {}",
+                            "mixed 🦀 text ".repeat(4 + index % 32)
+                        )
+                    };
+                    projection.append_user(DesktopOperationId::new(), text);
+                }
+                let ingest_ms = started.elapsed().as_millis();
+                let mut samples = Vec::new();
+                for _ in 0..20 {
+                    let started = std::time::Instant::now();
+                    std::hint::black_box(projection.messages());
+                    samples.push(started.elapsed().as_micros());
+                }
+                samples.sort_unstable();
+                let mut changed_samples = Vec::new();
+                let operation_id = DesktopOperationId::new();
+                for sequence in 1..=64 {
+                    let started = std::time::Instant::now();
+                    projection.apply(DesktopObservation {
+                        version: xana::desktop::PROTOCOL_VERSION,
+                        sequence,
+                        event: DesktopEvent::AssistantDelta {
+                            operation_id,
+                            text: "stream 🦀 ".repeat(8),
+                        },
+                    });
+                    std::hint::black_box(projection.messages());
+                    changed_samples.push(started.elapsed().as_micros());
+                }
+                changed_samples.sort_unstable();
+                println!(
+                    "m6_changed_snapshot count={count} run={run} p95_us={}",
+                    changed_samples[60]
+                );
+                println!(
+                    "m6_projection count={count} run={run} retained={} text_bytes={} ingest_ms={ingest_ms} snapshot_p95_us={}",
+                    projection.messages.len(),
+                    projection
+                        .messages
+                        .iter()
+                        .map(|message| message.text.len())
+                        .sum::<usize>(),
+                    samples[18]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn long_history_has_a_bounded_window_including_bytes_and_operation_indexes() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        for index in 0..1200 {
+            projection.append_user(
+                DesktopOperationId::new(),
+                format!("{index}:{}", "🦀".repeat(4096)),
+            );
+        }
+        let messages = projection.messages();
+        assert!(messages.len() <= 512);
+        assert!(
+            messages
+                .iter()
+                .map(|message| message.content().text().len())
+                .sum::<usize>()
+                <= 2 * 1024 * 1024
+        );
+        assert!(
+            messages
+                .last()
+                .expect("bounded window retains the latest message")
+                .content()
+                .text()
+                .starts_with("1199:")
+        );
+    }
+
+    #[test]
+    fn unchanged_messages_reuse_the_snapshot_but_stream_updates_do_not() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        projection.append_user(DesktopOperationId::new(), "question".into());
+        let first = projection.messages();
+        projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 1,
+            event: DesktopEvent::Activity {
+                label: "Working".into(),
+            },
+        });
+        assert!(Arc::ptr_eq(&first, &projection.messages()));
+        projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 2,
+            event: DesktopEvent::AssistantDelta {
+                operation_id: DesktopOperationId::new(),
+                text: "answer".into(),
+            },
+        });
+        let changed = projection.messages();
+        assert!(!Arc::ptr_eq(&first, &changed));
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            changed.last().expect("streamed message").content().text(),
+            "answer"
+        );
+    }
+
+    #[test]
+    fn live_tool_evidence_does_not_replace_or_finalize_the_assistant_stream() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        let operation_id = DesktopOperationId::new();
+        projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 1,
+            event: DesktopEvent::AssistantDelta {
+                operation_id,
+                text: "partial".to_owned(),
+            },
+        });
+        projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 2,
+            event: DesktopEvent::ToolResult {
+                message: DesktopMessage {
+                    id: "tool-evidence".to_owned(),
+                    role: DesktopRole::Tool,
+                    content: vec![text_content("bounded result")],
+                },
+                activity: None,
+            },
+        });
+        assert_eq!(projection.messages().len(), 2);
+        projection.apply(DesktopObservation {
+            version: xana::desktop::PROTOCOL_VERSION,
+            sequence: 3,
+            event: DesktopEvent::MessageFinal {
+                operation_id,
+                message: DesktopMessage {
+                    id: "assistant-final".to_owned(),
+                    role: DesktopRole::Assistant,
+                    content: vec![text_content("final answer")],
+                },
+            },
+        });
+        let messages = projection.messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content().text(), "final answer");
+        assert_eq!(messages[1].content().text(), "bounded result");
     }
 
     #[test]

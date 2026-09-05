@@ -1065,8 +1065,22 @@ viewport. The renderer visits a height-derived window (never more than 128
 messages), not the complete projected transcript. Historical native sessions
 use a two-pass journal index: the first bounded scan retains entry ancestry and
 byte offsets, and the second reads only the requested page of at most 128
-messages. The TUI retains at most 512 projected messages and preserves the
-scroll anchor when prepending a page. Durable records remain authoritative.
+messages and 2 MiB of encoded entries. The reader limits each `read_until`
+before allocation, including malformed unterminated records. TUI and Desktop
+retained windows cap 512 messages, 2 MiB of text and 128 resource references;
+the TUI also caps 4 MiB of derived rich-text body per window. While inspecting
+saved history it keeps a separately bounded live tail. Saved pages alone own
+durable cursors: local command results appear separately, live events update
+the tail, and submitting restores that tail without changing the draft. A new
+history inspection refreshes its source cursor from the journal. Older-page
+admission evicts newer rows; forward admission keeps the first unseen rows.
+Selection is invalidated when its cells change, not the composer draft.
+Desktop releases evicted operation indexes and admits decoded image previews
+only within its separate preview byte/count limits. Unchanged Chat snapshots
+reuse an Arc. A changed streamed snapshot still copies the bounded window
+because the pinned component API owns `String` content: this is not claimed
+as changed-row-only projection or unlimited-history storage. Durable records
+remain authoritative; the legacy 10,000-record/16-MiB session cap is unchanged.
 
 The shared frontend projection applies the same inert principle before a
 specialized renderer. Whole fenced code/diff, tables, constrained display

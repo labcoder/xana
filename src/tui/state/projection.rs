@@ -9,8 +9,22 @@ impl TuiState {
     }
 
     pub(in crate::tui) fn apply_runtime(&mut self, event: &AgentEvent) {
-        let viewing_background = self.viewed_conversation != self.runtime_conversation;
+        if matches!(event, AgentEvent::ConversationCleared) {
+            self.restore_live_tail();
+        }
+        let viewing_background = self.viewed_conversation != self.runtime_conversation
+            || (self.history_preview && self.background_messages.is_some());
+        let viewed_history = viewing_background.then(|| {
+            (
+                self.history_start,
+                self.history_end,
+                self.history_has_older,
+                self.history_preview,
+                self.conversation_selection.take(),
+            )
+        });
         if viewing_background {
+            self.history_preview = false;
             let background = self.background_messages.get_or_insert_with(VecDeque::new);
             std::mem::swap(&mut self.messages, background);
         }
@@ -157,6 +171,11 @@ impl TuiState {
             }
             AgentEvent::ConversationCleared => {
                 self.messages.clear();
+                self.history_start = 0;
+                self.history_end = 0;
+                self.history_has_older = false;
+                self.history_preview = false;
+                self.conversation_selection = None;
                 self.status = "Conversation cleared".to_owned();
             }
             AgentEvent::PromptPlanUpdated {
@@ -401,6 +420,13 @@ impl TuiState {
                 row.error |= matches!(event, AgentEvent::OperationFailed { .. });
             }
         }
+        if let Some((start, end, has_older, preview, selection)) = viewed_history {
+            self.history_start = start;
+            self.history_end = end;
+            self.history_has_older = has_older;
+            self.history_preview = preview;
+            self.conversation_selection = selection;
+        }
     }
 
     pub(super) fn interrupt(&mut self) -> UpdateEffect {
@@ -424,9 +450,11 @@ impl TuiState {
             self.active_operation = Some(operation_id);
         }
         if let Some(message) = self.messages.back_mut() {
+            let old_len = message.text.len();
             append_bounded(&mut message.text, text, MAX_MESSAGE_BYTES);
-            message.document.stream_append(text);
+            message.document.stream_append(&message.text[old_len..]);
         }
+        self.bound_tail_window();
     }
 
     fn finish_assistant(&mut self, operation_id: OperationId, message: &Message) {
@@ -444,12 +472,16 @@ impl TuiState {
                 );
             }
             self.messages.push_back(final_message);
-            trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
         }
+        self.bound_tail_window();
     }
 
     pub(super) fn push_message(&mut self, kind: MessageKind, text: impl Into<String>) {
         let text = bounded(text.into(), MAX_MESSAGE_BYTES);
+        if self.history_preview && kind == MessageKind::System {
+            self.show_command_result("Status".to_owned(), text);
+            return;
+        }
         let message = VisibleMessage {
             kind,
             document: RichDocument::plain(&text),
@@ -461,7 +493,7 @@ impl TuiState {
                 .saturating_add(message_row_estimate(&message).min(usize::from(u16::MAX)) as u16);
         }
         self.messages.push_back(message);
-        trim_front(&mut self.messages, MAX_VISIBLE_MESSAGES);
+        self.bound_tail_window();
     }
 
     pub(crate) fn push_activity(&mut self, text: impl Into<String>) {

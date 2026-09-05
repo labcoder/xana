@@ -37,6 +37,30 @@ struct ClassifiedImagePaths {
     external_paths: Vec<String>,
 }
 
+fn load_older_history(state: &mut TuiState, host: &WorkspaceHost, conversation: &ConversationRef) {
+    if state.needs_history_snapshot() {
+        match host.conversation_history_page(conversation, None, 128) {
+            Ok(Some(page)) => state.begin_saved_history_page(page),
+            Ok(None) => {
+                state.set_status("Managed history remains owned by its runtime");
+                return;
+            }
+            Err(error) => {
+                state.set_status(format!("could not inspect saved history: {error}"));
+                return;
+            }
+        }
+    }
+    let Some(before) = state.history_before() else {
+        return;
+    };
+    match host.conversation_history_page(conversation, Some(before), 128) {
+        Ok(Some(page)) => state.prepend_history_page(page),
+        Ok(None) => state.set_status("Managed history remains owned by its runtime"),
+        Err(error) => state.set_status(format!("could not load older history: {error}")),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn stage_typed_path(
     state: &mut TuiState,
@@ -500,18 +524,19 @@ pub(super) async fn dispatch_managed_effect(
             }
         }
         UpdateEffect::LoadOlder(conversation) => {
-            let Some(before) = state.history_before() else {
-                return Ok(None);
-            };
-            match workspace_host.conversation_history_page(&conversation, Some(before), 128) {
-                Ok(Some(page)) => state.prepend_history_page(page),
-                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
-                Err(error) => state.set_status(format!("could not load older history: {error}")),
-            }
+            load_older_history(state, workspace_host, &conversation);
         }
         UpdateEffect::PersistRail(expanded) => {
             if let Err(error) = session_preferences.set_rail_expanded(expanded) {
                 state.set_status(format!("could not save session rail preference: {error}"));
+            }
+        }
+        UpdateEffect::LoadNewer(conversation) => {
+            let Some(start) = state.history_newer_start() else { return Ok(None) };
+            match workspace_host.conversation_history_from(&conversation, start, 128) {
+                Ok(Some(page)) => state.replace_newer_page(page),
+                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
+                Err(error) => state.set_status(format!("could not load newer history: {error}")),
             }
         }
         UpdateEffect::ArchiveConversation(conversation) => {
@@ -1096,18 +1121,21 @@ pub(super) async fn dispatch_effect(
             }
         }
         UpdateEffect::LoadOlder(conversation) => {
-            let Some(before) = state.history_before() else {
-                return Ok(None);
-            };
-            match workspace_host.conversation_history_page(&conversation, Some(before), 128) {
-                Ok(Some(page)) => state.prepend_history_page(page),
-                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
-                Err(error) => state.set_status(format!("could not load older history: {error}")),
-            }
+            load_older_history(state, workspace_host, &conversation);
         }
         UpdateEffect::PersistRail(expanded) => {
             if let Err(error) = session_preferences.set_rail_expanded(expanded) {
                 state.set_status(format!("could not save session rail preference: {error}"));
+            }
+        }
+        UpdateEffect::LoadNewer(conversation) => {
+            let Some(start) = state.history_newer_start() else {
+                return Ok(None);
+            };
+            match workspace_host.conversation_history_from(&conversation, start, 128) {
+                Ok(Some(page)) => state.replace_newer_page(page),
+                Ok(None) => state.set_status("Managed history remains owned by its runtime"),
+                Err(error) => state.set_status(format!("could not load newer history: {error}")),
             }
         }
         UpdateEffect::ArchiveConversation(conversation) => {

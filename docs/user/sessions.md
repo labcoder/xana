@@ -316,9 +316,20 @@ reconcile it.
 
 Current load limits are 256 KiB per record, 10,000 records, and 16 MiB per
 session. Artifact registrations accept at most 4 MiB. Root `AGENTS.md` input is
-at most 64 KiB and its automatic view is bounded independently to 16 KiB and
-1,024 estimated tokens. Compaction summaries default to 16 KiB and remain
+at most 64 KiB; its complete bounded source must fit the request budget rather
+than silently losing later instructions. Compaction summaries default to 16 KiB and remain
 subject to both their configured safe ceiling and the per-record limit.
+
+History pages are also limited to 2 MiB of encoded entries. The TUI and Desktop
+retain at most 512 messages, 2 MiB of text and 128 resource references in their
+display window. The TUI additionally bounds its derived rich-text body to
+4 MiB per window. While inspecting saved history, the TUI keeps a separate
+bounded live tail so new output cannot appear in the middle of an older page.
+Submitting restores that live tail; your draft is preserved. Local status
+commands open a result panel during history inspection instead of becoming
+saved messages. Scrolling an inspected native history to either end loads the
+adjacent saved page when one exists. These are view limits, not deletion. They do not
+raise the legacy journal's record/size limits above.
 
 ## Backup expectations and limits
 

@@ -8,6 +8,128 @@ use crate::{
 use uuid::Uuid;
 
 #[test]
+fn paging_older_history_keeps_the_requested_page_instead_of_evicting_it() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.messages.clear();
+    state.composer.insert("draft stays here").unwrap();
+    for index in 128..640 {
+        state.push_message(MessageKind::User, format!("message {index}"));
+    }
+    state.seed_saved_history_cursor(640);
+    assert_eq!(state.history_before(), Some(128));
+    state.prepend_history_page(crate::session::ConversationPage {
+        messages: (0..128)
+            .map(|index| Message::text(Role::User, format!("message {index}")))
+            .collect(),
+        start: 0,
+        total: 640,
+        has_older: false,
+    });
+    assert_eq!(state.messages.front().unwrap().text, "message 0");
+    assert_eq!(state.messages.len(), 512);
+    assert_eq!(state.composer.text, "draft stays here");
+    assert_eq!(state.history_before(), None);
+    assert_eq!(state.history_newer_start(), Some(512));
+    state.replace_newer_page(crate::session::ConversationPage {
+        messages: (512..640)
+            .map(|index| Message::text(Role::User, format!("message {index}")))
+            .collect(),
+        start: 512,
+        total: 640,
+        has_older: true,
+    });
+    assert_eq!(state.messages.back().unwrap().text, "message 639");
+    assert_eq!(state.history_newer_start(), None);
+    assert_eq!(state.composer.text, "draft stays here");
+}
+
+#[test]
+fn conversation_window_caps_aggregate_text_not_only_the_number_of_messages() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.messages.clear();
+    for index in 0..600 {
+        state.push_message(
+            MessageKind::User,
+            format!("{index}:{}", "x".repeat(16 * 1024)),
+        );
+    }
+    assert!(
+        state
+            .messages
+            .iter()
+            .map(|message| message.text.len())
+            .sum::<usize>()
+            <= 2 * 1024 * 1024
+    );
+    assert!(state.messages.back().unwrap().text.starts_with("599:"));
+}
+
+#[test]
+fn saved_history_stays_contiguous_while_live_output_and_local_status_remain_separate() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.messages.clear();
+    state.push_message(MessageKind::User, "live tail");
+    state.begin_saved_history_page(crate::session::ConversationPage {
+        messages: (20..22)
+            .map(|n| Message::text(Role::User, format!("saved {n}")))
+            .collect(),
+        start: 20,
+        total: 100,
+        has_older: true,
+    });
+    state.push_message(MessageKind::System, "local usage report");
+    assert_eq!(state.messages.len(), 2);
+    assert!(state.overlay.is_some());
+    assert_eq!(state.history_newer_start(), Some(22));
+    let operation_id = OperationId::new();
+    state.apply_runtime(&AgentEvent::AssistantMessage {
+        operation_id,
+        message: Message::text(Role::Assistant, "live answer"),
+    });
+    assert_eq!(state.messages.front().unwrap().text, "saved 20");
+    assert_eq!(state.history_newer_start(), Some(22));
+    state.mark_submitted(OperationId::new(), "next question".to_owned());
+    assert_eq!(state.messages.front().unwrap().text, "live tail");
+    assert!(
+        state
+            .messages
+            .iter()
+            .any(|message| message.text == "live answer")
+    );
+    assert_eq!(state.messages.back().unwrap().text, "next question");
+    assert!(state.needs_history_snapshot());
+    state.seed_saved_history_cursor(100);
+    state.apply_runtime(&AgentEvent::ConversationCleared);
+    state.push_message(MessageKind::User, "new conversation");
+    assert_eq!(state.history_before(), None);
+    assert_eq!(state.history_newer_start(), None);
+}
+
+#[test]
+fn forward_page_keeps_its_first_unseen_row_when_client_bytes_are_tighter() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.history_preview = true;
+    state.replace_newer_page(crate::session::ConversationPage {
+        messages: (50..150)
+            .map(|n| Message::text(Role::User, format!("{n}:{}", "x".repeat(32 * 1024))))
+            .collect(),
+        start: 50,
+        total: 200,
+        has_older: true,
+    });
+    assert!(state.messages.front().unwrap().text.starts_with("50:"));
+    assert!(state.messages.len() < 100);
+    assert_eq!(state.history_newer_start(), Some(50 + state.messages.len()));
+}
+
+#[test]
+fn append_respects_even_a_sub_marker_remaining_byte_budget() {
+    let mut text = "1234".to_owned();
+    append_bounded(&mut text, "🦀", 5);
+    assert!(text.len() <= 5);
+}
+
+#[test]
 fn managed_usage_replaces_cumulative_snapshots_without_double_counting() {
     let conversation_id = ConversationId::new();
     let mut state = TuiState::from_managed(
@@ -1187,6 +1309,8 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
         other.clone(),
         Some(vec![Message::text(Role::User, "retained history")]),
     );
+    state.seed_saved_history_cursor(400);
+    assert_eq!(state.history_before(), Some(399));
     state.update_input(InputAction::Insert("local draft".to_owned()));
     assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
     assert_eq!(state.composer.text, "local draft");
@@ -1198,6 +1322,8 @@ fn session_inspection_keeps_the_runtime_transcript_and_draft_separate() {
         message: Message::text(Role::Assistant, "background result"),
     });
     assert_eq!(state.messages.back().unwrap().text, "retained history");
+    assert_eq!(state.history_before(), Some(399));
+    assert_eq!(state.history_newer_start(), None);
     assert!(
         state
             .sessions

@@ -287,6 +287,17 @@ impl DurableSession {
             .context("could not page durable conversation")
     }
 
+    pub(crate) fn conversation_page_from(
+        data_dir: &Path,
+        session_id: SessionId,
+        start: usize,
+        limit: usize,
+    ) -> Result<ConversationPage> {
+        let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
+        SessionStore::conversation_page_from(&path, start, limit)
+            .context("could not page newer durable conversation")
+    }
+
     pub(crate) fn latest_for_workspace(
         data_dir: &Path,
         workspace_root: &Path,

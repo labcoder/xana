@@ -2,6 +2,7 @@
 
 mod commands;
 mod projection;
+mod window;
 
 pub(super) use super::composer::MoveDirection;
 use super::composer::{Composer, MAX_INPUT_BYTES, sanitize_input};
@@ -268,6 +269,7 @@ pub(super) enum UpdateEffect {
     ViewSession(ConversationRef),
     SwitchConversation(ConversationRef),
     LoadOlder(ConversationRef),
+    LoadNewer(ConversationRef),
     PersistRail(bool),
     ArchiveConversation(ConversationRef),
     PersistActivity(ActivityPaneChoice),
@@ -455,6 +457,8 @@ pub(super) struct TuiState {
     queued: BTreeMap<ConversationRef, VecDeque<QueuedTurn>>,
     background_messages: Option<VecDeque<VisibleMessage>>,
     history_start: usize,
+    history_end: usize,
+    history_preview: bool,
     history_has_older: bool,
     pub(super) workspace: std::path::PathBuf,
     pub(super) workspace_id: String,
@@ -639,6 +643,8 @@ impl TuiState {
             queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
+            history_end: 0,
+            history_preview: false,
             history_has_older: false,
             workspace: std::path::PathBuf::new(),
             workspace_id: String::new(),
@@ -658,7 +664,7 @@ impl TuiState {
             .iter()
             .map(message_projection)
             .collect::<VecDeque<_>>();
-        trim_front(&mut messages, MAX_VISIBLE_MESSAGES);
+        window::bound(&mut messages, false);
         let mut state = Self {
             connection: snapshot.connection.clone(),
             model: snapshot.model.clone(),
@@ -703,6 +709,8 @@ impl TuiState {
             queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
+            history_end: 0,
+            history_preview: false,
             history_has_older: false,
             workspace: std::path::PathBuf::new(),
             workspace_id: String::new(),
@@ -770,6 +778,8 @@ impl TuiState {
             queued: BTreeMap::new(),
             background_messages: None,
             history_start: 0,
+            history_end: 0,
+            history_preview: false,
             history_has_older: false,
             workspace: std::path::PathBuf::new(),
             workspace_id: String::new(),
@@ -849,6 +859,7 @@ impl TuiState {
     }
 
     pub(super) fn mark_submitted(&mut self, operation_id: OperationId, input: String) {
+        self.restore_live_tail();
         self.push_message(MessageKind::User, input);
         self.busy = true;
         self.work_indicator_frame = 0;
@@ -1242,15 +1253,16 @@ impl TuiState {
         }
         let history = page.as_ref().map(|page| page.messages.as_slice());
         if conversation == self.runtime_conversation {
-            if self.viewed_conversation != self.runtime_conversation
-                && let Some(messages) = self.background_messages.take()
-            {
+            if let Some(messages) = self.background_messages.take() {
                 self.messages = messages;
             }
+            self.history_preview = false;
             self.viewed_conversation = conversation.clone();
             self.status = "Viewing the runtime conversation".to_owned();
         } else {
-            if self.viewed_conversation == self.runtime_conversation {
+            if self.viewed_conversation == self.runtime_conversation
+                && self.background_messages.is_none()
+            {
                 self.background_messages = Some(std::mem::take(&mut self.messages));
             }
             self.messages = history.map_or_else(
@@ -1264,23 +1276,30 @@ impl TuiState {
                     }])
                 },
                 |history| {
-                    let mut messages = history
+                    history
                         .iter()
                         .map(message_projection)
-                        .collect::<VecDeque<_>>();
-                    trim_front(&mut messages, MAX_VISIBLE_MESSAGES);
-                    messages
+                        .collect::<VecDeque<_>>()
                 },
             );
             self.viewed_conversation = conversation.clone();
+            self.history_preview = page.is_some();
             self.status = if self.busy {
                 "Inspecting another conversation; the active root remains controlled in its original conversation".to_owned()
             } else {
                 "Inspecting retained history; use exact resume to continue it".to_owned()
             };
         }
-        self.history_start = page.as_ref().map_or(0, |page| page.start);
-        self.history_has_older = page.as_ref().is_some_and(|page| page.has_older);
+        if conversation == self.runtime_conversation {
+            self.seed_saved_history_cursor(
+                page.as_ref().map_or(self.messages.len(), |page| page.total),
+            );
+        } else {
+            self.history_start = page.as_ref().map_or(0, |page| page.start);
+            self.history_has_older = page.as_ref().is_some_and(|page| page.has_older);
+            self.history_end = self.history_start.saturating_add(self.messages.len());
+        }
+        self.bound_tail_window();
         self.scroll = 0;
         if let Some(row) = self
             .sessions
@@ -1294,6 +1313,13 @@ impl TuiState {
     }
 
     pub(super) fn prepend_history_page(&mut self, page: crate::session::ConversationPage) {
+        if self.viewed_conversation == self.runtime_conversation && !self.history_preview {
+            self.background_messages = Some(self.messages.clone());
+        }
+        self.history_preview = true;
+        self.history_end = self
+            .history_end
+            .max(self.history_start.saturating_add(self.messages.len()));
         let added = page.messages.len();
         let mut older = page
             .messages
@@ -1301,8 +1327,11 @@ impl TuiState {
             .map(message_projection)
             .collect::<VecDeque<_>>();
         older.append(&mut self.messages);
-        trim_front(&mut older, MAX_VISIBLE_MESSAGES);
+        // Retain the requested older page, not the newest tail it replaces.
+        window::bound(&mut older, true);
         self.messages = older;
+        self.conversation_selection = None;
+        self.scroll = u16::MAX;
         self.history_start = page.start;
         self.history_has_older = page.has_older;
         self.status = format!(
@@ -1322,8 +1351,30 @@ impl TuiState {
                 .to_owned();
     }
 
+    pub(super) fn seed_saved_history_cursor(&mut self, total: usize) {
+        self.history_start = total.saturating_sub(self.messages.len());
+        self.history_end = total;
+        self.history_has_older = self.history_start > 0;
+    }
+
     pub(super) fn history_before(&self) -> Option<usize> {
         self.history_has_older.then_some(self.history_start)
+    }
+
+    pub(super) fn history_newer_start(&self) -> Option<usize> {
+        let end = self.history_start.saturating_add(self.messages.len());
+        (self.history_preview && end < self.history_end).then_some(end)
+    }
+
+    pub(super) fn replace_newer_page(&mut self, page: crate::session::ConversationPage) {
+        self.messages = page.messages.iter().map(message_projection).collect();
+        self.history_start = page.start;
+        self.history_end = page.total;
+        self.history_has_older = page.has_older;
+        window::bound(&mut self.messages, true);
+        self.conversation_selection = None;
+        self.scroll = u16::MAX;
+        self.status = "Loaded newer saved history".to_owned();
     }
 
     pub(super) fn attach_conversation(&mut self, conversation: ConversationRef) -> UpdateEffect {
@@ -1604,7 +1655,7 @@ pub(super) fn append_bounded(target: &mut String, value: &str, limit: usize) {
         boundary = boundary.saturating_sub(1);
     }
     target.push_str(&value[..boundary]);
-    target.push_str("...");
+    target.push_str(&"..."[..remaining.min(3)]);
 }
 
 fn trim_front<T>(values: &mut VecDeque<T>, limit: usize) {
