@@ -27,7 +27,10 @@ choice does not require authentication to edit files in another application.
 
 ## Consequences
 
-A library experiment and four-target evidence precede dependency selection.
+A library experiment and native Windows evidence precede Windows-first
+dependency selection. The owner deferred native macOS and Linux validation to
+integrated release acceptance so unavailable hardware does not stop development.
+This changes sequencing, not the protection contract or supported-target gates.
 Reviewed migration fences old writers, verifies activation and preserves
 recoverability. Locking must settle or record uncertain work before dropping
 usable keys. Backups and restore obey forgetting exclusions; external copies

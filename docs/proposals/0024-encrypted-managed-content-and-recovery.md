@@ -37,7 +37,12 @@ The library choice remains gated on a runnable feasibility proof: transactional
 encrypted records, bounded lexical/FTS search, bounded artifact ranges, tamper/
 truncation rejection, cancellation, journal/temp canary scans, interrupted-write
 recovery, licenses, exact native dependencies, package/resource costs and native
-Windows x64, macOS ARM64/Intel and Linux x64 glibc evidence. No custom crypto.
+Windows x64 evidence before Windows-first integration. Native macOS ARM64/Intel
+and Linux x64 glibc validation is deferred until integrated release acceptance;
+it does not block dependency selection or Windows implementation. Those targets
+still require real custody, recovery, lifecycle, packaging and resource evidence
+before this contract is declared fully implemented. Missing runs are not passes.
+No custom crypto.
 An isolated experiment is not production dependency acceptance. A failed gate
 must be resolved or brought to the owner, not weakened silently.
 
