@@ -6,7 +6,9 @@ use crate::{
     identity::{ArtifactId, ConversationEntryId},
     session::{
         CompactionCheckpoint,
-        compaction::{CompactionSourceProof, CompactionSourceProofBuilder},
+        compaction::{
+            CompactionPrefixAccumulator, CompactionSourceProof, CompactionSourceProofBuilder,
+        },
     },
 };
 use std::collections::{BTreeSet, HashMap};
@@ -16,6 +18,13 @@ const PROOF_PAGE: usize = 128;
 // Conversation because sequence follows kind/subject there. This schema-v7+
 // record index bounds each lookup to one record without weakening set equality.
 const SUBJECT_LOOKUP: &str = "SELECT kind,subject FROM native_subjects INDEXED BY native_subjects_record WHERE session=?1 AND sequence=?2 LIMIT 129";
+
+/// One original-byte hash prefix verified in this same immutable transaction.
+/// Never persisted or reconstructed from a checkpoint's claimed digest.
+struct VerifiedPrefix {
+    checkpoint: CompactionCheckpoint,
+    accumulator: CompactionPrefixAccumulator,
+}
 #[cfg(test)]
 mod tests;
 
@@ -98,6 +107,7 @@ impl ProtectedStore {
             let mut digest = String::new();
             let mut head = None;
             let mut entries = 0usize;
+            let mut verified_prefix = None;
             while let Some(row) = rows.next()? {
                 ensure!(read_usize(row,0)? == sequence, "immutable journal sequence is discontinuous");
                 let body = row.get_ref(2)?.as_blob()?;
@@ -160,7 +170,13 @@ impl ProtectedStore {
                     }
                     SessionRecord::ThreadHeadMoved { thread_id, head: next } => {
                         ensure!(thread_id.to_string() == expected.2, "Conversation head belongs to another thread");
-                        if let Some(next) = next { ensure!(entry_metadata(&tx,id,*next)?.1 < sequence, "Conversation head references a future entry"); }
+                        if let Some(next) = next {
+                            let (parent, position) = entry_metadata(&tx,id,*next)?;
+                            ensure!(position < sequence, "Conversation head references a future entry");
+                            // Preserve the cache only through ordinary append moves.
+                            // Clears, rewinds and branch switches get a fresh proof.
+                            if parent.map(|id| id.to_string()) != head { verified_prefix = None; }
+                        } else { verified_prefix = None; }
                         head = next.map(|id| id.to_string());
                     }
                     SessionRecord::ArtifactRegistered {artifact} => {
@@ -198,11 +214,15 @@ impl ProtectedStore {
                         timing.record("compaction_position", started);
                         #[cfg(test)]
                         let started = timing.start();
-                        let proof = historical_proof(&tx,id,checkpoint,sequence)?;
+                        let proof = historical_proof(&tx,id,checkpoint,sequence,verified_prefix.as_ref(),
+                            #[cfg(test)] &mut 0)?;
                         #[cfg(test)]
                         timing.record("compaction_source_proof", started);
                         ensure!(proof.matches(id,checkpoint) && crate::session::compaction::validate_summary(&checkpoint.summary,checkpoint.budget.summary_max_bytes), "historical compaction source or summary differs");
                         ensure!(checkpoint.semantic.as_ref().is_none_or(|provenance| provenance.valid_for(&checkpoint.summary)), "semantic compaction provenance differs");
+                        verified_prefix = Some(VerifiedPrefix {
+                            checkpoint: checkpoint.clone(), accumulator: proof.accumulator(),
+                        });
                     }
                     _ => {}
                 }
@@ -267,15 +287,44 @@ fn historical_proof(
     session: SessionId,
     checkpoint: &CompactionCheckpoint,
     before: usize,
+    prefix: Option<&VerifiedPrefix>,
+    #[cfg(test)] source_records_read: &mut usize,
 ) -> Result<CompactionSourceProof> {
-    let total = checkpoint
+    let absolute_total = checkpoint
         .source_entry_count
         .checked_add(1)
         .context("compaction count overflow")?;
     ensure!(
-        total > 1 && total <= MAX_PROTECTED_RECORDS,
+        absolute_total > 1 && absolute_total <= MAX_PROTECTED_RECORDS,
         "compaction source exceeds supported history range"
     );
+    let prefix = prefix.filter(|prefix| {
+        checkpoint.previous_checkpoint == Some(prefix.checkpoint.id)
+            && prefix.accumulator.matches(session, &prefix.checkpoint)
+    });
+    let (mut proof, total, boundary) = if let Some(prefix) = prefix {
+        let source_count = checkpoint
+            .source_entry_count
+            .checked_sub(prefix.checkpoint.source_entry_count)
+            .filter(|count| *count > 0)
+            .context("historical compaction prefix must advance")?;
+        (
+            CompactionSourceProofBuilder::from_prefix(
+                &prefix.accumulator,
+                checkpoint.source_entry_count,
+            )?,
+            source_count
+                .checked_add(1)
+                .context("compaction count overflow")?,
+            Some(prefix.checkpoint.source_end),
+        )
+    } else {
+        (
+            CompactionSourceProofBuilder::new(session, checkpoint.source_entry_count),
+            absolute_total,
+            None,
+        )
+    };
     // Retain only one metadata anchor per page, never historical message bodies.
     let mut anchors = Vec::with_capacity(total.div_ceil(PROOF_PAGE));
     let mut cursor = Some(checkpoint.retained_tail_start);
@@ -294,10 +343,9 @@ fn historical_proof(
         cursor = parent;
     }
     ensure!(
-        cursor.is_none(),
-        "historical compaction count does not cover its original prefix"
+        cursor == boundary,
+        "historical compaction count does not meet its verified original prefix boundary"
     );
-    let mut proof = CompactionSourceProofBuilder::new(session, checkpoint.source_entry_count);
     for (tail, count) in anchors.into_iter().rev() {
         let mut ids = Vec::with_capacity(count);
         let mut cursor = Some(tail);
@@ -309,6 +357,10 @@ fn historical_proof(
         }
         for (id, parent, sequence) in ids.into_iter().rev() {
             let record = original_record(tx, session, sequence)?;
+            #[cfg(test)]
+            {
+                *source_records_read += 1;
+            }
             ensure!(
                 record.session_id == session && record.version == SESSION_RECORD_VERSION,
                 "historical proof identity differs"
