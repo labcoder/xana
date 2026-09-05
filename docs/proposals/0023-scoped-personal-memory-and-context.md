@@ -109,8 +109,14 @@ with artifact outliers in release builds. Virtual painting alone is insufficient
 ## Scope and implementation
 
 Context budgets, deterministic compaction, artifact references and bounded
-frontend snapshots already exist. Automatic memory, semantic processing and
-cross-Conversation recall remain future work. Optional embeddings, graph stores,
+frontend snapshots already exist. The initial delivered subset additionally
+preserves complete required instructions or rejects assembly, publishes per-request
+root/child section costs, and retains oversized tool output behind typed artifact
+references in live and restored clients. Retained client windows and saved-history
+paging are bounded; the legacy store limit has not been raised. See
+[Architecture](../architecture/README.md) and [project context](../user/project-context.md)
+for the current behavior. This proposal remains Accepted, not Implemented:
+automatic memory, semantic processing and cross-Conversation recall remain future
+work. Optional embeddings, graph stores,
 RLM kernels, external memory vendors and automatic policy/Skill refinement are
 not required. User and Architecture docs describe only implemented slices.
-
