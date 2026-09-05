@@ -2,8 +2,8 @@
 
 > Audience: People using Xana's encrypted local content store.
 
-Protected storage is opt-in. Existing homes remain unchanged and are **not**
-retroactively encrypted. `xana storage status` inspects the format without
+Protected storage is opt-in. Existing homes remain unchanged until an explicitly
+reviewed migration. `xana storage status` inspects the format without
 unlocking it. `xana doctor` distinguishes legacy, locked, unavailable-key and
 invalid protected storage. No unavailable protected store falls back to plaintext.
 
@@ -89,3 +89,83 @@ erasure. Incomplete initialization fails closed and retains encrypted remnants
 for review. Do not remove the format marker to force an old binary to open a
 protected home. New configuration uses schema version 5; older configurations
 remain readable without automatic mutation.
+
+## Migrate an existing home
+
+Close every Xana client/host using that home. First finish any pending
+`xana config migrate --apply` transaction and resolve invalid private records
+reported by doctor. Keep an independent recovery key outside the data directory.
+
+```text
+xana storage migrate
+xana storage migrate --apply --review DIGEST_FROM_PREVIEW --recovery-key /separate/recovery.key
+xana storage verify
+```
+
+The preview hashes the config and bounded inventory; changed source files
+invalidate approval. Conversion preserves Conversation/record IDs, managed
+handles, project state, artifact references and original recency. Config schema
+5 fences old binaries. A restart journal and exclusive writer checks prevent
+competing writes while the verified encrypted generation is activated.
+Add `--manual-unlock` to deliberately select recovery-file rather than OS custody.
+
+After interruption, use the same independent key:
+
+```text
+xana storage migrate --resume --recovery-key /separate/recovery.key
+```
+
+The command reports the retained `data.legacy.UUID` plaintext generation.
+**It is not deleted automatically and is not encrypted retroactively.** Check
+recovery and your records before deciding whether to remove it. Secure SSD
+erasure is not promised. An unexpected changed source/destination stops recovery
+with both generations retained; do not remove the journal to force startup.
+
+Unknown derived files and torn journal tails are kept as encrypted archives,
+not installed as live plaintext files. Inspect/export them explicitly:
+
+```text
+xana storage archive
+xana storage archive --after LAST_ID
+xana storage archive --export ARCHIVE_ID --output /chosen/new-file
+```
+
+## Backups and reviewed restore
+
+```text
+xana storage backup-policy
+xana storage backup-policy --retention-days 7 --max-snapshots 7 --max-bytes 1073741824
+xana storage backup
+xana storage backup --if-due
+```
+
+Defaults are seven days, seven snapshots, one GiB, and a 24-hour due interval.
+The default directory is a `data.backups` sibling of the data directory; set an
+absolute `--directory` on `backup-policy` to choose another disk. `--enabled
+false` skips due-driven maintenance, not an explicitly requested backup.
+These commands perform maintenance when invoked; they do not install a timer,
+OS service or remote synchronization. A detached scheduler is separate work.
+
+Snapshots use the encrypted-to-encrypted SQLite backup API and copy immutable
+age objects, then verify database pages, history/references and complete objects.
+Only a verified replacement permits bounded pruning. Unrecognized files or a
+live snapshot reader prevent cleanup. If size/space prevents a fresh copy, the
+last usable snapshot remains and missing coverage is reported. No canonical
+Conversation history expires because of this policy. Interrupted `.pending`
+generations are not usable snapshots or silently counted as coverage.
+
+```text
+xana storage restore --snapshot /chosen/SNAPSHOT_UUID --recovery-key /separate/recovery.key
+xana storage restore --snapshot /chosen/SNAPSHOT_UUID --recovery-key /separate/recovery.key --apply --review DIGEST_FROM_PREVIEW
+xana storage restore --resume --recovery-key /separate/recovery.key
+```
+
+Restore requires a protected or empty destination home and all owners stopped.
+It replaces only protected content; ordinary sources, configuration, installed
+plugin code and inert preferences stay in place. The prior encrypted generation
+is retained. It does not replay model/tool operations or reinstate background
+authority. Recall, learning and automation require a later review of current
+forgetting exclusions and grant/job state; restoring older bytes is not consent
+to use them. Rebind OS custody explicitly with `storage unlock ... --remember`
+when recovering on another machine. Backups do not include vendor credentials,
+ordinary configuration or source files; maintain those separately as needed.

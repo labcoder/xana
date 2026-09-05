@@ -48,3 +48,28 @@ retain the 2 MiB bound. No transparent editor temporary-file decryption exists.
 
 See [protected storage](../user/protected-storage.md) for privacy boundaries and
 [native storage build inputs](../contributing/native-storage.md) for exact pins.
+
+## Generation lifecycle
+
+`storage::migration` inventories/hashes a selected legacy data directory, verifies
+independent recovery before fencing, preserves ordinary settings/package code,
+and imports records through existing history semantics. Unknown derived files
+become explicit encrypted archives. Config version 5 blocks older readers;
+a bounded sibling restart journal blocks current admissions during conversion
+and recoverable rename gaps. Source and prepared generations remain distinct.
+Windows writer locks are reacquired after directory renames and the source is
+revalidated before activation. An unexpected mutation fails closed.
+
+`storage::backup` uses keyed SQLite backup connections with matching SQLCipher
+settings and separately copies immutable ciphertext. Full page authentication,
+structural/referential validation and complete artifact authentication precede
+publication and retention cleanup. A shared backup-directory lock serializes
+maintenance. Count/age/byte bounds never delete the last usable copy before its
+replacement verifies. These are explicit/due-checked maintenance calls, not an
+independent background scheduler.
+
+`storage::restore` publishes a verified protected generation while leaving
+ordinary files untouched and retaining the prior encrypted generation. A
+durable review-required marker prevents future memory/automation services from
+treating restored eligibility/grants as current authority. There is no automatic
+effect replay, deletion of plaintext legacy copies, or secure-erasure promise.

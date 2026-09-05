@@ -75,6 +75,11 @@ requires deliberate user intent and a clear disclosed destination.
 records the privacy/recovery tradeoff. Fresh opt-in homes now use the
 [protected storage facade](../architecture/protected-storage.md), including
 native records, private metadata, artifacts and explicit lock/recovery controls.
-Legacy homes remain plaintext. Reviewed migration, rolling backups and the
-complete memory/automation integration are still pending, so this proposal
+Existing homes remain plaintext until the owner explicitly reviews and applies
+migration. Migration now preserves the prior generation and resumes interrupted
+activation. Encrypted backup commands enforce rolling retention and verify a
+replacement before pruning; restored generations require memory/automation
+authority review. Maintenance runs when invoked, including a due-checked mode;
+it does not yet install an automatic scheduler. Complete memory/automation
+integration and native-platform acceptance remain pending, so this proposal
 remains Accepted rather than Implemented. No existing home is migrated implicitly.

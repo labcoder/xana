@@ -3,13 +3,17 @@
 //! The composition root supplies custody or a recovery key. A handle owns one
 //! connection; clones share its revocable unlock state, not a process-global key.
 
+pub(crate) mod backup;
 mod database;
 mod documents;
 mod encrypted_artifacts;
 mod history;
 mod keys;
+pub(crate) mod migration;
 mod private_file;
 mod reset;
+pub(crate) mod restore;
+mod verification;
 
 #[cfg(test)]
 mod tests;
@@ -90,6 +94,10 @@ impl ProtectedStore {
     }
 
     pub(crate) fn status(data_dir: &Path) -> Result<StorageStatus> {
+        ensure!(
+            !migration::journal_path(data_dir).exists(),
+            "storage transition is pending; resume the reviewed migration/restore before opening Xana"
+        );
         let root = data_dir.join("protected");
         let Some(bootstrap) = read_bootstrap(&root)? else {
             return Ok(StorageStatus::Legacy);

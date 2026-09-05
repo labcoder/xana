@@ -12,7 +12,10 @@ use tempfile::tempdir;
 
 fn xana(home: &Path) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_xana"));
-    command.env("XANA_HOME", home).env("NO_COLOR", "1");
+    command
+        .env("XANA_HOME", home)
+        .env("NO_COLOR", "1")
+        .env_remove("XANA_STORAGE_RECOVERY_KEY");
     command
 }
 
@@ -305,6 +308,115 @@ fn protected_home_setup_stream_restart_lock_and_manual_recovery() {
     );
     assert_success(&command().args(["storage", "verify"]).output().unwrap());
     assert!(home.join("data/protected/content.sqlite").is_file());
+}
+
+#[test]
+fn storage_migration_backup_and_restore_preserve_a_real_cli_conversation() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let key = directory.path().join("recovery.key");
+    let (url, worker) = fake_chat_server("migration retained answer");
+    init_native(&home, &url);
+    assert_success(
+        &xana(&home)
+            .args(["-p", "migration retained question"])
+            .output()
+            .unwrap(),
+    );
+    worker.join().unwrap();
+    let path = std::fs::read_dir(home.join("data/sessions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "jsonl")
+        })
+        .unwrap();
+    let id = path.file_stem().unwrap().to_str().unwrap();
+    assert_success(
+        &xana(&home)
+            .args(["storage", "recovery-key", "--output"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    let inspect = xana(&home).args(["storage", "migrate"]).output().unwrap();
+    assert_success(&inspect);
+    let plan = serde_json::Deserializer::from_slice(&inspect.stdout)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    let migrated = xana(&home)
+        .args([
+            "storage",
+            "migrate",
+            "--apply",
+            "--manual-unlock",
+            "--review",
+            plan["review"].as_str().unwrap(),
+            "--recovery-key",
+        ])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&migrated);
+    let command = || {
+        let mut cmd = xana(&home);
+        cmd.env("XANA_STORAGE_RECOVERY_KEY", &key);
+        cmd
+    };
+    let before = command()
+        .args(["conversation", "preview", id, "--json"])
+        .output()
+        .unwrap();
+    assert_success(&before);
+    assert!(String::from_utf8_lossy(&before.stdout).contains("migration retained answer"));
+    let backup = command().args(["storage", "backup"]).output().unwrap();
+    assert_success(&backup);
+    let backup: serde_json::Value = serde_json::from_slice(&backup.stdout).unwrap();
+    let snapshot = backup["snapshot"].as_str().unwrap();
+    let inspect = command()
+        .args([
+            "storage",
+            "restore",
+            "--snapshot",
+            snapshot,
+            "--recovery-key",
+        ])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&inspect);
+    let plan = serde_json::Deserializer::from_slice(&inspect.stdout)
+        .into_iter::<serde_json::Value>()
+        .next()
+        .unwrap()
+        .unwrap();
+    let restored = command()
+        .args([
+            "storage",
+            "restore",
+            "--snapshot",
+            snapshot,
+            "--apply",
+            "--review",
+            plan["review"].as_str().unwrap(),
+            "--recovery-key",
+        ])
+        .arg(&key)
+        .output()
+        .unwrap();
+    assert_success(&restored);
+    let after = command()
+        .args(["conversation", "preview", id, "--json"])
+        .output()
+        .unwrap();
+    assert_success(&after);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&before.stdout).unwrap(),
+        serde_json::from_slice::<serde_json::Value>(&after.stdout).unwrap()
+    );
 }
 
 #[test]

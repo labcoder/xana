@@ -81,6 +81,15 @@ impl Database {
     }
 
     pub(super) fn verify(&self) -> Result<()> {
+        // Check the cryptographic page envelope as well as SQLite's structure:
+        // https://www.zetetic.net/sqlcipher/sqlcipher-api/#cipher_integrity_check
+        ensure!(
+            !self
+                .connection
+                .prepare("PRAGMA cipher_integrity_check")?
+                .exists([])?,
+            "protected database page authentication failed"
+        );
         let integrity: String = self
             .connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;

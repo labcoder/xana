@@ -291,6 +291,61 @@ pub(crate) struct StorageArgs {
 pub(crate) enum StorageCommand {
     /// Inspect format and lock state without loading a key.
     Status,
+    /// Preview an existing-home migration; apply requires the exact reviewed digest.
+    Migrate {
+        #[arg(long)]
+        recovery_key: Option<PathBuf>,
+        #[arg(long, requires = "recovery_key", conflicts_with = "resume")]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        review: Option<String>,
+        #[arg(long, requires = "recovery_key")]
+        resume: bool,
+        #[arg(long)]
+        manual_unlock: bool,
+    },
+    /// Create and verify an encrypted snapshot, then prune only covered old backups.
+    Backup {
+        #[arg(long)]
+        if_due: bool,
+    },
+    /// Inspect encrypted derived-file archives retained by migration.
+    Archive {
+        #[arg(long)]
+        after: Option<String>,
+        #[arg(long, requires = "output", conflicts_with = "after")]
+        export: Option<String>,
+        #[arg(long, requires = "export")]
+        output: Option<PathBuf>,
+    },
+    /// Preview or apply an independently recoverable snapshot; no effect replay.
+    Restore {
+        #[arg(long)]
+        snapshot: Option<PathBuf>,
+        #[arg(long)]
+        recovery_key: PathBuf,
+        #[arg(long, requires = "snapshot", conflicts_with = "resume")]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        review: Option<String>,
+        #[arg(long, conflicts_with = "snapshot")]
+        resume: bool,
+    },
+    /// Inspect or explicitly change the bounded backup policy.
+    BackupPolicy {
+        #[arg(long)]
+        directory: Option<PathBuf>,
+        #[arg(long)]
+        retention_days: Option<u32>,
+        #[arg(long)]
+        max_snapshots: Option<usize>,
+        #[arg(long)]
+        max_bytes: Option<u64>,
+        #[arg(long)]
+        interval_hours: Option<u32>,
+        #[arg(long)]
+        enabled: Option<bool>,
+    },
     /// Create a new user-held recovery key at an explicit destination.
     RecoveryKey {
         #[arg(long)]
