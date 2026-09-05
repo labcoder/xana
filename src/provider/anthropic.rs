@@ -665,6 +665,7 @@ mod tests {
                 call_id: "call-1".into(),
                 output: "answer".into(),
                 status: ToolResultStatus::Success,
+                artifact: None,
             }),
         ];
         let definition = tool();

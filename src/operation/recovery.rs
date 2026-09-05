@@ -239,6 +239,7 @@ fn append_recovery_result(
     let mut tool_result = tool_result;
     if let Some(output) = &completed {
         tool_result.output = super::output::for_model(tool_result.output, output);
+        tool_result.artifact = session.stored_artifact(output).map(Box::new);
     }
     session.append_message(Message::tool_result(tool_result))?;
     Ok(())

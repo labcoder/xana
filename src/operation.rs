@@ -1,6 +1,6 @@
 //! Durable tool-invocation records, execution ordering, and recovery planning.
 
-mod output;
+pub(crate) mod output;
 mod recovery;
 
 pub(crate) use recovery::{RecoveryAction, execute_recovery, plan_recovery};
@@ -127,7 +127,9 @@ pub(crate) enum DurableOperationCommand {
     },
     StoreJson {
         value: Value,
-        acknowledged: oneshot::Sender<Result<DurableValueRef, String>>,
+        acknowledged: oneshot::Sender<
+            Result<(DurableValueRef, Option<crate::artifact::ArtifactRecord>), String>,
+        >,
     },
 }
 
@@ -156,7 +158,10 @@ impl DurableOperationSender {
             .map_err(anyhow::Error::msg)
     }
 
-    async fn store_json(&self, value: Value) -> Result<DurableValueRef> {
+    async fn store_json(
+        &self,
+        value: Value,
+    ) -> Result<(DurableValueRef, Option<crate::artifact::ArtifactRecord>)> {
         let (acknowledged, acknowledgement) = oneshot::channel();
         self.sender
             .send(DurableOperationCommand::StoreJson {
@@ -308,17 +313,16 @@ impl<'a> OperationExecutor<'a> {
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;
             match execution {
                 Ok(output) => {
-                    let value = self
+                    let (value, artifact) = self
                         .commits
                         .store_json(Value::String(output.clone()))
                         .await?;
-                    (
-                        ToolResult::success(
-                            planned.call_id.clone(),
-                            output::for_model(output, &value),
-                        ),
-                        InvocationOutcome::Completed { output: value },
-                    )
+                    let mut result = ToolResult::success(
+                        planned.call_id.clone(),
+                        output::for_model(output, &value),
+                    );
+                    result.artifact = artifact.map(Box::new);
+                    (result, InvocationOutcome::Completed { output: value })
                 }
                 Err(error) => (
                     ToolResult::error(planned.call_id.clone(), error.clone()),

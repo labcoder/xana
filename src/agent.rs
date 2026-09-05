@@ -87,6 +87,7 @@ impl ConversationCommitSender {
 }
 
 pub(crate) struct Agent {
+    output_recorder: Option<Arc<dyn crate::operation::output::ToolOutputRecorder>>,
     provider: Box<dyn ConversationalProvider>,
     tools: ToolRegistry,
     workspace_root: PathBuf,
@@ -303,6 +304,7 @@ impl Agent {
             prompt,
             max_tool_rounds,
             boundary_observer: Arc::new(NoopBoundaryObserver),
+            output_recorder: None,
             telemetry: Arc::new(NoopRuntimeTelemetry),
         }
     }
@@ -540,6 +542,16 @@ impl Agent {
                         )
                         .await
                 };
+                let result = if durable.is_none()
+                    && let Some(recorder) = &self.output_recorder
+                {
+                    recorder
+                        .record(result)
+                        .await
+                        .context("could not retain tool evidence; do not replay the effect")?
+                } else {
+                    result
+                };
                 let result_message = Message::tool_result(result);
                 if let Some(durable) = &durable {
                     let _entry_id = durable
@@ -579,6 +591,14 @@ impl Agent {
     pub(crate) fn with_runtime_telemetry(mut self, telemetry: Arc<dyn RuntimeTelemetry>) -> Self {
         self.tools.set_runtime_telemetry(telemetry.clone());
         self.telemetry = telemetry;
+        self
+    }
+
+    pub(crate) fn with_output_recorder(
+        mut self,
+        recorder: Option<Arc<dyn crate::operation::output::ToolOutputRecorder>>,
+    ) -> Self {
+        self.output_recorder = recorder;
         self
     }
 

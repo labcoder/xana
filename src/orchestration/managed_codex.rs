@@ -504,6 +504,7 @@ mod tests {
                     },
                 },
                 ChildExecutionContext {
+                    output_recorder: None,
                     attribution: attribution(operation_id),
                     operation_id,
                     permissions: permissions.clone(),
@@ -573,6 +574,7 @@ mod tests {
                     policy: child_policy(PermissionMode::Ask).expect("ask policy"),
                 },
                 ChildExecutionContext {
+                    output_recorder: None,
                     attribution: attribution(operation_id),
                     operation_id,
                     permissions: permissions.clone(),
@@ -636,6 +638,7 @@ mod tests {
                 policy: child_policy(PermissionMode::Ask).expect("ask policy"),
             },
             ChildExecutionContext {
+                output_recorder: None,
                 attribution: attribution(operation_id),
                 operation_id,
                 permissions: permissions.clone(),

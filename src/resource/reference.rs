@@ -151,6 +151,26 @@ pub(crate) struct ResourceRefV1 {
 }
 
 impl ResourceRefV1 {
+    pub(crate) fn tool_evidence(artifact: ArtifactRecord) -> Self {
+        Self {
+            version: RESOURCE_SCHEMA_VERSION,
+            media_type: MediaTypeFactsV1 {
+                declared: Some(artifact.media_type.clone()),
+                detected: None,
+            },
+            artifact,
+            kind: ResourceKindV1::Binary,
+            metadata: ResourceMetadataV1::default(),
+            accessibility: Some(AccessibilityFactsV1 {
+                label: Some("Complete tool output (JSON string)".to_owned()),
+                transcript: None,
+                source: AccessibilitySourceV1::Derived,
+            }),
+            validation: ResourceValidationV1::Accepted,
+            lineage: None,
+        }
+    }
+
     pub(crate) fn validate(&self) -> Result<(), ResourceValidationError> {
         if self.version != RESOURCE_SCHEMA_VERSION {
             return Err(ResourceValidationError::UnsupportedVersion(self.version));

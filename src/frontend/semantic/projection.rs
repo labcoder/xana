@@ -180,7 +180,7 @@ pub(crate) struct ContentProjectionV1 {
 /// fenced block, display-math block, pipe table, or Markdown link. Mixed or
 /// malformed input remains inert Markdown/text for a renderer to parse safely.
 pub(crate) fn normalize_message(message: &Message) -> Vec<ContentPartV1> {
-    message
+    let mut parts = message
         .content
         .iter()
         .filter_map(|block| match block {
@@ -196,7 +196,17 @@ pub(crate) fn normalize_message(message: &Message) -> Vec<ContentPartV1> {
                 code: sanitize_and_bound(&result.output),
             }),
         })
-        .collect()
+        .collect::<Vec<_>>();
+    for block in &message.content {
+        if let ContentBlock::ToolResult(result) = block
+            && let Some(artifact) = &result.artifact
+        {
+            parts.push(ContentPartV1::Resource(Box::new(
+                ResourceRefV1::tool_evidence(*artifact.clone()),
+            )));
+        }
+    }
+    parts
 }
 
 fn normalize_text(source: &str) -> Option<ContentPartV1> {

@@ -2781,7 +2781,12 @@ impl Workbench {
                         .clone()
                         .unwrap_or_else(|| "Prompt ledger unavailable".to_owned())
                 },
-                |(used, budget)| format!("Prompt estimate {used} / {budget} input tokens"),
+                |(used, budget)| {
+                    format!(
+                        "Prompt estimate {used} / {budget} input tokens\n{}",
+                        facts.prompt_ledger.details.join("\n")
+                    )
+                },
             );
         let activity_items = facts
             .activity

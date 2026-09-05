@@ -196,6 +196,7 @@ pub struct DesktopRunCapability {
 /// Latest native prompt-budget ledger, or an exact reason one is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopPromptLedger {
+    pub details: Vec<String>,
     pub operation_id: Option<String>,
     pub estimated_input_tokens: Option<usize>,
     pub input_budget_tokens: Option<usize>,
@@ -262,6 +263,7 @@ pub(super) fn project_conversation_facts(
             .last()
             .map(|(operation_id, ledger)| project_prompt_ledger(*operation_id, ledger))
             .unwrap_or_else(|| DesktopPromptLedger {
+                details: Vec::new(),
                 operation_id: None,
                 estimated_input_tokens: None,
                 input_budget_tokens: None,
@@ -661,6 +663,20 @@ fn project_child_activity(
             DesktopActivityDisclosure::Summary,
             DesktopFactSource::Runtime,
         ),
+        ChildActivity::PromptPlan { ledger } => (
+            format!("child:{}:prompt-plan", attribution.agent_id),
+            parent_id,
+            operation_id,
+            owner,
+            DesktopActivityState::Completed,
+            "child.prompt_plan".to_owned(),
+            Some(bounded_detail(
+                ledger.detail_lines().join("\n"),
+                MAX_PRESENTATION_DETAIL_BYTES,
+            )),
+            DesktopActivityDisclosure::Detail,
+            DesktopFactSource::Runtime,
+        ),
         ChildActivity::Warning { message } => (
             format!("child:{}:warning", attribution.agent_id),
             parent_id,
@@ -1039,6 +1055,7 @@ fn project_prompt_ledger(
     ledger: &PromptPlanLedger,
 ) -> DesktopPromptLedger {
     DesktopPromptLedger {
+        details: ledger.detail_lines(),
         operation_id: Some(operation_id.to_string()),
         estimated_input_tokens: Some(ledger.estimated_input_tokens),
         input_budget_tokens: Some(ledger.budget.input_budget_tokens),

@@ -20,7 +20,10 @@ use crate::{
     message::{ContentBlock, Message, Role},
     model_catalog::ModelManager,
     permission::{PermissionPolicy, PermissionRule},
-    prompt::{ProductDocumentationHint, PromptAssembler, PromptEnvironment, PromptSurface},
+    prompt::{
+        ModelBudgetFacts, ProductDocumentationHint, PromptAssembler, PromptBudgetPlan,
+        PromptBudgetPolicy, PromptEnvironment, PromptSurface,
+    },
     provider::{
         ConversationalProvider, anthropic::AnthropicClient, openai_compat::OpenAiCompatClient,
     },
@@ -154,8 +157,20 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
         let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
         let mut project_sources = project_sources(&self.workspace_root)?;
         project_sources.extend(handoff_sources(request));
-        let total_tokens = resolved.orchestration.max_context_tokens;
-        let reserve_tokens = total_tokens.min(4_096) / 2;
+        let budget = PromptBudgetPlan::derive(
+            &PromptBudgetPolicy {
+                max_context_tokens: Some(resolved.orchestration.max_context_tokens),
+                ..PromptBudgetPolicy::default()
+            },
+            ModelBudgetFacts {
+                connection: resolved.connection.clone(),
+                model: resolved.model.id.clone(),
+                context_tokens: resolved.model.context_tokens,
+                max_output_tokens: resolved.model.max_output_tokens,
+                reasoning: resolved.model.reasoning == Some(true),
+            },
+        )
+        .map_err(|error| format!("could not budget child prompt: {error}"))?;
         let assembler = PromptAssembler::new(
             definitions,
             PromptEnvironment {
@@ -180,10 +195,11 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
                         .collect(),
                 }),
             ContextBudget {
-                total_tokens,
-                conversation_reserve_tokens: reserve_tokens,
+                total_tokens: budget.input_budget_tokens,
+                conversation_reserve_tokens: budget.conversation_reserve_tokens,
             },
-        );
+        )
+        .with_budget_plan(budget);
         let prompt = assembler
             .assemble(&project_sources)
             .map_err(|error| format!("could not assemble child prompt: {error}"))?;
@@ -238,8 +254,9 @@ impl ChildExecution for NativeChildExecution {
         Box::pin(async move {
             let mut history = self.history;
             let cleanup = DeferredCleanup::default();
+            let agent = self.agent.with_output_recorder(context.output_recorder);
             let selected = await_native_child_turn(
-                self.agent.run_turn_with_usage_in_scope(
+                agent.run_turn_with_usage_in_scope(
                     context.operation_id,
                     &mut history,
                     context.permissions,
@@ -744,6 +761,7 @@ profile = "codex-review"
         let outcome = prepared
             .execution
             .run(ChildExecutionContext {
+                output_recorder: None,
                 attribution,
                 operation_id: OperationId::new(),
                 permissions: permissions.clone(),

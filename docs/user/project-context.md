@@ -94,7 +94,7 @@ AGENTS.md
 
 Absence is normal. When present, the path must be a regular, non-symlink UTF-8
 file no larger than 64 KiB. Xana reads at most 64 KiB plus one detection byte,
-then materializes at most 16 KiB and 1,024 estimated tokens. Oversized, invalid
+then materializes the complete bounded source. Oversized, invalid
 UTF-8, symlink, and non-regular sources produce a typed turn-acceptance error
 rather than silently entering the prompt.
 
@@ -105,10 +105,11 @@ an older version. The view record naming the source id, version, selector,
 content hash, owner, trust, provenance, and independent byte/token bounds is
 committed before its text enters the prompt.
 
-Phase 2 does not search parents, nested directories, home directories, Git
-metadata, `XANA.md`, or `.agents/`. Nested `AGENTS.md` applicability, Agent
-Skills, and Agent Plugins require later capability-aware discovery. There is
-no Xana-specific project-instruction format.
+Project instruction discovery does not search parents, nested directories,
+home directories, Git metadata, or `XANA.md`. Separately, the skill catalog
+discovers bounded metadata in user/workspace `.agents/skills/` and enabled
+plugins. Only explicitly activated, contained skill bodies enter the prompt.
+There is no Xana-specific project-instruction format.
 
 Explicit user instructions override project instructions. The broader
 `AGENTS.md` convention also gives nearer files precedence over broader ones;
@@ -139,9 +140,9 @@ tokens, 2,048 reasoning tokens when applicable, a 4,096-token tool reserve, an
 are conservative estimates, not provider promises, and can be narrowed under
 the safe configuration bounds described in [Configuration](configuration.md).
 
-The estimator charges one token per three Unicode scalar values, rounded up.
-It is deliberately more conservative than the common four-character rule, but
-it is not a provider tokenizer. Automatic project selection is deterministic
+The versioned UTF-8 heuristic charges ASCII at one token per three bytes and
+non-ASCII at one token per UTF-8 byte, rounded up. It is not a provider tokenizer
+or a guaranteed upper bound for every model. Automatic selection is deterministic
 and preserves source order. If a required layer plus schemas and the minimum
 conversation reserve cannot fit, agent construction fails. If later history
 exceeds the total, Xana fails before provider I/O instead of dropping or
@@ -157,12 +158,24 @@ extends the chain and processes only newly retired messages. The complete raw
 history remains canonical and is still visible on resume; compaction is not
 deletion, personal memory, retrieval, or proof that omitted details are false.
 
-Prompt-plan events expose only bounded category totals for instructions, tool
-definitions, compacted history, recent history, and attachments, plus omissions
-and whether provider cache facts were available. They are labeled estimates
+Prompt-plan events expose bounded category totals for instructions, runtime
+facts, parent handoff, personal-memory and retrieved-evidence slots (both still
+zero), tools, compacted/recent history, tool evidence, and attachments. They
+also expose reserves, omitted source IDs, estimator/catalog provenance and
+unavailable cache facts. `/usage details` and Desktop's Activity view show these
+same redacted facts. Native children use the same budget derivation under their
+route ceiling and report their own attributed plan. They are labeled estimates
 and never include the underlying prompt, file, tool-result, or message text.
 Managed Codex owns its own context window, so Xana neither compacts it nor
 pretends a native checkpoint applies.
+
+Tool output whose encoded JSON exceeds 32 KiB is retained in a registered
+immutable artifact; the next model request receives a UTF-8-safe 4 KiB preview
+plus the reference. TUI `/artifact ID` and Desktop artifact actions can inspect
+that reference. Plain output prints the reference but does not provide that
+TUI command. Complete output remains retrievable, and compaction retains typed
+artifact references independently of its progress summaries. This does not add
+a model call, hide available tools, or authorize replay of a side effect.
 
 The internal preview API also supports inclusive one-based line ranges and
 literal matching lines with an explicit match cap. Every preview retains its

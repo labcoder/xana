@@ -83,6 +83,9 @@ pub(crate) struct ChildRestrictions {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum ChildActivity {
+    PromptPlan {
+        ledger: Box<crate::prompt::PromptPlanLedger>,
+    },
     AssistantTextDelta {
         step_id: StepId,
         text: String,

@@ -658,6 +658,18 @@ budget, not misreported as sent input. Authored instructions must fit completely
 or assembly rejects the request; optional evidence can still be omitted with
 an explicit source ID. These estimates are neither a guaranteed token bound
 for an unknown tokenizer nor evidence of a provider cache hit.
+
+Native child composition applies the same compiler with the smaller of its
+route ceiling and catalog limit. Attributed child ledgers cannot overwrite the
+root plan. Complete large tool results are registered in the existing artifact
+store before a 4 KiB preview and typed reference enter model history. The root
+operation writer and recovery path own registration. Nondurable child loops
+receive only an injected evidence sink: it performs bounded artifact I/O off
+the async worker and awaits the parent's registration acknowledgement. The
+headless Agent does not own a database or session writer. Semantic projection
+turns these references into inert inspectable resources in both live events and
+restored history; a tool result does not finish an assistant stream. Compaction
+carries the artifact ID and digest independently of prose extraction.
 Range and literal-search previews remain bounded, Unicode-safe, and
 provenance-bearing.
 

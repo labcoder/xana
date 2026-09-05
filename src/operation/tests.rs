@@ -21,6 +21,8 @@ use std::{
 };
 use tempfile::tempdir;
 
+mod output;
+
 #[test]
 fn diagnostic_bound_is_utf8_safe() {
     let bounded = bounded_diagnostic("\u{1f980}".repeat(MAX_OPERATION_DIAGNOSTIC_BYTES));
@@ -30,6 +32,7 @@ fn diagnostic_bound_is_utf8_safe() {
 }
 
 struct CountedTool {
+    output: Option<String>,
     name: &'static str,
     contract_version: u32,
     replay_safety: ReplaySafety,
@@ -62,12 +65,19 @@ impl Tool for CountedTool {
 
     fn execute<'a>(
         &'a self,
-        _planned: &'a PlannedToolInvocation,
+        planned: &'a PlannedToolInvocation,
         _context: crate::tool::ToolExecutionContext,
     ) -> BoxFuture<'a, Result<String, String>> {
         Box::pin(async move {
             self.effects.fetch_add(1, Ordering::SeqCst);
-            Ok("observed".to_owned())
+            Ok(self.output.clone().unwrap_or_else(|| {
+                planned
+                    .final_arguments
+                    .get("fixture_output")
+                    .and_then(Value::as_str)
+                    .unwrap_or("observed")
+                    .to_owned()
+            }))
         })
     }
 }
@@ -81,6 +91,7 @@ fn registry(
     let mut tools = ToolRegistry::new();
     tools
         .register(CountedTool {
+            output: None,
             name,
             contract_version,
             replay_safety,
@@ -622,7 +633,7 @@ async fn invoke_until_crash(site: CrashSite) -> (Vec<SessionRecord>, usize, Oper
                     acknowledged,
                 } => {
                     let result = session
-                        .store_json_value(value)
+                        .store_tool_output(value)
                         .map_err(|error| format!("{error:#}"));
                     let _ = acknowledged.send(result);
                 }

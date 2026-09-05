@@ -8,7 +8,7 @@ use crate::{
         semantic::{ContentPartV1, DecodedSemanticEventV1, SemanticEventV1, SemanticSnapshotV1},
     },
     identity::ArtifactId,
-    message::{ContentBlock, Message},
+    message::Message,
     native_runtime::AgentEvent,
     resource::MAX_RESOURCE_SOURCE_BYTES,
 };
@@ -106,15 +106,7 @@ impl ArtifactAccess {
     }
 
     fn observe_messages(&self, messages: &[Message]) {
-        self.observe_records(
-            messages
-                .iter()
-                .flat_map(|message| &message.content)
-                .filter_map(|content| match content {
-                    ContentBlock::Image(image) => Some(&image.artifact),
-                    _ => None,
-                }),
-        );
+        self.observe_records(messages.iter().flat_map(Message::artifacts));
     }
 
     fn observe_semantic_snapshot(&self, snapshot: &SemanticSnapshotV1) {
@@ -155,6 +147,41 @@ impl ArtifactAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_live_tool_result_authorizes_only_its_registered_reference() {
+        let data = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new(data.path().join("artifacts"));
+        let (artifact, _) = store
+            .put(
+                &vec![b'x'; 80 * 1024],
+                "application/json",
+                crate::identity::PrincipalId::new(),
+            )
+            .unwrap();
+        let access = ArtifactAccess::new(store, None);
+        let fetch = |id| {
+            access.fetch(
+                super::super::protocol::ArtifactRequestId::new(),
+                id,
+                0,
+                4096,
+            )
+        };
+        assert!(!fetch(artifact.reference.id).accepted);
+        let mut result = crate::message::ToolResult::success("call", "bounded preview");
+        result.artifact = Some(Box::new(artifact.clone()));
+        access.observe(&ClientEvent::bounded(AgentEvent::ToolFinished {
+            operation_id: crate::identity::OperationId::new(),
+            invocation_id: crate::identity::ToolInvocationId::new(),
+            result: Message::tool_result(result),
+        }));
+        let fetched = fetch(artifact.reference.id);
+        assert!(fetched.accepted);
+        assert_eq!(fetched.preview.len(), 4096);
+        assert!(fetched.preview_truncated);
+        assert!(!fetch(ArtifactId::new()).accepted);
+    }
     use crate::{
         frontend::ClientEvent,
         identity::{OperationId, PrincipalId},

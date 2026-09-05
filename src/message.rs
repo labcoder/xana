@@ -32,6 +32,9 @@ pub(crate) struct ToolResult {
     pub(crate) call_id: String,
     pub(crate) output: String,
     pub(crate) status: ToolResultStatus,
+    /// Registered immutable evidence, never inferred from provider text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) artifact: Option<Box<crate::artifact::ArtifactRecord>>,
 }
 
 impl ToolResult {
@@ -40,6 +43,7 @@ impl ToolResult {
             call_id: call_id.into(),
             output: output.into(),
             status: ToolResultStatus::Success,
+            artifact: None,
         }
     }
 
@@ -48,6 +52,7 @@ impl ToolResult {
             call_id: call_id.into(),
             output: output.into(),
             status: ToolResultStatus::Error,
+            artifact: None,
         }
     }
 }
@@ -67,6 +72,14 @@ pub(crate) struct Message {
 }
 
 impl Message {
+    pub(crate) fn artifacts(&self) -> impl Iterator<Item = &crate::artifact::ArtifactRecord> {
+        self.content.iter().filter_map(|block| match block {
+            ContentBlock::Image(image) => Some(&image.artifact),
+            ContentBlock::ToolResult(result) => result.artifact.as_deref(),
+            _ => None,
+        })
+    }
+
     /// Create the common one-text-block message while taking ownership of text.
     pub(crate) fn text(role: Role, text: impl Into<String>) -> Self {
         let text = text.into();

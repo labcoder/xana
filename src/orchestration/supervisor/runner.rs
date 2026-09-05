@@ -189,6 +189,9 @@ pub(super) async fn run_child_execution(child: RunningChild) {
 
 fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
     match event {
+        AgentEvent::PromptPlanUpdated { ledger, .. } => Some(ChildActivity::PromptPlan {
+            ledger: Box::new(ledger),
+        }),
         AgentEvent::AssistantTextDelta { step_id, text, .. } => {
             Some(ChildActivity::AssistantTextDelta { step_id, text })
         }
@@ -224,7 +227,6 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::AssistantMessage { .. }
         | AgentEvent::UsageObserved { .. }
         | AgentEvent::ConversationCleared
-        | AgentEvent::PromptPlanUpdated { .. }
         | AgentEvent::CompactionStarted { .. }
         | AgentEvent::ConversationCompacted { .. }
         | AgentEvent::CompactionUnavailable { .. }

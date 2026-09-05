@@ -32,6 +32,8 @@ impl PreparedChild {
 }
 
 pub(crate) struct ChildExecutionContext {
+    pub(crate) output_recorder:
+        Option<std::sync::Arc<dyn crate::operation::output::ToolOutputRecorder>>,
     pub(crate) attribution: ChildAttribution,
     pub(crate) operation_id: OperationId,
     pub(crate) permissions: PermissionBrokerHandle,

@@ -176,6 +176,16 @@ pub(crate) fn validate_envelope(
             }
         }
         SessionRecord::ConversationEntryAppended { entry } => {
+            for block in &entry.message.content {
+                if let crate::message::ContentBlock::ToolResult(result) = block
+                    && let Some(artifact) = &result.artifact
+                    && state.artifacts.get(&artifact.reference.id) != Some(artifact.as_ref())
+                {
+                    return Err(ReductionError::UnknownArtifact {
+                        artifact: artifact.reference.id,
+                    });
+                }
+            }
             if state.entries.contains_key(&entry.id) {
                 Err(ReductionError::DuplicateEntry { entry: entry.id })
             } else if entry

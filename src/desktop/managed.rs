@@ -116,6 +116,7 @@ impl ManagedDesktopState {
                 completions: Vec::new(),
                 capabilities,
                 prompt_ledger: DesktopPromptLedger {
+                    details: Vec::new(),
                     operation_id: None,
                     estimated_input_tokens: None,
                     input_budget_tokens: None,
@@ -1793,6 +1794,7 @@ mod tests {
                 completions: Vec::new(),
                 capabilities: Vec::new(),
                 prompt_ledger: DesktopPromptLedger {
+                    details: Vec::new(),
                     operation_id: None,
                     estimated_input_tokens: None,
                     input_budget_tokens: None,

@@ -390,6 +390,17 @@ impl<W: Write> EventRenderer<W> {
                 ChildActivity::PermissionAudited { .. }
                 | ChildActivity::ToolFinished { .. }
                 | ChildActivity::Suspended => {}
+                ChildActivity::PromptPlan { ledger } => {
+                    self.finish_stream()?;
+                    writeln!(
+                        self.output,
+                        "xana> child {} prompt plan: ~{} input tokens",
+                        attribution.agent_id, ledger.estimated_input_tokens
+                    )?;
+                    for line in ledger.detail_lines() {
+                        writeln!(self.output, "  {line}")?;
+                    }
+                }
                 ChildActivity::Warning { message } => {
                     self.finish_stream()?;
                     writeln!(
@@ -482,6 +493,9 @@ impl<W: Write> EventRenderer<W> {
                 ledger.budget.input_budget_tokens,
                 ledger.attachment_count,
             )?;
+            for line in ledger.detail_lines() {
+                writeln!(self.output, "  {line}")?;
+            }
         } else {
             writeln!(self.output, "xana> prompt plan: unavailable")?;
         }

@@ -99,23 +99,9 @@ pub(super) fn details(state: &TuiState) -> String {
             ledger.budget.input_budget_tokens,
             ledger.budget.context_window_tokens
         );
-        for category in &ledger.categories {
-            let _ = writeln!(
-                output,
-                "  {:?}: ~{} tokens",
-                category.kind, category.estimated_tokens
-            );
+        for line in ledger.detail_lines() {
+            let _ = writeln!(output, "{line}");
         }
-        let _ = writeln!(
-            output,
-            "Attachments: {} item(s), {} byte(s)",
-            ledger.attachment_count, ledger.attachment_bytes
-        );
-        let _ = writeln!(
-            output,
-            "Omitted sources: {} · cache read/write facts: unavailable",
-            ledger.omitted_source_ids.len()
-        );
     } else {
         output.push_str("Unavailable until Xana plans a native prompt for this process.\n");
     }

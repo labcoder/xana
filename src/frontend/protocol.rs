@@ -437,8 +437,7 @@ impl ClientSnapshot {
         let (conversation, conversation_truncated) = bounded_history(history);
         let artifact_count = conversation
             .iter()
-            .flat_map(|message| &message.content)
-            .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
+            .flat_map(crate::message::Message::artifacts)
             .count();
         let conversation_id = ConversationId::for_native(seed.session_id);
         Self {
@@ -524,8 +523,7 @@ impl ClientSnapshot {
                     self.artifact_count = self
                         .conversation
                         .iter()
-                        .flat_map(|message| &message.content)
-                        .filter(|block| matches!(block, crate::message::ContentBlock::Image(_)))
+                        .flat_map(crate::message::Message::artifacts)
                         .count();
                 }
                 AgentEvent::ConversationCleared => {
@@ -544,6 +542,16 @@ impl ClientSnapshot {
                 }
                 AgentEvent::ToolFinished { result, .. } => {
                     append_semantic_content(&mut self.semantic, normalize_message(result));
+                    let mut conversation = std::mem::take(&mut self.conversation);
+                    conversation.push(result.clone());
+                    let (conversation, truncated) = bounded_history(conversation);
+                    self.conversation = conversation;
+                    self.conversation_truncated |= truncated;
+                    self.artifact_count = self
+                        .conversation
+                        .iter()
+                        .flat_map(crate::message::Message::artifacts)
+                        .count();
                 }
                 AgentEvent::PermissionRequested { request } => {
                     let projection = PendingPermissionProjection {

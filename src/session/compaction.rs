@@ -243,6 +243,13 @@ fn message_references(message: &Message) -> Vec<String> {
             ContentBlock::Text(text) => collect_text_references(text, &mut references),
             ContentBlock::ToolResult(result) => {
                 collect_text_references(&result.output, &mut references);
+                if let Some(artifact) = &result.artifact {
+                    references.insert(format!(
+                        "artifact:{}@{}",
+                        artifact.reference.id,
+                        artifact.reference.content_hash.as_str()
+                    ));
+                }
             }
             ContentBlock::ToolCall(call) => {
                 collect_json_references(&call.arguments, &mut references);

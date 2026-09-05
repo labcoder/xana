@@ -56,6 +56,11 @@ impl ChildSupervisor {
             let (permissions, broker_task) =
                 PermissionBroker::spawn(prepared.permission_policy, true, child_events.clone());
             let execution_context = ChildExecutionContext {
+                output_recorder: Some(Arc::new(crate::orchestration::evidence::ChildEvidence {
+                    store: self.artifact_store.clone(),
+                    owner: self.artifact_owner,
+                    commits: commits.clone(),
+                })),
                 attribution: attribution.clone(),
                 operation_id: attribution.operation_id,
                 permissions: permissions.clone(),

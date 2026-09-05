@@ -104,3 +104,51 @@ fn charge(categories: &mut [PromptLedgerCategory], kind: Category, tokens: usize
         category.estimated_tokens = category.estimated_tokens.saturating_add(tokens);
     }
 }
+
+impl PromptPlanLedger {
+    /// The same redacted facts are exposed by every native frontend.
+    pub(crate) fn detail_lines(&self) -> Vec<String> {
+        let mut lines = vec![
+            format!(
+                "Connection/model: {} / {}",
+                self.budget.connection, self.budget.model
+            ),
+            format!(
+                "Estimator: {:?} (not a provider tokenizer); ledger v{}",
+                self.estimator, self.version
+            ),
+            format!(
+                "Context window: {} ({:?}); input budget: {}",
+                self.budget.context_window_tokens,
+                self.budget.context_window_source,
+                self.budget.input_budget_tokens
+            ),
+            format!(
+                "Reserves: output {}, reasoning {}, tool {}, conversation {}",
+                self.budget.output_reserve_tokens,
+                self.budget.reasoning_reserve_tokens,
+                self.budget.tool_reserve_tokens,
+                self.budget.conversation_reserve_tokens
+            ),
+        ];
+        lines.extend(
+            self.categories.iter().map(|category| {
+                format!("{:?}: ~{} tokens", category.kind, category.estimated_tokens)
+            }),
+        );
+        lines.push(format!(
+            "Attachments: {} item(s), {} byte(s)",
+            self.attachment_count, self.attachment_bytes
+        ));
+        lines.push(format!(
+            "Omitted source IDs: {}",
+            if self.omitted_source_ids.is_empty() {
+                "none".to_owned()
+            } else {
+                self.omitted_source_ids.join(", ")
+            }
+        ));
+        lines.push("Cache read/write: unavailable (not zero)".to_owned());
+        lines
+    }
+}

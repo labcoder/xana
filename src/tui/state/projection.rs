@@ -305,6 +305,16 @@ impl TuiState {
                         detail,
                     ));
                 }
+                crate::orchestration::ChildActivity::PromptPlan { ledger } => {
+                    self.push_card(ActivityCard::new(
+                        format!("Xana child {}", attribution.agent_id),
+                        format!("{}:prompt-plan", attribution.agent_id),
+                        ActivityKind::Status,
+                        ActivityState::Complete,
+                        "child prompt plan",
+                        ledger.detail_lines().join("\n"),
+                    ));
+                }
                 crate::orchestration::ChildActivity::Warning { message } => {
                     self.push_card(ActivityCard::new(
                         format!("Xana child {}", attribution.agent_id),

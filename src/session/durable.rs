@@ -156,6 +156,17 @@ impl DurableSession {
                 lineage: lineage.clone(),
             },
         ));
+        let mut copied_artifacts = HashSet::new();
+        for artifact in shared.iter().flat_map(|entry| entry.message.artifacts()) {
+            if copied_artifacts.insert(artifact.reference.id) {
+                records.push(RecordEnvelope::new(
+                    target_session_id,
+                    SessionRecord::ArtifactRegistered {
+                        artifact: artifact.clone(),
+                    },
+                ));
+            }
+        }
         records.extend(shared.into_iter().map(|entry| {
             RecordEnvelope::new(
                 target_session_id,
@@ -216,7 +227,12 @@ impl DurableSession {
             .skip(2)
             .enumerate()
             .all(|(index, envelope)| match &envelope.record {
-                SessionRecord::ConversationEntryAppended { .. } if !saw_head => true,
+                SessionRecord::ConversationEntryAppended { .. }
+                | SessionRecord::ArtifactRegistered { .. }
+                    if !saw_head =>
+                {
+                    true
+                }
                 SessionRecord::ThreadHeadMoved { .. }
                     if !saw_head && index + 3 == self.records.len() =>
                 {
@@ -502,6 +518,27 @@ impl DurableSession {
 
     pub(crate) fn append_record(&mut self, record: SessionRecord) -> Result<()> {
         self.append(record)
+    }
+
+    pub(crate) fn stored_artifact(
+        &self,
+        value: &DurableValueRef,
+    ) -> Option<crate::artifact::ArtifactRecord> {
+        match value {
+            DurableValueRef::Artifact(reference) => {
+                self.restored.artifacts.get(&reference.id).cloned()
+            }
+            DurableValueRef::InlineJson(_) | DurableValueRef::Context { .. } => None,
+        }
+    }
+
+    pub(crate) fn store_tool_output(
+        &mut self,
+        value: serde_json::Value,
+    ) -> Result<(DurableValueRef, Option<crate::artifact::ArtifactRecord>)> {
+        let stored = self.store_json_value(value)?;
+        let artifact = self.stored_artifact(&stored);
+        Ok((stored, artifact))
     }
 
     pub(crate) fn store_json_value(&mut self, value: serde_json::Value) -> Result<DurableValueRef> {

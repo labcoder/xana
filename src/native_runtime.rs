@@ -636,21 +636,15 @@ impl Runtime {
         }
         let mut candidate = self.history.clone();
         candidate.push(user_message.clone());
-        if let Some(snapshot) = &prompt {
-            if let Some(ledger) = snapshot.ledger(&candidate) {
-                self.emit(AgentEvent::PromptPlanUpdated {
-                    operation_id,
-                    ledger,
-                });
-            }
-            if let Err(error) = snapshot.messages_for_request(&candidate) {
-                self.emit(AgentEvent::CommandRejected {
-                    reason: format!(
-                        "turn still exceeds the safe prompt budget after compaction: {error}"
-                    ),
-                });
-                return;
-            }
+        if let Some(snapshot) = &prompt
+            && let Err(error) = snapshot.messages_for_request(&candidate)
+        {
+            self.emit(AgentEvent::CommandRejected {
+                reason: format!(
+                    "turn still exceeds the safe prompt budget after compaction: {error}"
+                ),
+            });
+            return;
         }
 
         let input_entry_id = if let Some(session) = &mut self.session {
@@ -1309,7 +1303,7 @@ impl Runtime {
                     .ok_or_else(|| "durable value has no session writer".to_owned())
                     .and_then(|session| {
                         session
-                            .store_json_value(value)
+                            .store_tool_output(value)
                             .map_err(|error| format!("could not store durable value: {error:#}"))
                     });
                 let _ = acknowledged.send(result);

@@ -189,6 +189,19 @@ impl ConversationProjection {
                 operation_id,
                 message,
             } => self.replace_stream_with_final(operation_id, message),
+            DesktopEvent::ToolResult { message, activity } => {
+                let projected = project_message(&message);
+                if let Some(existing) = self.messages.iter_mut().find(|row| row.id == projected.id)
+                {
+                    *existing = projected;
+                } else {
+                    self.messages.push(projected);
+                }
+                if let Some(activity) = activity {
+                    self.upsert_activity(activity);
+                }
+                self.latest_activity = "Tool finished".to_owned();
+            }
             DesktopEvent::PermissionRequired {
                 permission_id,
                 tool,
@@ -989,6 +1002,7 @@ mod tests {
                 completions: Vec::new(),
                 capabilities: Vec::new(),
                 prompt_ledger: xana::desktop::DesktopPromptLedger {
+                    details: Vec::new(),
                     operation_id: None,
                     estimated_input_tokens: None,
                     input_budget_tokens: None,

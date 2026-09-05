@@ -276,15 +276,9 @@ fn artifact_record_for_id(
         .conversation
         .iter()
         .rev()
-        .flat_map(|message| message.content.iter().rev())
-        .find_map(|block| match block {
-            crate::message::ContentBlock::Image(image)
-                if image.artifact.reference.id.to_string() == artifact_id =>
-            {
-                Some(image.artifact.clone())
-            }
-            _ => None,
-        })
+        .flat_map(crate::message::Message::artifacts)
+        .find(|artifact| artifact.reference.id.to_string() == artifact_id)
+        .cloned()
         .ok_or_else(|| {
             DesktopError::new(
                 DesktopErrorCode::StateInvalid,
@@ -1042,6 +1036,11 @@ pub enum DesktopEvent {
     MessageFinal {
         operation_id: DesktopOperationId,
         message: DesktopMessage,
+    },
+    /// Tool evidence is not an assistant final and must not consume its stream.
+    ToolResult {
+        message: DesktopMessage,
+        activity: Option<DesktopActivityItem>,
     },
     PermissionRequired {
         permission_id: DesktopPermissionId,
@@ -3571,7 +3570,24 @@ fn project_event(
     session_id: &crate::identity::SessionId,
     resource_policy: &crate::resource::ResourcePolicyV1,
 ) -> DesktopEvent {
-    if let Some(activity) = conversation::project_live_activity(event) {
+    let activity = conversation::project_live_activity(event);
+    if let ClientEvent::Runtime(runtime) = event
+        && let AgentEvent::ToolFinished {
+            invocation_id,
+            result,
+            ..
+        } = runtime.as_ref()
+    {
+        return DesktopEvent::ToolResult {
+            message: content::project_message(
+                format!("{session_id}:{invocation_id}:tool-result"),
+                result,
+                resource_policy,
+            ),
+            activity,
+        };
+    }
+    if let Some(activity) = activity {
         return DesktopEvent::ActivityUpserted(activity);
     }
     match event {
@@ -4157,6 +4173,41 @@ mod tests {
         service.save_artifact(&artifact, &destination).unwrap();
         assert_eq!(std::fs::read(destination).unwrap(), png);
         assert!(artifact_record_for_id(&snapshot, "not-visible").is_err());
+        let bytes = serde_json::to_vec(&"large output".repeat(8000)).unwrap();
+        let (evidence, _) = service
+            .store
+            .put(&bytes, "application/json", service.owner)
+            .unwrap();
+        let mut result = crate::message::ToolResult::success("call", "bounded preview");
+        result.artifact = Some(Box::new(evidence.clone()));
+        let mut snapshot = snapshot;
+        let event = ClientEvent::Runtime(Box::new(AgentEvent::ToolFinished {
+            operation_id: crate::identity::OperationId::new(),
+            invocation_id: crate::identity::ToolInvocationId::new(),
+            result: Message::tool_result(result),
+        }));
+        snapshot.apply(&event, 1);
+        let DesktopEvent::ToolResult { message, .. } = project_event(
+            &event,
+            &snapshot.session_id,
+            &snapshot.semantic.attachment_policy.configured,
+        ) else {
+            panic!("live tool resource message")
+        };
+        assert!(message.content.iter().any(|part| matches!(
+            &part.value, DesktopContentValue::Resource(resource)
+                if resource.artifact_id == evidence.reference.id.to_string()
+        )));
+        let record = artifact_record_for_id(&snapshot, &evidence.reference.id.to_string()).unwrap();
+        let destination = directory.path().join("saved-output.json");
+        service.save_artifact(&record, &destination).unwrap();
+        assert_eq!(std::fs::read(destination).unwrap(), bytes);
+        snapshot.apply(
+            &ClientEvent::Runtime(Box::new(AgentEvent::ConversationCleared)),
+            2,
+        );
+        assert!(artifact_record_for_id(&snapshot, &artifact_id).is_err());
+        assert!(artifact_record_for_id(&snapshot, &evidence.reference.id.to_string()).is_err());
     }
 
     #[test]

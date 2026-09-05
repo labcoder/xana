@@ -574,11 +574,19 @@ pub(super) fn apply_artifact_action(
                     record.media_type.as_str(),
                     "application/json" | "application/toml"
                 ) {
-                let bytes = store
-                    .read_bounded(&record, PREVIEW_BYTES)
+                let range = store
+                    .read_verified_range(
+                        &record,
+                        0,
+                        PREVIEW_BYTES - 128,
+                        crate::artifact::MAX_ARTIFACT_BYTES,
+                    )
                     .context("could not read artifact preview")?;
-                String::from_utf8(bytes)
-                    .unwrap_or_else(|_| "[artifact text is not valid UTF-8]".to_owned())
+                let mut text = String::from_utf8_lossy(&range.bytes).into_owned();
+                if range.truncated_after {
+                    text.push_str("\n[preview truncated; complete artifact retained]");
+                }
+                text
             } else {
                 format!(
                     "[binary preview omitted: {} · {} bytes]",
@@ -1208,6 +1216,38 @@ fn format_model_choice(connection: &str, model: &crate::model_catalog::ModelDesc
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn large_text_artifact_opens_a_bounded_preview_without_clipboard_access() {
+        let data = tempfile::tempdir().unwrap();
+        let store = crate::artifact::ArtifactStore::new(data.path().join("artifacts"));
+        let (record, _) = store
+            .put(
+                &vec![b'x'; 80 * 1024],
+                "application/json",
+                crate::identity::PrincipalId::new(),
+            )
+            .unwrap();
+        let mut state = TuiState::starting(crate::presentation::ComposerPreset::Submit);
+        apply_artifact_action(
+            &mut state,
+            &store,
+            data.path(),
+            &mut clipboard::Clipboard::default(),
+            record,
+            ArtifactAction::Preview,
+        )
+        .unwrap();
+        let Some(super::super::state::Overlay::Artifact {
+            preview: Some(preview),
+            ..
+        }) = &state.overlay
+        else {
+            panic!("expected artifact preview")
+        };
+        assert!(preview.len() <= 64 * 1024);
+        assert!(preview.contains("preview truncated; complete artifact retained"));
+    }
 
     #[test]
     fn image_path_classification_preserves_mixed_input_order_and_external_review() {

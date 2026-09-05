@@ -1,10 +1,20 @@
 //! Preserve complete durable evidence while bounding its model-facing preview.
 
 use super::DurableValueRef;
+use crate::message::ToolResult;
+
+/// A narrow evidence sink for nondurable child loops. The host owns storage
+/// and the registration acknowledgement; the agent does not own a session.
+pub(crate) trait ToolOutputRecorder: Send + Sync {
+    fn record(
+        &self,
+        result: ToolResult,
+    ) -> futures::future::BoxFuture<'_, anyhow::Result<ToolResult>>;
+}
 
 const MAX_PREVIEW_BYTES: usize = 4 * 1024;
 
-pub(super) fn for_model(output: String, stored: &DurableValueRef) -> String {
+pub(crate) fn for_model(output: String, stored: &DurableValueRef) -> String {
     let DurableValueRef::Artifact(reference) = stored else {
         return output;
     };
@@ -15,7 +25,7 @@ pub(super) fn for_model(output: String, stored: &DurableValueRef) -> String {
         "complete_output_bytes": output.len(),
         "artifact": reference,
         "encoding": "JSON string",
-        "notice": "The complete output is retained in the immutable artifact, not in this preview. The user can inspect it with /artifact ID. For more detail request a narrower read; do not repeat an action with side effects just to obtain its output.",
+        "notice": "The complete output is retained in the immutable artifact, not in this preview. TUI /artifact ID and Desktop artifact actions inspect this reference. For more detail request a narrower read; do not repeat an action with side effects just to obtain its output.",
     }).to_string()
 }
 

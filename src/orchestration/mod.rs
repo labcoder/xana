@@ -6,6 +6,7 @@
 
 mod budget;
 mod collection;
+mod evidence;
 mod execution;
 mod execution_owner;
 mod managed_codex;
