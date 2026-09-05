@@ -130,6 +130,7 @@ for the ownership boundaries.
 | `xana model` | Inspect the active model and available catalog |
 | `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
 | `xana usage ledger` / `xana budget` | Inspect [durable usage and local admission limits](docs/user/usage-budgets.md) in a protected home |
+| `xana memory` | Inspect and explicitly control [scoped personal memory](docs/user/personal-memory.md) locally; automatic learning and prompt selection remain future work |
 | `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |
 | `xana conversation list` | List conversations for the current workspace (`session` remains an alias) |
 | `xana conversation preview ID` | Print a bounded, read-only native transcript preview without acquiring control |

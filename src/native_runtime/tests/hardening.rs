@@ -641,6 +641,7 @@ async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
         assembler,
         supervisor_handle.clone(),
         supervisor,
+        None,
     )
     .expect("persistent runtime");
     let admitted = supervisor_handle

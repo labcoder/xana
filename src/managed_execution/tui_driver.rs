@@ -299,6 +299,45 @@ async fn run_actor(
                 input,
                 images,
             } => {
+                if images.is_empty() && crate::memory::parse_natural(&input).is_some() {
+                    let result = super::local_memory_reply(
+                        config.memory.as_ref(),
+                        thread.conversation_id(),
+                        &input,
+                    )
+                    .await;
+                    let (text, error) = match result {
+                        Ok(text) => (text, None),
+                        Err(error) => (format!("Memory control failed: {error}"), Some(error)),
+                    };
+                    send_event(
+                        &events,
+                        ManagedTuiEvent::Notification(ManagedClientEvent::AssistantDelta(text)),
+                    )
+                    .await?;
+                    send_event(
+                        &events,
+                        ManagedTuiEvent::Notification(ManagedClientEvent::TurnCompleted {
+                            status: if error.is_some() {
+                                "failed"
+                            } else {
+                                "completed"
+                            }
+                            .into(),
+                            error: error.clone(),
+                        }),
+                    )
+                    .await?;
+                    send_event(
+                        &events,
+                        ManagedTuiEvent::TurnFinished {
+                            operation_id,
+                            error,
+                        },
+                    )
+                    .await?;
+                    continue;
+                }
                 let lease = if let Some(workspace_host) = workspace_host.as_ref() {
                     match workspace_host.acquire_root(conversation.clone()) {
                         Ok(lease) => Some(lease),

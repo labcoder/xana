@@ -45,8 +45,9 @@ pub use management::{
     DesktopDiagnosticsSnapshot, DesktopDoctorFinding, DesktopDoctorRepairReceipt,
     DesktopDoctorRepairResult, DesktopDoctorSeverity, DesktopDoctorSnapshot,
     DesktopEntityMutationReceipt, DesktopExecutionKind, DesktopManagedLogin,
-    DesktopManagementSnapshot, DesktopMigrationReceipt, DesktopMigrationSnapshot,
-    DesktopModelOption, DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionMode,
+    DesktopManagementSnapshot, DesktopMemoryMutation, DesktopMemorySnapshot,
+    DesktopMigrationReceipt, DesktopMigrationSnapshot, DesktopModelOption,
+    DesktopPermissionDecision, DesktopPermissionEffect, DesktopPermissionMode,
     DesktopPermissionPreview, DesktopPermissionRuleDraft, DesktopPermissionRuleSummary,
     DesktopPermissionSnapshot, DesktopPrivateMigrationRecord, DesktopProfileDraft,
     DesktopProfileSummary, DesktopProjectDraft, DesktopProjectSummary, DesktopProviderKind,
@@ -54,7 +55,8 @@ pub use management::{
     DesktopResourceLimit, DesktopResourcePolicyDraft, DesktopResourcePolicyPreview,
     DesktopResourcePolicySnapshot, DesktopSecret, DesktopSetupDraft, DesktopSetupMode,
     DesktopSetupReceipt, DesktopSetupSnapshot, DesktopUsagePage,
-    DesktopWorkbenchPreferenceSnapshot,
+    DesktopWorkbenchPreferenceSnapshot, MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit,
+    MemoryPage, MemoryRecord, MemoryScope, MemoryState,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,

@@ -97,6 +97,7 @@ async fn root_tool_delegates_one_durable_child_without_an_intermediate_model_tur
         assembler,
         supervisor_handle,
         supervisor,
+        None,
     )
     .expect("persistent runtime with child supervisor");
     let operation_id = OperationId::new();

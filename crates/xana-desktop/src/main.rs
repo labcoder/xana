@@ -12,6 +12,7 @@ mod espejo;
 mod localization;
 mod maintenance_view;
 mod management_view;
+mod memory_view;
 mod model_filter;
 mod permission_view;
 mod projection;

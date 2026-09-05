@@ -41,12 +41,13 @@ impl Database {
         transaction.execute_batch("
             CREATE TABLE store_identity(id TEXT PRIMARY KEY, version INTEGER NOT NULL);
             CREATE TABLE documents(name TEXT PRIMARY KEY, revision INTEGER NOT NULL CHECK(revision > 0), body BLOB NOT NULL);
-            PRAGMA user_version=2;")?;
+            PRAGMA user_version=3;")?;
         transaction.execute_batch(super::history::SCHEMA)?;
         transaction.execute_batch(super::usage::SCHEMA)?;
+        transaction.execute_batch(super::memory::SCHEMA)?;
         transaction.execute_batch("CREATE TABLE encrypted_artifacts(hash TEXT PRIMARY KEY, file_id TEXT NOT NULL UNIQUE, length INTEGER NOT NULL);")?;
         transaction.execute(
-            "INSERT INTO store_identity VALUES (?1, 2)",
+            "INSERT INTO store_identity VALUES (?1, 3)",
             [id.to_string()],
         )?;
         transaction.commit()?;
@@ -71,7 +72,7 @@ impl Database {
             })
             .context("protected database could not be authenticated; no plaintext fallback")?;
         ensure!(
-            actual == id.to_string() && (1..=2).contains(&version),
+            actual == id.to_string() && (1..=3).contains(&version),
             "protected database identity or version differs"
         );
         Ok(Self {
@@ -83,11 +84,11 @@ impl Database {
 
     /// Canonical-home upgrade only; inspecting a recovery snapshot never edits its schema.
     /// Consuming self ensures failure cannot leave a usable unleased connection.
-    pub(super) fn prepare_accounting(mut self) -> Result<Option<Self>> {
+    pub(super) fn prepare_schema(mut self) -> Result<Option<Self>> {
         let version: u32 =
             self.connection
                 .query_row("SELECT version FROM store_identity", [], |r| r.get(0))?;
-        if version == 1 {
+        if version < 3 {
             self.exclusive()?;
             let tx = self
                 .connection
@@ -96,7 +97,10 @@ impl Database {
                 tx.query_row("SELECT version FROM store_identity", [], |r| r.get(0))?;
             if current == 1 {
                 tx.execute_batch(super::usage::SCHEMA)?;
-                tx.execute_batch("UPDATE store_identity SET version=2; PRAGMA user_version=2;")?;
+            }
+            if current < 3 {
+                tx.execute_batch(super::memory::SCHEMA)?;
+                tx.execute_batch("UPDATE store_identity SET version=3; PRAGMA user_version=3;")?;
             }
             tx.commit()?;
             // Close the connection while still exclusive. The caller must reopen

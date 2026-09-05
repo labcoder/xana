@@ -23,6 +23,8 @@ engineering contracts used to change it.
   credential authority, and why unavailable never means zero.
 - [Durable usage and admission budgets](user/usage-budgets.md) explains protected
   accounting, shared allowances, receipt uncertainty, and restored-usage review.
+- [Personal memory controls](user/personal-memory.md) explains explicit scoped
+  facts, corrections, independent use/learning flags and private readable export.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, model-aware input budgets,
   durable native compaction, and instruction boundaries.

@@ -132,6 +132,7 @@ pub(crate) struct Workbench {
     command_search: Entity<CommandSearch>,
     settings_view: Entity<SettingsView>,
     accounting_view: Entity<crate::accounting_view::AccountingView>,
+    memory_view: Entity<crate::memory_view::MemoryView>,
     palette_open: bool,
     shutdown_pending: bool,
     lock_after_shutdown: bool,
@@ -248,6 +249,8 @@ impl Workbench {
         let espejo = cx.new(|_| EspejoView::new(runtime.initial_snapshot()));
         let accounting_view =
             cx.new(|cx| crate::accounting_view::AccountingView::new(control.clone(), window, cx));
+        let memory_view =
+            cx.new(|cx| crate::memory_view::MemoryView::new(control.clone(), window, cx));
         if navigation == DesktopNavigationTarget::Diagnostics {
             settings_view.update(cx, |settings, cx| {
                 settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
@@ -388,6 +391,7 @@ impl Workbench {
             command_search,
             settings_view,
             accounting_view,
+            memory_view,
             palette_open: false,
             shutdown_pending: false,
             lock_after_shutdown: false,
@@ -2091,6 +2095,15 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if panel == DesktopPanelId::Memory {
+            self.memory_view.update(cx, |view, cx| {
+                view.open_for(
+                    self.navigation_snapshot.selected_conversation.clone(),
+                    window,
+                    cx,
+                )
+            });
+        }
         if let Err(error) = self.layout.activate_panel(panel) {
             self.projection.fail(error.message);
         } else {
@@ -2136,6 +2149,15 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if panel == DesktopPanelId::Memory {
+            self.memory_view.update(cx, |view, cx| {
+                view.open_for(
+                    self.navigation_snapshot.selected_conversation.clone(),
+                    window,
+                    cx,
+                )
+            });
+        }
         if let Err(error) = self.layout.reopen_panel(panel) {
             self.projection.fail(error.message);
         } else {
@@ -2322,6 +2344,7 @@ impl Workbench {
             DesktopPanelId::Summary,
             DesktopPanelId::Artifacts,
             DesktopPanelId::Usage,
+            DesktopPanelId::Memory,
             DesktopPanelId::WorkingSet,
         ];
         h_flex()
@@ -2581,6 +2604,7 @@ impl Workbench {
             ),
             DesktopPanelId::Artifacts => self.render_artifacts_panel(cx),
             DesktopPanelId::Usage => self.accounting_view.clone().into_any_element(),
+            DesktopPanelId::Memory => self.memory_view.clone().into_any_element(),
             DesktopPanelId::WorkingSet => self.placeholder_panel(
                 "Working Set",
                 "Pin trusted items here without changing their lifecycle.",
@@ -3489,6 +3513,13 @@ impl Workbench {
                     self.reopen_layout_panel(DesktopPanelId::Usage, window, cx);
                 }
                 self.activate_layout_panel(DesktopPanelId::Usage, window, cx);
+            }
+            PaletteSelection::Navigate(PaletteDestination::Memory) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                if !self.layout.panels().contains(&DesktopPanelId::Memory) {
+                    self.reopen_layout_panel(DesktopPanelId::Memory, window, cx);
+                }
+                self.activate_layout_panel(DesktopPanelId::Memory, window, cx);
             }
             PaletteSelection::Navigate(PaletteDestination::Settings(route)) => {
                 self.open_settings(window, cx);

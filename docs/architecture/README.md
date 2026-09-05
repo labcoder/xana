@@ -2102,6 +2102,10 @@ facts, not predictions about which proposals will be accepted. Model-aware
 prompt budgets, deterministic artifact-backed compaction checkpoints, and
 local foreground/embedded execution-host coordination already exist. They do
 not yet provide automatic personal memory or restartable scheduled work.
+Explicit [personal-memory owner controls](../user/personal-memory.md) now share
+typed scoped records, checked corrections, independent use/learning/no-memory
+flags and private exports through the [protected store](protected-storage.md).
+They do not add an automatic extractor or inject memory into model prompts.
 Fresh homes can opt into [protected storage](protected-storage.md): SQLCipher
 owns Conversation records and private catalogs, and age protects immutable
 artifact objects. Existing homes still use the legacy backend until explicitly

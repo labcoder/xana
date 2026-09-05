@@ -42,6 +42,155 @@ fn assert_success(output: &std::process::Output) {
     );
 }
 
+#[test]
+fn memory_cli_preserves_expiry_checks_revisions_and_exports_without_provider_configuration() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let key = directory.path().join("recovery.key");
+    assert_success(
+        &xana(&home)
+            .args(["storage", "recovery-key", "--output"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        &xana(&home)
+            .args(["storage", "initialize", "--manual-unlock", "--recovery-key"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    let command = || {
+        let mut cmd = xana(&home);
+        cmd.env("XANA_STORAGE_RECOVERY_KEY", &key)
+            .stdin(Stdio::null());
+        cmd
+    };
+    let remember = command()
+        .args([
+            "memory",
+            "remember",
+            "--scope",
+            "user",
+            "--text",
+            "Synthetic preference",
+            "--expires-at",
+            "4102444800",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&remember);
+    let value: serde_json::Value = serde_json::from_slice(&remember.stdout).unwrap();
+    let id = value["id"].as_str().unwrap();
+    let correction = command()
+        .args([
+            "memory",
+            "correct",
+            id,
+            "--revision",
+            "1",
+            "--text",
+            "Corrected preference",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&correction);
+    let value: serde_json::Value = serde_json::from_slice(&correction.stdout).unwrap();
+    assert_eq!(value["valid_until_unix_seconds"], 4102444800_u64);
+    assert!(
+        !command()
+            .args([
+                "memory",
+                "correct",
+                id,
+                "--revision",
+                "1",
+                "--text",
+                "Stale edit"
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let cleared = command()
+        .args([
+            "memory",
+            "correct",
+            id,
+            "--revision",
+            "2",
+            "--text",
+            "Permanent preference",
+            "--clear-expiry",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&cleared);
+    let value: serde_json::Value = serde_json::from_slice(&cleared.stdout).unwrap();
+    assert!(value["valid_until_unix_seconds"].is_null());
+    let scope = format!("conversation:{}", uuid::Uuid::new_v4());
+    assert!(
+        !command()
+            .args(["memory", "scope", id, "--revision", "3", "--to", &scope])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_success(
+        &command()
+            .args([
+                "memory",
+                "scope",
+                id,
+                "--revision",
+                "3",
+                "--to",
+                &scope,
+                "--confirm",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        &command()
+            .args([
+                "memory",
+                "controls",
+                "--scope",
+                &scope,
+                "--no-memory",
+                "on",
+                "--learn",
+                "off",
+            ])
+            .output()
+            .unwrap(),
+    );
+    let export = directory.path().join("readable.json");
+    assert_success(
+        &command()
+            .args(["memory", "export", "--scope", &scope, "--output"])
+            .arg(&export)
+            .output()
+            .unwrap(),
+    );
+    let exported: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(export).unwrap()).unwrap();
+    assert_eq!(exported["records"][0]["statement"], "Permanent preference");
+    // A protected home does not silently unlock without custody/recovery authority.
+    assert!(
+        !xana(&home)
+            .args(["memory", "list"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
 fn fake_chat_server(final_text: &str) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
     let address = listener.local_addr().expect("fake provider address");

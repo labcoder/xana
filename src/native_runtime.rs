@@ -4,6 +4,7 @@
 //! the explicit permission request transport, a closed receiver never changes an
 //! operation result.
 
+mod memory_controls;
 mod protocol;
 
 pub(crate) use protocol::{
@@ -57,6 +58,7 @@ pub(crate) enum RuntimeExit {
 }
 
 struct Runtime {
+    memory: Option<crate::memory::MemoryOwner>,
     agent: Arc<Agent>,
     history: Vec<Message>,
     active: Option<ActiveOperation>,
@@ -98,6 +100,7 @@ struct OperationCompletion {
 }
 
 struct RuntimeSeed {
+    memory: Option<crate::memory::MemoryOwner>,
     session: Option<DurableSession>,
     prompt_assembler: Option<PromptAssembler>,
     history: Vec<Message>,
@@ -110,6 +113,7 @@ impl RuntimeSeed {
     #[cfg(test)]
     fn transient() -> Self {
         Self {
+            memory: None,
             session: None,
             prompt_assembler: None,
             history: Vec::new(),
@@ -122,6 +126,7 @@ impl RuntimeSeed {
     fn persistent(
         session: DurableSession,
         prompt_assembler: PromptAssembler,
+        memory: Option<crate::memory::MemoryOwner>,
     ) -> Result<Self, RuntimeUnavailable> {
         let initial_history = session.conversation().map_err(|_| RuntimeUnavailable)?;
         let continuation = session
@@ -130,6 +135,7 @@ impl RuntimeSeed {
         let suspended_round_budget = session.round_budget_suspension();
         Ok(Self {
             session: Some(session),
+            memory,
             prompt_assembler: Some(prompt_assembler),
             history: continuation.history,
             initial_history,
@@ -157,16 +163,18 @@ impl RuntimeHandle {
         controller_present: bool,
         session: DurableSession,
         prompt_assembler: PromptAssembler,
+        memory: Option<crate::memory::MemoryOwner>,
     ) -> Result<Self, RuntimeUnavailable> {
         Ok(Self::spawn_inner(
             agent,
             policy,
             controller_present,
-            RuntimeSeed::persistent(session, prompt_assembler)?,
+            RuntimeSeed::persistent(session, prompt_assembler, memory)?,
             None,
         ))
     }
 
+    #[allow(clippy::too_many_arguments)] // Composition-only ownership handoff.
     pub(crate) fn spawn_persistent_with_supervisor(
         agent: Agent,
         policy: PermissionPolicy,
@@ -175,12 +183,13 @@ impl RuntimeHandle {
         prompt_assembler: PromptAssembler,
         supervisor_handle: ChildSupervisorHandle,
         supervisor: ChildSupervisor,
+        memory: Option<crate::memory::MemoryOwner>,
     ) -> Result<Self, RuntimeUnavailable> {
         Ok(Self::spawn_inner(
             agent,
             policy,
             controller_present,
-            RuntimeSeed::persistent(session, prompt_assembler)?,
+            RuntimeSeed::persistent(session, prompt_assembler, memory)?,
             Some((supervisor_handle, supervisor)),
         ))
     }
@@ -193,6 +202,7 @@ impl RuntimeHandle {
         child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
         let RuntimeSeed {
+            memory,
             session,
             prompt_assembler,
             history,
@@ -226,6 +236,7 @@ impl RuntimeHandle {
             None => (None, None),
         };
         let runtime = Runtime {
+            memory,
             agent: Arc::new(agent),
             history,
             active: None,
@@ -593,6 +604,10 @@ impl Runtime {
             return;
         }
 
+        if images.is_empty() && crate::memory::parse_natural(&input).is_some() {
+            self.run_memory_control(operation_id, input).await;
+            return;
+        }
         let mut content = vec![crate::message::ContentBlock::Text(input)];
         content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
         let user_message = Message {

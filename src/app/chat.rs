@@ -581,7 +581,21 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                 managed_skill_instructions
             )
         };
+        let memory = super::memory_commands::compose(
+            paths,
+            &artifact_store,
+            &conversation
+                .conversation_id()
+                .context("managed memory needs Conversation identity")?
+                .to_string(),
+            frozen_profile
+                .as_ref()
+                .or(launch_profile.as_ref())
+                .context("memory needs a resolved Profile")?
+                .profile_id,
+        )?;
         let managed_config = ManagedChatConfig {
+            memory,
             connection: provider_name,
             model,
             profile_name,
@@ -973,6 +987,16 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
     let round_budget_suspension = session.round_budget_suspension();
+    let memory = super::memory_commands::compose(
+        paths,
+        &artifact_store,
+        &session_id.to_string(),
+        frozen_profile
+            .as_ref()
+            .or(launch_profile.as_ref())
+            .context("memory needs a resolved Profile")?
+            .profile_id,
+    )?;
     let runtime = match child_supervisor {
         Some((handle, supervisor)) => RuntimeHandle::spawn_persistent_with_supervisor(
             agent,
@@ -982,6 +1006,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             prompt_assembler,
             handle,
             supervisor,
+            memory,
         )?,
         None => RuntimeHandle::spawn_persistent(
             agent,
@@ -989,6 +1014,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             true,
             session,
             prompt_assembler,
+            memory,
         )?,
     };
     let conversation = match conversation {
@@ -1267,6 +1293,7 @@ pub(super) async fn run_chat_control_command<W: Write>(
         .command;
     match command {
         Some(cli::Command::Budget(args)) => super::usage_commands::budget(args, paths, output),
+        Some(cli::Command::Memory(args)) => super::memory_commands::run(args, paths, output),
         Some(cli::Command::Usage(args)) => super::usage_commands::run(args, paths, output).await,
         Some(cli::Command::Storage(args)) => {
             super::storage_commands::run(&args.command, paths, output)

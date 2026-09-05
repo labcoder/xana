@@ -14,6 +14,7 @@ mod external_agents;
 mod hosting;
 mod image_commands;
 mod mcp_commands;
+mod memory_commands;
 pub(crate) mod one_shot;
 mod operations;
 mod outbound_commands;
@@ -109,6 +110,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Budget(args)) => {
             usage_commands::budget(args, &paths, &mut io::stdout().lock())
         }
+        Some(Command::Memory(args)) => memory_commands::run(args, &paths, &mut std::io::stdout()),
         Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
         Some(Command::Attach(args)) => hosting::run_attach(&args, &paths).await,
         Some(Command::Setup(args)) => {

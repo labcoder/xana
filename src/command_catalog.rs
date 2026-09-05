@@ -34,6 +34,7 @@ pub(crate) enum CommandAction {
     Interrupt,
     Layout,
     Mcp,
+    Memory,
     Model,
     Newline,
     Outbound,
@@ -208,6 +209,7 @@ impl CommandSpec {
             "presentation.conversation_list.hide.v1" => "view hide",
             "presentation.conversation_list.show.v1" => "view show",
             "profile.manage.v1"
+            | "memory.manage.v1"
             | "project.manage.v1"
             | "skill.manage.v1"
             | "plugin.manage.v1"
@@ -349,6 +351,23 @@ macro_rules! command {
 /// M3-exit command inventory plus the M4 attach/preview and Espejo semantics.
 /// Broad management families deliberately retain their runtime-owned parsers.
 pub(crate) const COMMANDS: &[CommandSpec] = &[
+    command!(
+        "memory.manage.v1",
+        Memory,
+        "memory",
+        &[],
+        "list|show|remember|correct|scope|disable|controls|export|say ...",
+        "Inspect and control scoped personal memory locally",
+        ArgumentSchema::Optional("memory_options"),
+        Owner,
+        Any,
+        None,
+        Configure,
+        CLI_AND_CHAT,
+        true,
+        true,
+        false
+    ),
     command!(
         "budget.manage.v1",
         Budget,
@@ -1585,6 +1604,7 @@ pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &
         "outbound.manage.v1" => Some(("outbound", "list")),
         "storage.manage.v1" => Some(("storage", "status")),
         "budget.manage.v1" => Some(("budget", "")),
+        "memory.manage.v1" => Some(("memory", "list")),
         "usage.ledger.v1" => Some(("usage", "ledger")),
         "operation.reconcile.v1" => Some(("operation", "")),
         "route.inspect.v1" => Some(("route", "list")),
@@ -1906,6 +1926,7 @@ mod tests {
     #[test]
     fn terminal_management_commands_have_one_suspended_cli_projection() {
         for (stable_id, family, default_arguments) in [
+            ("memory.manage.v1", "memory", "list"),
             ("connection.manage.v1", "connection", "list"),
             ("diagnostics.logs.v1", "logs", "list"),
             ("outbound.manage.v1", "outbound", "list"),

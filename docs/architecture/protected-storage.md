@@ -16,12 +16,43 @@ Canonical opens upgrade the accounting schema under an exclusive owner lease;
 inspection of a recovery snapshot does not upgrade its schema. See the
 [usage policy guide](../user/usage-budgets.md).
 
+`memory::MemoryOwner` is a capability injected only into trusted owner-input
+adapters. CLI/plain/TUI and Desktop management share it; native owner turns and
+managed owner turns intercept the bounded direct-control grammar outside the
+Agent loop. It is never a model tool or child-Agent dependency. `storage::memory`
+owns indexed records, immutable revision history and scoped controls. Current
+records validate their indexed ID/revision/scope before exposure. Immediate
+transactions serialize checked edits; read transactions hold coherent eligible
+snapshots and exports. No SQL, provider, key-custody or filesystem work runs in
+Desktop render methods.
+
+Schema 3 adds memory tables to accounting schema 2. Canonical upgrades from 1/2
+require the exclusive lifecycle lease, commit atomically, close while exclusive,
+then reopen through lifecycle checks. Recovery inspection never upgrades.
+Statements/encoded records/pages are bounded at 4,096 bytes/8 KiB/64 records.
+Eligible inspection merges at most four covering-index scans of 1,025 integer
+sequences, then reads at most 1,024 matching bodies, returning at most 64 active
+unexpired records. It does not sort an unbounded set of BLOBs in SQLite. A
+bounded incomplete view is explicit, not a relevance guarantee. Chat previews
+further cap this to eight records and 256 characters per statement. Exports are
+coherent create-only private JSON copies capped at 32 MiB, with identity-checked
+cleanup of failed output; no plaintext mirror or auto-import exists.
+
+Use/learning/no-memory flags are independent per User/Profile/Project/
+Conversation scope. Any applicable restriction and the restore-review gate
+limit eligible use. Explicit owner review remains possible. Correction changes
+the next eligible read, never an in-flight snapshot. Automatic selection,
+extraction and robust forgetting are not implemented by these controls; see
+[personal memory](../user/personal-memory.md).
+
 ```mermaid
 flowchart TD
     APP[Application / Desktop control plane] --> CUSTODY[OS custody or independent age recovery]
     CUSTODY --> STORE[ProtectedStore: revocable connection owner]
     SESSION[DurableSession / existing reducer] --> STORE
     RECORDS[Private records / managed handles / composer history] --> STORE
+    OWNER[Owner memory controls: CLI / TUI / Desktop] --> MEMORY[MemoryOwner: scopes, checked revisions, eligibility]
+    MEMORY --> STORE
     STORE --> DB[SQLCipher: records, ancestry, bounded catalogs]
     ART[ArtifactStore: existing authority and immutable IDs] --> STORE
     STORE --> AGE[age: opaque encrypted artifact objects]
@@ -78,6 +109,6 @@ independent background scheduler.
 
 `storage::restore` publishes a verified protected generation while leaving
 ordinary files untouched and retaining the prior encrypted generation. A
-durable review-required marker prevents future memory/automation services from
+durable review-required marker blocks current memory eligibility and prevents future automation services from
 treating restored eligibility/grants as current authority. There is no automatic
 effect replay, deletion of plaintext legacy copies, or secure-erasure promise.

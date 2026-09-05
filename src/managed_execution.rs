@@ -4,6 +4,8 @@
 //! conversation, one-shot, activity, and TUI-driver projections around it.
 
 mod activity;
+mod memory_controls;
+use memory_controls::local_memory_reply;
 mod tui_driver;
 
 pub(crate) use tui_driver::{ManagedTuiDriver, ManagedTuiEvent};
@@ -31,6 +33,7 @@ use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(crate) struct ManagedChatConfig {
+    pub(crate) memory: Option<crate::memory::MemoryOwner>,
     pub(crate) connection: String,
     pub(crate) model: String,
     pub(crate) profile_name: String,
@@ -216,6 +219,15 @@ pub(crate) async fn run_codex_chat(
         if let Some(command) = local_control(input) {
             exit = command;
             break;
+        }
+        if pending.len() == 0 && crate::memory::parse_natural(input).is_some() {
+            println!(
+                "xana> {}",
+                local_memory_reply(config.memory.as_ref(), thread.conversation_id(), input)
+                    .await
+                    .unwrap_or_else(|error| format!("Memory control failed: {error}"))
+            );
+            continue;
         }
         if input == "/doctor" {
             exit = ChatExit::Doctor(None);
@@ -555,6 +567,17 @@ async fn run_codex_one_shot_inner(
         .conversation
         .conversation_id()
         .expect("composed managed one-shot has a Conversation identity");
+    if crate::memory::parse_natural(&request.input).is_some() {
+        let text = local_memory_reply(config.memory.as_ref(), conversation_id, &request.input)
+            .await
+            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
+        return Ok(OneShotSuccess {
+            text,
+            session_id: None,
+            conversation_id,
+            execution_owner: "xana_memory_control",
+        });
+    }
     let account = server
         .account_status()
         .await

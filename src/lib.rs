@@ -40,6 +40,7 @@ pub mod localization;
 mod managed;
 mod managed_execution;
 mod mcp;
+mod memory;
 mod message;
 mod model_catalog;
 mod native_runtime;

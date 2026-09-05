@@ -575,8 +575,9 @@ async fn persistent_runtime_commits_conversation_before_final_events() {
     let session_path = session.path().to_owned();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -649,7 +650,7 @@ async fn protected_runtime_streams_committed_history_and_reopens_without_plainte
         DurableSession::create_protected(home.clone(), workspace_root.clone(), id).unwrap();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root).unwrap();
     let mut runtime =
-        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler).unwrap();
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None).unwrap();
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -745,7 +746,7 @@ async fn protected_active_turn_shutdown_records_interruption_before_lock() {
     let session = DurableSession::create_protected(home.clone(), workspace.clone(), id).unwrap();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace).unwrap();
     let mut runtime =
-        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler).unwrap();
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None).unwrap();
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -822,8 +823,9 @@ async fn round_budget_suspends_durably_and_continues_the_same_operation() {
     let session_path = session.path().to_owned();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -944,8 +946,9 @@ async fn restart_reemits_the_exact_round_budget_and_stop_is_terminal() {
     let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -972,8 +975,9 @@ async fn restart_reemits_the_exact_round_budget_and_stop_is_terminal() {
     let (agent, assembler) = persistent_tool_agent(Box::new(provider), workspace_root.clone(), 1);
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut resumed = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("resumed runtime");
+    let mut resumed =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("resumed runtime");
     let restored = receive_round_budget(&mut resumed, operation_id).await;
     assert_eq!(restored, suspension);
 
@@ -1029,8 +1033,9 @@ async fn manual_compaction_commits_a_checkpoint_and_preserves_raw_history() {
     let path = session.path().to_owned();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::CompactConversation { operation_id })
@@ -1116,8 +1121,9 @@ async fn automatic_compaction_runs_before_provider_rejection_and_keeps_raw_entri
     let path = session.path().to_owned();
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -1491,8 +1497,9 @@ async fn crash_after_continue_decision_is_durably_incomplete_not_replayed() {
     let agent = agent.with_boundary_observer(observer);
     let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
         .expect("allow policy");
-    let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-        .expect("persistent runtime");
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+            .expect("persistent runtime");
     let operation_id = OperationId::new();
     runtime
         .send(RuntimeCommand::SubmitTurn {
@@ -1625,8 +1632,9 @@ async fn runtime_crash_sites_commit_acceptance_step_and_conversation_in_order() 
             .with_boundary_observer(observer.clone());
         let policy = PermissionPolicy::new(PolicyDecision::Allow, Vec::new(), &workspace_root)
             .expect("allow policy");
-        let mut runtime = RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler)
-            .expect("persistent runtime");
+        let mut runtime =
+            RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None)
+                .expect("persistent runtime");
         let operation_id = OperationId::new();
         runtime
             .send(RuntimeCommand::SubmitTurn {

@@ -132,6 +132,7 @@ pub(crate) enum PaletteDestination {
     Conversation,
     Activity,
     Usage,
+    Memory,
     Settings(SettingsRoute),
 }
 
@@ -431,6 +432,7 @@ fn command_exposure(stable_id: &str) -> Option<CommandExposure> {
         }
         "usage.inspect.v1" => Select(Navigate(Activity)),
         "budget.manage.v1" | "usage.ledger.v1" => Select(Navigate(PaletteDestination::Usage)),
+        "memory.manage.v1" => Select(Navigate(PaletteDestination::Memory)),
         "run.steer.v1" => Contextual("Use Send now or Queue on the active Run's composer."),
         "run.stop.v1" | "run.resume.v1" => {
             Contextual("Use the exact active, interrupted, or suspended Run card.")

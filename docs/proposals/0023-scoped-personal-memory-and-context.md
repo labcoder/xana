@@ -116,6 +116,12 @@ references in live and restored clients. Retained client windows and saved-histo
 paging are bounded; the legacy store limit has not been raised. See
 [Architecture](../architecture/README.md) and [project context](../user/project-context.md)
 for the current behavior. This proposal remains Accepted, not Implemented:
+explicit owner memory controls now persist scoped stated facts, immutable
+revision history, temporal eligibility, independent use/learning/no-memory
+flags and safe readable exports. CLI/plain/TUI/Desktop share the same governed
+backend and direct owner-input grammar. See [personal memory](../user/personal-memory.md).
+Corrections apply to the next eligible read; they do not yet enable automatic
+prompt selection. The remainder stays accepted future work:
 automatic memory, semantic processing and cross-Conversation recall remain future
 work. Optional embeddings, graph stores,
 RLM kernels, external memory vendors and automatic policy/Skill refinement are

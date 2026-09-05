@@ -739,4 +739,5 @@ mod child_lifecycle;
 mod core;
 mod delegation;
 mod hardening;
+mod memory;
 mod plans;

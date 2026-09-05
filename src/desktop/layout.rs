@@ -27,6 +27,7 @@ pub enum DesktopPanelId {
     Summary,
     Artifacts,
     Usage,
+    Memory,
     WorkingSet,
     #[serde(other)]
     Unavailable,
@@ -41,6 +42,7 @@ impl DesktopPanelId {
             Self::Summary => "Summary",
             Self::Artifacts => "Artifacts",
             Self::Usage => "Usage",
+            Self::Memory => "Memory",
             Self::WorkingSet => "Working Set",
             Self::Unavailable => "Unavailable panel",
         }

@@ -9,6 +9,7 @@ mod documents;
 mod encrypted_artifacts;
 mod history;
 mod keys;
+mod memory;
 pub(crate) mod migration;
 mod private_file;
 mod reset;
@@ -99,7 +100,7 @@ impl ProtectedStore {
                             .lock()
                             .map_err(|_| anyhow::anyhow!("protected owner failed"))?;
                         let database = guard.take().context("protected storage is locked")?;
-                        let Some(database) = database.prepare_accounting()? else {
+                        let Some(database) = database.prepare_schema()? else {
                             continue;
                         };
                         *guard = Some(database);

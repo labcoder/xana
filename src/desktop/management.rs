@@ -4,6 +4,11 @@
 //! discovery, secret handling, validation, and durable mutation stay here.
 
 mod accounting;
+mod memory;
+pub use memory::{
+    DesktopMemoryMutation, DesktopMemorySnapshot, MemoryClaim, MemoryControlEdit, MemoryControls,
+    MemoryEdit, MemoryPage, MemoryRecord, MemoryScope, MemoryState,
+};
 mod actions;
 mod entities;
 mod maintenance;

@@ -9,6 +9,8 @@ use crate::{
     shell::ShellKind,
 };
 use clap::{Args, Parser, Subcommand, ValueEnum};
+mod memory;
+pub(crate) use memory::{MemoryArgs, MemoryCommand};
 use std::{net::IpAddr, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -217,6 +219,8 @@ pub(crate) enum Command {
     /// Inspect provider-neutral model, request, quota, and credit observations.
     #[command(display_order = 7)]
     Usage(UsageArgs),
+    /// Inspect and control scoped personal memory locally.
+    Memory(MemoryArgs),
     /// Inspect or change this protected home's shared admission policy.
     Budget(BudgetArgs),
     /// Inspect, initialize, lock or recover Xana-managed encrypted storage.

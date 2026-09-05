@@ -24,7 +24,9 @@ pub(crate) fn create_private_file(path: &Path) -> io::Result<File> {
             Authorization::ConvertStringSecurityDescriptorToSecurityDescriptorW,
             SECURITY_ATTRIBUTES,
         },
-        Storage::FileSystem::{CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL},
+        Storage::FileSystem::{
+            CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        },
     };
     let name = path
         .as_os_str()
@@ -64,7 +66,10 @@ pub(crate) fn create_private_file(path: &Path) -> io::Result<File> {
         let handle = CreateFileW(
             name.as_ptr(),
             GENERIC_WRITE,
-            0,
+            // Retained identity handles must permit read-only identity checks
+            // and cleanup by path. Do not permit another writer. The owner-only
+            // DACL remains the authority boundary, independently of sharing.
+            FILE_SHARE_READ | FILE_SHARE_DELETE,
             &attributes,
             CREATE_NEW,
             FILE_ATTRIBUTE_NORMAL,

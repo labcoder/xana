@@ -1368,7 +1368,7 @@ impl TuiState {
                     "This catalog action is not directly invokable on the current TUI".to_owned();
                 UpdateEffect::None
             }
-            CommandId::Storage | CommandId::Budget => UpdateEffect::None, // Routed through suspended_chat_control.
+            CommandId::Storage | CommandId::Budget | CommandId::Memory => UpdateEffect::None, // Routed through suspended_chat_control.
         }
     }
 
