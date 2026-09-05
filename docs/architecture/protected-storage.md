@@ -8,6 +8,14 @@ bundle behind an `Arc<Mutex<Option<Database>>>`. Clones share revocation, not a
 process-global key cache. The composition edge selects OS custody or the explicit
 recovery-file environment setting. `Agent` remains unaware of either.
 
+`usage_budget` receives an owned store and dispatch attribution from composition;
+`storage::usage` serializes admission and settlement in immediate transactions.
+Per-request receipts, conservative unknown reservations and managed cumulative
+observations remain distinct from the existing provider/account observation API.
+Canonical opens upgrade the accounting schema under an exclusive owner lease;
+inspection of a recovery snapshot does not upgrade its schema. See the
+[usage policy guide](../user/usage-budgets.md).
+
 ```mermaid
 flowchart TD
     APP[Application / Desktop control plane] --> CUSTODY[OS custody or independent age recovery]

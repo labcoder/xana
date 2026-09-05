@@ -106,6 +106,9 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Storage(args)) => {
             storage_commands::run(&args.command, &paths, &mut io::stdout().lock())
         }
+        Some(Command::Budget(args)) => {
+            usage_commands::budget(args, &paths, &mut io::stdout().lock())
+        }
         Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
         Some(Command::Attach(args)) => hosting::run_attach(&args, &paths).await,
         Some(Command::Setup(args)) => {

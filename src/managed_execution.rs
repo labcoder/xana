@@ -213,16 +213,8 @@ pub(crate) async fn run_codex_chat(
         if input == "/quit" {
             break;
         }
-        if input == "/storage" || input.starts_with("/storage ") {
-            let arguments = input.strip_prefix("/storage").unwrap_or_default().trim();
-            exit = ChatExit::ControlCommand {
-                family: "storage".into(),
-                arguments: if arguments.is_empty() {
-                    "status".into()
-                } else {
-                    arguments.into()
-                },
-            };
+        if let Some(command) = local_control(input) {
+            exit = command;
             break;
         }
         if input == "/doctor" {
@@ -483,6 +475,10 @@ pub(crate) async fn run_codex_chat(
                 continue;
             }
         };
+        server.set_usage_identity(
+            thread.conversation_id().to_string(),
+            crate::identity::OperationId::new(),
+        );
         let result = server
             .run_turn(
                 &loaded_thread_id,
@@ -905,6 +901,20 @@ fn print_reasoning_status(
     }
 }
 
+fn local_control(input: &str) -> Option<ChatExit> {
+    let parsed =
+        crate::command_catalog::parse(input, crate::command_catalog::CommandSurface::Plain).ok()?;
+    let (family, default) = crate::command_catalog::suspended_chat_control(parsed.stable_id)?;
+    Some(ChatExit::ControlCommand {
+        family: family.into(),
+        arguments: if parsed.arguments.is_empty() {
+            default.into()
+        } else {
+            parsed.arguments
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -914,6 +924,30 @@ mod tests {
     };
     use std::collections::BTreeSet;
     use tempfile::tempdir;
+
+    #[test]
+    fn local_accounting_commands_never_become_managed_prompts() {
+        for (input, family, arguments) in [
+            ("/budget", "budget", ""),
+            (
+                "/budget --daily-requests 50",
+                "budget",
+                "--daily-requests 50",
+            ),
+            ("/usage ledger --root abc", "usage", "ledger --root abc"),
+            ("/storage", "storage", "status"),
+        ] {
+            assert_eq!(
+                local_control(input),
+                Some(ChatExit::ControlCommand {
+                    family: family.into(),
+                    arguments: arguments.into()
+                })
+            );
+        }
+        assert!(local_control("/usage").is_none());
+        assert!(local_control("tell me about budgets").is_none());
+    }
 
     fn model(id: &str, is_default: bool) -> ModelDescriptor {
         ModelDescriptor {

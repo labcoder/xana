@@ -71,7 +71,11 @@ automatic Skill/policy rewriting require later acceptance.
 ## Implementation and scope
 
 Local host/controller/shutdown coordination and bounded one-turn children exist.
-Durable autonomous scheduling, restart-safe accounting and retained-worker
-continuations do not yet exist. Remote hosts, tenancy, messaging and universal
+Protected homes now have [restart-safe admission accounting](../user/usage-budgets.md)
+for native requests, focused services and managed outer turns, including child
+inheritance, conservative unknowns and shared day/root/job limits. This does not
+implement the background scheduler or impose a vendor-side billing ceiling.
+Durable autonomous scheduling and retained-worker continuations do not yet
+exist. Remote hosts, tenancy, messaging and universal
 computer control are not included. Prove restart, cancellation, duplicate events,
 clock changes, forgotten sources and unknown-effect recovery before promotion.

@@ -38,10 +38,10 @@ pub use layout::{
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use management::{
-    DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopConnection,
-    DesktopConnectionMutationReceipt, DesktopConnectionOperationReceipt,
-    DesktopConnectionRemovalPlan, DesktopConnectionSnapshot, DesktopControlPlane,
-    DesktopCredentialInput, DesktopCredentialState, DesktopDiagnosticEntry,
+    DesktopBudgetEdit, DesktopBudgetField, DesktopBudgetSetting, DesktopCapabilityFact,
+    DesktopCapabilitySnapshot, DesktopConnection, DesktopConnectionMutationReceipt,
+    DesktopConnectionOperationReceipt, DesktopConnectionRemovalPlan, DesktopConnectionSnapshot,
+    DesktopControlPlane, DesktopCredentialInput, DesktopCredentialState, DesktopDiagnosticEntry,
     DesktopDiagnosticsSnapshot, DesktopDoctorFinding, DesktopDoctorRepairReceipt,
     DesktopDoctorRepairResult, DesktopDoctorSeverity, DesktopDoctorSnapshot,
     DesktopEntityMutationReceipt, DesktopExecutionKind, DesktopManagedLogin,
@@ -53,7 +53,8 @@ pub use management::{
     DesktopResetPlan, DesktopResetReceipt, DesktopResetScope, DesktopResetTarget,
     DesktopResourceLimit, DesktopResourcePolicyDraft, DesktopResourcePolicyPreview,
     DesktopResourcePolicySnapshot, DesktopSecret, DesktopSetupDraft, DesktopSetupMode,
-    DesktopSetupReceipt, DesktopSetupSnapshot, DesktopWorkbenchPreferenceSnapshot,
+    DesktopSetupReceipt, DesktopSetupSnapshot, DesktopUsagePage,
+    DesktopWorkbenchPreferenceSnapshot,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,

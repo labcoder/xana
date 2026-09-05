@@ -556,7 +556,22 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                     .expect("fresh launches resolve one Profile"),
             )?;
         }
-        let server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
+        let mut server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
+        server.set_usage_budget(super::usage_commands::compose_budget(
+            paths,
+            conversation
+                .conversation_id()
+                .expect("managed identity")
+                .to_string(),
+            crate::usage_budget::DispatchFacts {
+                owner: Some("managed_codex".into()),
+                connection: Some(provider_name.clone()),
+                model: Some(model.clone()),
+                profile: Some(profile_name.clone()),
+                reasoning: managed_selection.reasoning_effort.clone(),
+                project: None,
+            },
+        )?);
         let developer_instructions = if managed_skill_instructions.is_empty() {
             crate::prompt::xana_identity().to_owned()
         } else {
@@ -879,7 +894,12 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             workspace_root.clone(),
             artifact_store.clone(),
             permission_rules,
-        );
+        )
+        .with_usage_budget(super::usage_commands::compose_budget(
+            paths,
+            session.session_id().to_string(),
+            crate::usage_budget::DispatchFacts::default(),
+        )?);
         let (handle, supervisor) = ChildSupervisor::with_restored(
             ParentExecution {
                 agent_id: session.agent_id(),
@@ -937,7 +957,19 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         prompt,
         max_tool_rounds,
     )
-    .with_runtime_telemetry(crate::diagnostics::runtime_telemetry());
+    .with_runtime_telemetry(crate::diagnostics::runtime_telemetry())
+    .with_usage_budget(super::usage_commands::compose_budget(
+        paths,
+        session.session_id().to_string(),
+        crate::usage_budget::DispatchFacts {
+            owner: Some("native".into()),
+            connection: Some(provider_name.clone()),
+            model: Some(model.clone()),
+            profile: Some(profile_name.clone()),
+            reasoning: selected.reasoning_effort.clone(),
+            project: None,
+        },
+    )?);
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
     let round_budget_suspension = session.round_budget_suspension();
@@ -1234,6 +1266,8 @@ pub(super) async fn run_chat_control_command<W: Write>(
         .map_err(|error| anyhow::anyhow!(error.render().ansi().to_string()))?
         .command;
     match command {
+        Some(cli::Command::Budget(args)) => super::usage_commands::budget(args, paths, output),
+        Some(cli::Command::Usage(args)) => super::usage_commands::run(args, paths, output).await,
         Some(cli::Command::Storage(args)) => {
             super::storage_commands::run(&args.command, paths, output)
         }

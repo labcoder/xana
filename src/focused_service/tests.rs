@@ -129,6 +129,65 @@ fn service_registry(
     services
 }
 
+#[tokio::test]
+async fn durable_usage_blocks_focused_dispatch_and_keeps_unknown_cost() {
+    let config = XanaConfig::parse_registry(CONFIG).unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let services = service_registry(calls.clone(), None);
+    let route = services
+        .resolve(
+            &config,
+            &config.profiles["default"].service_routes,
+            &config.egress_policies["images"].allowed,
+            ServiceOperation::ImageGenerate,
+            Some("fast"),
+        )
+        .unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let store = crate::storage::ProtectedStore::initialize(
+        home.path(),
+        &crate::storage::RecoveryIdentity::generate(),
+        &crate::storage::TestCustody::default(),
+    )
+    .unwrap();
+    store
+        .set_usage_policy(&crate::usage_budget::BudgetPolicy {
+            daily_requests: 1,
+            foreground_request_reserve: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    for allowed in [true, false] {
+        let result = services
+            .execute(
+                FocusedServiceRequest {
+                    operation_id: OperationId::new(),
+                    route: route.clone(),
+                    prompt: "fixture".into(),
+                    input_artifacts: Vec::new(),
+                },
+                FocusedServiceContext {
+                    artifacts: ArtifactStore::protected(store.clone()),
+                    owner: PrincipalId::new(),
+                    cancellation: CancellationToken::new(),
+                },
+            )
+            .await;
+        assert_eq!(result.is_ok(), allowed);
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let rows = store.usage_page(None, None, None).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0]
+            .receipt
+            .as_ref()
+            .unwrap()
+            .reported_cost_microunits
+            .is_none()
+    );
+}
+
 #[test]
 fn routes_resolve_by_exact_name_or_one_declared_default() {
     let registry = XanaConfig::parse_registry(CONFIG).unwrap();

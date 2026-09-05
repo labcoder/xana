@@ -95,6 +95,7 @@ pub(crate) struct Agent {
     max_tool_rounds: usize,
     boundary_observer: Arc<dyn BoundaryObserver>,
     telemetry: Arc<dyn RuntimeTelemetry>,
+    usage_budget: Option<crate::usage_budget::UsageBudget>,
 }
 
 pub(crate) struct AgentTurnResult {
@@ -290,6 +291,21 @@ impl UsageCounter {
 }
 
 impl Agent {
+    pub(crate) fn with_parent_usage(mut self, parent: OperationId) -> Result<Self> {
+        self.usage_budget = self
+            .usage_budget
+            .map(|budget| budget.inherit_operation(parent))
+            .transpose()?;
+        Ok(self)
+    }
+    pub(crate) fn with_usage_budget(
+        mut self,
+        budget: Option<crate::usage_budget::UsageBudget>,
+    ) -> Self {
+        self.usage_budget = budget;
+        self
+    }
+
     pub(crate) fn new(
         provider: Box<dyn ConversationalProvider>,
         tools: ToolRegistry,
@@ -306,6 +322,7 @@ impl Agent {
             boundary_observer: Arc::new(NoopBoundaryObserver),
             output_recorder: None,
             telemetry: Arc::new(NoopRuntimeTelemetry),
+            usage_budget: None,
         }
     }
 
@@ -469,18 +486,47 @@ impl Agent {
             }
             let step_id = StepId::new();
             delta_sink.begin_request();
-            let assistant = self
+            let input_tokens = prompt
+                .ledger(messages)
+                .map(|ledger| ledger.estimated_input_tokens)
+                .unwrap_or_else(|| {
+                    request_messages
+                        .iter()
+                        .map(crate::prompt::estimate_message_tokens)
+                        .sum::<usize>()
+                });
+            let reservation = self
+                .usage_budget
+                .as_ref()
+                .map(|budget| budget.admit(operation_id, step_id, input_tokens as u64))
+                .transpose()?;
+            let response = self
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
-                .await
-                .map_err(|error| {
-                    self.telemetry.record(RuntimeTelemetryEvent {
-                        operation_id,
-                        kind: RuntimeTelemetryKind::ProviderFailed,
-                        subject: format!("{:?}", error.kind()),
-                    });
-                    anyhow::anyhow!("provider {:?}: {error}", error.kind())
-                })?;
+                .await;
+            if let Some(reservation) = reservation {
+                let usage = delta_sink.request_usage();
+                reservation
+                    .settle(crate::usage_budget::Receipt {
+                        cumulative: None,
+                        total_tokens: usage.and_then(|value| value.total_tokens),
+                        reported_cost_microunits: usage.and_then(|value| value.cost_microunits),
+                        outcome: if response.is_ok() {
+                            crate::usage_budget::Outcome::Completed
+                        } else {
+                            crate::usage_budget::Outcome::Failed
+                        },
+                    })
+                    .context("could not settle provider usage; reservation remains charged")?;
+            }
+            let assistant = response.map_err(|error| {
+                self.telemetry.record(RuntimeTelemetryEvent {
+                    operation_id,
+                    kind: RuntimeTelemetryKind::ProviderFailed,
+                    subject: format!("{:?}", error.kind()),
+                });
+                anyhow::anyhow!("provider {:?}: {error}", error.kind())
+            })?;
             let calls = requested_tools(&assistant);
 
             if calls.is_empty() {
@@ -636,6 +682,15 @@ struct UsageAccumulator {
 }
 
 impl EventDeltaSink {
+    fn request_usage(&self) -> Option<ProviderUsage> {
+        self.usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .requests
+            .last()
+            .copied()
+            .flatten()
+    }
     fn begin_request(&self) {
         self.usage
             .lock()

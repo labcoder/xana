@@ -419,7 +419,60 @@ impl FocusedServiceRegistry {
         let adapter = self.adapters.get(&request.route.adapter).ok_or_else(|| {
             FocusedServiceError::AdapterUnavailable(request.route.adapter.clone())
         })?;
-        adapter.execute(request, context).await
+        let vision = request.route.descriptor.operation == ServiceOperation::VisionAnalyze;
+        let reservation = context
+            .artifacts
+            .protected_home()
+            .map(|store| {
+                crate::usage_budget::UsageBudget::new(
+                    store,
+                    request.operation_id.to_string(),
+                    format!(
+                        "focused/{}/{}/{}",
+                        request.route.name, request.route.connection, request.route.model
+                    ),
+                    16_384,
+                )
+                .with_facts(crate::usage_budget::DispatchFacts {
+                    owner: Some("focused_service".into()),
+                    connection: Some(request.route.connection.clone()),
+                    model: Some(request.route.model.clone()),
+                    ..Default::default()
+                })
+                .inherit_operation(request.operation_id)?
+                .admit(
+                    request.operation_id,
+                    crate::identity::StepId::new(),
+                    crate::context::estimate_tokens(&request.prompt) as u64,
+                )
+            })
+            .transpose()
+            .map_err(|error| FocusedServiceError::Admission(error.to_string()))?;
+        let result = adapter.execute(request, context).await;
+        if let Some(reservation) = reservation {
+            let tokens = result
+                .as_ref()
+                .ok()
+                .filter(|_| vision)
+                .and_then(|result| result.usage.input_units.zip(result.usage.output_units))
+                .and_then(|(a, b)| a.checked_add(b));
+            reservation
+                .settle(crate::usage_budget::Receipt {
+                    cumulative: None,
+                    total_tokens: tokens,
+                    reported_cost_microunits: result
+                        .as_ref()
+                        .ok()
+                        .and_then(|result| result.usage.cost_microusd),
+                    outcome: if result.is_ok() {
+                        crate::usage_budget::Outcome::Completed
+                    } else {
+                        crate::usage_budget::Outcome::Failed
+                    },
+                })
+                .map_err(|error| FocusedServiceError::Admission(error.to_string()))?;
+        }
+        result
     }
 
     fn resolve_default(
@@ -511,6 +564,7 @@ pub(crate) fn descriptor_registry() -> Result<FocusedServiceRegistry, FocusedSer
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FocusedServiceError {
+    Admission(String),
     UnknownRoute(String),
     RouteNotExposed(String),
     NoDefault(ServiceOperation),
@@ -547,6 +601,9 @@ pub(crate) enum FocusedServiceError {
 impl fmt::Display for FocusedServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Admission(reason) => {
+                write!(formatter, "local usage admission or settlement: {reason}")
+            }
             Self::UnknownRoute(route) => {
                 write!(formatter, "unknown focused-service route {route:?}")
             }

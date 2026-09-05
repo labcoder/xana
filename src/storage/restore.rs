@@ -125,7 +125,8 @@ fn apply_with(
     source.snapshot_into(&stage, plan.bytes.saturating_add(16 * 1024 * 1024))?;
     drop(source);
     let staged = ProtectedStore::recover(&stage, identity)?;
-    staged.set_document("restore/review-required", b"Current forgetting exclusions and grant/job authority require review. Recall, learning and automation remain inactive; ordinary chat may continue.", 4096)?;
+    staged.set_document("restore/review-required", b"Current forgetting exclusions and grant/job authority require review. Recall, learning and automation remain inactive; new foreground work also requires the separate restored-usage review.", 4096)?;
+    staged.set_document("usage/restore-review-required", b"Usage after the snapshot is unknown. Explicitly review admission policy before dispatch; restoring does not reset vendor bills or quotas.", 4096)?;
     staged.with_database(|db| db.checkpoint())?;
     drop(staged);
     let journal = Journal {

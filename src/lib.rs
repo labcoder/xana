@@ -74,6 +74,7 @@ mod telemetry;
 mod terminal_productivity;
 mod tool;
 mod tui;
+mod usage_budget;
 mod usage_observation;
 mod vision;
 mod workspace_host;

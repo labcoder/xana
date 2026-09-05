@@ -13,6 +13,7 @@ pub(crate) mod migration;
 mod private_file;
 mod reset;
 pub(crate) mod restore;
+mod usage;
 mod verification;
 
 #[cfg(test)]
@@ -76,21 +77,40 @@ impl ProtectedStore {
     /// Explicit managed-home selection. An unavailable/locked protected home
     /// is an error, never a reason to select the legacy plaintext backend.
     pub(crate) fn configured(data_dir: &Path) -> Result<Option<Self>> {
-        match Self::status(data_dir)? {
-            StorageStatus::Legacy => Ok(None),
-            StorageStatus::Protected { locked: true, .. } => {
-                bail!("protected storage is locked; explicitly unlock it before continuing")
-            }
-            StorageStatus::Protected { .. } => {
-                // Explicit application configuration, not a hidden fallback or
-                // a key cache. Provider/Agent objects never read this variable.
-                if let Some(path) = std::env::var_os("XANA_STORAGE_RECOVERY_KEY") {
-                    let identity = read_recovery_identity(Path::new(&path))?;
-                    return Self::open_recovery(data_dir, &identity, false).map(Some);
+        for _ in 0..2 {
+            match Self::status(data_dir)? {
+                StorageStatus::Legacy => return Ok(None),
+                StorageStatus::Protected { locked: true, .. } => {
+                    bail!("protected storage is locked; explicitly unlock it before continuing")
                 }
-                Self::open(data_dir, &OsCustody).map(Some)
+                StorageStatus::Protected { .. } => {
+                    // Explicit application configuration, not a hidden fallback or
+                    // a key cache. Provider/Agent objects never read this variable.
+                    let store = if let Some(path) = std::env::var_os("XANA_STORAGE_RECOVERY_KEY") {
+                        let identity = read_recovery_identity(Path::new(&path))?;
+                        Self::open_recovery(data_dir, &identity, false)?
+                    } else {
+                        Self::open(data_dir, &OsCustody)?
+                    };
+                    {
+                        let mut guard = store
+                            .inner
+                            .open
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("protected owner failed"))?;
+                        let database = guard.take().context("protected storage is locked")?;
+                        let Some(database) = database.prepare_accounting()? else {
+                            continue;
+                        };
+                        *guard = Some(database);
+                    }
+                    return Ok(Some(store));
+                }
             }
         }
+        bail!(
+            "protected schema changed repeatedly during upgrade; reopen after lifecycle work finishes"
+        )
     }
 
     pub(crate) fn status(data_dir: &Path) -> Result<StorageStatus> {

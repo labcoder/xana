@@ -64,6 +64,67 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn durable_managed_admission_counts_outer_turns_not_cumulative_thread_usage() {
+    use crate::{
+        storage::{ProtectedStore, RecoveryIdentity, TestCustody},
+        usage_budget::{BudgetPolicy, UsageBudget},
+    };
+    let fixture = Fixture::new();
+    let store = ProtectedStore::initialize(
+        &fixture.directory.path().join("protected-data"),
+        &RecoveryIdentity::generate(),
+        &TestCustody::default(),
+    )
+    .unwrap();
+    store
+        .set_usage_policy(&BudgetPolicy {
+            daily_requests: 1,
+            foreground_request_reserve: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    let mut server = fixture.spawn(
+        "READ \"method\":\"turn/start\"\n\
+         SEND {\"id\":2,\"result\":{\"turn\":{\"id\":\"turn-1\"}}}\n\
+         SEND {\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"thread-1\",\"turnId\":\"turn-1\",\"tokenUsage\":{\"total\":{\"inputTokens\":999900,\"outputTokens\":100,\"totalTokens\":1000000}}}}\n\
+         SEND {\"method\":\"turn/completed\",\"params\":{\"threadId\":\"thread-1\",\"turn\":{\"id\":\"turn-1\",\"status\":\"completed\"}}}\n"
+    ).await;
+    server.set_usage_budget(Some(UsageBudget::new(
+        store.clone(),
+        "conversation".into(),
+        "managed/test".into(),
+        100,
+    )));
+    for attempt in 0..2 {
+        let result = server
+            .run_turn(
+                "thread-1",
+                "fixture-model",
+                &ManagedTurnOptions {
+                    reasoning_effort: None,
+                    reasoning_summary: None,
+                },
+                ManagedTurnInput {
+                    text: "hello".into(),
+                    image_urls: Vec::new(),
+                },
+                &mut TestHandler::default(),
+            )
+            .await;
+        assert_eq!(result.is_ok(), attempt == 0);
+    }
+    server.shutdown().await.unwrap();
+    fixture.assert_complete();
+    let row = store.usage_page(None, None, None).unwrap().remove(0);
+    assert!(row.charged_tokens < 1_000_000);
+    assert_eq!(row.receipt.as_ref().unwrap().total_tokens, None);
+    assert_eq!(
+        row.receipt.unwrap().cumulative.unwrap().total_tokens,
+        1_000_000
+    );
+}
+
+#[tokio::test]
 async fn managed_login_cancel_uses_the_exact_vendor_operation() {
     let fixture = Fixture::new();
     let mut server = fixture
@@ -80,6 +141,61 @@ async fn managed_login_cancel_uses_the_exact_vendor_operation() {
     );
     server.shutdown().await.unwrap();
     fixture.assert_complete();
+}
+
+#[tokio::test]
+async fn managed_terminal_failures_settle_outcome_without_refunding_unknown_usage() {
+    use crate::{
+        storage::{ProtectedStore, RecoveryIdentity, TestCustody},
+        usage_budget::{Outcome, UsageBudget},
+    };
+    let fixture = Fixture::new();
+    let store = ProtectedStore::initialize(
+        &fixture.directory.path().join("ledger"),
+        &RecoveryIdentity::generate(),
+        &TestCustody::default(),
+    )
+    .unwrap();
+    for (status, outcome) in [
+        ("failed", Outcome::Failed),
+        ("interrupted", Outcome::Interrupted),
+    ] {
+        let mut server=fixture.spawn(&format!(
+            "READ \"method\":\"turn/start\"\nSEND {{\"id\":2,\"result\":{{\"turn\":{{\"id\":\"turn-1\"}}}}}}\nSEND {{\"method\":\"turn/completed\",\"params\":{{\"threadId\":\"thread-1\",\"turn\":{{\"id\":\"turn-1\",\"status\":\"{status}\"}}}}}}\n"
+        )).await;
+        server.set_usage_budget(Some(UsageBudget::new(
+            store.clone(),
+            status.into(),
+            "managed/fixture".into(),
+            100,
+        )));
+        assert!(
+            server
+                .run_turn(
+                    "thread-1",
+                    "fixture-model",
+                    &ManagedTurnOptions {
+                        reasoning_effort: None,
+                        reasoning_summary: None
+                    },
+                    ManagedTurnInput {
+                        text: "fixture".into(),
+                        image_urls: Vec::new()
+                    },
+                    &mut TestHandler::default()
+                )
+                .await
+                .is_err()
+        );
+        let row = store
+            .usage_page(Some(status), None, None)
+            .unwrap()
+            .remove(0);
+        assert_eq!(row.charged_tokens, row.admission.reserved_tokens);
+        assert_eq!(row.receipt.unwrap().outcome, outcome);
+        server.shutdown().await.unwrap();
+        fixture.assert_complete();
+    }
 }
 
 #[tokio::test]

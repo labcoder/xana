@@ -235,6 +235,32 @@ fn protected_home_setup_stream_restart_lock_and_manual_recovery() {
     );
     let verified = command().args(["storage", "verify"]).output().unwrap();
     assert_success(&verified);
+    let usage = command().args(["usage", "ledger"]).output().unwrap();
+    assert_success(&usage);
+    let ledger: serde_json::Value = serde_json::from_slice(&usage.stdout).unwrap();
+    assert_eq!(ledger["records"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        ledger["records"][0]["admission"]["facts"]["owner"],
+        "native"
+    );
+    assert!(ledger["records"][0]["receipt"]["reported_cost_microunits"].is_null());
+    let budget = command()
+        .args([
+            "budget",
+            "--daily-requests",
+            "1",
+            "--foreground-request-reserve",
+            "0",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&budget);
+    let denied_request = command()
+        .args(["--print", "no second dispatch"])
+        .output()
+        .unwrap();
+    assert!(!denied_request.status.success());
+    assert!(String::from_utf8_lossy(&denied_request.stderr).contains("allowance exhausted"));
     let locked = command().args(["storage", "lock"]).output().unwrap();
     assert_success(&locked);
     let denied = command().args(["storage", "verify"]).output().unwrap();

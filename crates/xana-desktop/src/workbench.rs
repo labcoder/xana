@@ -131,6 +131,7 @@ pub(crate) struct Workbench {
     sidebar: Entity<SidebarNav>,
     command_search: Entity<CommandSearch>,
     settings_view: Entity<SettingsView>,
+    accounting_view: Entity<crate::accounting_view::AccountingView>,
     palette_open: bool,
     shutdown_pending: bool,
     lock_after_shutdown: bool,
@@ -245,6 +246,8 @@ impl Workbench {
             )
         });
         let espejo = cx.new(|_| EspejoView::new(runtime.initial_snapshot()));
+        let accounting_view =
+            cx.new(|cx| crate::accounting_view::AccountingView::new(control.clone(), window, cx));
         if navigation == DesktopNavigationTarget::Diagnostics {
             settings_view.update(cx, |settings, cx| {
                 settings.open_section(DesktopSettingsSection::Diagnostics, window, cx);
@@ -384,6 +387,7 @@ impl Workbench {
             sidebar,
             command_search,
             settings_view,
+            accounting_view,
             palette_open: false,
             shutdown_pending: false,
             lock_after_shutdown: false,
@@ -2576,11 +2580,7 @@ impl Workbench {
                 cx,
             ),
             DesktopPanelId::Artifacts => self.render_artifacts_panel(cx),
-            DesktopPanelId::Usage => self.placeholder_panel(
-                "Usage",
-                "Usage observations remain source-qualified in Activity.",
-                cx,
-            ),
+            DesktopPanelId::Usage => self.accounting_view.clone().into_any_element(),
             DesktopPanelId::WorkingSet => self.placeholder_panel(
                 "Working Set",
                 "Pin trusted items here without changing their lifecycle.",
@@ -3482,6 +3482,13 @@ impl Workbench {
                 self.navigation = DesktopNavigationTarget::Activity;
                 self.projection.set_activity("Activity opened");
                 cx.notify();
+            }
+            PaletteSelection::Navigate(PaletteDestination::Usage) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                if !self.layout.panels().contains(&DesktopPanelId::Usage) {
+                    self.reopen_layout_panel(DesktopPanelId::Usage, window, cx);
+                }
+                self.activate_layout_panel(DesktopPanelId::Usage, window, cx);
             }
             PaletteSelection::Navigate(PaletteDestination::Settings(route)) => {
                 self.open_settings(window, cx);

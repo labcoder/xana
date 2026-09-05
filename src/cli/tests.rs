@@ -177,6 +177,7 @@ fn parses_provider_neutral_usage_query() {
         .unwrap()
         .command,
         Some(Command::Usage(UsageArgs {
+            command: None,
             connection: Some("openrouter".into()),
             model: Some("openai/gpt-5".into()),
             refresh: true,

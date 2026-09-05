@@ -44,6 +44,7 @@ pub(crate) struct ChildExecutionOwnerFactory {
     permission_rules: Vec<PermissionRule>,
     configured_shell: String,
     managed_runner: Arc<dyn ManagedCodexRunner>,
+    usage_budget: Option<crate::usage_budget::UsageBudget>,
 }
 
 impl ChildExecutionOwnerFactory {
@@ -65,12 +66,21 @@ impl ChildExecutionOwnerFactory {
             permission_rules,
             configured_shell,
             managed_runner: Arc::new(AppServerCodexRunner),
+            usage_budget: None,
         }
     }
 
     #[cfg(test)]
     pub(crate) fn with_managed_runner(mut self, runner: Arc<dyn ManagedCodexRunner>) -> Self {
         self.managed_runner = runner;
+        self
+    }
+
+    pub(crate) fn with_usage_budget(
+        mut self,
+        budget: Option<crate::usage_budget::UsageBudget>,
+    ) -> Self {
+        self.usage_budget = budget;
         self
     }
 }
@@ -143,7 +153,7 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
                         )
                     })?,
                 },
-            );
+            ).with_usage_budget(self.usage_budget.as_ref().map(|budget| budget.child_route(&resolved.route, "managed_codex", &resolved.connection, &resolved.model.id, &resolved.profile, resolved.reasoning_effort.clone())));
             return Ok(PreparedChild::new(resolved, policy, Box::new(execution)));
         }
         let (provider, _) = compose_native_provider(
@@ -220,7 +230,17 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             prompt,
             resolved.max_tool_rounds,
         )
-        .with_runtime_telemetry(crate::diagnostics::runtime_telemetry());
+        .with_runtime_telemetry(crate::diagnostics::runtime_telemetry())
+        .with_usage_budget(self.usage_budget.as_ref().map(|budget| {
+            budget.child_route(
+                &resolved.route,
+                "native",
+                &resolved.connection,
+                &resolved.model.id,
+                &resolved.profile,
+                resolved.reasoning_effort.clone(),
+            )
+        }));
         Ok(PreparedChild::new(
             resolved,
             policy,
@@ -254,7 +274,14 @@ impl ChildExecution for NativeChildExecution {
         Box::pin(async move {
             let mut history = self.history;
             let cleanup = DeferredCleanup::default();
-            let agent = self.agent.with_output_recorder(context.output_recorder);
+            let agent = match self
+                .agent
+                .with_output_recorder(context.output_recorder)
+                .with_parent_usage(context.attribution.parent_operation_id)
+            {
+                Ok(agent) => agent,
+                Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
+            };
             let selected = await_native_child_turn(
                 agent.run_turn_with_usage_in_scope(
                     context.operation_id,

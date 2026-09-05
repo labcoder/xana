@@ -21,6 +21,8 @@ engineering contracts used to change it.
 - [Usage, limits, and model facts](user/usage.md) explains process token
   counters, provider/account observations, explicit refresh and cache behavior,
   credential authority, and why unavailable never means zero.
+- [Durable usage and admission budgets](user/usage-budgets.md) explains protected
+  accounting, shared allowances, receipt uncertainty, and restored-usage review.
 - [Project context and system prompt](user/project-context.md) explains the
   built-in prompt, root `AGENTS.md` discovery, model-aware input budgets,
   durable native compaction, and instruction boundaries.

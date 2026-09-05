@@ -379,6 +379,7 @@ async fn run_actor(
                     connection: config.connection.clone(),
                     thread_id: thread_id.clone(),
                 };
+                server.set_usage_identity(thread.conversation_id().to_string(), operation_id);
                 let result = server
                     .run_turn_cancellable(
                         &thread_id,

@@ -129,6 +129,7 @@ for the ownership boundaries.
 | `xana connection repair ID` | Re-establish one connection and repair only its derived model catalog |
 | `xana model` | Inspect the active model and available catalog |
 | `xana usage` | Inspect model facts and cached provider/account usage; add `--refresh` for a bounded live refresh |
+| `xana usage ledger` / `xana budget` | Inspect [durable usage and local admission limits](docs/user/usage-budgets.md) in a protected home |
 | `xana capabilities` | Report what is configured, selected, authorized, and presentable here without network probes |
 | `xana conversation list` | List conversations for the current workspace (`session` remains an alias) |
 | `xana conversation preview ID` | Print a bounded, read-only native transcript preview without acquiring control |

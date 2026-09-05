@@ -217,6 +217,8 @@ pub(crate) enum Command {
     /// Inspect provider-neutral model, request, quota, and credit observations.
     #[command(display_order = 7)]
     Usage(UsageArgs),
+    /// Inspect or change this protected home's shared admission policy.
+    Budget(BudgetArgs),
     /// Inspect, initialize, lock or recover Xana-managed encrypted storage.
     Storage(StorageArgs),
     /// Report configured, available, selected, and authorized capabilities separately.
@@ -1076,6 +1078,8 @@ pub(crate) struct ConnectionArgs {
 
 #[derive(Debug, Args, PartialEq, Eq)]
 pub(crate) struct UsageArgs {
+    #[command(subcommand)]
+    pub(crate) command: Option<UsageCommand>,
     /// Inspect this connection instead of the active selection.
     #[arg(long, value_name = "CONNECTION")]
     pub(crate) connection: Option<String>,
@@ -1088,6 +1092,42 @@ pub(crate) struct UsageArgs {
     /// Emit the stable provider-neutral JSON report.
     #[arg(long)]
     pub(crate) json: bool,
+}
+
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub(crate) enum UsageCommand {
+    /// Read up to 128 durable request receipts; use the last sequence to page.
+    Ledger {
+        #[arg(long)]
+        root: Option<String>,
+        #[arg(long)]
+        job: Option<String>,
+        #[arg(long)]
+        after: Option<u64>,
+    },
+}
+
+#[derive(Debug, Default, Args, PartialEq, Eq)]
+pub(crate) struct BudgetArgs {
+    /// Acknowledge that a restored snapshot omits later usage; keep memory/automation review separate.
+    #[arg(long)]
+    pub(crate) accept_restored_usage: bool,
+    #[arg(long)]
+    pub(crate) daily_requests: Option<u64>,
+    #[arg(long)]
+    pub(crate) root_requests: Option<u64>,
+    #[arg(long)]
+    pub(crate) foreground_request_reserve: Option<u64>,
+    /// Set admission-token estimates per day; 0 removes this optional cap.
+    #[arg(long)]
+    pub(crate) daily_tokens: Option<u64>,
+    /// Set admission-token estimates per root; 0 removes this optional cap.
+    #[arg(long)]
+    pub(crate) root_tokens: Option<u64>,
+    #[arg(long)]
+    pub(crate) background_daily_tokens: Option<u64>,
+    #[arg(long)]
+    pub(crate) background_job_tokens: Option<u64>,
 }
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]

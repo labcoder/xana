@@ -848,9 +848,25 @@ pub(crate) struct CodexAppServer {
     pub(crate) version: String,
     pub(crate) codex_home: PathBuf,
     protocol_usable: bool,
+    usage_budget: Option<crate::usage_budget::UsageBudget>,
+    usage_operation: Option<crate::identity::OperationId>,
 }
 
 impl CodexAppServer {
+    pub(crate) fn set_usage_budget(&mut self, budget: Option<crate::usage_budget::UsageBudget>) {
+        self.usage_budget = budget;
+    }
+
+    pub(crate) fn set_usage_identity(
+        &mut self,
+        root: String,
+        operation: crate::identity::OperationId,
+    ) {
+        if let Some(budget) = &mut self.usage_budget {
+            budget.rebind_root(root);
+        }
+        self.usage_operation = Some(operation);
+    }
     pub(crate) async fn spawn(config: &CodexLaunchConfig) -> Result<Self, CodexError> {
         let version = probe_version(config).await?;
         let mut command = Command::new(&config.program);
@@ -907,6 +923,8 @@ impl CodexAppServer {
             version,
             codex_home,
             protocol_usable: true,
+            usage_budget: None,
+            usage_operation: None,
         })
     }
 
@@ -1210,6 +1228,25 @@ impl CodexAppServer {
         handler: &mut H,
     ) -> Result<ManagedTurnResult, CodexError> {
         self.ensure_usable()?;
+        let operation = self
+            .usage_operation
+            .take()
+            .unwrap_or_else(crate::identity::OperationId::new);
+        let reservation = self
+            .usage_budget
+            .as_ref()
+            .map(|budget| {
+                budget
+                    .with_model(model)
+                    .with_reasoning(options.reasoning_effort.clone())
+                    .admit(
+                        operation,
+                        crate::identity::StepId::new(),
+                        crate::context::estimate_tokens(&input.text) as u64,
+                    )
+            })
+            .transpose()
+            .map_err(|error| CodexError::Protocol(format!("usage admission: {error}")))?;
         let mut user_input = vec![json!({"type": "text", "text": input.text})];
         user_input.extend(
             input
@@ -1326,6 +1363,27 @@ impl CodexAppServer {
             }
         };
         let status = completed_status.unwrap_or_else(|| "unknown".into());
+        if let Some(reservation) = reservation {
+            reservation
+                .settle(crate::usage_budget::Receipt {
+                    cumulative: usage
+                        .as_ref()
+                        .map(|usage| crate::usage_budget::CumulativeUsage {
+                            counter: thread_id.to_owned(),
+                            total_tokens: usage.total_tokens,
+                        }),
+                    total_tokens: None, // tokenUsage.total includes earlier turns, including before restart.
+                    reported_cost_microunits: None,
+                    outcome: if status == "completed" {
+                        crate::usage_budget::Outcome::Completed
+                    } else if interruption_requested || status == "interrupted" {
+                        crate::usage_budget::Outcome::Interrupted
+                    } else {
+                        crate::usage_budget::Outcome::Failed
+                    },
+                })
+                .map_err(|error| CodexError::Protocol(format!("usage settlement: {error}")))?;
+        }
         if status != "completed" {
             if interruption_requested {
                 return Err(CodexError::TurnInterrupted { turn_id, status });

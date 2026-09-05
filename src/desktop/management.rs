@@ -3,12 +3,17 @@
 //! GPUI owns form state only. All path resolution, config parsing, live
 //! discovery, secret handling, validation, and durable mutation stay here.
 
+mod accounting;
 mod actions;
 mod entities;
 mod maintenance;
 mod permissions;
 mod resources;
 mod workbench;
+
+pub use accounting::{
+    DesktopBudgetEdit, DesktopBudgetField, DesktopBudgetSetting, DesktopUsagePage,
+};
 
 pub use actions::{
     DesktopConnectionMutationReceipt, DesktopConnectionRemovalPlan, DesktopManagedLogin,

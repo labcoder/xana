@@ -47,6 +47,65 @@ fn home_reopens_through_custody_and_independent_recovery() {
 }
 
 #[test]
+fn accounting_upgrade_preserves_old_snapshots_and_excludes_live_owners() {
+    let home = tempfile::tempdir().unwrap();
+    let key = RecoveryIdentity::generate();
+    let custody = Custody::default();
+    let store = ProtectedStore::initialize(home.path(), &key, &custody).unwrap();
+    store.set_document("fixture", b"retained", 1024).unwrap();
+    // Construct the released schema-1 format, not a different storage backend.
+    store.with_database(|db| { db.connection.execute_batch("DROP TABLE usage_requests; DROP TABLE usage_counters; UPDATE store_identity SET version=1; PRAGMA user_version=1;")?; Ok(()) }).unwrap();
+    let recovery = ProtectedStore::recover(home.path(), &key).unwrap();
+    assert_eq!(
+        recovery.document("fixture", 1024).unwrap().unwrap(),
+        b"retained"
+    );
+    let database = store.inner.open.lock().unwrap().take().unwrap();
+    assert!(
+        database.prepare_accounting().is_err(),
+        "a recovery owner prevents exclusive upgrade"
+    );
+    recovery
+        .with_database(|db| {
+            assert_eq!(
+                db.connection
+                    .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?,
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+    drop(recovery);
+    let reopened = ProtectedStore::open(home.path(), &custody).unwrap();
+    let database = reopened.inner.open.lock().unwrap().take().unwrap();
+    assert!(
+        database.prepare_accounting().unwrap().is_none(),
+        "upgrade closes the connection under its exclusive lease"
+    );
+    let upgraded = ProtectedStore::open(home.path(), &custody).unwrap();
+    assert_eq!(
+        upgraded.document("fixture", 1024).unwrap().unwrap(),
+        b"retained"
+    );
+    assert!(upgraded.usage_page(None, None, None).unwrap().is_empty());
+    upgraded.verify().unwrap();
+}
+
+#[test]
+fn usage_corruption_is_rejected_before_owned_blob_materialization() {
+    let home = tempfile::tempdir().unwrap();
+    let store = ProtectedStore::initialize(
+        home.path(),
+        &RecoveryIdentity::generate(),
+        &Custody::default(),
+    )
+    .unwrap();
+    store.with_database(|db| { db.connection.execute("INSERT INTO usage_requests(id,operation,root,job,day,background,charge,admission) VALUES('bad','op','root','job',0,0,1,zeroblob(16385))", [])?; Ok(()) }).unwrap();
+    assert!(store.usage_page(None, None, None).is_err());
+    assert!(store.usage_attribution("op").is_err());
+}
+
+#[test]
 fn lock_does_not_claim_success_while_an_independent_owner_retains_keys() {
     let home = tempfile::tempdir().unwrap();
     let custody = Custody::default();

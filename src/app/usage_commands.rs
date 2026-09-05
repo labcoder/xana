@@ -7,15 +7,47 @@ use crate::{
     paths::XanaPaths,
     usage_observation::{UsageCacheStatusV1, UsageObservationService, UsageReportV1},
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::io::Write;
 use tokio_util::sync::CancellationToken;
+
+pub(super) fn compose_budget(
+    paths: &XanaPaths,
+    root: String,
+    mut facts: crate::usage_budget::DispatchFacts,
+) -> Result<Option<crate::usage_budget::UsageBudget>> {
+    let Some(store) = crate::storage::ProtectedStore::configured(paths.data_dir())? else {
+        return Ok(None);
+    };
+    facts.project = crate::project::ProjectStore::open(paths)?
+        .membership(&root)?
+        .map(|id| id.to_string());
+    Ok(Some(
+        crate::usage_budget::UsageBudget::new(store, root, "conversation".into(), 16_384)
+            .with_facts(facts),
+    ))
+}
 
 pub(super) async fn run<W: Write>(
     args: UsageArgs,
     paths: &XanaPaths,
     output: &mut W,
 ) -> Result<()> {
+    if let Some(crate::cli::UsageCommand::Ledger { root, job, after }) = args.command {
+        let store = crate::storage::ProtectedStore::configured(paths.data_dir())?
+            .context("durable usage requires protected storage; inspect xana storage status")?;
+        let records = store.usage_page(root.as_deref(), job.as_deref(), after)?;
+        serde_json::to_writer_pretty(
+            &mut *output,
+            &serde_json::json!({
+                "version": 1, "records": records,
+                "next_after": records.last().map(|row| row.sequence),
+                "notice": "Charges are local admission estimates until reported tokens reconcile them. Null cost/usage means unknown, not free. Managed requests count outer turns, not vendor inner calls. Provider quotas and account limits are separate."
+            }),
+        )?;
+        writeln!(output)?;
+        return Ok(());
+    }
     let manager = model_manager(paths)?;
     let selected = manager.selected()?;
     let connection = args.connection.as_deref().unwrap_or(&selected.connection);
@@ -33,6 +65,47 @@ pub(super) async fn run<W: Write>(
     } else {
         write_text(output, &report)?;
     }
+    Ok(())
+}
+
+pub(super) fn budget<W: Write>(
+    args: crate::cli::BudgetArgs,
+    paths: &XanaPaths,
+    output: &mut W,
+) -> Result<()> {
+    let store = crate::storage::ProtectedStore::configured(paths.data_dir())?
+        .context("budgets require protected storage; no plaintext ledger is created")?;
+    let policy = store.update_usage_policy(|policy| {
+        if let Some(value) = args.daily_requests {
+            policy.daily_requests = value;
+        }
+        if let Some(value) = args.root_requests {
+            policy.root_requests = value;
+        }
+        if let Some(value) = args.foreground_request_reserve {
+            policy.foreground_request_reserve = value;
+        }
+        if let Some(value) = args.daily_tokens {
+            policy.daily_tokens = (value != 0).then_some(value);
+        }
+        if let Some(value) = args.root_tokens {
+            policy.root_tokens = (value != 0).then_some(value);
+        }
+        if let Some(value) = args.background_daily_tokens {
+            policy.background_daily_tokens = value;
+        }
+        if let Some(value) = args.background_job_tokens {
+            policy.background_job_tokens = value;
+        }
+    })?;
+    if args.accept_restored_usage {
+        store.remove_document("usage/restore-review-required")?;
+    }
+    serde_json::to_writer_pretty(&mut *output, &policy)?;
+    writeln!(
+        output,
+        "\nLocal admission policy; not a vendor billing ceiling. Existing reservations and receipts are not reset."
+    )?;
     Ok(())
 }
 

@@ -41,11 +41,24 @@ pub(crate) trait ManagedCodexRunner: Send + Sync {
 pub(crate) struct ManagedCodexChildExecution {
     runner: Arc<dyn ManagedCodexRunner>,
     spec: ManagedCodexChildSpec,
+    usage_budget: Option<crate::usage_budget::UsageBudget>,
 }
 
 impl ManagedCodexChildExecution {
     pub(crate) fn new(runner: Arc<dyn ManagedCodexRunner>, spec: ManagedCodexChildSpec) -> Self {
-        Self { runner, spec }
+        Self {
+            runner,
+            spec,
+            usage_budget: None,
+        }
+    }
+
+    pub(crate) fn with_usage_budget(
+        mut self,
+        budget: Option<crate::usage_budget::UsageBudget>,
+    ) -> Self {
+        self.usage_budget = budget;
+        self
     }
 }
 
@@ -58,7 +71,58 @@ impl ChildExecution for ManagedCodexChildExecution {
         self: Box<Self>,
         context: ChildExecutionContext,
     ) -> BoxFuture<'static, ChildExecutionOutcome> {
-        self.runner.run(self.spec, context)
+        Box::pin(async move {
+            let reservation = match self
+                .usage_budget
+                .map(|budget| {
+                    budget
+                        .inherit_operation(context.attribution.parent_operation_id)?
+                        .admit(
+                            context.operation_id,
+                            crate::identity::StepId::new(),
+                            crate::context::estimate_tokens(&self.spec.task) as u64,
+                        )
+                })
+                .transpose()
+            {
+                Ok(reservation) => reservation,
+                Err(error) => return ChildExecutionOutcome::Failed(error.to_string()),
+            };
+            let outcome = self.runner.run(self.spec, context).await;
+            if let Some(reservation) = reservation {
+                let (tokens, cost, status) = match &outcome {
+                    ChildExecutionOutcome::Completed(output) => match &output.usage {
+                        ChildUsage::Measured {
+                            total_tokens,
+                            spend_microusd,
+                            ..
+                        } => (
+                            *total_tokens,
+                            *spend_microusd,
+                            crate::usage_budget::Outcome::Completed,
+                        ),
+                        _ => (None, None, crate::usage_budget::Outcome::Completed),
+                    },
+                    ChildExecutionOutcome::Cancelled(_) => {
+                        (None, None, crate::usage_budget::Outcome::Interrupted)
+                    }
+                    ChildExecutionOutcome::Failed(_) => {
+                        (None, None, crate::usage_budget::Outcome::Failed)
+                    }
+                };
+                if let Err(error) = reservation.settle(crate::usage_budget::Receipt {
+                    cumulative: None, // This child owns one fresh vendor thread.
+                    total_tokens: tokens,
+                    reported_cost_microunits: cost,
+                    outcome: status,
+                }) {
+                    return ChildExecutionOutcome::Failed(format!(
+                        "usage settlement failed; reservation retained: {error}"
+                    ));
+                }
+            }
+            outcome
+        })
     }
 }
 

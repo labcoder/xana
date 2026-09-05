@@ -140,6 +140,52 @@ impl RuntimeTelemetry for CapturingTelemetry {
 }
 
 #[tokio::test]
+async fn durable_budget_prevents_a_second_native_dispatch_after_recovery() {
+    use crate::{
+        storage::{ProtectedStore, RecoveryIdentity, TestCustody},
+        usage_budget::{BudgetPolicy, UsageBudget},
+    };
+    let directory = tempdir().unwrap();
+    let key = RecoveryIdentity::generate();
+    let data = directory.path().join("data");
+    let store = ProtectedStore::initialize(&data, &key, &TestCustody::default()).unwrap();
+    store
+        .set_usage_policy(&BudgetPolicy {
+            daily_requests: 1,
+            foreground_request_reserve: 0,
+            ..Default::default()
+        })
+        .unwrap();
+    for attempt in 0..2 {
+        let home = ProtectedStore::recover(&data, &key).unwrap();
+        let response = ScriptedResponse {
+            deltas: Vec::new(),
+            message: Message::text(Role::Assistant, "answer"),
+            usage: None,
+        };
+        let (provider, requests) = ScriptedChatTransport::new(vec![response]);
+        let agent = make_agent(provider, directory.path(), 1).with_usage_budget(Some(
+            UsageBudget::new(home, "root".into(), "native/test/model".into(), 100),
+        ));
+        let (operation, permissions, events, _rx) = operation_services();
+        let result = agent
+            .run_turn(
+                operation,
+                &mut vec![Message::text(Role::User, "question")],
+                permissions,
+                events,
+            )
+            .await;
+        assert_eq!(result.is_ok(), attempt == 0);
+        assert_eq!(requests.lock().unwrap().len(), usize::from(attempt == 0));
+    }
+    let records = store.usage_page(None, None, None).unwrap();
+    assert_eq!(records.len(), 1);
+    assert!(records[0].charged_tokens > 100);
+    assert_eq!(records[0].receipt.as_ref().unwrap().total_tokens, None);
+}
+
+#[tokio::test]
 async fn provider_failures_use_the_injected_runtime_telemetry_seam() {
     let workspace = tempdir().expect("temporary workspace");
     let (provider, _) = ScriptedChatTransport::new(Vec::new());

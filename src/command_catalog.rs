@@ -15,6 +15,7 @@ pub(crate) enum CommandAction {
     Approval,
     Artifact,
     Attach,
+    Budget,
     Capabilities,
     Child,
     Clear,
@@ -348,6 +349,23 @@ macro_rules! command {
 /// M3-exit command inventory plus the M4 attach/preview and Espejo semantics.
 /// Broad management families deliberately retain their runtime-owned parsers.
 pub(crate) const COMMANDS: &[CommandSpec] = &[
+    command!(
+        "budget.manage.v1",
+        Budget,
+        "budget",
+        &[],
+        "[--daily-requests N] [--root-tokens N] ...",
+        "Inspect or change durable local admission limits",
+        ArgumentSchema::Optional("budget_options"),
+        Owner,
+        Any,
+        None,
+        Configure,
+        CLI_AND_CHAT,
+        true,
+        true,
+        false
+    ),
     command!(
         "storage.manage.v1",
         Storage,
@@ -1267,6 +1285,23 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         true
     ),
     command!(
+        "usage.ledger.v1",
+        Usage,
+        "usage",
+        &[],
+        "ledger [--root ID] [--job ID] [--after SEQUENCE]",
+        "Inspect durable, source-qualified usage reservations and receipts",
+        ArgumentSchema::Optional("ledger_filters"),
+        Observer,
+        Any,
+        None,
+        Inspect,
+        CLI_AND_CHAT,
+        true,
+        true,
+        true
+    ),
+    command!(
         "run.steer.v1",
         Steer,
         "steer",
@@ -1549,6 +1584,8 @@ pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &
         "diagnostics.logs.v1" => Some(("logs", "list")),
         "outbound.manage.v1" => Some(("outbound", "list")),
         "storage.manage.v1" => Some(("storage", "status")),
+        "budget.manage.v1" => Some(("budget", "")),
+        "usage.ledger.v1" => Some(("usage", "ledger")),
         "operation.reconcile.v1" => Some(("operation", "")),
         "route.inspect.v1" => Some(("route", "list")),
         "integration.connect.v1" => Some(("connect", "")),

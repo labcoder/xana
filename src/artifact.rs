@@ -88,6 +88,9 @@ pub(crate) struct ArtifactRecoveryReport {
 }
 
 impl ArtifactStore {
+    pub(crate) fn protected_home(&self) -> Option<crate::storage::ProtectedStore> {
+        self.protected.clone()
+    }
     pub(crate) fn open(data_dir: &Path) -> Result<Self, ArtifactError> {
         match crate::storage::ProtectedStore::configured(data_dir)
             .map_err(protected_artifact_error)?
