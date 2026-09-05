@@ -4,8 +4,11 @@
 
 `xana serve` starts an explicit foreground host for the canonical current
 workspace. It binds only to a loopback address, does not daemonize, and stops
-when the process receives Ctrl+C. Course 1 does not support LAN or remote
-attachment.
+when the process receives Ctrl+C. LAN and remote attachment are not supported.
+
+For work that must survive closing every client, use the separately enabled
+[detached host and durable schedules](durable-schedules.md). That host has its
+own explicit start/stop and optional startup controls; `serve` remains foreground.
 
 ```text
 xana serve
@@ -141,15 +144,16 @@ fresh snapshot.
 Ctrl+C stops intake and announces shutdown. Xana first fails pending approval
 work closed, requests native/managed cancellation, and waits up to two seconds
 for ordinary cleanup. At the five-second hard bound it aborts only the exact
-host-owned execution task. Native runtime/Phase 4 child shutdown and
+host-owned execution task. Native runtime child shutdown and
 `kill_on_drop` process ownership then reap their owned work; Codex app-server
 also receives its normal two-second exit opportunity before exact child
 termination. Xana never kills a process selected only by a stale PID or broad
 process name. The verified descriptor lease is removed when the host exits.
 
 The protocol is repository-private and versioned for Xana's own frontends. It
-is not a public SDK or compatibility promise. There is no daemon discovery,
-automatic startup, TLS, remote authentication, or LAN binding.
+is not a public SDK or compatibility promise. This foreground mode does not
+enable detached execution or automatic startup. Neither host mode enables TLS,
+remote authentication, or LAN binding.
 
 If a competing launch finds the lock held, it may attach only to the exact
 compatible descriptor and generation published by that owner. A stale
