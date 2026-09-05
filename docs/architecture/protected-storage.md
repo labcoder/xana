@@ -41,9 +41,11 @@ cleanup of failed output; no plaintext mirror or auto-import exists.
 Use/learning/no-memory flags are independent per User/Profile/Project/
 Conversation scope. Any applicable restriction and the restore-review gate
 limit eligible use. Explicit owner review remains possible. Correction changes
-the next eligible read, never an in-flight snapshot. Automatic selection,
-extraction and robust forgetting are not implemented by these controls; see
-[personal memory](../user/personal-memory.md).
+the next eligible read, never an in-flight snapshot. The separate memory
+selection and learning modules use those controls before disclosure and commit;
+transactional forgetting also invalidates derived work and persists restore
+suppression. See [personal memory](../user/personal-memory.md) for the implemented
+selection, learning and forgetting policies and their limits.
 
 ```mermaid
 flowchart TD

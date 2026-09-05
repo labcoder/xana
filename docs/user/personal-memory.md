@@ -125,11 +125,16 @@ An ordinary exact whole statement activates only under the documented initial
 allowlist: “I prefer concise responses”, “I prefer detailed responses”, “I
 prefer examples”, “I prefer metric units”, “I prefer dark mode”, “I prefer
 light mode”, or “I use Rust/Python/TypeScript” (case and final `.`/`!` may vary).
-These records stay Conversation-scoped. Other non-sensitive suggestions,
+These records stay Conversation-scoped. Other suggestions not flagged sensitive,
 including inferences, are inactive candidates, never instructions or permission.
-Sensitive suggestions are not copied into personal memory; an explicit owner
-remember request is required for intentional retention. This conservative first
-policy does not infer a global preference from one task instruction.
+Xana discards suggestions the helper flags as sensitive; an explicit owner
+remember request is required for intentional sensitive retention. Classification
+can be wrong: an unflagged sensitive quotation can remain in an inactive,
+encrypted candidate. It cannot pass the ordinary-statement allowlist or become
+eligible context automatically, but inactive does not mean absent from storage.
+Inspect and forget unwanted candidates, or disable learning when this residual
+risk is unacceptable. This policy does not infer a global preference from one
+task instruction, and no-memory does not erase the original Conversation.
 
 Inspection shows stated/inferred classification and source identity. Scope,
 control, source, route and forgetting checks run again before the transaction
