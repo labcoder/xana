@@ -329,7 +329,7 @@ pub(super) fn count_stale_markers(directory: &Path) -> Result<usize> {
                 stale += 1;
                 let _ = FileExt::unlock(&file);
             }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) if lock_is_held(&error) => {}
             Err(_) => stale += 1,
         }
     }

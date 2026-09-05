@@ -1,5 +1,8 @@
 //! Explicit detached process lifecycle. The existing authenticated loopback
 //! descriptor lease is keyed by protected-home identity, not a frontend window.
+#[cfg(windows)]
+mod windows;
+
 use super::{
     HostPolicy, JobState,
     runner::{NativeExecutor, TaskExecutor, tick},
@@ -12,9 +15,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use std::process::{Command, Stdio};
 use std::{
     net::{IpAddr, Ipv4Addr},
-    process::{Command, Stdio},
     time::Duration,
 };
 use uuid::Uuid;
@@ -225,17 +229,23 @@ pub(crate) fn detach(paths: &XanaPaths) -> Result<String> {
         return Ok("Existing same-home host retained; use autonomy host observe to attach".into());
     }
     let executable = cli_executable()?;
+    launch_detached(&executable)?;
+    Ok("Detached launch requested; host observe/status confirms readiness. Closing clients does not stop the host".into())
+}
+
+#[cfg(windows)]
+fn launch_detached(executable: &std::path::Path) -> Result<()> {
+    windows::detach(executable)
+}
+
+#[cfg(not(windows))]
+fn launch_detached(executable: &std::path::Path) -> Result<()> {
     let mut command = Command::new(executable);
     command
         .args(["autonomy", "host", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -259,7 +269,7 @@ pub(crate) fn detach(paths: &XanaPaths) -> Result<String> {
         .spawn(move || {
             let _ = child.wait();
         })?;
-    Ok("Detached launch requested; host observe/status confirms readiness. Closing clients does not stop the host".into())
+    Ok(())
 }
 
 pub(super) fn cli_executable() -> Result<std::path::PathBuf> {

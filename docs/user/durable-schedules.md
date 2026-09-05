@@ -76,6 +76,12 @@ occurrence. Observation is passive and bounded to the first 32 job summaries;
 use paginated owner inspection for the full retained set. No prompt bodies or
 credentials are published in those summaries.
 
+On Windows the detached owner does not inherit its launcher's open handles,
+including redirected command-output pipes and private file leases. Capturing
+`host start` output therefore finishes independently of the host's lifetime;
+the explicit home and recovery-file-path environment remain available to the
+child when manual unlock was selected.
+
 Ctrl+C in `host observe`, closing a terminal observer, or closing Desktop only
 detaches that client. These are different operations:
 

@@ -114,6 +114,11 @@ fn stale_locked_markers_and_crash_reports_are_distinct() {
     let (_directory, paths) = fixture();
     let runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
     assert!(runtime.marker_path.exists());
+    assert_eq!(
+        count_stale_markers(&runtime.active.crash_dir).unwrap(),
+        0,
+        "a live owner's locked marker is not a prior unclean exit"
+    );
     record_task_panic("fixture-task");
     let crashes = list(&paths).unwrap();
     assert!(crashes.iter().any(|entry| entry.kind == "crash"));
