@@ -2,6 +2,11 @@
 resolver = "3"
 members = ["crates/xana-desktop"]
 default-members = ["."]
+exclude = ["vendor/libsqlite3-sys"]
+
+[patch.crates-io]
+# The published wrapper bundles an older cipher; see vendor/libsqlite3-sys/README.xana.md.
+libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 
 [workspace.package]
 version = "0.7.0"
@@ -51,6 +56,7 @@ name = "xana"
 path = "src/main.rs"
 
 [dependencies]
+age = { version = "=0.12.1", default-features = false }
 anstream = "1.0.0"
 anyhow = "1.0.104"
 arboard = { version = "3.6.1", default-features = false, features = ["image-data"] }
@@ -63,13 +69,16 @@ csv = { version = "1.4.0", optional = true }
 directories = "6.0.0"
 futures = { version = "0.3.31", default-features = false, features = ["std"] }
 fs2 = "0.4.3"
+getrandom = "0.3.4"
 globset = "0.4.20"
 html2text = { version = "0.17.1", default-features = false }
 ignore = "0.4.33"
 keyring = "4.1.6"
+keyring-core = "=1.0.0"
 image = { version = "0.25.9", default-features = false, features = ["gif", "jpeg", "png"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["form", "http2", "json", "rustls-no-provider", "stream", "system-proxy"] }
 regex = "1.13.1"
+rusqlite = { version = "=0.40.2", default-features = false, features = ["backup", "hooks", "limits", "bundled-sqlcipher-vendored-openssl"] }
 # Xana does not require AWS-LC's FIPS or post-quantum extensions, so select
 # Rustls's smaller built-in provider without its CMake-based build dependency.
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
@@ -93,6 +102,15 @@ toml_edit = "0.25.13"
 uuid = { version = "1.18.1", features = ["serde", "v4", "v5"] }
 unicode-width = "0.2.2"
 zeroize = { version = "=1.8.2", features = ["derive"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-native-keyring-store = "=1.1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["rt-async-io-crypto-rust"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"

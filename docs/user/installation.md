@@ -187,6 +187,18 @@ The source channel requires Git and Rust from [rustup](https://rustup.rs/).
 Xana pins Rust `1.97.1` and uses its checked-in lockfile. It is not published to
 crates.io.
 
+Current source builds also compile the pinned SQLCipher/OpenSSL storage
+libraries. Install a C build toolchain, make and complete Perl. On Windows use
+Visual Studio's C++ tools, Strawberry Perl and NASM 3.02; Git's minimal Perl
+is not sufficient. Point `OPENSSL_SRC_PERL` to the complete `perl.exe` if Git's
+Perl comes first on PATH, and put `nasm.exe` on PATH. These are **build-only**
+requirements; prebuilt Xana binaries do not need them.
+
+Build from the Git workspace, not a normalized standalone `cargo package`
+archive: the workspace pins a reviewed native dependency patch that Cargo's
+`.crate` format omits. The [native storage build guide](../contributing/native-storage.md)
+records the exact sources and update checks.
+
 Install the default branch or one exact published tag:
 
 ```bash

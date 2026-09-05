@@ -133,7 +133,13 @@ jobs:
         shell: bash
         run: bash ./scripts/install-cargo-dist.sh
 
+      - name: Prepare reviewed native storage builder
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./scripts/prepare-storage-build.ps1
+
       - name: Build exact native archive
+        # Cargo builds the repository workspace, retaining its reviewed native patch.
         shell: pwsh
         run: dist build --artifacts=local --target '${{ matrix.target }}' --tag '${{ needs.plan.outputs.tag }}'
 

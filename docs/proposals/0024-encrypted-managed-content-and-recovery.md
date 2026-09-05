@@ -33,7 +33,11 @@ reports Locked. Do not promise to erase every process copy or unsend context.
 Restart reconciles state and key availability, never replays uncertain effects.
 Startup before user login does not imply OS custody can unlock.
 
-The library choice remains gated on a runnable feasibility proof: transactional
+The Windows-first library choice is now SQLCipher 4.18.0 with vendored OpenSSL
+3.6.3, rusqlite 0.40.2, native OS custody and standard age 0.12.1 artifact/recovery
+envelopes. Exact pins and the source-build contract are in the
+[native storage guide](../contributing/native-storage.md). The runnable
+feasibility gate covered transactional
 encrypted records, bounded lexical/FTS search, bounded artifact ranges, tamper/
 truncation rejection, cancellation, journal/temp canary scans, interrupted-write
 recovery, licenses, exact native dependencies, package/resource costs and native

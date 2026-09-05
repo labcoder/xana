@@ -1,0 +1,3 @@
+[env]
+# The reviewed Windows OpenSSL build uses NASM, never an accidental no-asm build.
+OPENSSL_RUST_USE_NASM = { value = "1", force = true }

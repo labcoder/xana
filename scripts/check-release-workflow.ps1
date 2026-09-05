@@ -67,7 +67,10 @@ $ciRequired = @(
     "stdio_lifecycle_is_stable_under_repetition",
     "report-ci-environment.ps1",
     "install-cargo-dist.sh",
-    "runner.temp }}/xana-package-target",
+    "runner.temp }}/xana-source-install",
+    "cargo install --path . --locked --debug",
+    "prepare-storage-build.ps1",
+    "--test encrypted_storage_contract",
     "test-release-ci-evidence.ps1",
     "test-create-release-draft.ps1"
 )

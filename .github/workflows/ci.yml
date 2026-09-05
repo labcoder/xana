@@ -57,6 +57,11 @@ jobs:
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
+      - name: Prepare reviewed native storage builder
+        if: ${{ runner.os == 'Windows' }}
+        shell: pwsh
+        run: ./scripts/prepare-storage-build.ps1
+
       - name: Install Linux Desktop build dependencies
         id: desktop-deps
         if: ${{ runner.os == 'Linux' }}
@@ -100,8 +105,8 @@ jobs:
       - name: Run Linux integration tests
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: |
-          cargo test --locked --test cli --test settings_cli --all-features
-          cargo test --locked --test cli --test settings_cli --no-default-features
+          cargo test --locked --test cli --test settings_cli --test encrypted_storage_contract --all-features
+          cargo test --locked --test cli --test settings_cli --test encrypted_storage_contract --no-default-features
 
       - name: Stress MCP stdio lifecycle
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
@@ -144,11 +149,12 @@ jobs:
           ./scripts/check-installation-docs.ps1
           ./scripts/test-removal-recipes.ps1
 
-      - name: Verify packageable application
+      - name: Verify locked source installation
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/xana-package-target
-        run: cargo package --package xana --locked
+        shell: pwsh
+        run: |
+          cargo install --path . --locked --debug --root '${{ runner.temp }}/xana-source-install'
+          if ($LASTEXITCODE -ne 0) { throw 'locked source installation failed' }
 
       - name: Install pinned release planner
         id: dist

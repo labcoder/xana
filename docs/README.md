@@ -156,6 +156,8 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 
 - [Code organization](contributing/code-organization.md) defines the repository
   policy for modules, tests, comments, formatting, and tooling.
+- [Native storage dependencies](contributing/native-storage.md) records cipher,
+  custody and artifact-library pins, source-build prerequisites and acceptance.
 - [Desktop development](contributing/desktop-development.md) explains the
   native GPUI package, exact dependency boundary, source launch, checks, and
   troubleshooting for the M4 Workbench.

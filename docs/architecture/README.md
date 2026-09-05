@@ -1947,12 +1947,12 @@ Xana is a Cargo-installable source application pinned to Rust 1.97.1. The
 checked-in lockfile is part of its package contract, and supported checkout or
 Git installs use `cargo install ... --locked`. CI runs formatting,
 warning-denied all-feature Clippy, all-feature and no-default-feature tests, a
-reviewed package-path audit, and `cargo package --package xana --locked` on
+reviewed package-path audit, and a locked source installation from the workspace on
 Linux, macOS, and Windows. The application package remains `publish = false`
 to prevent accidental registry publication, while its source archive is still
 audited as part of the distribution contract. The package includes its license,
 README, and User Documentation. Release builds retain Cargo's
-default profile; the measured Windows smoke binary was about 8.1 MiB, and no
+default profile; the pre-protected-storage Windows smoke binary was about 8.1 MiB, and no
 cross-platform evidence yet justifies custom LTO, stripping, panic, or codegen
 settings.
 
