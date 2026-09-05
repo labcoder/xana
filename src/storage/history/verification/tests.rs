@@ -21,6 +21,66 @@ fn fixture() -> (tempfile::TempDir, ProtectedStore, DurableSession) {
 }
 
 #[test]
+fn subject_lookup_uses_bounded_record_index_work() {
+    // Exercise the production SQL and exact schema/index with the linked SQLite
+    // engine. This is a query-plan fixture, not a valid execution journal or a
+    // substitute for the encrypted end-to-end resource probe.
+    let mut connection = rusqlite::Connection::open_in_memory().unwrap();
+    connection.execute_batch(super::super::SCHEMA).unwrap();
+    connection
+        .execute_batch(super::super::EXECUTION_SCHEMA)
+        .unwrap();
+    let tx = connection.transaction().unwrap();
+    tx.execute(
+        "INSERT INTO native_sessions VALUES('fixture','root','workspace',NULL,0,0,0)",
+        [],
+    )
+    .unwrap();
+    for sequence in 0..4096i64 {
+        tx.execute(
+            "INSERT INTO native_records VALUES('fixture',?1,?2,?3)",
+            params![sequence, format!("record-{sequence}"), b"{}".as_slice()],
+        )
+        .unwrap();
+        tx.execute(
+            "INSERT INTO native_subjects VALUES('fixture','entry',?1,?2)",
+            params![format!("entry-{sequence}"), sequence],
+        )
+        .unwrap();
+    }
+    let plan = tx
+        .prepare(&format!("EXPLAIN QUERY PLAN {SUBJECT_LOOKUP}"))
+        .unwrap()
+        .query_map(params!["fixture", 4095], |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let mut query = tx.prepare(SUBJECT_LOOKUP).unwrap();
+    let actual = query
+        .query_map(params!["fixture", 4095], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    let steps = query.get_status(rusqlite::StatementStatus::VmStep);
+    println!(
+        "subject_lookup_plan={plan:?} population=4096 returned={} vm_steps={steps}",
+        actual.len()
+    );
+    assert_eq!(actual, vec![("entry".into(), "entry-4095".into())]);
+    assert!(
+        steps <= 64,
+        "a single-record lookup scanned unrelated history: {steps} VM steps; {plan:?}"
+    );
+    assert!(
+        plan.iter().any(
+            |detail| detail.contains("native_subjects_record") && detail.contains("sequence=?")
+        )
+    );
+}
+
+#[test]
 fn offline_registration_replay_rejects_duplicate_orphan_artifacts_after_eviction() {
     let (_directory, store, mut session) = fixture();
     let crate::operation::DurableValueRef::Artifact(reference) = session
@@ -165,7 +225,7 @@ fn historical_compaction_rejects_wrong_predecessor_and_inactive_source_even_with
 
 #[test]
 fn offline_verification_detects_each_derived_index_mismatch() {
-    for kind in ["subjects", "digests", "path"] {
+    for kind in ["subjects", "subject_overflow", "digests", "path"] {
         let (_directory, store, mut session) = fixture();
         session
             .append_message(Message::text(Role::User, "An immutable entry"))
@@ -179,6 +239,16 @@ fn offline_verification_detects_each_derived_index_mismatch() {
                             "UPDATE native_subjects SET subject='wrong' WHERE kind='entry'",
                             [],
                         )?;
+                    }
+                    "subject_overflow" => {
+                        // The lookup's extra row remains an overflow sentinel;
+                        // a fast plan must not turn extra index rows into success.
+                        for extra in 0..130 {
+                            db.connection.execute(
+                                "INSERT INTO native_subjects VALUES(?1,'unexpected',?2,1)",
+                                params![session.session_id().to_string(), format!("extra-{extra}")],
+                            )?;
+                        }
                     }
                     "digests" => {
                         db.connection.execute(

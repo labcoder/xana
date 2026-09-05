@@ -12,6 +12,10 @@ use crate::{
 use std::collections::{BTreeSet, HashMap};
 
 const PROOF_PAGE: usize = 128;
+// The planner can prefer the covering primary key, which scans the whole
+// Conversation because sequence follows kind/subject there. This schema-v7+
+// record index bounds each lookup to one record without weakening set equality.
+const SUBJECT_LOOKUP: &str = "SELECT kind,subject FROM native_subjects INDEXED BY native_subjects_record WHERE session=?1 AND sequence=?2 LIMIT 129";
 #[cfg(test)]
 mod tests;
 
@@ -231,9 +235,7 @@ fn verify_subjects(tx: &Transaction<'_>, record: &RecordEnvelope, sequence: usiz
             (kind.to_owned(), key)
         })
         .collect();
-    let mut statement = tx.prepare(
-        "SELECT kind,subject FROM native_subjects WHERE session=?1 AND sequence=?2 LIMIT 129",
-    )?;
+    let mut statement = tx.prepare(SUBJECT_LOOKUP)?;
     let actual: BTreeSet<(String, String)> = statement
         .query_map(
             params![record.session_id.to_string(), i64::try_from(sequence)?],
