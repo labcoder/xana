@@ -4,6 +4,7 @@
 //! are data, never instructions or permission grants. Automatic extraction and
 //! model prompt selection are separate consumers of the eligibility contract.
 
+pub(crate) mod candidates;
 mod forgetting;
 pub(crate) mod learning;
 mod natural;
@@ -319,7 +320,7 @@ impl MemoryOwner {
     }
 }
 
-fn validate_scope(scope: &MemoryScope) -> Result<()> {
+pub(crate) fn validate_scope(scope: &MemoryScope) -> Result<()> {
     ensure!(
         match scope {
             MemoryScope::User => true,
@@ -330,7 +331,7 @@ fn validate_scope(scope: &MemoryScope) -> Result<()> {
     );
     Ok(())
 }
-fn validate_statement(text: &str) -> Result<()> {
+pub(crate) fn validate_statement(text: &str) -> Result<()> {
     ensure!(
         !text.trim().is_empty()
             && text.len() <= 4096

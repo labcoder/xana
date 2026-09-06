@@ -127,8 +127,12 @@ prefer examples”, “I prefer metric units”, “I prefer dark mode”, “I 
 light mode”, or “I use Rust/Python/TypeScript” (case and final `.`/`!` may vary).
 These records stay Conversation-scoped. Other suggestions not flagged sensitive,
 including inferences, are inactive candidates, never instructions or permission.
-Xana discards suggestions the helper flags as sensitive; an explicit owner
-remember request is required for intentional sensitive retention. Classification
+For suggestions the helper flags as sensitive, Xana retains only a redacted
+candidate envelope, not the quoted fact; an explicit owner remember request is
+required for intentional sensitive retention. Conflicting duplicate suggestions
+use the sensitive classification rather than copying a less restrictive version,
+and any conflicting inferred classification keeps the quote staged regardless
+of suggestion order. Classification
 can be wrong: an unflagged sensitive quotation can remain in an inactive,
 encrypted candidate. It cannot pass the ordinary-statement allowlist or become
 eligible context automatically, but inactive does not mean absent from storage.
@@ -153,6 +157,77 @@ them under new authority. `memory learning-status` shows `excluded_after_change`
 and a metadata-only `last_retirement` reason; retirement is bounded to 64 sources
 per pass, and sources remaining beyond that page still cannot be dispatched
 when ineligible.
+
+## Review learning candidates and inert drafts
+
+Candidate review is an offline owner control in CLI/plain/TUI and Desktop's
+Memory panel. It never calls a model or gives a draft tools or permissions:
+
+```text
+xana memory candidate list --scope conversation:CONVERSATION_UUID
+xana memory candidate list --after LAST_SEQUENCE
+xana memory candidate show CANDIDATE_UUID
+xana memory candidate diff CANDIDATE_UUID
+xana memory candidate approve CANDIDATE_UUID --revision 1
+xana memory candidate reject CANDIDATE_UUID --revision 1 --reason "Not accurate"
+xana memory candidate undo CANDIDATE_UUID --revision 2
+xana memory candidate archive CANDIDATE_UUID --revision 3
+xana memory candidate stage-skill --scope user --name example --markdown "# An inert procedure draft"
+```
+
+Use `/memory candidate ...` between turns in plain/TUI, or the **Learning
+candidates** area of Desktop Memory. Select the exact scope, refresh its bounded
+page, inspect the proposal/provenance/diff, and confirm the inspected content
+before acceptance. Candidate IDs are distinct from their target memory IDs.
+
+A candidate records its original source identity and hash, target and base
+revision, scope, privacy/consent generation, classification, validation rule,
+content hash and ordered owner/policy review events. List returns at most 32
+metadata-only summaries; Show/Diff explicitly materialize one proposal.
+Inferred or ambiguous memory remains inactive until approved. Approval preserves
+its stated/inferred classification and exact scope; it cannot choose a broader
+scope, change permissions, select a provider or install a tool. Explicit memory
+correction/scope commands remain separate owner actions.
+
+Automatically activated allowlisted facts also have candidate records with the
+deterministic rule and source proof. **Undo** revokes the unchanged published
+fact; it never restores old text over a subsequent correction. **Reject** retires
+a pending proposal without changing a memory target. **Archive** retains review
+history rather than securely erasing it; disable/undo an unchanged active fact
+before archiving its candidate. A corrected, disabled or forgotten publication
+can be archived without touching the newer target.
+
+Scope/control changes, source replacement/exclusion, correction, forgetting and
+restore invalidate incompatible proposals. The privacy-generation fence is
+conservative: accepting a memory can also invalidate other older staged
+proposals. Refresh reports the conflict but does not rebase old evidence; use a
+fresh explicit remember/correction or stage a fresh draft with current consent.
+Undo can likewise refuse after such a change; the exact memory's direct Disable
+or Forget control remains available. Restored-memory review does not reauthorize
+old candidate tokens. Pre-existing inactive candidates imported from older
+protected schemas are inspectable but cannot fabricate missing extraction proof
+or become newly approved through the candidate path.
+
+Sensitive metadata-only candidates have no recoverable quotation. Even
+`--confirm-sensitive` cannot reconstruct it: intentionally remember the fact in
+a fresh owner request. Forgotten/excluded candidate sources also hide payloads,
+pre-images and rejection text in inspection, and prevent the old memory
+inspection/export and prompt-selection surfaces from exposing those candidate
+payloads. Explicitly owner-created memory records retain their separate
+owner-inspection contract. A later exact owner Restore or correction makes the
+current active fact independent of its old candidate publication; the current
+fact is visible and usable, but the excluded candidate payload, pre-image and
+old approval/undo proof stay unavailable.
+
+Skill drafts contain at most 32 KiB of inert Markdown in the protected database,
+not a file under `.agents` or a Skill/plugin directory. Acceptance means
+**reviewed only**: no discovery, prompt assembly, loading or execution follows.
+Inspect/copy the reviewed text deliberately and use the existing explicit
+Skill/plugin authoring and installation lifecycle if it should become a real
+Skill. Draft creation is currently an explicit owner action, not automatic
+procedure extraction. General prompt, route, policy, executable or harness
+self-modification is not supported by candidate review. Envelopes are bounded
+to 64 KiB and 64 revisions; inspection is not a background full-catalog load.
 
 ## Memory in a conversation
 
@@ -218,9 +293,8 @@ failed partial writes. The successful copy is outside managed encryption; store
 or delete it deliberately. No Markdown mirror is created.
 
 Corrections and scope/control changes apply on the next eligible read; existing
-snapshots and in-flight work are not restarted. General learned-candidate
-approval and inert Skill-draft workflows remain separate work; these memory
-features do not rewrite identity, Skills or permissions. Task recall remains a
+snapshots and in-flight work are not restarted. Governed candidate review and
+inert Skill drafts do not rewrite identity, installed Skills or permissions. Task recall remains a
 separate source-evidence system, not personal truth.
 
 Native local-control acknowledgements are saved in the Conversation. Managed

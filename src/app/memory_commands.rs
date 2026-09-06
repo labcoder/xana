@@ -1,6 +1,6 @@
 //! One owner command adapter over the governed protected-memory API.
 use crate::{
-    cli::{MemoryArgs, MemoryCommand},
+    cli::{CandidateCommand, MemoryArgs, MemoryCommand},
     memory::{MemoryContext, MemoryControlEdit, MemoryEdit, MemoryOwner},
     paths::XanaPaths,
     storage::ProtectedStore,
@@ -96,6 +96,7 @@ pub(super) async fn run<W: Write>(
     let store=ProtectedStore::configured(paths.data_dir())?.context("Personal memory requires protected storage; inspect xana storage status. No plaintext memory was created")?;
     let owner = MemoryOwner::new(store, MemoryContext::default());
     let value = match args.command {
+        MemoryCommand::Candidate { command } => candidate(&owner, command)?,
         MemoryCommand::ReviewRestore { review } => {
             owner.store.review_restored_memory(review.as_deref())?
         }
@@ -263,6 +264,119 @@ pub(super) async fn run<W: Write>(
     serde_json::to_writer_pretty(&mut *output, &value)?;
     writeln!(output)?;
     Ok(())
+}
+
+fn candidate(owner: &MemoryOwner, command: CandidateCommand) -> Result<serde_json::Value> {
+    use crate::memory::candidates::CandidateEdit;
+    Ok(match command {
+        CandidateCommand::List { scope, after } => {
+            serde_json::to_value(owner.candidate_page(scope.as_ref(), after)?)?
+        }
+        CandidateCommand::Show { id } => serde_json::to_value(owner.candidate(id)?)?,
+        CandidateCommand::Diff { id } => {
+            let inspected = owner.candidate(id)?;
+            serde_json::json!({"id":id,"diff":inspected.diff,"stale_reason":inspected.stale_reason})
+        }
+        CandidateCommand::StageSkill {
+            scope,
+            name,
+            markdown,
+        } => serde_json::to_value(owner.stage_skill(scope, name, markdown)?)?,
+        CandidateCommand::Approve {
+            id,
+            revision,
+            confirm_sensitive,
+        } => serde_json::to_value(owner.review_candidate(
+            id,
+            revision,
+            CandidateEdit::Approve { confirm_sensitive },
+        )?)?,
+        CandidateCommand::Reject {
+            id,
+            revision,
+            reason,
+        } => serde_json::to_value(owner.review_candidate(
+            id,
+            revision,
+            CandidateEdit::Reject { reason },
+        )?)?,
+        CandidateCommand::Archive { id, revision } => {
+            serde_json::to_value(owner.review_candidate(id, revision, CandidateEdit::Archive)?)?
+        }
+        CandidateCommand::Undo { id, revision } => {
+            serde_json::to_value(owner.review_candidate(id, revision, CandidateEdit::Undo)?)?
+        }
+    })
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+    use crate::{
+        memory::MemoryScope,
+        storage::{RecoveryIdentity, TestCustody},
+    };
+
+    #[test]
+    fn terminal_review_preserves_inert_payload_and_rejects_stale_replays() {
+        let directory = tempfile::tempdir().unwrap();
+        let owner = MemoryOwner::new(
+            ProtectedStore::initialize(
+                directory.path(),
+                &RecoveryIdentity::generate(),
+                &TestCustody::default(),
+            )
+            .unwrap(),
+            MemoryContext::default(),
+        );
+        let staged = candidate(
+            &owner,
+            CandidateCommand::StageSkill {
+                scope: MemoryScope::User,
+                name: "synthetic-draft".into(),
+                markdown: "# Untrusted procedure\n```sh\nnever-execute-this\n```".into(),
+            },
+        )
+        .unwrap();
+        let id = staged["id"].as_str().unwrap().parse().unwrap();
+        let revision = staged["revision"].as_u64().unwrap();
+        let page = candidate(
+            &owner,
+            CandidateCommand::List {
+                scope: None,
+                after: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(page["records"].as_array().unwrap().len(), 1);
+        assert!(
+            !page.to_string().contains("never-execute-this"),
+            "list is metadata-only"
+        );
+        let diff = candidate(&owner, CandidateCommand::Diff { id }).unwrap();
+        assert!(diff.to_string().contains("never-execute-this"));
+        let accepted = candidate(
+            &owner,
+            CandidateCommand::Approve {
+                id,
+                revision,
+                confirm_sensitive: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(accepted["state"], "reviewed_only");
+        assert!(candidate(&owner, CandidateCommand::Archive { id, revision }).is_err());
+        let archived = candidate(
+            &owner,
+            CandidateCommand::Archive {
+                id,
+                revision: accepted["revision"].as_u64().unwrap(),
+            },
+        )
+        .unwrap();
+        assert_eq!(archived["state"], "archived");
+        assert!(!directory.path().join(".agents").exists());
+    }
 }
 
 #[cfg(test)]

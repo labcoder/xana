@@ -1,4 +1,5 @@
 //! Retained memory controls. Database work is explicit, bounded, and off-thread.
+mod candidates;
 use gpui::{
     Context, Entity, IntoElement, ParentElement as _, Render, SharedString, Subscription, Task,
     Window, prelude::*,
@@ -45,6 +46,8 @@ enum EditAction {
 }
 
 pub(crate) struct MemoryView {
+    candidates: Entity<candidates::CandidateView>,
+    show_candidates: bool,
     control: DesktopControlPlane,
     scope: Entity<InputState>,
     choices: Entity<SelectState<SearchableVec<ScopeChoice>>>,
@@ -102,6 +105,8 @@ impl MemoryView {
             }
         });
         Self {
+            candidates: cx.new(|cx| candidates::CandidateView::new(control.clone(), window, cx)),
+            show_candidates: false,
             control,
             scope: cx.new(|cx| InputState::new(window,cx).default_value("user")),
             choices,
@@ -452,6 +457,22 @@ impl MemoryView {
 
 impl Render for MemoryView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.show_candidates {
+            return v_flex()
+                .size_full()
+                .min_h_0()
+                .gap_2()
+                .child(
+                    Button::new("memory-candidates-back")
+                        .label("Back to memory")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_candidates = false;
+                            cx.notify();
+                        })),
+                )
+                .child(self.candidates.clone())
+                .into_any_element();
+        }
         let tokens = cx.theme().semantic_tokens();
         let selected = self.selected.is_some();
         let forgotten = self
@@ -498,6 +519,19 @@ impl Render for MemoryView {
         });
         let navigation = h_flex()
             .gap_2()
+            .child(Button::new("memory-candidates").label("Review candidates…").disabled(self.busy)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    match this.scope(cx) {
+                        Ok(scope) => {
+                            this.show_candidates = this.candidates.update(cx, |view, cx| view.open(scope, window, cx));
+                            if !this.show_candidates {
+                                this.status = "Candidate review still has local work running. Wait for it to finish before changing scope.".into();
+                            }
+                        }
+                        Err(error) => this.status = error,
+                    }
+                    cx.notify();
+                })))
             .child(
                 Button::new("memory-refresh")
                     .label("Refresh")

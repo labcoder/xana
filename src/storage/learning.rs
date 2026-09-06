@@ -131,11 +131,27 @@ impl ProtectedStore {
                 let source=sources.iter().find(|s|s.id==suggestion.source).ok_or_else(||anyhow::anyhow!("helper invented a source identity"))?;
                 // Do not copy sensitive information into a new personal-memory
                 // record without fresh owner consent; original history is separate.
-                if suggestion.sensitive || !seen.insert((source.id,suggestion.quote.as_str())) {continue;}
+                if !seen.insert((source.id,suggestion.quote.as_str())) {continue;}
+                ensure!(!suggestion.quote.trim().is_empty() && suggestion.quote.len()<=512 && source.text.contains(&suggestion.quote),"learning suggestion has no bounded exact owner quote");
+                // Conflicting duplicate classifications cannot gain authority
+                // by appearing first. The bounded batch uses the stricter claim.
+                let mut combined = suggestion.clone();
+                for other in suggestions.iter().filter(|other| other.source==source.id && other.quote==suggestion.quote) {
+                    combined.sensitive |= other.sensitive;
+                    if other.claim == crate::memory::MemoryClaim::Inferred {
+                        combined.claim = crate::memory::MemoryClaim::Inferred;
+                    }
+                }
+                let suggestion = &combined;
+                if suggestion.sensitive {
+                    super::candidates::learned(&tx,source,suggestion,route,None)?;
+                    continue;
+                }
                 let record=record_for(source,suggestion)?;
                 if super::forgetting::statement_suppressed(&tx,&record.statement)? {continue;}
                 let body=serde_json::to_vec(&record)?;ensure!(body.len()<=RECORD_BYTES,"learned record exceeds bound");
                 tx.execute("INSERT INTO memory_entries(id,revision,scope,body) VALUES(?1,1,?2,?3)",params![record.id.to_string(),record.scope.to_string(),body])?;
+                super::candidates::learned(&tx,source,suggestion,route,Some(&record))?;
                 count+=1;
             }
             for source in sources {
@@ -151,8 +167,16 @@ impl ProtectedStore {
             let pending = tx.query_row("SELECT COUNT(*) FROM learning_queue", [], |r| {
                 super::database::read_u64(r, 0)
             })?;
-            let candidates = tx.query_row("SELECT COUNT(*) FROM memory_entries WHERE (CASE WHEN json_valid(CAST(body AS TEXT)) THEN json_extract(CAST(body AS TEXT),'$.state') ELSE 'invalid' END)='candidate'", [], |r| super::database::read_u64(r, 0))?;
-            let excluded_after_change = tx.query_row("SELECT COUNT(*) FROM learning_sources WHERE state='excluded_after_change'", [], |r| super::database::read_u64(r, 0))?;
+            let candidates = tx.query_row(
+                "SELECT COUNT(*) FROM learning_candidates WHERE state IN ('staged','stale')",
+                [],
+                |r| super::database::read_u64(r, 0),
+            )?;
+            let excluded_after_change = tx.query_row(
+                "SELECT COUNT(*) FROM learning_sources WHERE state='excluded_after_change'",
+                [],
+                |r| super::database::read_u64(r, 0),
+            )?;
             Ok(LearningStatus {
                 pending,
                 candidates,

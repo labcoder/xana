@@ -23,6 +23,11 @@ impl From<Toggle> for bool {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum MemoryCommand {
+    /// Inspect and review learned suggestions; Skill drafts remain inert.
+    Candidate {
+        #[command(subcommand)]
+        command: CandidateCommand,
+    },
     /// Inspect bounded pending learning, route and last receipt; no provider call.
     LearningStatus,
     /// Authorize one exact native helper connection/model for personal processing.
@@ -141,4 +146,114 @@ pub(crate) enum MemoryCommand {
         project: Option<Uuid>,
         request: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub(crate) enum CandidateCommand {
+    /// Read a bounded page of candidate metadata.
+    List {
+        #[arg(long)]
+        scope: Option<MemoryScope>,
+        #[arg(long)]
+        after: Option<u64>,
+    },
+    /// Inspect the exact proposal, provenance, and current validity.
+    Show { id: Uuid },
+    /// Compare a proposal with its reviewed base.
+    Diff { id: Uuid },
+    /// Accept the inspected memory revision, or mark an inert draft reviewed.
+    Approve {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+        #[arg(long)]
+        confirm_sensitive: bool,
+    },
+    /// Reject one inspected revision without changing its target.
+    Reject {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+        #[arg(long)]
+        reason: String,
+    },
+    /// Retain an inactive review record; this is not secure forgetting.
+    Archive {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Undo an unchanged approved target; concurrent changes fail closed.
+    Undo {
+        id: Uuid,
+        #[arg(long)]
+        revision: u64,
+    },
+    /// Retain Markdown as an inert draft, never an installed Skill.
+    StageSkill {
+        #[arg(long)]
+        scope: MemoryScope,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        markdown: String,
+    },
+}
+
+#[cfg(test)]
+mod candidate_tests {
+    use super::*;
+    use crate::cli::{Cli, Command};
+    use clap::Parser as _;
+
+    #[test]
+    fn review_requires_exact_revision_and_never_implies_installation() {
+        let id = Uuid::new_v4().to_string();
+        assert!(Cli::try_parse_from(["xana", "memory", "candidate", "approve", &id]).is_err());
+        let args = Cli::try_parse_from([
+            "xana",
+            "memory",
+            "candidate",
+            "approve",
+            &id,
+            "--revision",
+            "4",
+        ])
+        .unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Memory(MemoryArgs {
+                command: MemoryCommand::Candidate {
+                    command: CandidateCommand::Approve {
+                        revision: 4,
+                        confirm_sensitive: false,
+                        ..
+                    }
+                }
+            }))
+        ));
+        assert!(Cli::try_parse_from(["xana", "memory", "candidate", "install", &id]).is_err());
+    }
+
+    #[test]
+    fn drafts_require_explicit_scope_and_keep_shell_text_as_data() {
+        let input = [
+            "xana",
+            "memory",
+            "candidate",
+            "stage-skill",
+            "--scope",
+            "user",
+            "--name",
+            "fixture",
+            "--markdown",
+            "```sh\nnever-execute-this\n```",
+        ];
+        let args = Cli::try_parse_from(input).unwrap();
+        assert!(matches!(args.command, Some(Command::Memory(MemoryArgs {
+            command: MemoryCommand::Candidate { command: CandidateCommand::StageSkill {
+                scope: MemoryScope::User, markdown, ..
+            }}
+        })) if markdown.contains("never-execute-this")));
+    }
 }

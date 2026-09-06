@@ -16,7 +16,7 @@ pub(crate) use recall::{NotesCommand, RecallArgs, RecallCommand};
 pub(crate) use worker::{WorkerArgs, WorkerCommand, WorkerTarget};
 mod autonomy;
 pub(crate) use autonomy::{AutonomyArgs, AutonomyCommand, CreateTask, HostCommand};
-pub(crate) use memory::{MemoryArgs, MemoryCommand};
+pub(crate) use memory::{CandidateCommand, MemoryArgs, MemoryCommand};
 use std::{net::IpAddr, path::PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

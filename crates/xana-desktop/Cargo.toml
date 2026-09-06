@@ -23,6 +23,7 @@ url.workspace = true
 xana = { path = "../.." }
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"
 
 [lints.clippy]

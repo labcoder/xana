@@ -111,7 +111,7 @@ fn accounting_upgrade_preserves_old_snapshots_and_excludes_live_owners() {
     let store = ProtectedStore::initialize(home.path(), &key, &custody).unwrap();
     store.set_document("fixture", b"retained", 1024).unwrap();
     // Construct the released schema-1 format, not a different storage backend.
-    store.with_database(|db| { db.connection.execute_batch("DROP TABLE recall_search; DROP TABLE recall_sources; DROP TABLE recall_progress; DROP TABLE learning_queue; DROP TABLE learning_sources; DROP TABLE native_execution_checkpoints; DROP TABLE native_record_digests; DROP TABLE native_subjects; DROP TABLE native_path; DROP TABLE autonomy_receipts; DROP TABLE autonomy_jobs; DROP TABLE privacy_generation; DROP TABLE forgotten_facts; DROP TABLE excluded_sources; DROP TABLE deletion_receipts; DROP TABLE usage_requests; DROP TABLE usage_counters; DROP TABLE memory_entries; DROP TABLE memory_revisions; DROP TABLE memory_controls; UPDATE store_identity SET version=1; PRAGMA user_version=1;")?; Ok(()) }).unwrap();
+    store.with_database(|db| { db.connection.execute_batch("DROP TABLE learning_candidates; DROP TABLE recall_search; DROP TABLE recall_sources; DROP TABLE recall_progress; DROP TABLE learning_queue; DROP TABLE learning_sources; DROP TABLE native_execution_checkpoints; DROP TABLE native_record_digests; DROP TABLE native_subjects; DROP TABLE native_path; DROP TABLE autonomy_receipts; DROP TABLE autonomy_jobs; DROP TABLE privacy_generation; DROP TABLE forgotten_facts; DROP TABLE excluded_sources; DROP TABLE deletion_receipts; DROP TABLE usage_requests; DROP TABLE usage_counters; DROP TABLE memory_entries; DROP TABLE memory_revisions; DROP TABLE memory_controls; UPDATE store_identity SET version=1; PRAGMA user_version=1;")?; Ok(()) }).unwrap();
     let recovery = ProtectedStore::recover(home.path(), &key).unwrap();
     assert_eq!(
         recovery.document("fixture", 1024).unwrap().unwrap(),
@@ -170,7 +170,7 @@ fn memory_schema_upgrade_from_accounting_preserves_data_and_snapshot_inspection_
     let store = ProtectedStore::initialize(home.path(), &key, &custody).unwrap();
     store.set_document("fixture", b"retained", 1024).unwrap();
     store.with_database(|db| {
-        db.connection.execute_batch("DROP TABLE recall_search; DROP TABLE recall_sources; DROP TABLE recall_progress; DROP TABLE learning_queue; DROP TABLE learning_sources; DROP TABLE native_execution_checkpoints; DROP TABLE native_record_digests; DROP TABLE native_subjects; DROP TABLE native_path; DROP TABLE autonomy_receipts; DROP TABLE autonomy_jobs; DROP TABLE privacy_generation; DROP TABLE forgotten_facts; DROP TABLE excluded_sources; DROP TABLE deletion_receipts; DROP TABLE memory_entries; DROP TABLE memory_revisions; DROP TABLE memory_controls; UPDATE store_identity SET version=2; PRAGMA user_version=2;")?;
+        db.connection.execute_batch("DROP TABLE learning_candidates; DROP TABLE recall_search; DROP TABLE recall_sources; DROP TABLE recall_progress; DROP TABLE learning_queue; DROP TABLE learning_sources; DROP TABLE native_execution_checkpoints; DROP TABLE native_record_digests; DROP TABLE native_subjects; DROP TABLE native_path; DROP TABLE autonomy_receipts; DROP TABLE autonomy_jobs; DROP TABLE privacy_generation; DROP TABLE forgotten_facts; DROP TABLE excluded_sources; DROP TABLE deletion_receipts; DROP TABLE memory_entries; DROP TABLE memory_revisions; DROP TABLE memory_controls; UPDATE store_identity SET version=2; PRAGMA user_version=2;")?;
         Ok(())
     }).unwrap();
     drop(store);

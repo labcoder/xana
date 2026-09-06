@@ -151,10 +151,14 @@ fn sensitive_output_is_not_copied_and_inferred_output_is_inactive() {
             .store
             .commit_learning(&sources, &suggestions, &route)
             .unwrap(),
-        1
+        0
     );
     assert_eq!(owner.store.learning_status().unwrap().candidates, 1);
     assert!(owner.eligible().unwrap().records.is_empty());
+    assert!(
+        owner.page(None, None).unwrap().records.is_empty(),
+        "a duplicate inferred suggestion cannot downgrade sensitive no-copy classification"
+    );
 }
 
 #[test]
@@ -339,6 +343,19 @@ async fn real_learning_path_batches_one_call_and_accounts_actual_usage() {
     );
     assert_eq!(provider.calls.load(std::sync::atomic::Ordering::Relaxed), 1);
     assert_eq!(owner.eligible().unwrap().records.len(), 1);
+    let candidates = owner.candidate_page(None, None).unwrap();
+    assert_eq!(candidates.records.len(), 1);
+    assert_eq!(
+        candidates.records[0].state,
+        crate::memory::candidates::CandidateState::AutoApplied
+    );
+    assert!(
+        owner
+            .candidate(candidates.records[0].id)
+            .unwrap()
+            .stale_reason
+            .is_none()
+    );
     let receipts = owner.store.usage_page(None, None, None).unwrap();
     assert_eq!(receipts.len(), 1);
     assert_eq!(

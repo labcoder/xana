@@ -230,6 +230,100 @@ fn memory_cli_preserves_expiry_checks_revisions_and_exports_without_provider_con
     );
 }
 
+#[test]
+fn candidate_cli_review_survives_restart_and_never_installs_a_skill() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let key = directory.path().join("recovery.key");
+    assert_success(
+        &xana(&home)
+            .args(["storage", "recovery-key", "--output"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        &xana(&home)
+            .args(["storage", "initialize", "--manual-unlock", "--recovery-key"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    let run = |arguments: &[&str]| {
+        xana(&home)
+            .env("XANA_STORAGE_RECOVERY_KEY", &key)
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .args(arguments)
+            .output()
+            .unwrap()
+    };
+    let staged = run(&[
+        "memory",
+        "candidate",
+        "stage-skill",
+        "--scope",
+        "user",
+        "--name",
+        "synthetic",
+        "--markdown",
+        "# Procedure\nNever execute this canary",
+    ]);
+    assert_success(&staged);
+    let record: serde_json::Value = serde_json::from_slice(&staged.stdout).unwrap();
+    let id = record["id"].as_str().unwrap();
+    let revision = record["revision"].as_u64().unwrap().to_string();
+    let page = run(&["memory", "candidate", "list", "--scope", "user"]);
+    assert_success(&page);
+    assert!(!String::from_utf8_lossy(&page.stdout).contains("Never execute"));
+    let inspected = run(&["memory", "candidate", "diff", id]);
+    assert_success(&inspected);
+    assert!(String::from_utf8_lossy(&inspected.stdout).contains("Never execute"));
+    let approved = run(&[
+        "memory",
+        "candidate",
+        "approve",
+        id,
+        "--revision",
+        &revision,
+    ]);
+    assert_success(&approved);
+    let approved: serde_json::Value = serde_json::from_slice(&approved.stdout).unwrap();
+    assert_eq!(approved["state"], "reviewed_only");
+    assert!(
+        !run(&[
+            "memory",
+            "candidate",
+            "archive",
+            id,
+            "--revision",
+            &revision
+        ])
+        .status
+        .success()
+    );
+    let next_revision = approved["revision"].as_u64().unwrap().to_string();
+    let archived = run(&[
+        "memory",
+        "candidate",
+        "archive",
+        id,
+        "--revision",
+        &next_revision,
+    ]);
+    assert_success(&archived);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&archived.stdout).unwrap()["state"],
+        "archived"
+    );
+    assert!(!home.join(".agents").exists());
+    assert!(!directory.path().join(".agents").exists());
+    assert!(
+        !home.join("config.toml").exists(),
+        "no provider configuration required"
+    );
+}
+
 fn fake_chat_server(final_text: &str) -> (String, thread::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind fake provider");
     let address = listener.local_addr().expect("fake provider address");

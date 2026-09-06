@@ -63,7 +63,7 @@ fn read_record(row: &rusqlite::Row<'_>, col: usize) -> rusqlite::Result<MemoryRe
         .map_err(|error| rusqlite::Error::FromSqlConversionFailure(col, Type::Blob, error.into()))
 }
 
-fn encode(record: &MemoryRecord) -> Result<Vec<u8>> {
+pub(super) fn encode(record: &MemoryRecord) -> Result<Vec<u8>> {
     record.validate()?;
     let bytes = serde_json::to_vec(record)?;
     ensure!(
@@ -137,7 +137,12 @@ impl ProtectedStore {
     }
 
     pub(crate) fn memory_record(&self, id: Uuid) -> Result<MemoryRecord> {
-        self.with_database(|db| get(&db.connection, id))
+        self.with_database(|db| {
+            let tx = db.connection.transaction()?;
+            let record = get(&tx,id)?;
+            ensure!(super::candidates::memory_visible(&tx,&record)?,"candidate content is unavailable after source exclusion; inspect its redacted candidate metadata instead");
+            Ok(record)
+        })
     }
 
     pub(crate) fn memory_revise(
@@ -187,6 +192,7 @@ impl ProtectedStore {
         after: Option<u64>,
     ) -> Result<MemoryPage> {
         self.with_database(|db| {
+            let tx = db.connection.transaction()?;
             // Keep the exact-scope predicate indexable; a nullable OR forces
             // scoped pages to walk unrelated sequence rows before their limit.
             let sql = if scope.is_some() {
@@ -194,7 +200,7 @@ impl ProtectedStore {
             } else {
                 "SELECT sequence,body,id,revision,scope FROM memory_entries WHERE sequence>?1 ORDER BY sequence LIMIT ?2"
             };
-            let mut q = db.connection.prepare(sql)?;
+            let mut q = tx.prepare(sql)?;
             let after = i64::try_from(after.unwrap_or(0))?;
             let limit = i64::try_from(PAGE_SIZE + 1)?;
             let mut rows = if let Some(scope) = scope {
@@ -205,10 +211,13 @@ impl ProtectedStore {
             let mut records = Vec::new();
             let mut last = None;
             let mut more = false;
+            let mut inspected = 0;
             while let Some(row) = rows.next()? {
-                if records.len() == PAGE_SIZE { more = true; break; }
+                if inspected == PAGE_SIZE { more = true; break; }
                 last = Some(super::database::read_u64(row,0)?);
-                records.push(indexed_record(row,1)?);
+                inspected += 1;
+                let record = indexed_record(row,1)?;
+                if super::candidates::memory_visible(&tx,&record)? { records.push(record); }
             }
             Ok(MemoryPage { records, next_after: more.then_some(last).flatten() })
         })
@@ -262,6 +271,10 @@ impl ProtectedStore {
             if !use_enabled {
                 return Ok(result);
             }
+            // One indexed empty-catalog check keeps explicit-only homes on
+            // their existing selection path. A read transaction makes this
+            // stable for the whole bounded page, even during learning writes.
+            let candidate_visibility = super::candidates::memory_visibility_required(&tx)?;
             // Lazily merge at most four covering-index cursors. Stop index work
             // when the candidate page is full, not after reading 1025 IDs from
             // every scope. Keep the same global sequence order and inspect cap.
@@ -299,7 +312,9 @@ impl ProtectedStore {
                 let record =
                     q.query_row([i64::try_from(sequence)?], |row| indexed_record(row, 0))?;
                 ensure!(scopes.contains(&record.scope), "memory scope index differs");
-                if record.eligible_at(now) {
+                if record.eligible_at(now)
+                    && (!candidate_visibility || super::candidates::memory_visible(&tx, &record)?)
+                {
                     result.records.push(record);
                 }
                 inspected += 1;
@@ -323,6 +338,7 @@ impl ProtectedStore {
             let mut count=0;
             while let Some(row)=rows.next()? {
                 let record=indexed_record(row,0)?;
+                if !super::candidates::memory_visible(&tx,&record)? { continue; }
                 if count>0 {out.push(b',');}
                 serde_json::to_writer(&mut out,&record)?;
                 ensure!(out.len() <= 32*1024*1024,"memory export exceeds 32 MiB; export individual scopes");

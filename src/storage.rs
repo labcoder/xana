@@ -4,6 +4,7 @@
 //! connection; clones share its revocable unlock state, not a process-global key.
 
 pub(crate) mod backup;
+mod candidates;
 mod database;
 mod documents;
 mod encrypted_artifacts;

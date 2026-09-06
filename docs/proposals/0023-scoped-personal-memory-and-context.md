@@ -127,8 +127,13 @@ suggestions are not copied without explicit retention permission. Forgetting
 persists suppression, separates reviewed native source deletion, and reconciles
 known later exclusions on restore. Supported managed text handoff includes
 current scoped records without an extra turn and makes no vendor erasure claim.
-The general governed-candidate workflow and remaining integrated quality/native
-platform evidence are not inferred complete by these slices. Optional embeddings, graph stores,
+The narrow governed-candidate workflow now shares protected Memory/inert-Skill
+envelopes, exact review/diff/reject/archive/undo and stale source/base/privacy
+checks across owner clients. Allowlisted automatic facts carry candidate proof;
+sensitive helper payloads are not copied. Explicit owner Skill drafts remain
+database-only and review never installs, loads or executes them. General harness
+promotion and remaining integrated quality/native platform evidence are not
+inferred complete by these slices. Optional embeddings, graph stores,
 RLM kernels, external memory vendors and automatic policy/Skill refinement are
 not required. User and Architecture docs describe only implemented slices.
 

@@ -93,7 +93,68 @@ async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
         sources[0].text, "Explain what you can do",
         "neither local controls nor assistant output enter automatic learning"
     );
-    runtime.send(RuntimeCommand::Shutdown).await.unwrap();
+    assert!(runtime.shutdown_owned().await);
+    // Exercise the normal accepted-owner edge through the real learning worker,
+    // not a second direct storage insert or a model-authorized command.
+    let route = crate::memory::learning::LearningRoute {
+        connection: "fixture".into(),
+        model: "synthetic-helper".into(),
+        digest: "no-network".into(),
+    };
+    home.set_document(
+        "memory/learning-route",
+        &serde_json::to_vec(&route).unwrap(),
+        4096,
+    )
+    .unwrap();
+    let helper = QueueTransport {
+        responses: Mutex::new(
+            vec![Ok(Message::text(
+                Role::Assistant,
+                serde_json::to_string(&vec![crate::memory::learning::Suggestion {
+                    source: sources[0].id,
+                    quote: sources[0].text.clone(),
+                    claim: crate::memory::MemoryClaim::Inferred,
+                    sensitive: false,
+                }])
+                .unwrap(),
+            ))]
+            .into(),
+        ),
+        requests: Arc::new(Mutex::new(Vec::new())),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: vec![],
+    };
+    let worker = crate::memory::learning::LearningWorker {
+        store: home.clone(),
+        route,
+        provider: Arc::new(helper),
+        validate_route: Arc::new(|_| Ok(())),
+    };
+    assert_eq!(
+        worker
+            .process(true, &tokio_util::sync::CancellationToken::new())
+            .await
+            .unwrap(),
+        1
+    );
+    let candidates = owner.candidate_page(None, None).unwrap();
+    assert_eq!(candidates.records.len(), 1);
+    let candidate = owner.candidate(candidates.records[0].id).unwrap();
+    assert_eq!(
+        candidate.record.state,
+        crate::memory::candidates::CandidateState::Staged
+    );
+    assert_eq!(candidate.record.sources[0].id, sources[0].id);
+    assert_eq!(
+        candidate.record.scope,
+        MemoryScope::Conversation(id.to_string().parse().unwrap())
+    );
+    assert_eq!(
+        owner.eligible().unwrap().records.len(),
+        1,
+        "only the explicitly remembered fact is active"
+    );
 }
 
 #[tokio::test]

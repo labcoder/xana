@@ -71,6 +71,9 @@ pub use management::{
     DesktopWorkerSummary, MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit, MemoryPage,
     MemoryRecord, MemoryScope, MemoryState, SourceDeletionPreview, SourceDeletionReceipt,
 };
+pub use management::{
+    DesktopCandidateCommand, DesktopCandidateKind, DesktopCandidateResult, DesktopCandidateRow,
+};
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,
     DesktopNavigationConversationState, DesktopNavigationSnapshot, DesktopProjectNode,

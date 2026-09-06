@@ -185,3 +185,45 @@ exclusions from a compatible prior home. A separate reviewed-memory marker can
 enable current eligible context without clearing restored automation or usage
 gates. See [personal memory](../user/personal-memory.md) for the exact controls,
 initial automatic-activation policy and residual-copy limits.
+
+## Governed learning candidates
+
+`memory::candidates` defines typed Memory/inert-Skill payloads and owner intents;
+`storage::candidates` owns their indexed encrypted envelope and immediate
+publication transaction. The existing learning worker inserts a memory target
+and its candidate proof in the same transaction. Ordinary whole-owner-statement
+activation records its deterministic allowlist validation; inferred/ambiguous
+facts remain staged. Conflicting duplicate inferred classifications stay staged,
+independent of suggestion order. A sensitive helper result creates metadata only,
+including when a duplicate suggests a less restrictive classification. Explicit
+owner `remember` stays on the separate direct governed path.
+
+The envelope binds candidate/target revisions, source IDs/hashes, typed origin,
+scope/consent/privacy generation, payload hash, risk, declared validation and
+ordered review events. Exact memory publication preserves claim/scope and saves
+its pre-image. Undo disables only the unchanged publication. Source/base/control
+or restore changes fail closed without rebasing. Generation invalidation is
+deliberately conservative, not an inferred merge. Approval, rejection, archive
+and rollback are not model tools. Skill review only records `reviewed_only`:
+there is no discovery/install/execution dependency or filesystem export side
+effect. A real Skill still requires the independent explicit installation path.
+
+Schema 10 adds a scope/sequence page index, lifecycle count index and indexed
+memory-target lookup. Canonical schema upgrades use the exclusive lifecycle
+lease; old inactive candidates are imported as stale legacy evidence without
+inventing provenance. Recovery-snapshot inspection remains read-only. Restore
+invalidates the generation even for a new destination, so later memory review
+cannot revive pre-restore candidate tokens.
+
+Payloads, pre-images and rejection text are suppressed when a candidate source
+is excluded/forgotten; current-memory read/export and prompt selection apply the
+same fence to candidate-owned text. Later explicit owner Active revisions,
+including a confirmed Restore, remain independently inspectable and usable;
+they do not revive excluded candidate evidence. Explicit owner-created records
+retain their separate contract. Pages return at most 32 metadata summaries;
+one explicit inspection may read a 64 KiB envelope (Skill Markdown <=32 KiB).
+Review history is capped at 64 candidate revisions. These controls run off the
+frontend render path. Prompt selection uses an indexed candidate-target check
+inside its existing bounded read transaction; homes without candidates skip
+per-record candidate checks. Inert Skill review/undo does not invalidate memory
+generations, and no model call or full draft-catalog load is introduced.

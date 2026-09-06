@@ -17,7 +17,11 @@ pub use autonomy_observer::{
     DesktopAutonomyObserver, DesktopBackgroundAttention, DesktopBackgroundAttentionKind,
     DesktopBackgroundUpdate,
 };
+mod candidates;
 mod memory;
+pub use candidates::{
+    DesktopCandidateCommand, DesktopCandidateKind, DesktopCandidateResult, DesktopCandidateRow,
+};
 pub use memory::{
     DesktopMemoryMutation, DesktopMemorySnapshot, MemoryClaim, MemoryControlEdit, MemoryControls,
     MemoryEdit, MemoryPage, MemoryRecord, MemoryScope, MemoryState, SourceDeletionPreview,

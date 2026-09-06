@@ -37,7 +37,7 @@ pub enum DesktopMemoryMutation {
 }
 
 impl DesktopControlPlane {
-    fn personal_memory_owner(&self) -> Result<MemoryOwner, DesktopError> {
+    pub(super) fn personal_memory_owner(&self) -> Result<MemoryOwner, DesktopError> {
         let store = ProtectedStore::configured(self.paths.data_dir())
             .map_err(control_error)?
             .ok_or_else(|| {

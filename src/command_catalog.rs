@@ -412,7 +412,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Memory,
         "memory",
         &[],
-        "list|show|remember|correct|scope|disable|controls|export|say ...",
+        "list|show|remember|correct|scope|disable|controls|export|candidate|say ...",
         "Inspect and control scoped personal memory locally",
         ArgumentSchema::Optional("memory_options"),
         Owner,

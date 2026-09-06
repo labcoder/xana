@@ -142,6 +142,14 @@ fn apply_with(
     }
     staged.set_document("restore/review-required", b"Current forgetting exclusions and grant/job authority require review. Recall, learning and automation remain inactive; new foreground work also requires the separate restored-usage review.", 4096)?;
     staged.remove_document("restore/memory-reviewed")?;
+    // Even restoring into an empty destination invalidates candidate tokens;
+    // reviewing the restore later must not revive pre-restore approvals.
+    staged.with_database(|db| {
+        let tx = db.connection.transaction()?;
+        super::forgetting::advance_generation(&tx)?;
+        tx.commit()?;
+        Ok(())
+    })?;
     staged.set_document("usage/restore-review-required", b"Usage after the snapshot is unknown. Explicitly review admission policy before dispatch; restoring does not reset vendor bills or quotas.", 4096)?;
     staged.with_database(|db| db.checkpoint())?;
     drop(staged);
