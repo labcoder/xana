@@ -13,6 +13,9 @@ pub(super) const CAPABILITIES: HelperCapabilities = HelperCapabilities {
     output_limit: true,
     structured_output: true,
     disable_reasoning: true,
+    // Temperature support varies by model; this adapter has no capability
+    // metadata that could safely promise the zero-temperature option.
+    zero_temperature: false,
 };
 
 pub(super) fn request<'a>(

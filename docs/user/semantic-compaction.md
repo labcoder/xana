@@ -35,6 +35,11 @@ adoption. Reports omit generated text. Use the single-case inspector below to
 review these ambiguities; inspection does not qualify a failed route.
 Missing second cycles still count against the fixed 200-fact plan.
 
+Reports record the helper protocol as `helper_version`, separate from the corpus
+version. The current helper protocol is v3; the corpus and its scoring remain v2.
+A historical report with a missing or different helper version cannot qualify
+the current helper. Reevaluate an approved route after a helper upgrade.
+
 For a short diagnostic run before repeating the full suite:
 
 ```text
@@ -121,10 +126,21 @@ local consumption immediately with `unexpected_reasoning`; Xana does not spend
 the remaining output allowance waiting for a prohibited stream to finish.
 
 Adapters explicitly send supported output caps, strict response schemas and
-documented reasoning-disable controls. Unsupported options or model rejection
-fail visibly; Xana never retries by silently removing these settings. An
+documented reasoning-disable controls. Helper protocol v3 also requests zero
+temperature from adapters that declare support, currently Ollama. Other adapters
+omit that setting; an unsupported explicit request fails before dispatch. Zero
+temperature does not guarantee identical outputs or factual accuracy.
+Unsupported options or model rejection fail visibly; Xana never retries by
+silently removing these settings. An
 OpenAI-compatible server's advertised dialect is not proof it enforces them;
 evaluate the exact route. Normal conversation generation is unchanged.
+
+For repeated compaction, Xana sends the previous checkpoint as typed JSON,
+preserving its field boundaries. The helper instructions request one current fact
+per item, replace superseded values with their corrections, retain original
+wording and language, and reserve references for evidence locations. The previous
+checkpoint remains lossy data with no new authority. These instructions improve
+the input contract; the separate evaluation still determines qualification.
 
 Older tool results become UTF-8-safe 2,000-byte previews in the helper input,
 with original history coordinates/artifact references retained. User messages
@@ -149,8 +165,9 @@ Successful checkpoints keep immutable source entry IDs, ranges, source digest,
 prior checkpoint identity, exact helper/evaluation provenance, and a digest of
 the resulting summary. Restart validates these facts through the ordinary
 session reducer. A helper cannot edit or erase the original Conversation.
-Old v1 checkpoint evidence remains readable; new helper dispatch requires v2
-qualification. This does not invalidate unrelated memory-processing route grants.
+Old v1/v2 checkpoint evidence remains readable; new helper dispatch requires
+current v3 helper qualification on the v2 corpus. This does not invalidate
+unrelated memory-processing route grants.
 
 No helper is enabled merely by installing Xana or running deterministic tests.
 Review [project context](project-context.md), [usage budgets](usage-budgets.md),

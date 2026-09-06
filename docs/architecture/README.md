@@ -754,14 +754,21 @@ Helper output is derived task data, not instructions, authority or completion
 evidence. Failure retains the deterministic candidate when source policy still
 allows it; cancellation or changed source/privacy state leaves the previous
 checkpoint intact. Optional semantic provenance binds the exact helper route,
-evaluation and summary digest. Reopened original proofs yield between bounded
+evaluation and summary digest. Helper protocol v3 sends the prior checkpoint as
+typed JSON and requests separate current facts with superseded values replaced.
+It requests zero-temperature sampling only from adapters that declare support,
+currently Ollama; this neither changes normal chat nor guarantees determinism.
+Reopened original proofs yield between bounded
 worker reads (128 rows/2 MiB); no store guard crosses an await. The exact source
 and privacy snapshot is rechecked after helper-lane admission, before disclosure,
 and again before commit. Prompt preflight borrows history instead of cloning
 and discarding complete provider requests. Context-phase telemetry separates
 local preparation/commit from helper latency without logging source content.
-The v2 evaluator has forty cases/fifty cycles, including actual summary reuse
-and later corrections. Summary-only retention excludes historical references
+The unchanged v2 evaluator has forty cases/fifty cycles, including actual summary
+reuse and later corrections. Reports also bind the helper protocol version;
+missing or mismatched versions cannot qualify the current helper. Prior checkpoint
+evidence remains readable, and unrelated processing grants remain valid.
+Summary-only retention excludes historical references
 and recent-tail recovery. Typed failure/usage/timing evidence includes fixed
 assertion IDs and active-field/reference matches, not raw provider text. An
 explicit single-case synthetic inspection can display up to two validated

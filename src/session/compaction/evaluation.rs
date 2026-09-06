@@ -98,6 +98,9 @@ impl From<ProviderUsage> for UsageObservation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct EvaluationReport {
     pub(crate) version: String,
+    /// Missing versions identify historical evidence, never current approval.
+    #[serde(default)]
+    pub(crate) helper_version: u16,
     pub(crate) corpus_digest: String,
     pub(crate) route_digest: String,
     pub(crate) fixture: bool,
@@ -162,6 +165,7 @@ impl EvaluationReport {
                     == score.retained
             });
         if self.version != CORPUS_VERSION
+            || self.helper_version != semantic::HELPER_VERSION
             || self.corpus_digest != corpus_digest()
             || self.selected_case.is_some()
             || !complete
@@ -438,6 +442,7 @@ pub(crate) async fn evaluate_selected(
     let started = std::time::Instant::now();
     let mut report = EvaluationReport {
         version: CORPUS_VERSION.into(),
+        helper_version: semantic::HELPER_VERSION,
         corpus_digest: corpus_digest(),
         route_digest,
         fixture: false,

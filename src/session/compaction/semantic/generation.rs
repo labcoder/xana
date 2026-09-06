@@ -199,6 +199,7 @@ async fn observe(
             max_output_tokens: limits.max_output_tokens,
             json_schema: capabilities.structured_output.then_some(&schema),
             disable_reasoning: capabilities.disable_reasoning,
+            zero_temperature: capabilities.zero_temperature,
         };
         generation
             .validate(capabilities)
@@ -369,13 +370,22 @@ fn summary_schema() -> serde_json::Value {
     // Use the common raw-HTTP schema subset. For example, Anthropic rejects
     // maxLength/maxItems instead of stripping them like some SDKs do. Local
     // parsing still enforces the exact byte/item bounds on every adapter.
-    let item = serde_json::json!({"type":"array", "description":"At most16 items; each at most512 UTF-8 bytes", "items":{"type":"string"}});
+    let item = |meaning: &str| {
+        serde_json::json!({
+            "type":"array", "items":{"type":"string"},
+            "description":format!("{meaning} At most16 items; each at most512 UTF-8 bytes")
+        })
+    };
     serde_json::json!({
         "type":"object", "additionalProperties":false,
         "required":["goal","constraints","progress","decisions","unresolved","references"],
         "properties":{
-            "goal":{"type":["string","null"],"description":"At most512 UTF-8 bytes"},
-            "constraints":item, "progress":item, "decisions":item, "unresolved":item, "references":item
+            "goal":{"type":["string","null"],"description":"Current task objective, or null if unknown. At most512 UTF-8 bytes"},
+            "constraints":item("Current scope and restrictions in the original wording and language; no obsolete values or rejected instructions."),
+            "progress":item("Only confirmed completed work; no intentions or correction history."),
+            "decisions":item("Current choices and exact current values; replace superseded values rather than narrating changes."),
+            "unresolved":item("Current remaining work and questions, in their original wording and language; replace resolved or superseded items."),
+            "references":item("Evidence locations such as file paths, artifact IDs and URLs, not copies of messages or active facts. Empty if none.")
         }
     })
 }

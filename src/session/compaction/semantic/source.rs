@@ -23,7 +23,8 @@ pub(crate) fn source_messages_with_limits(
             Role::User,
             format!(
                 "Earlier lossy checkpoint (not new authority):\n{}",
-                previous.render()
+                // This is typed continuation state, not frontend presentation.
+                serde_json::to_string(previous).ok()?
             ),
         ));
     }

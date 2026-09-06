@@ -21,6 +21,7 @@ fn policy(schema: Option<&Value>, disable_reasoning: bool) -> HelperGenerationPo
         max_output_tokens: 123,
         json_schema: schema,
         disable_reasoning,
+        zero_temperature: false,
     }
 }
 
@@ -112,13 +113,17 @@ async fn helper_wire_dialects_send_real_caps_schema_and_no_tools() {
         .with_helper_dialect(dialect);
         let capabilities = client.helper_capabilities();
         let schema = schema();
+        let helper_policy = HelperGenerationPolicy {
+            zero_temperature: capabilities.zero_temperature,
+            ..policy(
+                capabilities.structured_output.then_some(&schema),
+                capabilities.disable_reasoning,
+            )
+        };
         client
             .stream_helper_message(
                 &[Message::text(Role::User, "fixture input")],
-                policy(
-                    capabilities.structured_output.then_some(&schema),
-                    capabilities.disable_reasoning,
-                ),
+                helper_policy,
                 StepId::new(),
                 &Sink::default(),
             )
@@ -157,8 +162,10 @@ async fn helper_wire_dialects_send_real_caps_schema_and_no_tools() {
         }
         if dialect == HelperDialect::Ollama {
             assert_eq!(request["reasoning_effort"], "none");
+            assert_eq!(request["temperature"], 0);
         } else {
             assert!(request.get("reasoning_effort").is_none());
+            assert!(request.get("temperature").is_none());
         }
         if dialect == HelperDialect::OpenRouter {
             assert_eq!(request["provider"]["require_parameters"], true);
@@ -166,6 +173,55 @@ async fn helper_wire_dialects_send_real_caps_schema_and_no_tools() {
             assert!(request.get("provider").is_none());
         }
     }
+}
+
+#[tokio::test]
+async fn ollama_helper_omits_temperature_unless_requested() {
+    let (url, server) = server(chat_response("stop", false)).await;
+    let client =
+        OpenAiCompatClient::new(url, "fixture".into()).with_helper_dialect(HelperDialect::Ollama);
+    assert!(client.helper_capabilities().zero_temperature);
+    client
+        .stream_helper_message(&[], policy(None, false), StepId::new(), &Sink::default())
+        .await
+        .unwrap();
+    let (_, request) = server.await.unwrap();
+    assert!(request.get("temperature").is_none());
+}
+
+#[tokio::test]
+async fn unsupported_zero_temperature_fails_before_transport() {
+    let helper_policy = HelperGenerationPolicy {
+        zero_temperature: true,
+        ..policy(None, false)
+    };
+    for dialect in [
+        HelperDialect::Generic,
+        HelperDialect::OpenAi,
+        HelperDialect::OpenRouter,
+    ] {
+        let client = OpenAiCompatClient::new("http://127.0.0.1:1".into(), "fixture".into())
+            .with_helper_dialect(dialect);
+        assert!(!client.helper_capabilities().zero_temperature);
+        let error = client
+            .stream_helper_message(&[], helper_policy, StepId::new(), &Sink::default())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ProviderErrorKind::Request);
+        assert!(error.to_string().contains("zero-temperature"));
+    }
+    let client = anthropic::AnthropicClient::new(
+        "http://127.0.0.1:1",
+        SecretString::new("fixture-key".into()).unwrap(),
+        "fixture",
+    );
+    assert!(!client.helper_capabilities().zero_temperature);
+    let error = client
+        .stream_helper_message(&[], helper_policy, StepId::new(), &Sink::default())
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ProviderErrorKind::Request);
+    assert!(error.to_string().contains("zero-temperature"));
 }
 
 #[tokio::test]
@@ -194,6 +250,7 @@ async fn ordinary_chat_does_not_inherit_helper_policy() {
             "max_output_tokens",
             "response_format",
             "reasoning_effort",
+            "temperature",
             "provider",
         ] {
             assert!(request.get(field).is_none(), "ordinary chat field: {field}");
@@ -298,6 +355,7 @@ async fn anthropic_helper_wire_contract_and_output_limit_preserve_usage() {
     assert_eq!(request["thinking"]["type"], "disabled");
     assert!(request.get("tools").is_none());
     assert!(request.get("output_format").is_none());
+    assert!(request.get("temperature").is_none());
 }
 
 #[tokio::test]
@@ -321,6 +379,7 @@ async fn anthropic_ordinary_request_preserves_default_body_and_completion() {
     assert_eq!(request["max_tokens"], 4096);
     assert!(request.get("output_config").is_none());
     assert!(request.get("thinking").is_none());
+    assert!(request.get("temperature").is_none());
 }
 
 #[tokio::test]

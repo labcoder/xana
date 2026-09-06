@@ -53,6 +53,7 @@ pub(crate) struct HelperCapabilities {
     pub(crate) output_limit: bool,
     pub(crate) structured_output: bool,
     pub(crate) disable_reasoning: bool,
+    pub(crate) zero_temperature: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -62,6 +63,8 @@ pub(crate) struct HelperGenerationPolicy<'a> {
     pub(crate) json_schema: Option<&'a serde_json::Value>,
     /// Request the adapter's documented disable control, never hide reasoning.
     pub(crate) disable_reasoning: bool,
+    /// Request zero-temperature sampling; this does not guarantee determinism.
+    pub(crate) zero_temperature: bool,
 }
 
 impl HelperGenerationPolicy<'_> {
@@ -76,6 +79,8 @@ impl HelperGenerationPolicy<'_> {
             Some("helper JSON schema must be an object")
         } else if self.disable_reasoning && !capabilities.disable_reasoning {
             Some("provider does not support disabling helper reasoning")
+        } else if self.zero_temperature && !capabilities.zero_temperature {
+            Some("provider does not support zero-temperature helper sampling")
         } else {
             None
         };

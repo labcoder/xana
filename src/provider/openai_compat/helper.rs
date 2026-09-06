@@ -20,6 +20,7 @@ impl HelperDialect {
             // OpenAI/OpenRouter reasoning controls depend on per-model metadata
             // that this adapter does not own. Do not guess from model IDs.
             disable_reasoning: self == Self::Ollama,
+            zero_temperature: self == Self::Ollama,
         }
     }
 
@@ -42,6 +43,7 @@ impl HelperDialect {
                 },
             }),
             reasoning_effort: policy.disable_reasoning.then_some("none"),
+            temperature: policy.zero_temperature.then_some(0),
             // OpenRouter otherwise permits routing to providers that ignore
             // unsupported parameters. Keep cap/schema requests fail-closed.
             // https://openrouter.ai/docs/guides/routing/provider-selection
@@ -62,6 +64,8 @@ pub(super) struct WireHelperOptions<'a> {
     response_format: Option<WireResponseFormat<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<u8>,
     #[serde(skip_serializing_if = "Option::is_none")]
     provider: Option<WireProviderPreferences>,
 }

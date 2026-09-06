@@ -133,6 +133,7 @@ impl ConversationalProvider for ScriptedHelper {
             // This fixture deliberately emits reasoning to prove reports keep
             // only its byte count, so it must not advertise a disable control.
             disable_reasoning: false,
+            zero_temperature: false,
         }
     }
 
@@ -464,12 +465,45 @@ async fn full_fixture_keeps_ninety_five_percent_all_canaries_and_no_promotion() 
         report.passes(),
         "a complete fixture validates gate wiring only"
     );
+    assert_eq!(report.helper_version, semantic::HELPER_VERSION);
     assert!(semantic::HelperPolicy::approve(&store, report.route_digest.clone(), &report).is_err());
     assert!(
         semantic::HelperPolicy::load(&store, &report.route_digest)
             .unwrap()
             .is_none()
     );
+
+    // Corpus identity alone cannot approve a different prompt, input framing
+    // or generation policy. Historical reports remain inspectable, not reusable
+    // as current helper qualification. Clear the fixture marker only to test
+    // this independent rejection path against the disposable store.
+    let mut qualification = serde_json::to_value(&report).unwrap();
+    qualification["fixture"] = serde_json::json!(false);
+    for version in [None, Some(0), Some(2), Some(u16::MAX)] {
+        let mut stale = qualification.clone();
+        match version {
+            Some(version) => stale["helper_version"] = serde_json::json!(version),
+            None => {
+                stale.as_object_mut().unwrap().remove("helper_version");
+            }
+        }
+        let stale: EvaluationReport = serde_json::from_value(stale).unwrap();
+        assert_eq!(stale.helper_version, version.unwrap_or(0));
+        assert!(
+            !stale.passes(),
+            "missing, old or future helper evidence cannot qualify: {version:?}"
+        );
+        assert!(
+            semantic::HelperPolicy::approve(&store, stale.route_digest.clone(), &stale).is_err(),
+            "passing corpus scores must not bypass helper policy identity"
+        );
+        assert!(
+            semantic::HelperPolicy::load(&store, &stale.route_digest)
+                .unwrap()
+                .is_none(),
+            "rejected historical evidence must not write an approval"
+        );
+    }
 
     // Storage-path coverage only, in this disposable store and nonexistent
     // route. Clearing the fixture label here is not model-quality evidence or
