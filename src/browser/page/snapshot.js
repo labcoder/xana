@@ -21,8 +21,12 @@ function snapshot(element) {
     let form = null;
     if (element.form) {
         const owner = element.form;
-        if (owner.elements.length > 32) return { tag: element.tagName, label, labels, attributes, destination, form: { unsupported: true } };
-        const elements = Array.from(owner.elements);
+        // Named form controls can shadow properties even in an isolated world.
+        // Read the platform accessors, not the form's named-property lookup.
+        const formValue = key => Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, key).get.call(owner);
+        const controls = formValue('elements');
+        if (controls.length > 32) return { tag: element.tagName, label, labels, attributes, destination, form: { unsupported: true } };
+        const elements = Array.from(controls);
         // Ambiguous/custom/secret-bearing forms require explicit manual control.
         if (elements.length > 32 || elements.some(field =>
             !['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(field.tagName) ||
@@ -47,11 +51,11 @@ function snapshot(element) {
                 });
             }
             form = {
-                action: element.hasAttribute('formaction') ? element.formAction : owner.action,
-                method: element.hasAttribute('formmethod') ? element.formMethod : owner.method,
-                enctype: element.hasAttribute('formenctype') ? element.formEnctype : owner.enctype,
-                target: element.hasAttribute('formtarget') ? element.formTarget : owner.target,
-                noValidate: owner.noValidate || element.formNoValidate === true,
+                action: element.hasAttribute('formaction') ? element.formAction : formValue('action'),
+                method: element.hasAttribute('formmethod') ? element.formMethod : formValue('method'),
+                enctype: element.hasAttribute('formenctype') ? element.formEnctype : formValue('enctype'),
+                target: element.hasAttribute('formtarget') ? element.formTarget : formValue('target'),
+                noValidate: formValue('noValidate') || element.formNoValidate === true,
                 fields,
             };
             if (JSON.stringify(form).length > 8192) form = { unsupported: true };

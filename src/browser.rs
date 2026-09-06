@@ -21,12 +21,36 @@ pub enum BrowserControl {
     Status,
     Takeover,
     Close,
+    Resolve {
+        receipt: uuid::Uuid,
+        revision: u64,
+        outcome: BrowserResolution,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserResolution {
+    Applied,
+    NotApplied,
 }
 impl BrowserControl {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        let words: Vec<_> = value.split_whitespace().collect();
+        if let ["resolve", receipt, revision, outcome] = words.as_slice() {
+            return Ok(Self::Resolve {
+                receipt: receipt.parse().map_err(|_| "browser receipt must be a UUID")?,
+                revision: revision.parse::<u64>().ok().filter(|value| *value > 0).ok_or("browser review revision must be positive")?,
+                outcome: match *outcome {
+                    "applied" => BrowserResolution::Applied,
+                    "not-applied" => BrowserResolution::NotApplied,
+                    _ => return Err("browser resolution must be applied or not-applied after owner verification".into()),
+                },
+            });
+        }
         match value.trim() {
             "" | "status" => Ok(Self::Status), "takeover" => Ok(Self::Takeover), "close" => Ok(Self::Close),
-            _ => Err("usage: /browser [status|takeover|close]; resuming automation requires a reviewed browser tool request".into()),
+            _ => Err("usage: /browser [status|takeover|close] or /browser resolve RECEIPT REVISION applied|not-applied; resolution requires owner verification".into()),
         }
     }
 }
@@ -82,6 +106,7 @@ pub(crate) enum BrowserError {
     Process,
     Protocol,
     Uncertain,
+    ReviewRequired,
     Storage,
 }
 

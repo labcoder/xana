@@ -12,7 +12,14 @@ fn owner() -> (tempfile::TempDir, BrowserOwner) {
     .unwrap();
     (
         root,
-        BrowserOwner::with_executable(paths, store, PrincipalId::new(), None, true),
+        BrowserOwner::with_executable(
+            paths,
+            store,
+            PrincipalId::new(),
+            SessionId::new(),
+            None,
+            true,
+        ),
     )
 }
 

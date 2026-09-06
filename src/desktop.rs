@@ -6,6 +6,7 @@
 //! ownership stay in this package.
 
 mod attached;
+mod browser;
 mod content;
 mod conversation;
 mod history;
@@ -15,7 +16,10 @@ mod managed;
 mod management;
 mod navigation;
 mod settings;
-pub use crate::browser::BrowserControl as DesktopBrowserControl;
+pub use crate::browser::{
+    BrowserControl as DesktopBrowserControl, BrowserResolution as DesktopBrowserResolution,
+};
+pub use browser::DesktopBrowserReview;
 
 pub use content::{
     DesktopArtifactReader, DesktopCapabilitySource, DesktopContent, DesktopContentAction,

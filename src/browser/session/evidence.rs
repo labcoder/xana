@@ -1,4 +1,4 @@
-//! Protected, principal-scoped browser receipts and immutable evidence.
+//! Protected, Conversation-scoped receipts and principal-owned immutable evidence.
 use super::*;
 use crate::artifact::ArtifactStore;
 
@@ -23,7 +23,7 @@ impl BrowserOwner {
     pub(super) async fn persist(&self, receipt: &BrowserReceipt) -> Result<(), BrowserError> {
         let store = self.inner.store.clone();
         let name = format!("browser/receipts/{}", receipt.id);
-        let index_name = format!("browser/receipt-index/{}", self.inner.principal);
+        let index_name = format!("browser/receipt-index/{}", self.inner.conversation);
         let receipt_id = receipt.id;
         let bytes = serde_json::to_vec(receipt).map_err(|_| BrowserError::Protocol)?;
         let result = tokio::task::spawn_blocking(move || {
@@ -61,7 +61,7 @@ impl BrowserOwner {
     }
     pub(crate) async fn receipts(&self, limit: usize) -> Result<Vec<BrowserReceipt>, BrowserError> {
         let store = self.inner.store.clone();
-        let index_name = format!("browser/receipt-index/{}", self.inner.principal);
+        let index_name = format!("browser/receipt-index/{}", self.inner.conversation);
         tokio::task::spawn_blocking(move || {
             let index: Vec<Uuid> = store
                 .document(&index_name, 4096)

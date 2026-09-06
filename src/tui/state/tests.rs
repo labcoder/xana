@@ -54,6 +54,29 @@ fn browser_status_does_not_replace_an_active_modal_or_the_draft() {
 }
 
 #[test]
+fn browser_outcome_review_is_an_exact_owner_control_not_a_model_message() {
+    use crate::browser::{BrowserControl, BrowserResolution};
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    let receipt = Uuid::new_v4();
+    state
+        .composer
+        .replace(format!("/browser resolve {receipt} 7 not-applied"));
+    assert_eq!(
+        state.update_input(InputAction::Submit),
+        UpdateEffect::BrowserControl(BrowserControl::Resolve {
+            receipt,
+            revision: 7,
+            outcome: BrowserResolution::NotApplied
+        })
+    );
+    assert!(state.followups.is_empty());
+    state
+        .composer
+        .replace(format!("/browser resolve {receipt} 7 unknown"));
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+}
+
+#[test]
 fn learning_upgrade_disclosure_is_local_and_does_not_change_saved_cursors_or_draft() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.history_start = 40;

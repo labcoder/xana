@@ -2,7 +2,7 @@
 //! receipts. Protected evidence and disposable browser storage stay distinct.
 
 use super::{
-    BrowserEffect, BrowserError, BrowserRequest, EGRESS_DISCLOSURE, MAX_ACTIONS,
+    BrowserEffect, BrowserError, BrowserRequest, BrowserResolution, EGRESS_DISCLOSURE, MAX_ACTIONS,
     MAX_OBSERVATION_BYTES, MAX_TASK_SECONDS,
     cdp::CdpOwner,
     page::Page,
@@ -11,7 +11,7 @@ use super::{
 };
 use crate::{
     artifact::ArtifactRecord,
-    identity::{OperationId, PrincipalId},
+    identity::{OperationId, PrincipalId, SessionId},
     mcp::McpHttpSecurity,
     paths::XanaPaths,
     storage::ProtectedStore,
@@ -30,6 +30,7 @@ use uuid::Uuid;
 mod dispatch;
 mod evidence;
 mod lifecycle;
+mod review;
 
 #[derive(Clone)]
 pub(crate) struct BrowserOwner {
@@ -39,6 +40,7 @@ struct Owner {
     paths: XanaPaths,
     store: ProtectedStore,
     principal: PrincipalId,
+    conversation: SessionId,
     executable: Option<PathBuf>,
     headless: bool,
     session: AsyncMutex<Option<Session>>,
@@ -110,7 +112,18 @@ pub(crate) struct BrowserReceipt {
 }
 
 impl BrowserOwner {
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
+    pub(super) async fn suppress_next_effect_reply_fixture(&self) {
+        self.inner
+            .session
+            .lock()
+            .await
+            .as_ref()
+            .unwrap()
+            .page
+            .suppress_next_effect_reply_fixture();
+    }
+    #[cfg(all(test, windows))]
     pub(super) async fn mutate_fixture_form(&self, mutation: &str) -> Result<(), BrowserError> {
         self.inner
             .session
@@ -122,7 +135,7 @@ impl BrowserOwner {
             .mutate_fixture_form(mutation)
             .await
     }
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) async fn mutate_fixture_target(&self) -> Result<(), BrowserError> {
         self.inner
             .session
@@ -148,13 +161,26 @@ impl BrowserOwner {
     pub(super) fn paths(&self) -> &XanaPaths {
         &self.inner.paths
     }
-    pub(crate) fn new(paths: XanaPaths, store: ProtectedStore, principal: PrincipalId) -> Self {
-        Self::with_executable(paths, store, principal, OwnedBrowser::discover(), false)
+    pub(crate) fn new(
+        paths: XanaPaths,
+        store: ProtectedStore,
+        principal: PrincipalId,
+        conversation: SessionId,
+    ) -> Self {
+        Self::with_executable(
+            paths,
+            store,
+            principal,
+            conversation,
+            OwnedBrowser::discover(),
+            false,
+        )
     }
     pub(super) fn with_executable(
         paths: XanaPaths,
         store: ProtectedStore,
         principal: PrincipalId,
+        conversation: SessionId,
         executable: Option<PathBuf>,
         headless: bool,
     ) -> Self {
@@ -164,6 +190,7 @@ impl BrowserOwner {
                 paths,
                 store,
                 principal,
+                conversation,
                 executable,
                 headless,
                 session: AsyncMutex::new(None),
@@ -197,7 +224,7 @@ impl BrowserOwner {
             }),
         }
     }
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) fn native_fixture(
         mut self,
         origin: &str,
@@ -221,7 +248,14 @@ impl BrowserOwner {
     }
     #[cfg(test)]
     pub(super) fn other_principal_fixture(&self) -> Self {
-        self.reopened_fixture(PrincipalId::new())
+        Self::with_executable(
+            self.inner.paths.clone(),
+            self.inner.store.clone(),
+            PrincipalId::new(),
+            SessionId::new(),
+            None,
+            true,
+        )
     }
     #[cfg(test)]
     pub(super) fn reopened_fixture(&self, principal: PrincipalId) -> Self {
@@ -229,6 +263,7 @@ impl BrowserOwner {
             self.inner.paths.clone(),
             self.inner.store.clone(),
             principal,
+            self.inner.conversation,
             None,
             true,
         )
@@ -241,7 +276,7 @@ impl BrowserOwner {
     pub(super) fn lock_fixture(&self) {
         self.inner.store.lock().unwrap();
     }
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) fn cancel_fixture(&self) {
         self.inner
             .control_stop
@@ -402,6 +437,15 @@ impl BrowserOwner {
         if self.snapshot().revision != plan.revision {
             return Err(BrowserError::Stale);
         }
+        if matches!(
+            plan.request,
+            BrowserRequest::Launch { .. }
+                | BrowserRequest::Navigate { .. }
+                | BrowserRequest::Act { .. }
+                | BrowserRequest::Resume {}
+        ) {
+            self.require_review_clear().await?;
+        }
         if !matches!(
             plan.request,
             BrowserRequest::Close {} | BrowserRequest::Takeover {} | BrowserRequest::Resume {}
@@ -424,6 +468,11 @@ impl BrowserOwner {
             observation: None,
         };
         self.persist(&receipt).await?;
+        let review = if matches!(plan.request, BrowserRequest::Act { .. }) {
+            Some(self.begin_review(&receipt, &plan).await?)
+        } else {
+            None
+        };
         {
             let mut state = self.inner.snapshot.lock().expect("browser owner");
             state.revision = state.revision.checked_add(1).ok_or(BrowserError::Limit)?;
@@ -547,6 +596,22 @@ impl BrowserOwner {
             }
         }
         self.persist(&receipt).await?;
+        if let Some(review) = review {
+            // An explicit native acknowledgement, or a definite pre-dispatch
+            // rejection, settles the intent. Loss/cancellation/process failure
+            // stays fenced across cleanup and restart until owner review.
+            if receipt.acknowledged
+                || matches!(
+                    result,
+                    Err(BrowserError::Stale
+                        | BrowserError::InvalidInput
+                        | BrowserError::UnsupportedEgress
+                        | BrowserError::NoSession)
+                )
+            {
+                self.settle_review(&review).await?;
+            }
+        }
         Ok(receipt)
     }
 }

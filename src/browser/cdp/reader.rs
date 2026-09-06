@@ -38,6 +38,14 @@ pub(super) async fn run(
             break;
         };
         if let Some(id) = value["id"].as_u64() {
+            #[cfg(all(test, windows))]
+            {
+                let mut state = sender.shared.state.lock().expect("browser transport");
+                if state.suppressed_reply == Some(id) {
+                    state.suppressed_reply = None;
+                    continue;
+                }
+            }
             let reply = sender
                 .shared
                 .state

@@ -1188,11 +1188,21 @@ mod tests {
 
     #[test]
     fn browser_controls_round_trip_without_entering_the_model_queue() {
-        use crate::browser::BrowserControl;
+        use crate::browser::{BrowserControl, BrowserResolution};
         for action in [
             BrowserControl::Status,
             BrowserControl::Takeover,
             BrowserControl::Close,
+            BrowserControl::Resolve {
+                receipt: uuid::Uuid::new_v4(),
+                revision: 7,
+                outcome: BrowserResolution::Applied,
+            },
+            BrowserControl::Resolve {
+                receipt: uuid::Uuid::new_v4(),
+                revision: 9,
+                outcome: BrowserResolution::NotApplied,
+            },
         ] {
             let value = ClientCommandValue::BrowserControl { action };
             let command = ClientCommand::new(value.clone());

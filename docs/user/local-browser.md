@@ -66,6 +66,21 @@ Takeover may report busy while an existing typed browser call finishes. Close
 cancels that transport instead of waiting for the model to finish.
 Resuming automation goes through the reviewed tool path, not a client shortcut.
 
+An uncertain action also leaves a protected review fence for its Conversation.
+Closing the browser or restarting Xana does not resolve that effect. Inspect
+`/browser status` and the pending review's evidence, then verify what happened
+at the recipient. Only the owner can record the exact result:
+
+```text
+/browser resolve RECEIPT_ID REVISION applied
+/browser resolve RECEIPT_ID REVISION not-applied
+```
+
+In Desktop, request **Status**, then choose **Review uncertain outcome**. Keep
+it unresolved if you cannot establish what happened. Stale receipt/revision
+reviews fail; resolution records the owner's finding and never replays the
+action. The model has no tool that can clear this fence by itself.
+
 Close is a request until cleanup succeeds. Status can show `starting`,
 `cleaning_up` or pending shutdown while the owned work is being joined. Dropping
 a client request does not abandon its cleanup worker; `/browser close` can

@@ -38,6 +38,10 @@ struct State {
     ready: BTreeMap<(String, String), String>,
     configured: std::collections::BTreeSet<String>,
     failure: Option<BrowserError>,
+    #[cfg(all(test, windows))]
+    suppress_next_effect_reply: bool,
+    #[cfg(all(test, windows))]
+    suppressed_reply: Option<u64>,
 }
 struct Shared {
     writer: AsyncMutex<Writer>,
@@ -104,6 +108,14 @@ impl CdpOwner {
 }
 
 impl Cdp {
+    #[cfg(all(test, windows))]
+    pub(super) fn suppress_next_effect_reply_fixture(&self) {
+        self.shared
+            .state
+            .lock()
+            .expect("browser transport")
+            .suppress_next_effect_reply = true;
+    }
     pub(super) fn epoch(&self, session: &str) -> Result<u64, BrowserError> {
         let state = self.shared.state.lock().expect("browser transport");
         if let Some(failure) = state.failure {
@@ -236,6 +248,14 @@ impl Cdp {
             }
             state.next = state.next.checked_add(1).ok_or(BrowserError::Limit)?;
             let id = state.next;
+            #[cfg(all(test, windows))]
+            if method == "Runtime.callFunctionOn"
+                && params["userGesture"] == true
+                && state.suppress_next_effect_reply
+            {
+                state.suppress_next_effect_reply = false;
+                state.suppressed_reply = Some(id);
+            }
             state.pending.insert(id, send);
             id
         };

@@ -14,7 +14,14 @@ fn fixture() -> (tempfile::TempDir, BrowserOwner) {
         &TestCustody::default(),
     )
     .unwrap();
-    let owner = BrowserOwner::with_executable(paths, store, PrincipalId::new(), None, true);
+    let owner = BrowserOwner::with_executable(
+        paths,
+        store,
+        PrincipalId::new(),
+        crate::identity::SessionId::new(),
+        None,
+        true,
+    );
     (root, owner)
 }
 
@@ -78,7 +85,7 @@ async fn failed_cleanup_cannot_turn_into_acknowledged_close_or_new_launch() {
 }
 
 #[tokio::test]
-async fn receipt_reopen_is_principal_scoped_and_no_page_text_leaks_into_status() {
+async fn receipt_reopen_is_conversation_scoped_and_no_page_text_leaks_into_status() {
     let (_root, owner) = fixture();
     owner
         .execute(
@@ -424,7 +431,13 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
         "NATIVE_BROWSER_QUALIFICATION {}",
         serde_json::to_string(&timings).unwrap()
     );
-    for mutation in ["action", "value", "secret"] {
+    for mutation in [
+        "action",
+        "value",
+        "secret",
+        "clobber_elements",
+        "clobber_action",
+    ] {
         let (_root, owner) = fixture();
         let owner = owner.native_fixture(origin, address, spki.into());
         apply(
@@ -441,7 +454,7 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
             },
         )
         .await;
-        if mutation == "secret" {
+        if mutation == "secret" || mutation.starts_with("clobber_") {
             owner.mutate_fixture_form(mutation).await.unwrap();
         }
         let observed = apply(&owner, BrowserRequest::Observe {}).await;
@@ -504,8 +517,28 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
             format!("{origin}/submit")
         );
         assert_eq!(review["element"]["form"]["method"], "post");
-        assert_eq!(review["element"]["form"]["fields"][0]["name"], "value");
-        owner.mutate_fixture_form(mutation).await.unwrap();
+        assert_eq!(
+            review["element"]["form"]["fields"][0]["name"],
+            mutation.strip_prefix("clobber_").unwrap_or("value")
+        );
+        if mutation.starts_with("clobber_") {
+            let name = mutation.strip_prefix("clobber_").unwrap();
+            assert!(
+                review["element"]["form"]["fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|field| field["name"] == name)
+            );
+        }
+        owner
+            .mutate_fixture_form(match mutation {
+                "clobber_elements" => "value",
+                "clobber_action" => "action",
+                _ => mutation,
+            })
+            .await
+            .unwrap();
         let receipt = owner
             .execute(plan, crate::identity::OperationId::new())
             .await
@@ -514,6 +547,88 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
         let retained = serde_json::to_string(&owner.receipts(64).await.unwrap()).unwrap();
         assert!(!retained.contains("XANA_BROWSER_SECRET_CANARY"));
         assert_eq!(owner.snapshot().state, "closed");
+    }
+    {
+        let (_root, owner) = fixture();
+        let owner = owner.native_fixture(origin, address, spki.into());
+        apply(
+            &owner,
+            BrowserRequest::Launch {
+                origins: vec![origin.into()],
+            },
+        )
+        .await;
+        apply(
+            &owner,
+            BrowserRequest::Navigate {
+                url: format!("{origin}/"),
+            },
+        )
+        .await;
+        let observed = apply(&owner, BrowserRequest::Observe {}).await;
+        let target = observed.observation.as_ref().unwrap()["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|value| value["label"] == "Count effect")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap();
+        let plan = owner
+            .plan(BrowserRequest::Act {
+                reference: target.into(),
+                effect: BrowserEffect::Click {},
+                purpose: "Synthetic effect with deliberately lost native acknowledgement".into(),
+            })
+            .unwrap();
+        owner.suppress_next_effect_reply_fixture().await;
+        let receipt = owner
+            .execute(plan, crate::identity::OperationId::new())
+            .await
+            .unwrap();
+        assert!(!receipt.acknowledged);
+        assert!(receipt.outcome.contains("Uncertain"));
+        assert_eq!(owner.snapshot().state, "closed");
+        let reopened =
+            owner
+                .reopened_fixture(PrincipalId::new())
+                .native_fixture(origin, address, spki.into());
+        let review = reopened.pending_review().await.unwrap().unwrap();
+        assert_eq!(review.receipt, receipt.id);
+        assert_eq!(
+            reopened
+                .execute(
+                    reopened
+                        .plan(BrowserRequest::Launch {
+                            origins: vec![origin.into()]
+                        })
+                        .unwrap(),
+                    crate::identity::OperationId::new()
+                )
+                .await
+                .unwrap_err(),
+            BrowserError::ReviewRequired
+        );
+        reopened
+            .resolve(review.receipt, review.revision, BrowserResolution::Applied)
+            .await
+            .unwrap();
+        assert!(reopened.pending_review().await.unwrap().is_none());
+        // Resolution does not replay the original action or relaunch by itself.
+        assert!(
+            std::fs::read_dir(owner.paths().cache_dir().join("browser"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+        apply(
+            &reopened,
+            BrowserRequest::Launch {
+                origins: vec![origin.into()],
+            },
+        )
+        .await;
+        apply(&reopened, BrowserRequest::Close {}).await;
     }
     let counts: Value =
         serde_json::from_slice(&crate::bounded_file::read(&counts_file, 4096).unwrap()).unwrap();
@@ -530,7 +645,7 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
         counts["intrinsicPoisonEffects"], 0,
         "page-world prototype poisoned a typed action"
     );
-    for (key, expected) in [("clicks", 1), ("forms", 1), ("downloads", 1)] {
+    for (key, expected) in [("clicks", 2), ("forms", 1), ("downloads", 1)] {
         assert_eq!(
             counts[key].as_u64().unwrap() - before[key].as_u64().unwrap(),
             expected,

@@ -860,7 +860,12 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     }
     let artifact_owner = session.artifact_owner();
     let browser = artifact_store.protected_home().map(|store| {
-        crate::browser::BrowserOwner::new(paths.clone(), store.clone(), artifact_owner)
+        crate::browser::BrowserOwner::new(
+            paths.clone(),
+            store.clone(),
+            artifact_owner,
+            session.session_id(),
+        )
     });
     if let Some(owner) = browser.as_ref().filter(|owner| owner.snapshot().available) {
         crate::browser::register_tools(

@@ -5,6 +5,40 @@ use anyhow::{Result, ensure};
 use rusqlite::{OptionalExtension, params};
 
 impl ProtectedStore {
+    /// Atomically replace one bounded logical document only if its previous
+    /// bytes still match. Authority decisions must not lose a concurrent fence.
+    pub(crate) fn compare_exchange_document(
+        &self,
+        name: &str,
+        expected: Option<&[u8]>,
+        replacement: &[u8],
+        max_bytes: usize,
+    ) -> Result<bool> {
+        validate_name(name)?;
+        ensure!(
+            replacement.len() <= max_bytes && max_bytes <= 16 * 1024 * 1024,
+            "protected document exceeds its write limit"
+        );
+        ensure!(
+            expected.is_none_or(|bytes| bytes.len() <= max_bytes),
+            "protected document exceeds its comparison limit"
+        );
+        self.with_database(|db| {
+            let changed = if let Some(expected) = expected {
+                db.connection.execute(
+                    "UPDATE documents SET revision=revision+1,body=?3 WHERE name=?1 AND body=?2",
+                    params![name, expected, replacement],
+                )?
+            } else {
+                db.connection.execute(
+                    "INSERT OR IGNORE INTO documents(name,revision,body) VALUES(?1,1,?2)",
+                    params![name, replacement],
+                )?
+            };
+            Ok(changed == 1)
+        })
+    }
+
     pub(crate) fn document(&self, name: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         self.with_database(|db| read(&db.connection, name, max_bytes))
     }

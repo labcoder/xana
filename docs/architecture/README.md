@@ -326,6 +326,13 @@ reviewed tool path can launch, navigate, act or resume. Managed Codex and
 unattended schedules do not acquire this browser capability. See the
 [browser guide](../user/local-browser.md) for supported operations and limits.
 
+Before dispatching an effect, the owner persists a Conversation-bound pending
+review intent. Uncertainty survives successful process cleanup and runtime
+restart. A separate exact-receipt/revision owner command records a verified
+applied/not-applied outcome; neither a model tool nor closing the browser can
+clear the fence. Resolution is a receipt, not effect replay or an independently
+verified external business-success claim.
+
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
 bounded command for delivery; semantic runtime outcomes remain ordered

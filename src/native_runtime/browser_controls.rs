@@ -84,6 +84,14 @@ async fn control_result(browser: &BrowserOwner, action: BrowserControl) -> Agent
     let result = match action {
         BrowserControl::Status => Ok(()),
         BrowserControl::Close => browser.shutdown().await,
+        BrowserControl::Resolve {
+            receipt,
+            revision,
+            outcome,
+        } => browser
+            .resolve(receipt, revision, outcome)
+            .await
+            .map(|_| ()),
         BrowserControl::Takeover => match browser.plan(BrowserRequest::Takeover {}) {
             Ok(plan) => browser
                 .execute(plan, OperationId::new())
@@ -115,12 +123,13 @@ async fn control_result(browser: &BrowserOwner, action: BrowserControl) -> Agent
 }
 
 async fn browser_status(browser: &BrowserOwner) -> Result<String, BrowserError> {
+    let pending_review = browser.pending_review().await?;
     let receipts = browser.receipts(8).await?;
     let recent: Vec<_> = receipts.into_iter().take(8).map(|receipt| serde_json::json!({
         "id":receipt.id,"task":receipt.task,"operation":receipt.operation,"outcome":receipt.outcome,"acknowledged":receipt.acknowledged
     })).collect();
     serde_json::to_string_pretty(
-        &serde_json::json!({"browser":browser.snapshot(),"recent_receipts":recent}),
+        &serde_json::json!({"browser":browser.snapshot(),"recent_receipts":recent,"pending_review":pending_review}),
     )
     .map_err(|_| BrowserError::Protocol)
 }
@@ -146,7 +155,12 @@ mod tests {
             &TestCustody::default(),
         )
         .unwrap();
-        let browser = BrowserOwner::new(paths, store, PrincipalId::new());
+        let browser = BrowserOwner::new(
+            paths,
+            store,
+            PrincipalId::new(),
+            crate::identity::SessionId::new(),
+        );
         let (commands, mut blocked_model) = mpsc::channel(1);
         commands
             .try_send(super::super::RuntimeCommand::ClearConversation)

@@ -73,6 +73,10 @@ pub(super) struct Page {
 }
 
 impl Page {
+    #[cfg(all(test, windows))]
+    pub(super) fn suppress_next_effect_reply_fixture(&self) {
+        self.connection.suppress_next_effect_reply_fixture();
+    }
     pub(super) fn preview(
         &self,
         reference: &str,
@@ -104,7 +108,7 @@ impl Page {
             json!({"url":self.url,"label":target.label,"role":target.role,"element":target.expected}),
         )
     }
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) async fn mutate_fixture_target(&self) -> Result<(), BrowserError> {
         let document = self.call("DOM.getDocument", json!({"depth":1})).await?;
         let root = document["root"]["nodeId"]
@@ -127,7 +131,7 @@ impl Page {
         .await?;
         Ok(())
     }
-    #[cfg(test)]
+    #[cfg(all(test, windows))]
     pub(super) async fn mutate_fixture_form(&self, mutation: &str) -> Result<(), BrowserError> {
         let document = self.call("DOM.getDocument", json!({"depth":1})).await?;
         let root = document["root"]["nodeId"]
@@ -136,6 +140,8 @@ impl Page {
         let (selector, name, value) = match mutation {
             "action" => ("form", "action", "/changed-after-review"),
             "value" => ("#value", "value", "changed-after-review"),
+            "clobber_elements" => ("#value", "name", "elements"),
+            "clobber_action" => ("#value", "name", "action"),
             "secret" => (
                 "input[type=password]",
                 "value",
