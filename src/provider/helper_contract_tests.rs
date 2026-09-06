@@ -109,8 +109,7 @@ async fn helper_wire_dialects_send_real_caps_schema_and_no_tools() {
             Some("https://fixture.invalid".into()),
             Some("fixture-title".into()),
         )
-        .with_helper_dialect(dialect)
-        .with_usage();
+        .with_helper_dialect(dialect);
         let capabilities = client.helper_capabilities();
         let schema = schema();
         client

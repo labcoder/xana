@@ -285,7 +285,7 @@ impl OpenAiCompatClient {
             model: &self.model,
             messages: wire_messages,
             stream: true,
-            stream_options: self.include_usage.then_some(WireStreamOptions {
+            stream_options: (self.include_usage || helper.is_some()).then_some(WireStreamOptions {
                 include_usage: true,
             }),
             helper: helper
