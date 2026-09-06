@@ -31,6 +31,8 @@ mod verification;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod hardening_tests;
+#[cfg(test)]
 pub(crate) use tests::Custody as TestCustody;
 
 use anyhow::{Context, Result, bail, ensure};

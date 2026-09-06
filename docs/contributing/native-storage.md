@@ -49,3 +49,28 @@ remain release-acceptance requirements, not Windows implementation blockers.
 Missing native runs are not passes. The accepted
 [storage contract](../proposals/0024-encrypted-managed-content-and-recovery.md)
 continues to govern migration, lock and no-plaintext-fallback behavior.
+
+## Opt-in native custody check
+
+Normal tests use disposable in-memory custody and never access the OS key store.
+An ignored production-seam test is available for an explicitly authorized native
+check in an ordinary logged-in user session:
+
+```text
+cargo test --offline --locked -p xana --lib --all-features storage::keys::native_tests::production_os_custody_unlock_loss_lock_and_independent_recovery -- --ignored --exact --nocapture
+```
+
+It creates one UUID-named credential under `dev.xana.protected-storage` and one
+synthetic temporary encrypted home. It rejects an existing credential at that
+identity, verifies reopen, explicit lock/unlock, missing-key refusal and recovery
+without that credential, then verifies exact credential and directory cleanup.
+It neither enumerates nor reads existing credentials and never opens the normal
+Xana home. A cleanup failure fails the test and names only the fixture identity;
+do not delete the whole service or key store to recover from a failed fixture.
+
+This check alone does not establish denied/locked-service prompt behavior,
+native Desktop interaction, browser ownership or resource measurements. Record
+those separately on each supported native target, at the same source revision.
+Cross-compilation and a root WSL session without Secret Service are not native
+custody evidence. Missing tools or cached sources are prerequisites, not a reason
+to install software or change the key-store policy implicitly.

@@ -207,6 +207,9 @@ impl Secrets {
 }
 
 #[cfg(test)]
+mod native_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
