@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 pub(crate) const CORPUS_VERSION: &str = "xana-semantic-40-v2";
+const SUMMARY_MAX_BYTES: usize = 4096;
+
+mod diagnostics;
+use diagnostics::{AssertionObservation, SyntheticInspection, assertion_observations};
 
 #[derive(Serialize)]
 pub(crate) struct EvaluationCase {
@@ -51,6 +55,11 @@ pub(crate) struct CallObservation {
     pub(crate) retained: usize,
     pub(crate) required: usize,
     pub(crate) canaries_pass: bool,
+    /// Fixed corpus IDs and field names, never assertion or generated text.
+    #[serde(default)]
+    pub(crate) required_facts: Vec<AssertionObservation>,
+    #[serde(default)]
+    pub(crate) canaries: Vec<AssertionObservation>,
     pub(crate) failure: Option<semantic::HelperFailure>,
     pub(crate) elapsed_millis: u64,
     pub(crate) admission_millis: u64,
@@ -97,6 +106,12 @@ pub(crate) struct EvaluationReport {
     pub(crate) elapsed_millis: u64,
     pub(crate) selected_case: Option<String>,
     pub(crate) calls: Vec<CallObservation>,
+}
+
+/// Inspection text has no serialization path through the retained report.
+pub(crate) struct EvaluationOutcome {
+    pub(crate) report: EvaluationReport,
+    pub(crate) inspection: Option<SyntheticInspection>,
 }
 
 impl EvaluationReport {
@@ -392,9 +407,11 @@ pub(crate) async fn evaluate(
         route_digest,
         cancellation,
         None,
+        false,
         semantic::HelperLimits::default(),
     )
     .await
+    .map(|outcome| outcome.report)
 }
 
 pub(crate) async fn evaluate_selected(
@@ -403,13 +420,21 @@ pub(crate) async fn evaluate_selected(
     route_digest: String,
     cancellation: &CancellationToken,
     case_id: Option<&str>,
+    inspect_synthetic_summary: bool,
     limits: semantic::HelperLimits,
-) -> Result<EvaluationReport> {
+) -> Result<EvaluationOutcome> {
     let cases = corpus();
     ensure!(
         case_id.is_none_or(|id| cases.iter().any(|case| case.id == id)),
         "unknown semantic evaluation case"
     );
+    ensure!(
+        !inspect_synthetic_summary || case_id.is_some(),
+        "synthetic summary inspection requires one case"
+    );
+    let mut inspection = case_id
+        .filter(|_| inspect_synthetic_summary)
+        .map(SyntheticInspection::new);
     let started = std::time::Instant::now();
     let mut report = EvaluationReport {
         version: CORPUS_VERSION.into(),
@@ -434,7 +459,8 @@ pub(crate) async fn evaluate_selected(
         let mut previous = None;
         let mut baseline = CaseScore::empty(&case.id);
         for cycle in case.cycles() {
-            let summary = CompactionSummary::derive(previous.as_ref(), cycle.messages, 4096);
+            let summary =
+                CompactionSummary::derive(previous.as_ref(), cycle.messages, SUMMARY_MAX_BYTES);
             baseline.include(score_cycle(&case.id, cycle, Some(&summary)));
             previous = Some(summary);
         }
@@ -457,7 +483,7 @@ pub(crate) async fn evaluate_selected(
                         budget,
                         OperationId::new(),
                         source,
-                        4096,
+                        SUMMARY_MAX_BYTES,
                         cancellation,
                         limits,
                     )
@@ -470,12 +496,18 @@ pub(crate) async fn evaluate_selected(
                 .as_ref()
                 .and_then(|observation| observation.summary.as_ref());
             let score = score_cycle(&case.id, cycle, summary);
+            let (required_facts, canaries) = assertion_observations(cycle, summary);
+            if let (Some(inspection), Some(summary)) = (&mut inspection, summary) {
+                inspection.record(index + 1, summary);
+            }
             report.calls.push(CallObservation {
                 case_id: case.id.clone(),
                 cycle: index + 1,
                 retained: score.retained,
                 required: score.required,
                 canaries_pass: score.canaries_pass,
+                required_facts,
+                canaries,
                 failure: observation
                     .as_ref()
                     .map_or(Some(semantic::HelperFailure::InputLimit), |observation| {
@@ -514,7 +546,7 @@ pub(crate) async fn evaluate_selected(
         report.helper.push(aggregate);
     }
     report.elapsed_millis = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-    Ok(report)
+    Ok(EvaluationOutcome { report, inspection })
 }
 
 impl CaseScore {

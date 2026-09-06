@@ -31,9 +31,9 @@ accuracy: valid paraphrases can miss a string check, and passing this corpus
 does not prove every future summary correct.
 Likewise, a negated old target or rejected tool instruction in an active field
 can trigger the conservative canary; the report does not establish semantic
-adoption. Reports intentionally omit generated text, so investigating those
-ambiguities requires a separate synthetic review, not relabeling a failed route
-as qualified. Missing second cycles still count against the fixed 200-fact plan.
+adoption. Reports omit generated text. Use the single-case inspector below to
+review these ambiguities; inspection does not qualify a failed route.
+Missing second cycles still count against the fixed 200-fact plan.
 
 For a short diagnostic run before repeating the full suite:
 
@@ -43,7 +43,10 @@ xana session evaluate-compaction --connection ollama --model YOUR_MODEL --case-i
 
 Filtered runs cannot enable a helper. Reports retain typed failures, input
 estimates, separate reasoning/answer byte counts, reported usage when available,
-and admission/provider/total timings. Provider error bodies, prompts, generated
+and admission/provider/total timings. Each call also identifies required facts
+and canaries by fixed synthetic assertion IDs, lists matching active fields,
+and records historical matches with `references_hit`. Reference-only matches
+still earn no retention and fail no canary. Provider error bodies, prompts, generated
 answers and reasoning text are not copied into these reports. Missing usage is
 not reported as zero. Run from the repository with `cargo run --locked --` in
 place of `xana` if the executable is not installed.
@@ -52,6 +55,27 @@ explicit successful opt-in also retains its exact content-addressed evidence
 (at most 512 KiB per approved report), so a later failed attempt cannot erase
 the report cited by an existing approval. Ctrl+C settles the active evaluation
 request and saves its diagnostic report without enabling anything.
+
+To inspect the valid summary objects from that same single-case run:
+
+```text
+xana session evaluate-compaction --connection ollama --model YOUR_MODEL --case-id en-6 --inspect-synthetic-summary --yes
+```
+
+Xana prints a separate `Synthetic summary inspection` object after the report.
+It contains the selected case ID and at most two validated summary objects,
+labeled by cycle. Each summary retains the helper's 4 KiB rendered-text bound,
+16-item array limits and 512-byte string limits. If the helper produces no valid
+summary, the `summaries` array is empty; malformed or partial answers and raw
+provider errors remain excluded. For a failed second cycle, you can inspect the
+valid first summary. Xana makes no extra generation calls for inspection.
+
+`--inspect-synthetic-summary` requires `--case-id` and conflicts with `--enable`
+and `--disable`. Xana writes this synthetic text to the command output only,
+outside the protected evaluation report, approval evidence and runtime logs.
+Your terminal or redirected output may retain it. The inspector does not read
+private Conversations or expose reasoning text, and it does not change scoring,
+the corpus, or the helper prompt.
 
 To repeat evaluation and enable the exact route only if it passes:
 

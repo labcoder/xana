@@ -1,6 +1,8 @@
 use super::*;
 use clap::{CommandFactory as _, error::ErrorKind};
 
+mod compaction;
+
 #[test]
 fn visible_cli_families_have_shared_catalog_projections() {
     let catalog = crate::command_catalog::commands_for(crate::command_catalog::CommandSurface::Cli)

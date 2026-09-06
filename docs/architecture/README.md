@@ -762,8 +762,11 @@ and discarding complete provider requests. Context-phase telemetry separates
 local preparation/commit from helper latency without logging source content.
 The v2 evaluator has forty cases/fifty cycles, including actual summary reuse
 and later corrections. Summary-only retention excludes historical references
-and recent-tail recovery. Typed failure/usage/timing evidence does not contain
-raw provider text; fixtures cannot enable a production route. See
+and recent-tail recovery. Typed failure/usage/timing evidence includes fixed
+assertion IDs and active-field/reference matches, not raw provider text. An
+explicit single-case synthetic inspection can display up to two validated
+bounded summaries separately from the persisted report; it cannot inspect
+private runtime history or enable a route. Fixtures cannot enable a production route. See
 [semantic compaction](../user/semantic-compaction.md).
 
 Image attachments are reference-based and artifact-backed; see

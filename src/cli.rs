@@ -1419,6 +1419,9 @@ pub(crate) enum SessionCommand {
         /// Run one synthetic case for diagnosis; partial results cannot enable a helper.
         #[arg(long, conflicts_with_all = ["enable", "disable"])]
         case_id: Option<String>,
+        /// Print bounded valid summaries for one synthetic case; never save them.
+        #[arg(long, requires = "case_id", conflicts_with_all = ["enable", "disable"])]
+        inspect_synthetic_summary: bool,
         /// Explicitly authorize these synthetic requests through the exact route.
         #[arg(long)]
         yes: bool,

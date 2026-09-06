@@ -8,6 +8,8 @@ use crate::{
 use futures::future::BoxFuture;
 use std::{collections::VecDeque, sync::Mutex};
 
+mod inspection;
+
 #[test]
 fn active_facts_cannot_be_recovered_from_historical_references() {
     let case = corpus().remove(0);
@@ -206,10 +208,12 @@ async fn repeated_compaction_uses_the_actual_checkpoint_and_fresh_correction() {
         "a".repeat(64),
         &CancellationToken::new(),
         Some("en-6"),
+        false,
         semantic::HelperLimits::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .report;
     let score = &report.helper[0];
     assert_eq!((score.retained, score.required, score.cycles), (8, 8, 2));
     assert!(score.canaries_pass && score.helper_succeeded);
@@ -256,10 +260,12 @@ async fn failure_is_classified_and_does_not_restart_a_repeated_case_without_its_
         "a".repeat(64),
         &CancellationToken::new(),
         Some("ja-6"),
+        false,
         semantic::HelperLimits::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .report;
     assert_eq!(helper.requests.lock().unwrap().len(), 1);
     assert_eq!(report.calls.len(), 1);
     assert!(report.calls[0].failure.is_some());
@@ -284,6 +290,7 @@ async fn unknown_case_is_rejected_before_dispatch() {
             "a".repeat(64),
             &CancellationToken::new(),
             Some("not-a-case"),
+            false,
             semantic::HelperLimits::default()
         )
         .await
@@ -306,10 +313,12 @@ async fn source_limit_keeps_a_typed_predispatch_failure_with_unknown_encoded_tok
         "a".repeat(64),
         &CancellationToken::new(),
         Some("en-0"),
+        false,
         limits,
     )
     .await
-    .unwrap();
+    .unwrap()
+    .report;
     assert!(helper.requests.lock().unwrap().is_empty());
     assert_eq!(
         report.calls[0].failure,
@@ -381,6 +390,7 @@ async fn joined_cancellation_retains_the_call_failure_and_interruption_receipt()
         "a".repeat(64),
         &cancellation,
         Some("en-6"),
+        false,
         semantic::HelperLimits::default(),
     );
     tokio::pin!(evaluation);
@@ -391,7 +401,8 @@ async fn joined_cancellation_retains_the_call_failure_and_interruption_receipt()
     let report = tokio::time::timeout(std::time::Duration::from_secs(5), evaluation)
         .await
         .expect("cancelled evaluation must join promptly")
-        .unwrap();
+        .unwrap()
+        .report;
     assert_eq!(report.calls.len(), 1);
     assert_eq!(
         report.calls[0].failure,
@@ -591,10 +602,12 @@ async fn second_cycle_active_old_target_fails_even_with_every_required_fact() {
         "a".repeat(64),
         &CancellationToken::new(),
         Some("de-6"),
+        false,
         semantic::HelperLimits::default(),
     )
     .await
-    .unwrap();
+    .unwrap()
+    .report;
     assert_eq!(report.helper[0].retained, 8);
     assert!(
         report.helper[0].helper_succeeded,

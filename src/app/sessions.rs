@@ -422,6 +422,7 @@ pub(super) struct CompactionEvaluationOptions<'a> {
     pub(super) enable: bool,
     pub(super) disable: bool,
     pub(super) case_id: Option<&'a str>,
+    pub(super) inspect_synthetic_summary: bool,
 }
 
 pub(super) async fn evaluate_compaction<W: Write>(
@@ -437,7 +438,12 @@ pub(super) async fn evaluate_compaction<W: Write>(
         enable,
         disable,
         case_id,
+        inspect_synthetic_summary,
     } = options;
+    anyhow::ensure!(
+        !inspect_synthetic_summary || (case_id.is_some() && !enable && !disable),
+        "synthetic summary inspection requires one case and cannot change helper approval"
+    );
     anyhow::ensure!(
         case_id.is_none() || (!enable && !disable),
         "partial evaluation cannot change helper approval"
@@ -517,10 +523,11 @@ pub(super) async fn evaluate_compaction<W: Write>(
         digest.clone(),
         &cancellation,
         case_id,
+        inspect_synthetic_summary,
         limits,
     );
     tokio::pin!(evaluation);
-    let (report, cancelled) = tokio::select! {
+    let (outcome, cancelled) = tokio::select! {
         biased;
         _ = tokio::signal::ctrl_c() => {
             cancellation.cancel();
@@ -530,6 +537,7 @@ pub(super) async fn evaluate_compaction<W: Write>(
         },
         result = &mut evaluation => (result?, false),
     };
+    let evaluation::EvaluationOutcome { report, inspection } = outcome;
     let report_name = if case_id.is_some() || cancelled {
         format!("compaction/evaluations/{digest}/diagnostic")
     } else {
@@ -539,6 +547,10 @@ pub(super) async fn evaluate_compaction<W: Write>(
     // Failed opt-in must expose the same safe per-call evidence as a diagnostic
     // run; approval refusal must not hide the observed failure classifications.
     serde_json::to_writer_pretty(&mut *output, &report)?;
+    if let Some(inspection) = inspection {
+        writeln!(output, "\nSynthetic summary inspection (not retained):")?;
+        serde_json::to_writer_pretty(&mut *output, &inspection)?;
+    }
     if cancelled {
         writeln!(output)?;
         anyhow::bail!(

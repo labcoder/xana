@@ -202,6 +202,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                 connection,
                 model,
                 case_id,
+                inspect_synthetic_summary,
                 yes,
                 enable,
                 disable,
@@ -216,6 +217,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                         enable,
                         disable,
                         case_id: case_id.as_deref(),
+                        inspect_synthetic_summary,
                     },
                     &mut stdout.lock(),
                 )
