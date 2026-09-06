@@ -30,9 +30,11 @@ Schema 3 adds memory tables to accounting schema 2. Canonical upgrades from 1/2
 require the exclusive lifecycle lease, commit atomically, close while exclusive,
 then reopen through lifecycle checks. Recovery inspection never upgrades.
 Statements/encoded records/pages are bounded at 4,096 bytes/8 KiB/64 records.
-Eligible inspection merges at most four covering-index scans of 1,025 integer
-sequences, then reads at most 1,024 matching bodies, returning at most 64 active
-unexpired records. It does not sort an unbounded set of BLOBs in SQLite. A
+Eligible inspection lazily merges at most four covering-index cursors in global
+sequence order. It reads at most 1,024 matching bodies plus one next sequence
+per scope, stopping when 64 active unexpired records are found. Exact-scope
+inspection pages use the scope/sequence index without scanning unrelated scopes.
+It does not sort an unbounded set of BLOBs in SQLite. A
 bounded incomplete view is explicit, not a relevance guarantee. Chat previews
 further cap this to eight records and 256 characters per statement. Exports are
 coherent create-only private JSON copies capped at 32 MiB, with identity-checked

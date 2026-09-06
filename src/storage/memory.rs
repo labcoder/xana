@@ -187,8 +187,21 @@ impl ProtectedStore {
         after: Option<u64>,
     ) -> Result<MemoryPage> {
         self.with_database(|db| {
-            let mut q = db.connection.prepare("SELECT sequence,body,id,revision,scope FROM memory_entries WHERE sequence>?1 AND (?2 IS NULL OR scope=?2) ORDER BY sequence LIMIT ?3")?;
-            let mut rows = q.query(params![i64::try_from(after.unwrap_or(0))?,scope.map(ToString::to_string),i64::try_from(PAGE_SIZE+1)?])?;
+            // Keep the exact-scope predicate indexable; a nullable OR forces
+            // scoped pages to walk unrelated sequence rows before their limit.
+            let sql = if scope.is_some() {
+                "SELECT sequence,body,id,revision,scope FROM memory_entries WHERE sequence>?1 AND scope=?2 ORDER BY sequence LIMIT ?3"
+            } else {
+                "SELECT sequence,body,id,revision,scope FROM memory_entries WHERE sequence>?1 ORDER BY sequence LIMIT ?2"
+            };
+            let mut q = db.connection.prepare(sql)?;
+            let after = i64::try_from(after.unwrap_or(0))?;
+            let limit = i64::try_from(PAGE_SIZE + 1)?;
+            let mut rows = if let Some(scope) = scope {
+                q.query(params![after, scope.to_string(), limit])?
+            } else {
+                q.query(params![after, limit])?
+            };
             let mut records = Vec::new();
             let mut last = None;
             let mut more = false;
@@ -249,22 +262,36 @@ impl ProtectedStore {
             if !use_enabled {
                 return Ok(result);
             }
-            // Merge at most four bounded covering-index traversals. An IN query
-            // ordered by sequence can sort every matching BLOB before yielding;
-            // a Rust loop limit alone would not bound that SQLite work.
-            let mut sequences = Vec::new();
-            let mut index = tx.prepare(ELIGIBLE_INDEX_QUERY)?;
-            for scope in &scopes {
-                let values = index
-                    .query_map([scope.to_string()], |row| super::database::read_u64(row, 0))?;
-                for value in values {
-                    sequences.push(value?);
-                }
-            }
-            sequences.sort_unstable();
+            // Lazily merge at most four covering-index cursors. Stop index work
+            // when the candidate page is full, not after reading 1025 IDs from
+            // every scope. Keep the same global sequence order and inspect cap.
+            let mut queries = scopes
+                .iter()
+                .map(|_| tx.prepare(ELIGIBLE_INDEX_QUERY))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut cursors = queries
+                .iter_mut()
+                .zip(&scopes)
+                .map(|(query, scope)| query.query([scope.to_string()]))
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut next = cursors
+                .iter_mut()
+                .map(|cursor| {
+                    cursor
+                        .next()?
+                        .map(|row| super::database::read_u64(row, 0))
+                        .transpose()
+                })
+                .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut q =
                 tx.prepare("SELECT body,id,revision,scope FROM memory_entries WHERE sequence=?1")?;
-            for (inspected, sequence) in sequences.into_iter().enumerate() {
+            let mut inspected = 0;
+            while let Some((scope_index, sequence)) = next
+                .iter()
+                .enumerate()
+                .filter_map(|(index, sequence)| sequence.map(|sequence| (index, sequence)))
+                .min_by_key(|(_, sequence)| *sequence)
+            {
                 if inspected == 1024 || result.records.len() == PAGE_SIZE {
                     result.has_more = true;
                     break;
@@ -275,6 +302,11 @@ impl ProtectedStore {
                 if record.eligible_at(now) {
                     result.records.push(record);
                 }
+                inspected += 1;
+                next[scope_index] = cursors[scope_index]
+                    .next()?
+                    .map(|row| super::database::read_u64(row, 0))
+                    .transpose()?;
             }
             Ok(result)
         })
@@ -334,6 +366,239 @@ fn write_export(path: &Path, write: impl FnOnce(&mut std::fs::File) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn selection_fixture() -> (tempfile::TempDir, ProtectedStore) {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::initialize(
+            directory.path(),
+            &crate::storage::RecoveryIdentity::generate(),
+            &crate::storage::TestCustody::default(),
+        )
+        .unwrap();
+        (directory, store)
+    }
+
+    fn seed_records(store: &ProtectedStore, scopes: &[MemoryScope], per_scope: usize) {
+        store
+            .with_database(|db| {
+                let tx = db.connection.transaction()?;
+                for scope in scopes {
+                    for index in 0..per_scope {
+                        let origin = MemoryProvenance {
+                            owner_request: Uuid::new_v4(),
+                            conversation: None,
+                            at_unix_seconds: 1,
+                        };
+                        let record = MemoryRecord {
+                            version: 1,
+                            id: Uuid::new_v4(),
+                            revision: 1,
+                            scope: scope.clone(),
+                            statement: format!("Fixture preference {index}"),
+                            claim: MemoryClaim::Stated,
+                            state: MemoryState::Active,
+                            created: origin.clone(),
+                            changed: origin,
+                            valid_until_unix_seconds: None,
+                        };
+                        tx.execute(
+                            "INSERT INTO memory_entries(id,revision,scope,body) VALUES(?1,1,?2,?3)",
+                            params![record.id.to_string(), scope.to_string(), encode(&record)?],
+                        )?;
+                    }
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn measured_work<T>(store: &ProtectedStore, operation: impl FnOnce() -> T) -> (T, usize) {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let steps = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&steps);
+        store
+            .with_database(|db| {
+                db.connection.progress_handler(
+                    1,
+                    Some(move || {
+                        observed.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }),
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let result = operation();
+        store
+            .with_database(|db| {
+                db.connection.progress_handler(0, None::<fn() -> bool>)?;
+                Ok(())
+            })
+            .unwrap();
+        (result, steps.load(Ordering::Relaxed))
+    }
+
+    #[test]
+    fn memory_scope_page_does_not_scan_unrelated_records() {
+        let (_directory, store) = selection_fixture();
+        seed_records(&store, &[MemoryScope::Project(Uuid::new_v4())], 4096);
+        seed_records(&store, &[MemoryScope::User], 1);
+        let (page, steps) =
+            measured_work(&store, || store.memory_page(Some(&MemoryScope::User), None));
+        let page = page.unwrap();
+        assert_eq!(page.records.len(), 1);
+        assert_eq!(page.records[0].scope, MemoryScope::User);
+        assert_eq!(page.next_after, None);
+        println!("memory_scope_page population=4097 returned=1 vm_steps={steps}");
+        assert!(
+            steps <= 256,
+            "scope page scanned unrelated records: {steps} VM steps"
+        );
+    }
+
+    #[test]
+    fn memory_selection_stops_index_work_after_its_candidate_page() {
+        let (_directory, store) = selection_fixture();
+        let context = MemoryContext {
+            conversation: Some(Uuid::new_v4()),
+            profile: Some(Uuid::new_v4()),
+            project: Some(Uuid::new_v4()),
+        };
+        seed_records(&store, &context.scopes(), 1025);
+        let (selection, steps) = measured_work(&store, || store.memory_eligible(&context, 2));
+        let selection = selection.unwrap();
+        assert_eq!(selection.records.len(), PAGE_SIZE);
+        assert!(selection.has_more);
+        assert!(
+            selection
+                .records
+                .iter()
+                .all(|record| record.scope == MemoryScope::User)
+        );
+        println!(
+            "memory_selection population=4100 returned={} vm_steps={steps}",
+            selection.records.len()
+        );
+        assert!(
+            steps <= 4096,
+            "selection eagerly read unused scope candidates: {steps} VM steps"
+        );
+    }
+
+    #[test]
+    fn memory_selection_merges_scopes_in_sequence_order_and_skips_ineligible_records() {
+        let (_directory, store) = selection_fixture();
+        let context = MemoryContext {
+            conversation: Some(Uuid::new_v4()),
+            profile: Some(Uuid::new_v4()),
+            project: Some(Uuid::new_v4()),
+        };
+        for _ in 0..20 {
+            seed_records(&store, &context.scopes(), 1);
+        }
+        let first = store.memory_page(None, None).unwrap();
+        let second = store.memory_page(None, first.next_after).unwrap();
+        let mut expected = first.records;
+        expected.extend(second.records);
+        store
+            .with_database(|db| {
+                let tx = db.connection.transaction()?;
+                for (index, record) in expected.iter_mut().take(4).enumerate() {
+                    if index == 0 {
+                        record.valid_until_unix_seconds = Some(2);
+                    } else {
+                        record.state = [
+                            MemoryState::Candidate,
+                            MemoryState::Stale,
+                            MemoryState::Forgotten,
+                        ][index - 1];
+                    }
+                    tx.execute(
+                        "UPDATE memory_entries SET body=?2 WHERE id=?1",
+                        params![record.id.to_string(), encode(record)?],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+        let selection = store.memory_eligible(&context, 2).unwrap();
+        assert_eq!(
+            selection.records,
+            expected
+                .into_iter()
+                .filter(|record| record.eligible_at(2))
+                .take(PAGE_SIZE)
+                .collect::<Vec<_>>()
+        );
+        assert!(selection.has_more);
+    }
+
+    #[test]
+    fn memory_selection_keeps_the_global_ineligible_inspection_limit() {
+        let (_directory, store) = selection_fixture();
+        seed_records(&store, &[MemoryScope::User], 1025);
+        store
+            .with_database(|db| {
+                let tx = db.connection.transaction()?;
+                for sequence in 1..=1024 {
+                    let mut record = tx.query_row(
+                        "SELECT body FROM memory_entries WHERE sequence=?1",
+                        [sequence],
+                        |row| read_record(row, 0),
+                    )?;
+                    record.state = MemoryState::Stale;
+                    tx.execute(
+                        "UPDATE memory_entries SET body=?2 WHERE sequence=?1",
+                        params![sequence, encode(&record)?],
+                    )?;
+                }
+                tx.commit()?;
+                Ok(())
+            })
+            .unwrap();
+        let selection = store.memory_eligible(&MemoryContext::default(), 2).unwrap();
+        assert!(
+            selection.records.is_empty(),
+            "record 1025 remains beyond the read limit"
+        );
+        assert!(selection.has_more);
+    }
+
+    #[test]
+    fn memory_scope_pages_keep_cursors_and_reject_mismatched_routing() {
+        let (_directory, store) = selection_fixture();
+        seed_records(&store, &[MemoryScope::Project(Uuid::new_v4())], 65);
+        seed_records(&store, &[MemoryScope::User], 65);
+        let first = store.memory_page(Some(&MemoryScope::User), None).unwrap();
+        let second = store
+            .memory_page(Some(&MemoryScope::User), first.next_after)
+            .unwrap();
+        assert_eq!(first.records.len(), PAGE_SIZE);
+        assert_eq!(second.records.len(), 1);
+        assert!(second.next_after.is_none());
+        assert!(
+            first.records.iter().all(
+                |record| record.id != second.records[0].id && record.scope == MemoryScope::User
+            )
+        );
+        store
+            .with_database(|db| {
+                db.connection.execute(
+                    "UPDATE memory_entries SET scope='user' WHERE sequence=1",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.memory_page(Some(&MemoryScope::User), None).is_err());
+        assert!(store.memory_eligible(&MemoryContext::default(), 2).is_err());
+    }
+
     #[test]
     fn memory_eligibility_uses_bounded_covering_index_without_blob_sort() {
         let db = Connection::open_in_memory().unwrap();
