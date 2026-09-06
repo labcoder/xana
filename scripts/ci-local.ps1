@@ -70,6 +70,7 @@ try {
         } else {
             ./scripts/check-package-contents.ps1 -AllowDirty
         }
+        ./scripts/test-package-contents.ps1
     }
     Invoke-CiStep "Bash installer behavior" {
         & $bash ./scripts/test-install-sh.sh

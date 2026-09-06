@@ -118,7 +118,9 @@ jobs:
       - name: Audit package contents
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         shell: pwsh
-        run: ./scripts/check-package-contents.ps1
+        run: |
+          ./scripts/check-package-contents.ps1
+          ./scripts/test-package-contents.ps1
 
       - name: Verify Bash installer behavior
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}

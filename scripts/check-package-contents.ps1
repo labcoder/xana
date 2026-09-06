@@ -61,6 +61,9 @@ $forbiddenPatterns = @(
 )
 
 foreach ($path in $packageEntries) {
+    # This exact tracked file configures Cargo's native build, not Xana's home.
+    # Nested or differently named config files still pass through every guard.
+    if ($path -ceq ".cargo/config.toml") { continue }
     foreach ($pattern in $forbiddenPatterns) {
         if ($path -match $pattern) {
             throw "forbidden package path matched $pattern`: $path"
