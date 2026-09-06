@@ -17,6 +17,7 @@ use xana::desktop::{
 
 pub(crate) struct AutonomyView {
     control: DesktopControlPlane,
+    workers: Entity<crate::worker_view::WorkerView>,
     name: Entity<InputState>,
     workspace: Entity<InputState>,
     profile: Entity<InputState>,
@@ -39,6 +40,7 @@ pub(crate) struct AutonomyView {
     task: Option<Task<()>>,
 }
 enum ViewResult {
+    Reviewed(DesktopScheduledTask, String),
     Snapshot(DesktopAutonomySnapshot),
     Preview(DesktopTaskDraft, DesktopTaskPreview),
     Detail(String),
@@ -51,6 +53,7 @@ impl AutonomyView {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            workers: cx.new(|cx| crate::worker_view::WorkerView::new(control.clone(), window, cx)),
             control,name:cx.new(|cx|InputState::new(window,cx)),workspace:cx.new(|cx|InputState::new(window,cx)),profile:cx.new(|cx|InputState::new(window,cx)),project:cx.new(|cx|InputState::new(window,cx)),
             time:cx.new(|cx|InputState::new(window,cx).placeholder("RFC3339 instant, or daily HH:MM")),timezone:cx.new(|cx|InputState::new(window,cx).placeholder("America/Los_Angeles")),expires:cx.new(|cx|InputState::new(window,cx).placeholder("RFC3339 expiry with timezone offset")),
             text:cx.new(|cx|TextareaState::new(window,cx).auto_grow(3,8)),detail:cx.new(|cx|TextareaState::new(window,cx).auto_grow(3,12)),
@@ -74,6 +77,29 @@ impl AutonomyView {
             expires: self.expires.read(cx).value().to_string(),
         }
     }
+    pub(crate) fn review_task(
+        &mut self,
+        task: DesktopScheduledTask,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Espejo rows may be stale. Load selection and review from one owner
+        // record instead of pairing an old revision with fresh detail.
+        self.review_id(task.id, window, cx);
+    }
+    pub(crate) fn review_id(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            self.status =
+                "Finish the current schedule operation, then open this task again.".into();
+            cx.notify();
+            return;
+        }
+        self.perform(window, cx, move |control| {
+            control
+                .review_scheduled_task(&id)
+                .map(|(task, detail)| ViewResult::Reviewed(task, detail))
+        });
+    }
     fn perform(
         &mut self,
         window: &mut Window,
@@ -91,6 +117,7 @@ impl AutonomyView {
             _=this.update_in(cx,|this,window,cx| {
                 this.busy=false;
                 match result {
+                    Ok(ViewResult::Reviewed(task,detail))=>{this.selected=Some(task);this.review_unknown=false;this.detail.update(cx,|input,cx|input.set_value(detail,window,cx));this.status="Current task scope loaded; opening it did not grant authority.".into();}
                     Ok(ViewResult::Snapshot(snapshot))=>{
                         this.selected=this.selected.as_ref().and_then(|selected|snapshot.jobs.iter().find(|job|job.id==selected.id).cloned());
                         this.snapshot=Some(snapshot);this.status="Current protected schedule page loaded. Select a task to inspect its exact intent.".into();
@@ -202,11 +229,11 @@ impl Render for AutonomyView {
             .child("Closing this panel detaches it; it does not stop the host. Login startup is a separate explicit per-user installation.")
             .children(self.snapshot.iter().flat_map(|snapshot|snapshot.jobs.iter()).map(|job| {
                 let chosen=job.clone();
-                Button::new(gpui::SharedString::from(format!("scheduled-{}",job.id))).label(format!("{} · {} · next {}",job.name,job.state,job.next_at)).selected(self.selected.as_ref().is_some_and(|s|s.id==job.id)).disabled(self.busy).on_click(cx.listener(move|this,_,_,cx|{this.selected=Some(chosen.clone());this.review_unknown=false;cx.notify();}))
+                Button::new(gpui::SharedString::from(format!("scheduled-{}",job.id))).label(format!("{} · {} · {} · next {}",job.name,job.group.label(),job.trigger,job.next_at)).selected(self.selected.as_ref().is_some_and(|s|s.id==job.id)).disabled(self.busy).on_click(cx.listener(move|this,_,_,cx|{this.selected=Some(chosen.clone());this.review_unknown=false;cx.notify();}))
             }))
             .when(self.snapshot.as_ref().is_some_and(|s|s.jobs.is_empty()),|view|view.child("No schedules on this page. Create an explicitly scoped task below."))
             .child(h_flex().flex_wrap().gap_2()
-                .child(Button::new("schedule-inspect").label("Inspect task").disabled(self.busy || !selected).on_click(cx.listener(|this,_,window,cx|this.inspect(false,window,cx))))
+                .child(Button::new("schedule-inspect").label("Review grant and memory scope").disabled(self.busy || !selected).on_click(cx.listener(|this,_,window,cx|this.inspect(false,window,cx))))
                 .child(Button::new("schedule-receipts").label("Receipts").disabled(self.busy || !selected).on_click(cx.listener(|this,_,window,cx|this.inspect(true,window,cx))))
                 .children([(DesktopScheduleEdit::Pause,"schedule-pause","Pause"),(DesktopScheduleEdit::Resume,"schedule-resume","Resume"),(DesktopScheduleEdit::Cancel,"schedule-cancel","Cancel task")].into_iter().map(|(edit,id,label)|Button::new(id).label(label).disabled(self.busy || !selected).on_click(cx.listener(move|this,_,window,cx|this.edit(edit,window,cx))))))
             .child(Checkbox::new("schedule-review-unknown").label("I inspected the uncertain outcome and authorize a new attempt").checked(self.review_unknown).disabled(self.busy || !selected).on_click(cx.listener(|this,checked,_,cx|{this.review_unknown = *checked;cx.notify();})))
@@ -220,6 +247,7 @@ impl Render for AutonomyView {
             .child(Textarea::new(&self.detail).readonly(true))
             .child(Checkbox::new("schedule-authorize").label("Authorize this exact reviewed task, recipient, expiry and budgets").checked(self.authorize).disabled(self.busy || self.preview.is_none()).on_click(cx.listener(|this,checked,_,cx|{this.authorize = *checked;cx.notify();})))
             .child(Button::new("schedule-create").label("Create schedule").disabled(self.busy || !can_create).on_click(cx.listener(|this,_,window,cx|this.create(window,cx))))
-            .child(self.status.clone())).into_any_element()
+            .child(self.status.clone())
+            .child(self.workers.clone())).into_any_element()
     }
 }

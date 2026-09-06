@@ -24,6 +24,7 @@ mod shell;
 mod storage_lock;
 mod workbench;
 mod workbench_preferences_view;
+mod worker_view;
 
 use catalog::ComponentCatalog;
 use gpui::{App, AppContext as _, Styled as _, WindowOptions};
@@ -107,7 +108,7 @@ fn main() -> ExitCode {
                         "xana-desktop-activity" => {
                             window.dispatch_action(Box::new(commands::ShowActivity), cx);
                         }
-                        "xana-desktop-diagnostics" => {
+                        "xana-desktop-diagnostics" | "xana-desktop-schedules" => {
                             window.dispatch_action(Box::new(commands::ShowEspejo), cx);
                         }
                         _ => {}

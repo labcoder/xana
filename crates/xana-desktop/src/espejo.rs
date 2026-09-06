@@ -1,4 +1,5 @@
 //! Retained Desktop Espejo view over bounded runtime-owned facts.
+mod scheduled;
 
 use gpui::{
     AnyElement, Context, EventEmitter, IntoElement, ParentElement as _, Render, Styled as _, div,
@@ -160,9 +161,12 @@ pub(crate) enum EspejoViewEvent {
         needs_attention: bool,
     },
     OpenDiagnostics,
+    OpenScheduled(xana::desktop::DesktopScheduledTask),
+    OpenScheduledId(String),
 }
 
 pub(crate) struct EspejoView {
+    scheduled: gpui::Entity<scheduled::ScheduledWorkView>,
     projection: EspejoProjection,
     navigation: DesktopNavigationSnapshot,
     queue_counts: HashMap<String, usize>,
@@ -172,7 +176,16 @@ pub(crate) struct EspejoView {
 }
 
 impl EspejoView {
-    pub(crate) fn new(snapshot: &DesktopSnapshot) -> Self {
+    pub(crate) fn new(
+        snapshot: &DesktopSnapshot,
+        control: xana::desktop::DesktopControlPlane,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let scheduled = cx.new(|_| scheduled::ScheduledWorkView::new(control));
+        cx.subscribe(&scheduled, |_, _, event: &EspejoViewEvent, cx| {
+            cx.emit(event.clone())
+        })
+        .detach();
         let selected_project = snapshot
             .navigation
             .selected_conversation
@@ -181,6 +194,7 @@ impl EspejoView {
                 project_for_conversation(&snapshot.navigation, conversation_id)
             });
         Self {
+            scheduled,
             projection: EspejoProjection::from_snapshot(snapshot),
             navigation: snapshot.navigation.clone(),
             queue_counts: HashMap::new(),
@@ -191,8 +205,18 @@ impl EspejoView {
     }
 
     pub(crate) fn open(&mut self, scope: EspejoScope, cx: &mut Context<Self>) {
+        self.scheduled
+            .update(cx, |view, cx| view.set_scope(scope.clone(), cx));
         self.scope = scope;
         cx.notify();
+    }
+    pub(crate) fn background_attention(
+        &mut self,
+        notes: Vec<xana::desktop::DesktopBackgroundAttention>,
+        cx: &mut Context<Self>,
+    ) {
+        self.scheduled
+            .update(cx, |view, cx| view.attention(notes, cx));
     }
 
     pub(crate) fn replace_snapshot(&mut self, snapshot: &DesktopSnapshot, cx: &mut Context<Self>) {
@@ -524,6 +548,7 @@ impl Render for EspejoView {
                                     .selected(global_selected)
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.scope = EspejoScope::Global;
+                                        this.scheduled.update(cx,|view,cx|view.set_scope(EspejoScope::Global,cx));
                                         cx.notify();
                                     })),
                             )
@@ -536,6 +561,7 @@ impl Render for EspejoView {
                                         .selected(selected)
                                         .on_click(cx.listener(move |this, _, _, cx| {
                                             this.scope = EspejoScope::Project(project_id.clone());
+                                            this.scheduled.update(cx,|view,cx|view.set_scope(EspejoScope::Project(project_id.clone()),cx));
                                             cx.notify();
                                         })),
                                 )
@@ -552,6 +578,7 @@ impl Render for EspejoView {
                     .gap(tokens.spacing.lg)
                     .p(tokens.spacing.lg)
                     .overflow_y_scrollbar()
+                    .child(self.scheduled.clone())
                     .when(!notices.is_empty(), |body| {
                         body.child(self.render_notices(notices, cx))
                     })

@@ -1,5 +1,6 @@
 //! Application-owned state and the first real Desktop runtime projection.
 
+mod background;
 mod browser;
 mod history;
 
@@ -150,6 +151,7 @@ pub(crate) struct Workbench {
     _settings_subscription: Subscription,
     _runtime_driver: Task<()>,
     _instance_driver: Task<()>,
+    background_driver: Option<Task<()>>,
 }
 
 impl Workbench {
@@ -257,7 +259,7 @@ impl Workbench {
                 cx,
             )
         });
-        let espejo = cx.new(|_| EspejoView::new(runtime.initial_snapshot()));
+        let espejo = cx.new(|cx| EspejoView::new(runtime.initial_snapshot(), control.clone(), cx));
         let accounting_view =
             cx.new(|cx| crate::accounting_view::AccountingView::new(control.clone(), window, cx));
         let memory_view =
@@ -419,9 +421,11 @@ impl Workbench {
             _settings_subscription: settings_subscription,
             _runtime_driver: runtime_driver,
             _instance_driver: instance_driver,
+            background_driver: None,
         };
         workbench.refresh_model_options(window, cx);
         workbench.schedule_image_previews(window, cx);
+        workbench.observe_background_work(window, cx);
         workbench
     }
 
@@ -1248,6 +1252,18 @@ impl Workbench {
                 self.open_espejo_conversation(conversation_id.clone(), *needs_attention, window, cx)
             }
             EspejoViewEvent::OpenDiagnostics => self.open_diagnostics(window, cx),
+            EspejoViewEvent::OpenScheduled(task) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                self.autonomy_view
+                    .update(cx, |view, cx| view.review_task(task.clone(), window, cx));
+                self.reopen_layout_panel(DesktopPanelId::Schedules, window, cx);
+            }
+            EspejoViewEvent::OpenScheduledId(id) => {
+                self.navigation = DesktopNavigationTarget::Conversation;
+                self.autonomy_view
+                    .update(cx, |view, cx| view.review_id(id.clone(), window, cx));
+                self.reopen_layout_panel(DesktopPanelId::Schedules, window, cx);
+            }
         }
     }
 
