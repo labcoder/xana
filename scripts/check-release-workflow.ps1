@@ -71,6 +71,8 @@ $ciRequired = @(
     "cargo install --path . --locked --debug",
     "prepare-storage-build.ps1",
     "--test encrypted_storage_contract",
+    "--test adapter_outcomes",
+    "--test adapter_vision",
     "test-release-ci-evidence.ps1",
     "test-create-release-draft.ps1"
 )
