@@ -1073,8 +1073,13 @@ visual rows, anchors at the bottom, and interprets scroll state as rows rather
 than messages. A bounded terminal-input adapter preserves ordinary keys but
 uses a short, adaptive quiet window to coalesce key-stream paste, including
 fallback newlines, before command interpretation. Once a paste is detected, a
-wider quiet window absorbs terminal delivery jitter. Replaceable pointer-drag
-motion is sampled at its latest queued coordinate instead of replaying stale
+wider quiet window absorbs terminal delivery jitter. Key releases carry no TUI
+action and are discarded before burst detection without extending its timer;
+press/repeat actions and control/mouse boundaries retain their semantics.
+The adapter consumes Tokio's cooperative budget for each raw event so a large
+ready queue, including discarded releases, yields to other runtime tasks.
+Replaceable pointer-drag motion is sampled at its latest queued coordinate
+instead of replaying stale
 cursor positions through separate renders. Bracketed and detected fallback
 paste therefore enter one normalized confirmation as untrusted draft data
 rather than repeated submits. Model

@@ -71,10 +71,28 @@ impl Drop for TerminalInput {
     }
 }
 
-async fn read_terminal_input<S>(mut events: S, sender: mpsc::Sender<io::Result<TerminalInputEvent>>)
+async fn read_terminal_input<S>(events: S, sender: mpsc::Sender<io::Result<TerminalInputEvent>>)
 where
     S: Stream<Item = io::Result<Event>> + Unpin,
 {
+    // Crossterm's ready queue has no Tokio work budget. Yield cooperatively for
+    // both large character bursts and discarded releases, not just sent events.
+    let events = events.then(|event| async move {
+        tokio::task::consume_budget().await;
+        event
+    });
+    // ConPTY can emit a release after every pasted key. Releases have no TUI
+    // action, so discard them before burst detection without resetting its gap.
+    let events = events.filter(|event| {
+        futures::future::ready(!matches!(
+            event,
+            Ok(Event::Key(KeyEvent {
+                kind: KeyEventKind::Release,
+                ..
+            }))
+        ))
+    });
+    futures::pin_mut!(events);
     let mut pending = None;
     loop {
         let event = if let Some(event) = pending.take() {
@@ -282,6 +300,166 @@ mod tests {
             receiver.recv().await.unwrap().unwrap(),
             TerminalInputEvent::Paste("a\nb".to_owned())
         );
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn paired_press_release_paste_does_not_submit_embedded_newlines() {
+        let events = stream::iter("alpha\nbeta".chars().flat_map(|character| {
+            let code = if character == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(character)
+            };
+            [KeyEventKind::Press, KeyEventKind::Release].map(|kind| {
+                Ok(Event::Key(KeyEvent::new_with_kind(
+                    code,
+                    KeyModifiers::NONE,
+                    kind,
+                )))
+            })
+        }));
+        let (sender, mut receiver) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+
+        read_terminal_input(events, sender).await;
+
+        assert_eq!(
+            receiver.recv().await.unwrap().unwrap(),
+            TerminalInputEvent::Paste("alpha\nbeta".to_owned())
+        );
+        assert!(
+            receiver.recv().await.is_none(),
+            "the paste must not emit a raw Enter or a separate key-release action"
+        );
+    }
+
+    #[tokio::test]
+    async fn continuously_ready_raw_events_yield_before_draining() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        const EVENT_COUNT: usize = 4096;
+        for kind in [KeyEventKind::Release, KeyEventKind::Press] {
+            let consumed = Arc::new(AtomicUsize::new(0));
+            let count = consumed.clone();
+            let events = stream::iter((0..EVENT_COUNT).map(move |_| {
+                count.fetch_add(1, Ordering::Relaxed);
+                Ok(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('x'),
+                    KeyModifiers::NONE,
+                    kind,
+                )))
+            }));
+            let (sender, mut receiver) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+            let reader = read_terminal_input(events, sender);
+            tokio::pin!(reader);
+
+            assert!(
+                futures::poll!(&mut reader).is_pending(),
+                "a ready {kind:?} queue must yield to its task owner"
+            );
+            assert!(
+                consumed.load(Ordering::Relaxed) < EVENT_COUNT,
+                "input normalization must not drain an arbitrary queue in one poll"
+            );
+            reader.await;
+
+            if kind == KeyEventKind::Press {
+                assert_eq!(
+                    receiver.recv().await.unwrap().unwrap(),
+                    TerminalInputEvent::Paste("x".repeat(EVENT_COUNT)),
+                    "cooperative yields must not fragment a buffered paste"
+                );
+            }
+            assert!(receiver.recv().await.is_none());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn releases_do_not_extend_the_fallback_paste_gap() {
+        let (mut event_sender, events) = futures::channel::mpsc::unbounded();
+        let producer = tokio::spawn(async move {
+            event_sender
+                .send(Ok(Event::Key(key(KeyCode::Char('a')))))
+                .await
+                .unwrap();
+            sleep(Duration::from_millis(19)).await;
+            event_sender
+                .send(Ok(Event::Key(KeyEvent::new_with_kind(
+                    KeyCode::Char('a'),
+                    KeyModifiers::NONE,
+                    KeyEventKind::Release,
+                ))))
+                .await
+                .unwrap();
+            sleep(Duration::from_millis(6)).await;
+            event_sender
+                .send(Ok(Event::Key(key(KeyCode::Char('b')))))
+                .await
+                .unwrap();
+        });
+        let (sender, mut receiver) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+
+        read_terminal_input(events, sender).await;
+        producer.await.unwrap();
+
+        for expected in ["a", "b"] {
+            assert_eq!(
+                receiver.recv().await.unwrap().unwrap(),
+                TerminalInputEvent::Text(expected.to_owned())
+            );
+        }
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn release_filter_preserves_single_enter_repeat_shortcuts_navigation_and_mouse() {
+        let expected = [
+            Event::Key(key(KeyCode::Enter)),
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT)),
+            Event::Key(key(KeyCode::Up)),
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char('a'),
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat,
+            )),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 2,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 2,
+                row: 4,
+                modifiers: KeyModifiers::NONE,
+            }),
+        ];
+        let events = stream::iter(expected.iter().cloned().flat_map(|event| {
+            let release = match &event {
+                Event::Key(key) => Some(Ok(Event::Key(KeyEvent {
+                    kind: KeyEventKind::Release,
+                    ..*key
+                }))),
+                _ => None,
+            };
+            std::iter::once(Ok(event)).chain(release)
+        }));
+        let (sender, mut receiver) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
+
+        read_terminal_input(events, sender).await;
+
+        for event in expected {
+            assert_eq!(
+                receiver.recv().await.unwrap().unwrap(),
+                TerminalInputEvent::Raw(event)
+            );
+        }
         assert!(receiver.recv().await.is_none());
     }
 

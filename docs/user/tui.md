@@ -56,10 +56,12 @@ offers Send.
 
 Bracketed paste opens a confirmation preview. Some terminals deliver a paste
 as a paced sequence of ordinary key events instead; Xana uses a short adaptive
-quiet window to coalesce that bounded stream before interpreting Enter, so a
-multiline paste cannot become several submitted messages or redraw one
-character at a time. Xana removes terminal control characters, normalizes line
-endings and tabs, and bounds the result before it can enter the draft. A pasted
+quiet window to coalesce that bounded stream before interpreting Enter. Windows
+key-release notifications do not split the burst. A detected multiline paste
+opens one confirmation instead of submitting each line; delivery gaps longer
+than the quiet window cannot be distinguished from ordinary typing. Xana
+removes terminal control characters, normalizes line endings and tabs, and bounds
+the result before it can enter the draft. A pasted
 `/command` remains untrusted text and is never executed by the paste event.
 Enter confirms the preview; Esc discards it.
 
