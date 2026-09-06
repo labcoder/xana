@@ -68,8 +68,9 @@ may be arbitrary synthetic text, but discard them before submitting.
    and back, and confirm the draft, scroll anchor and tail-follow behavior.
 2. Submit `fixture:slow`. During its roughly 24-second stream, browse older
    history, resize and inspect Activity. Clear any selection before TUI Ctrl+C,
-   or use `/interrupt`; Desktop uses Interrupt or Ctrl+period. Confirm the exact
-   Run reaches a cancelled terminal state, then submit `fixture:next`. Record
+   or use `/interrupt`; Desktop uses Interrupt or Ctrl+period. Confirm streaming
+   stops and the exact operation reports its outcome (native interruption can
+   retain a recoverable Suspended operation), then submit `fixture:next`. Record
    whether it completes without duplicate output or a stuck busy state.
 3. With the client idle, invoke Compact Conversation (`/compact` in TUI). Inspect
    progress and, if still running, interrupt it; then submit `fixture:next`.
