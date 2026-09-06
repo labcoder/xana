@@ -261,12 +261,18 @@ impl ChildSupervisor {
             self.parent.thread_id,
             &prepared.resolved,
         );
-        let admission = ChildAdmission::new(
+        let mut admission = ChildAdmission::new(
             attribution,
             &request.task,
             request.result_schema,
             &prepared.resolved,
         );
+        request
+            .restrictions
+            .completion
+            .validate()
+            .map_err(|error| SupervisorError::Admission(error.to_string()))?;
+        admission.completion = request.restrictions.completion.clone();
         let reservation = ReservationRequest {
             tool_rounds: prepared.resolved.max_tool_rounds,
             context_tokens: prepared.resolved.orchestration.max_context_tokens,

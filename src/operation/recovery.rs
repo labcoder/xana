@@ -225,6 +225,7 @@ fn append_recovery_result(
         invocation_id: intent.invocation_id,
         result_id,
         outcome,
+        command_status: None,
     };
     let completed = match &result.outcome {
         InvocationOutcome::Completed { output } => Some(output.clone()),

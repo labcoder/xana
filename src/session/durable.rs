@@ -528,6 +528,62 @@ impl DurableSession {
         self.owner
     }
 
+    pub(crate) fn completion_evidence(&self) -> &[crate::completion_evidence::CompletionEvidence] {
+        &self.restored.completion_evidence
+    }
+
+    pub(crate) fn completion_artifact_store(&self) -> ArtifactStore {
+        self.artifacts.clone()
+    }
+
+    /// A planned-call rejection has a committed assistant request but no
+    /// invocation intent (and no effect). It must not disappear from completion
+    /// merely because collection primarily follows dispatched invocations.
+    pub(crate) fn completion_calls_prepared(
+        &self,
+        operation: &crate::session::RestoredOperation,
+    ) -> bool {
+        let limit = crate::completion_evidence::MAX_EVIDENCE_ITEMS;
+        if operation.steps.len() > limit || operation.intents.len() > limit {
+            return false;
+        }
+        let mut requested = std::collections::BTreeSet::new();
+        for (step, entry) in &operation.steps {
+            let Some(entry) = self.restored.entries.get(entry) else {
+                return false;
+            };
+            if entry.message.role != crate::message::Role::Assistant {
+                return false;
+            }
+            for content in &entry.message.content {
+                if let crate::message::ContentBlock::ToolCall(call) = content
+                    && (requested.len() >= limit || !requested.insert((*step, call.id.as_str())))
+                {
+                    return false;
+                }
+            }
+        }
+        let prepared = operation
+            .intents
+            .values()
+            .map(|intent| (intent.step_id, intent.model_call_id.as_str()))
+            .collect::<std::collections::BTreeSet<_>>();
+        prepared.len() == operation.intents.len() && requested == prepared
+    }
+
+    pub(crate) fn completion_children(
+        &self,
+        parent: OperationId,
+    ) -> Vec<super::reduce::RestoredChild> {
+        self.restored
+            .children
+            .values()
+            .filter(|child| child.handle.admission.attribution.parent_operation_id == parent)
+            .take(65)
+            .cloned()
+            .collect()
+    }
+
     pub(crate) fn started_orchestration_plans(
         &self,
     ) -> Vec<crate::orchestration::OrchestrationPlanStart> {

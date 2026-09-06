@@ -291,6 +291,7 @@ fn provider_failure(kind: ProviderErrorKind) -> HelperFailure {
         ProviderErrorKind::InvalidStream => HelperFailure::InvalidStream,
         ProviderErrorKind::Timeout => HelperFailure::Timeout,
         ProviderErrorKind::OutputLimit => HelperFailure::OutputTokens,
+        #[cfg(test)]
         ProviderErrorKind::Other => HelperFailure::ProviderOther,
     }
 }

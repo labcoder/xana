@@ -107,6 +107,11 @@ impl ChildExecutionOwnerFactory {
 
 impl ChildExecutionFactory for ChildExecutionOwnerFactory {
     fn prepare(&self, request: &SpawnAgentRequest) -> Result<PreparedChild, String> {
+        request
+            .restrictions
+            .completion
+            .validate()
+            .map_err(|error| error.to_string())?;
         let mut resolved = RouteResolver::new(&self.registry, &self.models)
             .resolve(request.route.as_deref())
             .map_err(|error| error.to_string())?;
@@ -136,6 +141,11 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
                 )
             })?;
         if resolved.owner == ExecutionOwner::Codex {
+            if !request.restrictions.completion.conditions.is_empty() {
+                return Err(
+                    "managed child cannot independently verify native acceptance conditions".into(),
+                );
+            }
             let task = managed_task(request)?;
             if estimate_tokens(&task) > resolved.orchestration.max_context_tokens {
                 return Err(format!(
@@ -276,7 +286,11 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
         Ok(PreparedChild::new(
             resolved,
             policy,
-            Box::new(NativeChildExecution { agent, history }),
+            Box::new(NativeChildExecution {
+                agent,
+                history,
+                completion: request.restrictions.completion.clone(),
+            }),
         ))
     }
 }
@@ -296,6 +310,7 @@ fn managed_task(request: &SpawnAgentRequest) -> Result<String, String> {
 struct NativeChildExecution {
     agent: Agent,
     history: Vec<Message>,
+    completion: crate::completion_evidence::CompletionContract,
 }
 
 impl ChildExecution for NativeChildExecution {
@@ -339,7 +354,18 @@ impl ChildExecution for NativeChildExecution {
                 Ok(text) => text,
                 Err(error) => return ChildExecutionOutcome::Failed(error),
             };
+            let mut evidence = crate::completion_evidence::CompletionEvidence::new(
+                context.operation_id,
+                crate::completion_evidence::WorkKind::Child,
+                crate::completion_evidence::EvidenceOwner::Native,
+                crate::completion_evidence::CompletionClaim::Completed,
+                self.completion,
+            )
+            .expect("validated child contract");
+            evidence.delivered(text.as_bytes());
+            crate::completion_evidence::from_messages(&mut evidence, &history);
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: Some(Box::new(evidence)),
                 text,
                 usage: ChildUsage::Measured {
                     input_tokens: result.usage.input_tokens,
@@ -630,6 +656,7 @@ mod tests {
                     },
                 });
                 ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                    evidence: None,
                     text: "managed result".to_owned(),
                     usage: ChildUsage::Measured {
                         input_tokens: Some(9),

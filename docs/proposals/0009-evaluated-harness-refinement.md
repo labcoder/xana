@@ -104,12 +104,21 @@ validation crosses the authority and containment boundaries in
 
 ## Open questions
 
-- Which session-local memory changes could ever qualify for automatic
-  promotion?
+- Which additional memory changes, beyond the narrow accepted stated-fact policy,
+  could qualify for automatic promotion under an independent evaluator?
 - How are evaluator and task-set revisions pinned and reproduced?
 - What held-out Xana task suite resists leakage and reward shaping?
 - Which conflicts require manual merge rather than patch rejection?
 - How long are inactive, rejected, and rolled-back revisions retained?
+
+## Relationship to implemented behavior
+
+The [scoped personal-memory contract](0023-scoped-personal-memory-and-context.md)
+now provides governed memory candidates and inert Skill drafts with exact-revision
+review, forgetting fences and undo. [Finite completion evidence](../architecture/completion-evidence.md)
+records observed checks, effects and outputs without a model judge. These narrow
+workflows do not implement or accept the general evaluator, shadow/canary rollout
+or automatic executable promotion proposed here. This proposal remains Proposed.
 
 ## Research basis
 

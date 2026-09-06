@@ -419,9 +419,10 @@ pub(super) fn read_log_records(path: &Path, limit: usize) -> Result<Vec<String>>
         if !meta.within_limit {
             continue;
         }
-        let Ok(record) = serde_json::from_slice::<DiagnosticRecord>(&line) else {
+        let Ok(mut record) = serde_json::from_slice::<DiagnosticRecord>(&line) else {
             continue;
         };
+        record.redact_identifiers();
         let encoded = serde_json::to_string(&record)?;
         if retained.len() == limit {
             retained.pop_front();
@@ -487,7 +488,13 @@ pub(super) fn read_crash_record(path: &Path) -> Result<Vec<String>> {
     File::open(path)?
         .take(1024 * 1024)
         .read_to_end(&mut bytes)?;
-    let report: CrashReport =
+    let mut report: CrashReport =
         serde_json::from_slice(&bytes).context("selected crash report is invalid or truncated")?;
+    report.thread = sanitize_identifier(&report.thread);
+    report.location_hash = report.location_hash.as_deref().map(sanitize_identifier);
+    report.backtrace_hash = sanitize_identifier(&report.backtrace_hash);
+    for record in &mut report.breadcrumbs {
+        record.redact_identifiers();
+    }
     Ok(vec![serde_json::to_string_pretty(&report)?])
 }

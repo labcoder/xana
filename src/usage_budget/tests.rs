@@ -24,6 +24,89 @@ fn request(root: &str, id: &str) -> Admission {
 }
 
 #[test]
+fn remaining_allowance_uses_every_enforced_partition_without_hydrating_history() {
+    for partition in [
+        "day_requests",
+        "root_requests",
+        "headroom",
+        "day_tokens",
+        "root_tokens",
+        "background_tokens",
+        "job_tokens",
+    ] {
+        let (_dir, store, _) = home();
+        let mut policy = BudgetPolicy::default();
+        let mut admission = request("root", "request");
+        match partition {
+            "day_requests" => {
+                policy.daily_requests = 1;
+                policy.foreground_request_reserve = 0;
+            }
+            "root_requests" => policy.root_requests = 1,
+            "headroom" => {
+                policy.daily_requests = 2;
+                policy.foreground_request_reserve = 1;
+                admission.class = WorkClass::Background;
+            }
+            "day_tokens" => policy.daily_tokens = Some(100),
+            "root_tokens" => policy.root_tokens = Some(100),
+            "background_tokens" => {
+                policy.background_daily_tokens = 100;
+                admission.class = WorkClass::Background;
+            }
+            "job_tokens" => {
+                policy.background_job_tokens = 100;
+                admission.class = WorkClass::Background;
+            }
+            _ => unreachable!(),
+        }
+        store.set_usage_policy(&policy).unwrap();
+        store.reserve_usage(&admission, 100).unwrap();
+        let remaining = store
+            .usage_remaining("root", "job", admission.class, 50)
+            .unwrap();
+        if partition.ends_with("tokens") {
+            assert_eq!(remaining.tokens, Some(0), "{partition}");
+        } else {
+            assert_eq!(remaining.requests, 0, "{partition}");
+        }
+    }
+    let (_dir, store, _) = home();
+    let remaining = store
+        .usage_remaining("root", "job", WorkClass::Foreground, 100)
+        .unwrap();
+    assert_eq!(remaining.tokens, None);
+    assert_eq!(remaining.requests, BudgetPolicy::default().root_requests);
+    store
+        .set_usage_policy(&BudgetPolicy {
+            root_tokens: Some(200),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .reserve_usage(&request("root", "observed"), 100)
+        .unwrap();
+    store
+        .settle_usage(
+            "observed",
+            &Receipt {
+                cumulative: None,
+                total_tokens: Some(40),
+                reported_cost_microunits: Some(9),
+                outcome: Outcome::Completed,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        store
+            .usage_remaining("root", "job", WorkClass::Foreground, 100)
+            .unwrap()
+            .tokens,
+        Some(160)
+    );
+}
+
+#[test]
 fn concurrent_owners_cannot_dispatch_past_a_shared_cap() {
     let (dir, store, key) = home();
     store

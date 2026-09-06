@@ -58,6 +58,7 @@ fn context_settlement_preserves_a_followup_without_replacing_its_reservation() {
             worker.context_operations = 1;
             worker.context_bytes = 16;
             worker.context_receipt = Some(ContextWorkReceipt {
+                completion: None,
                 id: reservation,
                 state: ContextWorkState::Reserved,
                 verified_bytes: 16,

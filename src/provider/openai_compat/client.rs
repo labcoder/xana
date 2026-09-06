@@ -10,6 +10,7 @@ use super::{
 };
 use crate::{
     credential::SecretString,
+    failure::{FailureCategory, FailureDetails, FailureStage, MetadataDigest},
     identity::StepId,
     message::Message,
     provider::{
@@ -50,6 +51,7 @@ pub(crate) struct OpenAiCompatError {
     pub(crate) kind: OpenAiCompatErrorKind,
     endpoint: String,
     source: OpenAiCompatErrorSource,
+    response: Option<(u16, Option<MetadataDigest>)>,
 }
 
 impl OpenAiCompatError {
@@ -58,6 +60,7 @@ impl OpenAiCompatError {
             kind: OpenAiCompatErrorKind::RequestConversion,
             endpoint: endpoint.to_owned(),
             source: OpenAiCompatErrorSource::Conversion(source),
+            response: None,
         }
     }
 
@@ -66,6 +69,7 @@ impl OpenAiCompatError {
             kind,
             endpoint: endpoint.to_owned(),
             source: OpenAiCompatErrorSource::Http(source),
+            response: None,
         }
     }
 
@@ -74,6 +78,7 @@ impl OpenAiCompatError {
             kind: OpenAiCompatErrorKind::Stream,
             endpoint: endpoint.to_owned(),
             source: OpenAiCompatErrorSource::Stream(source),
+            response: None,
         }
     }
 
@@ -82,7 +87,64 @@ impl OpenAiCompatError {
             kind: OpenAiCompatErrorKind::Timeout,
             endpoint: endpoint.to_owned(),
             source: OpenAiCompatErrorSource::Timeout(phase),
+            response: None,
         }
+    }
+
+    fn with_response(mut self, response: (u16, Option<MetadataDigest>)) -> Self {
+        self.response = Some(response);
+        self
+    }
+
+    fn failure(&self) -> FailureDetails {
+        let stage = if self.response.is_some() {
+            FailureStage::ProviderStream
+        } else {
+            FailureStage::ProviderConnect
+        };
+        let detail = match &self.source {
+            OpenAiCompatErrorSource::Http(error) if error.status().is_some() => {
+                return FailureDetails::rejection(
+                    error.status().unwrap().as_u16(),
+                    self.response.and_then(|(_, id)| id),
+                );
+            }
+            OpenAiCompatErrorSource::Http(error) if error.is_timeout() => FailureDetails::new(
+                if error.is_connect() {
+                    FailureCategory::ConnectTimeout
+                } else {
+                    FailureCategory::ReadTimeout
+                },
+                stage,
+            ),
+            OpenAiCompatErrorSource::Http(_) => {
+                FailureDetails::new(FailureCategory::Transport, stage)
+            }
+            OpenAiCompatErrorSource::Timeout(_) => FailureDetails::new(
+                FailureCategory::ReadTimeout,
+                if self.response.is_some() {
+                    FailureStage::ProviderStream
+                } else {
+                    FailureStage::ProviderResponse
+                },
+            ),
+            OpenAiCompatErrorSource::Conversion(_) => FailureDetails::new(
+                FailureCategory::InvalidRequest,
+                FailureStage::RequestPreparation,
+            ),
+            OpenAiCompatErrorSource::Stream(StreamError::InvalidJson(_)) => FailureDetails::new(
+                FailureCategory::InvalidResponse,
+                FailureStage::ProviderStream,
+            ),
+            OpenAiCompatErrorSource::Stream(_) => {
+                FailureDetails::new(FailureCategory::BrokenStream, FailureStage::ProviderStream)
+            }
+            OpenAiCompatErrorSource::OutputLimit => {
+                FailureDetails::new(FailureCategory::OutputLimit, FailureStage::ProviderStream)
+            }
+        };
+        self.response
+            .map_or(detail, |(status, id)| detail.response(status, id))
     }
 
     fn detail(&self) -> String {
@@ -164,6 +226,8 @@ pub(crate) struct OpenAiCompatClient {
     media: Option<MediaResolver>,
     include_usage: bool,
     helper_dialect: HelperDialect,
+    response_start_timeout: Duration,
+    stream_idle_timeout: Duration,
 }
 
 impl OpenAiCompatClient {
@@ -191,7 +255,20 @@ impl OpenAiCompatClient {
             media: None,
             include_usage: false,
             helper_dialect: HelperDialect::Generic,
+            response_start_timeout: RESPONSE_START_TIMEOUT,
+            stream_idle_timeout: STREAM_IDLE_TIMEOUT,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_fixture_timeouts(
+        mut self,
+        response_start: Duration,
+        idle: Duration,
+    ) -> Self {
+        self.response_start_timeout = response_start;
+        self.stream_idle_timeout = idle;
+        self
     }
 
     pub(crate) fn with_bearer_and_attribution(
@@ -306,127 +383,149 @@ impl OpenAiCompatClient {
         for (name, value) in &self.attribution {
             builder = builder.header(name, value);
         }
-        let response = tokio::time::timeout(RESPONSE_START_TIMEOUT, builder.json(&request).send())
-            .await
-            .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "response start"))?
-            .map_err(|source| {
-                OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
-            })?
-            .error_for_status()
-            .map_err(|source| {
-                OpenAiCompatError::http(OpenAiCompatErrorKind::HttpStatus, &self.endpoint, source)
-            })?;
+        let response =
+            tokio::time::timeout(self.response_start_timeout, builder.json(&request).send())
+                .await
+                .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "response start"))?
+                .map_err(|source| {
+                    OpenAiCompatError::http(
+                        OpenAiCompatErrorKind::Transport,
+                        &self.endpoint,
+                        source,
+                    )
+                })?;
+        let response_metadata = (
+            response.status().as_u16(),
+            ["x-request-id", "x-openrouter-generation-id"]
+                .into_iter()
+                .find_map(|name| response.headers().get(name))
+                .and_then(|value| value.to_str().ok())
+                .and_then(MetadataDigest::request_id),
+        );
+        response.error_for_status_ref().map_err(|source| {
+            OpenAiCompatError::http(OpenAiCompatErrorKind::HttpStatus, &self.endpoint, source)
+                .with_response(response_metadata)
+        })?;
         let request_affinity = request_affinity(&response);
 
-        let mut bytes = response.bytes_stream();
-        let mut decoder = SseDecoder::default();
-        let mut accumulator = StreamAccumulator::default();
-        let mut done = false;
-        let mut output_limited = false;
-        let mut unexpected_reasoning = false;
+        let result = async {
+            let mut bytes = response.bytes_stream();
+            let mut decoder = SseDecoder::default();
+            let mut accumulator = StreamAccumulator::default();
+            let mut done = false;
+            let mut output_limited = false;
+            let mut unexpected_reasoning = false;
 
-        while let Some(chunk) = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next())
-            .await
-            .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "stream idle"))?
-        {
-            let chunk = chunk.map_err(|source| {
-                OpenAiCompatError::http(OpenAiCompatErrorKind::Transport, &self.endpoint, source)
-            })?;
-            for item in decoder
-                .push(&chunk)
-                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+            while let Some(chunk) = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
+                .await
+                .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "stream idle"))?
             {
-                match item {
-                    SseItem::Done => {
-                        done = true;
-                        break;
-                    }
-                    SseItem::Data(data) => {
-                        let response: WireStreamResponse =
-                            serde_json::from_slice(&data).map_err(|source| {
-                                OpenAiCompatError::stream(
-                                    &self.endpoint,
-                                    StreamError::InvalidJson(source),
-                                )
-                            })?;
-                        let has_usage = response.usage.is_some();
-                        if let Some(usage) = response.usage {
-                            let prompt_details = usage.prompt_tokens_details.unwrap_or_default();
-                            let completion_details =
-                                usage.completion_tokens_details.unwrap_or_default();
-                            deltas.usage(ProviderUsage {
-                                input_tokens: usage.prompt_tokens,
-                                cached_input_tokens: prompt_details.cached_tokens,
-                                cache_write_input_tokens: prompt_details.cache_write_tokens,
-                                output_tokens: usage.completion_tokens,
-                                reasoning_tokens: completion_details.reasoning_tokens,
-                                tool_tokens: None,
-                                total_tokens: usage.total_tokens,
-                                cost_microunits: usage.cost.and_then(usd_microunits),
-                                prompt_bytes,
-                                tool_schema_bytes,
-                                request_affinity,
-                            });
+                let chunk = chunk.map_err(|source| {
+                    OpenAiCompatError::http(
+                        OpenAiCompatErrorKind::Transport,
+                        &self.endpoint,
+                        source,
+                    )
+                })?;
+                for item in decoder
+                    .push(&chunk)
+                    .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+                {
+                    match item {
+                        SseItem::Done => {
+                            done = true;
+                            break;
                         }
-                        let Some(choice) = response.choices.into_iter().next() else {
-                            if has_usage {
-                                continue;
+                        SseItem::Data(data) => {
+                            let response: WireStreamResponse = serde_json::from_slice(&data)
+                                .map_err(|source| {
+                                    OpenAiCompatError::stream(
+                                        &self.endpoint,
+                                        StreamError::InvalidJson(source),
+                                    )
+                                })?;
+                            let has_usage = response.usage.is_some();
+                            if let Some(usage) = response.usage {
+                                let prompt_details =
+                                    usage.prompt_tokens_details.unwrap_or_default();
+                                let completion_details =
+                                    usage.completion_tokens_details.unwrap_or_default();
+                                deltas.usage(ProviderUsage {
+                                    input_tokens: usage.prompt_tokens,
+                                    cached_input_tokens: prompt_details.cached_tokens,
+                                    cache_write_input_tokens: prompt_details.cache_write_tokens,
+                                    output_tokens: usage.completion_tokens,
+                                    reasoning_tokens: completion_details.reasoning_tokens,
+                                    tool_tokens: None,
+                                    total_tokens: usage.total_tokens,
+                                    cost_microunits: usage.cost.and_then(usd_microunits),
+                                    prompt_bytes,
+                                    tool_schema_bytes,
+                                    request_affinity,
+                                });
                             }
-                            return Err(OpenAiCompatError::stream(
-                                &self.endpoint,
-                                StreamError::MissingChoice,
-                            ));
-                        };
-                        output_limited |= choice.finish_reason.as_deref() == Some("length");
-                        let mut delta = choice.delta;
-                        if let Some(reasoning) =
-                            delta.reasoning.take().filter(|text| !text.is_empty())
-                        {
-                            unexpected_reasoning |=
-                                helper.is_some_and(|policy| policy.disable_reasoning);
-                            deltas.reasoning_delta(step_id, &reasoning);
-                        }
-                        for fragment in accumulator
-                            .apply(delta)
-                            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
-                        {
-                            deltas.text_delta(step_id, &fragment);
+                            let Some(choice) = response.choices.into_iter().next() else {
+                                if has_usage {
+                                    continue;
+                                }
+                                return Err(OpenAiCompatError::stream(
+                                    &self.endpoint,
+                                    StreamError::MissingChoice,
+                                ));
+                            };
+                            output_limited |= choice.finish_reason.as_deref() == Some("length");
+                            let mut delta = choice.delta;
+                            if let Some(reasoning) =
+                                delta.reasoning.take().filter(|text| !text.is_empty())
+                            {
+                                unexpected_reasoning |=
+                                    helper.is_some_and(|policy| policy.disable_reasoning);
+                                deltas.reasoning_delta(step_id, &reasoning);
+                            }
+                            for fragment in accumulator.apply(delta).map_err(|source| {
+                                OpenAiCompatError::stream(&self.endpoint, source)
+                            })? {
+                                deltas.text_delta(step_id, &fragment);
+                            }
                         }
                     }
                 }
+                if done {
+                    break;
+                }
             }
-            if done {
-                break;
-            }
-        }
 
-        decoder
-            .finish()
-            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
-        if !done {
-            return Err(OpenAiCompatError::stream(
-                &self.endpoint,
-                StreamError::MissingDone,
-            ));
+            decoder
+                .finish()
+                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
+            if !done {
+                return Err(OpenAiCompatError::stream(
+                    &self.endpoint,
+                    StreamError::MissingDone,
+                ));
+            }
+            // Read through the terminal usage event before rejecting truncation.
+            // Even syntactically valid JSON at the cap is not a completed helper.
+            if helper.is_some() && output_limited {
+                return Err(OpenAiCompatError {
+                    kind: OpenAiCompatErrorKind::OutputLimit,
+                    endpoint: self.endpoint.clone(),
+                    source: OpenAiCompatErrorSource::OutputLimit,
+                    response: None,
+                });
+            }
+            if unexpected_reasoning {
+                return Err(OpenAiCompatError::stream(
+                    &self.endpoint,
+                    StreamError::UnexpectedHelperReasoning,
+                ));
+            }
+            accumulator
+                .finish()
+                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))
         }
-        // Read through the terminal usage event before rejecting truncation.
-        // Even syntactically valid JSON at the cap is not a completed helper.
-        if helper.is_some() && output_limited {
-            return Err(OpenAiCompatError {
-                kind: OpenAiCompatErrorKind::OutputLimit,
-                endpoint: self.endpoint.clone(),
-                source: OpenAiCompatErrorSource::OutputLimit,
-            });
-        }
-        if unexpected_reasoning {
-            return Err(OpenAiCompatError::stream(
-                &self.endpoint,
-                StreamError::UnexpectedHelperReasoning,
-            ));
-        }
-        accumulator
-            .finish()
-            .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))
+        .await;
+        result.map_err(|error| error.with_response(response_metadata))
     }
 
     #[cfg(test)]
@@ -515,7 +614,8 @@ fn provider_error(error: OpenAiCompatError) -> ProviderError {
         OpenAiCompatErrorKind::Timeout => ProviderErrorKind::Timeout,
         OpenAiCompatErrorKind::OutputLimit => ProviderErrorKind::OutputLimit,
     };
-    ProviderError::classified(kind, error.to_string())
+    let failure = error.failure();
+    ProviderError::classified(kind, error.to_string()).with_failure(failure)
 }
 
 pub(super) fn chat_endpoint(base_url: &str) -> String {

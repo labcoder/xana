@@ -35,6 +35,9 @@ pub(crate) struct ToolResult {
     /// Registered immutable evidence, never inferred from provider text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) artifact: Option<Box<crate::artifact::ArtifactRecord>>,
+    /// Only the built-in command adapter supplies this observed process status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) command_status: Option<crate::completion_evidence::CommandStatus>,
 }
 
 impl ToolResult {
@@ -44,6 +47,7 @@ impl ToolResult {
             output: output.into(),
             status: ToolResultStatus::Success,
             artifact: None,
+            command_status: None,
         }
     }
 
@@ -53,6 +57,7 @@ impl ToolResult {
             output: output.into(),
             status: ToolResultStatus::Error,
             artifact: None,
+            command_status: None,
         }
     }
 }

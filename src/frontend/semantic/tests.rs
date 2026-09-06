@@ -518,6 +518,7 @@ fn completion_receipt_binds_execution_identity_and_bounded_evidence() {
     let conversation_id = ConversationId::for_native(SessionId::new());
     let run_id = OperationId::new();
     let receipt = CompletionReceiptV1 {
+        evidence: None,
         id: Uuid::new_v4(),
         conversation_id,
         run_id,

@@ -44,6 +44,9 @@ pub(crate) struct RestoredSession {
     pub(crate) views: BTreeMap<ContextViewId, ContextViewRecord>,
     pub(crate) named_context: BTreeMap<String, (ContextId, u64)>,
     pub(crate) operation_details: BTreeMap<OperationId, RestoredOperation>,
+    /// Latest bounded completion receipts survive disposable execution eviction.
+    #[serde(default)]
+    pub(crate) completion_evidence: Vec<crate::completion_evidence::CompletionEvidence>,
     pub(crate) named_values: BTreeMap<NamedValueId, NamedValueRecord>,
     pub(crate) orchestration_plans:
         BTreeMap<OrchestrationPlanId, crate::orchestration::OrchestrationPlanStart>,
@@ -127,6 +130,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         views: BTreeMap::new(),
         named_context: BTreeMap::new(),
         operation_details: BTreeMap::new(),
+        completion_evidence: Vec::new(),
         named_values: BTreeMap::new(),
         orchestration_plans: BTreeMap::new(),
         children: BTreeMap::new(),
@@ -312,7 +316,22 @@ pub(crate) fn validate_envelope_with_compaction_proof(
             operation_id,
             thread_id,
             input_entry_id,
+        }
+        | SessionRecord::FiniteOperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+            ..
         } => {
+            if let SessionRecord::FiniteOperationAccepted { completion, .. } = &envelope.record
+                && (completion.generation != *operation_id
+                    || !crate::completion_evidence::valid_transition(None, completion)
+                    || !completion_capacity(state, *operation_id))
+            {
+                return Err(ReductionError::InvalidCompletionEvidence {
+                    operation: *operation_id,
+                });
+            }
             if *thread_id != state.thread_id {
                 Err(ReductionError::UnknownThread { thread: *thread_id })
             } else if !state.entries.contains_key(input_entry_id) {
@@ -625,6 +644,25 @@ pub(crate) fn validate_envelope_with_compaction_proof(
         SessionRecord::ConversationCompacted { checkpoint } => {
             validate_compaction_checkpoint(state, checkpoint, source_proof)
         }
+        SessionRecord::CompletionEvidenceRecorded { evidence } => {
+            let known = state.operation_details.contains_key(&evidence.generation)
+                || state.children.values().any(|child| {
+                    child.handle.admission.attribution.operation_id == evidence.generation
+                });
+            let previous = state
+                .completion_evidence
+                .iter()
+                .find(|previous| previous.generation == evidence.generation);
+            if !known
+                || !crate::completion_evidence::valid_transition(previous, evidence)
+                || !completion_capacity(state, evidence.generation)
+            {
+                return Err(ReductionError::InvalidCompletionEvidence {
+                    operation: evidence.generation,
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -645,6 +683,9 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             state.operations.insert(*operation_id, *next);
         }
         SessionRecord::PermissionAudited { fact } => state.audits.push(fact.clone()),
+        SessionRecord::CompletionEvidenceRecorded { evidence } => {
+            retain_completion(state, evidence);
+        }
         SessionRecord::ArtifactRegistered { artifact } => {
             state
                 .artifacts
@@ -671,6 +712,12 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             operation_id,
             thread_id,
             input_entry_id,
+        }
+        | SessionRecord::FiniteOperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+            ..
         } => {
             state.operation_details.insert(
                 *operation_id,
@@ -692,6 +739,9 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             state
                 .operations
                 .insert(*operation_id, OperationState::Running);
+            if let SessionRecord::FiniteOperationAccepted { completion, .. } = record {
+                retain_completion(state, completion);
+            }
         }
         SessionRecord::StepStarted {
             operation_id,
@@ -834,6 +884,41 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             state.compactions.push(checkpoint.clone());
         }
     }
+}
+
+fn completion_inflight(state: &RestoredSession, generation: OperationId) -> bool {
+    state
+        .operation_details
+        .get(&generation)
+        .is_some_and(|operation| operation.finished.is_none())
+        || state.children.values().any(|child| {
+            child.handle.admission.attribution.operation_id == generation && child.report.is_none()
+        })
+}
+
+fn completion_capacity(state: &RestoredSession, generation: OperationId) -> bool {
+    state.completion_evidence.len() < 128
+        || state.completion_evidence.iter().any(|item| {
+            item.generation == generation || !completion_inflight(state, item.generation)
+        })
+}
+
+fn retain_completion(
+    state: &mut RestoredSession,
+    evidence: &crate::completion_evidence::CompletionEvidence,
+) {
+    state
+        .completion_evidence
+        .retain(|previous| previous.generation != evidence.generation);
+    if state.completion_evidence.len() >= 128 {
+        let index = state
+            .completion_evidence
+            .iter()
+            .position(|item| !completion_inflight(state, item.generation))
+            .expect("validated completion capacity");
+        state.completion_evidence.remove(index);
+    }
+    state.completion_evidence.push(evidence.clone());
 }
 
 fn validate_compaction_checkpoint(
@@ -995,7 +1080,28 @@ fn valid_child_report(
     max_inline_bytes: usize,
     max_artifact_bytes: usize,
 ) -> bool {
+    if let Some(evidence) = &report.evidence
+        && (evidence.generation != report.attribution.operation_id
+            || evidence.validate().is_err()
+            || !state
+                .completion_evidence
+                .iter()
+                .any(|saved| saved == evidence))
+    {
+        return false;
+    }
+    let rejected_completion = report.status == ChildTerminalStatus::Failed
+        && report.output.is_some()
+        && report
+            .error
+            .as_ref()
+            .is_some_and(|error| !error.is_empty() && error.len() <= max_inline_bytes)
+        && report.evidence.as_ref().is_some_and(|evidence| {
+            evidence.claim == crate::completion_evidence::CompletionClaim::Completed
+                && !evidence.supported()
+        });
     let content = match report.status {
+        ChildTerminalStatus::Failed if rejected_completion => report.output.as_deref(),
         ChildTerminalStatus::Completed if report.error.is_none() => report.output.as_deref(),
         ChildTerminalStatus::Failed
         | ChildTerminalStatus::Cancelled
@@ -1020,7 +1126,7 @@ fn valid_child_report(
             byte_len,
             preview_byte_len,
         } => {
-            report.status == ChildTerminalStatus::Completed
+            (report.status == ChildTerminalStatus::Completed || rejected_completion)
                 && *preview_byte_len == content.len()
                 && *preview_byte_len <= max_inline_bytes
                 && usize::try_from(*byte_len)
@@ -1186,6 +1292,9 @@ fn valid_operation_transition(previous: Option<OperationState>, next: OperationS
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ReductionError {
+    InvalidCompletionEvidence {
+        operation: OperationId,
+    },
     MissingCreation,
     UnsupportedVersion(u32),
     WrongSession {

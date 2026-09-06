@@ -54,6 +54,18 @@ uuid_id!(ProjectId);
 uuid_id!(CompactionId);
 uuid_id!(RoundBudgetId);
 
+impl OperationId {
+    pub(crate) fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
+impl ConversationId {
+    pub(crate) fn as_uuid(self) -> Uuid {
+        self.0
+    }
+}
+
 impl Default for OrchestrationPlanId {
     fn default() -> Self {
         Self::new()

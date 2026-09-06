@@ -150,6 +150,15 @@ pub(super) fn details(state: &TuiState) -> String {
                 receipt.unresolved_warnings.len(),
                 freshness_label(&receipt.freshness),
             );
+            let _ = writeln!(
+                output,
+                "{}",
+                receipt.evidence.as_ref().map_or_else(
+                    || "Task correctness evidence unavailable (legacy or vendor-owned execution)."
+                        .to_owned(),
+                    |evidence| evidence.summary(),
+                ),
+            );
         }
     }
 

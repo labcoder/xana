@@ -11,6 +11,7 @@ fn finish(store: &ProtectedStore, job: &Job, outcome: RunOutcome) {
         .autonomy_finish(
             running.id,
             RunReceipt {
+                completion: None,
                 occurrence: running.occurrence.unwrap(),
                 scheduled_at: running.next.at,
                 finished_at: running.next.at,

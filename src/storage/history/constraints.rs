@@ -26,7 +26,8 @@ pub(super) fn validate_registration_before(
         );
     }
     let unique = match record {
-        SessionRecord::OperationAccepted { operation_id, .. } => {
+        SessionRecord::OperationAccepted { operation_id, .. }
+        | SessionRecord::FiniteOperationAccepted { operation_id, .. } => {
             vec![
                 HistorySubject::Operation(*operation_id),
                 HistorySubject::ChildOperation(*operation_id),

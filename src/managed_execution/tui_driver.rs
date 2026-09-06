@@ -477,6 +477,22 @@ async fn run_actor(
                         &mut handler,
                     )
                     .await;
+                if let Err(error) = &result {
+                    let diagnostic = super::failure::diagnostic(
+                        error,
+                        Some(operation_id),
+                        thread.conversation_id(),
+                        &config,
+                    );
+                    crate::diagnostics::emit_terminal(diagnostic.clone());
+                    send_event(
+                        &events,
+                        ManagedTuiEvent::Notification(ManagedClientEvent::TerminalDiagnostic(
+                            diagnostic,
+                        )),
+                    )
+                    .await?;
+                }
                 clear_active(&active, operation_id);
                 drop(_foreground);
                 super::memory_context::maintain(config.memory.as_ref(), &mut memory_maintenance);

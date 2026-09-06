@@ -78,11 +78,19 @@ impl ConversationCommitSender {
                 tool_finished,
                 acknowledged,
             })
-            .map_err(|_| anyhow::anyhow!("durable conversation writer is unavailable"))?;
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error(
+                    "durable conversation writer is unavailable",
+                )
+            })?;
         acknowledgement
             .await
-            .map_err(|_| anyhow::anyhow!("durable conversation writer dropped its reply"))?
-            .map_err(anyhow::Error::msg)
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error(
+                    "durable conversation writer dropped its reply",
+                )
+            })?
+            .map_err(crate::failure::PersistenceFailure::error)
     }
 }
 
@@ -356,6 +364,10 @@ impl Agent {
         self
     }
 
+    pub(crate) fn completion_usage_budget(&self) -> Option<crate::usage_budget::UsageBudget> {
+        self.usage_budget.clone()
+    }
+
     pub(crate) fn new(
         provider: Box<dyn ConversationalProvider>,
         tools: ToolRegistry,
@@ -555,9 +567,28 @@ impl Agent {
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
                 .await;
+            if let Err(error) = &response {
+                // Publish the observed origin before accounting or a queued
+                // Shutdown can replace the operation's final owner outcome.
+                let (route, model) = self.diagnostic_route();
+                let diagnostic = crate::failure::TerminalDiagnostic::new(
+                    Some(operation_id),
+                    None,
+                    crate::failure::FailureOrigin::Native,
+                    crate::failure::TerminalOutcome::Failed,
+                    error.failure(),
+                )
+                .route(route, model);
+                let _ = events.send(AgentEvent::TerminalDiagnostic {
+                    diagnostic: diagnostic.clone(),
+                });
+                self.record_terminal(diagnostic);
+                self.telemetry
+                    .provider_failure(operation_id, error.failure());
+            }
             if let Some(reservation) = reservation {
                 let usage = delta_sink.request_usage();
-                reservation
+                let settlement = reservation
                     .settle(crate::usage_budget::Receipt {
                         cumulative: None,
                         total_tokens: usage.and_then(|value| value.total_tokens),
@@ -568,7 +599,15 @@ impl Agent {
                             crate::usage_budget::Outcome::Failed
                         },
                     })
-                    .context("could not settle provider usage; reservation remains charged")?;
+                    .context("could not settle provider usage; reservation remains charged");
+                if let Err(error) = settlement {
+                    self.record_storage_failure(operation_id, "provider-usage-settlement");
+                    // Keep the originating provider error typed if both failed;
+                    // accounting has its own content-free persistence diagnostic.
+                    if response.is_ok() {
+                        return Err(error);
+                    }
+                }
             }
             let assistant = response.map_err(|error| {
                 self.telemetry.record(RuntimeTelemetryEvent {
@@ -576,7 +615,9 @@ impl Agent {
                     kind: RuntimeTelemetryKind::ProviderFailed,
                     subject: format!("{:?}", error.kind()),
                 });
-                anyhow::anyhow!("provider {:?}: {error}", error.kind())
+                let kind = error.kind();
+                let display = format!("provider {kind:?}: {error}");
+                anyhow::Error::new(error).context(display)
             })?;
             let calls = requested_tools(&assistant);
 
@@ -587,13 +628,15 @@ impl Agent {
                 }));
             }
 
-            messages.push(assistant.clone());
             if let Some(durable) = &durable {
                 let assistant_entry_id = durable
                     .conversations
-                    .commit(operation_id, assistant, None)
+                    .commit(operation_id, assistant.clone(), None)
                     .await
                     .context("could not commit assistant tool request")?;
+                // A rejected ACK must not leave an uncommitted tool call in
+                // the next provider request. No tool has been dispatched yet.
+                messages.push(assistant);
                 durable
                     .operations
                     .append(
@@ -608,6 +651,8 @@ impl Agent {
                     .context("could not commit operation step")?;
                 self.boundary_observer
                     .reached(CrashSite::AfterStepStarted)?;
+            } else {
+                messages.push(assistant);
             }
 
             for call in calls {
@@ -689,6 +734,19 @@ impl Agent {
         self.tools.set_runtime_telemetry(telemetry.clone());
         self.telemetry = telemetry;
         self
+    }
+
+    pub(crate) fn record_terminal(&self, diagnostic: crate::failure::TerminalDiagnostic) {
+        self.telemetry.terminal(diagnostic);
+    }
+
+    pub(crate) fn diagnostic_route(&self) -> (Option<&str>, Option<&str>) {
+        self.prompt
+            .budget_plan
+            .as_ref()
+            .map_or((None, None), |plan| {
+                (Some(plan.connection.as_str()), Some(plan.model.as_str()))
+            })
     }
 
     pub(crate) fn with_output_recorder(

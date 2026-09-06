@@ -82,6 +82,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                     cli.continue_chat,
                     argument,
                     output,
+                    one_shot::acceptance_contract(cli.accept_command, cli.accept_cwd)?,
                 )
                 .await;
             }

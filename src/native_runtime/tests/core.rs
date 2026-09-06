@@ -16,7 +16,7 @@ fn read_file_call(id: &str) -> Message {
     }
 }
 
-fn persistent_tool_agent(
+pub(super) fn persistent_tool_agent(
     provider: Box<dyn ConversationalProvider>,
     workspace: std::path::PathBuf,
     max_tool_rounds: usize,
@@ -284,6 +284,7 @@ fn commands_and_events_round_trip_through_json() {
         },
         AgentEvent::InvocationResultCommitted {
             result: crate::operation::InvocationResultRecord {
+                command_status: None,
                 operation_id,
                 invocation_id,
                 result_id,
@@ -1401,6 +1402,13 @@ async fn active_root_turn_rejects_competition_and_honors_only_correlated_interru
         })
         .await
         .expect("correlated interrupt command");
+    assert!(matches!(
+        runtime.next_event().await,
+        Some(AgentEvent::TerminalDiagnostic { diagnostic })
+            if diagnostic.operation_id == Some(active)
+                && diagnostic.outcome == crate::failure::TerminalOutcome::Cancelled
+                && diagnostic.failure.category == crate::failure::FailureCategory::Cancelled
+    ));
     assert_eq!(
         runtime.next_event().await,
         Some(AgentEvent::OperationStateChanged {

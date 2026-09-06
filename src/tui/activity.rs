@@ -303,6 +303,17 @@ pub(super) fn push(cards: &mut VecDeque<ActivityCard>, card: ActivityCard) {
 
 pub(super) fn from_managed(event: &ManagedClientEvent) -> Option<ActivityCard> {
     let card = match event {
+        ManagedClientEvent::TerminalDiagnostic(diagnostic) => ActivityCard::new(
+            "Codex",
+            "terminal-diagnostic",
+            ActivityKind::Error,
+            ActivityState::Failed,
+            format!(
+                "{:?}: {:?}",
+                diagnostic.outcome, diagnostic.failure.category
+            ),
+            serde_json::to_string_pretty(diagnostic).unwrap_or_default(),
+        ),
         ManagedClientEvent::ThreadReady => ActivityCard::new(
             "Codex",
             "thread",

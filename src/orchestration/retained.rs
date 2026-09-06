@@ -46,6 +46,8 @@ pub(crate) struct FollowUp {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WorkerReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<crate::completion_evidence::CompletionEvidence>,
     pub(crate) execution: Uuid,
     pub(crate) follow_up: Uuid,
     pub(crate) child: Option<AgentId>,
@@ -130,15 +132,27 @@ impl RetainedWorker {
             "worker execution was replaced or is no longer running"
         );
         let (_, follow_up) = self.active.take().expect("verified active execution");
-        let status = report.map_or(ChildTerminalStatus::Interrupted, |r| r.status);
+        let status = report.map_or(ChildTerminalStatus::Interrupted, |report| {
+            if report.status == ChildTerminalStatus::Completed && !report.completion_supported() {
+                ChildTerminalStatus::Failed
+            } else {
+                report.status
+            }
+        });
+        let gate_summary = report
+            .and_then(|report| report.evidence.as_ref())
+            .filter(|evidence| !evidence.supported())
+            .map(|evidence| evidence.summary());
         let receipt = WorkerReceipt {
+            completion: report.and_then(|report| report.evidence.clone()),
             execution,
             follow_up: follow_up.id,
             child: report.map(|r| r.attribution.agent_id),
             status,
             summary: super::truncate_utf8(
-                report
-                    .and_then(|r| r.output.as_deref().or(r.error.as_deref()))
+                gate_summary
+                    .as_deref()
+                    .or_else(|| report.and_then(|r| r.output.as_deref().or(r.error.as_deref())))
                     .unwrap_or(reason),
                 2048,
             ),
@@ -151,6 +165,11 @@ impl RetainedWorker {
             (_, ChildTerminalStatus::Completed) => WorkerState::Idle,
             _ => WorkerState::NeedsReview,
         };
+        if report.is_some_and(|report| !report.completion_supported())
+            && !matches!(self.state, WorkerState::Stopped | WorkerState::Expired)
+        {
+            self.state = WorkerState::NeedsReview;
+        }
         self.last_receipt = Some(receipt.clone());
         Ok(receipt)
     }

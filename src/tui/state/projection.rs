@@ -29,6 +29,32 @@ impl TuiState {
             std::mem::swap(&mut self.messages, background);
         }
         match event {
+            AgentEvent::CompletionEvidenceRecorded {
+                operation_id,
+                evidence,
+            } => self.push_card(ActivityCard::new(
+                "Xana runtime",
+                format!("completion-{operation_id}"),
+                ActivityKind::Status,
+                if evidence.supported() {
+                    ActivityState::Complete
+                } else {
+                    ActivityState::Failed
+                },
+                evidence.summary(),
+                serde_json::to_string_pretty(evidence).unwrap_or_default(),
+            )),
+            AgentEvent::TerminalDiagnostic { diagnostic } => self.push_card(ActivityCard::new(
+                "Xana runtime",
+                "terminal-diagnostic",
+                ActivityKind::Error,
+                ActivityState::Failed,
+                format!(
+                    "{:?}: {:?}",
+                    diagnostic.outcome, diagnostic.failure.category
+                ),
+                serde_json::to_string_pretty(diagnostic).unwrap_or_default(),
+            )),
             AgentEvent::UserMessageCommitted {
                 operation_id,
                 message,
@@ -787,6 +813,7 @@ impl TuiState {
             format!("xana://completion/{}/{run_id}", execution.conversation_id).as_bytes(),
         );
         let receipt = CompletionReceiptV1 {
+            evidence: None,
             id,
             conversation_id: execution.conversation_id,
             run_id,

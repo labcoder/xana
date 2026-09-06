@@ -41,6 +41,7 @@ pub(crate) fn request(worker: &RetainedWorker, message: &FollowUp) -> SpawnAgent
         ),
         result_schema: worker.admission.result_schema,
         restrictions: ChildRestrictions {
+            completion: worker.admission.completion.clone(),
             permission_mode: Some(worker.admission.permission_mode),
             max_tool_rounds: Some(worker.admission.max_tool_rounds),
             deadline_seconds: Some(worker.admission.limits.deadline_seconds.min(120)),
@@ -360,9 +361,10 @@ pub(super) async fn run_with_factory(
         .context("retained child supervisor stopped unexpectedly")?;
     session.append_record(crate::session::SessionRecord::OperationFinished {
         operation_id: operation,
-        outcome: if result.as_ref().is_ok_and(|report| {
-            report.status == crate::orchestration::ChildTerminalStatus::Completed
-        }) {
+        outcome: if result
+            .as_ref()
+            .is_ok_and(|report| report.completion_supported())
+        {
             crate::native_runtime::OperationOutcome::Completed
         } else {
             crate::native_runtime::OperationOutcome::Failed

@@ -49,6 +49,8 @@ pub(crate) struct InvocationResultRecord {
     pub(crate) invocation_id: ToolInvocationId,
     pub(crate) result_id: ToolResultId,
     pub(crate) outcome: InvocationOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) command_status: Option<crate::completion_evidence::CommandStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,11 +153,17 @@ impl DurableOperationSender {
                 event: event.map(Box::new),
                 acknowledged,
             })
-            .map_err(|_| anyhow::anyhow!("durable operation writer is unavailable"))?;
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error("durable operation writer is unavailable")
+            })?;
         acknowledgement
             .await
-            .map_err(|_| anyhow::anyhow!("durable operation writer dropped its reply"))?
-            .map_err(anyhow::Error::msg)
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error(
+                    "durable operation writer dropped its reply",
+                )
+            })?
+            .map_err(crate::failure::PersistenceFailure::error)
     }
 
     async fn store_json(
@@ -168,11 +176,15 @@ impl DurableOperationSender {
                 value,
                 acknowledged,
             })
-            .map_err(|_| anyhow::anyhow!("durable value writer is unavailable"))?;
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error("durable value writer is unavailable")
+            })?;
         acknowledgement
             .await
-            .map_err(|_| anyhow::anyhow!("durable value writer dropped its reply"))?
-            .map_err(anyhow::Error::msg)
+            .map_err(|_| {
+                crate::failure::PersistenceFailure::error("durable value writer dropped its reply")
+            })?
+            .map_err(crate::failure::PersistenceFailure::error)
     }
 }
 
@@ -313,6 +325,8 @@ impl<'a> OperationExecutor<'a> {
             self.observer.reached(CrashSite::AfterEffectBeforeResult)?;
             match execution {
                 Ok(output) => {
+                    let command_status =
+                        ToolRegistry::command_status(&planned.definition.name, &output);
                     let (value, artifact) = self
                         .commits
                         .store_json(Value::String(output.clone()))
@@ -322,6 +336,7 @@ impl<'a> OperationExecutor<'a> {
                         output::for_model(output, &value),
                     );
                     result.artifact = artifact.map(Box::new);
+                    result.command_status = command_status;
                     (result, InvocationOutcome::Completed { output: value })
                 }
                 Err(error) => (
@@ -337,6 +352,7 @@ impl<'a> OperationExecutor<'a> {
             invocation_id,
             result_id,
             outcome,
+            command_status: tool_result.command_status,
         };
         self.commits
             .append(

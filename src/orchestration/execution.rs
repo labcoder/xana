@@ -45,6 +45,7 @@ pub(crate) struct ChildExecutionContext {
 pub(crate) struct ChildExecutionOutput {
     pub(crate) text: String,
     pub(crate) usage: ChildUsage,
+    pub(crate) evidence: Option<Box<crate::completion_evidence::CompletionEvidence>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

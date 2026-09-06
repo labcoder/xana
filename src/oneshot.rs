@@ -170,6 +170,16 @@ impl<'a> OneShotReporter<'a> {
         snapshot: &ClientSnapshot,
         run_id: OperationId,
     ) -> std::io::Result<()> {
+        if let Self::Text(output) = self
+            && let Some(evidence) = snapshot
+                .semantic
+                .completion_receipts
+                .iter()
+                .find(|receipt| receipt.run_id == run_id)
+                .and_then(|receipt| receipt.evidence.as_ref())
+        {
+            writeln!(output, "{}", evidence.summary())?;
+        }
         if let Self::StreamJson {
             output,
             sequence,

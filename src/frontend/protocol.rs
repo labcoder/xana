@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 12;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 13;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -70,6 +70,12 @@ impl ClientCommand {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ClientCommandValue {
+    SubmitFiniteTurn {
+        operation_id: OperationId,
+        input: String,
+        kind: crate::completion_evidence::WorkKind,
+        contract: crate::completion_evidence::CompletionContract,
+    },
     BrowserControl {
         action: crate::browser::BrowserControl,
     },
@@ -122,6 +128,17 @@ pub(crate) enum ClientCommandValue {
 impl From<RuntimeCommand> for ClientCommandValue {
     fn from(command: RuntimeCommand) -> Self {
         match command {
+            RuntimeCommand::SubmitFiniteTurn {
+                operation_id,
+                input,
+                kind,
+                contract,
+            } => Self::SubmitFiniteTurn {
+                operation_id,
+                input,
+                kind,
+                contract,
+            },
             RuntimeCommand::BrowserControl { action } => Self::BrowserControl { action },
             RuntimeCommand::SubmitTurn {
                 operation_id,
@@ -201,6 +218,17 @@ impl From<RuntimeCommand> for ClientCommandValue {
 impl From<ClientCommandValue> for RuntimeCommand {
     fn from(command: ClientCommandValue) -> Self {
         match command {
+            ClientCommandValue::SubmitFiniteTurn {
+                operation_id,
+                input,
+                kind,
+                contract,
+            } => Self::SubmitFiniteTurn {
+                operation_id,
+                input,
+                kind,
+                contract,
+            },
             ClientCommandValue::BrowserControl { action } => Self::BrowserControl { action },
             ClientCommandValue::SubmitTurn {
                 operation_id,
@@ -282,6 +310,7 @@ impl ClientCommandValue {
         match self {
             Self::BrowserControl { .. } => "browser.control.v1",
             Self::SubmitTurn { .. } => "turn.submit.v1",
+            Self::SubmitFiniteTurn { .. } => "turn.submit.v1",
             Self::ClearConversation => "conversation.clear.v1",
             Self::CompactConversation { .. } => "conversation.compact.v1",
             Self::ResumeOperation { .. } => "run.resume.v1",
@@ -318,6 +347,9 @@ impl ClientCommandValue {
             && images.len() > 8
         {
             return Err("a frontend turn may contain at most 8 images".to_owned());
+        }
+        if let Self::SubmitFiniteTurn { contract, .. } = self {
+            contract.validate().map_err(|error| error.to_string())?;
         }
         Ok(())
     }
@@ -386,6 +418,8 @@ impl From<&ChildInspection> for ChildSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct ClientSnapshot {
+    #[serde(default)]
+    pub(crate) terminal_diagnostics: Vec<crate::failure::TerminalDiagnostic>,
     pub(crate) version: u16,
     /// Last observation included in the snapshot. The initial embedded
     /// snapshot is captured before forwarding starts, so this is zero.
@@ -486,6 +520,7 @@ impl ClientSnapshot {
         let conversation_id = ConversationId::for_native(seed.session_id);
         Self {
             version: FRONTEND_PROTOCOL_VERSION,
+            terminal_diagnostics: Vec::new(),
             sequence: 0,
             session_id: seed.session_id,
             connection: bounded_text(seed.connection, MAX_OMISSION_LABEL_BYTES),
@@ -530,6 +565,58 @@ impl ClientSnapshot {
         }
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::TerminalDiagnostic { diagnostic } => {
+                    self.retain_terminal_diagnostic(diagnostic.clone());
+                }
+                AgentEvent::CompletionEvidenceRecorded {
+                    operation_id,
+                    evidence,
+                } => {
+                    if evidence.generation == *operation_id
+                        && evidence.validate_outcome().is_ok()
+                        && self
+                            .semantic
+                            .completion_receipts
+                            .iter()
+                            .find(|receipt| receipt.run_id == *operation_id)
+                            .and_then(|receipt| receipt.evidence.as_ref())
+                            .is_none_or(|previous| {
+                                previous.revision < evidence.revision
+                                    && previous.contract_digest == evidence.contract_digest
+                                    && previous.kind == evidence.kind
+                                    && previous.owner == evidence.owner
+                            })
+                    {
+                        self.upsert_completion(
+                            *operation_id,
+                            if evidence.supported() {
+                                crate::native_runtime::OperationOutcome::Completed
+                            } else {
+                                crate::native_runtime::OperationOutcome::Failed
+                            },
+                        );
+                        if let Some(receipt) = self
+                            .semantic
+                            .completion_receipts
+                            .iter_mut()
+                            .find(|receipt| receipt.run_id == *operation_id)
+                            && receipt
+                                .evidence
+                                .as_ref()
+                                .is_none_or(|previous| previous.revision < evidence.revision)
+                        {
+                            receipt.evidence = Some(Box::new(evidence.clone()));
+                        }
+                        // Detail is durable in the Conversation journal. Do not
+                        // let a long run list exhaust reconnect frame capacity.
+                        while self.semantic.completion_receipts.len() > 1
+                            && serde_json::to_vec(&self.semantic.completion_receipts)
+                                .map_or(true, |bytes| bytes.len() > 256 * 1024)
+                        {
+                            self.semantic.completion_receipts.remove(0);
+                        }
+                    }
+                }
                 AgentEvent::UserMessageCommitted { message, .. } => {
                     append_semantic_content(&mut self.semantic, normalize_message(message));
                     self.append_conversation_message(message);
@@ -691,10 +778,20 @@ impl ClientSnapshot {
                 }
                 self.activity_count = self.activity_count.saturating_add(1);
             }
-            ClientEvent::Managed(_) => {
+            ClientEvent::Managed(event) => {
+                if let ManagedClientEvent::TerminalDiagnostic(diagnostic) = event.as_ref() {
+                    self.retain_terminal_diagnostic(diagnostic.clone());
+                }
                 self.activity_count = self.activity_count.saturating_add(1);
             }
         }
+    }
+
+    fn retain_terminal_diagnostic(&mut self, diagnostic: crate::failure::TerminalDiagnostic) {
+        if self.terminal_diagnostics.len() >= 64 {
+            self.terminal_diagnostics.remove(0);
+        }
+        self.terminal_diagnostics.push(diagnostic);
     }
 
     fn upsert_execution_facts(&mut self, run_id: OperationId) -> ExecutionFactsV1 {
@@ -775,6 +872,12 @@ impl ClientSnapshot {
             format!("xana://completion/{}/{run_id}", execution.conversation_id).as_bytes(),
         );
         let receipt = CompletionReceiptV1 {
+            evidence: self
+                .semantic
+                .completion_receipts
+                .iter()
+                .find(|receipt| receipt.run_id == run_id)
+                .and_then(|receipt| receipt.evidence.clone()),
             id,
             conversation_id: execution.conversation_id,
             run_id,
@@ -977,6 +1080,8 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 
 fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
+        AgentEvent::TerminalDiagnostic { .. } => "terminal diagnostic",
+        AgentEvent::CompletionEvidenceRecorded { .. } => "completion evidence",
         AgentEvent::UserMessageCommitted { .. } => "committed user message",
         AgentEvent::BrowserStatus { .. } => "browser status",
         AgentEvent::OperationStateChanged { .. } => "operation state",
@@ -1014,6 +1119,154 @@ mod tests {
     use crate::managed::codex::ManagedNotification;
     use crate::message::{ContentBlock, Role};
     use crate::{permission::PermissionRequest, tool::EffectClass};
+
+    #[test]
+    fn completion_projection_is_byte_bounded_and_stale_evidence_cannot_downgrade_it() {
+        use crate::completion_evidence::*;
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "fixture".into(),
+                execution_owner: "native".into(),
+                model: "fixture".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "deny".into(),
+                children: vec![],
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            vec![],
+        );
+        let mut last = None;
+        for index in 0..128 {
+            let operation = OperationId::new();
+            let contract = CompletionContract {
+                conditions: vec![AcceptanceCondition::CommandSucceeded {
+                    command: "c".repeat(4000),
+                    cwd: ".".into(),
+                }],
+            };
+            let mut evidence = CompletionEvidence::new(
+                operation,
+                WorkKind::Root,
+                EvidenceOwner::Native,
+                CompletionClaim::Completed,
+                contract,
+            )
+            .unwrap();
+            evidence.revision = 2;
+            evidence.delivered(b"result");
+            evidence.checks.push(CheckEvidence {
+                invocation: crate::identity::ToolInvocationId::new(),
+                generation: operation,
+                command_digest: command_digest(&"c".repeat(4000), "."),
+                work_revision: 0,
+                outcome: CheckOutcome::Passed,
+                exit_code: Some(0),
+            });
+            add_artifact(
+                &mut evidence,
+                crate::artifact::ArtifactRecord {
+                    reference: crate::artifact::ArtifactRef {
+                        id: crate::identity::ArtifactId::new(),
+                        content_hash: crate::artifact::ContentHash::for_bytes(b"x"),
+                    },
+                    media_type: "text/plain".into(),
+                    byte_len: 1,
+                    owner: crate::identity::PrincipalId::new(),
+                },
+            );
+            evidence.reserve_verifier(true, false).unwrap();
+            snapshot.apply(
+                &ClientEvent::bounded(AgentEvent::CompletionEvidenceRecorded {
+                    operation_id: operation,
+                    evidence: evidence.clone(),
+                }),
+                index + 1,
+            );
+            last = Some(evidence);
+        }
+        assert!(snapshot.semantic.completion_receipts.len() < 128);
+        assert!(
+            serde_json::to_vec(&snapshot.semantic.completion_receipts)
+                .unwrap()
+                .len()
+                <= 256 * 1024
+        );
+        let last = last.unwrap();
+        let mut stale = last.clone();
+        stale.revision = 1;
+        stale.claim = CompletionClaim::Interrupted;
+        stale.evaluate();
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::CompletionEvidenceRecorded {
+                operation_id: last.generation,
+                evidence: stale,
+            }),
+            129,
+        );
+        assert_eq!(
+            snapshot
+                .semantic
+                .completion_receipts
+                .last()
+                .unwrap()
+                .evidence
+                .as_deref(),
+            Some(&last)
+        );
+        let mut newer = last.clone();
+        newer.revision = 3;
+        newer.verification = VerificationState::Passed;
+        newer.artifacts[0].verified = true;
+        newer.evaluate();
+        assert!(valid_transition(Some(&last), &newer));
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::CompletionEvidenceRecorded {
+                operation_id: newer.generation,
+                evidence: newer.clone(),
+            }),
+            130,
+        );
+        let expected = snapshot
+            .semantic
+            .completion_receipts
+            .last()
+            .unwrap()
+            .clone();
+        assert!(expected.evidence.as_ref().unwrap().supported());
+        for incoming in [last, newer.clone()] {
+            snapshot.apply(
+                &ClientEvent::bounded(AgentEvent::CompletionEvidenceRecorded {
+                    operation_id: incoming.generation,
+                    evidence: incoming,
+                }),
+                131,
+            );
+            assert_eq!(
+                snapshot.semantic.completion_receipts.last(),
+                Some(&expected)
+            );
+        }
+        let mut incoherent = newer;
+        incoherent.generation = OperationId::new();
+        incoherent.claim = CompletionClaim::Failed;
+        let expected_all = snapshot.semantic.completion_receipts.clone();
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::CompletionEvidenceRecorded {
+                operation_id: incoherent.generation,
+                evidence: incoherent,
+            }),
+            132,
+        );
+        assert_eq!(snapshot.semantic.completion_receipts, expected_all);
+        let reopened: ClientSnapshot =
+            serde_json::from_slice(&serde_json::to_vec(&snapshot).unwrap()).unwrap();
+        assert_eq!(
+            reopened.semantic.completion_receipts,
+            snapshot.semantic.completion_receipts
+        );
+    }
 
     #[test]
     fn ten_thousand_source_messages_reduce_to_the_recent_bounded_snapshot() {

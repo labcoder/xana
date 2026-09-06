@@ -5,6 +5,86 @@ use crate::{
 };
 
 #[tokio::test]
+async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
+    use crate::completion_evidence::{
+        AcceptanceCondition, CompletionContract, EvidenceOutcome, WorkKind,
+    };
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let store = ProtectedStore::initialize(
+        data.path(),
+        &RecoveryIdentity::generate(),
+        &TestCustody::default(),
+    )
+    .unwrap();
+    let id = crate::identity::SessionId::new();
+    let owner = MemoryOwner::new(store.clone(), MemoryContext::default());
+    let session = DurableSession::create_protected(store.clone(), root.clone(), id).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = QueueTransport {
+        responses: Mutex::new(Vec::new().into()),
+        requests: requests.clone(),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: vec![],
+    };
+    let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
+    let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, Some(owner))
+            .unwrap();
+    for declared in [false, true] {
+        let operation_id = OperationId::new();
+        let conditions = if declared {
+            vec![AcceptanceCondition::CommandSucceeded {
+                command: "cargo test".into(),
+                cwd: ".".into(),
+            }]
+        } else {
+            vec![]
+        };
+        runtime
+            .send(RuntimeCommand::SubmitFiniteTurn {
+                operation_id,
+                input: "what do you remember?".into(),
+                kind: WorkKind::Root,
+                contract: CompletionContract { conditions },
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                receive_finished(&mut runtime, operation_id)
+            )
+            .await
+            .unwrap(),
+            if declared {
+                OperationOutcome::Failed
+            } else {
+                OperationOutcome::Completed
+            }
+        );
+        let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
+        let evidence = restored
+            .completion_evidence
+            .iter()
+            .find(|evidence| evidence.generation == operation_id)
+            .unwrap();
+        assert_eq!(
+            evidence.outcome,
+            if declared {
+                EvidenceOutcome::NeedsAttention
+            } else {
+                EvidenceOutcome::DeliveryVerified
+            }
+        );
+    }
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(runtime.shutdown_owned().await);
+}
+
+#[tokio::test]
 async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();

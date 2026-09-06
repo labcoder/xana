@@ -5,6 +5,8 @@
 //! operation result.
 
 mod browser_controls;
+mod completion;
+mod failure;
 mod memory_controls;
 mod protocol;
 
@@ -70,6 +72,7 @@ struct Runtime {
     owned_tasks: tokio_util::task::TaskTracker,
     stop_after_compaction: bool,
     compaction_cancelled: bool,
+    stop_after_verification: bool,
     memory: Option<crate::memory::MemoryOwner>,
     agent: Arc<Agent>,
     history: Vec<Message>,
@@ -108,7 +111,7 @@ struct ActiveOperation {
 struct OperationCompletion {
     operation_id: OperationId,
     history: Vec<Message>,
-    result: Result<AgentTurnOutcome, String>,
+    result: Result<AgentTurnOutcome, failure::OperationFailure>,
 }
 
 struct RuntimeSeed {
@@ -305,6 +308,7 @@ impl RuntimeHandle {
             owned_tasks: owned_tasks.clone(),
             stop_after_compaction: false,
             compaction_cancelled: false,
+            stop_after_verification: false,
             memory,
             agent: Arc::new(agent),
             history,
@@ -430,18 +434,24 @@ impl Drop for Runtime {
 
 impl Runtime {
     async fn run(mut self) -> RuntimeExit {
+        self.emit_restored_completion_evidence();
         let mut maintenance = tokio::time::interval(std::time::Duration::from_secs(30));
         maintenance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         if let Some(suspension) = self.suspended_round_budget.clone() {
             self.emit(AgentEvent::RoundBudgetReached { suspension });
         }
         loop {
+            if self.stop_after_verification {
+                self.permissions.controller_lost();
+                self.shutdown_children().await;
+                return RuntimeExit::ShutdownRequested;
+            }
             tokio::select! {
                 biased;
                 command = self.commands.recv() => {
                     let Some(command) = command else {
                         self.permissions.controller_lost();
-                        self.interrupt_active().await;
+                        self.interrupt_active(crate::failure::FailureCategory::Interrupted).await;
                         self.shutdown_children().await;
                         return RuntimeExit::ControllerDropped;
                     };
@@ -492,14 +502,21 @@ impl Runtime {
                 operation_id,
                 input,
             } => {
-                self.start_turn(operation_id, input, Vec::new()).await;
+                self.start_turn(operation_id, input, Vec::new(), None).await;
+            }
+            RuntimeCommand::SubmitFiniteTurn { operation_id, input, kind, contract } => {
+                if self.session.is_none() || contract.validate().is_err() {
+                    self.emit(AgentEvent::CommandRejected { reason: "finite work requires a durable Conversation and bounded valid acceptance conditions".to_owned() });
+                } else {
+                    self.start_turn(operation_id, input, Vec::new(), Some((kind, contract))).await;
+                }
             }
             RuntimeCommand::SubmitTurnWithImages {
                 operation_id,
                 input,
                 images,
             } => {
-                self.start_turn(operation_id, input, images).await;
+                self.start_turn(operation_id, input, images, None).await;
             }
             RuntimeCommand::ClearConversation => {
                 if self.active.is_some() || self.suspended_round_budget.is_some() {
@@ -566,7 +583,7 @@ impl Runtime {
             }
             RuntimeCommand::InterruptOperation { operation_id } => {
                 match self.active.as_ref().map(|active| active.operation_id) {
-                    Some(active) if active == operation_id => self.interrupt_active().await,
+                    Some(active) if active == operation_id => self.interrupt_active(crate::failure::FailureCategory::Cancelled).await,
                     Some(active) => self.emit(AgentEvent::CommandRejected {
                         reason: format!(
                             "cannot interrupt operation {operation_id}; active operation is {active}"
@@ -689,15 +706,18 @@ impl Runtime {
                 }
             }
             RuntimeCommand::Shutdown => {
+                self.terminal_diagnostic(None, crate::failure::TerminalOutcome::HostShutdown,
+                    crate::failure::FailureDetails::new(crate::failure::FailureCategory::HostShutdown, crate::failure::FailureStage::Shutdown));
                 self.permissions.shutdown();
-                self.interrupt_active().await;
+                self.interrupt_active(crate::failure::FailureCategory::HostShutdown).await;
                 self.shutdown_children().await;
                 return true;
             }
         }
         if self.stop_after_compaction {
             self.permissions.shutdown();
-            self.interrupt_active().await;
+            self.interrupt_active(crate::failure::FailureCategory::HostShutdown)
+                .await;
             self.shutdown_children().await;
         }
         self.stop_after_compaction
@@ -708,6 +728,10 @@ impl Runtime {
         operation_id: OperationId,
         input: String,
         images: Vec<crate::vision::ImageRef>,
+        completion_contract: Option<(
+            crate::completion_evidence::WorkKind,
+            crate::completion_evidence::CompletionContract,
+        )>,
     ) {
         if input.trim().is_empty() {
             self.emit(AgentEvent::CommandRejected {
@@ -739,7 +763,8 @@ impl Runtime {
                 self.emit(AgentEvent::CommandRejected{reason:"Scheduled work cannot exercise owner-only personal memory controls; return to the owner for review".into()});
                 return;
             }
-            self.run_memory_control(operation_id, input).await;
+            self.run_memory_control(operation_id, input, completion_contract)
+                .await;
             return;
         }
         let _foreground = if self.automatic_learning {
@@ -848,6 +873,7 @@ impl Runtime {
                 Err(error) => {
                     self.agent
                         .record_storage_failure(operation_id, "conversation-user-entry");
+                    self.storage_diagnostic(operation_id);
                     self.emit(AgentEvent::CommandRejected {
                         reason: format!("could not commit user conversation entry: {error:#}"),
                     });
@@ -876,13 +902,33 @@ impl Runtime {
             message: user_message,
         });
         if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
-            if let Err(error) = session.append_record(SessionRecord::OperationAccepted {
-                operation_id,
-                thread_id: session.thread_id(),
-                input_entry_id,
-            }) {
+            let accepted = if let Some((kind, contract)) = completion_contract {
+                let mut completion = crate::completion_evidence::CompletionEvidence::new(
+                    operation_id,
+                    kind,
+                    crate::completion_evidence::EvidenceOwner::Native,
+                    crate::completion_evidence::CompletionClaim::Interrupted,
+                    contract,
+                )
+                .expect("validated finite contract");
+                completion.evaluate();
+                SessionRecord::FiniteOperationAccepted {
+                    operation_id,
+                    thread_id: session.thread_id(),
+                    input_entry_id,
+                    completion,
+                }
+            } else {
+                SessionRecord::OperationAccepted {
+                    operation_id,
+                    thread_id: session.thread_id(),
+                    input_entry_id,
+                }
+            };
+            if let Err(error) = session.append_record(accepted) {
                 self.agent
                     .record_storage_failure(operation_id, "operation-accepted");
+                self.storage_diagnostic(operation_id);
                 self.emit(AgentEvent::CommandRejected {
                     reason: format!("could not commit operation acceptance: {error:#}"),
                 });
@@ -979,9 +1025,8 @@ impl Runtime {
             })
             .catch_unwind()
             .await
-            .map_err(|_| anyhow::anyhow!("native operation task panicked"))
-            .and_then(|result| result)
-            .map_err(|error| error.to_string());
+            .map_err(|_| failure::OperationFailure::panicked())
+            .and_then(|result| result.map_err(failure::OperationFailure::from_error));
             if let Ok(AgentTurnOutcome::Completed(result)) = &result {
                 history.push(result.message.clone());
             }
@@ -1019,6 +1064,23 @@ impl Runtime {
             });
             return;
         }
+        if let Err(error) = &completion.result {
+            let pending =
+                active.progress_committed && self.operation_has_pending(completion.operation_id);
+            let mut detail = error.failure;
+            if pending {
+                detail.retry = crate::failure::RetryAdvice::ReconcileFirst;
+            }
+            self.terminal_diagnostic(
+                Some(completion.operation_id),
+                if pending {
+                    crate::failure::TerminalOutcome::Suspended
+                } else {
+                    crate::failure::TerminalOutcome::Failed
+                },
+                detail,
+            );
+        }
         let _ = active.task.await;
         active.cleanup.drain().await;
 
@@ -1041,6 +1103,7 @@ impl Runtime {
                         completion.operation_id,
                         "conversation-result-entry",
                     );
+                    self.storage_diagnostic(completion.operation_id);
                     self.emit(AgentEvent::OperationFailed {
                         operation_id: completion.operation_id,
                         reason: format!("could not commit conversation entry: {error:#}"),
@@ -1053,12 +1116,21 @@ impl Runtime {
         match completion.result {
             Ok(AgentTurnOutcome::Completed(result)) => {
                 self.history = completion.history;
+                let completion_supported = self
+                    .record_completion_evidence(
+                        completion.operation_id,
+                        crate::completion_evidence::CompletionClaim::Completed,
+                        &crate::completion_evidence::message_text(&result.message),
+                    )
+                    .await;
+                let outcome = if completion_supported {
+                    OperationOutcome::Completed
+                } else {
+                    OperationOutcome::Failed
+                };
                 let usage = active.usage_before.merge(result.usage);
                 if active.progress_committed
-                    && !self.commit_operation_finished(
-                        completion.operation_id,
-                        OperationOutcome::Completed,
-                    )
+                    && !self.commit_operation_finished(completion.operation_id, outcome)
                 {
                     return;
                 }
@@ -1072,7 +1144,7 @@ impl Runtime {
                 });
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id: completion.operation_id,
-                    state: OperationState::Finished(OperationOutcome::Completed),
+                    state: OperationState::Finished(outcome),
                 });
             }
             Ok(AgentTurnOutcome::RoundBudgetReached { rounds, usage }) => {
@@ -1098,6 +1170,7 @@ impl Runtime {
                             completion.operation_id,
                             "round-budget-suspension",
                         );
+                        self.storage_diagnostic(completion.operation_id);
                         self.emit(AgentEvent::OperationFailed {
                             operation_id: completion.operation_id,
                             reason: format!("could not commit round-budget suspension: {error:#}"),
@@ -1106,14 +1179,30 @@ impl Runtime {
                     }
                 }
                 self.suspended_round_budget = Some(suspension.clone());
+                self.terminal_diagnostic(
+                    Some(completion.operation_id),
+                    crate::failure::TerminalOutcome::Suspended,
+                    crate::failure::FailureDetails::new(
+                        crate::failure::FailureCategory::RoundBudget,
+                        crate::failure::FailureStage::Execution,
+                    ),
+                );
                 self.emit(AgentEvent::RoundBudgetReached { suspension });
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id: completion.operation_id,
                     state: OperationState::Suspended,
                 });
             }
-            Err(reason) => {
+            Err(failure) => {
+                let reason = failure.reason;
                 self.history = completion.history;
+                let _ = self
+                    .record_completion_evidence(
+                        completion.operation_id,
+                        crate::completion_evidence::CompletionClaim::Failed,
+                        "",
+                    )
+                    .await;
                 if active.progress_committed && self.operation_has_pending(completion.operation_id)
                 {
                     if let Some(session) = &mut self.session
@@ -1123,6 +1212,7 @@ impl Runtime {
                                 reason: SuspensionReason::ProcessInterrupted,
                             })
                     {
+                        self.storage_diagnostic(completion.operation_id);
                         self.emit(AgentEvent::OperationFailed {
                             operation_id: completion.operation_id,
                             reason: format!("could not commit operation suspension: {error:#}"),
@@ -1300,6 +1390,21 @@ impl Runtime {
                 );
             }
             RoundBudgetAction::Stop => {
+                let _ = self
+                    .record_completion_evidence(
+                        operation_id,
+                        crate::completion_evidence::CompletionClaim::Cancelled,
+                        "",
+                    )
+                    .await;
+                self.terminal_diagnostic(
+                    Some(operation_id),
+                    crate::failure::TerminalOutcome::Declined,
+                    crate::failure::FailureDetails::new(
+                        crate::failure::FailureCategory::RoundBudget,
+                        crate::failure::FailureStage::Execution,
+                    ),
+                );
                 self.emit(AgentEvent::UsageObserved {
                     operation_id,
                     usage: suspension.usage,
@@ -1312,7 +1417,7 @@ impl Runtime {
         }
     }
 
-    async fn interrupt_active(&mut self) {
+    async fn interrupt_active(&mut self, category: crate::failure::FailureCategory) {
         if let Some(active) = self.active.take() {
             let ActiveOperation {
                 operation_id,
@@ -1321,15 +1426,39 @@ impl Runtime {
                 cleanup,
                 ..
             } = active;
+            self.terminal_diagnostic(
+                Some(operation_id),
+                if category == crate::failure::FailureCategory::Cancelled {
+                    crate::failure::TerminalOutcome::Cancelled
+                } else {
+                    crate::failure::TerminalOutcome::Interrupted
+                },
+                crate::failure::FailureDetails::new(
+                    category,
+                    crate::failure::FailureStage::Execution,
+                ),
+            );
             task.abort();
             let _ = task.await;
             cleanup.drain().await;
+            let claim = if category == crate::failure::FailureCategory::Cancelled {
+                crate::completion_evidence::CompletionClaim::Cancelled
+            } else {
+                crate::completion_evidence::CompletionClaim::Interrupted
+            };
+            let _ = self
+                .record_completion_evidence(operation_id, claim, "")
+                .await;
             if progress_committed {
-                if let Some(session) = &mut self.session {
-                    let _ = session.append_record(SessionRecord::OperationSuspended {
-                        operation_id,
-                        reason: SuspensionReason::ProcessInterrupted,
-                    });
+                if let Some(session) = &mut self.session
+                    && session
+                        .append_record(SessionRecord::OperationSuspended {
+                            operation_id,
+                            reason: SuspensionReason::ProcessInterrupted,
+                        })
+                        .is_err()
+                {
+                    self.storage_diagnostic(operation_id);
                 }
                 self.emit(AgentEvent::OperationStateChanged {
                     operation_id,
@@ -1702,6 +1831,7 @@ impl Runtime {
                 outcome,
             })
         {
+            self.storage_diagnostic(operation_id);
             self.emit(AgentEvent::OperationFailed {
                 operation_id,
                 reason: format!("could not commit operation finish: {error:#}"),

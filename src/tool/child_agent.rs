@@ -472,6 +472,13 @@ pub(super) fn restriction_schema() -> Value {
         "type":"object",
         "additionalProperties":false,
         "properties":{
+            "completion":{"type":"object","additionalProperties":false,"properties":{
+                "conditions":{"type":"array","maxItems":64,"items":{"type":"object","additionalProperties":false,
+                    "required":["kind","command","cwd"],"properties":{
+                        "kind":{"type":"string","enum":["command_succeeded"]},
+                        "command":{"type":"string","minLength":1,"maxLength":4096},"cwd":{"type":"string","minLength":1,"maxLength":4096}
+                    }}}
+            }},
             "permission_mode":{"type":"string","enum":["deny","ask","allow"]},
             "max_tool_rounds":{"type":"integer","minimum":1},
             "deadline_seconds":{"type":"integer","minimum":1},

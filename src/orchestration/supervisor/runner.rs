@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::orchestration::{ChildExecution, ChildResultSchema};
+use crate::orchestration::{ChildTerminalStatus, ChildUsage, ExecutionOwner};
 
 const MAX_CHILD_ACTIVITY_EVENTS: usize = 4_096;
 const MAX_CHILD_ACTIVITY_BYTES: usize = 4 * 1024 * 1024;
@@ -22,6 +23,9 @@ pub(super) struct RunningChild {
     pub(super) report_limits: crate::config::OrchestrationLimits,
     pub(super) artifact_store: ArtifactStore,
     pub(super) artifact_owner: crate::identity::PrincipalId,
+    pub(super) commits: ChildCommitSender,
+    pub(super) contract: crate::completion_evidence::CompletionContract,
+    pub(super) hard_token_limit: Option<u64>,
 }
 
 struct ChildActivityForwarder {
@@ -107,6 +111,9 @@ pub(super) async fn run_child_execution(child: RunningChild) {
         report_limits,
         artifact_store,
         artifact_owner,
+        commits,
+        contract,
+        hard_token_limit,
     } = child;
     let cancellation = context.cancellation.clone();
     let handles_cancellation = execution.handles_cancellation();
@@ -149,7 +156,50 @@ pub(super) async fn run_child_execution(child: RunningChild) {
     activity_forwarder.finish(dropped_child_events.count());
     broker_task.abort();
     let _ = broker_task.await;
-    let materialized = match outcome {
+    let mut evidence = match &outcome {
+        ChildExecutionOutcome::Completed(output) => output.evidence.as_deref().cloned(),
+        _ => None,
+    }
+    .unwrap_or_else(|| {
+        crate::completion_evidence::CompletionEvidence::new(
+            attribution.operation_id,
+            crate::completion_evidence::WorkKind::Child,
+            if attribution.owner == ExecutionOwner::Native {
+                crate::completion_evidence::EvidenceOwner::Native
+            } else {
+                crate::completion_evidence::EvidenceOwner::Managed
+            },
+            match &outcome {
+                ChildExecutionOutcome::Completed(_) => {
+                    crate::completion_evidence::CompletionClaim::Completed
+                }
+                ChildExecutionOutcome::Failed(_) => {
+                    crate::completion_evidence::CompletionClaim::Failed
+                }
+                ChildExecutionOutcome::Cancelled(_) => {
+                    crate::completion_evidence::CompletionClaim::Cancelled
+                }
+            },
+            contract.clone(),
+        )
+        .expect("validated child contract")
+    });
+    evidence.contract = contract;
+    evidence.contract_digest = evidence.contract.digest();
+    if let ChildExecutionOutcome::Completed(output) = &outcome {
+        evidence.delivered(output.text.as_bytes());
+        if let Some(limit) = hard_token_limit {
+            let used = match output.usage {
+                ChildUsage::Measured { total_tokens, .. } => total_tokens,
+                _ => None,
+            };
+            evidence.budget.remaining_tokens = used.map(|used| limit.saturating_sub(used));
+            evidence.budget.exhausted |= used.is_none_or(|used| used >= limit);
+            evidence.budget.exceeded |= used.is_some_and(|used| used > limit);
+            evidence.omitted_observations |= used.is_none();
+        }
+    }
+    let mut materialized = match outcome {
         ChildExecutionOutcome::Completed(output) => {
             materialize_completed_report(
                 attribution.clone(),
@@ -157,7 +207,7 @@ pub(super) async fn run_child_execution(child: RunningChild) {
                 output.text,
                 output.usage,
                 report_limits.clone(),
-                artifact_store,
+                artifact_store.clone(),
                 artifact_owner,
             )
             .await
@@ -181,6 +231,66 @@ pub(super) async fn run_child_execution(child: RunningChild) {
             artifact: None,
         },
     };
+    if let Some(artifact) = &materialized.artifact {
+        // Registration precedes any referenced verification receipt.
+        if let Err(error) = commits
+            .append(SessionRecord::ArtifactRegistered {
+                artifact: artifact.clone(),
+            })
+            .await
+        {
+            materialized.report = ChildReport::failed_with_schema(
+                materialized.report.attribution.clone(),
+                report_schema,
+                format!("completion artifact registration failed: {error}"),
+                report_limits.max_report_bytes,
+            );
+            materialized.artifact = None;
+            evidence.claim = crate::completion_evidence::CompletionClaim::Failed;
+        } else {
+            crate::completion_evidence::add_artifact(&mut evidence, artifact.clone());
+            materialized.artifact = None; // already registered, do not duplicate at report commit
+        }
+    }
+    evidence.revision = 2;
+    if materialized.report.status != ChildTerminalStatus::Completed {
+        evidence.claim = crate::completion_evidence::CompletionClaim::Failed;
+    }
+    let reserved = evidence
+        .reserve_verifier(!cancellation.is_cancelled(), cancellation.is_cancelled())
+        .unwrap_or(false);
+    if let Err(error) = commits
+        .append(SessionRecord::CompletionEvidenceRecorded {
+            evidence: evidence.clone(),
+        })
+        .await
+    {
+        materialized.report = ChildReport::failed_with_schema(
+            materialized.report.attribution.clone(),
+            report_schema,
+            format!("completion evidence commit failed: {error}"),
+            report_limits.max_report_bytes,
+        );
+    } else if reserved {
+        let reservation = evidence.clone();
+        let cancelled = cancellation.clone();
+        if let Ok(Ok(verified)) = tokio::task::spawn_blocking(move || {
+            crate::completion_evidence::verify_artifacts(reservation, &artifact_store, &cancelled)
+        })
+        .await
+            && commits
+                .append(SessionRecord::CompletionEvidenceRecorded {
+                    evidence: verified.clone(),
+                })
+                .await
+                .is_ok()
+        {
+            evidence = verified;
+        }
+    }
+    materialized
+        .report
+        .apply_completion_evidence(evidence, report_limits.max_report_bytes);
     let _ = completions.send(ChildCompletion {
         agent_id,
         materialized,
@@ -222,6 +332,8 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
             Some(ChildActivity::ExternalAgent { activity })
         }
         AgentEvent::OperationStateChanged { .. }
+        | AgentEvent::CompletionEvidenceRecorded { .. }
+        | AgentEvent::TerminalDiagnostic { .. }
         | AgentEvent::BrowserStatus { .. }
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }

@@ -53,6 +53,7 @@ pub(crate) fn source_messages_with_limits(
                                 output: preview(&result.output),
                                 status: result.status,
                                 artifact: result.artifact.clone(),
+                                command_status: result.command_status,
                             })
                         }
                         ContentBlock::Text(text) if message.role == Role::Tool => {

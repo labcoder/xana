@@ -23,6 +23,10 @@ pub(crate) struct RuntimeTelemetryEvent {
 pub(crate) trait RuntimeTelemetry: Send + Sync {
     fn record(&self, event: RuntimeTelemetryEvent);
 
+    fn provider_failure(&self, _operation: OperationId, _failure: crate::failure::FailureDetails) {}
+
+    fn terminal(&self, _diagnostic: crate::failure::TerminalDiagnostic) {}
+
     fn context_phase(&self, _event: ContextPhaseEvent) {}
 }
 

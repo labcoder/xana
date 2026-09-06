@@ -243,6 +243,7 @@ impl ChildExecution for FakeExecution {
                 ChildExecutionOutcome::Cancelled("fixture cancelled".into())
             } else {
                 ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                    evidence: None,
                     text: "bounded continuation result".into(),
                     usage: ChildUsage::Unknown,
                 })
@@ -470,6 +471,7 @@ fn unknown_context_reservation_requires_review_without_refunding_work() {
             worker.context_bytes = artifact.byte_len;
             worker.context_operations = 1;
             worker.context_receipt = Some(ContextWorkReceipt {
+                completion: None,
                 id: Uuid::new_v4(),
                 state: ContextWorkState::Reserved,
                 verified_bytes: artifact.byte_len,

@@ -85,7 +85,7 @@ pub(super) async fn run(
     resume: Option<crate::identity::SessionId>,
     continue_chat: bool,
     force_new: bool,
-    one_shot: Option<String>,
+    one_shot: Option<OneShotInput>,
     stream_sequence: Option<StreamSequence>,
 ) -> Result<Option<OneShotSuccess>> {
     run_with_target(
@@ -124,9 +124,14 @@ struct ChatLaunch {
     resume: Option<crate::identity::SessionId>,
     continue_chat: bool,
     force_new: bool,
-    one_shot: Option<String>,
+    one_shot: Option<OneShotInput>,
     stream_sequence: Option<StreamSequence>,
     conversation_target: Option<ConversationRef>,
+}
+
+pub(super) struct OneShotInput {
+    pub(super) input: String,
+    pub(super) contract: crate::completion_evidence::CompletionContract,
 }
 
 async fn run_with_target(
@@ -220,7 +225,7 @@ struct ChatIntent {
     conversation_target: Option<ConversationRef>,
     continue_chat: bool,
     force_new: bool,
-    one_shot: Option<String>,
+    one_shot: Option<OneShotInput>,
     stream_sequence: Option<StreamSequence>,
 }
 
@@ -610,7 +615,11 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             resource_policy,
         };
         return match one_shot {
-            Some(input) => {
+            Some(OneShotInput { input, contract }) => {
+                anyhow::ensure!(
+                    contract.conditions.is_empty(),
+                    "declared completion checks are unavailable for managed Codex; no vendor turn was started"
+                );
                 let conversation_id = conversation
                     .conversation_id()
                     .expect("composed managed one-shot has a Conversation identity");
@@ -1086,7 +1095,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         vision,
     };
 
-    if let Some(input) = one_shot {
+    if let Some(OneShotInput { input, contract }) = one_shot {
         let conversation_id = conversation
             .conversation_id()
             .expect("composed native one-shot has a Conversation identity");
@@ -1111,6 +1120,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             &mut reporter,
             &workspace_host,
             conversation,
+            contract,
         )
         .await
         .map(|result| ChatRun::Complete(Some(result)))

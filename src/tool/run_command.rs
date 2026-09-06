@@ -50,6 +50,20 @@ struct CommandResult {
     stderr_truncated: bool,
 }
 
+/// Read the adapter's typed exit status before large output becomes an artifact.
+pub(super) fn observed_status(output: &str) -> Option<crate::completion_evidence::CommandStatus> {
+    #[derive(Deserialize)]
+    struct Status {
+        success: bool,
+        exit_code: Option<i32>,
+    }
+    let status: Status = serde_json::from_str(output).ok()?;
+    Some(crate::completion_evidence::CommandStatus {
+        success: status.success,
+        exit_code: status.exit_code,
+    })
+}
+
 pub(super) struct RunCommand {
     shell: Shell,
 }

@@ -222,9 +222,11 @@ fn map_provider_error(error: crate::provider::ProviderError) -> FocusedServiceEr
         ProviderErrorKind::InvalidStream | ProviderErrorKind::OutputLimit => {
             FocusedServiceError::MalformedResponse
         }
-        ProviderErrorKind::Rejected | ProviderErrorKind::Transport | ProviderErrorKind::Other => {
+        ProviderErrorKind::Rejected | ProviderErrorKind::Transport => {
             FocusedServiceError::Transport
         }
+        #[cfg(test)]
+        ProviderErrorKind::Other => FocusedServiceError::Transport,
     }
 }
 

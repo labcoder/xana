@@ -170,6 +170,8 @@ pub struct DesktopCompletionReceipt {
     pub id: String,
     pub operation_id: String,
     pub status: String,
+    /// Observed finite-work evidence; absent for legacy or vendor-only receipts.
+    pub completion_evidence: Option<String>,
     pub execution: DesktopExecutionFact,
     pub artifact_ids: Vec<String>,
     pub checks: Vec<DesktopCompletionCheck>,
@@ -211,6 +213,7 @@ pub struct DesktopPromptLedger {
 /// Complete bounded semantic state for the selected Conversation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopConversationFacts {
+    pub terminal_diagnostics: Vec<crate::failure::TerminalDiagnostic>,
     pub profile: Option<String>,
     pub activity: Vec<DesktopActivityItem>,
     pub execution: Vec<DesktopExecutionFact>,
@@ -225,6 +228,7 @@ pub(super) fn project_conversation_facts(
     profile: Option<String>,
 ) -> DesktopConversationFacts {
     DesktopConversationFacts {
+        terminal_diagnostics: snapshot.terminal_diagnostics.clone(),
         profile,
         activity: snapshot
             .semantic
@@ -335,6 +339,37 @@ pub(super) fn project_live_activity(event: &ClientEvent) -> Option<DesktopActivi
     let (id, parent_id, operation_id, owner, state, summary, detail, disclosure, source) =
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::CompletionEvidenceRecorded {
+                    operation_id,
+                    evidence,
+                } => (
+                    format!("completion:{operation_id}"),
+                    None,
+                    Some(operation_id.to_string()),
+                    DesktopActivityOwner::XanaRoot,
+                    if evidence.supported() {
+                        DesktopActivityState::Completed
+                    } else {
+                        DesktopActivityState::Failed
+                    },
+                    "completion.evidence".to_owned(),
+                    serde_json::to_string_pretty(evidence).ok().map(|detail| {
+                        bounded_detail(detail, crate::completion_evidence::MAX_EVIDENCE_BYTES)
+                    }),
+                    DesktopActivityDisclosure::Detail,
+                    DesktopFactSource::Runtime,
+                ),
+                AgentEvent::TerminalDiagnostic { diagnostic } => (
+                    "terminal-diagnostic".to_owned(),
+                    None,
+                    diagnostic.operation_id.map(|id| id.to_string()),
+                    DesktopActivityOwner::XanaRoot,
+                    DesktopActivityState::Failed,
+                    "runtime.terminal_diagnostic".to_owned(),
+                    serde_json::to_string_pretty(diagnostic).ok(),
+                    DesktopActivityDisclosure::Detail,
+                    DesktopFactSource::Runtime,
+                ),
                 AgentEvent::BrowserStatus { detail } => (
                     "browser:status".to_owned(),
                     None,
@@ -1030,6 +1065,7 @@ fn project_completion(receipt: &CompletionReceiptV1) -> DesktopCompletionReceipt
     DesktopCompletionReceipt {
         id: receipt.id.to_string(),
         operation_id: receipt.run_id.to_string(),
+        completion_evidence: receipt.evidence.as_ref().map(|evidence| evidence.summary()),
         status: match receipt.status {
             CompletionStatusV1::Completed => "completed",
             CompletionStatusV1::Failed => "failed",
@@ -1151,6 +1187,59 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use uuid::Uuid;
+
+    #[test]
+    fn completion_detail_retains_exact_conditions_and_revision_with_a_byte_bound() {
+        use crate::completion_evidence::{
+            AcceptanceCondition, CompletionClaim, CompletionContract, CompletionEvidence,
+            EvidenceOwner, WorkKind,
+        };
+        let operation = OperationId::new();
+        let mut evidence = CompletionEvidence::new(
+            operation,
+            WorkKind::Root,
+            EvidenceOwner::Native,
+            CompletionClaim::Completed,
+            CompletionContract {
+                conditions: vec![AcceptanceCondition::CommandSucceeded {
+                    command: "cargo test --offline".into(),
+                    cwd: ".".into(),
+                }],
+            },
+        )
+        .unwrap();
+        evidence.revision = 2;
+        let item = project_live_activity(&ClientEvent::Runtime(Box::new(
+            AgentEvent::CompletionEvidenceRecorded {
+                operation_id: operation,
+                evidence: evidence.clone(),
+            },
+        )))
+        .unwrap();
+        assert_eq!(item.id, format!("completion:{operation}"));
+        assert_eq!(item.disclosure, DesktopActivityDisclosure::Detail);
+        let detail: serde_json::Value =
+            serde_json::from_str(item.disclosed_text.as_deref().unwrap()).unwrap();
+        assert_eq!(detail["revision"], 2);
+        assert_eq!(
+            detail["contract"]["conditions"][0]["command"],
+            "cargo test --offline"
+        );
+        evidence.contract.conditions = vec![AcceptanceCondition::CommandSucceeded {
+            command: "水".repeat(100_000),
+            cwd: ".".into(),
+        }];
+        let item = project_live_activity(&ClientEvent::Runtime(Box::new(
+            AgentEvent::CompletionEvidenceRecorded {
+                operation_id: operation,
+                evidence,
+            },
+        )))
+        .unwrap();
+        assert!(
+            item.disclosed_text.unwrap().len() <= crate::completion_evidence::MAX_EVIDENCE_BYTES
+        );
+    }
 
     #[test]
     fn browser_status_is_one_bounded_replaceable_runtime_detail() {

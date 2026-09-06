@@ -6,6 +6,7 @@
 
 use crate::{
     credential::SecretString,
+    failure::{FailureCategory, FailureDetails, FailureStage, MetadataDigest},
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
     provider::{
@@ -224,6 +225,63 @@ pub(crate) enum AnthropicError {
     Http(reqwest::Error),
     Stream(String),
     OutputLimit,
+    Malformed,
+    Timeout(FailureStage),
+    Observed {
+        failure: FailureDetails,
+        source: Box<AnthropicError>,
+    },
+}
+impl AnthropicError {
+    fn failure(&self) -> FailureDetails {
+        match self {
+            Self::Observed { failure, .. } => *failure,
+            Self::Http(error) => {
+                FailureDetails::rejection(error.status().map_or(0, |status| status.as_u16()), None)
+            }
+            Self::Transport(error) => FailureDetails::new(
+                if error.is_timeout() {
+                    if error.is_connect() {
+                        FailureCategory::ConnectTimeout
+                    } else {
+                        FailureCategory::ReadTimeout
+                    }
+                } else {
+                    FailureCategory::Transport
+                },
+                FailureStage::ProviderConnect,
+            ),
+            Self::Timeout(stage) => FailureDetails::new(FailureCategory::ReadTimeout, *stage),
+            Self::Stream(_) => {
+                FailureDetails::new(FailureCategory::BrokenStream, FailureStage::ProviderStream)
+            }
+            Self::Malformed => FailureDetails::new(
+                FailureCategory::InvalidResponse,
+                FailureStage::ProviderStream,
+            ),
+            Self::OutputLimit => {
+                FailureDetails::new(FailureCategory::OutputLimit, FailureStage::ProviderStream)
+            }
+        }
+    }
+
+    fn provider(self) -> ProviderError {
+        let failure = self.failure();
+        let kind = match failure.category {
+            FailureCategory::ProviderRejected
+            | FailureCategory::ProviderRateLimited
+            | FailureCategory::ProviderUnavailable => ProviderErrorKind::Rejected,
+            FailureCategory::ConnectTimeout | FailureCategory::ReadTimeout => {
+                ProviderErrorKind::Timeout
+            }
+            FailureCategory::InvalidResponse | FailureCategory::BrokenStream => {
+                ProviderErrorKind::InvalidStream
+            }
+            FailureCategory::OutputLimit => ProviderErrorKind::OutputLimit,
+            _ => ProviderErrorKind::Transport,
+        };
+        ProviderError::classified(kind, self.to_string()).with_failure(failure)
+    }
 }
 impl fmt::Display for AnthropicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -232,6 +290,9 @@ impl fmt::Display for AnthropicError {
             Self::Http(_) => f.write_str("Anthropic Messages API rejected the request"),
             Self::Stream(message) => write!(f, "invalid Anthropic stream: {message}"),
             Self::OutputLimit => f.write_str("helper reached its output-token limit"),
+            Self::Malformed => f.write_str("Anthropic stream response was not valid JSON"),
+            Self::Timeout(_) => f.write_str("Anthropic response timed out"),
+            Self::Observed { source, .. } => source.fmt(f),
         }
     }
 }
@@ -239,7 +300,8 @@ impl Error for AnthropicError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(source) | Self::Http(source) => Some(source),
-            Self::Stream(_) | Self::OutputLimit => None,
+            Self::Observed { source, .. } => Some(source.as_ref()),
+            Self::Stream(_) | Self::OutputLimit | Self::Malformed | Self::Timeout(_) => None,
         }
     }
 }
@@ -259,7 +321,10 @@ impl AnthropicClient {
         model: impl Into<String>,
     ) -> Self {
         Self {
-            client: crate::http_client::client(),
+            client: crate::http_client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .build()
+                .expect("static HTTP configuration"),
             endpoint: format!("{}/v1/messages", base_url.into().trim_end_matches('/')),
             api_key,
             default_model: model.into(),
@@ -285,51 +350,80 @@ impl AnthropicClient {
     ) -> Result<Message, AnthropicError> {
         let prompt_bytes = encoded_len(&request.messages);
         let tool_schema_bytes = encoded_len(&request.tools);
-        let response = self
-            .client
-            .post(&self.endpoint)
-            .header("x-api-key", self.api_key.expose())
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&request)
-            .send()
-            .await
-            .map_err(AnthropicError::Transport)?
-            .error_for_status()
-            .map_err(AnthropicError::Http)?;
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(120),
+            self.client
+                .post(&self.endpoint)
+                .header("x-api-key", self.api_key.expose())
+                .header("anthropic-version", ANTHROPIC_VERSION)
+                .json(&request)
+                .send(),
+        )
+        .await
+        .map_err(|_| AnthropicError::Timeout(FailureStage::ProviderResponse))?
+        .map_err(AnthropicError::Transport)?;
+        let status = response.status().as_u16();
+        let request_id = response
+            .headers()
+            .get("request-id")
+            .or_else(|| response.headers().get("x-request-id"))
+            .and_then(|value| value.to_str().ok())
+            .and_then(MetadataDigest::request_id);
+        response
+            .error_for_status_ref()
+            .map_err(|error| AnthropicError::Observed {
+                failure: FailureDetails::rejection(status, request_id),
+                source: Box::new(AnthropicError::Http(error)),
+            })?;
         let request_affinity = request_affinity(&response);
-        let mut stream = response.bytes_stream();
-        let mut decoder = SseDecoder::default();
-        let mut accumulator = AnthropicAccumulator {
-            prompt_bytes,
-            tool_schema_bytes,
-            request_affinity,
-            ..AnthropicAccumulator::default()
-        };
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(AnthropicError::Transport)?;
-            for event in decoder
-                .push(&chunk)
-                .map_err(|error| AnthropicError::Stream(error.to_string()))?
+        let result = async {
+            let mut stream = response.bytes_stream();
+            let mut decoder = SseDecoder::default();
+            let mut accumulator = AnthropicAccumulator {
+                prompt_bytes,
+                tool_schema_bytes,
+                request_affinity,
+                ..AnthropicAccumulator::default()
+            };
+            while let Some(chunk) =
+                tokio::time::timeout(std::time::Duration::from_secs(60), stream.next())
+                    .await
+                    .map_err(|_| AnthropicError::Timeout(FailureStage::ProviderStream))?
             {
-                if event.data.is_empty() {
-                    continue;
+                let chunk = chunk.map_err(AnthropicError::Transport)?;
+                for event in decoder
+                    .push(&chunk)
+                    .map_err(|error| AnthropicError::Stream(error.to_string()))?
+                {
+                    if event.data.is_empty() {
+                        continue;
+                    }
+                    let event = serde_json::from_slice(&event.data)
+                        .map_err(|_| AnthropicError::Malformed)?;
+                    accumulator
+                        .apply(&event, step_id, deltas)
+                        .map_err(AnthropicError::Stream)?;
                 }
-                let event = serde_json::from_slice(&event.data)
-                    .map_err(|_| AnthropicError::Stream("SSE data is not JSON".into()))?;
-                accumulator
-                    .apply(&event, step_id, deltas)
-                    .map_err(AnthropicError::Stream)?;
             }
+            decoder
+                .finish()
+                .map_err(|error| AnthropicError::Stream(error.to_string()))?;
+            let output_limited = accumulator.stop_reason.as_deref() == Some("max_tokens");
+            let message = accumulator.finish().map_err(AnthropicError::Stream)?;
+            if reject_output_limit && output_limited {
+                return Err(AnthropicError::OutputLimit);
+            }
+            Ok(message)
         }
-        decoder
-            .finish()
-            .map_err(|error| AnthropicError::Stream(error.to_string()))?;
-        let output_limited = accumulator.stop_reason.as_deref() == Some("max_tokens");
-        let message = accumulator.finish().map_err(AnthropicError::Stream)?;
-        if reject_output_limit && output_limited {
-            return Err(AnthropicError::OutputLimit);
-        }
-        Ok(message)
+        .await;
+        result.map_err(|error: AnthropicError| {
+            let mut failure = error.failure().response(status, request_id);
+            failure.stage = FailureStage::ProviderStream;
+            AnthropicError::Observed {
+                failure,
+                source: Box::new(error),
+            }
+        })
     }
 }
 
@@ -354,15 +448,7 @@ impl ConversationalProvider for AnthropicClient {
                     })?;
             self.stream_message_inner(request, true, step_id, deltas)
                 .await
-                .map_err(|error| {
-                    let kind = match error {
-                        AnthropicError::Transport(_) => ProviderErrorKind::Transport,
-                        AnthropicError::Http(_) => ProviderErrorKind::Rejected,
-                        AnthropicError::Stream(_) => ProviderErrorKind::InvalidStream,
-                        AnthropicError::OutputLimit => ProviderErrorKind::OutputLimit,
-                    };
-                    ProviderError::classified(kind, error.to_string())
-                })
+                .map_err(AnthropicError::provider)
         })
     }
 
@@ -381,10 +467,12 @@ impl ConversationalProvider for AnthropicClient {
                 4096,
                 self.media.as_ref(),
             )
-            .map_err(|error| ProviderError::new(error.to_string()))?;
+            .map_err(|error| {
+                ProviderError::classified(ProviderErrorKind::Request, error.to_string())
+            })?;
             self.stream_message_inner(request, false, step_id, deltas)
                 .await
-                .map_err(|error| ProviderError::new(error.to_string()))
+                .map_err(AnthropicError::provider)
         })
     }
 }
@@ -713,6 +801,7 @@ mod tests {
                 })],
             },
             Message::tool_result(ToolResult {
+                command_status: None,
                 call_id: "call-1".into(),
                 output: "answer".into(),
                 status: ToolResultStatus::Success,

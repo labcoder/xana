@@ -205,6 +205,7 @@ impl ManagedCodexRunner for SupervisorManagedRunner {
                         "Codex app-server error -32601: method not found".to_owned(),
                     ),
                     "completion-wins" => ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                        evidence: None,
                         text: "Codex completed before interruption took effect".to_owned(),
                         usage: ChildUsage::Unknown,
                     }),
@@ -228,6 +229,7 @@ impl ManagedCodexRunner for SupervisorManagedRunner {
                 },
             });
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "managed child result".to_owned(),
                 usage: ChildUsage::Measured {
                     input_tokens: Some(20),
@@ -402,6 +404,7 @@ impl ChildExecution for BarrierChildExecution {
             self.started.notify_one();
             self.release.notified().await;
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "released child".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -426,6 +429,7 @@ impl ChildExecution for CountingBarrierChildExecution {
             permit.forget();
             self.running.fetch_sub(1, Ordering::SeqCst);
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "released counted child".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -458,6 +462,7 @@ impl ChildExecution for PermissionChildExecution {
                 self.effect_ran.store(true, Ordering::SeqCst);
             }
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "permission resolved".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -476,6 +481,7 @@ impl ChildExecution for ScriptedOutcomeChildExecution {
             };
             match kind {
                 "complete" => ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                    evidence: None,
                     text: value.to_owned(),
                     usage: ChildUsage::Unknown,
                 }),
@@ -488,6 +494,7 @@ impl ChildExecution for ScriptedOutcomeChildExecution {
                     ))
                     .await;
                     ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                        evidence: None,
                         text: output.to_owned(),
                         usage: ChildUsage::Unknown,
                     })
@@ -525,6 +532,7 @@ impl ChildExecution for ActivityFloodChildExecution {
                 },
             });
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "bounded activity report".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -597,6 +605,7 @@ impl ChildExecution for ImmediateChildExecution {
     ) -> BoxFuture<'static, ChildExecutionOutcome> {
         Box::pin(async {
             ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: "child result".to_owned(),
                 usage: ChildUsage::Unknown,
             })
@@ -736,6 +745,7 @@ async fn receive_finished(
 }
 
 mod child_lifecycle;
+mod completion;
 mod context_performance;
 mod core;
 mod delegation;

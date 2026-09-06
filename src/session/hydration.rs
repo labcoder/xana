@@ -144,6 +144,23 @@ pub(crate) fn archive_compacted_prefix(state: &mut RestoredSession) -> Result<()
 
 pub(crate) fn validate_bounds(state: &RestoredSession) -> Result<()> {
     ensure!(
+        state.completion_evidence.len() <= 128,
+        "completion receipt count exceeds its bound"
+    );
+    ensure!(
+        state
+            .completion_evidence
+            .iter()
+            .map(|evidence| evidence.generation)
+            .collect::<HashSet<_>>()
+            .len()
+            == state.completion_evidence.len(),
+        "duplicate completion receipt generation"
+    );
+    for evidence in &state.completion_evidence {
+        evidence.validate_outcome()?;
+    }
+    ensure!(
         state.entries.len() <= MAX_EXECUTION_ENTRIES,
         "retained execution history needs compaction before another turn"
     );
@@ -176,7 +193,7 @@ pub(crate) fn validate_append_bounds(
 ) -> Result<()> {
     use super::SessionRecord as R;
     let (count, additional) = match record {
-        R::OperationAccepted { .. } => {
+        R::OperationAccepted { .. } | R::FiniteOperationAccepted { .. } => {
             (state.operations.len().max(state.operation_details.len()), 1)
         }
         R::OperationStateChanged { operation_id, .. } => (

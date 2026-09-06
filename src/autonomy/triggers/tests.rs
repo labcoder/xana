@@ -138,6 +138,7 @@ fn source_receipt_completion_and_pending_guard_are_transactional() {
     store.autonomy_observed(job.clone()).unwrap();
     let claimed = store.autonomy_claim(at).unwrap().unwrap();
     let receipt = RunReceipt {
+        completion: None,
         occurrence: claimed.occurrence.unwrap(),
         scheduled_at: at,
         finished_at: at + 1,
@@ -323,6 +324,7 @@ async fn protected_tool_completion_suppresses_exact_own_write_but_not_later_user
         session
             .append_record(SessionRecord::InvocationResultAppended {
                 result: InvocationResultRecord {
+                    command_status: None,
                     operation_id,
                     invocation_id,
                     result_id: intent.result_id,

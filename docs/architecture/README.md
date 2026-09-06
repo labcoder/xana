@@ -1112,13 +1112,16 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 12
+staged images, and an ordered follow-up queue. Frontend protocol version 13
 retains version 5's stable semantic command identifiers, version 7's frozen
 execution/completion facts, and version 8's Desktop Conversation controls, then
 retains Espejo/host supervision and classified prompt accounting, and adds
 committed native user messages with bounded history positions for reconnect.
 It also carries same-owner browser inspection/revocation and bounded lifecycle
 receipts without routing those controls through the model's command queue.
+It adds typed terminal diagnostics and bounded finite-work evidence, including
+an explicit finite-turn command. See [completion evidence](completion-evidence.md)
+for the distinction between delivery, observed checks and task correctness.
 Native and managed Runs publish
 authoritative execution facts and deterministic completion receipts. One
 application-owned catalog now
@@ -1427,11 +1430,26 @@ records produce a separate error without echoing their contents.
 Process diagnostics are a separate, non-authoritative product. Ownership
 boundaries emit fixed typed metadata into a bounded `try_send` queue only after
 identifier sanitization; runtime work never awaits the writer. One Xana-owned
-thread serializes versioned JSONL, rotates at mandatory file limits, and cleans
+thread writes pre-serialized versioned JSONL, rotates at mandatory file limits, and cleans
 only recognized regular files inside a validated non-symlink root. Session
 journals, permission audits, prompts, tool payloads, files, and model text never
 enter this stream. Queue pressure and sink faults are counters, not execution
 backpressure.
+
+Provider adapters attach `FailureDetails` at the typed HTTP/stream boundary,
+before errors acquire frontend prose. Only fixed categories/stages, bounded
+numeric HTTP status, and validated-and-hashed request identifiers cross into
+this diagnostic contract. `Agent` retains the typed source error and emits its
+origin to diagnostics and the critical consumer stream before usage settlement;
+the native owner adds its correlated `TerminalDiagnostic` before cleanup can fail
+independently. Origin observations remain available if a queued shutdown wins
+over completion handling; later cancellation or suspension is not a rewrite of
+the provider fact. Managed owners use
+the same envelope without inventing vendor HTTP detail. The envelope is an
+observation, not a new execution outcome or retry grant. Protocol 13 carries it
+as a critical event; snapshots retain the most recent 64, and Desktop exposes
+the same pure DTO. Existing transcript and permission views remain separate
+from this content-free metadata.
 
 ```mermaid
 flowchart LR
@@ -1447,7 +1465,9 @@ flowchart LR
 ```
 
 The process retains an exclusive lock on one run marker. Clean shutdown flushes
-for a bounded interval and removes that marker; a later process can identify an
+for a total 750 ms acknowledgement budget and removes that marker only after
+confirmed flush/sync and health persistence. Missing acknowledgement or sink
+failure retains the marker and a writer-fault count; a later process can identify an
 unlocked stale marker without confusing a concurrently running Xana process.
 Panic reports contain hashes rather than panic text, source paths, or raw
 backtraces. OS termination may leave only a marker. `doctor` and `logs`

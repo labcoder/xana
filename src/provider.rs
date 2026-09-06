@@ -122,6 +122,7 @@ pub(crate) struct ProviderUsage {
 pub(crate) struct ProviderError {
     kind: ProviderErrorKind,
     message: String,
+    failure: crate::failure::FailureDetails,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,22 +133,42 @@ pub(crate) enum ProviderErrorKind {
     InvalidStream,
     Timeout,
     OutputLimit,
+    #[cfg(test)]
     Other,
 }
 
 impl ProviderError {
+    #[cfg(test)]
     pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            kind: ProviderErrorKind::Other,
-            message: message.into(),
-        }
+        Self::classified(ProviderErrorKind::Other, message)
     }
 
     pub(crate) fn classified(kind: ProviderErrorKind, message: impl Into<String>) -> Self {
+        use crate::failure::{FailureCategory as Category, FailureDetails, FailureStage as Stage};
+        let (category, stage) = match kind {
+            ProviderErrorKind::Request => (Category::InvalidRequest, Stage::RequestPreparation),
+            ProviderErrorKind::Transport => (Category::Transport, Stage::ProviderConnect),
+            ProviderErrorKind::Rejected => (Category::ProviderRejected, Stage::ProviderResponse),
+            ProviderErrorKind::InvalidStream => (Category::BrokenStream, Stage::ProviderStream),
+            ProviderErrorKind::Timeout => (Category::ReadTimeout, Stage::Unknown),
+            ProviderErrorKind::OutputLimit => (Category::OutputLimit, Stage::ProviderStream),
+            #[cfg(test)]
+            ProviderErrorKind::Other => (Category::Unknown, Stage::Unknown),
+        };
         Self {
             kind,
             message: message.into(),
+            failure: FailureDetails::new(category, stage),
         }
+    }
+
+    pub(crate) fn with_failure(mut self, failure: crate::failure::FailureDetails) -> Self {
+        self.failure = failure;
+        self
+    }
+
+    pub(crate) fn failure(&self) -> crate::failure::FailureDetails {
+        self.failure
     }
 
     pub(crate) fn kind(&self) -> ProviderErrorKind {

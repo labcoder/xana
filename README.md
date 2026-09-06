@@ -31,6 +31,8 @@ sandbox, and conversation history.
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
 | Local autonomy | Explicit [durable jobs](docs/user/durable-schedules.md), selected-file and named GitHub CI triggers, bounded background supervision |
 | Retained work | [Retained children](docs/user/retained-workers.md), explicit follow-ups and cited context operations under cumulative parent limits |
+| Personal learning | Scoped [memory](docs/user/personal-memory.md), reviewable learned candidates, exact undo and inert Skill drafts |
+| Completion | [Finite-work evidence](docs/user/completion-evidence.md) distinguishes delivered answers from observed checks and unresolved effects |
 | Browser | Optional [dedicated local browser](docs/user/local-browser.md) with reviewed recipients, bounded evidence, takeover and owned cleanup on the qualified Windows adapter |
 
 Xana keeps its native engine separate from terminal presentation and provider

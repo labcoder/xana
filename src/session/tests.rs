@@ -75,6 +75,7 @@ fn child_handle(
     parent_operation_id: OperationId,
 ) -> AgentHandleSnapshot {
     AgentHandleSnapshot::admitted(ChildAdmission {
+        completion: Default::default(),
         attribution: ChildAttribution {
             agent_id: AgentId::new(),
             parent_agent_id: AgentId::for_session(session_id),
@@ -138,6 +139,7 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
     let handle = child_handle(session_id, thread_id, operation_id);
     let agent_id = handle.admission.attribution.agent_id;
     let report = ChildReport {
+        evidence: None,
         version: crate::orchestration::CHILD_REPORT_VERSION,
         attribution: handle.admission.attribution.clone(),
         status: ChildTerminalStatus::Completed,
@@ -191,6 +193,71 @@ fn child_lifecycle_and_report_reduce_in_legal_durable_order() {
 }
 
 #[test]
+fn rejected_child_completion_reopens_failed_with_output_and_exact_evidence() {
+    use crate::completion_evidence::*;
+    let session = SessionId::new();
+    let thread = ThreadId::new();
+    let parent = OperationId::new();
+    let handle = child_handle(session, thread, parent);
+    let agent = handle.admission.attribution.agent_id;
+    let generation = handle.admission.attribution.operation_id;
+    let declaration = CompletionEvidence::new(
+        generation,
+        WorkKind::Child,
+        EvidenceOwner::Native,
+        CompletionClaim::Interrupted,
+        Default::default(),
+    )
+    .unwrap();
+    let mut evidence = declaration.clone();
+    evidence.revision = 2;
+    evidence.claim = CompletionClaim::Completed;
+    evidence.delivered(b"done");
+    evidence.omitted_observations = true;
+    evidence.evaluate();
+    let mut report = ChildReport::completed(
+        handle.admission.attribution.clone(),
+        "done".into(),
+        ChildUsage::Unknown,
+    );
+    report.apply_completion_evidence(evidence.clone(), 1024);
+    let mut records = child_operation_prefix(session, thread, parent);
+    for record in [
+        SessionRecord::ChildAdmitted { handle },
+        SessionRecord::ChildLifecycleChanged {
+            agent_id: agent,
+            lifecycle: ChildLifecycle::Queued,
+        },
+        SessionRecord::ChildLifecycleChanged {
+            agent_id: agent,
+            lifecycle: ChildLifecycle::Running,
+        },
+        SessionRecord::CompletionEvidenceRecorded {
+            evidence: declaration,
+        },
+        SessionRecord::CompletionEvidenceRecorded { evidence },
+        SessionRecord::ChildReportCommitted {
+            report: report.clone(),
+        },
+    ] {
+        records.push(RecordEnvelope::new(session, record));
+    }
+    let restored = reduce(&records).unwrap();
+    assert_eq!(
+        restored.children[&agent].handle.lifecycle,
+        ChildLifecycle::Failed
+    );
+    assert_eq!(restored.children[&agent].report.as_ref(), Some(&report));
+    assert_eq!(report.output.as_deref(), Some("done"));
+    report.evidence = None;
+    records.last_mut().unwrap().record = SessionRecord::ChildReportCommitted { report };
+    assert!(
+        reduce(&records).is_err(),
+        "mixed success/failure shape requires its exact committed proof"
+    );
+}
+
+#[test]
 fn artifact_backed_child_report_requires_a_matching_prior_registration() {
     let session_id = SessionId::new();
     let thread_id = ThreadId::new();
@@ -208,6 +275,7 @@ fn artifact_backed_child_report_requires_a_matching_prior_registration() {
         owner: PrincipalId::new(),
     };
     let report = ChildReport {
+        evidence: None,
         version: crate::orchestration::CHILD_REPORT_VERSION,
         attribution: handle.admission.attribution.clone(),
         status: ChildTerminalStatus::Completed,
@@ -755,6 +823,7 @@ fn crash_recovery_record_kinds_round_trip_with_semantic_identities() {
         },
         SessionRecord::InvocationResultAppended {
             result: InvocationResultRecord {
+                command_status: None,
                 operation_id,
                 invocation_id,
                 result_id,
@@ -879,6 +948,7 @@ fn valid_recovery_sequence() -> (
             session_id,
             SessionRecord::InvocationResultAppended {
                 result: InvocationResultRecord {
+                    command_status: None,
                     operation_id,
                     invocation_id,
                     result_id,

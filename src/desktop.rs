@@ -19,6 +19,10 @@ mod settings;
 pub use crate::browser::{
     BrowserControl as DesktopBrowserControl, BrowserResolution as DesktopBrowserResolution,
 };
+pub use crate::failure::{
+    FailureCategory, FailureDetails, FailureOrigin, FailureStage, MetadataDigest, OutcomeKnowledge,
+    RetryAdvice, TerminalDiagnostic, TerminalOutcome,
+};
 pub use browser::DesktopBrowserReview;
 
 pub use content::{
@@ -3679,6 +3683,15 @@ fn project_event(
     }
     match event {
         ClientEvent::Runtime(event) => match event.as_ref() {
+            AgentEvent::TerminalDiagnostic { diagnostic } => DesktopEvent::Activity {
+                label: format!(
+                    "{:?}: {:?}",
+                    diagnostic.outcome, diagnostic.failure.category
+                ),
+            },
+            AgentEvent::CompletionEvidenceRecorded { evidence, .. } => DesktopEvent::Activity {
+                label: evidence.summary(),
+            },
             AgentEvent::OperationStateChanged {
                 operation_id,
                 state,

@@ -127,6 +127,8 @@ impl ContextOperation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ContextWorkReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<crate::completion_evidence::CompletionEvidence>,
     pub(crate) id: Uuid,
     pub(crate) state: ContextWorkState,
     pub(crate) verified_bytes: u64,
@@ -206,6 +208,7 @@ pub(crate) fn execute(
         );
     }
     let mut receipt = ContextWorkReceipt {
+        completion: None,
         id: Uuid::new_v4(),
         state: ContextWorkState::Reserved,
         verified_bytes,
@@ -278,6 +281,7 @@ pub(crate) fn execute(
         .as_ref()
         .err()
         .map(|error| crate::orchestration::truncate_utf8(&error.to_string(), 2048));
+    receipt.completion = Some(context_completion(&receipt, &reserved)?);
     let finish = |worker: &mut super::retained::RetainedWorker| {
         ensure!(
             worker
@@ -296,6 +300,50 @@ pub(crate) fn execute(
     store.retained_settle(id, result.is_ok(), finish)?;
     result?;
     Ok(receipt)
+}
+
+fn context_completion(
+    receipt: &ContextWorkReceipt,
+    worker: &super::retained::RetainedWorker,
+) -> Result<crate::completion_evidence::CompletionEvidence> {
+    use crate::completion_evidence::*;
+    let contract = CompletionContract {
+        conditions: receipt
+            .result
+            .iter()
+            .map(|record| AcceptanceCondition::ArtifactPresent {
+                artifact: record.reference.clone(),
+            })
+            .collect(),
+    };
+    let mut evidence = CompletionEvidence::new(
+        receipt.id.to_string().parse()?,
+        WorkKind::Context,
+        EvidenceOwner::Native,
+        match receipt.state {
+            ContextWorkState::Completed => CompletionClaim::Completed,
+            ContextWorkState::Cancelled => CompletionClaim::Cancelled,
+            _ => CompletionClaim::Failed,
+        },
+        contract,
+    )?;
+    evidence.revision = 2;
+    evidence.budget.remaining_actions =
+        Some(CONTEXT_TOTAL_OPS.saturating_sub(worker.context_operations));
+    if let Some(artifact) = &receipt.result {
+        evidence.delivered_hash = Some(artifact.reference.content_hash.clone());
+        evidence.delivered_bytes = artifact.byte_len;
+        // ArtifactStore::put just durably acknowledged these exact generated
+        // bytes. Reuse that hash receipt; no redundant verifier/model request.
+        evidence.artifacts.push(ArtifactEvidence {
+            generation: evidence.generation,
+            artifact: artifact.clone(),
+            verified: true,
+        });
+    }
+    evidence.evaluate();
+    evidence.validate()?;
+    Ok(evidence)
 }
 
 fn materialize(

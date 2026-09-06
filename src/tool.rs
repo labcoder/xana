@@ -446,6 +446,14 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
+    pub(crate) fn command_status(
+        name: &str,
+        output: &str,
+    ) -> Option<crate::completion_evidence::CommandStatus> {
+        (name == "run_command")
+            .then(|| run_command::observed_status(output))
+            .flatten()
+    }
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -614,7 +622,12 @@ impl ToolRegistry {
             ))
             .await;
         match execution {
-            Ok(output) => ToolResult::success(call.id.clone(), output),
+            Ok(output) => {
+                let status = Self::command_status(&call.name, &output);
+                let mut result = ToolResult::success(call.id.clone(), output);
+                result.command_status = status;
+                result
+            }
             Err(error) => {
                 self.record_tool_event(
                     context.operation_id,

@@ -286,6 +286,15 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/automation.md"),
     },
     BundledDoc {
+        id: "user.completion-evidence",
+        title: "Completion evidence",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["completion", "checks", "automation", "verification"],
+        body: include_str!("../docs/user/completion-evidence.md"),
+    },
+    BundledDoc {
         id: "user.configuration",
         title: "Configuration",
         audience: USER_AUDIENCE,
@@ -620,6 +629,7 @@ mod tests {
         let catalog = default_catalog();
         for (topic, id) in [
             ("memory", "user.personal-memory"),
+            ("completion", "user.completion-evidence"),
             ("recall", "user.project-recall"),
             ("compaction", "user.semantic-compaction"),
             ("schedules", "user.durable-schedules"),

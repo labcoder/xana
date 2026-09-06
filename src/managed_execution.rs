@@ -4,6 +4,7 @@
 //! conversation, one-shot, activity, and TUI-driver projections around it.
 
 mod activity;
+mod failure;
 mod memory_context;
 mod memory_controls;
 #[cfg(test)]
@@ -495,10 +496,8 @@ pub(crate) async fn run_codex_chat(
                 continue;
             }
         };
-        server.set_usage_identity(
-            thread.conversation_id().to_string(),
-            crate::identity::OperationId::new(),
-        );
+        let operation_id = crate::identity::OperationId::new();
+        server.set_usage_identity(thread.conversation_id().to_string(), operation_id);
         let _foreground = memory_context::foreground(config.memory.as_ref())?;
         let managed_input =
             match memory_context::prepare(config.memory.as_ref(), thread.conversation_id(), input)
@@ -528,6 +527,14 @@ pub(crate) async fn run_codex_chat(
                 &mut handler,
             )
             .await;
+        if let Err(error) = &result {
+            crate::diagnostics::emit_terminal(failure::diagnostic(
+                error,
+                Some(operation_id),
+                thread.conversation_id(),
+                &config,
+            ));
+        }
         handler.finish_stream()?;
         last_activity = handler.into_retained();
         drop(_foreground);
@@ -682,6 +689,8 @@ async fn run_codex_one_shot_inner(
         memory_context::prepare(config.memory.as_ref(), conversation_id, &request.input)
             .await
             .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
+    let operation_id = crate::identity::OperationId::new();
+    server.set_usage_identity(conversation_id.to_string(), operation_id);
     let turn = server
         .run_turn(
             &thread_id,
@@ -697,6 +706,14 @@ async fn run_codex_one_shot_inner(
             &mut handler,
         )
         .await;
+    if let Err(error) = &turn {
+        let diagnostic = failure::diagnostic(error, Some(operation_id), conversation_id, config);
+        crate::diagnostics::emit_terminal(diagnostic.clone());
+        handler
+            .reporter
+            .managed_observation(&ManagedClientEvent::TerminalDiagnostic(diagnostic))
+            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+    }
     match turn {
         Ok(_) if handler.approval_required => Err(OneShotFailure::new(
             ExitCategory::Approval,

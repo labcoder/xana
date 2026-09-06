@@ -17,6 +17,7 @@ fn worker() -> RetainedWorker {
         session,
         goal: "Keep a bounded task alive".into(),
         admission: ChildAdmission {
+            completion: Default::default(),
             attribution: ChildAttribution {
                 agent_id: id,
                 parent_agent_id: AgentId::for_session(session),
@@ -127,6 +128,45 @@ fn interrupted_attempt_is_not_requeued_and_stop_is_sticky() {
     assert!(worker.active.is_none() && worker.mailbox.is_empty());
     assert_eq!(worker.state, WorkerState::Stopped);
     assert!(worker.finish(attempt, None, "duplicate").is_err());
+}
+
+#[test]
+fn unsupported_completion_needs_review_and_never_looks_completed() {
+    let mut worker = worker();
+    let attempt = Uuid::new_v4();
+    worker.state = WorkerState::Running;
+    worker.active = Some((
+        attempt,
+        FollowUp {
+            id: Uuid::new_v4(),
+            text: "finish".into(),
+        },
+    ));
+    let mut report = ChildReport::completed(
+        worker.admission.attribution.clone(),
+        "all done".into(),
+        super::super::ChildUsage::Unknown,
+    );
+    let mut evidence = crate::completion_evidence::CompletionEvidence::new(
+        report.attribution.operation_id,
+        crate::completion_evidence::WorkKind::Child,
+        crate::completion_evidence::EvidenceOwner::Native,
+        crate::completion_evidence::CompletionClaim::Completed,
+        Default::default(),
+    )
+    .unwrap();
+    evidence.revision = 2;
+    evidence.omitted_observations = true;
+    evidence.evaluate();
+    report.apply_completion_evidence(evidence, 2048);
+    assert_eq!(report.status, ChildTerminalStatus::Failed);
+    assert_eq!(report.lifecycle(), super::super::ChildLifecycle::Failed);
+    assert_eq!(report.output.as_deref(), Some("all done"));
+    assert!(report.error.as_ref().unwrap().contains("Needs attention"));
+    let receipt = worker.finish(attempt, Some(&report), "finished").unwrap();
+    assert_eq!(receipt.status, ChildTerminalStatus::Failed);
+    assert!(receipt.summary.contains("Needs attention"));
+    assert_eq!(worker.state, WorkerState::NeedsReview);
 }
 
 #[test]

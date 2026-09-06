@@ -684,7 +684,23 @@ async fn runtime_shutdown_observes_child_terminal_commit_before_stopping() {
 
 #[tokio::test]
 async fn child_events_never_claim_a_transition_whose_commit_failed() {
-    for fail_at in 1..=4 {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum FailedRecord {
+        Admission,
+        Queued,
+        Running,
+        Declaration,
+        Collected,
+        Report,
+    }
+    for failed_record in [
+        FailedRecord::Admission,
+        FailedRecord::Queued,
+        FailedRecord::Running,
+        FailedRecord::Declaration,
+        FailedRecord::Collected,
+        FailedRecord::Report,
+    ] {
         let directory = tempdir().expect("temporary directory");
         let workspace = directory
             .path()
@@ -703,11 +719,34 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
         );
         let (commits, mut commit_receiver) = crate::orchestration::ChildCommitSender::channel();
         let commit_task = tokio::spawn(async move {
-            let mut count = 0;
+            let mut rejected = false;
             while let Some(command) = commit_receiver.recv().await {
-                count += 1;
-                let result = if count == fail_at {
-                    Err(format!("injected commit failure {fail_at}"))
+                let target = match &command.record {
+                    SessionRecord::ChildAdmitted { .. } => Some(FailedRecord::Admission),
+                    SessionRecord::ChildLifecycleChanged {
+                        lifecycle: ChildLifecycle::Queued,
+                        ..
+                    } => Some(FailedRecord::Queued),
+                    SessionRecord::ChildLifecycleChanged {
+                        lifecycle: ChildLifecycle::Running,
+                        ..
+                    } => Some(FailedRecord::Running),
+                    SessionRecord::CompletionEvidenceRecorded { evidence }
+                        if evidence.revision == 1 =>
+                    {
+                        Some(FailedRecord::Declaration)
+                    }
+                    SessionRecord::CompletionEvidenceRecorded { evidence }
+                        if evidence.revision == 2 =>
+                    {
+                        Some(FailedRecord::Collected)
+                    }
+                    SessionRecord::ChildReportCommitted { .. } => Some(FailedRecord::Report),
+                    _ => None,
+                };
+                let result = if !rejected && target == Some(failed_record) {
+                    rejected = true;
+                    Err(format!("injected {failed_record:?} commit failure"))
                 } else {
                     Ok(())
                 };
@@ -729,12 +768,12 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                 },
             )
             .await;
-        match fail_at {
-            1 => {
+        match failed_record {
+            FailedRecord::Admission => {
                 assert!(spawn.is_err(), "admission commit should fail");
                 assert!(handle.list_agents().await.expect("children").is_empty());
             }
-            2 => {
+            FailedRecord::Queued => {
                 assert!(spawn.is_err(), "queued transition should fail");
                 let children = handle.list_agents().await.expect("owned child");
                 assert_eq!(children.len(), 1);
@@ -747,7 +786,7 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                     .expect("recovered failed report");
                 assert_eq!(report.status, ChildTerminalStatus::Failed);
             }
-            3 => {
+            FailedRecord::Running | FailedRecord::Declaration | FailedRecord::Collected => {
                 let child_id = spawn
                     .expect("running transition happens after admission")
                     .admission
@@ -759,7 +798,7 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                     .expect("recovered failed report");
                 assert_eq!(report.status, ChildTerminalStatus::Failed);
             }
-            4 => {
+            FailedRecord::Report => {
                 let child_id = spawn
                     .expect("report commit happens after admission")
                     .admission
@@ -767,7 +806,6 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                     .agent_id;
                 assert!(handle.await_agent(child_id).await.is_err());
             }
-            _ => unreachable!(),
         }
         tokio::task::yield_now().await;
         let emitted = std::iter::from_fn(|| event_receiver.try_recv().ok()).collect::<Vec<_>>();
@@ -775,10 +813,15 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
             .iter()
             .filter(|event| matches!(event, AgentEvent::ChildLifecycleChanged { .. }))
             .count();
-        let expected_lifecycle_count = [0, 0, 2, 3, 3][fail_at];
+        let expected_lifecycle_count = match failed_record {
+            FailedRecord::Admission => 0,
+            FailedRecord::Queued => 2,
+            FailedRecord::Running | FailedRecord::Declaration | FailedRecord::Report => 3,
+            FailedRecord::Collected => 4,
+        };
         assert_eq!(
             lifecycle_count, expected_lifecycle_count,
-            "commit {fail_at}"
+            "commit {failed_record:?}"
         );
         let terminal_was_emitted = emitted.iter().any(|event| {
             matches!(
@@ -793,8 +836,14 @@ async fn child_events_never_claim_a_transition_whose_commit_failed() {
                     }
             )
         });
-        assert_eq!(terminal_was_emitted, matches!(fail_at, 2 | 3));
-        if fail_at == 2 {
+        assert_eq!(
+            terminal_was_emitted,
+            !matches!(
+                failed_record,
+                FailedRecord::Admission | FailedRecord::Report
+            )
+        );
+        if failed_record == FailedRecord::Queued {
             assert!(!emitted.iter().any(|event| matches!(
                 event,
                 AgentEvent::ChildLifecycleChanged {

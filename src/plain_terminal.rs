@@ -225,6 +225,17 @@ impl<W: Write> EventRenderer<W> {
 
     fn render(&mut self, event: &AgentEvent) -> io::Result<()> {
         match event {
+            AgentEvent::CompletionEvidenceRecorded { evidence, .. } => {
+                self.finish_stream()?;
+                writeln!(self.output, "xana> {}", evidence.summary())?;
+            }
+            AgentEvent::TerminalDiagnostic { diagnostic } => {
+                writeln!(
+                    self.output,
+                    "xana> diagnostic: {:?} / {:?}",
+                    diagnostic.outcome, diagnostic.failure.category
+                )?;
+            }
             AgentEvent::OperationStateChanged {
                 state: OperationState::Running,
                 ..
@@ -545,6 +556,14 @@ impl<W: Write> EventRenderer<W> {
                     } else {
                         ""
                     },
+                )?;
+                writeln!(
+                    self.output,
+                    "xana> {}",
+                    receipt.evidence.as_ref().map_or_else(
+                        || "Task correctness evidence unavailable (legacy or vendor-owned execution).".to_owned(),
+                        |evidence| evidence.summary(),
+                    ),
                 )?;
             }
         }
@@ -1316,6 +1335,7 @@ pub(crate) async fn run_one_shot(
     reporter: &mut OneShotReporter<'_>,
     workspace_host: &WorkspaceHost,
     conversation: ConversationRef,
+    contract: crate::completion_evidence::CompletionContract,
 ) -> Result<OneShotSuccess, OneShotFailure> {
     if let Some(suspension) = &header.round_budget_suspension {
         return Err(round_budget_incomplete_failure(
@@ -1333,9 +1353,11 @@ pub(crate) async fn run_one_shot(
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let operation_id = OperationId::new();
     client
-        .send(RuntimeCommand::SubmitTurn {
+        .send(RuntimeCommand::SubmitFiniteTurn {
             operation_id,
             input,
+            kind: crate::completion_evidence::WorkKind::Root,
+            contract,
         })
         .await
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
@@ -1459,6 +1481,27 @@ pub(crate) async fn run_one_shot(
                     .map_err(|error| {
                         OneShotFailure::new(ExitCategory::Runtime, error.to_string())
                     })?;
+                if !approval_required
+                    && outcome != OperationOutcome::Interrupted
+                    && let Some(evidence) = client
+                        .snapshot()
+                        .semantic
+                        .completion_receipts
+                        .iter()
+                        .find(|receipt| receipt.run_id == operation_id)
+                        .and_then(|receipt| receipt.evidence.as_ref())
+                    && evidence.claim == crate::completion_evidence::CompletionClaim::Completed
+                    && matches!(
+                        evidence.outcome,
+                        crate::completion_evidence::EvidenceOutcome::Incomplete
+                            | crate::completion_evidence::EvidenceOutcome::NeedsAttention
+                    )
+                {
+                    return Err(OneShotFailure::new(
+                        ExitCategory::Incomplete,
+                        evidence.summary(),
+                    ));
+                }
                 return match outcome {
                     OperationOutcome::Completed => Ok(OneShotSuccess {
                         text: final_text.unwrap_or_default(),
@@ -2037,6 +2080,7 @@ mod tests {
         };
         let mut handle = crate::orchestration::AgentHandleSnapshot::admitted(
             crate::orchestration::ChildAdmission {
+                completion: Default::default(),
                 attribution,
                 plan: None,
                 task_preview: "review".to_owned(),

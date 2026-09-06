@@ -25,6 +25,7 @@ pub(crate) struct ManagedClientPlanStep {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ManagedClientEvent {
+    TerminalDiagnostic(crate::failure::TerminalDiagnostic),
     ThreadReady,
     AssistantDelta(String),
     ReasoningSummaryDelta(String),

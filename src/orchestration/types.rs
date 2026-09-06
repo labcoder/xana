@@ -63,6 +63,8 @@ pub(crate) enum ChildResultSchema {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChildRestrictions {
     #[serde(default)]
+    pub(crate) completion: crate::completion_evidence::CompletionContract,
+    #[serde(default)]
     pub(crate) permission_mode: Option<PermissionMode>,
     #[serde(default)]
     pub(crate) max_tool_rounds: Option<usize>,
@@ -234,6 +236,8 @@ pub(crate) enum ChildReportReference {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChildReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<crate::completion_evidence::CompletionEvidence>,
     pub(crate) version: u32,
     pub(crate) attribution: ChildAttribution,
     pub(crate) status: ChildTerminalStatus,
@@ -246,6 +250,25 @@ pub(crate) struct ChildReport {
 }
 
 impl ChildReport {
+    pub(crate) fn apply_completion_evidence(
+        &mut self,
+        evidence: crate::completion_evidence::CompletionEvidence,
+        max_error_bytes: usize,
+    ) {
+        if self.status == ChildTerminalStatus::Completed && !evidence.supported() {
+            self.status = ChildTerminalStatus::Failed;
+            self.error = Some(truncate_utf8(&evidence.summary(), max_error_bytes));
+        }
+        self.evidence = Some(evidence);
+    }
+
+    pub(crate) fn completion_supported(&self) -> bool {
+        self.status == ChildTerminalStatus::Completed
+            && self
+                .evidence
+                .as_ref()
+                .is_none_or(|evidence| evidence.supported())
+    }
     #[cfg(test)]
     pub(crate) fn completed(
         attribution: ChildAttribution,
@@ -255,6 +278,7 @@ impl ChildReport {
         let byte_len = output.len();
         Self {
             version: CHILD_REPORT_VERSION,
+            evidence: None,
             attribution,
             status: ChildTerminalStatus::Completed,
             schema: ChildResultSchema::Summary,
@@ -274,6 +298,7 @@ impl ChildReport {
     ) -> Self {
         Self {
             version: CHILD_REPORT_VERSION,
+            evidence: None,
             attribution,
             status: ChildTerminalStatus::Completed,
             schema,
@@ -340,6 +365,7 @@ impl ChildReport {
         let byte_len = error.len();
         Self {
             version: CHILD_REPORT_VERSION,
+            evidence: None,
             attribution,
             status,
             schema,
@@ -391,6 +417,8 @@ pub(crate) struct ChildCancellationReceipt {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ChildAdmission {
+    #[serde(default)]
+    pub(crate) completion: crate::completion_evidence::CompletionContract,
     pub(crate) attribution: ChildAttribution,
     #[serde(default)]
     pub(crate) plan: Option<PlanChildAttribution>,
@@ -426,6 +454,7 @@ impl ChildAdmission {
         Self {
             attribution,
             plan: None,
+            completion: Default::default(),
             task_preview: truncate_utf8(task, MAX_CHILD_TASK_PREVIEW_BYTES),
             task_hash: blake3::hash(task.as_bytes()).to_hex().to_string(),
             result_schema,
@@ -556,6 +585,9 @@ impl AgentHandleSnapshot {
 }
 
 pub(crate) fn validate_spawn_request(request: &SpawnAgentRequest) -> Result<(), &'static str> {
+    if request.restrictions.completion.validate().is_err() {
+        return Err("invalid bounded completion conditions");
+    }
     if request.task.trim().is_empty() {
         return Err("child task must not be blank");
     }
@@ -700,6 +732,7 @@ mod tests {
             model: "small".to_owned(),
         };
         let admission = ChildAdmission {
+            completion: Default::default(),
             attribution: attribution.clone(),
             plan: None,
             task_preview: "task".to_owned(),

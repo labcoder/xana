@@ -191,6 +191,12 @@ impl TerminalManagedHandler {
     fn render_event(&mut self, event: ManagedClientEvent) -> Result<(), CodexError> {
         self.retained.push(&event);
         match event {
+            ManagedClientEvent::TerminalDiagnostic(diagnostic) => {
+                self.line(format_args!(
+                    "diagnostic: {:?} / {:?}",
+                    diagnostic.outcome, diagnostic.failure.category
+                ))?;
+            }
             ManagedClientEvent::ThreadReady | ManagedClientEvent::TokenUsageUpdated { .. } => {}
             ManagedClientEvent::AssistantDelta(delta) => {
                 self.retained.assistant_streamed |= !delta.is_empty();
@@ -385,6 +391,7 @@ pub(super) fn render_retained_activity(activity: &RetainedActivity) -> Result<()
 
 fn retained_cost(notification: &ManagedClientEvent) -> usize {
     match notification {
+        ManagedClientEvent::TerminalDiagnostic(_) => 1024,
         ManagedClientEvent::AssistantDelta(delta)
         | ManagedClientEvent::ReasoningSummaryDelta(delta)
         | ManagedClientEvent::ReasoningDelta(delta)

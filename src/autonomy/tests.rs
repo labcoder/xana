@@ -78,6 +78,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, ProtectedStore, TestCustody, Job)
 
 fn terminal(job: &Job, outcome: RunOutcome, at: i64) -> RunReceipt {
     RunReceipt {
+        completion: None,
         occurrence: job.occurrence.unwrap(),
         scheduled_at: job.next.at,
         finished_at: at,
@@ -372,6 +373,46 @@ async fn scheduled_native_runtime_reads_only_pre_authorized_data_and_reopens_rec
 
 struct CancellableFixture {
     started: Arc<AtomicUsize>,
+}
+
+#[tokio::test]
+async fn scheduled_false_claim_after_failed_read_finishes_needs_you_with_budget_evidence() {
+    let (_home, store, _custody, mut job) = fixture();
+    job.action = Action::NativeTask {
+        prompt: "Read the missing note.txt and finish".into(),
+        workspace_reads: true,
+    };
+    store.autonomy_create(job.clone()).unwrap();
+    host::policy_edit(&store, 0, Some(true), None, false, false).unwrap();
+    let executor = NativeFixture {
+        store: store.clone(),
+        requests: Arc::new(Mutex::new(vec![])),
+        permission: PolicyDecision::Allow,
+        lose_response: false,
+    };
+    let finished = tokio::time::timeout(
+        Duration::from_secs(10),
+        runner::tick(
+            &store,
+            &executor,
+            &|| Ok(job.next.at),
+            &CancellationToken::new(),
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap()
+    .unwrap();
+    assert_eq!(finished.state, JobState::NeedsYou);
+    let receipt = finished.last_receipt.unwrap();
+    assert_eq!(receipt.outcome, RunOutcome::NeedsYou);
+    let evidence = receipt.completion.unwrap();
+    assert!(!evidence.supported());
+    assert!(evidence.budget.remaining_requests.is_some());
+    assert!(evidence.budget.remaining_tokens.is_some());
+    assert_eq!(evidence.budget.remaining_cost_microusd, None);
+    assert_eq!(evidence.budget.remaining_millis, None);
+    assert!(store.background_lease().unwrap().is_some());
 }
 impl runner::TaskExecutor for CancellableFixture {
     fn execute<'a>(

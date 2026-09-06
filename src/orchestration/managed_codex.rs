@@ -232,6 +232,7 @@ async fn run_app_server(
     match turn {
         Ok(result) => match shutdown {
             Ok(()) => ChildExecutionOutcome::Completed(ChildExecutionOutput {
+                evidence: None,
                 text: result.final_text,
                 usage: result.usage.map_or(
                     ChildUsage::Measured {

@@ -166,6 +166,7 @@ fn unchanged_ci_status_cannot_claim_a_task_and_terminal_status_finishes_once() {
     store.autonomy_create(job.clone()).unwrap();
     let running = store.autonomy_claim(at).unwrap().unwrap();
     let receipt = |running: &crate::autonomy::Job, finished_at| RunReceipt {
+        completion: None,
         occurrence: running.occurrence.unwrap(),
         scheduled_at: running.next.at,
         finished_at,

@@ -154,7 +154,8 @@ pub(super) fn dependencies(
     record: &SessionRecord,
 ) -> Result<()> {
     match record {
-        SessionRecord::OperationAccepted { input_entry_id, .. } => {
+        SessionRecord::OperationAccepted { input_entry_id, .. }
+        | SessionRecord::FiniteOperationAccepted { input_entry_id, .. } => {
             entry(home, state, *input_entry_id)?
         }
         SessionRecord::StepStarted {

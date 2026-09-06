@@ -2,6 +2,20 @@ use super::*;
 use std::collections::HashMap;
 use zeroize::Zeroizing;
 
+impl ProtectedStore {
+    /// A temporary, exact-record SQLite fault for the real runtime ACK fixture.
+    pub(crate) fn reject_diagnostic_fixture_record(&self) -> Result<()> {
+        self.with_database(|db| {
+            db.connection.execute_batch(
+                "CREATE TEMP TRIGGER diagnostic_fixture_failure BEFORE INSERT ON native_records
+                WHEN instr(CAST(NEW.body AS TEXT), 'canary-persistence-message') > 0
+                BEGIN SELECT RAISE(ABORT, 'canary-private-database-error'); END;",
+            )?;
+            Ok(())
+        })
+    }
+}
+
 #[test]
 fn memory_corrupt_routing_and_oversized_blobs_fail_closed() {
     use crate::memory::{MemoryContext, MemoryControlEdit, MemoryOwner, MemoryScope};

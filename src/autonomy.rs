@@ -131,6 +131,8 @@ pub(crate) enum RunOutcome {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RunReceipt {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) completion: Option<crate::completion_evidence::CompletionEvidence>,
     pub(crate) occurrence: Uuid,
     pub(crate) scheduled_at: i64,
     pub(crate) finished_at: i64,
@@ -231,6 +233,17 @@ impl Job {
 }
 impl RunReceipt {
     pub(crate) fn validate(&self) -> Result<()> {
+        if let Some(evidence) = &self.completion {
+            evidence.validate_outcome()?;
+            ensure!(
+                evidence.generation.to_string() == self.occurrence.to_string(),
+                "completion evidence belongs to another scheduled occurrence"
+            );
+            ensure!(
+                self.outcome != RunOutcome::Completed || evidence.supported(),
+                "scheduled completion contradicts its evidence"
+            );
+        }
         ensure!(
             !self.occurrence.is_nil()
                 && self.scheduled_at > 0

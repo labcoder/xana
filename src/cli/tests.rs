@@ -74,6 +74,24 @@ fn parses_plain_tui_and_one_shot_surface_contracts() {
 }
 
 #[test]
+fn finite_acceptance_flags_require_an_explicit_one_shot() {
+    let cli = Cli::try_parse_from([
+        "xana",
+        "-p",
+        "check this",
+        "--accept-command",
+        "cargo test --offline",
+        "--accept-cwd",
+        "crates/example",
+    ])
+    .unwrap();
+    assert_eq!(cli.accept_command.as_deref(), Some("cargo test --offline"));
+    assert_eq!(cli.accept_cwd.as_deref(), Some("crates/example"));
+    assert!(Cli::try_parse_from(["xana", "--accept-command", "test"]).is_err());
+    assert!(Cli::try_parse_from(["xana", "-p", "check", "--accept-cwd", "."]).is_err());
+}
+
+#[test]
 fn parses_auth_lifecycle_commands() {
     assert_eq!(
         Cli::try_parse_from(["xana", "auth", "status", "codex"])

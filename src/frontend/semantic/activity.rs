@@ -308,6 +308,8 @@ pub(crate) struct CheckReceiptV1 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CompletionReceiptV1 {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) evidence: Option<Box<crate::completion_evidence::CompletionEvidence>>,
     pub(crate) id: Uuid,
     pub(crate) conversation_id: ConversationId,
     pub(crate) run_id: OperationId,
@@ -324,6 +326,14 @@ pub(crate) struct CompletionReceiptV1 {
 
 impl CompletionReceiptV1 {
     pub(crate) fn validate(&self) -> Result<(), SemanticError> {
+        if let Some(evidence) = &self.evidence
+            && (evidence.generation != self.run_id || evidence.validate_outcome().is_err())
+        {
+            return Err(SemanticError::InvalidStructure {
+                field: "completion evidence",
+                reason: "must be bounded and belong to this exact run",
+            });
+        }
         if self.execution.conversation_id != self.conversation_id
             || self.execution.run_id != self.run_id
         {

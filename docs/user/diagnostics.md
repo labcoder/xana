@@ -60,7 +60,9 @@ inside the configured log root. Old malformed files cannot prevent startup;
 sink faults degrade diagnostics rather than runtime authority or execution.
 On ordinary shutdown Xana requests a writer drain and waits for its bounded
 acknowledgement before joining the writer; an unresponsive sink is detached at
-the deadline rather than hanging process exit.
+the 750 ms deadline rather than hanging process exit. A failed or missing
+flush acknowledgement increments the writer-fault count and retains the run
+marker. Doctor reports that incomplete shutdown; it is not silently labeled clean.
 
 Desktop notification preferences are separate from diagnostic retention:
 
@@ -90,6 +92,56 @@ size, and dropped-event count. A bounded nonblocking writer prevents logging
 from stalling the agent. Queue pressure increments a loss counter carried by a
 later record and reported by Doctor.
 
+### Why a turn stopped
+
+Native turns emit a typed `terminal_diagnostic` before failure cleanup, retaining
+the operation and available Conversation identity. The same bounded value reaches
+CLI stream consumers, TUI Activity, and Desktop facts, so an adapter does not have
+to guess from a generic "turn not completed" message. Failed, declined, suspended,
+cancelled, interrupted, and host-shutdown observations remain distinct. Normal
+shutdown is not evidence that an earlier failed turn completed successfully.
+
+A failed durable append disables that session writer: the live client can show
+the storage failure even when a final operation record cannot be committed.
+Do not treat that as a safely finished operation or automatically replay it.
+Stop the damaged owner and inspect the retained operation before explicitly
+reopening its Conversation or starting a new one. A distinct new request after
+reopening does not reconcile or erase the old operation's unresolved status.
+
+For native OpenAI-compatible and Anthropic requests, available facts include an
+HTTP status, failure stage and category (rejection, rate limit, service failure,
+transport, timeout, malformed response, or broken stream). A timeout with no
+response does not prove that a provider performed no work. An opaque request ID
+is grammar/length checked and **always hashed**; raw IDs, response bodies, headers,
+URLs, route labels and model labels are not logged. Route/model correlation uses
+digests when the owner exposes those identities. Xana's numeric version is
+included; a source-revision digest is present only when supplied at build time.
+Unavailable Run identities, HTTP facts, request IDs, or managed-provider details
+remain absent rather than inferred from error text.
+
+To inspect a failure after exiting Xana:
+
+1. Run `xana logs list`, then `xana logs show <exact-listed-log> --lines 200`.
+2. Locate `terminal_diagnostic` and its operation ID. Compare the typed category,
+   stage and HTTP status, when present; a `provider_failed` record preserves the
+   original provider fact even if later accounting or persistence also fails.
+   An originating provider diagnostic can coexist with a later owner outcome,
+   such as shutdown or suspension; the latter does not erase the former.
+   Read/export projections also sanitize legacy free-form identifiers without
+   rewriting the original retained files.
+3. Run `xana doctor` to check writer faults, lost records and unclean markers.
+   If diagnostics were disabled or a target was filtered out, the missing record
+   does not establish the cause.
+
+Retry advice is observational, not authorization or an automatic retry. Submit
+a new request only when appropriate; unresolved effects still require review
+through the existing recovery controls. No diagnostic path replays a tool or
+provider request. Managed Codex failures report only facts Xana actually receives;
+an opaque vendor failure is not reclassified as HTTP 429 or exhausted credits.
+
+Snapshots retain at most 64 terminal diagnostics. Logs retain their normal
+bounded queue, file and age limits; enabling debug/trace never records content.
+
 No level records credentials, authorization/OAuth material, environment
 values, prompt or response bodies, hidden reasoning, file/clipboard contents,
 raw paths or URLs, tool arguments/results, or artifact bytes. Session journals,
@@ -114,7 +166,7 @@ Before writing an in-process crash report, Xana makes a best-effort terminal
 restore. A report contains platform/version facts, a typed panic/task exit,
 hashed panic location and backtrace identity, and at most 64 metadata-only
 breadcrumbs. Panic text is excluded. A locked per-process run marker is removed
-on clean shutdown. A later process can distinguish a currently locked marker
+only after acknowledged clean shutdown. A later process can distinguish a currently locked marker
 from a stale prior marker and points to `xana logs list` and `xana doctor`.
 
 An OS kill, power loss, or process abort may leave only the unclean marker; Xana

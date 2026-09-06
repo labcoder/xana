@@ -37,6 +37,7 @@ pub(crate) enum HistorySubject {
     Result(crate::identity::ToolResultId),
     CompactionOperation(OperationId),
     ChildOperation(OperationId),
+    Completion(OperationId),
 }
 
 impl HistorySubject {
@@ -55,6 +56,7 @@ impl HistorySubject {
             Self::Result(id) => ("result", id.to_string()),
             Self::CompactionOperation(id) => ("compaction_operation", id.to_string()),
             Self::ChildOperation(id) => ("child_operation", id.to_string()),
+            Self::Completion(id) => ("completion", id.to_string()),
         }
     }
 }
@@ -344,6 +346,7 @@ pub(super) fn record_subjects(record: &SessionRecord) -> Vec<HistorySubject> {
         SessionRecord::ConversationEntryAppended { entry } => vec![S::Entry(entry.id)],
         SessionRecord::OperationStateChanged { operation_id, .. }
         | SessionRecord::OperationAccepted { operation_id, .. }
+        | SessionRecord::FiniteOperationAccepted { operation_id, .. }
         | SessionRecord::StepStarted { operation_id, .. }
         | SessionRecord::OperationSuspended { operation_id, .. }
         | SessionRecord::OperationFinished { operation_id, .. }
@@ -357,6 +360,10 @@ pub(super) fn record_subjects(record: &SessionRecord) -> Vec<HistorySubject> {
                 S::Result(intent.result_id),
             ]
         }
+        SessionRecord::CompletionEvidenceRecorded { evidence } => vec![
+            S::Operation(evidence.generation),
+            S::Completion(evidence.generation),
+        ],
         SessionRecord::InvocationResultAppended { result } => {
             vec![S::Operation(result.operation_id)]
         }

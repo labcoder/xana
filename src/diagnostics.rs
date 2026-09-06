@@ -92,6 +92,26 @@ impl crate::outbound::OutboundAuditObserver for DiagnosticOutboundAudit {
 struct DiagnosticTelemetry;
 
 impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
+    fn provider_failure(
+        &self,
+        operation: crate::identity::OperationId,
+        failure: crate::failure::FailureDetails,
+    ) {
+        let mut fact = DiagnosticFact::new(
+            DiagnosticLevel::Error,
+            DiagnosticTarget::Provider,
+            EventKind::ProviderFailed,
+            EventOutcome::Failed,
+        )
+        .correlation(operation.to_string());
+        fact.failure = Some(failure);
+        emit(fact);
+    }
+
+    fn terminal(&self, diagnostic: crate::failure::TerminalDiagnostic) {
+        emit_terminal(diagnostic);
+    }
+
     fn context_phase(&self, event: crate::telemetry::ContextPhaseEvent) {
         let mut fact = DiagnosticFact::new(
             DiagnosticLevel::Info,
@@ -129,11 +149,22 @@ impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
                 EventOutcome::Failed,
             ),
         };
-        emit(
-            DiagnosticFact::new(DiagnosticLevel::Warn, target, kind, outcome)
-                .subject(event.subject)
-                .correlation(event.operation_id.to_string()),
-        );
+        let mut fact = DiagnosticFact::new(DiagnosticLevel::Warn, target, kind, outcome)
+            .subject(event.subject)
+            .correlation(event.operation_id.to_string());
+        use crate::failure::{FailureCategory, FailureDetails, FailureStage};
+        fact.failure = match event.kind {
+            RuntimeTelemetryKind::StorageFailed => Some(FailureDetails::new(
+                FailureCategory::Storage,
+                FailureStage::Persistence,
+            )),
+            RuntimeTelemetryKind::ToolDenied => Some(FailureDetails::new(
+                FailureCategory::PermissionDeclined,
+                FailureStage::Permission,
+            )),
+            _ => None,
+        };
+        emit(fact);
     }
 }
 
@@ -154,6 +185,7 @@ static PANIC_HOOK: OnceLock<()> = OnceLock::new();
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EventKind {
+    TerminalDiagnostic,
     ContextPhase,
     ApplicationStarted,
     ApplicationStopped,
@@ -181,10 +213,15 @@ pub(crate) enum EventOutcome {
     Denied,
     Cancelled,
     Unavailable,
+    Suspended,
+    Interrupted,
+    Stopped,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct DiagnosticFact {
+    failure: Option<crate::failure::FailureDetails>,
+    terminal: Option<crate::failure::TerminalDiagnostic>,
     pub(crate) level: DiagnosticLevel,
     pub(crate) target: DiagnosticTarget,
     pub(crate) kind: EventKind,
@@ -203,6 +240,8 @@ impl DiagnosticFact {
         outcome: EventOutcome,
     ) -> Self {
         Self {
+            failure: None,
+            terminal: None,
             level,
             target,
             kind,
@@ -215,12 +254,22 @@ impl DiagnosticFact {
     }
 
     pub(crate) fn subject(mut self, value: impl AsRef<str>) -> Self {
-        self.subject = Some(sanitize_identifier(value.as_ref()));
+        let value = value.as_ref();
+        self.subject = Some(if static_subject(value) {
+            value.to_owned()
+        } else {
+            hash_label(value)
+        });
         self
     }
 
     pub(crate) fn correlation(mut self, value: impl AsRef<str>) -> Self {
-        self.correlation_id = Some(sanitize_identifier(value.as_ref()));
+        let value = value.as_ref();
+        self.correlation_id = Some(
+            Uuid::parse_str(value)
+                .map(|id| id.to_string())
+                .unwrap_or_else(|_| hash_label(value)),
+        );
         self
     }
 }
@@ -228,6 +277,10 @@ impl DiagnosticFact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DiagnosticRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure: Option<crate::failure::FailureDetails>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal: Option<crate::failure::TerminalDiagnostic>,
     version: u32,
     timestamp_ms: u64,
     sequence: u64,
@@ -245,6 +298,13 @@ pub(crate) struct DiagnosticRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     size_bytes: Option<u64>,
     dropped_before: u64,
+}
+
+impl DiagnosticRecord {
+    fn redact_identifiers(&mut self) {
+        self.subject = self.subject.as_deref().map(sanitize_identifier);
+        self.correlation_id = self.correlation_id.as_deref().map(sanitize_correlation);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -317,7 +377,7 @@ struct DiagnosticHealthSummary {
 
 enum WriterMessage {
     Record(Vec<u8>),
-    Shutdown(mpsc::SyncSender<()>),
+    Shutdown(mpsc::SyncSender<bool>),
 }
 
 pub(crate) struct DiagnosticRuntime {
@@ -419,7 +479,9 @@ impl Drop for DiagnosticRuntime {
                 .try_send(WriterMessage::Shutdown(ack_sender.clone()))
             {
                 Ok(()) => {
-                    acknowledged = ack_receiver.recv_timeout(SHUTDOWN_WAIT).is_ok();
+                    acknowledged = ack_receiver
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .unwrap_or(false);
                     break;
                 }
                 Err(TrySendError::Full(_)) if std::time::Instant::now() < deadline => {
@@ -433,6 +495,11 @@ impl Drop for DiagnosticRuntime {
         {
             let _ = writer.join();
         }
+        if !acknowledged {
+            // Missing/failed flush is observable even when no subsequent record
+            // exists to carry a dropped-before count. Never erase its run marker.
+            self.active.writer_faults.fetch_add(1, Ordering::Relaxed);
+        }
         let dropped_events = self.active.dropped_total.load(Ordering::Relaxed);
         let writer_faults = self.active.writer_faults.load(Ordering::Relaxed);
         let health_persisted = (dropped_events == 0 && writer_faults == 0)
@@ -443,7 +510,7 @@ impl Drop for DiagnosticRuntime {
             let _ = FileExt::unlock(&file);
             drop(file);
         }
-        if clean_shutdown && health_persisted {
+        if clean_shutdown && acknowledged && health_persisted {
             let _ = fs::remove_file(&self.marker_path);
         }
     }
@@ -461,6 +528,8 @@ pub(crate) fn emit(fact: DiagnosticFact) {
     let sequence = active.sequence.fetch_add(1, Ordering::Relaxed) + 1;
     let carried_drops = active.dropped.swap(0, Ordering::Relaxed);
     let record = DiagnosticRecord {
+        failure: fact.failure,
+        terminal: fact.terminal,
         version: RECORD_VERSION,
         timestamp_ms: now_ms(),
         sequence,
@@ -493,6 +562,34 @@ pub(crate) fn emit(fact: DiagnosticFact) {
             active.dropped_total.fetch_add(1, Ordering::Relaxed);
         }
     }
+}
+
+pub(crate) fn emit_terminal(diagnostic: crate::failure::TerminalDiagnostic) {
+    use crate::failure::TerminalOutcome;
+    let outcome = match diagnostic.outcome {
+        TerminalOutcome::Failed => EventOutcome::Failed,
+        TerminalOutcome::Declined => EventOutcome::Denied,
+        TerminalOutcome::Suspended => EventOutcome::Suspended,
+        TerminalOutcome::Cancelled => EventOutcome::Cancelled,
+        TerminalOutcome::Interrupted => EventOutcome::Interrupted,
+        TerminalOutcome::HostShutdown => EventOutcome::Stopped,
+    };
+    let level = if diagnostic.outcome == TerminalOutcome::Failed {
+        DiagnosticLevel::Error
+    } else {
+        DiagnosticLevel::Warn
+    };
+    let mut fact = DiagnosticFact::new(
+        level,
+        DiagnosticTarget::Runtime,
+        EventKind::TerminalDiagnostic,
+        outcome,
+    );
+    if let Some(operation) = diagnostic.operation_id {
+        fact = fact.correlation(operation.to_string());
+    }
+    fact.terminal = Some(diagnostic);
+    emit(fact);
 }
 
 pub(crate) fn record_task_panic(subject: &str) {
@@ -715,8 +812,9 @@ pub(crate) fn follow_records(paths: &XanaPaths, name: &str, mut output: impl Wri
             }
             consumed = consumed.saturating_add(meta.consumed as u64);
             if meta.within_limit
-                && let Ok(record) = serde_json::from_slice::<DiagnosticRecord>(&line)
+                && let Ok(mut record) = serde_json::from_slice::<DiagnosticRecord>(&line)
             {
+                record.redact_identifiers();
                 serde_json::to_writer(&mut output, &record)?;
                 writeln!(output)?;
             }
@@ -793,9 +891,15 @@ fn writer_loop(
                 }
             }
             WriterMessage::Shutdown(ack) => {
-                let _ = sink.file.flush();
-                let _ = sink.file.sync_data();
-                let _ = ack.try_send(());
+                let flushed = sink
+                    .file
+                    .flush()
+                    .and_then(|()| sink.file.sync_data())
+                    .is_ok();
+                if !flushed {
+                    writer_faults.fetch_add(1, Ordering::Relaxed);
+                }
+                let _ = ack.try_send(flushed);
                 break;
             }
         }
@@ -971,40 +1075,44 @@ fn level_rank(level: DiagnosticLevel) -> u8 {
 
 fn sanitize_identifier(value: &str) -> String {
     let value = value.trim();
-    let safe = !value.is_empty()
-        && value.len() <= 128
-        && !value.starts_with('/')
-        && !value.contains("..")
-        && !value.contains("://")
-        && !looks_secret(value)
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/' | b':')
-        });
-    if safe {
-        value.to_owned()
-    } else {
-        hash_label(value)
+    if let Ok(id) = Uuid::parse_str(value) {
+        return id.to_string();
     }
+    if static_subject(value)
+        || value.strip_prefix("hash:").is_some_and(|digest| {
+            digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return value.to_owned();
+    }
+    hash_label(value)
+}
+
+fn sanitize_correlation(value: &str) -> String {
+    if let Ok(id) = Uuid::parse_str(value) {
+        return id.to_string();
+    }
+    if value.strip_prefix("hash:").is_some_and(|digest| {
+        digest.len() == 16 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }) {
+        return value.to_owned();
+    }
+    hash_label(value)
+}
+
+fn static_subject(value: &str) -> bool {
+    matches!(
+        value,
+        "SourceAdmission"
+            | "SourcePreparation"
+            | "HelperGeneration"
+            | "CheckpointCommit"
+            | "PromptPreparation"
+    )
 }
 
 fn hash_label(value: &str) -> String {
     format!("hash:{}", &blake3::hash(value.as_bytes()).to_hex()[..16])
-}
-
-fn looks_secret(value: &str) -> bool {
-    let lower = value.to_ascii_lowercase();
-    [
-        "authorization",
-        "bearer",
-        "api_key",
-        "apikey",
-        "password",
-        "secret",
-        "token",
-        "sk-",
-    ]
-    .iter()
-    .any(|shape| lower.contains(shape))
 }
 
 fn contains_secret_shape(bytes: &[u8]) -> bool {

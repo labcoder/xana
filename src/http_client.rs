@@ -5,6 +5,7 @@ pub(crate) fn builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
 }
 
+#[cfg(test)]
 pub(crate) fn client() -> reqwest::Client {
     install_crypto_provider();
     reqwest::Client::new()

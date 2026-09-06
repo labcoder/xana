@@ -2,6 +2,7 @@
 
 use super::{banner_mode, chat};
 use crate::{
+    completion_evidence::{AcceptanceCondition, CompletionContract},
     identity::SessionId,
     oneshot::{
         ExitCategory, OneShotFailure, OneShotOutput, StreamSequence, write_failure_with_sequence,
@@ -18,7 +19,10 @@ pub(crate) fn preflight(cli: &mut crate::cli::Cli) -> Result<()> {
     let Some(argument) = cli.print.take() else {
         return Ok(());
     };
-    match resolve_one_shot_input(argument) {
+    let result = acceptance_contract(cli.accept_command.clone(), cli.accept_cwd.clone())
+        .map_err(|error| OneShotFailure::new(ExitCategory::InvalidInput, error.to_string()))
+        .and_then(|_| resolve_one_shot_input(argument));
+    match result {
         Ok(input) => {
             cli.print = Some(Some(input));
             Ok(())
@@ -54,6 +58,7 @@ pub(super) async fn run_and_render(
     continue_chat: bool,
     argument: Option<String>,
     output: OneShotOutput,
+    contract: CompletionContract,
 ) -> Result<()> {
     let stream_sequence = (output == OneShotOutput::StreamJson).then(StreamSequence::default);
     let result = resolve_one_shot_input(argument);
@@ -64,7 +69,7 @@ pub(super) async fn run_and_render(
             resume,
             continue_chat,
             false,
-            Some(input),
+            Some(chat::OneShotInput { input, contract }),
             stream_sequence.clone(),
         )
         .await
@@ -94,6 +99,23 @@ pub(super) async fn run_and_render(
             Err(anyhow::Error::new(failure.rendered()))
         }
     }
+}
+
+pub(super) fn acceptance_contract(
+    command: Option<String>,
+    cwd: Option<String>,
+) -> Result<CompletionContract> {
+    let contract = CompletionContract {
+        conditions: command
+            .map(|command| AcceptanceCondition::CommandSucceeded {
+                command,
+                cwd: cwd.unwrap_or_else(|| ".".to_owned()),
+            })
+            .into_iter()
+            .collect(),
+    };
+    contract.validate()?;
+    Ok(contract)
 }
 
 fn resolve_one_shot_input(argument: Option<String>) -> Result<String, OneShotFailure> {
@@ -172,6 +194,26 @@ fn classify_one_shot_error(error: anyhow::Error) -> OneShotFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_shot_acceptance_is_opt_in_and_validated_before_launch() {
+        assert!(
+            acceptance_contract(None, None)
+                .unwrap()
+                .conditions
+                .is_empty()
+        );
+        let contract = acceptance_contract(Some("cargo test --offline".to_owned()), None).unwrap();
+        assert_eq!(
+            contract.conditions,
+            vec![AcceptanceCondition::CommandSucceeded {
+                command: "cargo test --offline".to_owned(),
+                cwd: ".".to_owned(),
+            }]
+        );
+        assert!(acceptance_contract(Some(" ".to_owned()), None).is_err());
+        assert!(acceptance_contract(Some("ok".to_owned()), Some("\0".to_owned())).is_err());
+    }
 
     #[test]
     fn accepts_exactly_one_nonblank_input_source() {

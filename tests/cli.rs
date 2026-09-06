@@ -1441,6 +1441,10 @@ fn one_shot_stream_json_is_ordered_jsonl_ending_in_authoritative_result() {
         .expect("one bounded semantic run summary");
     assert!(summary["payload"]["execution"].is_object());
     assert!(summary["payload"]["completion"].is_object());
+    assert_eq!(
+        summary["payload"]["completion"]["evidence"]["outcome"],
+        "delivery_verified"
+    );
     assert!(summary["payload"]["prompt_plan"].is_object());
     assert!(summary["payload"]["usage"].is_array());
     let final_frame = frames.last().expect("result frame");
@@ -1448,6 +1452,49 @@ fn one_shot_stream_json_is_ordered_jsonl_ending_in_authoritative_result() {
     assert_eq!(final_frame["payload"]["status"], "success");
     assert_eq!(final_frame["payload"]["result"]["text"], "streamed answer");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("streamed answer"));
+}
+
+#[test]
+fn one_shot_declared_check_cannot_be_satisfied_by_provider_prose() {
+    let directory = tempdir().expect("temporary Xana home");
+    let home = directory.path().join("xana-home");
+    let (base_url, worker) = fake_chat_server("All tests passed. The task is complete.");
+    init_native(&home, &base_url);
+
+    let output = xana(&home)
+        .args([
+            "--output",
+            "stream-json",
+            "-p",
+            "Check the task",
+            "--accept-command",
+            "cargo test --offline",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("finite native one-shot");
+    worker.join().expect("exactly one fake provider call");
+    assert_eq!(
+        output.status.code(),
+        Some(7),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let frames: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let receipt = &frames
+        .iter()
+        .find(|frame| frame["type"] == "summary")
+        .expect("typed finite receipt")["payload"]["completion"];
+    assert_eq!(receipt["evidence"]["outcome"], "needs_attention");
+    assert_eq!(receipt["evidence"]["claim"], "completed");
+    assert_eq!(
+        frames.last().unwrap()["payload"]["error"]["category"],
+        "incomplete"
+    );
 }
 
 #[test]

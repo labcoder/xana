@@ -715,6 +715,7 @@ profile = "worker"
             &mut narrowed,
             &ChildRestrictions {
                 permission_mode: Some(PermissionMode::Deny),
+                completion: Default::default(),
                 max_tool_rounds: Some(2),
                 deadline_seconds: Some(30),
                 max_context_tokens: Some(1_024),

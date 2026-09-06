@@ -26,6 +26,12 @@ pub(crate) enum RuntimeCommand {
         operation_id: OperationId,
         input: String,
     },
+    SubmitFiniteTurn {
+        operation_id: OperationId,
+        input: String,
+        kind: crate::completion_evidence::WorkKind,
+        contract: crate::completion_evidence::CompletionContract,
+    },
     SubmitTurnWithImages {
         operation_id: OperationId,
         input: String,
@@ -126,6 +132,13 @@ pub(crate) struct RoundBudgetDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
+    CompletionEvidenceRecorded {
+        operation_id: OperationId,
+        evidence: crate::completion_evidence::CompletionEvidence,
+    },
+    TerminalDiagnostic {
+        diagnostic: crate::failure::TerminalDiagnostic,
+    },
     BrowserStatus {
         detail: String,
     },

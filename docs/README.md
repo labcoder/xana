@@ -131,6 +131,8 @@ engineering contracts used to change it.
   privacy, artifacts, and no-fallback behavior.
 - [Plain and one-shot modes](user/automation.md) explains terminal surface
   selection, pipelines, JSON envelopes, continuation, and stable exit codes.
+- [Completion evidence](user/completion-evidence.md) explains finite-work
+  receipts, explicit command checks, uncertain effects and bounded verification.
 - [Terminal presentation](user/presentation.md) explains semantic styling,
   terminal fallbacks, `NO_COLOR`, reduced motion, and machine-local
   preferences.

@@ -3,6 +3,8 @@ use crate::config::{InitialConfig, InitialConnection, PermissionMode};
 use crate::shell::ShellConfig;
 use tempfile::tempdir;
 
+mod runtime_failure;
+
 static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn test_guard() -> std::sync::MutexGuard<'static, ()> {
@@ -106,6 +108,32 @@ fn standalone_inspection_reports_prior_writer_health_failures() {
             .iter()
             .any(|entry| entry.name.starts_with("health-"))
     );
+}
+
+#[test]
+fn missing_shutdown_acknowledgement_is_bounded_and_retains_loss_evidence() {
+    let _guard = test_guard();
+    let (_directory, paths) = fixture();
+    let mut runtime = DiagnosticRuntime::start(&paths).unwrap().unwrap();
+    let (ack, wait) = mpsc::sync_channel(1);
+    runtime
+        .active
+        .sender
+        .send(WriterMessage::Shutdown(ack))
+        .unwrap();
+    assert!(wait.recv_timeout(Duration::from_secs(2)).unwrap());
+    runtime.writer.take().unwrap().join().unwrap();
+    *active_slot().write().unwrap() = None;
+    let (stalled, _receiver) = mpsc::sync_channel(1);
+    Arc::get_mut(&mut runtime.active).unwrap().sender = stalled;
+    let marker = runtime.marker_path.clone();
+    let started = std::time::Instant::now();
+    drop(runtime);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(marker.exists(), "unproven flush must not claim clean exit");
+    let health = inspect(&paths);
+    assert!(health.writer_faults >= 1);
+    assert_eq!(health.stale_markers, 1);
 }
 
 #[test]

@@ -2966,6 +2966,13 @@ impl Workbench {
                         ),
                 )
                 .child(
+                    div().text_sm().child(
+                        receipt.completion_evidence.clone().unwrap_or_else(||
+                            "Task correctness evidence unavailable (legacy or vendor-owned execution).".to_owned()
+                        ),
+                    ),
+                )
+                .child(
                     div()
                         .text_sm()
                         .text_color(cx.theme().muted_foreground)

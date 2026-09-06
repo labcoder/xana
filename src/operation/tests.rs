@@ -238,6 +238,7 @@ fn recovery_planner_preserves_completed_prefix_and_original_order() {
             operation_id: operation.operation_id,
             invocation_id: first_id,
             result_id: first_intent.result_id,
+            command_status: None,
             outcome: InvocationOutcome::Completed {
                 output: DurableValueRef::InlineJson(json!("done")),
             },

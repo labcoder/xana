@@ -41,6 +41,7 @@ fn projection_tracks_durable_edits_and_never_copies_payloads() {
         .autonomy_finish(
             job.id,
             RunReceipt {
+                completion: None,
                 occurrence: active.occurrence.unwrap(),
                 scheduled_at: job.next.at,
                 finished_at: job.next.at + 1,
@@ -107,6 +108,7 @@ fn exact_review_exposes_saved_action_without_leaking_it_into_pages_or_attention(
             .autonomy_finish(
                 job.id,
                 RunReceipt {
+                    completion: None,
                     occurrence: active.occurrence.unwrap(),
                     scheduled_at: job.next.at,
                     finished_at: job.next.at + 1,

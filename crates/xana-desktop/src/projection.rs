@@ -1071,6 +1071,7 @@ mod tests {
                 truncated: false,
             },
             conversation_facts: xana::desktop::DesktopConversationFacts {
+                terminal_diagnostics: Vec::new(),
                 profile: Some("default".to_owned()),
                 activity: Vec::new(),
                 execution: Vec::new(),

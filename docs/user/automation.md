@@ -88,6 +88,39 @@ session. Xana never translates native history into a Codex thread or the
 reverse, and exact native resume fails if launched from a different canonical
 workspace.
 
+### Evidence for finite work
+
+Native one-shot runs record bounded completion evidence. By default the check
+is **delivery only**: a delivered answer is not independent proof that the
+answer is correct. Ordinary interactive conversation has no invented success
+score and does not add a verification model call.
+
+For a concrete task, require a successful command observed during that same
+run:
+
+```console
+cargo run -- -p "Run cargo test --offline and report the result" --accept-command "cargo test --offline" --accept-cwd . --output stream-json
+```
+
+The command and working directory must match the actual tool invocation. This
+flag declares a condition; it does not execute the command, grant permission,
+or retry a failed effect. A missing/failed check, a later possibly mutating
+action, or an unresolved effect cannot be replaced by the model saying
+"tests passed". Missing or stale evidence produces an `incomplete` result.
+
+Xana may make one bounded local verification pass over already registered
+immutable artifacts. It never reruns commands or starts a model judge to fill
+an evidence gap. The reservation and result survive restart; a lost verifier
+result is not permission to repeat it. Exact evidence is available in the
+stream summary and retained completion receipt. Plain/TUI usage details and
+Desktop's latest receipt distinguish delivery, verified conditions, incomplete
+work, and attention required.
+
+Managed Codex owns its internal checks. Xana does not infer those checks from
+prose; `--accept-command` is rejected before a managed vendor turn starts.
+Legacy and vendor-only receipts explicitly report that task-correctness
+evidence is unavailable.
+
 ## JSON and process status
 
 `--output json` and `--json` emit one redacted version-2 envelope to stdout:
@@ -97,8 +130,8 @@ workspace.
 ```
 
 Failures use `status: "error"` with an `error.category` and bounded message.
-A committed round-budget suspension uses `status: "incomplete"` and category
-`incomplete`. Diagnostics remain on stderr. JSON and redirected output contain
+A committed round-budget suspension or an unsatisfied finite-work evidence
+gate uses `status: "incomplete"` and category `incomplete`. Diagnostics remain on stderr. JSON and redirected output contain
 no terminal control sequences.
 
 | Exit | Category | Meaning |
@@ -109,7 +142,7 @@ no terminal control sequences.
 | 4 | `connection` | Authentication, model availability, or provider connection failed. |
 | 5 | `approval` | The turn required an unavailable interactive approval. |
 | 6 | `runtime` | Provider or runtime execution failed. |
-| 7 | `incomplete` | The same native operation is durably suspended at a round boundary and needs an interactive continue/stop decision. |
+| 7 | `incomplete` | A native round boundary needs a continue/stop decision, or finite-work completion evidence is missing, stale, failed, or unresolved. Inspect the receipt before deciding what to do next. |
 | 130 | `interrupted` | The operation was interrupted. |
 
 The envelope is a result contract, not an event stream. For a repository-private

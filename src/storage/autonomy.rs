@@ -93,6 +93,7 @@ impl ProtectedStore {
                     .and_then(|trigger| trigger.observation().last_checked)
                     .context("source failure requires an observation instant")?;
                 let receipt = RunReceipt {
+                    completion: None,
                     occurrence: Uuid::new_v4(),
                     scheduled_at: current.next.at,
                     finished_at: checked,
@@ -325,7 +326,7 @@ impl ProtectedStore {
             if job.expires_at>now && job.authorized && job.trigger.as_ref().is_some_and(|t|!t.observation().pending) { return Ok(None); }
             if job.expires_at<=now || !job.authorized {
                 job.state=JobState::Expired;
-                let receipt=RunReceipt { occurrence:Uuid::new_v4(),scheduled_at:job.next.at,finished_at:now,outcome:RunOutcome::Expired,detail:"Authority expired before dispatch; no work started".into(),coalesced:now>job.next.at,dst_adjusted:job.next.dst_adjusted };
+                let receipt=RunReceipt { completion: None, occurrence:Uuid::new_v4(),scheduled_at:job.next.at,finished_at:now,outcome:RunOutcome::Expired,detail:"Authority expired before dispatch; no work started".into(),coalesced:now>job.next.at,dst_adjusted:job.next.dst_adjusted };
                 insert_receipt(&tx,job.id,&receipt)?;
                 job.last_receipt=Some(receipt);
                 save(&tx,&mut job)?;
@@ -436,7 +437,7 @@ impl ProtectedStore {
             "running schedule count exceeds the single-job bound"
         );
         for job in jobs {
-            self.autonomy_finish(job.id,RunReceipt {
+            self.autonomy_finish(job.id,RunReceipt { completion: None,
                 occurrence:job.occurrence.context("missing running occurrence")?,
                 scheduled_at:job.next.at,finished_at:now,outcome:RunOutcome::Unknown,
                 detail:"Previous host exited without a terminal receipt. Work may have occurred; review before a new attempt".into(),

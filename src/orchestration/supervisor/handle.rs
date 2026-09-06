@@ -510,6 +510,7 @@ mod tests {
     fn child_control_projection_omits_large_report_bodies() {
         let report = large_report();
         let mut snapshot = AgentHandleSnapshot::admitted(ChildAdmission {
+            completion: Default::default(),
             attribution: report.attribution.clone(),
             plan: None,
             task_preview: "task".to_owned(),

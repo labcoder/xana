@@ -119,6 +119,7 @@ impl FixtureTurn {
             session
                 .append_record(SessionRecord::InvocationResultAppended {
                     result: InvocationResultRecord {
+                        command_status: None,
                         operation_id: intent.operation_id,
                         invocation_id: intent.invocation_id,
                         result_id: intent.result_id,

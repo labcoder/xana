@@ -114,6 +114,7 @@ impl ManagedDesktopState {
                 execution: Vec::new(),
                 usage: Vec::new(),
                 completions: Vec::new(),
+                terminal_diagnostics: Vec::new(),
                 capabilities,
                 prompt_ledger: DesktopPromptLedger {
                     details: Vec::new(),
@@ -308,6 +309,7 @@ impl ManagedDesktopState {
             id: format!("managed:{}:{operation_id}", self.thread_id),
             operation_id: operation_id.to_string(),
             status: status.to_owned(),
+            completion_evidence: None,
             execution,
             artifact_ids: Vec::new(),
             checks: vec![DesktopCompletionCheck {
@@ -1483,6 +1485,22 @@ fn project_managed_event(
 ) -> DesktopEvent {
     use crate::frontend::ManagedClientEvent;
     match event {
+        ManagedClientEvent::TerminalDiagnostic(diagnostic) => {
+            state.facts.terminal_diagnostics.push(diagnostic.clone());
+            if state.facts.terminal_diagnostics.len() > 64 {
+                state.facts.terminal_diagnostics.remove(0);
+            }
+            DesktopEvent::ActivityUpserted(state.activity(
+                "terminal-diagnostic",
+                DesktopActivityState::Failed,
+                "managed.terminal_diagnostic",
+                Some(&format!(
+                    "{:?}: {:?}",
+                    diagnostic.outcome, diagnostic.failure.category
+                )),
+                DesktopActivityDisclosure::Summary,
+            ))
+        }
         ManagedClientEvent::ThreadReady => DesktopEvent::ActivityUpserted(state.activity(
             "thread",
             DesktopActivityState::Completed,
@@ -1804,6 +1822,7 @@ mod tests {
                 usage: Vec::new(),
                 completions: Vec::new(),
                 capabilities: Vec::new(),
+                terminal_diagnostics: Vec::new(),
                 prompt_ledger: DesktopPromptLedger {
                     details: Vec::new(),
                     operation_id: None,

@@ -178,6 +178,14 @@ pub(crate) struct Cli {
     #[arg(short = 'p', long = "print", num_args = 0..=1, value_name = "PROMPT")]
     pub(crate) print: Option<Option<String>>,
 
+    /// Require evidence of this exact successful command before one-shot completion.
+    #[arg(long, requires = "print", value_name = "COMMAND")]
+    pub(crate) accept_command: Option<String>,
+
+    /// Working directory for --accept-command (relative to the workspace).
+    #[arg(long, requires = "accept_command", value_name = "DIRECTORY")]
+    pub(crate) accept_cwd: Option<String>,
+
     /// Select the latest compatible conversation for this workspace and owner.
     #[arg(
         long = "continue",

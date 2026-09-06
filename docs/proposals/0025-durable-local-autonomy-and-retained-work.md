@@ -79,6 +79,16 @@ and [retained-worker continuations](../user/retained-workers.md) now implement
 the bounded local contract, with selected-file/named-CI triggers, supervision
 and deterministic context operations. Native macOS/Linux and owner interaction
 qualification remain explicit before integrated release acceptance.
+
+Finite native work now records [completion evidence](../architecture/completion-evidence.md)
+separately from a model's completion claim. Current command/artifact/effect and
+budget observations determine delivery, declared-condition satisfaction or an
+honest incomplete/needs-attention result. One durably reserved local artifact
+verification may run; it cannot call a model, repeat a command or replay an
+external effect. Managed delivery uses only exposed vendor facts. Ordinary chat
+has no synthetic correctness score, and a poisoned session writer cannot invent
+a safely committed terminal outcome.
+
 Remote hosts, tenancy, messaging and universal
 computer control are not included. Prove restart, cancellation, duplicate events,
 clock changes, forgotten sources and unknown-effect recovery before promotion.

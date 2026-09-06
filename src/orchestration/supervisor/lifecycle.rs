@@ -1,6 +1,7 @@
 //! Terminal lifecycle, deadlines, cancellation, and shutdown for supervised children.
 
 use super::*;
+use crate::orchestration::ExecutionOwner;
 
 impl ChildSupervisor {
     pub(super) async fn start_queued_children(
@@ -30,6 +31,31 @@ impl ChildSupervisor {
                 .append(SessionRecord::ChildLifecycleChanged {
                     agent_id,
                     lifecycle: ChildLifecycle::Running,
+                })
+                .await
+            {
+                self.record_transition_failure(agent_id, &error, commits, events)
+                    .await;
+                continue;
+            }
+
+            let admission = &self.children[&agent_id].snapshot.admission;
+            let mut declaration = crate::completion_evidence::CompletionEvidence::new(
+                attribution.operation_id,
+                crate::completion_evidence::WorkKind::Child,
+                if attribution.owner == ExecutionOwner::Native {
+                    crate::completion_evidence::EvidenceOwner::Native
+                } else {
+                    crate::completion_evidence::EvidenceOwner::Managed
+                },
+                crate::completion_evidence::CompletionClaim::Interrupted,
+                admission.completion.clone(),
+            )
+            .expect("validated child completion contract");
+            declaration.evaluate();
+            if let Err(error) = commits
+                .append(SessionRecord::CompletionEvidenceRecorded {
+                    evidence: declaration,
                 })
                 .await
             {
@@ -83,6 +109,9 @@ impl ChildSupervisor {
                 report_limits: child.snapshot.admission.limits.clone(),
                 artifact_store: self.artifact_store.clone(),
                 artifact_owner: self.artifact_owner,
+                commits: commits.clone(),
+                contract: child.snapshot.admission.completion.clone(),
+                hard_token_limit: child.snapshot.admission.hard_token_limit,
             })));
         }
     }

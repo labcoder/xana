@@ -217,6 +217,7 @@ mod tests {
             model: "small".to_owned(),
         };
         let mut handle = AgentHandleSnapshot::admitted(ChildAdmission {
+            completion: Default::default(),
             attribution: attribution.clone(),
             plan: None,
             task_preview: "task".to_owned(),

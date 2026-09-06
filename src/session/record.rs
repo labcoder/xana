@@ -80,6 +80,15 @@ pub(crate) enum SessionRecord {
         thread_id: ThreadId,
         input_entry_id: ConversationEntryId,
     },
+    CompletionEvidenceRecorded {
+        evidence: crate::completion_evidence::CompletionEvidence,
+    },
+    FiniteOperationAccepted {
+        operation_id: OperationId,
+        thread_id: ThreadId,
+        input_entry_id: ConversationEntryId,
+        completion: crate::completion_evidence::CompletionEvidence,
+    },
     StepStarted {
         operation_id: OperationId,
         step_id: StepId,

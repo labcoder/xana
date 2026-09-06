@@ -20,6 +20,98 @@ const POLICY: &str = "usage/policy";
 const RECORD_BYTES: usize = 16 * 1024;
 
 impl ProtectedStore {
+    /// Read the same indexed counters and policy as admission in one snapshot;
+    /// never hydrate request history merely to describe the remaining budget.
+    pub(crate) fn usage_remaining(
+        &self,
+        root: &str,
+        job: &str,
+        class: WorkClass,
+        now_day: u64,
+    ) -> Result<crate::usage_budget::RemainingAllowance> {
+        ensure!(
+            !root.is_empty() && root.len() <= 128 && !job.is_empty() && job.len() <= 128,
+            "invalid usage identity"
+        );
+        self.with_database(|db| {
+            let tx = db.connection.transaction()?;
+            let bytes = tx
+                .query_row("SELECT body FROM documents WHERE name=?1", [POLICY], |r| {
+                    bounded_blob(r, 0, 4096)?.ok_or(rusqlite::Error::InvalidQuery)
+                })
+                .optional()?;
+            let policy: BudgetPolicy = bytes
+                .map(|b| serde_json::from_slice(&b))
+                .transpose()?
+                .unwrap_or_default();
+            policy.validate()?;
+            let last_day =
+                tx.query_row("SELECT coalesce(max(day),0) FROM usage_requests", [], |r| {
+                    read_u64(r, 0)
+                })?;
+            let day = now_day.max(last_day).to_string();
+            let (day_requests, day_tokens) = counter(&tx, "day", &day)?;
+            let (root_requests, root_tokens) = counter(&tx, "root", root)?;
+            let request_cap = if class == WorkClass::Background {
+                policy
+                    .daily_requests
+                    .saturating_sub(policy.foreground_request_reserve)
+            } else {
+                policy.daily_requests
+            };
+            let requests = request_cap
+                .saturating_sub(day_requests)
+                .min(policy.root_requests.saturating_sub(root_requests));
+            let mut tokens = [
+                policy
+                    .daily_tokens
+                    .map(|cap| cap.saturating_sub(day_tokens)),
+                policy
+                    .root_tokens
+                    .map(|cap| cap.saturating_sub(root_tokens)),
+            ]
+            .into_iter()
+            .flatten()
+            .min();
+            let mut exceeded = day_requests > request_cap
+                || root_requests > policy.root_requests
+                || policy.daily_tokens.is_some_and(|cap| day_tokens > cap)
+                || policy.root_tokens.is_some_and(|cap| root_tokens > cap);
+            if class == WorkClass::Background {
+                let (_, background_tokens) = counter(&tx, "background_day", &day)?;
+                let (_, job_tokens) = counter(&tx, "job", job)?;
+                exceeded |= background_tokens > policy.background_daily_tokens.min(32_768)
+                    || job_tokens
+                        > policy
+                            .background_job_tokens
+                            .min(crate::autonomy::JOB_TOKENS);
+                tokens = [
+                    tokens,
+                    Some(
+                        policy
+                            .background_daily_tokens
+                            .min(32_768)
+                            .saturating_sub(background_tokens),
+                    ),
+                    Some(
+                        policy
+                            .background_job_tokens
+                            .min(crate::autonomy::JOB_TOKENS)
+                            .saturating_sub(job_tokens),
+                    ),
+                ]
+                .into_iter()
+                .flatten()
+                .min();
+            }
+            Ok(crate::usage_budget::RemainingAllowance {
+                requests,
+                tokens,
+                exceeded,
+            })
+        })
+    }
+
     pub(crate) fn usage_attribution(&self, operation: &str) -> Result<Option<Admission>> {
         self.with_database(|db| {
             let bytes = db.connection.query_row("SELECT admission FROM usage_requests WHERE operation=?1 ORDER BY sequence LIMIT 1", [operation], |r| required_blob(r, 0)).optional()?;

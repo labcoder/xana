@@ -165,6 +165,14 @@ pub(crate) struct UsageRecord {
     pub(crate) receipt: Option<Receipt>,
 }
 
+/// Remaining configured admission allowance, not a vendor wallet estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RemainingAllowance {
+    pub(crate) requests: u64,
+    pub(crate) tokens: Option<u64>,
+    pub(crate) exceeded: bool,
+}
+
 /// Composition supplies the owner/route once; every child shares the root's
 /// durable allowance. Dropping a reservation deliberately never refunds it.
 #[derive(Clone)]
@@ -179,6 +187,18 @@ pub(crate) struct UsageBudget {
 }
 
 impl UsageBudget {
+    pub(crate) fn remaining(&self, operation: OperationId) -> Result<RemainingAllowance> {
+        let day = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_secs()
+            / 86_400;
+        self.store.usage_remaining(
+            &self.root,
+            self.job.as_deref().unwrap_or(&operation.to_string()),
+            self.class,
+            day,
+        )
+    }
     pub(crate) async fn foreground_helper_lease(
         &self,
         cancellation: &tokio_util::sync::CancellationToken,
