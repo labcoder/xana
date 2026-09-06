@@ -3,7 +3,7 @@
 use super::{DesktopControlPlane, DesktopError, control_error};
 use crate::{
     app::autonomy_commands,
-    autonomy::{self, runner},
+    autonomy::{runner, supervision},
     cli::{AutonomyCommand, CreateTask, HostCommand},
 };
 
@@ -26,16 +26,9 @@ pub struct DesktopTaskPreview {
     pub text: String,
     pub route_digest: String,
 }
-#[derive(Debug, Clone)]
-pub struct DesktopScheduledTask {
-    pub id: String,
-    pub revision: u64,
-    pub name: String,
-    pub state: String,
-    pub conversation: String,
-    pub next_at: i64,
-    pub receipt: String,
-}
+pub use crate::autonomy::supervision::{
+    TaskOverview as DesktopScheduledTask, WorkGroup as DesktopWorkGroup,
+};
 #[derive(Debug, Clone)]
 pub struct DesktopAutonomySnapshot {
     pub jobs: Vec<DesktopScheduledTask>,
@@ -63,33 +56,23 @@ pub enum DesktopHostEdit {
 }
 
 impl DesktopControlPlane {
+    pub fn review_scheduled_task(
+        &self,
+        id: &str,
+    ) -> Result<(DesktopScheduledTask, String), DesktopError> {
+        let store = autonomy_commands::store(&self.paths).map_err(control_error)?;
+        let job = store
+            .autonomy_job(id.parse().map_err(control_error)?)
+            .map_err(control_error)?;
+        let detail = supervision::review(&self.paths, &store, &job).map_err(control_error)?;
+        Ok((
+            supervision::overview(&job),
+            serde_json::to_string_pretty(&detail).map_err(control_error)?,
+        ))
+    }
     pub fn autonomy_snapshot(&self, after: u64) -> Result<DesktopAutonomySnapshot, DesktopError> {
         let store = autonomy_commands::store(&self.paths).map_err(control_error)?;
-        let page = store.autonomy_page(after).map_err(control_error)?;
-        let next_after = (page.len() == autonomy::PAGE_SIZE)
-            .then(|| page.last().map(|(sequence, _)| *sequence))
-            .flatten();
-        let jobs = page
-            .into_iter()
-            .map(|(_, job)| DesktopScheduledTask {
-                id: job.id.to_string(),
-                revision: job.revision,
-                name: job.name,
-                state: format!("{:?}", job.state),
-                conversation: job.conversation.to_string(),
-                next_at: job.next.at,
-                receipt: job
-                    .last_receipt
-                    .map(|receipt| {
-                        format!(
-                            "{:?}: {}",
-                            receipt.outcome,
-                            receipt.detail.chars().take(256).collect::<String>()
-                        )
-                    })
-                    .unwrap_or_default(),
-            })
-            .collect();
+        let page = supervision::page(&store, after).map_err(control_error)?;
         let policy = store.autonomy_policy().map_err(control_error)?;
         let health = crate::local_host::inspect_descriptor_health(
             self.paths.runtime_dir(),
@@ -97,8 +80,8 @@ impl DesktopControlPlane {
         )
         .map_err(control_error)?;
         Ok(DesktopAutonomySnapshot {
-            jobs,
-            next_after,
+            jobs: page.jobs,
+            next_after: page.next_after,
             policy_revision: policy.revision,
             detached_enabled: policy.detached_enabled,
             startup_enabled: policy.startup_enabled,
@@ -193,6 +176,9 @@ impl DesktopControlPlane {
             expires: draft.expires,
             authorize: true,
             reviewed_route: Some(reviewed_route),
+            watch_root: None,
+            github_run: None,
+            github_credential: None,
         };
         let job = autonomy_commands::create(&self.paths, args).map_err(control_error)?;
         Ok(format!(
@@ -205,7 +191,7 @@ impl DesktopControlPlane {
         let command = if receipts {
             AutonomyCommand::Receipts { id, after: 0 }
         } else {
-            AutonomyCommand::Show { id }
+            AutonomyCommand::Review { id }
         };
         serde_json::to_string_pretty(
             &autonomy_commands::execute(command, &self.paths).map_err(control_error)?,

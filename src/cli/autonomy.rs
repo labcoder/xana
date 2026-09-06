@@ -11,6 +11,13 @@ pub(crate) struct AutonomyArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub(crate) enum AutonomyCommand {
+    /// Inspect upcoming and supervised work without changing authority.
+    Overview {
+        #[arg(long, default_value_t = 0)]
+        after: u64,
+    },
+    /// Review exact scope, route, grants and current admission readiness.
+    Review { id: Uuid },
     /// Inspect a bounded protected page. Names and payloads stay local.
     List {
         #[arg(long, default_value_t = 0)]
@@ -73,13 +80,22 @@ pub(crate) struct CreateTask {
     #[arg(long, requires = "prompt")]
     pub(crate) workspace_reads: bool,
     /// One-shot RFC3339 instant including an offset, e.g. 2026-09-06T09:00:00-07:00.
-    #[arg(long, conflicts_with = "daily", required_unless_present = "daily")]
+    #[arg(long, conflicts_with_all = ["daily", "watch_root", "github_run"], required_unless_present_any = ["daily", "watch_root", "github_run"])]
     pub(crate) at: Option<String>,
     /// Daily wall time HH:MM; timezone must be an explicit IANA name.
-    #[arg(long, requires = "timezone")]
+    #[arg(long, requires = "timezone", conflicts_with_all = ["watch_root", "github_run"])]
     pub(crate) daily: Option<String>,
     #[arg(long, requires = "daily")]
     pub(crate) timezone: Option<String>,
+    /// Watch only this selected workspace directory (max 256 entries, no links).
+    #[arg(long, conflicts_with = "github_run")]
+    pub(crate) watch_root: Option<PathBuf>,
+    /// Follow one exact GitHub Actions run: OWNER/REPO/RUN_ID; never enumerate accounts.
+    #[arg(long, requires = "github_credential")]
+    pub(crate) github_run: Option<String>,
+    /// Explicit token source, env:NAME or stored:ID; requires Actions read on the named repo.
+    #[arg(long, requires = "github_run")]
+    pub(crate) github_credential: Option<String>,
     /// Mandatory authority expiry as an RFC3339 instant, independent of trigger.
     #[arg(long)]
     pub(crate) expires: String,
@@ -134,6 +150,49 @@ pub(crate) enum HostCommand {
 mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
+    #[test]
+    fn named_sources_are_exclusive_and_github_requires_an_explicit_token_reference() {
+        let base = [
+            "xana",
+            "autonomy",
+            "create",
+            "--name",
+            "fixture",
+            "--workspace",
+            ".",
+            "--profile",
+            "fixture",
+            "--reminder",
+            "Inspect source",
+            "--expires",
+            "2026-10-01T00:00:00Z",
+        ];
+        for source in [
+            vec!["--watch-root", "src"],
+            vec![
+                "--github-run",
+                "owner/repo/41",
+                "--github-credential",
+                "env:FIXTURE_TOKEN",
+            ],
+        ] {
+            assert!(crate::cli::Cli::try_parse_from(base.into_iter().chain(source)).is_ok());
+        }
+        for source in [
+            vec!["--github-run", "owner/repo/41"],
+            vec!["--watch-root", "src", "--at", "2026-09-10T00:00:00Z"],
+            vec![
+                "--watch-root",
+                "src",
+                "--github-run",
+                "owner/repo/41",
+                "--github-credential",
+                "stored:fixture",
+            ],
+        ] {
+            assert!(crate::cli::Cli::try_parse_from(base.into_iter().chain(source)).is_err());
+        }
+    }
     #[test]
     fn controls_are_discoverable_and_startup_home_requires_explicit_mode() {
         let cli = crate::cli::Cli::command();

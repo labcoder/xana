@@ -4,8 +4,10 @@ mod calendar;
 pub(crate) mod host;
 pub(crate) mod runner;
 pub(crate) mod startup;
+pub(crate) mod supervision;
 #[cfg(test)]
 mod tests;
+pub(crate) mod triggers;
 
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
@@ -104,6 +106,8 @@ pub(crate) struct Job {
     pub(crate) action: Action,
     pub(crate) budget: TaskBudget,
     pub(crate) schedule: Schedule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trigger: Option<triggers::Trigger>,
     pub(crate) expires_at: i64,
     pub(crate) authorized: bool,
     pub(crate) state: JobState,
@@ -195,6 +199,13 @@ impl Job {
             "task text must be 1–16384 UTF-8 bytes"
         );
         self.schedule.validate()?;
+        ensure!(
+            matches!(self.schedule, Schedule::Triggered { .. }) == self.trigger.is_some(),
+            "trigger and schedule disagree"
+        );
+        if let Some(trigger) = &self.trigger {
+            trigger.validate(&self.scope.workspace)?;
+        }
         ensure!(
             self.budget == TaskBudget::default(),
             "saved task budget does not match the supported reviewed ceiling"

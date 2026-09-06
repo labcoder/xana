@@ -955,6 +955,29 @@ impl DurableSession {
             source_proof,
         )
         .context("new session record failed validation")?;
+        if let Some(home) = self.store.protected_home() {
+            let intent = match &envelope.record {
+                SessionRecord::InvocationIntentAppended { intent } => Some((intent, false)),
+                SessionRecord::InvocationResultAppended { result }
+                    if matches!(
+                        result.outcome,
+                        crate::operation::InvocationOutcome::Completed { .. }
+                    ) =>
+                {
+                    self.restored
+                        .operation_details
+                        .get(&result.operation_id)
+                        .and_then(|operation| operation.intents.get(&result.invocation_id))
+                        .map(|intent| (intent, true))
+                }
+                _ => None,
+            };
+            if let Some((intent, completed)) = intent {
+                // Attribution precedes the append acknowledgement. If it fails,
+                // the already executed effect remains uncertain, never replay-safe.
+                crate::autonomy::triggers::files::record_invocation(home, intent, completed)?;
+            }
+        }
         self.store
             .append_guarded(&envelope, privacy_generation)
             .context("could not append durable session record")?;

@@ -39,6 +39,7 @@ pub(super) fn fixture() -> (tempfile::TempDir, ProtectedStore, TestCustody, Job)
     let identity = WorkspaceIdentity::resolve(&workspace).unwrap();
     let at = 1_800_000_000;
     let job = Job {
+        trigger: None,
         id: Uuid::new_v4(),
         revision: 1,
         conversation: Uuid::new_v4(),

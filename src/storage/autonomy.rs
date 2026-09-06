@@ -21,6 +21,114 @@ const POLICY: &str = "autonomy/host-policy";
 const STOP_IMPACT: &str = "autonomy/stop-impact";
 
 impl ProtectedStore {
+    pub(crate) fn autonomy_attention_baseline(&self) -> Result<(u64, u64)> {
+        self.with_database(|db| Ok(db.connection.query_row("SELECT (SELECT COALESCE(MAX(sequence),0) FROM autonomy_jobs),(SELECT COALESCE(MAX(sequence),0) FROM autonomy_receipts)",[],|row|Ok((read_u64(row,0)?,read_u64(row,1)?)))?))
+    }
+
+    pub(crate) fn autonomy_attention_jobs(&self, after: u64) -> Result<Vec<(u64, Job)>> {
+        self.with_database(|db| {
+            let mut statement=db.connection.prepare("SELECT sequence,id,revision,state,due,body FROM autonomy_jobs WHERE state IN (0,1,2,3,4) AND sequence>?1 ORDER BY sequence LIMIT 16")?;
+            Ok(statement.query_map([i64::try_from(after)?],|row|Ok((read_u64(row,0)?,stored_job(row,1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) fn autonomy_attention_receipts(
+        &self,
+        after: u64,
+    ) -> Result<Vec<(u64, Job, RunReceipt)>> {
+        self.with_database(|db| {
+            let mut statement=db.connection.prepare("SELECT r.sequence,j.id,j.revision,j.state,j.due,j.body,r.body,r.occurrence FROM autonomy_receipts r JOIN autonomy_jobs j ON j.id=r.job WHERE r.sequence>?1 ORDER BY r.sequence LIMIT 16")?;
+            let rows=statement.query_map([i64::try_from(after)?],|row|Ok((read_u64(row,0)?,stored_job(row,1)?,blob(row,6,20*1024)?,row.get::<_,String>(7)?)))?;
+            rows.map(|row| {
+                let (sequence,job,bytes,occurrence)=row?;
+                let receipt:RunReceipt=serde_json::from_slice(&bytes)?;
+                receipt.validate()?;
+                ensure!(receipt.occurrence.to_string()==occurrence,"attention receipt identity differs from its index");
+                Ok((sequence,job,receipt))
+            }).collect()
+        })
+    }
+
+    pub(crate) fn autonomy_due(&self, now: i64) -> Result<Vec<Job>> {
+        self.with_database(|db| {
+            let mut statement = db.connection.prepare("SELECT id,revision,state,due,body FROM autonomy_jobs WHERE state=0 AND due<=?1 ORDER BY due,sequence LIMIT 8")?;
+            Ok(statement.query_map([now], |r| stored_job(r,0))?.collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    pub(crate) fn autonomy_observed(&self, mut observed: Job) -> Result<()> {
+        self.with_database(|db| {
+            let tx = db
+                .connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let current = get(&tx, observed.id)?;
+            // A late source reply cannot undo pause/cancel or a newer observation.
+            if current.revision != observed.revision || current.state != JobState::Ready {
+                return Ok(());
+            }
+            ensure!(
+                current.action == observed.action
+                    && current.scope == observed.scope
+                    && current.authorized == observed.authorized
+                    && current.conversation == observed.conversation
+                    && current.name == observed.name
+                    && current.budget == observed.budget
+                    && current.expires_at == observed.expires_at
+                    && current.schedule == observed.schedule
+                    && current.occurrence == observed.occurrence
+                    && current.pause_after_run == observed.pause_after_run
+                    && current.last_receipt == observed.last_receipt
+                    && matches!(observed.state, JobState::Ready | JobState::NeedsYou)
+                    && current
+                        .trigger
+                        .as_ref()
+                        .zip(observed.trigger.as_ref())
+                        .is_some_and(|(left, right)| left.same_source(right)),
+                "observation cannot change task/source authority"
+            );
+            if observed.state == JobState::NeedsYou {
+                let checked = observed
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.observation().last_checked)
+                    .context("source failure requires an observation instant")?;
+                let receipt = RunReceipt {
+                    occurrence: Uuid::new_v4(),
+                    scheduled_at: current.next.at,
+                    finished_at: checked,
+                    outcome: RunOutcome::NeedsYou,
+                    detail: "Source observation requires owner review; no task execution started"
+                        .into(),
+                    coalesced: checked > current.next.at,
+                    dst_adjusted: false,
+                };
+                insert_receipt(&tx, observed.id, &receipt)?;
+                observed.last_receipt = Some(receipt);
+            }
+            save(&tx, &mut observed)?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn autonomy_record_outputs(
+        &self,
+        name: &str,
+        bound: usize,
+        update: impl FnOnce(Option<&[u8]>) -> Result<Vec<u8>>,
+    ) -> Result<()> {
+        self.with_database(|db| {
+            let tx=db.connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            // No source watchers means no additional own-output tracking cost.
+            if !tx.prepare("SELECT 1 FROM autonomy_jobs WHERE state IN (0,1,3,4) LIMIT 1")?.exists([])? { return Ok(()); }
+            let previous=super::documents::read(&tx,name,bound)?;
+            let body=update(previous.as_deref())?;
+            ensure!(body.len()<=bound,"own-output attribution exceeds bound");
+            tx.execute("INSERT INTO documents(name,revision,body) VALUES(?1,1,?2) ON CONFLICT(name) DO UPDATE SET revision=revision+1,body=excluded.body",params![name,body])?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
     pub(crate) fn autonomy_stop_impact(&self) -> Result<Option<crate::autonomy::host::StopImpact>> {
         self.document(STOP_IMPACT, 8192)?
             .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
@@ -186,6 +294,11 @@ impl ProtectedStore {
                     ensure!(matches!(job.state,JobState::Paused|JobState::NeedsYou), "only paused or needs-you work can resume");
                     ensure!(job.expires_at > now && job.authorized, "schedule authority expired or revoked; create a newly reviewed task");
                     ensure!(job.last_receipt.as_ref().is_none_or(|r| r.outcome != RunOutcome::Unknown) || review_unknown, "unknown effect requires explicit --review-unknown; inspect its receipt first");
+                    if job.state == JobState::NeedsYou && job.trigger.is_some() { ensure!(review_unknown, "trigger scope/effects review requires explicit --review-unknown"); }
+                    if review_unknown && let Some(crate::autonomy::triggers::Trigger::Files(watch)) = job.trigger.as_mut() {
+                        watch.unknown_generation = crate::autonomy::triggers::files::review_generation(&tx)?;
+                        watch.candidate = None;
+                    }
                     // Explicit review creates a new occurrence; the old receipt and
                     // usage charges remain immutable, including uncertain work.
                     job.state=JobState::Ready;
@@ -209,6 +322,7 @@ impl ProtectedStore {
             let job = tx.query_row("SELECT id,revision,state,due,body FROM autonomy_jobs WHERE state=0 AND due<=?1 ORDER BY due,sequence LIMIT 1",[now],|r|stored_job(r,0)).optional()?;
             let Some(mut job)=job else { return Ok(None) };
             ensure!(job.not_before<=now && job.state==JobState::Ready, "schedule index does not match its payload");
+            if job.expires_at>now && job.authorized && job.trigger.as_ref().is_some_and(|t|!t.observation().pending) { return Ok(None); }
             if job.expires_at<=now || !job.authorized {
                 job.state=JobState::Expired;
                 let receipt=RunReceipt { occurrence:Uuid::new_v4(),scheduled_at:job.next.at,finished_at:now,outcome:RunOutcome::Expired,detail:"Authority expired before dispatch; no work started".into(),coalesced:now>job.next.at,dst_adjusted:job.next.dst_adjusted };
@@ -265,6 +379,17 @@ impl ProtectedStore {
             );
             insert_receipt(&tx, id, &receipt)?;
             job.occurrence = None;
+            let trigger_completed = job
+                .trigger
+                .as_ref()
+                .is_some_and(|trigger| trigger.completed());
+            if matches!(
+                receipt.outcome,
+                RunOutcome::Completed | RunOutcome::Cancelled | RunOutcome::Expired
+            ) && let Some(trigger) = job.trigger.as_mut()
+            {
+                trigger.observation_mut().pending = false;
+            }
             job.state = match receipt.outcome {
                 RunOutcome::Unknown | RunOutcome::NeedsYou => JobState::NeedsYou,
                 RunOutcome::Cancelled => JobState::Cancelled,
@@ -272,6 +397,8 @@ impl ProtectedStore {
                 RunOutcome::Completed => {
                     if job.state == JobState::CancelRequested {
                         JobState::Cancelled
+                    } else if trigger_completed {
+                        JobState::Completed
                     } else if let Some(next) =
                         job.schedule.after(receipt.finished_at.max(job.next.at))?
                     {

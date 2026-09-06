@@ -18,6 +18,9 @@ pub(crate) enum Schedule {
         hour: i8,
         minute: i8,
     },
+    Triggered {
+        poll_seconds: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +34,10 @@ pub(crate) struct Occurrence {
 impl Schedule {
     pub(crate) fn validate(&self) -> Result<()> {
         match self {
+            Self::Triggered { poll_seconds } => ensure!(
+                (5..=3600).contains(poll_seconds),
+                "trigger poll interval must be 5–3600 seconds"
+            ),
             Self::Once { at } => {
                 ensure!(*at > 0, "one-shot instant must be after the Unix epoch");
                 Timestamp::from_second(*at)?;
@@ -53,6 +60,11 @@ impl Schedule {
     pub(crate) fn first(&self, now: i64) -> Result<Occurrence> {
         self.validate()?;
         match self {
+            Self::Triggered { poll_seconds } => Ok(Occurrence {
+                at: now.saturating_add(i64::from(*poll_seconds)),
+                local_date: String::new(),
+                dst_adjusted: false,
+            }),
             Self::Once { at } => Ok(Occurrence {
                 at: *at,
                 local_date: String::new(),
@@ -67,6 +79,9 @@ impl Schedule {
     /// Missed occurrences collapse into the already saved occurrence. Computing
     /// its successor jumps to today's date instead of iterating missed days.
     pub(crate) fn after(&self, now: i64) -> Result<Option<Occurrence>> {
+        if let Self::Triggered { .. } = self {
+            return self.first(now).map(Some);
+        }
         let Self::Daily {
             timezone,
             hour,

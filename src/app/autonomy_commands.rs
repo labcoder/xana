@@ -33,11 +33,54 @@ pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
         },
         _ => anyhow::bail!("select exactly one reminder or native task"),
     };
-    let schedule = match (args.at, args.daily, args.timezone) {
-        (Some(at), None, None) => Schedule::Once {
+    let store = store(paths)?;
+    let trigger = match (args.watch_root, args.github_run, args.github_credential) {
+        (Some(root), None, None) => Some(autonomy::triggers::Trigger::Files(
+            autonomy::triggers::files::FileTrigger::create(
+                &store,
+                &root,
+                &scope.workspace,
+                &[
+                    paths.data_dir().to_owned(),
+                    paths.runtime_dir().to_owned(),
+                    paths
+                        .config_file()
+                        .parent()
+                        .context("config parent missing")?
+                        .to_owned(),
+                ],
+            )?,
+        )),
+        (None, Some(run), Some(reference)) => {
+            let (kind, name) = reference
+                .split_once(':')
+                .context("credential reference must be env:NAME or stored:ID")?;
+            let credential = match kind {
+                "env" => crate::config::CredentialReference::Environment {
+                    variable: name.into(),
+                },
+                "stored" => crate::config::CredentialReference::Stored { id: name.into() },
+                _ => anyhow::bail!("credential reference must be env:NAME or stored:ID"),
+            };
+            Some(autonomy::triggers::Trigger::Github(
+                autonomy::triggers::github::GithubTrigger::create(&run, credential)?,
+            ))
+        }
+        (None, None, None) => None,
+        _ => anyhow::bail!("select exactly one selected-file or named-CI trigger"),
+    };
+    let schedule = match (args.at, args.daily, args.timezone, trigger.as_ref()) {
+        (None, None, None, Some(trigger)) => Schedule::Triggered {
+            poll_seconds: if matches!(trigger, autonomy::triggers::Trigger::Files(_)) {
+                5
+            } else {
+                60
+            },
+        },
+        (Some(at), None, None, None) => Schedule::Once {
             at: at.parse::<jiff::Timestamp>()?.as_second(),
         },
-        (None, Some(time), Some(timezone)) => {
+        (None, Some(time), Some(timezone), None) => {
             let (hour, minute) = time.split_once(':').context("daily time must be HH:MM")?;
             ensure!(
                 hour.len() == 2 && minute.len() == 2,
@@ -65,6 +108,7 @@ pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
         action,
         budget: Default::default(),
         schedule,
+        trigger,
         expires_at,
         authorized: true,
         state: JobState::Ready,
@@ -74,7 +118,7 @@ pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
         pause_after_run: false,
         last_receipt: None,
     };
-    store(paths)?.autonomy_create(job)
+    store.autonomy_create(job)
 }
 
 pub(crate) fn store(paths: &XanaPaths) -> Result<ProtectedStore> {
@@ -133,6 +177,14 @@ pub(crate) fn execute(command: AutonomyCommand, paths: &XanaPaths) -> Result<ser
     }
     let store = store(paths)?;
     Ok(match command {
+        AutonomyCommand::Overview { after } => {
+            serde_json::to_value(autonomy::supervision::page(&store, after)?)?
+        }
+        AutonomyCommand::Review { id } => serde_json::to_value(autonomy::supervision::review(
+            paths,
+            &store,
+            &store.autonomy_job(id)?,
+        )?)?,
         AutonomyCommand::List { after } => serde_json::to_value(store.autonomy_page(after)?)?,
         AutonomyCommand::Show { id } => serde_json::to_value(store.autonomy_job(id)?)?,
         AutonomyCommand::Receipts { id, after } => {

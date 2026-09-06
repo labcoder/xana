@@ -4,10 +4,17 @@
 //! discovery, secret handling, validation, and durable mutation stay here.
 
 mod accounting;
+mod workers;
+pub use workers::{DesktopWorkerCancellation, DesktopWorkerIntent, DesktopWorkerSummary};
 mod autonomy;
+mod autonomy_observer;
 pub use autonomy::{
     DesktopAutonomySnapshot, DesktopHostEdit, DesktopScheduleEdit, DesktopScheduledTask,
-    DesktopTaskDraft, DesktopTaskPreview,
+    DesktopTaskDraft, DesktopTaskPreview, DesktopWorkGroup,
+};
+pub use autonomy_observer::{
+    DesktopAutonomyObserver, DesktopBackgroundAttention, DesktopBackgroundAttentionKind,
+    DesktopBackgroundUpdate,
 };
 mod memory;
 pub use memory::{

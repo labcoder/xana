@@ -116,6 +116,8 @@ pub enum AttentionKind {
     Failed,
     ControllerLost,
     HostFailure,
+    BackgroundNeedsYou,
+    BackgroundCompleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +142,7 @@ pub enum NotificationDestination {
     Conversation,
     Activity,
     Diagnostics,
+    Schedules,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +286,8 @@ fn enabled(settings: &NotificationPolicy, kind: AttentionKind) -> bool {
         AttentionKind::Failed => settings.failures,
         AttentionKind::ControllerLost => settings.controller_lost,
         AttentionKind::HostFailure => settings.host_failures,
+        AttentionKind::BackgroundNeedsYou => settings.failures,
+        AttentionKind::BackgroundCompleted => settings.completions,
     }
 }
 
@@ -317,6 +322,16 @@ fn candidate(signal: &AttentionSignal) -> NotificationCandidate {
             "Xana host needs attention",
             "Open Diagnostics to review a local host failure.",
             NotificationDestination::Diagnostics,
+        ),
+        AttentionKind::BackgroundNeedsYou => (
+            "Xana background work needs you",
+            "A scheduled task needs an authority, budget, source, or recovery decision.",
+            NotificationDestination::Schedules,
+        ),
+        AttentionKind::BackgroundCompleted => (
+            "Xana background work finished",
+            "A scheduled task has a completion receipt.",
+            NotificationDestination::Schedules,
         ),
     };
     NotificationCandidate {

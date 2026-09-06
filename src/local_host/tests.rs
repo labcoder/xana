@@ -30,6 +30,47 @@ fn seed(workspace: &std::path::Path, data_root: &std::path::Path) -> HostSnapsho
 }
 
 #[test]
+fn scheduled_work_updates_are_bounded_deduplicated_and_reconnectable() {
+    use crate::autonomy::{JobState, PAGE_SIZE, host::JobSummary};
+    let directory = tempdir().unwrap();
+    let workspace = directory.path().join("workspace");
+    std::fs::create_dir(&workspace).unwrap();
+    let hub = ObservationHub::new(HostSnapshot::new(
+        uuid::Uuid::new_v4(),
+        1,
+        seed(&workspace, directory.path()),
+    ));
+    let mut subscriber = hub.subscribe().unwrap();
+    let mut job = JobSummary {
+        id: uuid::Uuid::new_v4(),
+        revision: 1,
+        conversation: uuid::Uuid::new_v4(),
+        state: JobState::Ready,
+        next_at: 1800000000,
+        receipt: None,
+    };
+    hub.replace_scheduled(vec![job.clone()]).unwrap();
+    let first = subscriber.observations.try_recv().unwrap();
+    assert!(matches!(
+        first.event,
+        HostEvent::ScheduledJobsChanged { .. }
+    ));
+    hub.replace_scheduled(vec![job.clone()]).unwrap();
+    assert!(subscriber.observations.try_recv().is_err());
+    job.state = JobState::NeedsYou;
+    job.revision = 2;
+    job.receipt = Some(uuid::Uuid::new_v4());
+    hub.replace_scheduled(vec![job.clone()]).unwrap();
+    let changed = subscriber.observations.try_recv().unwrap();
+    assert_eq!(changed.sequence, first.sequence + 1);
+    let reconnected = hub.subscribe().unwrap();
+    assert_eq!(reconnected.snapshot.scheduled_jobs, vec![job.clone()]);
+    assert_eq!(reconnected.snapshot.sequence, changed.sequence);
+    assert!(hub.replace_scheduled(vec![job; PAGE_SIZE + 1]).is_err());
+    assert_eq!(hub.subscribe().unwrap().snapshot.sequence, changed.sequence);
+}
+
+#[test]
 fn managed_approval_transport_preserves_authority_bearing_command_and_cwd_tails() {
     use super::protocol::{HostObservation, ManagedApprovalSnapshot, encode_frame};
     use crate::{identity::OperationId, managed::codex::ApprovalRequest};

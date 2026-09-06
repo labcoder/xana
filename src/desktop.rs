@@ -42,8 +42,9 @@ pub use layout::{
     DesktopResolvedLayout, DesktopSplitAxis, DesktopWorkbenchLayout,
 };
 pub use management::{
-    DesktopAutonomySnapshot, DesktopBudgetEdit, DesktopBudgetField, DesktopBudgetSetting,
-    DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopConnection,
+    DesktopAutonomyObserver, DesktopAutonomySnapshot, DesktopBackgroundAttention,
+    DesktopBackgroundAttentionKind, DesktopBackgroundUpdate, DesktopBudgetEdit, DesktopBudgetField,
+    DesktopBudgetSetting, DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopConnection,
     DesktopConnectionMutationReceipt, DesktopConnectionOperationReceipt,
     DesktopConnectionRemovalPlan, DesktopConnectionSnapshot, DesktopControlPlane,
     DesktopCredentialInput, DesktopCredentialState, DesktopDiagnosticEntry,
@@ -60,9 +61,10 @@ pub use management::{
     DesktopResourceLimit, DesktopResourcePolicyDraft, DesktopResourcePolicyPreview,
     DesktopResourcePolicySnapshot, DesktopScheduleEdit, DesktopScheduledTask, DesktopSecret,
     DesktopSetupDraft, DesktopSetupMode, DesktopSetupReceipt, DesktopSetupSnapshot,
-    DesktopTaskDraft, DesktopTaskPreview, DesktopUsagePage, DesktopWorkbenchPreferenceSnapshot,
-    MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit, MemoryPage, MemoryRecord,
-    MemoryScope, MemoryState, SourceDeletionPreview, SourceDeletionReceipt,
+    DesktopTaskDraft, DesktopTaskPreview, DesktopUsagePage, DesktopWorkGroup,
+    DesktopWorkbenchPreferenceSnapshot, DesktopWorkerCancellation, DesktopWorkerIntent,
+    DesktopWorkerSummary, MemoryClaim, MemoryControlEdit, MemoryControls, MemoryEdit, MemoryPage,
+    MemoryRecord, MemoryScope, MemoryState, SourceDeletionPreview, SourceDeletionReceipt,
 };
 pub use navigation::{
     DesktopConversationNode, DesktopLaunchCatalog, DesktopLaunchChoice, DesktopLaunchChoiceKind,

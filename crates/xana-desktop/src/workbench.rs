@@ -4256,6 +4256,7 @@ fn notification_destination(destination: NotificationDestination) -> &'static st
         NotificationDestination::Conversation => "conversation",
         NotificationDestination::Activity => "activity",
         NotificationDestination::Diagnostics => "diagnostics",
+        NotificationDestination::Schedules => "schedules",
     }
 }
 

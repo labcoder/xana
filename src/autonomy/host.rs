@@ -26,9 +26,13 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct JobSummary {
     pub(crate) id: Uuid,
+    #[serde(default)]
+    pub(crate) revision: u64,
     pub(crate) conversation: Uuid,
     pub(crate) state: JobState,
     pub(crate) next_at: i64,
+    #[serde(default)]
+    pub(crate) receipt: Option<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,9 +68,11 @@ pub(crate) fn summaries(store: &ProtectedStore) -> Result<Vec<JobSummary>> {
         .into_iter()
         .map(|(_, job)| JobSummary {
             id: job.id,
+            revision: job.revision,
             conversation: job.conversation,
             state: job.state,
             next_at: job.next.at,
+            receipt: job.last_receipt.map(|receipt| receipt.occurrence),
         })
         .collect())
 }
