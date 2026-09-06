@@ -13,7 +13,7 @@ mod memory;
 mod recall;
 mod worker;
 pub(crate) use recall::{NotesCommand, RecallArgs, RecallCommand};
-pub(crate) use worker::{WorkerArgs, WorkerCommand};
+pub(crate) use worker::{WorkerArgs, WorkerCommand, WorkerTarget};
 mod autonomy;
 pub(crate) use autonomy::{AutonomyArgs, AutonomyCommand, CreateTask, HostCommand};
 pub(crate) use memory::{MemoryArgs, MemoryCommand};

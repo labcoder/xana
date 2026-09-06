@@ -1,6 +1,11 @@
 //! Bounded public projections and owner intents; no database/runtime capability.
 use super::{DesktopControlPlane, DesktopError, control_error};
-use crate::{app::worker_commands, cli::WorkerCommand, identity::AgentId, storage::ProtectedStore};
+use crate::{
+    app::worker_commands,
+    cli::{WorkerCommand, WorkerTarget},
+    identity::AgentId,
+    storage::ProtectedStore,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -140,10 +145,9 @@ impl DesktopControlPlane {
         cancellation: DesktopWorkerCancellation,
     ) -> Result<String, DesktopError> {
         let id: AgentId = id.parse().map_err(control_error)?;
-        let command: WorkerCommand = serde_json::from_value(
-            serde_json::json!({"command":"run","target":{"id":id,"revision":revision}}),
-        )
-        .map_err(control_error)?;
+        let command = WorkerCommand::Run {
+            target: WorkerTarget { id, revision },
+        };
         let value = worker_commands::execute(self.paths.clone(), command, cancellation.0)
             .await
             .map_err(control_error)?;
@@ -155,11 +159,13 @@ fn worker_command(intent: DesktopWorkerIntent) -> Result<WorkerCommand, DesktopE
     if serde_json::to_vec(&intent).map_err(control_error)?.len() > 32 * 1024 {
         return Err(control_error("Worker intent exceeds 32 KiB"));
     }
-    let target = |id: String, revision: u64| -> Result<serde_json::Value, DesktopError> {
-        let id: AgentId = id.parse().map_err(control_error)?;
-        Ok(serde_json::json!({"id":id,"revision":revision}))
+    let target = |id: String, revision: u64| -> Result<WorkerTarget, DesktopError> {
+        Ok(WorkerTarget {
+            id: id.parse().map_err(control_error)?,
+            revision,
+        })
     };
-    let wire = match intent {
+    Ok(match intent {
         DesktopWorkerIntent::Retain {
             session,
             agent,
@@ -167,39 +173,50 @@ fn worker_command(intent: DesktopWorkerIntent) -> Result<WorkerCommand, DesktopE
             expires,
             evidence,
             authorize,
-        } => {
-            serde_json::json!({"command":"retain","session":session,"agent":agent,"goal":goal,"expires":expires,"evidence":evidence,"authorize":authorize})
-        }
+        } => WorkerCommand::Retain {
+            session: session.parse().map_err(control_error)?,
+            agent: agent.parse().map_err(control_error)?,
+            goal,
+            expires,
+            evidence: evidence
+                .into_iter()
+                .map(|id| id.parse().map_err(control_error))
+                .collect::<Result<_, _>>()?,
+            authorize,
+        },
         DesktopWorkerIntent::FollowUp {
             id,
             revision,
             request_id,
             text,
-        } => {
-            serde_json::json!({"command":"follow_up","target":target(id,revision)?,"request_id":request_id,"text":text})
-        }
-        DesktopWorkerIntent::Drain { id, revision } => {
-            serde_json::json!({"command":"drain","target":target(id,revision)?})
-        }
-        DesktopWorkerIntent::Stop { id, revision } => {
-            serde_json::json!({"command":"stop","target":target(id,revision)?})
-        }
+        } => WorkerCommand::FollowUp {
+            target: target(id, revision)?,
+            request_id: request_id.parse().map_err(control_error)?,
+            text,
+        },
+        DesktopWorkerIntent::Drain { id, revision } => WorkerCommand::Drain {
+            target: target(id, revision)?,
+        },
+        DesktopWorkerIntent::Stop { id, revision } => WorkerCommand::Stop {
+            target: target(id, revision)?,
+        },
         DesktopWorkerIntent::Recover {
             id,
             revision,
             review_unknown,
-        } => {
-            serde_json::json!({"command":"recover","target":target(id,revision)?,"review_unknown":review_unknown})
-        }
+        } => WorkerCommand::Recover {
+            target: target(id, revision)?,
+            review_unknown,
+        },
         DesktopWorkerIntent::Context {
             id,
             revision,
             operation,
-        } => {
-            serde_json::json!({"command":"context","target":target(id,revision)?,"operation":operation})
-        }
-    };
-    serde_json::from_value(wire).map_err(control_error)
+        } => WorkerCommand::Context {
+            target: target(id, revision)?,
+            operation,
+        },
+    })
 }
 
 #[cfg(test)]
@@ -248,6 +265,35 @@ mod tests {
             worker_command(DesktopWorkerIntent::Stop {
                 id: "invalid".into(),
                 revision: 1
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn follow_up_preserves_typed_identity_revision_and_message() {
+        let id = AgentId::new();
+        let request_id = uuid::Uuid::new_v4();
+        assert_eq!(
+            worker_command(DesktopWorkerIntent::FollowUp {
+                id: id.to_string(),
+                revision: 7,
+                request_id: request_id.to_string(),
+                text: "Continue only the approved task".into(),
+            })
+            .unwrap(),
+            WorkerCommand::FollowUp {
+                target: WorkerTarget { id, revision: 7 },
+                request_id,
+                text: "Continue only the approved task".into(),
+            }
+        );
+        assert!(
+            worker_command(DesktopWorkerIntent::FollowUp {
+                id: id.to_string(),
+                revision: 7,
+                request_id: "not-a-request-id".into(),
+                text: "Continue".into(),
             })
             .is_err()
         );
