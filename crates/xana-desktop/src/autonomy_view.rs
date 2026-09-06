@@ -7,12 +7,14 @@ use gpui_component::{
     checkbox::Checkbox,
     h_flex,
     input::{Input, InputState, Textarea, TextareaState},
+    radio::{Radio, RadioGroup},
     scroll::ScrollableElement as _,
     v_flex,
 };
 use xana::desktop::{
-    DesktopAutonomySnapshot, DesktopControlPlane, DesktopError, DesktopHostEdit,
-    DesktopScheduleEdit, DesktopScheduledTask, DesktopTaskDraft, DesktopTaskPreview,
+    DesktopAutonomySnapshot, DesktopControlPlane, DesktopError, DesktopGithubCredential,
+    DesktopHostEdit, DesktopScheduleEdit, DesktopScheduledTask, DesktopTaskDraft,
+    DesktopTaskPreview, DesktopTaskTrigger,
 };
 
 pub(crate) struct AutonomyView {
@@ -24,11 +26,15 @@ pub(crate) struct AutonomyView {
     project: Entity<InputState>,
     time: Entity<InputState>,
     timezone: Entity<InputState>,
+    watch_root: Entity<InputState>,
+    github_run: Entity<InputState>,
+    credential_reference: Entity<InputState>,
     expires: Entity<InputState>,
     text: Entity<TextareaState>,
     detail: Entity<TextareaState>,
     reminder: bool,
-    daily: bool,
+    trigger: TriggerChoice,
+    stored_credential: bool,
     workspace_reads: bool,
     authorize: bool,
     review_unknown: bool,
@@ -38,6 +44,24 @@ pub(crate) struct AutonomyView {
     status: String,
     busy: bool,
     task: Option<Task<()>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TriggerChoice {
+    Once,
+    Daily,
+    Files,
+    GithubRun,
+}
+
+impl TriggerChoice {
+    const ALL: [Self; 4] = [Self::Once, Self::Daily, Self::Files, Self::GithubRun];
+    fn index(self) -> usize {
+        Self::ALL
+            .iter()
+            .position(|choice| *choice == self)
+            .expect("all trigger choices listed")
+    }
 }
 enum ViewResult {
     Reviewed(DesktopScheduledTask, String),
@@ -56,8 +80,11 @@ impl AutonomyView {
             workers: cx.new(|cx| crate::worker_view::WorkerView::new(control.clone(), window, cx)),
             control,name:cx.new(|cx|InputState::new(window,cx)),workspace:cx.new(|cx|InputState::new(window,cx)),profile:cx.new(|cx|InputState::new(window,cx)),project:cx.new(|cx|InputState::new(window,cx)),
             time:cx.new(|cx|InputState::new(window,cx).placeholder("RFC3339 instant, or daily HH:MM")),timezone:cx.new(|cx|InputState::new(window,cx).placeholder("America/Los_Angeles")),expires:cx.new(|cx|InputState::new(window,cx).placeholder("RFC3339 expiry with timezone offset")),
+            watch_root:cx.new(|cx|InputState::new(window,cx).placeholder("Exact directory within the workspace, e.g. src")),
+            github_run:cx.new(|cx|InputState::new(window,cx).placeholder("OWNER/REPO/RUN_ID")),
+            credential_reference:cx.new(|cx|InputState::new(window,cx).placeholder("Environment variable name or stored credential ID; never a token")),
             text:cx.new(|cx|TextareaState::new(window,cx).auto_grow(3,8)),detail:cx.new(|cx|TextareaState::new(window,cx).auto_grow(3,12)),
-            reminder:true,daily:false,workspace_reads:false,authorize:false,review_unknown:false,preview:None,snapshot:None,selected:None,
+            reminder:true,trigger:TriggerChoice::Once,stored_credential:false,workspace_reads:false,authorize:false,review_unknown:false,preview:None,snapshot:None,selected:None,
             status:"Refresh to inspect schedules and host status. Nothing runs until you explicitly start the detached host.".into(),busy:false,task:None,
         }
     }
@@ -71,9 +98,30 @@ impl AutonomyView {
             text: self.text.read(cx).value().to_string(),
             reminder: self.reminder,
             workspace_reads: self.workspace_reads && !self.reminder,
-            daily: self.daily,
-            time: self.time.read(cx).value().to_string(),
-            timezone: self.timezone.read(cx).value().to_string(),
+            trigger: match self.trigger {
+                TriggerChoice::Once => DesktopTaskTrigger::Once {
+                    at: self.time.read(cx).value().to_string(),
+                },
+                TriggerChoice::Daily => DesktopTaskTrigger::Daily {
+                    time: self.time.read(cx).value().to_string(),
+                    timezone: self.timezone.read(cx).value().to_string(),
+                },
+                TriggerChoice::Files => DesktopTaskTrigger::Files {
+                    root: self.watch_root.read(cx).value().to_string(),
+                },
+                TriggerChoice::GithubRun => DesktopTaskTrigger::GithubRun {
+                    run: self.github_run.read(cx).value().to_string(),
+                    credential: if self.stored_credential {
+                        DesktopGithubCredential::Stored {
+                            id: self.credential_reference.read(cx).value().to_string(),
+                        }
+                    } else {
+                        DesktopGithubCredential::Environment {
+                            variable: self.credential_reference.read(cx).value().to_string(),
+                        }
+                    },
+                },
+            },
             expires: self.expires.read(cx).value().to_string(),
         }
     }
@@ -117,13 +165,13 @@ impl AutonomyView {
             _=this.update_in(cx,|this,window,cx| {
                 this.busy=false;
                 match result {
-                    Ok(ViewResult::Reviewed(task,detail))=>{this.selected=Some(task);this.review_unknown=false;this.detail.update(cx,|input,cx|input.set_value(detail,window,cx));this.status="Current task scope loaded; opening it did not grant authority.".into();}
+                    Ok(ViewResult::Reviewed(task,detail))=>{this.selected=Some(task);this.review_unknown=false;this.preview=None;this.authorize=false;this.detail.update(cx,|input,cx|input.set_value(detail,window,cx));this.status="Current task scope loaded; opening it did not grant authority.".into();}
                     Ok(ViewResult::Snapshot(snapshot))=>{
                         this.selected=this.selected.as_ref().and_then(|selected|snapshot.jobs.iter().find(|job|job.id==selected.id).cloned());
                         this.snapshot=Some(snapshot);this.status="Current protected schedule page loaded. Select a task to inspect its exact intent.".into();
                     }
                     Ok(ViewResult::Preview(draft,preview))=>{this.detail.update(cx,|input,cx|input.set_value(preview.text.clone(),window,cx));this.preview=Some((draft,preview));this.authorize=false;this.status="Review the exact task, recipient and bounds below, then confirm creation.".into();}
-                    Ok(ViewResult::Detail(text))=>{this.detail.update(cx,|input,cx|input.set_value(text,window,cx));this.status="Read-only inspection. This does not grant new authority or replay work.".into();}
+                    Ok(ViewResult::Detail(text))=>{this.preview=None;this.authorize=false;this.detail.update(cx,|input,cx|input.set_value(text,window,cx));this.status="Read-only inspection. This does not grant new authority or replay work.".into();}
                     Ok(ViewResult::Changed(receipt))=>{this.status=receipt;this.snapshot=None;this.selected=None;this.preview=None;this.authorize=false;this.review_unknown=false;}
                     Err(error)=>this.status=error.message,
                 }
@@ -163,10 +211,10 @@ impl AutonomyView {
             cx.notify();
             return;
         }
-        let digest = preview.route_digest.clone();
+        let preview = preview.clone();
         self.perform(window, cx, move |control| {
             control
-                .create_scheduled_task(draft, digest)
+                .create_scheduled_task(draft, preview)
                 .map(ViewResult::Changed)
         });
     }
@@ -207,6 +255,40 @@ impl AutonomyView {
                 .map(ViewResult::Changed)
         });
     }
+
+    fn render_trigger(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let fields: Vec<(&str, &Entity<InputState>)> = match self.trigger {
+            TriggerChoice::Once => vec![("Exact time (RFC3339 with offset)", &self.time)],
+            TriggerChoice::Daily => vec![
+                ("Daily time (HH:MM)", &self.time),
+                ("IANA timezone", &self.timezone),
+            ],
+            TriggerChoice::Files => vec![("Selected directory", &self.watch_root)],
+            TriggerChoice::GithubRun => vec![("GitHub run (OWNER/REPO/RUN_ID)", &self.github_run)],
+        };
+        v_flex().gap_2()
+            .child("Trigger")
+            .child(RadioGroup::horizontal("task-trigger").selected_index(Some(self.trigger.index())).disabled(self.busy)
+                .children([("trigger-once", "Once"), ("trigger-daily", "Daily"), ("trigger-files", "Selected files"), ("trigger-github", "GitHub run")]
+                    .into_iter().map(|(id,label)|Radio::new(id).label(label)))
+                .on_click(cx.listener(|this, index, _, cx| {
+                    if let Some(choice) = TriggerChoice::ALL.get(*index) {
+                        this.trigger = *choice; this.authorize = false; this.preview = None; cx.notify();
+                    }
+                })))
+            .children(fields.into_iter().map(|(label,input)|v_flex().gap_1().child(label.to_owned()).child(Input::new(input).disabled(self.busy))))
+            .when(self.trigger == TriggerChoice::Files, |view|view.child("Metadata changes only; at most 256 entries, no links or Xana-managed state. No model call while unchanged."))
+            .when(self.trigger == TriggerChoice::GithubRun, |view|view
+                .child("Credential source (not an API key)")
+                .child(RadioGroup::horizontal("task-ci-credential-source").selected_index(Some(usize::from(self.stored_credential))).disabled(self.busy)
+                    .child(Radio::new("ci-credential-env").label("Environment variable"))
+                    .child(Radio::new("ci-credential-stored").label("Stored credential"))
+                    .on_click(cx.listener(|this,index,_,cx|{this.stored_credential = *index == 1;this.authorize=false;this.preview=None;cx.notify();})))
+                .child(if self.stored_credential {"Stored credential ID"} else {"Environment variable name"})
+                .child(Input::new(&self.credential_reference).disabled(self.busy))
+                .child("Actions-read access to only this named repository/run. Preview does not fetch a token or call GitHub. No Codex or GitHub CLI account fallback."))
+            .into_any_element()
+    }
 }
 impl Render for AutonomyView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -238,8 +320,9 @@ impl Render for AutonomyView {
                 .children([(DesktopScheduleEdit::Pause,"schedule-pause","Pause"),(DesktopScheduleEdit::Resume,"schedule-resume","Resume"),(DesktopScheduleEdit::Cancel,"schedule-cancel","Cancel task")].into_iter().map(|(edit,id,label)|Button::new(id).label(label).disabled(self.busy || !selected).on_click(cx.listener(move|this,_,window,cx|this.edit(edit,window,cx))))))
             .child(Checkbox::new("schedule-review-unknown").label("I inspected the uncertain outcome and authorize a new attempt").checked(self.review_unknown).disabled(self.busy || !selected).on_click(cx.listener(|this,checked,_,cx|{this.review_unknown = *checked;cx.notify();})))
             .child("Create a schedule")
-            .children([("Name",&self.name),("Workspace (exact existing folder)",&self.workspace),("Global Profile name",&self.profile),("Project ID (optional)",&self.project),("Trigger time",&self.time),("IANA timezone (daily only)",&self.timezone),("Authority expiry",&self.expires)].into_iter().map(|(label,input)|v_flex().gap_1().child(label).child(Input::new(input).disabled(self.busy))))
-            .child(Checkbox::new("schedule-daily").label("Repeat daily (otherwise one-shot)").checked(self.daily).disabled(self.busy).on_click(cx.listener(|this,checked,_,cx|{this.daily = *checked;this.authorize=false;cx.notify();})))
+            .children([("Name",&self.name),("Workspace (exact existing folder)",&self.workspace),("Global Profile name",&self.profile),("Project ID (optional)",&self.project)].into_iter().map(|(label,input)|v_flex().gap_1().child(label).child(Input::new(input).disabled(self.busy))))
+            .child(self.render_trigger(cx))
+            .child(v_flex().gap_1().child("Authority expiry (RFC3339 with offset)").child(Input::new(&self.expires).disabled(self.busy)))
             .child(Checkbox::new("schedule-reminder").label("Local reminder (otherwise native task)").checked(self.reminder).disabled(self.busy).on_click(cx.listener(|this,checked,_,cx|{this.reminder = *checked;this.authorize=false;cx.notify();})))
             .child(Checkbox::new("schedule-reads").label("Authorize Profile-selected bounded workspace reads and their disclosure").checked(self.workspace_reads).disabled(self.busy || self.reminder).on_click(cx.listener(|this,checked,_,cx|{this.workspace_reads = *checked;this.authorize=false;cx.notify();})))
             .child("Task / reminder text (maximum 16 KiB)").child(Textarea::new(&self.text).disabled(self.busy))

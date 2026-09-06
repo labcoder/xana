@@ -11,6 +11,14 @@ use std::io::Write;
 use uuid::Uuid;
 
 pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
+    let store = store(paths)?;
+    let job = prepare(paths, &store, args)?;
+    store.autonomy_create(job)
+}
+
+/// Resolve and validate the same exact task for every client, without saving it
+/// or fetching credentials/status. File sources capture only a bounded baseline.
+pub(crate) fn prepare(paths: &XanaPaths, store: &ProtectedStore, args: CreateTask) -> Result<Job> {
     ensure!(
         args.authorize,
         "schedule creation requires explicit --authorize after reviewing exact task scope"
@@ -33,11 +41,10 @@ pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
         },
         _ => anyhow::bail!("select exactly one reminder or native task"),
     };
-    let store = store(paths)?;
     let trigger = match (args.watch_root, args.github_run, args.github_credential) {
         (Some(root), None, None) => Some(autonomy::triggers::Trigger::Files(
             autonomy::triggers::files::FileTrigger::create(
-                &store,
+                store,
                 &root,
                 &scope.workspace,
                 &[
@@ -118,7 +125,8 @@ pub(crate) fn create(paths: &XanaPaths, args: CreateTask) -> Result<Job> {
         pause_after_run: false,
         last_receipt: None,
     };
-    store.autonomy_create(job)
+    job.validate()?;
+    Ok(job)
 }
 
 pub(crate) fn store(paths: &XanaPaths) -> Result<ProtectedStore> {

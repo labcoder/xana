@@ -9,8 +9,9 @@ pub use workers::{DesktopWorkerCancellation, DesktopWorkerIntent, DesktopWorkerS
 mod autonomy;
 mod autonomy_observer;
 pub use autonomy::{
-    DesktopAutonomySnapshot, DesktopHostEdit, DesktopScheduleEdit, DesktopScheduledTask,
-    DesktopTaskDraft, DesktopTaskPreview, DesktopWorkGroup,
+    DesktopAutonomySnapshot, DesktopGithubCredential, DesktopHostEdit, DesktopScheduleEdit,
+    DesktopScheduledTask, DesktopTaskDraft, DesktopTaskPreview, DesktopTaskTrigger,
+    DesktopWorkGroup,
 };
 pub use autonomy_observer::{
     DesktopAutonomyObserver, DesktopBackgroundAttention, DesktopBackgroundAttentionKind,
