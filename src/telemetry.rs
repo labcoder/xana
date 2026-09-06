@@ -22,6 +22,24 @@ pub(crate) struct RuntimeTelemetryEvent {
 
 pub(crate) trait RuntimeTelemetry: Send + Sync {
     fn record(&self, event: RuntimeTelemetryEvent);
+
+    fn context_phase(&self, _event: ContextPhaseEvent) {}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextPhase {
+    SourceAdmission,
+    SourcePreparation,
+    HelperGeneration,
+    CheckpointCommit,
+    PromptPreparation,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ContextPhaseEvent {
+    pub(crate) operation_id: OperationId,
+    pub(crate) phase: ContextPhase,
+    pub(crate) elapsed: std::time::Duration,
 }
 
 #[derive(Debug, Default)]

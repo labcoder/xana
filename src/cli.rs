@@ -1410,12 +1410,15 @@ pub(crate) struct SessionArgs {
 
 #[derive(Debug, Subcommand, PartialEq, Eq)]
 pub(crate) enum SessionCommand {
-    /// Compare a no-tool native helper on forty synthetic compaction cases.
+    /// Compare a no-tool native helper on forty synthetic cases (up to fifty calls).
     EvaluateCompaction {
         #[arg(long)]
         connection: String,
         #[arg(long)]
         model: String,
+        /// Run one synthetic case for diagnosis; partial results cannot enable a helper.
+        #[arg(long, conflicts_with_all = ["enable", "disable"])]
+        case_id: Option<String>,
         /// Explicitly authorize these synthetic requests through the exact route.
         #[arg(long)]
         yes: bool,

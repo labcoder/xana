@@ -417,17 +417,31 @@ fn live_semantic_route(
     })
 }
 
-#[allow(clippy::too_many_arguments)] // One CLI command with explicit disclosure/activation choices.
+pub(super) struct CompactionEvaluationOptions<'a> {
+    pub(super) yes: bool,
+    pub(super) enable: bool,
+    pub(super) disable: bool,
+    pub(super) case_id: Option<&'a str>,
+}
+
 pub(super) async fn evaluate_compaction<W: Write>(
     paths: &XanaPaths,
     connection: &str,
     model: &str,
-    yes: bool,
-    enable: bool,
-    disable: bool,
+    options: CompactionEvaluationOptions<'_>,
     output: &mut W,
 ) -> Result<()> {
     use crate::session::compaction::{evaluation, semantic};
+    let CompactionEvaluationOptions {
+        yes,
+        enable,
+        disable,
+        case_id,
+    } = options;
+    anyhow::ensure!(
+        case_id.is_none() || (!enable && !disable),
+        "partial evaluation cannot change helper approval"
+    );
     anyhow::ensure!(
         yes,
         "pass --yes to authorize synthetic helper evaluation or approval revocation"
@@ -456,6 +470,27 @@ pub(super) async fn evaluate_compaction<W: Write>(
         )?;
         return Ok(());
     }
+    // Read the same cached model metadata and user ceiling as native prompt
+    // planning. Unknown catalog facts use its conservative fallback, not an
+    // inferred window based on a model's name. This performs no model request.
+    let manager = super::connections::model_manager(paths)?;
+    let descriptor = manager.descriptor(&connection.id, model).ok();
+    let config = crate::config::XanaConfig::load_from(paths.config_file())?;
+    let plan = crate::prompt::PromptBudgetPlan::derive(
+        &config.context,
+        crate::prompt::ModelBudgetFacts {
+            connection: connection.id.clone(),
+            model: model.into(),
+            context_tokens: descriptor.as_ref().and_then(|model| model.context_tokens),
+            max_output_tokens: descriptor
+                .as_ref()
+                .and_then(|model| model.max_output_tokens),
+            reasoning: descriptor
+                .as_ref()
+                .is_some_and(|model| model.reasoning == Some(true)),
+        },
+    )?;
+    let limits = semantic::HelperLimits::from_plan(&plan);
     let (provider, _) = crate::orchestration::compose_native_provider(
         connection,
         model,
@@ -476,22 +511,43 @@ pub(super) async fn evaluate_compaction<W: Write>(
         ..Default::default()
     });
     let cancellation = tokio_util::sync::CancellationToken::new();
-    let report = tokio::select! {
-        result = evaluation::evaluate(provider.as_ref(), &budget, digest.clone(), &cancellation) => result?,
+    let evaluation = evaluation::evaluate_selected(
+        provider.as_ref(),
+        &budget,
+        digest.clone(),
+        &cancellation,
+        case_id,
+        limits,
+    );
+    tokio::pin!(evaluation);
+    let (report, cancelled) = tokio::select! {
+        biased;
         _ = tokio::signal::ctrl_c() => {
             cancellation.cancel();
-            anyhow::bail!("semantic evaluation cancelled; no helper approval changed; unfinished usage remains reserved");
-        }
+            // Join the same future: dropping it here bypasses the admitted
+            // helper's interruption receipt and loses the failure observation.
+            (evaluation.await?, true)
+        },
+        result = &mut evaluation => (result?, false),
     };
-    store.set_document(
-        &format!("compaction/evaluations/{digest}"),
-        &serde_json::to_vec(&report)?,
-        64 * 1024,
-    )?;
+    let report_name = if case_id.is_some() || cancelled {
+        format!("compaction/evaluations/{digest}/diagnostic")
+    } else {
+        format!("compaction/evaluations/{digest}")
+    };
+    store.set_document(&report_name, &serde_json::to_vec(&report)?, 512 * 1024)?;
+    // Failed opt-in must expose the same safe per-call evidence as a diagnostic
+    // run; approval refusal must not hide the observed failure classifications.
+    serde_json::to_writer_pretty(&mut *output, &report)?;
+    if cancelled {
+        writeln!(output)?;
+        anyhow::bail!(
+            "semantic evaluation cancelled; no helper approval changed; interruption recorded; unreported usage remains reserved"
+        );
+    }
     if enable {
         semantic::HelperPolicy::approve(&store, digest, &report)?;
     }
-    serde_json::to_writer_pretty(&mut *output, &report)?;
     writeln!(
         output,
         "\nPromotion gate: {}. Synthetic measured cases are not universal semantic accuracy; review the recorded route and failures. {}",

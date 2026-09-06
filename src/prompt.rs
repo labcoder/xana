@@ -104,11 +104,26 @@ impl PromptSnapshot {
         &self,
         history: &[Message],
     ) -> Result<Vec<Message>, PromptError> {
-        if history.iter().any(|message| message.role == Role::System) {
-            return Err(PromptError::SystemRoleInHistory);
-        }
+        self.validate_history(history)?;
+        let mut messages = Vec::with_capacity(history.len() + 1);
+        messages.push(self.system_message.clone());
+        messages.extend_from_slice(history);
+        Ok(messages)
+    }
 
-        let history_tokens = history.iter().map(estimate_message_tokens).sum::<usize>();
+    /// Preflight borrowed history, including an uncommitted user message,
+    /// without allocating a provider request that will immediately be dropped.
+    pub(crate) fn validate_history<'a>(
+        &self,
+        history: impl IntoIterator<Item = &'a Message>,
+    ) -> Result<(), PromptError> {
+        let mut history_tokens = 0_usize;
+        for message in history {
+            if message.role == Role::System {
+                return Err(PromptError::SystemRoleInHistory);
+            }
+            history_tokens = history_tokens.saturating_add(estimate_message_tokens(message));
+        }
         let used = self
             .system_tokens
             .saturating_add(self.tool_schema_tokens)
@@ -122,10 +137,7 @@ impl PromptSnapshot {
             });
         }
 
-        let mut messages = Vec::with_capacity(history.len() + 1);
-        messages.push(self.system_message.clone());
-        messages.extend_from_slice(history);
-        Ok(messages)
+        Ok(())
     }
 }
 

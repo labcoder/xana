@@ -5,6 +5,7 @@ mod checkpoint;
 mod constraints;
 mod inventory;
 mod path_index;
+mod proof;
 mod reader;
 mod subjects;
 mod verification;
@@ -15,6 +16,7 @@ mod execution_tests;
 mod tests;
 
 pub(super) use path_index::{PATH_SCHEMA, migrate_path_index};
+pub(crate) use proof::{ActivePrefixProofCursor, CompactionDisclosureGuard};
 pub(crate) use subjects::HistorySubject;
 pub(super) use subjects::{EXECUTION_SCHEMA, migrate_execution_index};
 

@@ -5,6 +5,7 @@ use super::{
     apply_validated, reduce, validate_envelope_with_compaction_proof,
 };
 mod inspection;
+mod preparation;
 mod protected;
 use crate::{
     artifact::{ArtifactStore, ContentHash},
@@ -29,6 +30,7 @@ use crate::{
     prompt::PromptBudgetPlan,
 };
 use anyhow::{Context, Result, bail};
+pub(crate) use preparation::CompactionPreparation;
 use std::{
     collections::HashSet,
     fs,
@@ -605,130 +607,36 @@ impl DurableSession {
         self.commit_compaction(candidate)
     }
 
+    pub(crate) fn begin_compaction(
+        &self,
+        operation_id: OperationId,
+        reason: CompactionReason,
+        budget: &PromptBudgetPlan,
+    ) -> Result<CompactionPreparation> {
+        CompactionPreparation::begin(self, operation_id, reason, budget)
+    }
+
+    #[cfg(test)]
     pub(crate) fn prepare_compaction(
         &self,
         operation_id: OperationId,
         reason: CompactionReason,
         budget: &PromptBudgetPlan,
     ) -> Result<super::CompactionCandidate> {
-        let privacy_generation = if let Some(home) = self.store.protected_home() {
-            anyhow::ensure!(
-                home.source_eligible(self.session_id().to_string().parse()?)?,
-                "compaction source is excluded by forgetting or restore policy; raw history remains inspectable"
-            );
-            Some(home.privacy_generation()?)
-        } else {
-            None
-        };
-        let path = self
-            .restored
-            .conversation_entry_path()
-            .context("could not restore compaction source path")?;
-        let messages = path.iter().map(|entry| &entry.message).collect::<Vec<_>>();
-        let retained_start =
-            super::compaction::select_retained_start(&messages, budget.retained_tail_tokens);
-        if retained_start == 0 || retained_start >= path.len() {
-            return Err(CompactionError::NothingToCompact.into());
+        let mut preparation = self.begin_compaction(operation_id, reason, budget)?;
+        while !preparation.is_ready() {
+            preparation = preparation.advance()?;
         }
-        let previous = self
-            .restored
-            .active_compaction()
-            .context("could not resolve prior compaction checkpoint")?
-            .cloned();
-        let offset = self.restored.retained_offset();
-        let incremental_start = previous
-            .as_ref()
-            .map_or(0, |checkpoint| checkpoint.source_entry_count - offset);
-        if retained_start <= incremental_start {
-            return Err(CompactionError::NothingToCompact.into());
-        }
-        let summary = CompactionSummary::derive(
-            previous.as_ref().map(|checkpoint| &checkpoint.summary),
-            path[incremental_start..retained_start]
-                .iter()
-                .map(|entry| &entry.message),
-            budget.summary_max_bytes,
-        );
-        let source_entry_count = offset
-            .checked_add(retained_start)
-            .context("compaction source count exceeds supported history size")?;
-        let cached = self.compaction_prefix.as_ref().filter(|prefix| {
-            previous
-                .as_ref()
-                .is_some_and(|checkpoint| prefix.matches(self.session_id(), checkpoint))
-        });
-        let source_proof = if let Some(prefix) = cached {
-            let mut builder = super::compaction::CompactionSourceProofBuilder::from_prefix(
-                prefix,
-                source_entry_count,
-            )?;
-            for entry in &path[incremental_start..=retained_start] {
-                builder.push(entry.id, &entry.message)?;
-            }
-            Some(builder.finish()?)
-        } else if offset > 0 {
-            Some(
-                self.store
-                    .protected_home()
-                    .context("archived compaction sources require protected history")?
-                    .active_prefix_proof(self.session_id(), source_entry_count)?,
-            )
-        } else {
-            let mut builder = super::compaction::CompactionSourceProofBuilder::new(
-                self.session_id(),
-                source_entry_count,
-            );
-            for entry in &path[..=retained_start] {
-                builder.push(entry.id, &entry.message)?;
-            }
-            Some(builder.finish()?)
-        };
-        let checkpoint = CompactionCheckpoint {
-            version: COMPACTION_CHECKPOINT_VERSION,
-            id: CompactionId::new(),
-            operation_id,
-            previous_checkpoint: previous.as_ref().map(|checkpoint| checkpoint.id),
-            reason,
-            source_start: source_proof
-                .as_ref()
-                .map_or(path[0].id, |proof| proof.start()),
-            source_end: source_proof
-                .as_ref()
-                .map_or(path[retained_start - 1].id, |proof| proof.end()),
-            source_entry_count,
-            source_digest: source_proof.as_ref().map_or_else(
-                || {
-                    super::compaction::source_digest(
-                        path[..retained_start]
-                            .iter()
-                            .map(|entry| (entry.id, &entry.message)),
-                    )
-                },
-                |proof| proof.digest().to_owned(),
-            ),
-            retained_tail_start: source_proof
-                .as_ref()
-                .map_or(path[retained_start].id, |proof| proof.tail()),
-            summary,
-            budget: budget.clone(),
-            semantic: None,
-        };
-        let helper_messages = super::compaction::semantic::source_messages(
-            previous.as_ref().map(|checkpoint| &checkpoint.summary),
-            &messages[incremental_start..retained_start],
-        );
-        Ok(super::CompactionCandidate {
-            checkpoint,
-            helper_messages,
-            privacy_generation,
-            source_proof,
-        })
+        preparation.finish()
     }
 
     pub(crate) fn commit_compaction(
         &mut self,
         candidate: super::CompactionCandidate,
     ) -> Result<CompactionCheckpoint> {
+        if let Some(guard) = &candidate.source_guard {
+            guard.recheck()?;
+        }
         if let Some(home) = self.store.protected_home() {
             anyhow::ensure!(
                 home.source_eligible(self.session_id().to_string().parse()?)?

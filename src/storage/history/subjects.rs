@@ -229,7 +229,7 @@ impl ProtectedStore {
     }
 }
 
-fn metadata(db: &rusqlite::Connection, id: SessionId) -> Result<HistoryMetadata> {
+pub(super) fn metadata(db: &rusqlite::Connection, id: SessionId) -> Result<HistoryMetadata> {
     let (revision, bytes, thread, workspace, head): (usize, usize, String, String, Option<String>) =
         db.query_row(
             "SELECT revision,bytes,root_thread,workspace,head FROM native_sessions WHERE id=?1",

@@ -12,9 +12,32 @@ enum Behavior {
     Oversized,
     Failure,
     Wait,
+    ReasoningThenSummary,
+    ReasoningOverflow,
+    UnexpectedReasoning,
+    TokenLimit,
 }
 struct Helper(Behavior);
 impl ConversationalProvider for Helper {
+    fn helper_capabilities(&self) -> crate::provider::HelperCapabilities {
+        crate::provider::HelperCapabilities {
+            output_limit: true,
+            disable_reasoning: matches!(self.0, Behavior::UnexpectedReasoning),
+            ..Default::default()
+        }
+    }
+
+    fn stream_helper_message<'a>(
+        &'a self,
+        messages: &'a [Message],
+        policy: crate::provider::HelperGenerationPolicy<'a>,
+        step: StepId,
+        sink: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, std::result::Result<Message, ProviderError>> {
+        assert!(policy.max_output_tokens <= OUTPUT_RESERVE as usize);
+        self.stream_message(messages, &[], step, sink)
+    }
+
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
@@ -50,9 +73,97 @@ impl ConversationalProvider for Helper {
                 }
                 Behavior::Failure => Err(ProviderError::new("synthetic private provider error")),
                 Behavior::Wait => std::future::pending().await,
+                Behavior::ReasoningThenSummary => {
+                    sink.reasoning_delta(step, &"r".repeat(8_000));
+                    let summary = CompactionSummary {
+                        goal: Some("answer after bounded reasoning".into()),
+                        constraints: vec!["c".repeat(400)],
+                        ..Default::default()
+                    };
+                    let text = serde_json::to_string(&summary).unwrap();
+                    sink.text_delta(step, &text);
+                    Ok(Message::text(Role::Assistant, text))
+                }
+                Behavior::ReasoningOverflow => {
+                    sink.reasoning_delta(step, &"r".repeat(64 * 1024 + 1));
+                    std::future::pending().await
+                }
+                Behavior::UnexpectedReasoning => {
+                    sink.reasoning_delta(step, "unexpected reasoning");
+                    std::future::pending().await
+                }
+                Behavior::TokenLimit => Err(ProviderError::classified(
+                    crate::provider::ProviderErrorKind::OutputLimit,
+                    "PRIVATE_PROVIDER_DETAIL",
+                )),
             }
         })
     }
+}
+
+#[tokio::test]
+async fn disabled_reasoning_stops_on_first_delta_without_waiting_for_answer_or_deadline() {
+    let (_home, _, budget) = setup();
+    let source = source();
+    let cancellation = CancellationToken::new();
+    let observed = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        request_observed(
+            &Helper(Behavior::UnexpectedReasoning),
+            &budget,
+            OperationId::new(),
+            &source,
+            4096,
+            &cancellation,
+            HelperLimits::default(),
+        ),
+    )
+    .await
+    .expect("a no-reasoning contract violation must not await the 120-second deadline");
+    assert!(observed.summary.is_none());
+    assert_eq!(observed.failure, Some(HelperFailure::UnexpectedReasoning));
+    assert_eq!(observed.reasoning_bytes, "unexpected reasoning".len());
+    assert_eq!(observed.output_bytes, 0);
+}
+
+#[tokio::test]
+async fn bounded_reasoning_does_not_consume_the_answer_byte_allowance() {
+    let (_home, _, budget) = setup();
+    let result = request(
+        &Helper(Behavior::ReasoningThenSummary),
+        &budget,
+        OperationId::new(),
+        &source(),
+        4096,
+        &CancellationToken::new(),
+    )
+    .await;
+    assert!(
+        result.is_ok(),
+        "bounded reasoning must not truncate the separate answer: {result:?}"
+    );
+}
+
+#[test]
+fn historical_references_do_not_activate_superseded_targets() {
+    use crate::session::compaction::evaluation;
+    let case = evaluation::corpus().remove(0);
+    let summary = CompactionSummary {
+        goal: Some(case.required[0].clone()),
+        constraints: vec![case.required[3].clone()],
+        decisions: vec![case.required[1].clone()],
+        unresolved: vec![case.required[2].clone()],
+        references: vec![format!("Historical rejected target: {}", case.forbidden[0])],
+        ..Default::default()
+    };
+    let score = evaluation::score(&case, Some(&summary));
+    assert!(
+        score.canaries_pass,
+        "a historical reference is not an active decision"
+    );
+    let mut unsafe_summary = summary;
+    unsafe_summary.decisions.push(case.forbidden[0].clone());
+    assert!(!evaluation::score(&case, Some(&unsafe_summary)).canaries_pass);
 }
 
 fn setup() -> (tempfile::TempDir, ProtectedStore, UsageBudget) {
@@ -198,6 +309,8 @@ fn forty_multilingual_cases_compare_baseline_without_faking_promotion() {
         baseline: Vec::new(),
         helper: Vec::new(),
         elapsed_millis: 0,
+        calls: Vec::new(),
+        selected_case: None,
     };
     for case in cases {
         let baseline = CompactionSummary::derive(None, &case.messages, 4096);
@@ -214,8 +327,8 @@ fn forty_multilingual_cases_compare_baseline_without_faking_promotion() {
         report.helper.push(evaluation::score(&case, Some(&mocked)));
     }
     assert!(
-        report.passes(),
-        "fixed mock establishes evaluator wiring, not model quality"
+        !report.passes(),
+        "hand-built final summaries lack repeated-cycle and call evidence"
     );
     assert!(
         HelperPolicy::approve(&store, report.route_digest.clone(), &report).is_err(),
@@ -246,8 +359,271 @@ fn provenance_rejects_mutated_summary() {
         summary_digest: summary_digest(&summary),
     };
     assert!(provenance.valid_for(&summary));
+    let historical = SemanticProvenance {
+        helper_version: 1,
+        ..provenance.clone()
+    };
+    assert!(
+        historical.valid_for(&summary),
+        "policy upgrades must not invalidate durable v1 evidence"
+    );
+    assert!(
+        !SemanticProvenance {
+            helper_version: 0,
+            ..provenance.clone()
+        }
+        .valid_for(&summary)
+    );
+    assert!(
+        !SemanticProvenance {
+            helper_version: HELPER_VERSION + 1,
+            ..provenance.clone()
+        }
+        .valid_for(&summary)
+    );
     summary.goal = Some("different goal".into());
     assert!(!provenance.valid_for(&summary));
+}
+
+#[tokio::test]
+async fn typed_failure_evidence_separates_stream_and_generation_limits() {
+    let (_home, store, budget) = setup();
+    for (behavior, failure) in [
+        (Behavior::ReasoningOverflow, HelperFailure::ReasoningBytes),
+        (Behavior::Oversized, HelperFailure::OutputBytes),
+        (Behavior::TokenLimit, HelperFailure::OutputTokens),
+        (Behavior::ToolCall, HelperFailure::InvalidShape),
+    ] {
+        let observed = request_observed(
+            &Helper(behavior),
+            &budget,
+            OperationId::new(),
+            &source(),
+            4096,
+            &CancellationToken::new(),
+            HelperLimits::default(),
+        )
+        .await;
+        assert_eq!(observed.failure, Some(failure));
+        assert!(observed.summary.is_none());
+        assert!(observed.input_tokens > 0);
+        assert!(!format!("{observed:?}").contains("PRIVATE_PROVIDER_DETAIL"));
+    }
+    assert_eq!(store.usage_page(None, None, None).unwrap().len(), 4);
+}
+
+#[test]
+fn helper_policy_version_does_not_rotate_shared_processing_route_grants() {
+    let connection = crate::config::ConnectionConfig {
+        id: "local".into(),
+        kind: crate::config::ProviderKind::Ollama,
+        base_url: Some("http://localhost:11434/v1".into()),
+        credential: None,
+        models: Default::default(),
+        codex_program: None,
+        codex_home: None,
+    };
+    let original = blake3::hash(format!("v1:{connection:?}:fixture").as_bytes())
+        .to_hex()
+        .to_string();
+    assert_eq!(route_digest(&connection, "fixture"), original);
+    let (_home, store, _) = setup();
+    let old = HelperPolicy {
+        version: 1,
+        route_digest: original.clone(),
+        evaluation_digest: "a".repeat(64),
+        corpus_digest: crate::session::compaction::evaluation::corpus_digest(),
+        authorization_store: None,
+        route_validator: None,
+    };
+    store
+        .set_document(
+            &policy_name(&original),
+            &serde_json::to_vec(&old).unwrap(),
+            4096,
+        )
+        .unwrap();
+    assert!(
+        HelperPolicy::load(&store, &original).is_err(),
+        "new dispatch requires requalification, unlike old checkpoint integrity"
+    );
+}
+
+#[test]
+fn source_preparation_prunes_only_old_tool_output_and_obeys_the_actual_plan() {
+    let correction = Message::text(Role::User, "Correction: use 日本語-target; never deploy");
+    let output = "界".repeat(30_000);
+    let tool = Message::tool_result(crate::message::ToolResult::success("call1", output.clone()));
+    let source =
+        source_messages_with_limits(None, &[&tool, &correction], HelperLimits::default()).unwrap();
+    let encoded = serde_json::to_string(&source).unwrap();
+    assert!(encoded.contains("日本語-target; never deploy"));
+    assert!(encoded.contains("90000 original bytes"));
+    assert!(encoded.len() < 6000);
+    assert_eq!(
+        tool,
+        Message::tool_result(crate::message::ToolResult::success("call1", output))
+    );
+    let large_user = Message::text(Role::User, "explicit constraint ".repeat(2000));
+    assert!(source_messages(None, &[&large_user]).is_none());
+    let limits = HelperLimits {
+        max_input_tokens: MAX_SOURCE_TOKENS,
+        ..Default::default()
+    };
+    assert!(
+        source_messages_with_limits(None, &[&large_user], limits).is_some(),
+        "larger known budgets need not inherit the old5k cap"
+    );
+    assert!(
+        source_messages_with_limits(
+            None,
+            &[&correction],
+            HelperLimits {
+                max_input_tokens: 1,
+                ..limits
+            }
+        )
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn privacy_revoked_while_waiting_for_helper_lane_blocks_disclosure() {
+    let (_home, store, budget) = setup();
+    let workspace = tempfile::tempdir().unwrap();
+    let mut session = crate::session::DurableSession::create_protected(
+        store.clone(),
+        workspace.path().canonicalize().unwrap(),
+        crate::identity::SessionId::new(),
+    )
+    .unwrap();
+    for text in ["old task", "next task", "latest task"] {
+        session
+            .append_message(Message::text(Role::User, text))
+            .unwrap();
+    }
+    let plan = crate::prompt::PromptBudgetPlan::derive(
+        &crate::prompt::PromptBudgetPolicy {
+            retained_tail_tokens: 1,
+            ..Default::default()
+        },
+        crate::prompt::ModelBudgetFacts {
+            connection: "test".into(),
+            model: "test".into(),
+            context_tokens: None,
+            max_output_tokens: None,
+            reasoning: false,
+        },
+    )
+    .unwrap();
+    let mut candidate = session
+        .prepare_compaction(
+            OperationId::new(),
+            crate::session::CompactionReason::Manual,
+            &plan,
+        )
+        .unwrap();
+    let policy = HelperPolicy {
+        version: HELPER_VERSION,
+        route_digest: "a".repeat(64),
+        evaluation_digest: "b".repeat(64),
+        corpus_digest: crate::session::compaction::evaluation::corpus_digest(),
+        authorization_store: Some(store.clone()),
+        route_validator: Some(Arc::new(|_| Ok(()))),
+    };
+    store
+        .set_document(
+            &policy_name(&policy.route_digest),
+            &serde_json::to_vec(&policy).unwrap(),
+            4096,
+        )
+        .unwrap();
+    let cancellation = CancellationToken::new();
+    let lane = budget.foreground_helper_lease(&cancellation).await.unwrap();
+    let helper = Helper(Behavior::Summary(CompactionSummary {
+        goal: Some("must not be sent".into()),
+        ..Default::default()
+    }));
+    let future = enrich(&mut candidate, &helper, &budget, &policy, &cancellation);
+    tokio::pin!(future);
+    // Poll enrichment into its real process-shared lane wait, then revoke.
+    assert!(futures::poll!(&mut future).is_pending());
+    crate::memory::MemoryOwner::new(store.clone(), Default::default())
+        .controls(
+            crate::memory::MemoryScope::User,
+            crate::memory::MemoryControlEdit {
+                learning_enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    drop(lane);
+    let error = tokio::time::timeout(std::time::Duration::from_secs(5), future)
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<HelperFailure>(),
+        Some(&HelperFailure::Authorization)
+    );
+    assert!(
+        store.usage_page(None, None, None).unwrap().is_empty(),
+        "revoked source cannot reach provider admission"
+    );
+}
+
+#[tokio::test]
+async fn structured_schema_overhead_is_not_free_input() {
+    struct Structured(Helper);
+    impl ConversationalProvider for Structured {
+        fn helper_capabilities(&self) -> crate::provider::HelperCapabilities {
+            crate::provider::HelperCapabilities {
+                output_limit: true,
+                structured_output: true,
+                disable_reasoning: false,
+            }
+        }
+        fn stream_message<'a>(
+            &'a self,
+            _: &'a [Message],
+            _: &'a [&'a ToolDefinition],
+            _: StepId,
+            _: &'a dyn DeltaSink,
+        ) -> BoxFuture<'a, std::result::Result<Message, ProviderError>> {
+            panic!("not chat")
+        }
+        fn stream_helper_message<'a>(
+            &'a self,
+            messages: &'a [Message],
+            policy: crate::provider::HelperGenerationPolicy<'a>,
+            step: StepId,
+            sink: &'a dyn DeltaSink,
+        ) -> BoxFuture<'a, std::result::Result<Message, ProviderError>> {
+            self.0.stream_helper_message(messages, policy, step, sink)
+        }
+    }
+    let (_home, store, budget) = setup();
+    let source = source();
+    let message_tokens = source
+        .iter()
+        .map(crate::prompt::estimate_message_tokens)
+        .sum();
+    let observed = request_observed(
+        &Structured(Helper(Behavior::Wait)),
+        &budget,
+        OperationId::new(),
+        &source,
+        4096,
+        &CancellationToken::new(),
+        HelperLimits {
+            max_input_tokens: message_tokens,
+            ..Default::default()
+        },
+    )
+    .await;
+    assert_eq!(observed.failure, Some(HelperFailure::InputLimit));
+    assert!(observed.input_tokens > message_tokens);
+    assert!(store.usage_page(None, None, None).unwrap().is_empty());
 }
 
 #[tokio::test]

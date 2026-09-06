@@ -741,6 +741,7 @@ impl Runtime {
             role: Role::User,
             content,
         };
+        let prompt_started = std::time::Instant::now();
         let mut prompt = match self.prepare_turn_prompt_for(&query) {
             Ok(prompt) => prompt,
             Err(reason) => {
@@ -748,50 +749,64 @@ impl Runtime {
                 return;
             }
         };
-        if let Some(snapshot) = &prompt {
-            let mut candidate = self.history.clone();
-            candidate.push(user_message.clone());
-            if let Some(ledger) = snapshot.ledger(&candidate)
-                && (ledger.estimated_input_tokens > ledger.budget.compaction_threshold_tokens
-                    || self
-                        .session
-                        .as_ref()
-                        .is_some_and(DurableSession::retained_pressure))
+        self.agent.record_context_phase(
+            operation_id,
+            crate::telemetry::ContextPhase::PromptPreparation,
+            prompt_started.elapsed(),
+        );
+        // A prior checkpoint can be replaced by a smaller summary. Only this
+        // lower bound is irreducible without guessing the replacement's size.
+        if let Some(snapshot) = &prompt
+            && crate::prompt::estimate_message_tokens(&user_message)
+                .saturating_add(snapshot.tool_schema_tokens)
+                > snapshot.budget.total_tokens
+        {
+            self.emit(AgentEvent::CommandRejected {
+                reason: "new user message and required tool schemas exceed the safe prompt budget; compacting older history cannot help".to_owned(),
+            });
+            return;
+        }
+        if let Some(snapshot) = &prompt
+            && let Some(ledger) =
+                snapshot.ledger(self.history.iter().chain(std::iter::once(&user_message)))
+            && (ledger.estimated_input_tokens > ledger.budget.compaction_threshold_tokens
+                || self
+                    .session
+                    .as_ref()
+                    .is_some_and(DurableSession::retained_pressure))
+        {
+            self.emit(AgentEvent::CompactionStarted {
+                operation_id,
+                reason: CompactionReason::AutomaticThreshold,
+            });
+            match self
+                .compact_now(operation_id, CompactionReason::AutomaticThreshold)
+                .await
             {
-                self.emit(AgentEvent::CompactionStarted {
-                    operation_id,
-                    reason: CompactionReason::AutomaticThreshold,
-                });
-                match self
-                    .compact_now(operation_id, CompactionReason::AutomaticThreshold)
-                    .await
-                {
-                    Ok(checkpoint) => {
-                        self.emit(AgentEvent::ConversationCompacted { checkpoint });
-                        prompt = match self.prepare_turn_prompt_for(&query) {
-                            Ok(prompt) => prompt,
-                            Err(reason) => {
-                                self.emit(AgentEvent::CommandRejected { reason });
-                                return;
-                            }
-                        };
-                    }
-                    Err(reason) => {
-                        self.emit(AgentEvent::CompactionUnavailable {
-                            operation_id,
-                            reason,
-                        });
-                        if self.stop_after_compaction || self.compaction_cancelled {
+                Ok(checkpoint) => {
+                    self.emit(AgentEvent::ConversationCompacted { checkpoint });
+                    prompt = match self.prepare_turn_prompt_for(&query) {
+                        Ok(prompt) => prompt,
+                        Err(reason) => {
+                            self.emit(AgentEvent::CommandRejected { reason });
                             return;
                         }
+                    };
+                }
+                Err(reason) => {
+                    self.emit(AgentEvent::CompactionUnavailable {
+                        operation_id,
+                        reason,
+                    });
+                    if self.stop_after_compaction || self.compaction_cancelled {
+                        return;
                     }
                 }
             }
         }
-        let mut candidate = self.history.clone();
-        candidate.push(user_message.clone());
         if let Some(snapshot) = &prompt
-            && let Err(error) = snapshot.messages_for_request(&candidate)
+            && let Err(error) =
+                snapshot.validate_history(self.history.iter().chain(std::iter::once(&user_message)))
         {
             self.emit(AgentEvent::CommandRejected {
                 reason: format!(
@@ -1358,8 +1373,9 @@ impl Runtime {
         let session = self.session.as_ref().ok_or_else(|| {
             "managed or transient runtime owns context; Xana compaction is unavailable".to_owned()
         })?;
-        let mut candidate = session
-            .prepare_compaction(operation_id, reason, &budget)
+        let preparation_started = std::time::Instant::now();
+        let mut preparation = session
+            .begin_compaction(operation_id, reason, &budget)
             .map_err(|error| {
                 if error.downcast_ref::<CompactionError>()
                     == Some(&CompactionError::NothingToCompact)
@@ -1370,8 +1386,45 @@ impl Runtime {
                     format!("could not commit durable compaction checkpoint: {error:#}")
                 }
             })?;
-        self.compaction_cancelled = false;
+        self.agent.record_context_phase(
+            operation_id,
+            crate::telemetry::ContextPhase::SourceAdmission,
+            preparation_started.elapsed(),
+        );
+        // A cold reopened checkpoint still verifies original bytes, but never
+        // holds the runtime thread or one store transaction for the full prefix.
+        // Dropping a cancelled read may finish one bounded page; it cannot
+        // dispatch a model, mutate history, or publish an incomplete proof.
+        while !preparation.is_ready() {
+            let page = tokio::task::spawn_blocking(move || preparation.advance());
+            tokio::pin!(page);
+            preparation = loop {
+                tokio::select! {
+                    biased;
+                    command = self.commands.recv() => {
+                        if let Err(reason) = self.handle_compaction_command(command, operation_id) {
+                            // Abort an unstarted blocking job; a running page
+                            // is read-only and releases its bounded state itself.
+                            page.abort();
+                            return Err(reason);
+                        }
+                    },
+                    result = &mut page => break result
+                        .map_err(|_| "compaction source reader stopped; originals are unchanged".to_owned())?
+                        .map_err(|error| format!("compaction source verification failed: {error:#}"))?,
+                }
+            };
+        }
+        let mut candidate = preparation
+            .finish()
+            .map_err(|error| format!("compaction source verification failed: {error:#}"))?;
+        self.agent.record_context_phase(
+            operation_id,
+            crate::telemetry::ContextPhase::SourcePreparation,
+            preparation_started.elapsed(),
+        );
         if self.agent.semantic_compaction_enabled() {
+            let helper_started = std::time::Instant::now();
             let cancellation = tokio_util::sync::CancellationToken::new();
             let agent = self.agent.clone();
             let enrichment = agent.enrich_compaction(&mut candidate, &cancellation);
@@ -1379,30 +1432,30 @@ impl Runtime {
             loop {
                 tokio::select! {
                     biased;
-                    command = self.commands.recv() => match command {
-                        Some(RuntimeCommand::InterruptOperation { operation_id: interrupted }) if interrupted == operation_id => {
-                            self.compaction_cancelled = true;
+                    command = self.commands.recv() => {
+                        if let Err(reason) = self.handle_compaction_command(command, operation_id) {
                             cancellation.cancel();
                             let _ = enrichment.await;
-                            return Err("compaction cancelled; the previous checkpoint and raw history are unchanged".into());
+                            return Err(reason);
                         }
-                        Some(RuntimeCommand::Shutdown) | None => {
-                            self.stop_after_compaction = true;
-                            cancellation.cancel();
-                            let _ = enrichment.await;
-                            return Err("compaction stopped; the previous checkpoint and raw history are unchanged".into());
-                        }
-                        Some(_) => self.emit(AgentEvent::CommandRejected { reason: "compaction is active; wait or cancel before changing this Conversation".into() }),
                     },
                     result = &mut enrichment => {
-                        if result.is_err() {
-                            self.emit(AgentEvent::CompactionUnavailable { operation_id, reason: "semantic helper unavailable, failed, or exceeded its allowance; using the deterministic checkpoint".into() });
+                        if let Err(error) = result {
+                            let failure = error.downcast_ref::<crate::session::compaction::semantic::HelperFailure>()
+                                .map_or_else(|| "authorization or source unavailable".into(), ToString::to_string);
+                            self.emit(AgentEvent::CompactionUnavailable { operation_id, reason: format!("{failure}; using the deterministic checkpoint") });
                         }
                         break;
                     }
                 }
             }
+            self.agent.record_context_phase(
+                operation_id,
+                crate::telemetry::ContextPhase::HelperGeneration,
+                helper_started.elapsed(),
+            );
         }
+        let commit_started = std::time::Instant::now();
         let session = self
             .session
             .as_mut()
@@ -1416,7 +1469,46 @@ impl Runtime {
             .map_err(|error| format!("could not restore compacted continuation: {error:#}"))?;
         self.history = continuation.history;
         self.compaction_checkpoint = continuation.checkpoint;
+        self.compaction_cancelled = false;
+        self.agent.record_context_phase(
+            operation_id,
+            crate::telemetry::ContextPhase::CheckpointCommit,
+            commit_started.elapsed(),
+        );
         Ok(checkpoint)
+    }
+
+    fn handle_compaction_command(
+        &mut self,
+        command: Option<RuntimeCommand>,
+        operation_id: OperationId,
+    ) -> Result<(), String> {
+        match command {
+            Some(RuntimeCommand::InterruptOperation {
+                operation_id: interrupted,
+            }) if interrupted == operation_id => {
+                self.compaction_cancelled = true;
+                Err(
+                    "compaction cancelled; the previous checkpoint and raw history are unchanged"
+                        .into(),
+                )
+            }
+            Some(RuntimeCommand::Shutdown) | None => {
+                self.stop_after_compaction = true;
+                Err(
+                    "compaction stopped; the previous checkpoint and raw history are unchanged"
+                        .into(),
+                )
+            }
+            Some(_) => {
+                self.emit(AgentEvent::CommandRejected {
+                    reason:
+                        "compaction is active; wait or cancel before changing this Conversation"
+                            .into(),
+                });
+                Ok(())
+            }
+        }
     }
 
     fn handle_broker_event(&mut self, event: AgentEvent) {

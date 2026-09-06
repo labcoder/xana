@@ -1,6 +1,28 @@
 use super::*;
 
 #[test]
+fn borrowed_pending_turn_preflight_matches_the_provider_request_gate() {
+    let prompt = snapshot(&[]);
+    let history = vec![
+        Message::text(Role::User, "previous"),
+        Message::text(Role::Assistant, "answer"),
+    ];
+    for pending in [
+        Message::text(Role::User, "next"),
+        Message::text(Role::System, "cannot be user history"),
+        Message::text(Role::User, "x".repeat(100_000)),
+    ] {
+        let mut owned = history.clone();
+        owned.push(pending.clone());
+        let borrowed = prompt.validate_history(history.iter().chain(std::iter::once(&pending)));
+        assert_eq!(
+            format!("{:?}", borrowed.err()),
+            format!("{:?}", prompt.messages_for_request(&owned).err())
+        );
+    }
+}
+
+#[test]
 fn required_instructions_are_not_silently_cut_at_a_source_budget() {
     for source in [
         project_source(

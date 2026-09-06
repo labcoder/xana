@@ -172,6 +172,7 @@ pub(crate) struct CompactionCandidate {
     pub(crate) helper_messages: Option<Vec<Message>>,
     pub(crate) privacy_generation: Option<u64>,
     pub(crate) source_proof: Option<CompactionSourceProof>,
+    pub(crate) source_guard: Option<crate::storage::CompactionDisclosureGuard>,
 }
 
 /// Constructed only by hashing original entries, never by trusting a summary
@@ -233,12 +234,15 @@ impl CompactionSourceProof {
             && self.digest == checkpoint.source_digest
     }
 
+    #[cfg(test)]
     pub(crate) fn start(&self) -> ConversationEntryId {
         self.start
     }
+    #[cfg(test)]
     pub(crate) fn end(&self) -> ConversationEntryId {
         self.end
     }
+    #[cfg(test)]
     pub(crate) fn tail(&self) -> ConversationEntryId {
         self.tail
     }

@@ -201,6 +201,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             SessionCommand::EvaluateCompaction {
                 connection,
                 model,
+                case_id,
                 yes,
                 enable,
                 disable,
@@ -210,9 +211,12 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                     &paths,
                     &connection,
                     &model,
-                    yes,
-                    enable,
-                    disable,
+                    sessions::CompactionEvaluationOptions {
+                        yes,
+                        enable,
+                        disable,
+                        case_id: case_id.as_deref(),
+                    },
                     &mut stdout.lock(),
                 )
                 .await

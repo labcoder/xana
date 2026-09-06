@@ -138,6 +138,13 @@ fallback. No route is promoted by mocked tests; its separate real-model quality
 measurement and owner assessment remain required before enabling it. See
 [evaluated semantic compaction](../user/semantic-compaction.md).
 
+The P0 follow-up adds explicit adapter-owned helper generation controls,
+independent answer/reasoning bounds, model-aware preparation, and a versioned
+repeated-compaction evaluation. Original-proof paging and indexed/lazy memory
+selection reduce local work without a persistent trusted cache. Qualification
+is still a real-route gate, not a consequence of these implementation changes;
+native-platform, loaded-client and semantic owner assessment remain distinct.
+
 Project task recall and selected Markdown/text knowledge now use the existing
 protected database's bounded lexical index, exact original references/hashes,
 current Project/frozen-Profile scope, explicit broader inclusion and separate

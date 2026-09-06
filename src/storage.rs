@@ -8,7 +8,7 @@ mod database;
 mod documents;
 mod encrypted_artifacts;
 mod history;
-pub(crate) use history::HistorySubject;
+pub(crate) use history::{ActivePrefixProofCursor, CompactionDisclosureGuard, HistorySubject};
 mod autonomy;
 mod forgetting;
 mod keys;

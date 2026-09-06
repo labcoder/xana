@@ -292,6 +292,20 @@ impl UsageCounter {
 }
 
 impl Agent {
+    pub(crate) fn record_context_phase(
+        &self,
+        operation_id: OperationId,
+        phase: crate::telemetry::ContextPhase,
+        elapsed: std::time::Duration,
+    ) {
+        self.telemetry
+            .context_phase(crate::telemetry::ContextPhaseEvent {
+                operation_id,
+                phase,
+                elapsed,
+            });
+    }
+
     pub(crate) fn with_semantic_compaction(
         mut self,
         policy: Option<crate::session::compaction::semantic::HelperPolicy>,
@@ -513,7 +527,7 @@ impl Agent {
 
         for _ in 0..round_limit {
             let request_messages = prompt.messages_for_request(messages)?;
-            if let Some(ledger) = prompt.ledger(messages) {
+            if let Some(ledger) = prompt.ledger(messages.iter()) {
                 // Tool results change the tail within a turn. Report each
                 // actual request, not only the pre-tool submission estimate.
                 let _ = events.send(AgentEvent::PromptPlanUpdated {
@@ -524,7 +538,7 @@ impl Agent {
             let step_id = StepId::new();
             delta_sink.begin_request();
             let input_tokens = prompt
-                .ledger(messages)
+                .ledger(messages.iter())
                 .map(|ledger| ledger.estimated_input_tokens)
                 .unwrap_or_else(|| {
                     request_messages

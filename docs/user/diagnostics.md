@@ -98,6 +98,11 @@ records; logs do not duplicate them.
 Prompt-plan ledgers and compaction summaries are likewise excluded from log
 files. Their bounded metadata is available through the attached frontend and
 `xana session inspect`; the append-only session checkpoint remains authoritative.
+Native context work emits `context_phase` info records under the runtime target:
+source admission, total source preparation, helper wait/generation, checkpoint
+commit/continuation reload, and turn prompt preparation (including memory access).
+These contain an operation correlation and elapsed milliseconds, not content.
+They measure backend work, not frontend frame rate or end-to-end model latency.
 The separate `data/interoperable/outbound-audit.json` journal contains only
 bounded recipient/class/count/digest metadata and keeps at most 512 records.
 Its pre-send facts are authoritative; diagnostic forwarding remains

@@ -754,9 +754,17 @@ Helper output is derived task data, not instructions, authority or completion
 evidence. Failure retains the deterministic candidate when source policy still
 allows it; cancellation or changed source/privacy state leaves the previous
 checkpoint intact. Optional semantic provenance binds the exact helper route,
-evaluation and summary digest. The forty-case evaluator separates mocked
-contract tests from real-route opt-in quality measurements, and does not enable
-a helper merely because fixtures pass. See [semantic compaction](../user/semantic-compaction.md).
+evaluation and summary digest. Reopened original proofs yield between bounded
+worker reads (128 rows/2 MiB); no store guard crosses an await. The exact source
+and privacy snapshot is rechecked after helper-lane admission, before disclosure,
+and again before commit. Prompt preflight borrows history instead of cloning
+and discarding complete provider requests. Context-phase telemetry separates
+local preparation/commit from helper latency without logging source content.
+The v2 evaluator has forty cases/fifty cycles, including actual summary reuse
+and later corrections. Summary-only retention excludes historical references
+and recent-tail recovery. Typed failure/usage/timing evidence does not contain
+raw provider text; fixtures cannot enable a production route. See
+[semantic compaction](../user/semantic-compaction.md).
 
 Image attachments are reference-based and artifact-backed; see
 [Image input and media resolution](vision.md). OpenAI-compatible and Anthropic

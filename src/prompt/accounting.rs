@@ -11,7 +11,10 @@ use crate::{
 };
 
 impl PromptSnapshot {
-    pub(crate) fn ledger(&self, history: &[Message]) -> Option<PromptPlanLedger> {
+    pub(crate) fn ledger<'a>(
+        &self,
+        history: impl IntoIterator<Item = &'a Message>,
+    ) -> Option<PromptPlanLedger> {
         let budget = self.budget_plan.clone()?;
         let mut categories = [
             Category::Instructions,

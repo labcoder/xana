@@ -10,6 +10,19 @@ provider-reasoning deltas. Authentication,
 catalog discovery, model selection, and managed agent runtimes are separate
 composition concerns.
 
+Semantic compaction uses a separate no-tool helper request on this same
+boundary. Adapters declare which output limit, JSON-schema and reasoning-disable
+options they can express; unsupported requested options fail before HTTP.
+Composition selects the dialect from the configured provider kind, never by
+guessing from an endpoint URL. Ollama uses `max_tokens`, schema response format
+and `reasoning_effort: none`; OpenAI uses `max_completion_tokens`, OpenRouter
+uses `max_tokens` and required-parameter routing. Anthropic uses `max_tokens`,
+`output_config.format` and an explicit disabled-thinking request. Model-specific
+rejections remain visible, not silently retried with weaker settings. Unknown
+compatible servers get only their declared generic output-limit contract.
+Helper token-limit completion is a typed failure while reported usage survives.
+Normal chat requests and the separate background-learning helper are unchanged.
+
 ## OpenAI-compatible family
 
 Ollama, custom OpenAI-compatible endpoints, the OpenAI API, and OpenRouter use
@@ -71,9 +84,10 @@ Xana then canonicalizes one internal assistant message as answer text followed
 by tool calls in index order; wire arrival order is not treated as an internal
 content-block ordering guarantee.
 
-The native OpenAI-compatible adapter currently uses Chat Completions and has
+Normal native conversation generation currently uses Chat Completions and has
 no first-class reasoning-effort or reasoning-summary wire mapping. Those model
-options are therefore accepted only for managed Codex selections. Supporting
+options are therefore accepted only for managed Codex selections; the bounded
+no-tool helper's explicit no-reasoning policy is a separate execution path. Supporting
 them for the OpenAI API requires a future native Responses adapter rather than
 silently dropping the user's requested setting.
 
