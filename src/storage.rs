@@ -16,6 +16,9 @@ mod learning;
 mod memory;
 mod priority;
 mod recall;
+mod retained;
+#[cfg(test)]
+pub(crate) use history::AdmissionFault;
 pub(crate) use priority::{ForegroundJobLease, ForegroundLease};
 pub(crate) mod migration;
 mod private_file;

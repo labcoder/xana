@@ -538,6 +538,22 @@ impl DurableSession {
             .collect()
     }
 
+    /// Completed children may leave the execution projection, but their original
+    /// admission budgets remain charged across every owner resume.
+    pub(crate) fn orchestration_reservations(
+        &self,
+    ) -> Result<Vec<crate::orchestration::ReservationRequest>> {
+        if let Some(home) = self.store.protected_home() {
+            return home.history_orchestration_reservations(self.session_id());
+        }
+        Ok(self
+            .restored
+            .children
+            .values()
+            .map(|child| crate::orchestration::ReservationRequest::from(&child.handle.admission))
+            .collect())
+    }
+
     pub(crate) fn path(&self) -> &Path {
         self.store.path()
     }

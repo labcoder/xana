@@ -477,6 +477,23 @@ impl ToolRegistry {
         self.tools.iter().map(|tool| &tool.definition).collect()
     }
 
+    /// Decorate execution without rebuilding or changing the exposed contracts.
+    /// Application-owned guards keep their state outside the agent itself.
+    pub(crate) fn map_implementations(
+        mut self,
+        mut decorate: impl FnMut(Box<dyn Tool>) -> Box<dyn Tool>,
+    ) -> Self {
+        self.tools = self
+            .tools
+            .into_iter()
+            .map(|registered| RegisteredTool {
+                definition: registered.definition,
+                implementation: decorate(registered.implementation),
+            })
+            .collect();
+        self
+    }
+
     pub(crate) fn definition(&self, name: &str) -> Option<&ToolDefinition> {
         self.tools
             .iter()

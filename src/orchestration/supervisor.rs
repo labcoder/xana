@@ -140,12 +140,7 @@ struct AdmissionCandidate {
 }
 
 fn reservation_for(admission: &ChildAdmission) -> ReservationRequest {
-    ReservationRequest {
-        tool_rounds: admission.max_tool_rounds,
-        context_tokens: admission.limits.max_context_tokens,
-        report_bytes: admission.limits.max_report_bytes,
-        artifact_bytes: admission.limits.max_artifact_bytes,
-    }
+    ReservationRequest::from(admission)
 }
 
 enum SupervisorCommand {
@@ -379,6 +374,16 @@ impl ChildSupervisor {
                     .collect(),
             },
         )
+    }
+
+    /// Replace the execution-view ledger with complete durable accounting.
+    /// Active handles are already included in these reservations, never added twice.
+    pub(crate) fn with_consumed_reservations(
+        mut self,
+        reservations: &[ReservationRequest],
+    ) -> Self {
+        self.ledger = BudgetLedger::with_consumed(self.ledger.budget().clone(), reservations);
+        self
     }
 
     pub(crate) async fn run(

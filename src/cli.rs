@@ -11,7 +11,9 @@ use crate::{
 use clap::{Args, Parser, Subcommand, ValueEnum};
 mod memory;
 mod recall;
+mod worker;
 pub(crate) use recall::{NotesCommand, RecallArgs, RecallCommand};
+pub(crate) use worker::{WorkerArgs, WorkerCommand};
 mod autonomy;
 pub(crate) use autonomy::{AutonomyArgs, AutonomyCommand, CreateTask, HostCommand};
 pub(crate) use memory::{MemoryArgs, MemoryCommand};
@@ -229,6 +231,8 @@ pub(crate) enum Command {
     Recall(RecallArgs),
     /// Durable schedules and explicit detached local host controls.
     Autonomy(AutonomyArgs),
+    /// Inspect and continue retained bounded child workers.
+    Worker(WorkerArgs),
     /// Inspect or change this protected home's shared admission policy.
     Budget(BudgetArgs),
     /// Inspect, initialize, lock or recover Xana-managed encrypted storage.

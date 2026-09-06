@@ -45,6 +45,8 @@ pub(crate) struct ChildExecutionOwnerFactory {
     configured_shell: String,
     managed_runner: Arc<dyn ManagedCodexRunner>,
     usage_budget: Option<crate::usage_budget::UsageBudget>,
+    context_operations: Option<super::context_ops::WorkerContextTool>,
+    retained_authority: Option<super::retained::RetainedToolGuard>,
 }
 
 impl ChildExecutionOwnerFactory {
@@ -67,6 +69,8 @@ impl ChildExecutionOwnerFactory {
             configured_shell,
             managed_runner: Arc::new(AppServerCodexRunner),
             usage_budget: None,
+            context_operations: None,
+            retained_authority: None,
         }
     }
 
@@ -81,6 +85,22 @@ impl ChildExecutionOwnerFactory {
         budget: Option<crate::usage_budget::UsageBudget>,
     ) -> Self {
         self.usage_budget = budget;
+        self
+    }
+
+    pub(crate) fn with_context_operations(
+        mut self,
+        tool: Option<super::context_ops::WorkerContextTool>,
+    ) -> Self {
+        self.context_operations = tool;
+        self
+    }
+
+    pub(crate) fn with_retained_authority(
+        mut self,
+        guard: super::retained::RetainedToolGuard,
+    ) -> Self {
+        self.retained_authority = Some(guard);
         self
     }
 }
@@ -162,8 +182,20 @@ impl ChildExecutionFactory for ChildExecutionOwnerFactory {
             self.artifact_store.clone(),
             true,
         )?;
-        let tools = ToolRegistry::builtins_for_snapshot(self.shell.clone(), &resolved.capabilities)
-            .map_err(|error| error.to_string())?;
+        let mut tools =
+            ToolRegistry::builtins_for_snapshot(self.shell.clone(), &resolved.capabilities)
+                .map_err(|error| error.to_string())?;
+        if let Some(tool) = &self.context_operations {
+            if resolved.model.tools != Some(true) {
+                return Err(
+                    "retained context operations require advertised model tool support".into(),
+                );
+            }
+            tools.register(tool.clone()).map_err(|e| e.to_string())?;
+        }
+        if let Some(guard) = &self.retained_authority {
+            tools = guard.wrap(tools);
+        }
         let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
         let mut project_sources = project_sources(&self.workspace_root)?;
         project_sources.extend(handoff_sources(request));

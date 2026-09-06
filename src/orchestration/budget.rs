@@ -38,6 +38,17 @@ pub(crate) struct ReservationRequest {
     pub(crate) artifact_bytes: usize,
 }
 
+impl From<&super::ChildAdmission> for ReservationRequest {
+    fn from(admission: &super::ChildAdmission) -> Self {
+        Self {
+            tool_rounds: admission.max_tool_rounds,
+            context_tokens: admission.limits.max_context_tokens,
+            report_bytes: admission.limits.max_report_bytes,
+            artifact_bytes: admission.limits.max_artifact_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BudgetReservation {
     request: ReservationRequest,

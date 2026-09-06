@@ -30,6 +30,7 @@ mod storage_commands;
 mod usage_commands;
 pub(crate) mod vision;
 mod vision_commands;
+pub(crate) mod worker_commands;
 
 pub(crate) use connections::{codex_launch, model_manager, refresh_connection, test_connection};
 
@@ -108,6 +109,7 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
         Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
         Some(Command::Autonomy(args)) => autonomy_commands::run(args, &paths).await,
         Some(Command::Recall(args)) => recall_commands::run(args, &paths).await,
+        Some(Command::Worker(args)) => worker_commands::run(args, &paths).await,
         Some(Command::Storage(args)) => {
             storage_commands::run(&args.command, &paths, &mut io::stdout().lock())
         }

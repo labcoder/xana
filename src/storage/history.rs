@@ -4,6 +4,7 @@ mod branch;
 mod checkpoint;
 mod constraints;
 mod inventory;
+mod orchestration;
 mod path_index;
 mod proof;
 mod reader;
@@ -31,6 +32,14 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use rusqlite::{OptionalExtension, Transaction, TransactionBehavior, params};
+
+#[cfg(test)]
+pub(crate) enum AdmissionFault {
+    WrongIndex,
+    MissingIndex,
+    OversizeRecord,
+    ChangedCharge,
+}
 
 // Durable retention is separate from per-object reads and execution hydration.
 // Legacy JSONL/full-inspection safety limits above remain unchanged.

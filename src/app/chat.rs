@@ -941,6 +941,8 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             artifact_store.clone(),
             artifact_owner,
         );
+        let supervisor =
+            supervisor.with_consumed_reservations(&session.orchestration_reservations()?);
         tools
             .enable_child_delegation(handle.clone())
             .context("could not register child delegation tool")?;
@@ -1316,6 +1318,18 @@ pub(super) async fn run_chat_control_command<W: Write>(
     match command {
         Some(cli::Command::Budget(args)) => super::usage_commands::budget(args, paths, output),
         Some(cli::Command::Memory(args)) => super::memory_commands::run(args, paths, output).await,
+        Some(cli::Command::Worker(args)) => {
+            let cancellation = tokio_util::sync::CancellationToken::new();
+            let execution =
+                super::worker_commands::execute(paths.clone(), args.command, cancellation.clone());
+            tokio::pin!(execution);
+            let value = tokio::select! {
+                result=&mut execution=>result?,
+                interrupted=tokio::signal::ctrl_c()=>{interrupted?;cancellation.cancel();execution.await?}
+            };
+            writeln!(output, "{}", serde_json::to_string_pretty(&value)?)?;
+            Ok(())
+        }
         Some(cli::Command::Autonomy(args)) => {
             super::autonomy_commands::control(args, paths, output)
         }
