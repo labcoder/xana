@@ -23,6 +23,70 @@ pub(crate) trait ConversationalProvider: Send + Sync {
         step_id: StepId,
         deltas: &'a dyn DeltaSink,
     ) -> BoxFuture<'a, Result<Message, ProviderError>>;
+
+    fn helper_capabilities(&self) -> HelperCapabilities {
+        HelperCapabilities::default()
+    }
+
+    /// A separate no-tool request contract. An adapter must implement the wire
+    /// policy explicitly; falling back to ordinary chat would discard limits.
+    fn stream_helper_message<'a>(
+        &'a self,
+        _messages: &'a [Message],
+        _policy: HelperGenerationPolicy<'a>,
+        _step_id: StepId,
+        _deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
+        Box::pin(async {
+            Err(ProviderError::classified(
+                ProviderErrorKind::Request,
+                "provider does not implement bounded helper generation",
+            ))
+        })
+    }
+}
+
+/// Expressible adapter options, not a guarantee that every model accepts them.
+/// Unsupported model/parameter responses must propagate without downgrading.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct HelperCapabilities {
+    pub(crate) output_limit: bool,
+    pub(crate) structured_output: bool,
+    pub(crate) disable_reasoning: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct HelperGenerationPolicy<'a> {
+    /// Wire generation ceiling, separate from source-window and byte budgets.
+    pub(crate) max_output_tokens: usize,
+    pub(crate) json_schema: Option<&'a serde_json::Value>,
+    /// Request the adapter's documented disable control, never hide reasoning.
+    pub(crate) disable_reasoning: bool,
+}
+
+impl HelperGenerationPolicy<'_> {
+    pub(crate) fn validate(self, capabilities: HelperCapabilities) -> Result<(), ProviderError> {
+        let reason = if self.max_output_tokens == 0 {
+            Some("helper output-token limit must be positive")
+        } else if !capabilities.output_limit {
+            Some("provider does not support a helper output-token limit")
+        } else if self.json_schema.is_some() && !capabilities.structured_output {
+            Some("provider does not support helper structured output")
+        } else if self.json_schema.is_some_and(|schema| !schema.is_object()) {
+            Some("helper JSON schema must be an object")
+        } else if self.disable_reasoning && !capabilities.disable_reasoning {
+            Some("provider does not support disabling helper reasoning")
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => Err(ProviderError::classified(
+                ProviderErrorKind::Request,
+                reason,
+            )),
+            None => Ok(()),
+        }
+    }
 }
 
 pub(crate) trait DeltaSink: Send + Sync {
@@ -62,6 +126,7 @@ pub(crate) enum ProviderErrorKind {
     Rejected,
     InvalidStream,
     Timeout,
+    OutputLimit,
     Other,
 }
 
@@ -92,3 +157,6 @@ impl fmt::Display for ProviderError {
 }
 
 impl Error for ProviderError {}
+
+#[cfg(test)]
+mod helper_contract_tests;

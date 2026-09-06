@@ -371,6 +371,11 @@ pub(crate) fn compose_native_provider(
                 }
                 None => OpenAiCompatClient::new(base_url, model.to_owned()),
             }
+            .with_helper_dialect(if connection.kind == ProviderKind::Ollama {
+                crate::provider::openai_compat::HelperDialect::Ollama
+            } else {
+                crate::provider::openai_compat::HelperDialect::Generic
+            })
             .with_media_resolver(media);
             let endpoint = client.endpoint().to_owned();
             Ok((Box::new(client), endpoint))
@@ -388,7 +393,12 @@ pub(crate) fn compose_native_provider(
                 secret,
                 None,
                 (connection.kind == ProviderKind::OpenRouter).then(|| "Xana".to_owned()),
-            );
+            )
+            .with_helper_dialect(if connection.kind == ProviderKind::OpenRouter {
+                crate::provider::openai_compat::HelperDialect::OpenRouter
+            } else {
+                crate::provider::openai_compat::HelperDialect::OpenAi
+            });
             let client = if capture_usage {
                 client.with_usage()
             } else {

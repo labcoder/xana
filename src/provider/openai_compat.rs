@@ -5,10 +5,12 @@
 
 mod client;
 mod convert;
+mod helper;
 mod stream;
 mod wire;
 
 pub(crate) use client::OpenAiCompatClient;
+pub(crate) use helper::HelperDialect;
 
 #[cfg(test)]
 use crate::message::{Message, Role, ToolCall};

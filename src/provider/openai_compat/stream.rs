@@ -169,6 +169,7 @@ pub(super) enum StreamError {
     InvalidJson(serde_json::Error),
     MissingChoice,
     MissingDone,
+    UnexpectedHelperReasoning,
     ResponseTextTooLarge {
         limit: usize,
     },
@@ -217,6 +218,9 @@ impl fmt::Display for StreamError {
             Self::InvalidJson(_) => write!(f, "stream data is not valid response JSON"),
             Self::MissingChoice => write!(f, "stream response contained no choice"),
             Self::MissingDone => write!(f, "stream ended before the [DONE] marker"),
+            Self::UnexpectedHelperReasoning => {
+                write!(f, "helper returned reasoning despite its disable request")
+            }
             Self::ResponseTextTooLarge { limit } => {
                 write!(f, "streamed response text exceeds the {limit}-byte limit")
             }
@@ -249,6 +253,7 @@ impl Error for StreamError {
             | Self::IncompleteFrame { .. }
             | Self::MissingChoice
             | Self::MissingDone
+            | Self::UnexpectedHelperReasoning
             | Self::ResponseTextTooLarge { .. }
             | Self::ToolDataTooLarge { .. }
             | Self::TooManyToolCalls { .. }

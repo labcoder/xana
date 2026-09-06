@@ -219,7 +219,9 @@ fn map_provider_error(error: crate::provider::ProviderError) -> FocusedServiceEr
             "vision request could not be encoded for the selected provider",
         ),
         ProviderErrorKind::Timeout => FocusedServiceError::Timeout,
-        ProviderErrorKind::InvalidStream => FocusedServiceError::MalformedResponse,
+        ProviderErrorKind::InvalidStream | ProviderErrorKind::OutputLimit => {
+            FocusedServiceError::MalformedResponse
+        }
         ProviderErrorKind::Rejected | ProviderErrorKind::Transport | ProviderErrorKind::Other => {
             FocusedServiceError::Transport
         }

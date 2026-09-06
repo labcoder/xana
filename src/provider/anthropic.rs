@@ -8,7 +8,10 @@ use crate::{
     credential::SecretString,
     identity::StepId,
     message::{ContentBlock, Message, Role, ToolCall, ToolResultStatus},
-    provider::{ConversationalProvider, DeltaSink, ProviderError, ProviderUsage},
+    provider::{
+        ConversationalProvider, DeltaSink, HelperCapabilities, HelperGenerationPolicy,
+        ProviderError, ProviderErrorKind, ProviderUsage,
+    },
     sse::SseDecoder,
     tool::ToolDefinition,
     vision::MediaResolver,
@@ -26,6 +29,8 @@ use std::{
 };
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
+
+mod helper;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnthropicConversionError {
@@ -98,6 +103,10 @@ struct WireRequest<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<WireTool<'a>>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_config: Option<helper::WireOutputConfig<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<helper::WireThinking>,
 }
 
 fn convert_messages<'a>(
@@ -168,6 +177,8 @@ fn convert_messages<'a>(
             })
             .collect(),
         stream: true,
+        output_config: None,
+        thinking: None,
     })
 }
 
@@ -212,6 +223,7 @@ pub(crate) enum AnthropicError {
     Transport(reqwest::Error),
     Http(reqwest::Error),
     Stream(String),
+    OutputLimit,
 }
 impl fmt::Display for AnthropicError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -219,6 +231,7 @@ impl fmt::Display for AnthropicError {
             Self::Transport(_) => f.write_str("could not reach Anthropic Messages API"),
             Self::Http(_) => f.write_str("Anthropic Messages API rejected the request"),
             Self::Stream(message) => write!(f, "invalid Anthropic stream: {message}"),
+            Self::OutputLimit => f.write_str("helper reached its output-token limit"),
         }
     }
 }
@@ -226,7 +239,7 @@ impl Error for AnthropicError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Transport(source) | Self::Http(source) => Some(source),
-            Self::Stream(_) => None,
+            Self::Stream(_) | Self::OutputLimit => None,
         }
     }
 }
@@ -266,6 +279,7 @@ impl AnthropicClient {
     async fn stream_message_inner(
         &self,
         request: WireRequest<'_>,
+        reject_output_limit: bool,
         step_id: StepId,
         deltas: &dyn DeltaSink,
     ) -> Result<Message, AnthropicError> {
@@ -310,11 +324,48 @@ impl AnthropicClient {
         decoder
             .finish()
             .map_err(|error| AnthropicError::Stream(error.to_string()))?;
-        accumulator.finish().map_err(AnthropicError::Stream)
+        let output_limited = accumulator.stop_reason.as_deref() == Some("max_tokens");
+        let message = accumulator.finish().map_err(AnthropicError::Stream)?;
+        if reject_output_limit && output_limited {
+            return Err(AnthropicError::OutputLimit);
+        }
+        Ok(message)
     }
 }
 
 impl ConversationalProvider for AnthropicClient {
+    fn helper_capabilities(&self) -> HelperCapabilities {
+        helper::CAPABILITIES
+    }
+
+    fn stream_helper_message<'a>(
+        &'a self,
+        messages: &'a [Message],
+        policy: HelperGenerationPolicy<'a>,
+        step_id: StepId,
+        deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
+        Box::pin(async move {
+            policy.validate(self.helper_capabilities())?;
+            let request =
+                helper::request(messages, &self.default_model, policy, self.media.as_ref())
+                    .map_err(|error| {
+                        ProviderError::classified(ProviderErrorKind::Request, error.to_string())
+                    })?;
+            self.stream_message_inner(request, true, step_id, deltas)
+                .await
+                .map_err(|error| {
+                    let kind = match error {
+                        AnthropicError::Transport(_) => ProviderErrorKind::Transport,
+                        AnthropicError::Http(_) => ProviderErrorKind::Rejected,
+                        AnthropicError::Stream(_) => ProviderErrorKind::InvalidStream,
+                        AnthropicError::OutputLimit => ProviderErrorKind::OutputLimit,
+                    };
+                    ProviderError::classified(kind, error.to_string())
+                })
+        })
+    }
+
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
@@ -331,7 +382,7 @@ impl ConversationalProvider for AnthropicClient {
                 self.media.as_ref(),
             )
             .map_err(|error| ProviderError::new(error.to_string()))?;
-            self.stream_message_inner(request, step_id, deltas)
+            self.stream_message_inner(request, false, step_id, deltas)
                 .await
                 .map_err(|error| ProviderError::new(error.to_string()))
         })

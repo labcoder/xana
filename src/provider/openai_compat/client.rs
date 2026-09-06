@@ -2,6 +2,7 @@
 
 use super::{
     convert::{MessageConversionError, convert_message},
+    helper::HelperDialect,
     stream::{SseDecoder, SseItem, StreamAccumulator, StreamError},
     wire::{
         WireChatRequest, WireMessage, WireStreamOptions, WireStreamResponse, WireToolDefinition,
@@ -12,7 +13,8 @@ use crate::{
     identity::StepId,
     message::Message,
     provider::{
-        ConversationalProvider, DeltaSink, ProviderError, ProviderErrorKind, ProviderUsage,
+        ConversationalProvider, DeltaSink, HelperCapabilities, HelperGenerationPolicy,
+        ProviderError, ProviderErrorKind, ProviderUsage,
     },
     tool::ToolDefinition,
     vision::MediaResolver,
@@ -31,6 +33,7 @@ pub(crate) enum OpenAiCompatErrorKind {
     HttpStatus,
     Stream,
     Timeout,
+    OutputLimit,
 }
 
 #[derive(Debug)]
@@ -39,6 +42,7 @@ enum OpenAiCompatErrorSource {
     Http(reqwest::Error),
     Stream(StreamError),
     Timeout(&'static str),
+    OutputLimit,
 }
 
 #[derive(Debug)]
@@ -87,6 +91,7 @@ impl OpenAiCompatError {
             OpenAiCompatErrorSource::Http(source) => source.to_string(),
             OpenAiCompatErrorSource::Stream(source) => source.to_string(),
             OpenAiCompatErrorSource::Timeout(phase) => format!("timed out during {phase}"),
+            OpenAiCompatErrorSource::OutputLimit => "helper reached its output-token limit".into(),
         }
     }
 }
@@ -132,6 +137,9 @@ impl fmt::Display for OpenAiCompatError {
                 self.endpoint,
                 self.detail()
             ),
+            OpenAiCompatErrorKind::OutputLimit => {
+                f.write_str("helper reached its output-token limit")
+            }
         }
     }
 }
@@ -142,7 +150,7 @@ impl Error for OpenAiCompatError {
             OpenAiCompatErrorSource::Conversion(source) => Some(source),
             OpenAiCompatErrorSource::Http(source) => Some(source),
             OpenAiCompatErrorSource::Stream(source) => Some(source),
-            OpenAiCompatErrorSource::Timeout(_) => None,
+            OpenAiCompatErrorSource::Timeout(_) | OpenAiCompatErrorSource::OutputLimit => None,
         }
     }
 }
@@ -155,6 +163,7 @@ pub(crate) struct OpenAiCompatClient {
     attribution: Vec<(String, String)>,
     media: Option<MediaResolver>,
     include_usage: bool,
+    helper_dialect: HelperDialect,
 }
 
 impl OpenAiCompatClient {
@@ -181,6 +190,7 @@ impl OpenAiCompatClient {
             attribution: Vec::new(),
             media: None,
             include_usage: false,
+            helper_dialect: HelperDialect::Generic,
         }
     }
 
@@ -238,6 +248,11 @@ impl OpenAiCompatClient {
         self
     }
 
+    pub(crate) fn with_helper_dialect(mut self, dialect: HelperDialect) -> Self {
+        self.helper_dialect = dialect;
+        self
+    }
+
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
@@ -246,7 +261,7 @@ impl OpenAiCompatClient {
         &self,
         messages: &[Message],
         tools: &[&ToolDefinition],
-        max_output_tokens: Option<usize>,
+        helper: Option<HelperGenerationPolicy<'_>>,
         step_id: StepId,
         deltas: &dyn DeltaSink,
     ) -> Result<Message, OpenAiCompatError> {
@@ -273,7 +288,9 @@ impl OpenAiCompatClient {
             stream_options: self.include_usage.then_some(WireStreamOptions {
                 include_usage: true,
             }),
-            max_output_tokens,
+            helper: helper
+                .map(|policy| self.helper_dialect.wire_options(policy))
+                .unwrap_or_default(),
             tools: tools
                 .iter()
                 .map(|definition| WireToolDefinition::from(*definition))
@@ -305,6 +322,8 @@ impl OpenAiCompatClient {
         let mut decoder = SseDecoder::default();
         let mut accumulator = StreamAccumulator::default();
         let mut done = false;
+        let mut output_limited = false;
+        let mut unexpected_reasoning = false;
 
         while let Some(chunk) = tokio::time::timeout(STREAM_IDLE_TIMEOUT, bytes.next())
             .await
@@ -358,10 +377,13 @@ impl OpenAiCompatClient {
                                 StreamError::MissingChoice,
                             ));
                         };
+                        output_limited |= choice.finish_reason.as_deref() == Some("length");
                         let mut delta = choice.delta;
                         if let Some(reasoning) =
                             delta.reasoning.take().filter(|text| !text.is_empty())
                         {
+                            unexpected_reasoning |=
+                                helper.is_some_and(|policy| policy.disable_reasoning);
                             deltas.reasoning_delta(step_id, &reasoning);
                         }
                         for fragment in accumulator
@@ -385,6 +407,21 @@ impl OpenAiCompatClient {
             return Err(OpenAiCompatError::stream(
                 &self.endpoint,
                 StreamError::MissingDone,
+            ));
+        }
+        // Read through the terminal usage event before rejecting truncation.
+        // Even syntactically valid JSON at the cap is not a completed helper.
+        if helper.is_some() && output_limited {
+            return Err(OpenAiCompatError {
+                kind: OpenAiCompatErrorKind::OutputLimit,
+                endpoint: self.endpoint.clone(),
+                source: OpenAiCompatErrorSource::OutputLimit,
+            });
+        }
+        if unexpected_reasoning {
+            return Err(OpenAiCompatError::stream(
+                &self.endpoint,
+                StreamError::UnexpectedHelperReasoning,
             ));
         }
         accumulator
@@ -435,6 +472,25 @@ fn usd_microunits(value: f64) -> Option<u64> {
 }
 
 impl ConversationalProvider for OpenAiCompatClient {
+    fn helper_capabilities(&self) -> HelperCapabilities {
+        self.helper_dialect.capabilities()
+    }
+
+    fn stream_helper_message<'a>(
+        &'a self,
+        messages: &'a [Message],
+        policy: HelperGenerationPolicy<'a>,
+        step_id: StepId,
+        deltas: &'a dyn DeltaSink,
+    ) -> BoxFuture<'a, Result<Message, ProviderError>> {
+        Box::pin(async move {
+            policy.validate(self.helper_capabilities())?;
+            self.stream_message_inner(messages, &[], Some(policy), step_id, deltas)
+                .await
+                .map_err(provider_error)
+        })
+    }
+
     fn stream_message<'a>(
         &'a self,
         messages: &'a [Message],
@@ -445,18 +501,21 @@ impl ConversationalProvider for OpenAiCompatClient {
         Box::pin(async move {
             self.stream_message_inner(messages, tools, None, step_id, deltas)
                 .await
-                .map_err(|error| {
-                    let kind = match error.kind {
-                        OpenAiCompatErrorKind::RequestConversion => ProviderErrorKind::Request,
-                        OpenAiCompatErrorKind::Transport => ProviderErrorKind::Transport,
-                        OpenAiCompatErrorKind::HttpStatus => ProviderErrorKind::Rejected,
-                        OpenAiCompatErrorKind::Stream => ProviderErrorKind::InvalidStream,
-                        OpenAiCompatErrorKind::Timeout => ProviderErrorKind::Timeout,
-                    };
-                    ProviderError::classified(kind, error.to_string())
-                })
+                .map_err(provider_error)
         })
     }
+}
+
+fn provider_error(error: OpenAiCompatError) -> ProviderError {
+    let kind = match error.kind {
+        OpenAiCompatErrorKind::RequestConversion => ProviderErrorKind::Request,
+        OpenAiCompatErrorKind::Transport => ProviderErrorKind::Transport,
+        OpenAiCompatErrorKind::HttpStatus => ProviderErrorKind::Rejected,
+        OpenAiCompatErrorKind::Stream => ProviderErrorKind::InvalidStream,
+        OpenAiCompatErrorKind::Timeout => ProviderErrorKind::Timeout,
+        OpenAiCompatErrorKind::OutputLimit => ProviderErrorKind::OutputLimit,
+    };
+    ProviderError::classified(kind, error.to_string())
 }
 
 pub(super) fn chat_endpoint(base_url: &str) -> String {

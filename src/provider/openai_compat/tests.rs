@@ -443,7 +443,7 @@ fn request_serializes_internal_history_at_the_wire_edge() {
         messages: wire_messages,
         stream: false,
         stream_options: None,
-        max_output_tokens: None,
+        helper: Default::default(),
         tools: Vec::new(),
     };
 
@@ -489,7 +489,7 @@ fn request_serializes_all_registry_definitions_without_runtime_metadata() {
         messages: Vec::new(),
         stream: false,
         stream_options: None,
-        max_output_tokens: None,
+        helper: Default::default(),
         tools: definitions
             .iter()
             .map(|definition| WireToolDefinition::from(*definition))

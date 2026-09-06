@@ -106,8 +106,8 @@ pub(super) struct WireChatRequest<'a> {
     pub(super) stream: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) stream_options: Option<WireStreamOptions>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(super) max_output_tokens: Option<usize>,
+    #[serde(flatten)]
+    pub(super) helper: super::helper::WireHelperOptions<'a>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) tools: Vec<WireToolDefinition<'a>>,
 }
@@ -170,6 +170,8 @@ pub(super) struct WireCompletionTokenDetails {
 #[derive(Debug, Deserialize)]
 pub(super) struct WireStreamChoice {
     pub(super) delta: WireDelta,
+    #[serde(default)]
+    pub(super) finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
