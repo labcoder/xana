@@ -538,6 +538,24 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/durable-schedules.md"),
     },
     BundledDoc {
+        id: "user.retained-workers",
+        title: "Retained workers and native context operations",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["workers", "context", "orchestration"],
+        body: include_str!("../docs/user/retained-workers.md"),
+    },
+    BundledDoc {
+        id: "user.local-browser",
+        title: "Dedicated local browser",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["browser", "web", "permissions"],
+        body: include_str!("../docs/user/local-browser.md"),
+    },
+    BundledDoc {
         id: "proposal.media",
         title: "Media and document services",
         audience: CONTRIBUTOR_AUDIENCE,
@@ -605,6 +623,8 @@ mod tests {
             ("recall", "user.project-recall"),
             ("compaction", "user.semantic-compaction"),
             ("schedules", "user.durable-schedules"),
+            ("workers", "user.retained-workers"),
+            ("browser", "user.local-browser"),
             ("encryption", "user.protected-storage"),
             ("budgets", "user.usage-budgets"),
         ] {

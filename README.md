@@ -29,6 +29,9 @@ sandbox, and conversation history.
 | Privacy | Opt-in [protected storage](docs/user/protected-storage.md), reviewed legacy migration, encrypted backup/restore, local OS unlock, independent recovery, and explicit locking |
 | Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
+| Local autonomy | Explicit [durable jobs](docs/user/durable-schedules.md), selected-file and named GitHub CI triggers, bounded background supervision |
+| Retained work | [Retained children](docs/user/retained-workers.md), explicit follow-ups and cited context operations under cumulative parent limits |
+| Browser | Optional [dedicated local browser](docs/user/local-browser.md) with reviewed recipients, bounded evidence, takeover and owned cleanup on the qualified Windows adapter |
 
 Xana keeps its native engine separate from terminal presentation and provider
 wire formats. The same application policy drives interactive chat, automation,

@@ -55,6 +55,10 @@ Measure at least five cold/warm release-profile runs, package size, RSS/CPU and
 idle behavior. Separate automated native evidence from manual viewing/takeover
 and useful public-site checks; cross-compilation is not runtime proof.
 
-Current web_fetch is bounded HTTP retrieval, not browser control. This accepted
-contract does not claim the first-party browser adapter exists. Protected
-storage/accounting and demonstrated transport safety gate production integration.
+The [first-party browser adapter](../user/local-browser.md) implements the typed
+local contract for the qualified Windows build. Native macOS/Linux and human
+viewing/takeover/login qualification remain required before integrated acceptance;
+this proposal stays Accepted while those gates are open. The direct adapter
+uses owned process containment and a mandatory recipient proxy, not an
+agent-browser dependency or its unrestricted command surface. `web_fetch`
+remains the lighter bounded HTTP path.

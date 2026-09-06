@@ -259,6 +259,73 @@ grant it last; OS registration and SQLCipher cannot be one transaction.
 Available post-login keys remain required. See [durable schedules](../user/durable-schedules.md)
 for exact controls, limits and unsupported profiles.
 
+`autonomy::triggers` adds selected-directory metadata sampling and one explicitly
+named GitHub Actions run. Source observations use frozen identity/scope and
+revision-checked protected writes; changed sources coalesce to one pending
+occurrence. Known Xana output revisions suppress writeback loops. Overflow,
+changed authority and uncertain shell effects become NeedsYou, not broader
+observation or unattended effects. GitHub polling uses only a selected credential,
+conditional responses and bounded backoff, never ambient CLI authentication.
+
+`autonomy::supervision` projects indexed work pages and exact review from the
+same records. Desktop's passive observer consumes bounded metadata pages and
+durable receipt edges, including source failures before execution admission.
+First attachment/home changes establish a quiet baseline; deduplication and
+redacted notification policy do not grant authority. Espejo and Schedules reuse
+the shared projection rather than owning a scheduler.
+
+### Retained workers and context operations
+
+`orchestration::retained` persists a completed child's identity, goal, evidence,
+original scope, expiry, bounded mailbox and execution receipts in
+`storage::retained`. Explicit follow-up runs use the existing child supervisor
+under the original parent and cumulative descendant/usage limits. Native and
+managed runs are fresh bounded executions, not restored interpreter heaps or
+implicit vendor-session resumes. The source Conversation writer lease prevents
+a foreground owner and retained runner from mutating that journal concurrently.
+
+Cumulative descendant admission is read from bounded indexed durable records,
+not the hydrated execution view that intentionally omits completed children.
+Malformed or incomplete accounting fails closed. Completion settlement fences
+the execution/reservation identity while retaining follow-ups accepted during
+execution; owner edits still require an exact record revision.
+
+Privacy generation, configuration/grants and source identity are rechecked.
+Unknown outcomes require explicit reconciliation without replaying the consumed
+request. `orchestration::context_ops` implements a closed deterministic operation
+set over selected immutable artifacts; full verification reads count toward
+per-operation and cumulative byte limits. Derived artifacts retain lineage.
+There is no arbitrary reducer code or model call hidden in these operations.
+The CLI/TUI and background Desktop facade share these owners; GPUI stores form
+and selection state only. See [retained workers](../user/retained-workers.md).
+
+### Dedicated browser tasks
+
+`browser` owns one optional, qualified native process tree, fresh profile,
+mandatory recipient proxy, bounded CDP connection and typed task lifecycle.
+`browser::tool` uses the existing Profile, tool-approval and outbound-review
+boundaries. Fixed internal page scripts run in a private isolated world and
+produce bounded untrusted observations and single-use element references; no
+public arbitrary-evaluation seam exists. Approval binds the observed target and
+supported form destination/method/non-secret field state, not just an opaque ID.
+Page identity changes or takeover invalidate references before an effect.
+
+The Windows adapter assigns the suspended process to its owned Job Object
+before execution. Cleanup joins owned descendants and verifies profile identity
+before removal. Failed cleanup remains a failed state, not an idle success.
+Tracked ownership starts before process/profile allocation, survives a dropped
+request, and fences new admission until shutdown joins the cleanup result.
+Receipts/screenshots use protected storage; browser cache/login material is a
+separate temporary boundary. Exact-recipient egress is not an effect sandbox
+or OS firewall. Other native platforms remain unqualified and fail closed.
+
+Runtime, TUI/plain and Desktop browser controls target that same owner.
+Inspection/revocation bypasses the model queue but not frontend controller
+authority; a weak event sender does not keep a stopped runtime alive. Only the
+reviewed tool path can launch, navigate, act or resume. Managed Codex and
+unattended schedules do not acquire this browser capability. See the
+[browser guide](../user/local-browser.md) for supported operations and limits.
+
 Client commands use a provider-neutral, serializable value and an independent
 correlation id. The embedded transport reports whether it accepted the
 bounded command for delivery; semantic runtime outcomes remain ordered
@@ -1038,11 +1105,13 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 11
+staged images, and an ordered follow-up queue. Frontend protocol version 12
 retains version 5's stable semantic command identifiers, version 7's frozen
 execution/completion facts, and version 8's Desktop Conversation controls, then
 retains Espejo/host supervision and classified prompt accounting, and adds
 committed native user messages with bounded history positions for reconnect.
+It also carries same-owner browser inspection/revocation and bounded lifecycle
+receipts without routing those controls through the model's command queue.
 Native and managed Runs publish
 authoritative execution facts and deterministic completion receipts. One
 application-owned catalog now

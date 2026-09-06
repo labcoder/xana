@@ -5,7 +5,9 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 11 adds committed native user messages and exact bounded
+facts. Protocol version 12 adds same-owner browser inspection/revocation commands
+and bounded status receipts; these bypass the model queue, not controller authority.
+Version 11 added committed native user messages and exact bounded
 history positions for reconnecting observers; version 10 added classified prompt accounting and
 retains version 5's stable command-semantic
 identifiers, version 7's execution and completion facts, version 8's Desktop

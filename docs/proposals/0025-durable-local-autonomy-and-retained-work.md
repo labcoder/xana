@@ -74,8 +74,11 @@ Local host/controller/shutdown coordination and bounded one-turn children exist.
 Protected homes now have [restart-safe admission accounting](../user/usage-budgets.md)
 for native requests, focused services and managed outer turns, including child
 inheritance, conservative unknowns and shared day/root/job limits. This does not
-implement the background scheduler or impose a vendor-side billing ceiling.
-Durable autonomous scheduling and retained-worker continuations do not yet
-exist. Remote hosts, tenancy, messaging and universal
+impose a vendor-side billing ceiling. The [durable scheduler](../user/durable-schedules.md)
+and [retained-worker continuations](../user/retained-workers.md) now implement
+the bounded local contract, with selected-file/named-CI triggers, supervision
+and deterministic context operations. Native macOS/Linux and owner interaction
+qualification remain explicit before integrated release acceptance.
+Remote hosts, tenancy, messaging and universal
 computer control are not included. Prove restart, cancellation, duplicate events,
 clock changes, forgotten sources and unknown-effect recovery before promotion.

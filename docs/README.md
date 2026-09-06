@@ -34,7 +34,11 @@ engineering contracts used to change it.
   source-cited local recall, bounded refresh, editable notes, and separate
   provider-disclosure grants.
 - [Durable local schedules](user/durable-schedules.md) explains explicit jobs,
-  supervision, admission, and restart behavior.
+  selected-file/named-CI triggers, supervision, admission, and restart behavior.
+- [Retained workers and bounded context operations](user/retained-workers.md)
+  explains explicit follow-ups, cumulative scope/budgets and immutable evidence.
+- [Dedicated local browser](user/local-browser.md) explains optional browser
+  tasks, exact-recipient review, takeover, cleanup and qualification limits.
 - [M4 native context and compaction evidence](development/m4-native-context-compaction-evidence.md)
   records the redacted budget, prompt-size, checkpoint-size, recovery, and
   managed-runtime baseline used to validate that boundary.

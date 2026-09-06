@@ -53,12 +53,80 @@ Codex execution, explicit reasoning options, identity layers, or skill layers
 are rejected by this initial detached execution path.
 
 Terminal and TUI chat expose the same owner operations as `/autonomy ...`;
-their command palette opens the bounded list. Long-running `host run` and
+their command palette opens the bounded overview. Long-running `host run` and
 `host observe` belong in a dedicated CLI process. Desktop's **Schedules** panel
 provides the same creation, inspection, pause/resume/cancel, and host controls.
 Desktop creation requires an exact preview and confirmation; changing the draft
 or resolved route invalidates that preview. Disk and configuration work happens
 outside the UI thread. Refresh after edits to obtain the new revision.
+
+## Selected files and named CI runs
+
+Calendar time is not the only trigger. `--watch-root` and `--github-run` replace
+`--at`/`--daily`; the action, Profile, recipient, expiry and budget still need
+explicit authorization. These commands save intent, not a running watcher:
+
+```text
+xana autonomy create --name "Notes changed" --workspace "C:/work/project" --profile YOUR_PROFILE --watch-root notes --reminder "Review the changed notes" --expires "2026-11-01T00:00:00-07:00" --authorize
+xana autonomy create --name "Named CI run" --workspace "C:/work/project" --profile YOUR_PROFILE --github-run OWNER/REPO/RUN_ID --github-credential env:XANA_GITHUB_TOKEN --reminder "Review the named CI run status" --expires "2026-11-01T00:00:00-07:00" --authorize
+```
+
+Use a fine-grained GitHub credential with Actions read access to the named
+repository. The explicit reference can be `env:NAME` or `stored:ID`; it is not
+the token itself. Xana does not borrow `gh` authentication, enumerate your
+accounts, download CI logs, rerun jobs or modify the repository. The adapter
+uses GitHub's [versioned REST API](https://docs.github.com/en/rest/about-the-rest-api/api-versions).
+Repeated unchanged statuses do not call a model. A rerun or changed commit
+requires new reviewed intent rather than silently changing the resource.
+
+The file watcher checks a selected workspace directory at five-second
+intervals, with a stable sample across at least two seconds before admission.
+It checks at most 256 entries and 16 directory levels, refuses links/reparse
+points and special files, and rejects overlap with Xana-managed state. Overflow,
+root replacement, or uncertain shell effects requires owner review. Select a
+small source folder, not an entire repository containing build output.
+
+This is a coalesced metadata watcher, not a filesystem audit trail. A change
+reverted between polls, or content changed while deliberately preserving size
+and timestamps, may not be observed. Successful built-in writes record their
+observed output revision for loop suppression; later differing revisions are
+eligible changes. Unknown shell outputs cannot be treated as safely attributed.
+Watching never turns file contents into instructions, and unattended actions
+retain their read-only ceiling.
+
+GitHub polling normally waits 60 seconds, uses conditional requests, respects
+server retry windows, and has bounded backoff. Transport/resource/credential
+failures are distinct from an unchanged run. No alternative credential is tried.
+The last status and pending event are retained across restart; terminal run
+completion ends the named-run task after its authorized action.
+
+## Review upcoming and background work
+
+`xana autonomy overview` (or `/autonomy`) reads a bounded page of durable work,
+including Coming up, In motion, Paused, Needs you and terminal outcomes.
+`xana autonomy review JOB_ID` shows the saved scope, watched source, last check,
+last event, pending action, current route agreement, budget ceilings and scoped
+memory controls. A ceiling is not actual usage; use the usage ledger for charges.
+`list` and `show` remain available for full local structured inspection.
+
+Desktop's Espejo **Coming up and background work** section reads these same
+records, with Global/Project filtering and bounded pagination. Opening a row
+opens exact review in **Schedules**; it never acquires a Conversation controller
+or grants new authority. Refresh is explicit. A changed route requires a newly
+reviewed task, not an invisible grant expansion.
+
+While Desktop is attached, a passive bounded observer also reports new
+`NeedsYou` and completion receipts. It establishes a quiet baseline at connect,
+deduplicates task/revision events, and does not call a model or claim control.
+In-app attention remains available when the window is focused; OS notifications
+follow your notification policy and focus state. Opening a notice leads to
+review in Schedules. This attention feed is not an automatically refreshed
+full work list: use **Refresh work** for current row state.
+
+No-memory disables personal use/learning at the selected scope; it does not
+erase encrypted task history or execution receipts. Background execution cannot
+invent an attached human approver. `NeedsYou` remains visible until the owner
+reviews the cause and takes an explicit revision-checked action.
 
 ## Start, detach, stop, and lock
 
