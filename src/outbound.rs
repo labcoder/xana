@@ -52,6 +52,7 @@ pub(crate) enum RecipientKind {
     ExternalAgent,
     FocusedService,
     WebFetch,
+    Browser,
 }
 
 impl RecipientKind {
@@ -62,6 +63,7 @@ impl RecipientKind {
             Self::ExternalAgent => "external_agent",
             Self::FocusedService => "focused_service",
             Self::WebFetch => "web_fetch",
+            Self::Browser => "browser",
         }
     }
 }

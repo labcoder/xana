@@ -159,6 +159,24 @@ pub(crate) async fn pinned_client(
     security: McpHttpSecurity,
     timeout: Duration,
 ) -> Result<Client, McpHttpError> {
+    let addresses = resolve_pinned_addresses(url, security).await?;
+    let host = url.host_str().ok_or(McpHttpError::InvalidEndpoint)?;
+    crate::http_client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(timeout)
+        .resolve_to_addrs(host, &addresses)
+        .build()
+        .map_err(|_| McpHttpError::Client)
+}
+
+/// Validate and resolve one exact recipient before an adapter opens its socket.
+/// Callers retain these addresses instead of resolving the peer's host again.
+pub(crate) async fn resolve_pinned_addresses(
+    url: &Url,
+    security: McpHttpSecurity,
+) -> Result<Vec<SocketAddr>, McpHttpError> {
     if url.username() != ""
         || url.password().is_some()
         || url.fragment().is_some()
@@ -190,14 +208,7 @@ pub(crate) async fn pinned_client(
     {
         return Err(McpHttpError::AddressPolicy);
     }
-    crate::http_client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(timeout)
-        .resolve_to_addrs(host, &addresses)
-        .build()
-        .map_err(|_| McpHttpError::Client)
+    Ok(addresses)
 }
 
 #[derive(Debug, Clone, PartialEq)]

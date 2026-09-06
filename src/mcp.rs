@@ -25,7 +25,7 @@ pub(crate) use catalog::{
 };
 pub(crate) use http::{
     McpHttpClient, McpHttpEndpoint, McpHttpError, McpHttpSecurity, McpHttpToolHeaders,
-    mcp_http_recipient, pinned_client,
+    mcp_http_recipient, pinned_client, resolve_pinned_addresses,
 };
 pub(crate) use oauth::{
     McpAuthChallenge, McpOAuthClient, McpOAuthError, McpOAuthFlow, McpOAuthReference,

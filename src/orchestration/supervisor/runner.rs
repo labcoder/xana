@@ -222,6 +222,7 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
             Some(ChildActivity::ExternalAgent { activity })
         }
         AgentEvent::OperationStateChanged { .. }
+        | AgentEvent::BrowserStatus { .. }
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }
         | AgentEvent::AssistantMessage { .. }

@@ -15,6 +15,7 @@ mod managed;
 mod management;
 mod navigation;
 mod settings;
+pub use crate::browser::BrowserControl as DesktopBrowserControl;
 
 pub use content::{
     DesktopArtifactReader, DesktopCapabilitySource, DesktopContent, DesktopContentAction,
@@ -1301,6 +1302,16 @@ impl DesktopClient {
     pub fn initial_snapshot(&self) -> &DesktopSnapshot {
         &self.initial_snapshot
     }
+    pub fn browser_control(
+        &self,
+        action: DesktopBrowserControl,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        self.enqueue(BridgeCommandValue::BrowserControl(action))
+            .map(|command_id| DesktopCommandReceipt {
+                command_id,
+                operation_id: None,
+            })
+    }
 
     /// Returns a coalescing signal used to wake a presentation only when the
     /// runtime may have queued updates.
@@ -1933,6 +1944,7 @@ struct BridgeCommand {
 
 #[derive(Debug)]
 enum BridgeCommandValue {
+    BrowserControl(DesktopBrowserControl),
     Submit {
         operation_id: DesktopOperationId,
         input: String,
@@ -2967,6 +2979,22 @@ impl Bridge {
                 self.publish_command_result(command_id, result).await?;
                 Ok(None)
             }
+            BridgeCommandValue::BrowserControl(action) => {
+                let result = owner
+                    .send(ClientCommand::new(RuntimeCommand::BrowserControl {
+                        action,
+                    }))
+                    .await
+                    .map_err(|_| {
+                        DesktopError::new(
+                            DesktopErrorCode::RuntimeUnavailable,
+                            "runtime is unavailable",
+                        )
+                    })
+                    .and_then(command_result);
+                self.publish_command_result(command_id, result).await?;
+                Ok(None)
+            }
             BridgeCommandValue::Interrupt { operation_id } => {
                 let result = owner
                     .send(ClientCommand::new(RuntimeCommand::InterruptOperation {
@@ -3783,6 +3811,9 @@ fn project_event(
             },
             AgentEvent::ExternalAgentActivity { .. } => DesktopEvent::Activity {
                 label: "External agent activity updated".to_owned(),
+            },
+            AgentEvent::BrowserStatus { .. } => DesktopEvent::Activity {
+                label: "Browser status updated; see Activity details".to_owned(),
             },
         },
         ClientEvent::Managed(_) => DesktopEvent::Error(DesktopError::new(

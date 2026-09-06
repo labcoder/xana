@@ -489,6 +489,7 @@ pub(super) async fn dispatch_managed_effect(
         UpdateEffect::CompactConversation { .. } => {
             state.set_status("This managed runtime owns its context; Xana compaction is unavailable")
         }
+        UpdateEffect::BrowserControl(_) => state.set_status("Managed runtimes own their browser tools; Xana's local browser controls require native execution"),
         UpdateEffect::DecideRoundBudget { .. } => state
             .set_status("Managed runtimes own their continuation and do not use Xana round tranches"),
         UpdateEffect::OpenModelPicker => state.open_model_picker(
@@ -1047,6 +1048,19 @@ pub(super) async fn dispatch_effect(
                     result
                         .reason
                         .unwrap_or_else(|| "compaction was rejected".to_owned()),
+                );
+            }
+        }
+        UpdateEffect::BrowserControl(action) => {
+            let result = client
+                .send(RuntimeCommand::BrowserControl { action })
+                .await
+                .context("native TUI runtime unavailable")?;
+            if !result.accepted {
+                state.set_status(
+                    result
+                        .reason
+                        .unwrap_or_else(|| "Browser control rejected".into()),
                 );
             }
         }

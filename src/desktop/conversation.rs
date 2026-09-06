@@ -335,6 +335,17 @@ pub(super) fn project_live_activity(event: &ClientEvent) -> Option<DesktopActivi
     let (id, parent_id, operation_id, owner, state, summary, detail, disclosure, source) =
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::BrowserStatus { detail } => (
+                    "browser:status".to_owned(),
+                    None,
+                    None,
+                    DesktopActivityOwner::XanaRoot,
+                    DesktopActivityState::Completed,
+                    "browser.status".to_owned(),
+                    Some(bounded_detail(detail.clone(), 16 * 1024)),
+                    DesktopActivityDisclosure::Detail,
+                    DesktopFactSource::Runtime,
+                ),
                 AgentEvent::InvocationIntentCommitted { intent } => {
                     let target = match &intent.target {
                         InvocationTarget::Tool { name, .. } => name.clone(),
@@ -1140,6 +1151,18 @@ mod tests {
     };
     use std::collections::BTreeMap;
     use uuid::Uuid;
+
+    #[test]
+    fn browser_status_is_one_bounded_replaceable_runtime_detail() {
+        for detail in ["idle".to_owned(), "水".repeat(10_000)] {
+            let event = ClientEvent::Runtime(Box::new(AgentEvent::BrowserStatus { detail }));
+            let item = project_live_activity(&event).unwrap();
+            assert_eq!(item.id, "browser:status");
+            assert_eq!(item.owner, DesktopActivityOwner::XanaRoot);
+            assert_eq!(item.disclosure, DesktopActivityDisclosure::Detail);
+            assert!(item.disclosed_text.unwrap().len() <= 16 * 1024);
+        }
+    }
 
     #[test]
     fn activity_projection_retains_owner_provenance_and_disclosure() {

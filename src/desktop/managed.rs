@@ -749,6 +749,12 @@ impl Bridge {
         }
 
         match command.value {
+            BridgeCommandValue::BrowserControl(_) => {
+                self.publish_command_result(command_id, Err(DesktopError::new(
+                    DesktopErrorCode::UnsupportedExecutionOwner,
+                    "Xana browser controls require a native runtime; the managed vendor owns its browser tools",
+                ))).await?;
+            }
             BridgeCommandValue::RequestSnapshot => {
                 let host = execution_host.snapshot().map_err(host_error)?;
                 self.publish_critical(DesktopUpdate::Snapshot(Box::new(state.project_snapshot(

@@ -31,6 +31,7 @@ use std::io::{self, BufRead, Write};
 
 #[derive(Debug, PartialEq, Eq)]
 enum InputAction<'a> {
+    Browser(&'a str),
     Quit,
     Clear,
     Compact,
@@ -74,6 +75,7 @@ fn classify_input(line: &str) -> InputAction<'_> {
         }
         use crate::command_catalog::CommandAction;
         match parsed.action {
+            CommandAction::Browser => return InputAction::Browser(arguments),
             CommandAction::Project
             | CommandAction::Profile
             | CommandAction::Skill
@@ -271,6 +273,10 @@ impl<W: Write> EventRenderer<W> {
             | AgentEvent::InvocationResultCommitted { .. } => {}
             AgentEvent::ToolFinished { .. } => {
                 self.finish_stream()?;
+            }
+            AgentEvent::BrowserStatus { detail } => {
+                self.finish_stream()?;
+                writeln!(self.output, "browser> {detail}")?;
             }
             AgentEvent::AssistantMessage { message, .. } => {
                 if self.streaming_text {
@@ -965,6 +971,17 @@ pub(crate) async fn run_chat(
                     runtime.send(RuntimeCommand::ListChildren).await?;
                     render_until_child_control_result(&mut runtime, &mut renderer).await?;
                 }
+                InputAction::Browser(arguments) => {
+                    match crate::browser::BrowserControl::parse(arguments) {
+                        Ok(action) => {
+                            runtime
+                                .send(RuntimeCommand::BrowserControl { action })
+                                .await?;
+                            render_until_child_control_result(&mut runtime, &mut renderer).await?;
+                        }
+                        Err(reason) => println!("xana> {reason}"),
+                    }
+                }
                 InputAction::Agent(value) => {
                     let agent_id = match value.parse() {
                         Ok(agent_id) => agent_id,
@@ -1539,6 +1556,7 @@ async fn render_until_child_control_result<W: Write>(
             AgentEvent::ChildListSnapshot { .. }
                 | AgentEvent::ChildInspectionSnapshot { .. }
                 | AgentEvent::ChildCancellationRequested { .. }
+                | AgentEvent::BrowserStatus { .. }
                 | AgentEvent::CommandRejected { .. }
         );
         renderer.render(&event)?;

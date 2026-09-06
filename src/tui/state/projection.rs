@@ -410,6 +410,19 @@ impl TuiState {
                     detail,
                 ));
             }
+            AgentEvent::BrowserStatus { detail } => {
+                self.push_card(ActivityCard::new(
+                    "Xana browser",
+                    "browser-lifecycle",
+                    ActivityKind::Status,
+                    ActivityState::Complete,
+                    "Browser status",
+                    detail.clone(),
+                ));
+                if self.overlay.is_none() {
+                    self.show_command_result("Browser".into(), detail.clone());
+                }
+            }
             AgentEvent::InvocationResultCommitted { .. }
             | AgentEvent::PermissionAudited { .. }
             | AgentEvent::ChildListSnapshot { .. }

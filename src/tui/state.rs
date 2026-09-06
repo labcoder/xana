@@ -208,6 +208,7 @@ pub(super) enum InputAction {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum UpdateEffect {
+    BrowserControl(crate::browser::BrowserControl),
     None,
     Doctor,
     Reset,

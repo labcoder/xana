@@ -19,6 +19,9 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum RuntimeCommand {
+    BrowserControl {
+        action: crate::browser::BrowserControl,
+    },
     SubmitTurn {
         operation_id: OperationId,
         input: String,
@@ -123,6 +126,9 @@ pub(crate) struct RoundBudgetDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
+    BrowserStatus {
+        detail: String,
+    },
     UserMessageCommitted {
         operation_id: OperationId,
         message: Message,

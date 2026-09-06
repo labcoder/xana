@@ -4,6 +4,7 @@
 //! the explicit permission request transport, a closed receiver never changes an
 //! operation result.
 
+mod browser_controls;
 mod memory_controls;
 mod protocol;
 
@@ -45,6 +46,9 @@ const COMMAND_CAPACITY: usize = 16;
 const MAX_ROOT_TOOL_ROUNDS: usize = 256;
 
 pub(crate) struct RuntimeHandle {
+    browser: Option<crate::browser::BrowserOwner>,
+    browser_controls: browser_controls::ControlState,
+    control_events: mpsc::WeakUnboundedSender<AgentEvent>,
     runtime_task: Option<JoinHandle<()>>,
     owned_tasks: tokio_util::task::TaskTracker,
     commands: mpsc::Sender<RuntimeCommand>,
@@ -187,11 +191,12 @@ impl RuntimeHandle {
         };
         let deadline = std::time::Duration::from_secs(8);
         let graceful = async {
-            let _ = self.send(RuntimeCommand::Shutdown).await;
-            (&mut task).await
+            let requested = self.send(RuntimeCommand::Shutdown).await.is_ok();
+            let joined = (&mut task).await.is_ok();
+            requested && joined
         };
         let acknowledged = match tokio::time::timeout(deadline, graceful).await {
-            Ok(result) => result.is_ok(),
+            Ok(result) => result,
             Err(_) => {
                 task.abort();
                 let _ = task.await;
@@ -200,7 +205,7 @@ impl RuntimeHandle {
         };
         self.owned_tasks.close();
         self.owned_tasks.wait().await;
-        acknowledged
+        acknowledged && self.browser_controls.shutdown_succeeded()
     }
     #[cfg(test)]
     pub(crate) fn spawn(agent: Agent, policy: PermissionPolicy, controller_present: bool) -> Self {
@@ -293,6 +298,7 @@ impl RuntimeHandle {
             None => (None, None),
         };
         let owned_tasks = tokio_util::task::TaskTracker::new();
+        let control_events = event_sender.downgrade();
         let runtime = Runtime {
             memory_maintenance: None,
             automatic_learning,
@@ -332,6 +338,9 @@ impl RuntimeHandle {
 
         Self {
             runtime_task: Some(runtime_task),
+            browser: None,
+            browser_controls: browser_controls::ControlState::default(),
+            control_events,
             owned_tasks,
             commands: command_sender,
             events: event_receiver,
@@ -341,6 +350,14 @@ impl RuntimeHandle {
     }
 
     pub(crate) async fn send(&self, command: RuntimeCommand) -> Result<(), RuntimeUnavailable> {
+        if let RuntimeCommand::BrowserControl { action } = command {
+            return self.browser_control(action).await;
+        }
+        if matches!(command, RuntimeCommand::Shutdown) {
+            if let Some(browser) = &self.browser {
+                browser.request_shutdown();
+            }
+        }
         self.commands
             .send(command)
             .await
@@ -362,6 +379,9 @@ impl RuntimeHandle {
     ) {
         let Self {
             runtime_task,
+            browser,
+            browser_controls,
+            control_events,
             owned_tasks,
             commands,
             events,
@@ -372,6 +392,9 @@ impl RuntimeHandle {
         (
             Self {
                 runtime_task,
+                browser,
+                browser_controls,
+                control_events,
                 owned_tasks,
                 commands,
                 events: mpsc::unbounded_channel().1,
@@ -628,6 +651,9 @@ impl Runtime {
                     Err(reason) => self.emit(AgentEvent::CommandRejected { reason }),
                 }
             }
+            RuntimeCommand::BrowserControl { .. } => self.emit(AgentEvent::CommandRejected {
+                reason: "browser lifecycle control requires its live owner handle".into(),
+            }),
             RuntimeCommand::InspectChild { agent_id } => {
                 let result = match self.child_supervisor.clone() {
                     Some(supervisor) => await_supervisor_response(

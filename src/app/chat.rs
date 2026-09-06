@@ -859,6 +859,17 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             .context("could not register bounded Project recall")?;
     }
     let artifact_owner = session.artifact_owner();
+    let browser = artifact_store.protected_home().map(|store| {
+        crate::browser::BrowserOwner::new(paths.clone(), store.clone(), artifact_owner)
+    });
+    if let Some(owner) = browser.as_ref().filter(|owner| owner.snapshot().available) {
+        crate::browser::register_tools(
+            &mut tools,
+            owner.clone(),
+            profile_egress.iter().copied().collect(),
+        )
+        .context("could not activate the dedicated local browser")?;
+    }
     crate::a2a::activate_profile_delegation_tools(
         &child_registry,
         crate::a2a::A2aDelegationActivation {
@@ -1041,6 +1052,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             memory,
         )?,
     };
+    let runtime = runtime.with_browser(browser);
     let conversation = match conversation {
         ConversationRef::NewNative => ConversationRef::Native { session_id },
         conversation => conversation,

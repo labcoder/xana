@@ -590,6 +590,12 @@ async fn handle_command(
                 send_controller_command(observer, state, RuntimeCommand::ClearConversation).await;
             bridge.publish_command_result(command_id, result).await?;
         }
+        BridgeCommandValue::BrowserControl(action) => {
+            let result =
+                send_controller_command(observer, state, RuntimeCommand::BrowserControl { action })
+                    .await;
+            bridge.publish_command_result(command_id, result).await?;
+        }
         BridgeCommandValue::Interrupt { operation_id } => {
             let result = send_controller_command(
                 observer,

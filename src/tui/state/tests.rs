@@ -8,6 +8,52 @@ use crate::{
 use uuid::Uuid;
 
 #[test]
+fn browser_control_is_not_queued_as_model_input_even_during_a_turn() {
+    use crate::browser::BrowserControl;
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.busy = true;
+    for (input, action) in [
+        ("/browser status", BrowserControl::Status),
+        ("/browser takeover", BrowserControl::Takeover),
+        ("/browser close", BrowserControl::Close),
+    ] {
+        state.composer.replace(input.into());
+        assert_eq!(
+            state.update_input(InputAction::Submit),
+            UpdateEffect::BrowserControl(action)
+        );
+        assert!(state.followups.is_empty());
+    }
+    state.composer.replace("/browser resume".into());
+    assert_eq!(state.update_input(InputAction::Submit), UpdateEffect::None);
+    assert!(state.followups.is_empty());
+}
+
+#[test]
+fn browser_status_does_not_replace_an_active_modal_or_the_draft() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    state.composer.replace("unfinished message".into());
+    state.overlay = Some(Overlay::PastePreview {
+        text: "pending paste".into(),
+    });
+    state.apply_runtime(&AgentEvent::BrowserStatus {
+        detail: "cleanup_failed".into(),
+    });
+    assert!(
+        matches!(&state.overlay, Some(Overlay::PastePreview { text }) if text == "pending paste")
+    );
+    assert_eq!(state.composer.text, "unfinished message");
+    assert!(
+        state
+            .activity
+            .back()
+            .unwrap()
+            .detail
+            .contains("cleanup_failed")
+    );
+}
+
+#[test]
 fn learning_upgrade_disclosure_is_local_and_does_not_change_saved_cursors_or_draft() {
     let mut state = TuiState::starting(ComposerPreset::Submit);
     state.history_start = 40;

@@ -870,6 +870,16 @@ impl TuiState {
                 self.overlay = Some(Overlay::Help);
                 UpdateEffect::None
             }
+            CommandId::Browser => {
+                self.composer.take();
+                match crate::browser::BrowserControl::parse(&command.arguments) {
+                    Ok(action) => UpdateEffect::BrowserControl(action),
+                    Err(reason) => {
+                        self.status = reason;
+                        UpdateEffect::None
+                    }
+                }
+            }
             CommandId::Header => {
                 self.composer.take();
                 self.header_expanded = match command.arguments.as_str() {
@@ -1369,9 +1379,11 @@ impl TuiState {
                     "This catalog action is not directly invokable on the current TUI".to_owned();
                 UpdateEffect::None
             }
-            CommandId::Storage | CommandId::Budget | CommandId::Memory | CommandId::Autonomy => {
-                UpdateEffect::None
-            } // Routed through suspended_chat_control.
+            CommandId::Storage
+            | CommandId::Budget
+            | CommandId::Memory
+            | CommandId::Autonomy
+            | CommandId::Worker => UpdateEffect::None, // Routed through suspended_chat_control.
         }
     }
 

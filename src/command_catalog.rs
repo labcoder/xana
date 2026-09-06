@@ -16,7 +16,9 @@ pub(crate) enum CommandAction {
     Artifact,
     Attach,
     Autonomy,
+    Worker,
     Budget,
+    Browser,
     Capabilities,
     Child,
     Clear,
@@ -355,6 +357,23 @@ macro_rules! command {
 /// Broad management families deliberately retain their runtime-owned parsers.
 pub(crate) const COMMANDS: &[CommandSpec] = &[
     command!(
+        "worker.manage.v1",
+        Worker,
+        "worker",
+        &[],
+        "list|inspect|retain|follow-up|run|drain|stop|recover|context ...",
+        "Inspect and continue bounded retained workers",
+        ArgumentSchema::Optional("worker_options"),
+        Owner,
+        Any,
+        ExactScope,
+        Configure,
+        CLI_AND_CHAT,
+        true,
+        true,
+        false
+    ),
+    command!(
         "recall.manage.v1",
         Recall,
         "recall",
@@ -376,7 +395,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Autonomy,
         "autonomy",
         &[],
-        "list|show|create|pause|resume|cancel|receipts|host ...",
+        "overview|review|list|show|create|pause|resume|cancel|receipts|host ...",
         "Control durable schedules and the opt-in detached local host",
         ArgumentSchema::Optional("autonomy_options"),
         Owner,
@@ -438,6 +457,23 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         true,
         true,
         false
+    ),
+    command!(
+        "browser.control.v1",
+        Browser,
+        "browser",
+        &[],
+        "status|takeover|close",
+        "Inspect or take control of this runtime's dedicated browser; never approve new effects",
+        ArgumentSchema::Variants("status|takeover|close"),
+        Controller,
+        Interactive,
+        None,
+        Control,
+        CHAT_SURFACES,
+        true,
+        true,
+        true
     ),
     command!(
         "presentation.activity.auto.v1",
@@ -1642,7 +1678,8 @@ pub(crate) fn suspended_chat_control(stable_id: &str) -> Option<(&'static str, &
         "storage.manage.v1" => Some(("storage", "status")),
         "budget.manage.v1" => Some(("budget", "")),
         "memory.manage.v1" => Some(("memory", "list")),
-        "autonomy.manage.v1" => Some(("autonomy", "list")),
+        "autonomy.manage.v1" => Some(("autonomy", "overview")),
+        "worker.manage.v1" => Some(("worker", "list")),
         "usage.ledger.v1" => Some(("usage", "ledger")),
         "operation.reconcile.v1" => Some(("operation", "")),
         "route.inspect.v1" => Some(("route", "list")),
@@ -1965,6 +2002,8 @@ mod tests {
     fn terminal_management_commands_have_one_suspended_cli_projection() {
         for (stable_id, family, default_arguments) in [
             ("memory.manage.v1", "memory", "list"),
+            ("autonomy.manage.v1", "autonomy", "overview"),
+            ("worker.manage.v1", "worker", "list"),
             ("connection.manage.v1", "connection", "list"),
             ("diagnostics.logs.v1", "logs", "list"),
             ("outbound.manage.v1", "outbound", "list"),

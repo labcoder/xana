@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 11;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 12;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -70,6 +70,9 @@ impl ClientCommand {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ClientCommandValue {
+    BrowserControl {
+        action: crate::browser::BrowserControl,
+    },
     SubmitTurn {
         operation_id: OperationId,
         input: String,
@@ -119,6 +122,7 @@ pub(crate) enum ClientCommandValue {
 impl From<RuntimeCommand> for ClientCommandValue {
     fn from(command: RuntimeCommand) -> Self {
         match command {
+            RuntimeCommand::BrowserControl { action } => Self::BrowserControl { action },
             RuntimeCommand::SubmitTurn {
                 operation_id,
                 input,
@@ -197,6 +201,7 @@ impl From<RuntimeCommand> for ClientCommandValue {
 impl From<ClientCommandValue> for RuntimeCommand {
     fn from(command: ClientCommandValue) -> Self {
         match command {
+            ClientCommandValue::BrowserControl { action } => Self::BrowserControl { action },
             ClientCommandValue::SubmitTurn {
                 operation_id,
                 input,
@@ -275,6 +280,7 @@ impl From<ClientCommandValue> for RuntimeCommand {
 impl ClientCommandValue {
     pub(crate) fn semantic_id(&self) -> &'static str {
         match self {
+            Self::BrowserControl { .. } => "browser.control.v1",
             Self::SubmitTurn { .. } => "turn.submit.v1",
             Self::ClearConversation => "conversation.clear.v1",
             Self::CompactConversation { .. } => "conversation.compact.v1",
@@ -972,6 +978,7 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
         AgentEvent::UserMessageCommitted { .. } => "committed user message",
+        AgentEvent::BrowserStatus { .. } => "browser status",
         AgentEvent::OperationStateChanged { .. } => "operation state",
         AgentEvent::AssistantTextDelta { .. } => "assistant delta",
         AgentEvent::ProviderReasoningDelta { .. } => "provider reasoning delta",
@@ -1172,9 +1179,32 @@ mod tests {
             "child.list.v1",
             "child.inspect.v1",
             "child.cancel.v1",
+            "browser.control.v1",
             "application.shutdown.v1",
         ] {
             assert!(crate::command_catalog::find(id).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn browser_controls_round_trip_without_entering_the_model_queue() {
+        use crate::browser::BrowserControl;
+        for action in [
+            BrowserControl::Status,
+            BrowserControl::Takeover,
+            BrowserControl::Close,
+        ] {
+            let value = ClientCommandValue::BrowserControl { action };
+            let command = ClientCommand::new(value.clone());
+            let decoded: ClientCommand =
+                serde_json::from_slice(&serde_json::to_vec(&command).unwrap()).unwrap();
+            assert_eq!(decoded.version, FRONTEND_PROTOCOL_VERSION);
+            assert_eq!(decoded.semantic_id, "browser.control.v1");
+            assert_eq!(decoded.value, value);
+            assert_eq!(
+                RuntimeCommand::from(decoded.value),
+                RuntimeCommand::BrowserControl { action }
+            );
         }
     }
 

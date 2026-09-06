@@ -1,5 +1,6 @@
 //! Application-owned state and the first real Desktop runtime projection.
 
+mod browser;
 mod history;
 
 use crate::{
@@ -2965,6 +2966,7 @@ impl Workbench {
             .gap(tokens.spacing.md)
             .p(tokens.spacing.lg)
             .child(status)
+            .child(self.render_browser_controls(cx))
             .when(self.projection.history_omitted(), |panel| {
                 panel.child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child("Older history is outside this bounded display window; the saved Conversation is unchanged."))

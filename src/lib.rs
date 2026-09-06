@@ -12,6 +12,7 @@ mod artifact;
 mod artifact_action;
 mod autonomy;
 mod bounded_file;
+mod browser;
 mod capability;
 mod cli;
 mod command_catalog;
