@@ -40,6 +40,9 @@ impl RecordEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum SessionRecord {
+    VisionReceiptRecorded {
+        receipt: crate::vision::receipt::VisionReceipt,
+    },
     SessionCreated {
         thread_id: ThreadId,
         workspace_root: PathBuf,
@@ -79,6 +82,17 @@ pub(crate) enum SessionRecord {
         operation_id: OperationId,
         thread_id: ThreadId,
         input_entry_id: ConversationEntryId,
+    },
+    AdapterOperationAccepted {
+        operation_id: OperationId,
+        thread_id: ThreadId,
+        input_entry_id: ConversationEntryId,
+        binding: crate::operation::adapter::DesktopCommandKey,
+    },
+    AdapterOperationFinished {
+        operation_id: OperationId,
+        outcome: crate::native_runtime::OperationOutcome,
+        result_entry: Option<crate::operation::adapter::DesktopCommandResultRef>,
     },
     CompletionEvidenceRecorded {
         evidence: crate::completion_evidence::CompletionEvidence,

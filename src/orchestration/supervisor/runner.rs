@@ -351,6 +351,7 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::ChildInspectionSnapshot { .. }
         | AgentEvent::ChildCancellationRequested { .. }
         | AgentEvent::RoundBudgetReached { .. }
-        | AgentEvent::RoundBudgetDecisionCommitted { .. } => None,
+        | AgentEvent::RoundBudgetDecisionCommitted { .. }
+        | AgentEvent::TurnStartUnavailable { .. } => None,
     }
 }

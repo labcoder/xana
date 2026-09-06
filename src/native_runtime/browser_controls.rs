@@ -168,6 +168,7 @@ mod tests {
         let (events, receiver) = mpsc::unbounded_channel();
         let (_exit_sender, exit) = watch::channel(None);
         let mut runtime = RuntimeHandle {
+            receipt_writer: crate::operation::DurableOperationSender::channel().0,
             runtime_task: None,
             browser: Some(browser.clone()),
             browser_controls: ControlState::default(),

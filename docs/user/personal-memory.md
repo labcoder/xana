@@ -34,6 +34,10 @@ explicit scope. This is a small deterministic grammar, not general natural-
 language extraction: other wording remains ordinary model input. Quoted/tool/
 child output is never processed as an owner memory command. Attached-image turns
 remain model turns, not local memory commands.
+This includes image turns prepared by a named vision specialist: its generated
+description is available to the conversational model but cannot become your
+memory command or learning source. Only the original text you wrote is eligible
+for personal-memory selection and learning.
 
 Inspection returns at most eight short previews with IDs and an explicit
 more/truncation indicator. For complete records, use Desktop's **Memory** panel,

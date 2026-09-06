@@ -360,6 +360,9 @@ impl<W: Write> EventRenderer<W> {
             AgentEvent::CommandRejected { reason } => {
                 writeln!(self.output, "xana> command rejected: {reason}")?;
             }
+            // The preceding rejection/compaction event already explains why;
+            // this exact correlation is for adapters, not a duplicate message.
+            AgentEvent::TurnStartUnavailable { .. } => {}
             AgentEvent::ChildLifecycleChanged {
                 attribution,
                 lifecycle,
@@ -1150,6 +1153,7 @@ pub(crate) async fn run_chat(
                         .collect::<Vec<_>>();
                     let native_vision = descriptor.input_modalities.contains("image");
                     let mut turn_input = input.to_owned();
+                    let mut owner_input = None;
                     let mut turn_images = images;
                     let specialist_plan = if turn_images.is_empty() {
                         None
@@ -1270,6 +1274,7 @@ pub(crate) async fn run_chat(
                             }
                         );
                         turn_input = prepared.model_input;
+                        owner_input = Some(prepared.owner_input);
                         turn_images = Vec::new();
                         pending_vision_route = None;
                     } else if !turn_images.is_empty() {
@@ -1280,7 +1285,13 @@ pub(crate) async fn run_chat(
                             turn_images.len()
                         );
                     }
-                    let command = if turn_images.is_empty() {
+                    let command = if let Some(owner_input) = owner_input {
+                        RuntimeCommand::SubmitDerivedTurn {
+                            operation_id,
+                            input: turn_input,
+                            owner_input,
+                        }
+                    } else if turn_images.is_empty() {
                         RuntimeCommand::SubmitTurn {
                             operation_id,
                             input: turn_input,

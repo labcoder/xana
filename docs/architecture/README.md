@@ -1112,7 +1112,7 @@ configuration/provider composition. The startup header is expanded identity
 and status state, collapses on draft input, and reopens through the same update
 model. It adapts side panes into drawer labels at medium/narrow widths, hides a
 wide sessions panel at zero width, and bounds composer, message, activity,
-staged images, and an ordered follow-up queue. Frontend protocol version 13
+staged images, and an ordered follow-up queue. Frontend protocol version 14
 retains version 5's stable semantic command identifiers, version 7's frozen
 execution/completion facts, and version 8's Desktop Conversation controls, then
 retains Espejo/host supervision and classified prompt accounting, and adds
@@ -1122,6 +1122,10 @@ receipts without routing those controls through the model's command queue.
 It adds typed terminal diagnostics and bounded finite-work evidence, including
 an explicit finite-turn command. See [completion evidence](completion-evidence.md)
 for the distinction between delivery, observed checks and task correctness.
+Native adapter correlation and derived-input commands preserve exact durable
+outcomes and keep specialist-generated analysis out of owner-memory authority.
+See the [optional Desktop adapter capabilities](desktop.md#optional-native-adapter-capabilities)
+for receipt, scope, custody and no-replay boundaries.
 Native and managed Runs publish
 authoritative execution facts and deterministic completion receipts. One
 application-owned catalog now

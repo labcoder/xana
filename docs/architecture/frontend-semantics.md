@@ -5,7 +5,18 @@
 
 Xana's repository-private frontend protocol has two layers. The transport
 layer carries bounded commands, snapshots, ordered observations, and omission
-facts. Protocol version 12 adds same-owner browser inspection/revocation and
+facts. Protocol version 14 adds exact native command correlation and typed
+derived-input submission. A specialist image description remains attributed
+model input, while the original owner text is carried separately for memory
+selection/learning. It cannot be parsed as an owner memory-control command.
+The optional Desktop vision plan/receipt observations remain outside the
+ordinary Workbench flow; they do not approve or submit work by themselves.
+Image/derived turns that do not start emit an exact `TurnStartUnavailable`
+correlation in addition to the explanatory rejection or compaction event.
+This releases only the matching client run; it does not assert that durable
+admission never happened or authorize a retry. A pending native vision review
+returns unavailable without fabricating a terminal receipt.
+Version 13 added finite-work acceptance evidence. Version 12 added same-owner browser inspection/revocation and
 exact outcome-review commands, plus bounded status receipts; these bypass the
 model queue, not controller authority. Outcome review records the owner's
 finding for an exact receipt/revision and never replays an effect.

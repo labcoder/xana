@@ -102,6 +102,10 @@ pub(crate) struct RestoredOperation {
     pub(crate) suspensions: Vec<crate::operation::SuspensionReason>,
     pub(crate) round_budget_decisions: Vec<crate::native_runtime::RoundBudgetDecision>,
     pub(crate) finished: Option<OperationOutcome>,
+    #[serde(default)]
+    pub(crate) adapter: Option<crate::operation::adapter::DesktopCommandKey>,
+    #[serde(default)]
+    pub(crate) adapter_result: Option<crate::operation::adapter::DesktopCommandResultRef>,
 }
 
 pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, ReductionError> {
@@ -322,7 +326,25 @@ pub(crate) fn validate_envelope_with_compaction_proof(
             thread_id,
             input_entry_id,
             ..
+        }
+        | SessionRecord::AdapterOperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+            ..
         } => {
+            if let SessionRecord::AdapterOperationAccepted { binding, .. } = &envelope.record
+                && (binding.validate().is_err()
+                    || binding.operation() != *operation_id
+                    || binding.session() != state.session_id
+                    || !state.entries.get(input_entry_id).is_some_and(|entry| {
+                        binding.matches_message(&entry.message).unwrap_or(false)
+                    }))
+            {
+                return Err(ReductionError::UnknownOperationInput {
+                    entry: *input_entry_id,
+                });
+            }
             if let SessionRecord::FiniteOperationAccepted { completion, .. } = &envelope.record
                 && (completion.generation != *operation_id
                     || !crate::completion_evidence::valid_transition(None, completion)
@@ -491,12 +513,46 @@ pub(crate) fn validate_envelope_with_compaction_proof(
         SessionRecord::OperationFinished {
             operation_id,
             outcome,
+        }
+        | SessionRecord::AdapterOperationFinished {
+            operation_id,
+            outcome,
+            ..
         } => {
             let operation = state.operation_details.get(operation_id).ok_or(
                 ReductionError::UnknownOperation {
                     operation: *operation_id,
                 },
             )?;
+            if let SessionRecord::AdapterOperationFinished { result_entry, .. } = &envelope.record {
+                let valid = operation.adapter.is_some()
+                    && result_entry.as_ref().is_none_or(|result| {
+                        let Ok(id) = result.entry_id.to_string().parse() else {
+                            return false;
+                        };
+                        state.head == Some(id)
+                            && adapter_output_descends_from_input(
+                                state,
+                                id,
+                                operation.input_entry_id,
+                            )
+                            && state.entries.get(&id).is_some_and(|entry| {
+                                entry.message.role == crate::message::Role::Assistant
+                                    && crate::operation::adapter::message_digest(&entry.message)
+                                        .is_ok_and(|hash| hash == result.message_digest)
+                            })
+                    })
+                    && (*outcome != OperationOutcome::Completed || result_entry.is_some());
+                if !valid {
+                    return Err(ReductionError::UnknownOperation {
+                        operation: *operation_id,
+                    });
+                }
+            } else if operation.adapter.is_some() {
+                return Err(ReductionError::UnknownOperation {
+                    operation: *operation_id,
+                });
+            }
             if operation.finished.is_some() {
                 return Err(ReductionError::OperationAlreadyFinished {
                     operation: *operation_id,
@@ -644,6 +700,13 @@ pub(crate) fn validate_envelope_with_compaction_proof(
         SessionRecord::ConversationCompacted { checkpoint } => {
             validate_compaction_checkpoint(state, checkpoint, source_proof)
         }
+        SessionRecord::VisionReceiptRecorded { receipt } => {
+            if receipt.valid_for(envelope.session_id) {
+                Ok(())
+            } else {
+                Err(ReductionError::InvalidVisionReceipt)
+            }
+        }
         SessionRecord::CompletionEvidenceRecorded { evidence } => {
             let known = state.operation_details.contains_key(&evidence.generation)
                 || state.children.values().any(|child| {
@@ -668,6 +731,9 @@ pub(crate) fn validate_envelope_with_compaction_proof(
 
 pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecord) {
     match record {
+        // Historical receipts are indexed separately, never accumulated in the
+        // hot execution projection or injected into a model prompt.
+        SessionRecord::VisionReceiptRecorded { .. } => {}
         SessionRecord::SessionCreated { .. } => unreachable!("creation is never appended"),
         SessionRecord::ConversationBranched { lineage } => {
             state.branch = Some(lineage.clone());
@@ -718,6 +784,12 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             thread_id,
             input_entry_id,
             ..
+        }
+        | SessionRecord::AdapterOperationAccepted {
+            operation_id,
+            thread_id,
+            input_entry_id,
+            ..
         } => {
             state.operation_details.insert(
                 *operation_id,
@@ -734,6 +806,13 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
                     suspensions: Vec::new(),
                     round_budget_decisions: Vec::new(),
                     finished: None,
+                    adapter: if let SessionRecord::AdapterOperationAccepted { binding, .. } = record
+                    {
+                        Some(binding.clone())
+                    } else {
+                        None
+                    },
+                    adapter_result: None,
                 },
             );
             state
@@ -811,12 +890,24 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
         SessionRecord::OperationFinished {
             operation_id,
             outcome,
+        }
+        | SessionRecord::AdapterOperationFinished {
+            operation_id,
+            outcome,
+            ..
         } => {
             state
                 .operation_details
                 .get_mut(operation_id)
                 .expect("validated operation exists")
                 .finished = Some(*outcome);
+            if let SessionRecord::AdapterOperationFinished { result_entry, .. } = record {
+                state
+                    .operation_details
+                    .get_mut(operation_id)
+                    .expect("validated operation")
+                    .adapter_result = result_entry.clone();
+            }
             state
                 .operations
                 .insert(*operation_id, OperationState::Finished(*outcome));
@@ -894,6 +985,31 @@ fn completion_inflight(state: &RestoredSession, generation: OperationId) -> bool
         || state.children.values().any(|child| {
             child.handle.admission.attribution.operation_id == generation && child.report.is_none()
         })
+}
+
+pub(super) fn adapter_output_descends_from_input(
+    state: &RestoredSession,
+    output: ConversationEntryId,
+    input: ConversationEntryId,
+) -> bool {
+    let mut cursor = Some(output);
+    for _ in 0..4096 {
+        let Some(id) = cursor else {
+            return false;
+        };
+        if id == input {
+            return true;
+        }
+        let Some(entry) = state.entries.get(&id) else {
+            return false;
+        };
+        // Another user turn cannot donate its output to this admission.
+        if entry.message.role == crate::message::Role::User {
+            return false;
+        }
+        cursor = entry.parent;
+    }
+    false
 }
 
 fn completion_capacity(state: &RestoredSession, generation: OperationId) -> bool {
@@ -1292,6 +1408,7 @@ fn valid_operation_transition(previous: Option<OperationState>, next: OperationS
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ReductionError {
+    InvalidVisionReceipt,
     InvalidCompletionEvidence {
         operation: OperationId,
     },

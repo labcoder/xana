@@ -10,6 +10,7 @@ impl Runtime {
             crate::completion_evidence::WorkKind,
             crate::completion_evidence::CompletionContract,
         )>,
+        adapter: Option<crate::operation::adapter::DesktopCommandKey>,
     ) {
         let user = Message::text(Role::User, input.clone());
         let entry = if let Some(session) = &mut self.session {
@@ -32,7 +33,14 @@ impl Runtime {
             message: user,
         });
         if let (Some(session), Some(entry)) = (&mut self.session, entry) {
-            let accepted = if let Some((kind, contract)) = completion_contract {
+            let accepted = if let Some(binding) = adapter {
+                SessionRecord::AdapterOperationAccepted {
+                    operation_id,
+                    thread_id: session.thread_id(),
+                    input_entry_id: entry,
+                    binding,
+                }
+            } else if let Some((kind, contract)) = completion_contract {
                 let mut completion = crate::completion_evidence::CompletionEvidence::new(
                     operation_id,
                     kind,

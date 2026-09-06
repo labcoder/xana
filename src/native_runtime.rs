@@ -4,6 +4,7 @@
 //! the explicit permission request transport, a closed receiver never changes an
 //! operation result.
 
+mod adapter;
 mod browser_controls;
 mod completion;
 mod failure;
@@ -48,6 +49,7 @@ const COMMAND_CAPACITY: usize = 16;
 const MAX_ROOT_TOOL_ROUNDS: usize = 256;
 
 pub(crate) struct RuntimeHandle {
+    receipt_writer: DurableOperationSender,
     browser: Option<crate::browser::BrowserOwner>,
     browser_controls: browser_controls::ControlState,
     control_events: mpsc::WeakUnboundedSender<AgentEvent>,
@@ -323,7 +325,7 @@ impl RuntimeHandle {
             conversation_commits,
             conversation_committer,
             durable_operations,
-            durable_operation_sender,
+            durable_operation_sender: durable_operation_sender.clone(),
             session,
             prompt_assembler,
             compaction_checkpoint,
@@ -341,6 +343,7 @@ impl RuntimeHandle {
         });
 
         Self {
+            receipt_writer: durable_operation_sender,
             runtime_task: Some(runtime_task),
             browser: None,
             browser_controls: browser_controls::ControlState::default(),
@@ -368,6 +371,11 @@ impl RuntimeHandle {
             .map_err(|_| RuntimeUnavailable)
     }
 
+    /// Private application-side receipt lane; shares the sole durable writer.
+    pub(crate) fn receipt_writer(&self) -> DurableOperationSender {
+        self.receipt_writer.clone()
+    }
+
     #[cfg(test)]
     pub(crate) async fn next_event(&mut self) -> Option<AgentEvent> {
         self.events.recv().await
@@ -382,6 +390,7 @@ impl RuntimeHandle {
         watch::Receiver<Option<RuntimeExit>>,
     ) {
         let Self {
+            receipt_writer,
             runtime_task,
             browser,
             browser_controls,
@@ -395,6 +404,7 @@ impl RuntimeHandle {
         let observer_exit = exit.clone();
         (
             Self {
+                receipt_writer,
                 runtime_task,
                 browser,
                 browser_controls,
@@ -502,13 +512,17 @@ impl Runtime {
                 operation_id,
                 input,
             } => {
-                self.start_turn(operation_id, input, Vec::new(), None).await;
+                self.start_turn(operation_id, input, Vec::new(), None, None, None).await;
+            }
+            RuntimeCommand::SubmitDerivedTurn { operation_id, input, owner_input } => {
+                self.start_turn(operation_id, input, Vec::new(), None, None, Some(owner_input)).await;
+                self.report_unstarted_turn(operation_id);
             }
             RuntimeCommand::SubmitFiniteTurn { operation_id, input, kind, contract } => {
                 if self.session.is_none() || contract.validate().is_err() {
                     self.emit(AgentEvent::CommandRejected { reason: "finite work requires a durable Conversation and bounded valid acceptance conditions".to_owned() });
                 } else {
-                    self.start_turn(operation_id, input, Vec::new(), Some((kind, contract))).await;
+                    self.start_turn(operation_id, input, Vec::new(), Some((kind, contract)), None, None).await;
                 }
             }
             RuntimeCommand::SubmitTurnWithImages {
@@ -516,7 +530,14 @@ impl Runtime {
                 input,
                 images,
             } => {
-                self.start_turn(operation_id, input, images, None).await;
+                let has_images = !images.is_empty();
+                self.start_turn(operation_id, input, images, None, None, None).await;
+                if has_images {
+                    self.report_unstarted_turn(operation_id);
+                }
+            }
+            RuntimeCommand::SubmitCorrelatedTurn { binding, input, images } => {
+                self.start_correlated(binding, input, images).await;
             }
             RuntimeCommand::ClearConversation => {
                 if self.active.is_some() || self.suspended_round_budget.is_some() {
@@ -723,6 +744,18 @@ impl Runtime {
         self.stop_after_compaction
     }
 
+    fn report_unstarted_turn(&mut self, operation_id: OperationId) {
+        if !self
+            .active
+            .as_ref()
+            .is_some_and(|active| active.operation_id == operation_id)
+        {
+            // Keep this correlated uncertainty separate from the human-readable
+            // CommandRejected message, which can describe an unrelated command.
+            self.emit(AgentEvent::TurnStartUnavailable { operation_id });
+        }
+    }
+
     async fn start_turn(
         &mut self,
         operation_id: OperationId,
@@ -732,8 +765,14 @@ impl Runtime {
             crate::completion_evidence::WorkKind,
             crate::completion_evidence::CompletionContract,
         )>,
+        adapter: Option<crate::operation::adapter::DesktopCommandKey>,
+        owner_input: Option<String>,
     ) {
-        if input.trim().is_empty() {
+        if input.trim().is_empty()
+            || owner_input
+                .as_ref()
+                .is_some_and(|text| text.trim().is_empty())
+        {
             self.emit(AgentEvent::CommandRejected {
                 reason: "turn input must not be blank".to_owned(),
             });
@@ -758,12 +797,15 @@ impl Runtime {
             return;
         }
 
-        if images.is_empty() && crate::memory::parse_natural(&input).is_some() {
+        if owner_input.is_none()
+            && images.is_empty()
+            && crate::memory::parse_natural(&input).is_some()
+        {
             if !self.automatic_learning {
                 self.emit(AgentEvent::CommandRejected{reason:"Scheduled work cannot exercise owner-only personal memory controls; return to the owner for review".into()});
                 return;
             }
-            self.run_memory_control(operation_id, input, completion_contract)
+            self.run_memory_control(operation_id, input, completion_contract, adapter)
                 .await;
             return;
         }
@@ -785,7 +827,9 @@ impl Runtime {
         } else {
             None
         };
-        let query = input.clone();
+        // Generated image analysis stays available to the model/history, but
+        // cannot masquerade as an owner memory command or learning source.
+        let query = owner_input.unwrap_or_else(|| input.clone());
         let mut content = vec![crate::message::ContentBlock::Text(input)];
         content.extend(images.into_iter().map(crate::message::ContentBlock::Image));
         let user_message = Message {
@@ -902,7 +946,14 @@ impl Runtime {
             message: user_message,
         });
         if let (Some(session), Some(input_entry_id)) = (&mut self.session, input_entry_id) {
-            let accepted = if let Some((kind, contract)) = completion_contract {
+            let accepted = if let Some(binding) = adapter {
+                SessionRecord::AdapterOperationAccepted {
+                    operation_id,
+                    thread_id: session.thread_id(),
+                    input_entry_id,
+                    binding,
+                }
+            } else if let Some((kind, contract)) = completion_contract {
                 let mut completion = crate::completion_evidence::CompletionEvidence::new(
                     operation_id,
                     kind,
@@ -1826,10 +1877,9 @@ impl Runtime {
         outcome: OperationOutcome,
     ) -> bool {
         if let Some(session) = &mut self.session
-            && let Err(error) = session.append_record(SessionRecord::OperationFinished {
-                operation_id,
-                outcome,
-            })
+            && let Err(error) = session
+                .finish_record(operation_id, outcome)
+                .and_then(|record| session.append_record(record))
         {
             self.storage_diagnostic(operation_id);
             self.emit(AgentEvent::OperationFailed {

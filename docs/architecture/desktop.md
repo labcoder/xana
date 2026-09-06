@@ -171,6 +171,46 @@ URLs, session writers, or tool registries. Runtime and durable state remain
 authoritative; Desktop state is a controlled projection with optimistic input
 only until the authoritative final arrives.
 
+## Optional native adapter capabilities
+
+The same facade supports trusted local, headless clients without adding a
+second agent loop or granting access to session writers. These capabilities
+are opt-in; the GPUI Workbench keeps its existing submit and attachment flow.
+Managed and attached owners reject unsupported adapter commands explicitly.
+
+```mermaid
+flowchart LR
+    A["Local adapter"] --> K["Prepare and retain command key"]
+    K --> S["Correlated native submission"]
+    S --> J["Sole native journal writer"]
+    A --> L["Read-only exact outcome lookup"]
+    J --> L
+    A --> V["Stage image bytes / review exact vision plan"]
+    V --> G["Existing VisionTurnService and outbound guard"]
+    G --> J
+    G --> D["Immutable untrusted derivative artifact"]
+```
+
+`DesktopCommandOutcomes` prepares a serializable key before dispatch, binding
+the command to a Conversation, immutable Profile, protected-store identity,
+adapter namespace and exact input. The namespace partitions correlation; it
+is not a credential. Native admission and terminal result references live in
+the existing operation journal. Duplicate admission does not run the turn
+again. Exact lookup neither starts a provider nor opens a session writer; it
+rechecks selected scope and held storage custody before disclosure. Missing
+or incomplete history is an observation, never permission to retry effects.
+See [adapter command outcomes](../user/adapter-outcomes.md).
+
+The governed vision facade stages bounded image bytes rather than accepting
+client filesystem paths. One bridge-owned plan/job binds ordered immutable
+sources, prompt digest, exact recipient, owner and Conversation. Native image
+input uses the existing foreground route; specialist analysis uses an explicit
+named route and exact review through the existing focused-service policy.
+Receipts are indexed native journal records, and analysis output is an
+immutable untrusted artifact. An unfinished dispatch reads as unknown, not a
+replayable job. Receipt admission and offline verification share the same
+bounded transition validator. See [adapter vision](../user/adapter-vision.md).
+
 ## Configuration and recovery control plane
 
 Graphical setup, Settings, focused managers, and maintenance views are adapters

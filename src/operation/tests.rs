@@ -159,6 +159,8 @@ fn pending_operation(
         suspensions: Vec::new(),
         round_budget_decisions: Vec::new(),
         finished: None,
+        adapter: None,
+        adapter_result: None,
     }
 }
 

@@ -38,6 +38,7 @@ pub(crate) enum HistorySubject {
     CompactionOperation(OperationId),
     ChildOperation(OperationId),
     Completion(OperationId),
+    Vision(OperationId),
 }
 
 impl HistorySubject {
@@ -57,6 +58,7 @@ impl HistorySubject {
             Self::CompactionOperation(id) => ("compaction_operation", id.to_string()),
             Self::ChildOperation(id) => ("child_operation", id.to_string()),
             Self::Completion(id) => ("completion", id.to_string()),
+            Self::Vision(id) => ("vision", id.to_string()),
         }
     }
 }
@@ -343,13 +345,18 @@ pub(in crate::storage) fn migrate_execution_index(tx: &Transaction<'_>) -> Resul
 pub(super) fn record_subjects(record: &SessionRecord) -> Vec<HistorySubject> {
     use HistorySubject as S;
     match record {
+        SessionRecord::VisionReceiptRecorded { receipt } => {
+            receipt.operation().map(S::Vision).into_iter().collect()
+        }
         SessionRecord::ConversationEntryAppended { entry } => vec![S::Entry(entry.id)],
         SessionRecord::OperationStateChanged { operation_id, .. }
         | SessionRecord::OperationAccepted { operation_id, .. }
         | SessionRecord::FiniteOperationAccepted { operation_id, .. }
+        | SessionRecord::AdapterOperationAccepted { operation_id, .. }
         | SessionRecord::StepStarted { operation_id, .. }
         | SessionRecord::OperationSuspended { operation_id, .. }
         | SessionRecord::OperationFinished { operation_id, .. }
+        | SessionRecord::AdapterOperationFinished { operation_id, .. }
         | SessionRecord::RecoveryDecisionAppended { operation_id, .. } => {
             vec![S::Operation(*operation_id)]
         }

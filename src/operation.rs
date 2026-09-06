@@ -1,5 +1,6 @@
 //! Durable tool-invocation records, execution ordering, and recovery planning.
 
+pub(crate) mod adapter;
 pub(crate) mod output;
 mod recovery;
 

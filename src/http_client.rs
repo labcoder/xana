@@ -1,5 +1,8 @@
 //! Xana-owned HTTP client construction and TLS provider selection.
 
+mod service_certificate;
+pub(crate) use service_certificate::ScopedServiceCertificate;
+
 pub(crate) fn builder() -> reqwest::ClientBuilder {
     install_crypto_provider();
     reqwest::Client::builder()

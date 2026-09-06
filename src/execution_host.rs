@@ -212,6 +212,12 @@ pub(crate) struct HostedRun {
     access: RunAccess,
 }
 
+impl HostedRun {
+    pub(crate) fn operation_id(&self) -> OperationId {
+        self.operation_id
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum ExecutionHostError {
     Limit {

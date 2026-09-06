@@ -320,6 +320,22 @@ impl OpenAiCompatClient {
         self
     }
 
+    /// Only the focused service facade supplies this scoped, explicit trust.
+    pub(crate) fn with_service_certificate(
+        mut self,
+        certificate: &crate::http_client::ScopedServiceCertificate,
+    ) -> Result<Self, reqwest::Error> {
+        self.client = certificate
+            .apply(
+                &self.endpoint,
+                crate::http_client::builder()
+                    .connect_timeout(Duration::from_secs(5))
+                    .redirect(reqwest::redirect::Policy::none()),
+            )
+            .build()?;
+        Ok(self)
+    }
+
     pub(crate) fn with_usage(mut self) -> Self {
         self.include_usage = true;
         self

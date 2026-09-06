@@ -19,6 +19,18 @@ use tokio::sync::mpsc;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum RuntimeCommand {
+    /// Model input contains attributed generated data; only `owner_input` may
+    /// be used for personal-memory selection/learning, never the derivative.
+    SubmitDerivedTurn {
+        operation_id: OperationId,
+        input: String,
+        owner_input: String,
+    },
+    SubmitCorrelatedTurn {
+        binding: crate::operation::adapter::DesktopCommandKey,
+        input: String,
+        images: Vec<crate::vision::ImageRef>,
+    },
     BrowserControl {
         action: crate::browser::BrowserControl,
     },
@@ -213,6 +225,11 @@ pub(crate) enum AgentEvent {
     },
     CommandRejected {
         reason: String,
+    },
+    /// An image/derived submission did not start this exact turn. This does
+    /// not prove that durable admission or an external effect did not occur.
+    TurnStartUnavailable {
+        operation_id: OperationId,
     },
     ChildLifecycleChanged {
         attribution: ChildAttribution,

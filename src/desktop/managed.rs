@@ -535,6 +535,7 @@ pub(crate) async fn run_managed(
             state,
             notification_policy,
             DesktopFrontendState {
+                vision: None,
                 navigation,
                 navigation_store,
                 layout,
@@ -558,6 +559,7 @@ impl Bridge {
     ) -> Result<ChatExit, DesktopError> {
         self.notification_policy = notification_policy;
         let DesktopFrontendState {
+            vision: _,
             mut navigation,
             navigation_store,
             mut layout,
@@ -751,6 +753,13 @@ impl Bridge {
         }
 
         match command.value {
+            BridgeCommandValue::Vision(_) => {
+                self.publish_command_result(
+                    command_id,
+                    Err(vision::invalid(DesktopVisionError::Unsupported)),
+                )
+                .await?;
+            }
             BridgeCommandValue::BrowserControl(_) => {
                 self.publish_command_result(command_id, Err(DesktopError::new(
                     DesktopErrorCode::UnsupportedExecutionOwner,
@@ -1117,7 +1126,19 @@ impl Bridge {
                 input,
                 attachments,
                 acknowledge_workspace_write_collision,
+                correlation,
             } => {
+                if correlation.is_some() {
+                    self.publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::UnsupportedExecutionOwner,
+                            "managed command outcomes are not exposed by this adapter",
+                        )),
+                    )
+                    .await?;
+                    return Ok(None);
+                }
                 if active_run.is_some() {
                     self.publish_command_result(
                         command_id,

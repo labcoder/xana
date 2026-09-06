@@ -547,6 +547,14 @@ async fn handle_command(
 ) -> Result<bool, DesktopError> {
     let command_id = command.command_id;
     match command.value {
+        BridgeCommandValue::Vision(_) => {
+            bridge
+                .publish_command_result(
+                    command_id,
+                    Err(vision::invalid(DesktopVisionError::Unsupported)),
+                )
+                .await?;
+        }
         BridgeCommandValue::RequestSnapshot => {
             bridge
                 .publish_critical(DesktopUpdate::Snapshot(Box::new(state.project())))
@@ -558,7 +566,20 @@ async fn handle_command(
             input,
             attachments,
             acknowledge_workspace_write_collision: _,
+            correlation,
         } => {
+            if correlation.is_some() {
+                bridge
+                    .publish_command_result(
+                        command_id,
+                        Err(DesktopError::new(
+                            DesktopErrorCode::UnsupportedExecutionOwner,
+                            "correlated submission requires an embedded native owner",
+                        )),
+                    )
+                    .await?;
+                return Ok(false);
+            }
             let result = state.require_controller().and_then(|()| {
                 validate_desktop_attachments(attachments).map(|images| {
                     if images.is_empty() {
@@ -955,6 +976,7 @@ mod tests {
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
                 deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
+                service_certificate: None,
             },
             command_sender,
             update_receiver,

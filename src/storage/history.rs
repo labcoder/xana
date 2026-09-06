@@ -1,5 +1,6 @@
 //! Encrypted native journals and a small ancestry index, not another reducer.
 
+mod adapter;
 mod branch;
 mod checkpoint;
 mod constraints;
@@ -10,6 +11,7 @@ mod proof;
 mod reader;
 mod subjects;
 mod verification;
+mod vision;
 
 #[cfg(test)]
 mod execution_tests;

@@ -193,7 +193,9 @@ pub(crate) fn validate_append_bounds(
 ) -> Result<()> {
     use super::SessionRecord as R;
     let (count, additional) = match record {
-        R::OperationAccepted { .. } | R::FiniteOperationAccepted { .. } => {
+        R::OperationAccepted { .. }
+        | R::FiniteOperationAccepted { .. }
+        | R::AdapterOperationAccepted { .. } => {
             (state.operations.len().max(state.operation_details.len()), 1)
         }
         R::OperationStateChanged { operation_id, .. } => (

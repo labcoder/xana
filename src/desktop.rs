@@ -7,8 +7,13 @@
 
 mod attached;
 mod browser;
+mod command_outcomes;
 mod content;
 mod conversation;
+pub use command_outcomes::{
+    DesktopCommandKey, DesktopCommandOutcome, DesktopCommandOutcomes, DesktopCommandResultRef,
+    DesktopCommandState, DesktopCommandUnavailable,
+};
 mod history;
 mod instance;
 mod layout;
@@ -16,6 +21,7 @@ mod managed;
 mod management;
 mod navigation;
 mod settings;
+mod vision;
 pub use crate::browser::{
     BrowserControl as DesktopBrowserControl, BrowserResolution as DesktopBrowserResolution,
 };
@@ -24,6 +30,10 @@ pub use crate::failure::{
     RetryAdvice, TerminalDiagnostic, TerminalOutcome,
 };
 pub use browser::DesktopBrowserReview;
+pub use vision::{
+    DesktopVisionDecision, DesktopVisionError, DesktopVisionPlan, DesktopVisionUpdate,
+    VisionDestination, VisionReceipt, VisionSource, VisionStatus, VisionUsage,
+};
 
 pub use content::{
     DesktopArtifactReader, DesktopCapabilitySource, DesktopContent, DesktopContentAction,
@@ -164,6 +174,7 @@ struct NativeCommandContext<'a> {
 }
 
 struct DesktopFrontendState {
+    vision: Option<vision::State>,
     navigation: DesktopNavigationSnapshot,
     navigation_store: navigation::DesktopNavigationStore,
     layout: DesktopResolvedLayout,
@@ -498,6 +509,7 @@ pub struct DesktopLaunch {
     conversation: Option<ConversationRef>,
     force_new: bool,
     xana_home: Option<OsString>,
+    service_certificate: Option<Arc<crate::http_client::ScopedServiceCertificate>>,
 }
 
 impl DesktopLaunch {
@@ -514,6 +526,7 @@ impl DesktopLaunch {
             conversation: None,
             force_new: false,
             xana_home: std::env::var_os("XANA_HOME"),
+            service_certificate: None,
         })
     }
 
@@ -524,6 +537,7 @@ impl DesktopLaunch {
             conversation: None,
             force_new: false,
             xana_home: std::env::var_os("XANA_HOME"),
+            service_certificate: None,
         }
     }
 
@@ -534,6 +548,7 @@ impl DesktopLaunch {
             conversation: None,
             force_new: false,
             xana_home,
+            service_certificate: None,
         }
     }
 
@@ -548,6 +563,22 @@ impl DesktopLaunch {
         navigation::DesktopNavigationStore::launch_catalog(&paths)
     }
 
+    /// Adds one DER trust root only for an already-configured specialist HTTPS
+    /// origin. Normal hostname verification, approvals and redirects remain unchanged.
+    /// This does not affect the native conversational provider or OS trust store.
+    pub fn with_service_certificate(
+        mut self,
+        origin: &str,
+        certificate_der: Vec<u8>,
+    ) -> Result<Self, DesktopError> {
+        self.service_certificate = Some(Arc::new(
+            crate::http_client::ScopedServiceCertificate::new(origin, certificate_der).map_err(
+                |message| DesktopError::new(DesktopErrorCode::ConfigurationUnavailable, message),
+            )?,
+        ));
+        Ok(self)
+    }
+
     /// Opens the typed setup/settings control plane without granting workspace authority.
     pub fn control_plane(&self) -> Result<DesktopControlPlane, DesktopError> {
         DesktopControlPlane::resolve(self.xana_home.clone())
@@ -560,6 +591,7 @@ impl DesktopLaunch {
             conversation: choice.target.conversation.clone(),
             force_new: choice.target.force_new,
             xana_home: self.xana_home.clone(),
+            service_certificate: self.service_certificate.clone(),
         }
     }
 
@@ -570,6 +602,7 @@ impl DesktopLaunch {
             conversation: None,
             force_new,
             xana_home: self.xana_home.clone(),
+            service_certificate: self.service_certificate.clone(),
         }
     }
 }
@@ -1115,6 +1148,7 @@ impl DesktopEvent {
 /// Updates delivered to one Desktop projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesktopUpdate {
+    Vision(DesktopVisionUpdate),
     Snapshot(Box<DesktopSnapshot>),
     Navigation(DesktopNavigationSnapshot),
     Layout(Box<DesktopResolvedLayout>),
@@ -1144,6 +1178,7 @@ pub enum DesktopUpdate {
 
 /// The Desktop-side controller and bounded observation receiver.
 pub struct DesktopClient {
+    vision_upload_bytes: Arc<std::sync::atomic::AtomicUsize>,
     commands: mpsc::Sender<BridgeCommand>,
     updates: mpsc::Receiver<DesktopUpdate>,
     update_signal: DesktopWakeSignal,
@@ -1153,6 +1188,7 @@ pub struct DesktopClient {
     initial_snapshot: DesktopSnapshot,
     artifacts: DesktopArtifactReader,
     history: DesktopHistoryReader,
+    command_outcomes: DesktopCommandOutcomes,
 }
 
 /// A coalescing, executor-independent wake signal for newly queued Desktop work.
@@ -1209,6 +1245,11 @@ impl DesktopClient {
             workspace.clone(),
             paths.config_file().to_owned(),
         );
+        let command_outcomes = DesktopCommandOutcomes::new(
+            paths.clone(),
+            workspace.clone(),
+            artifact_store.protected_home(),
+        );
         let artifacts = DesktopArtifactReader::new(artifact_store);
         let (commands, command_receiver) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
@@ -1223,9 +1264,11 @@ impl DesktopClient {
             startup: startup.clone(),
             notification_policy: NotificationPolicy::default(),
             deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
+            service_certificate: launch.service_certificate,
         };
         let failure_updates = updates.clone();
         let failure_signal = update_signal.clone();
+        let outcome_custody = command_outcomes.clone();
         let backend = thread::Builder::new()
             .name("xana-desktop-runtime".to_owned())
             .stack_size(4 * 1024 * 1024)
@@ -1233,6 +1276,9 @@ impl DesktopClient {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run_backend(paths, workspace, conversation, force_new, bridge)
                 }));
+                // Readers must not depend on an adapter draining queued events
+                // to learn that its execution owner stopped.
+                outcome_custody.revoke();
                 match result {
                     Ok(Ok(())) => {
                         startup.fail_if_pending(DesktopError::new(
@@ -1297,7 +1343,9 @@ impl DesktopClient {
             ));
         }
         history.select(Some(&initial_snapshot));
+        command_outcomes.select(Some(&initial_snapshot));
         Ok(Self {
+            vision_upload_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             commands,
             updates: update_receiver,
             update_signal,
@@ -1307,6 +1355,7 @@ impl DesktopClient {
             initial_snapshot,
             artifacts,
             history,
+            command_outcomes,
         })
     }
 
@@ -1432,6 +1481,7 @@ impl DesktopClient {
             input: input.into(),
             attachments,
             acknowledge_workspace_write_collision: acknowledge,
+            correlation: None,
         })?;
         Ok(DesktopCommandReceipt {
             command_id,
@@ -1825,8 +1875,14 @@ impl DesktopClient {
         match self.updates.try_recv() {
             Ok(update) => {
                 match &update {
-                    DesktopUpdate::Snapshot(snapshot) => self.history.select(Some(snapshot)),
-                    DesktopUpdate::BackendStopped { .. } => self.history.select(None),
+                    DesktopUpdate::Snapshot(snapshot) => {
+                        self.history.select(Some(snapshot));
+                        self.command_outcomes.select(Some(snapshot));
+                    }
+                    DesktopUpdate::BackendStopped { .. } => {
+                        self.history.select(None);
+                        self.command_outcomes.select(None);
+                    }
                     _ => {}
                 }
                 Ok(Some(update))
@@ -1841,6 +1897,7 @@ impl DesktopClient {
 
     /// Requests clean shutdown and verifies the runtime thread terminates.
     pub fn shutdown(mut self) -> Result<(), DesktopError> {
+        self.command_outcomes.revoke();
         let _ = self.enqueue(BridgeCommandValue::Shutdown);
         self.backend_done
             .recv_timeout(SHUTDOWN_TIMEOUT)
@@ -1892,6 +1949,7 @@ impl DesktopClient {
 
 impl Drop for DesktopClient {
     fn drop(&mut self) {
+        self.command_outcomes.revoke();
         use std::sync::atomic::Ordering;
         let command_id = self.next_command_id.fetch_add(1, Ordering::Relaxed);
         let _ = self.commands.try_send(BridgeCommand {
@@ -1937,6 +1995,7 @@ pub(crate) struct Bridge {
     startup: StartupSignal,
     notification_policy: NotificationPolicy,
     deferred: Arc<Mutex<DeferredDelivery>>,
+    service_certificate: Option<Arc<crate::http_client::ScopedServiceCertificate>>,
 }
 
 #[derive(Default)]
@@ -1955,12 +2014,14 @@ struct BridgeCommand {
 
 #[derive(Debug)]
 enum BridgeCommandValue {
+    Vision(vision::Command),
     BrowserControl(DesktopBrowserControl),
     Submit {
         operation_id: DesktopOperationId,
         input: String,
         attachments: Vec<DesktopAttachment>,
         acknowledge_workspace_write_collision: bool,
+        correlation: Option<DesktopCommandKey>,
     },
     StageResource {
         path: PathBuf,
@@ -2182,6 +2243,11 @@ pub(crate) async fn run_native(
         ),
     )?;
     execution_host.attach(&conversation)?;
+    let mut vision_state = vision::State::new(header, paths, runtime.receipt_writer())?;
+    if let Some(certificate) = &bridge.service_certificate {
+        vision_state.with_service_certificate(certificate.as_ref().clone())?;
+    }
+    let vision = Some(vision_state);
     let exit = bridge
         .serve_native(
             EmbeddedClient::from_runtime(runtime, seed),
@@ -2189,6 +2255,7 @@ pub(crate) async fn run_native(
             conversation,
             header.notification_policy.clone(),
             DesktopFrontendState {
+                vision,
                 navigation,
                 navigation_store,
                 layout,
@@ -2212,6 +2279,7 @@ impl Bridge {
     ) -> Result<ChatExit, DesktopError> {
         self.notification_policy = notification_policy;
         let DesktopFrontendState {
+            mut vision,
             mut navigation,
             navigation_store,
             mut layout,
@@ -2254,8 +2322,14 @@ impl Bridge {
 
         loop {
             tokio::select! {
+                finished = vision::next(&mut vision) => {
+                    if let Some(state) = &mut vision {
+                        state.finished(finished, &self, &owner, &execution_host, &controller, &mut active_run).await?;
+                    }
+                }
                 command = commands.recv() => {
                     let Some(command) = command else {
+                        vision::stop(&mut vision).await;
                         execution_host.request_shutdown().map_err(host_error)?;
                         if owner.send(ClientCommand::new(RuntimeCommand::Shutdown)).await
                             .is_ok_and(|result| result.accepted)
@@ -2277,6 +2351,31 @@ impl Bridge {
                         ).await?;
                         continue;
                     }
+                    if let BridgeCommandValue::Vision(value) = command.value {
+                        if let Some(state) = &mut vision {
+                            state.command(command.command_id, value, &self, &execution_host, &controller, &mut active_run).await?;
+                        } else {
+                            self.publish_command_result(command.command_id, Err(vision::invalid(DesktopVisionError::Unsupported))).await?;
+                        }
+                        continue;
+                    }
+                    if let BridgeCommandValue::Interrupt { operation_id } = &command.value
+                        && vision.as_ref().is_some_and(|state| state.owns_operation(operation_id.0))
+                        && let Some(state) = &mut vision {
+                        state.command(command.command_id, vision::Command::Cancel { operation: *operation_id }, &self, &execution_host, &controller, &mut active_run).await?;
+                        continue;
+                    }
+                    if matches!(command.value, BridgeCommandValue::Shutdown) {
+                        vision::stop(&mut vision).await;
+                    }
+                    if vision.as_ref().is_some_and(vision::State::is_busy)
+                        && !matches!(command.value, BridgeCommandValue::RequestSnapshot | BridgeCommandValue::Shutdown) {
+                        self.publish_command_result(command.command_id, Err(vision::invalid(DesktopVisionError::Busy))).await?;
+                        continue;
+                    }
+                    if matches!(command.value, BridgeCommandValue::Submit { .. } | BridgeCommandValue::Clear
+                        | BridgeCommandValue::SwitchConversation { .. } | BridgeCommandValue::NewConversation { .. })
+                        && let Some(state) = &mut vision { state.revoke_pending(); }
                     let stop = self
                         .handle_command(
                             command,
@@ -2313,6 +2412,7 @@ impl Bridge {
                     let observation = observation.map_err(|error| {
                         DesktopError::new(DesktopErrorCode::RuntimeUnavailable, error.to_string())
                     })?;
+                    if let Some(state) = &mut vision { state.observe(&observation.event, &self).await?; }
                     if observation.version != FRONTEND_PROTOCOL_VERSION {
                         return Err(DesktopError::new(
                             DesktopErrorCode::ProtocolMismatch,
@@ -2341,7 +2441,7 @@ impl Bridge {
                             return Err(host_error(error));
                         }
                     }
-                    if let Some(outcome) = observation_outcome(&observation)
+                    if let Some(outcome) = active_run.as_ref().and_then(|run| observation_outcome(&observation, run.operation_id()))
                         && let Some(run) = active_run.take()
                     {
                         execution_host.finish_run(run, outcome).map_err(host_error)?;
@@ -2372,6 +2472,7 @@ impl Bridge {
             }
         }
 
+        vision::stop(&mut vision).await;
         execution_host.request_shutdown().map_err(host_error)?;
         drop(active_run);
         execution_host
@@ -2443,6 +2544,14 @@ impl Bridge {
             return Ok(None);
         }
         match command.value {
+            BridgeCommandValue::Vision(_) => {
+                self.publish_command_result(
+                    command_id,
+                    Err(vision::invalid(DesktopVisionError::Unsupported)),
+                )
+                .await?;
+                Ok(None)
+            }
             BridgeCommandValue::RequestSnapshot => {
                 let host_snapshot = execution_host.snapshot().map_err(host_error)?;
                 self.publish_critical(DesktopUpdate::Snapshot(Box::new(project_snapshot(
@@ -2898,6 +3007,7 @@ impl Bridge {
                 input,
                 attachments,
                 acknowledge_workspace_write_collision,
+                correlation,
             } => {
                 if active_run.is_some() {
                     self.publish_command_result(
@@ -2940,7 +3050,27 @@ impl Bridge {
                         return Ok(None);
                     }
                 };
-                let runtime_command = if images.is_empty() {
+                if correlation
+                    .as_ref()
+                    .is_some_and(|key| key.session() != snapshot.session_id)
+                {
+                    let error = DesktopError::new(
+                        DesktopErrorCode::AuthorityRequired,
+                        "correlated command belongs to another Conversation",
+                    );
+                    execution_host
+                        .finish_run(run, Err(error.message.clone()))
+                        .map_err(host_error)?;
+                    self.publish_command_result(command_id, Err(error)).await?;
+                    return Ok(None);
+                }
+                let runtime_command = if let Some(binding) = correlation {
+                    RuntimeCommand::SubmitCorrelatedTurn {
+                        binding,
+                        input,
+                        images,
+                    }
+                } else if images.is_empty() {
                     RuntimeCommand::SubmitTurn {
                         operation_id: operation_id.0,
                         input,
@@ -3374,14 +3504,26 @@ fn host_error(error: crate::execution_host::ExecutionHostError) -> DesktopError 
 
 fn observation_outcome(
     observation: &ClientObservation,
+    active_operation: OperationId,
 ) -> Option<Result<OperationOutcome, String>> {
     match &observation.event {
         ClientEvent::Runtime(event) => match event.as_ref() {
             AgentEvent::OperationStateChanged {
+                operation_id,
                 state: OperationState::Finished(outcome),
+            } if *operation_id == active_operation => Some(Ok(*outcome)),
+            AgentEvent::OperationFailed {
+                operation_id,
+                reason,
                 ..
-            } => Some(Ok(*outcome)),
-            AgentEvent::OperationFailed { reason, .. } => Some(Err(reason.clone())),
+            } if *operation_id == active_operation => Some(Err(reason.clone())),
+            AgentEvent::TurnStartUnavailable { operation_id }
+                if *operation_id == active_operation =>
+            {
+                Some(Err(
+                    "turn did not start; durable outcome remains unproven".into()
+                ))
+            }
             _ => None,
         },
         ClientEvent::Managed(_) | ClientEvent::Semantic(_) | ClientEvent::PayloadOmitted { .. } => {
@@ -3802,6 +3944,10 @@ fn project_event(
                 DesktopErrorCode::CommandRejected,
                 reason.clone(),
             )),
+            AgentEvent::TurnStartUnavailable { .. } => DesktopEvent::Activity {
+                label: "Turn did not start; inspect the reported rejection or interruption"
+                    .to_owned(),
+            },
             AgentEvent::ToolFinished { .. } => DesktopEvent::Activity {
                 label: "Tool finished".to_owned(),
             },
@@ -4013,7 +4159,7 @@ mod tests {
     use anyhow::Result;
     use futures::future::BoxFuture;
 
-    type BridgeChannels = (
+    pub(super) type BridgeChannels = (
         Bridge,
         mpsc::Sender<BridgeCommand>,
         mpsc::Receiver<DesktopUpdate>,
@@ -4038,7 +4184,9 @@ mod tests {
         }
     }
 
-    fn scripted_client(workspace: &std::path::Path) -> (EmbeddedClient, ConversationRef) {
+    pub(super) fn scripted_client(
+        workspace: &std::path::Path,
+    ) -> (EmbeddedClient, ConversationRef) {
         let tools = ToolRegistry::new();
         let definitions = tools.definitions();
         let environment = PromptEnvironment {
@@ -4087,7 +4235,7 @@ mod tests {
         (client, conversation)
     }
 
-    fn execution_host(
+    pub(super) fn execution_host(
         data_root: &std::path::Path,
         workspace: &std::path::Path,
         conversation: &ConversationRef,
@@ -4139,7 +4287,7 @@ mod tests {
         }
     }
 
-    fn bridge_channels() -> BridgeChannels {
+    pub(super) fn bridge_channels() -> BridgeChannels {
         let (command_sender, commands) = mpsc::channel(COMMAND_CAPACITY);
         let (updates, update_receiver) = mpsc::channel(UPDATE_CAPACITY);
         let (startup_sender, startup_receiver) = std_mpsc::sync_channel(1);
@@ -4151,6 +4299,7 @@ mod tests {
                 startup: StartupSignal::new(startup_sender),
                 notification_policy: NotificationPolicy::default(),
                 deferred: Arc::new(Mutex::new(DeferredDelivery::default())),
+                service_certificate: None,
             },
             command_sender,
             update_receiver,
@@ -4505,6 +4654,7 @@ mod tests {
             NotificationPolicy::default(),
             DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                vision: None,
                 navigation_store,
                 layout,
                 layout_store,
@@ -4534,6 +4684,7 @@ mod tests {
                     input: "hello".to_owned(),
                     attachments: Vec::new(),
                     acknowledge_workspace_write_collision: false,
+                    correlation: None,
                 },
             })
             .await
@@ -4637,6 +4788,7 @@ mod tests {
             NotificationPolicy::default(),
             DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                vision: None,
                 navigation_store,
                 layout,
                 layout_store,
@@ -4659,6 +4811,7 @@ mod tests {
                     input: "hello".to_owned(),
                     attachments: Vec::new(),
                     acknowledge_workspace_write_collision: false,
+                    correlation: None,
                 },
             })
             .await
@@ -4750,6 +4903,7 @@ mod tests {
             NotificationPolicy::default(),
             DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                vision: None,
                 navigation_store,
                 layout,
                 layout_store,
@@ -4896,6 +5050,7 @@ mod tests {
             NotificationPolicy::default(),
             DesktopFrontendState {
                 navigation: DesktopNavigationSnapshot::empty(DesktopSidebarMode::Full),
+                vision: None,
                 navigation_store,
                 layout,
                 layout_store,

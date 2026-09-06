@@ -206,10 +206,8 @@ where
     // Recovery deliberately does not continue the provider turn. Once every known
     // effect is reconciled, the interrupted operation terminates explicitly.
     let outcome = OperationOutcome::Interrupted;
-    session.append_record(SessionRecord::OperationFinished {
-        operation_id,
-        outcome,
-    })?;
+    let finished = session.finish_record(operation_id, outcome)?;
+    session.append_record(finished)?;
     Ok(actions)
 }
 

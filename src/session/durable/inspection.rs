@@ -141,6 +141,33 @@ fn protected_operation(
     let mut seen = HashSet::new();
     for (index, record) in records.iter().enumerate() {
         dependencies(home, &mut state, &record.record)?;
+        if let SessionRecord::AdapterOperationFinished {
+            result_entry: Some(_),
+            operation_id,
+            ..
+        } = &record.record
+        {
+            let input = state
+                .operation_details
+                .get(operation_id)
+                .context("adapter admission is missing")?
+                .input_entry_id;
+            for entry_record in home.history_adapter_output(id, input, record.record_id)? {
+                match entry_record.record {
+                    SessionRecord::ConversationEntryAppended { entry } => {
+                        state.entries.insert(entry.id, entry);
+                    }
+                    SessionRecord::ThreadHeadMoved { head, thread_id } => {
+                        anyhow::ensure!(
+                            thread_id == state.thread_id,
+                            "adapter output head belongs to another thread"
+                        );
+                        state.head = head;
+                    }
+                    _ => {}
+                }
+            }
+        }
         super::super::validate_envelope(&state, &seen, record, index + 1)?;
         apply_validated(&mut state, &record.record);
         seen.insert(record.record_id);
@@ -155,8 +182,15 @@ pub(super) fn dependencies(
 ) -> Result<()> {
     match record {
         SessionRecord::OperationAccepted { input_entry_id, .. }
-        | SessionRecord::FiniteOperationAccepted { input_entry_id, .. } => {
+        | SessionRecord::FiniteOperationAccepted { input_entry_id, .. }
+        | SessionRecord::AdapterOperationAccepted { input_entry_id, .. } => {
             entry(home, state, *input_entry_id)?
+        }
+        SessionRecord::AdapterOperationFinished {
+            result_entry: Some(result),
+            ..
+        } => {
+            entry(home, state, result.entry_id.to_string().parse()?)?;
         }
         SessionRecord::StepStarted {
             assistant_entry_id, ..

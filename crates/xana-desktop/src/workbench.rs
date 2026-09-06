@@ -1793,6 +1793,10 @@ impl Workbench {
                         espejo.apply_host(&observation, cx);
                     });
                 }
+                // Only opt-in adapters request vision plans. The ordinary
+                // Workbench keeps using its existing attachment/turn flow;
+                // a plan observation must never implicitly approve or submit.
+                DesktopUpdate::Vision(_) => {}
                 DesktopUpdate::CommandResult {
                     command_id,
                     accepted,

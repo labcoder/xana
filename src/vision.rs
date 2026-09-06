@@ -1,5 +1,7 @@
 //! Artifact-backed image input and bounded provider media resolution.
 
+pub(crate) mod receipt;
+
 use crate::{
     artifact::{ArtifactRecord, ArtifactStore, MAX_ARTIFACT_BYTES},
     identity::PrincipalId,
@@ -435,12 +437,15 @@ pub(crate) fn image_paths_in_text(text: &str) -> Vec<String> {
         .collect()
 }
 
-struct ImageMetadata {
-    media_type: &'static str,
+pub(crate) struct ImageMetadata {
+    pub(crate) media_type: &'static str,
     width: Option<u32>,
     height: Option<u32>,
 }
-fn inspect_image(bytes: &[u8], limits: ImageLimits) -> Result<ImageMetadata, ImageError> {
+pub(crate) fn inspect_image(
+    bytes: &[u8],
+    limits: ImageLimits,
+) -> Result<ImageMetadata, ImageError> {
     let format = image::guess_format(bytes).map_err(|_| ImageError::UnsupportedFormat)?;
     let media_type = match format {
         image::ImageFormat::Png => "image/png",

@@ -199,7 +199,9 @@ async fn execute_recovery_command<W: Write>(
             write_recovery_plan(output, session_id, &operation, &actions)
         }
         RuntimeCommand::SubmitTurn { .. }
+        | RuntimeCommand::SubmitDerivedTurn { .. }
         | RuntimeCommand::SubmitFiniteTurn { .. }
+        | RuntimeCommand::SubmitCorrelatedTurn { .. }
         | RuntimeCommand::BrowserControl { .. }
         | RuntimeCommand::SubmitTurnWithImages { .. }
         | RuntimeCommand::InterruptOperation { .. }

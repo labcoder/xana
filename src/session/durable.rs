@@ -4,6 +4,7 @@ use super::{
     PromptContinuation, RecordEnvelope, RestoredSession, SessionRecord, SessionStore,
     apply_validated, reduce, validate_envelope_with_compaction_proof,
 };
+mod adapter;
 mod inspection;
 mod preparation;
 mod protected;

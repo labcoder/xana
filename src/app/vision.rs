@@ -61,6 +61,7 @@ pub(crate) struct VisionReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PreparedVisionTurn {
+    pub(crate) owner_input: String,
     pub(crate) model_input: String,
     pub(crate) derived_text: String,
     pub(crate) receipt: VisionReceipt,
@@ -76,6 +77,8 @@ pub(crate) struct VisionTurnService {
     artifacts: ArtifactStore,
     owner: PrincipalId,
     audit: Arc<dyn OutboundAuditObserver>,
+    dispatch_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    service_certificate: Option<crate::http_client::ScopedServiceCertificate>,
 }
 
 impl VisionTurnService {
@@ -97,12 +100,47 @@ impl VisionTurnService {
             artifacts,
             owner,
             audit: Arc::new(NoopOutboundAuditObserver),
+            dispatch_check: None,
+            service_certificate: None,
         }
     }
 
     pub(crate) fn with_outbound_audit(mut self, audit: Arc<dyn OutboundAuditObserver>) -> Self {
         self.audit = audit;
         self
+    }
+
+    /// The controlling host supplies revocation, not an alternate permission policy.
+    pub(crate) fn with_dispatch_check(
+        mut self,
+        check: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Self {
+        self.dispatch_check = Some(check);
+        self
+    }
+
+    pub(crate) fn matches_registry(&self, registry: &ConnectionRegistry) -> bool {
+        &self.registry == registry
+    }
+
+    pub(crate) fn with_service_certificate(
+        mut self,
+        certificate: crate::http_client::ScopedServiceCertificate,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            self.registry
+                .service_connections
+                .values()
+                .any(|connection| {
+                    connection
+                        .base_url
+                        .as_deref()
+                        .is_some_and(|url| certificate.matches(url))
+                }),
+            "service certificate origin is not an explicitly configured service origin"
+        );
+        self.service_certificate = Some(certificate);
+        Ok(self)
     }
 
     pub(crate) fn plan(&self, selected_route: Option<&str>) -> Result<VisionPlan> {
@@ -268,6 +306,8 @@ impl VisionTurnService {
             expected_recipient: recipient,
             expected_item_count: images.len() + 1,
             failure: None,
+            dispatch_check: self.dispatch_check.clone(),
+            service_certificate: self.service_certificate.clone(),
         };
         let mut approval = outbound_decision
             .map(|decision| ReviewedOutboundApproval::new(outbound_request.review(), decision));
@@ -324,6 +364,7 @@ impl VisionTurnService {
             derived
         );
         Ok(PreparedVisionTurn {
+            owner_input: question,
             model_input,
             derived_text: derived,
             receipt,
@@ -331,7 +372,7 @@ impl VisionTurnService {
     }
 }
 
-fn vision_recipient(route: &ResolvedServiceRoute) -> Result<RecipientIdentity> {
+pub(crate) fn vision_recipient(route: &ResolvedServiceRoute) -> Result<RecipientIdentity> {
     let default_base_url = match route.adapter.as_str() {
         "openai.vision" => VisionProvider::OpenAi.default_base_url(),
         "openrouter.vision" => VisionProvider::OpenRouter.default_base_url(),
@@ -364,6 +405,8 @@ struct VisionTransport {
     expected_recipient: RecipientIdentity,
     expected_item_count: usize,
     failure: Option<FocusedServiceError>,
+    dispatch_check: Option<Arc<dyn Fn() -> bool + Send + Sync>>,
+    service_certificate: Option<crate::http_client::ScopedServiceCertificate>,
 }
 
 impl OutboundTransport for VisionTransport {
@@ -386,6 +429,12 @@ impl OutboundTransport for VisionTransport {
                 .context
                 .take()
                 .ok_or(OutboundTransportFailure::Protocol)?;
+            if context.cancellation.is_cancelled()
+                || self.dispatch_check.as_ref().is_some_and(|check| !check())
+            {
+                self.failure = Some(FocusedServiceError::Cancelled);
+                return Err(OutboundTransportFailure::Cancelled);
+            }
             let secret = match request
                 .route
                 .credential
@@ -418,9 +467,10 @@ impl OutboundTransport for VisionTransport {
                 }
             };
             let mut execution = FocusedServiceRegistry::default();
-            if let Err(error) =
-                execution.register(Arc::new(OpenAiVisionAdapter::new(provider, secret)))
-            {
+            if let Err(error) = execution.register(Arc::new(
+                OpenAiVisionAdapter::new(provider, secret)
+                    .with_service_certificate(self.service_certificate.clone()),
+            )) {
                 let failure = map_transport_failure(&error);
                 self.failure = Some(error);
                 return Err(failure);

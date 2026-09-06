@@ -368,9 +368,10 @@ impl ExecutionOwner for NativeOwner<'_> {
                     state.finish_vision_preparation(&prepared.receipt);
                     let result = self
                         .client
-                        .send(crate::native_runtime::RuntimeCommand::SubmitTurn {
+                        .send(crate::native_runtime::RuntimeCommand::SubmitDerivedTurn {
                             operation_id,
                             input: prepared.model_input,
+                            owner_input: prepared.owner_input,
                         })
                         .await
                         .context("native TUI runtime stopped after vision preparation")?;

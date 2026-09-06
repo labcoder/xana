@@ -29,9 +29,9 @@ mod usage;
 mod verification;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod hardening_tests;
+#[cfg(test)]
+mod tests;
 #[cfg(test)]
 pub(crate) use tests::Custody as TestCustody;
 
@@ -120,12 +120,8 @@ impl ProtectedStore {
                 StorageStatus::Protected { .. } => {
                     // Explicit application configuration, not a hidden fallback or
                     // a key cache. Provider/Agent objects never read this variable.
-                    let store = if let Some(path) = std::env::var_os("XANA_STORAGE_RECOVERY_KEY") {
-                        let identity = read_recovery_identity(Path::new(&path))?;
-                        Self::open_recovery(data_dir, &identity, false)?
-                    } else {
-                        Self::open(data_dir, &OsCustody)?
-                    };
+                    let store = Self::configured_inspection(data_dir)?
+                        .context("protected storage changed during open")?;
                     {
                         let mut guard = store
                             .inner
@@ -145,6 +141,24 @@ impl ProtectedStore {
         bail!(
             "protected schema changed repeatedly during upgrade; reopen after lifecycle work finishes"
         )
+    }
+
+    /// Capture the existing configured custody without upgrading, unlocking, or
+    /// starting a writer. Subsequent reads must reuse this revocable handle.
+    pub(crate) fn configured_inspection(data_dir: &Path) -> Result<Option<Self>> {
+        match Self::status(data_dir)? {
+            StorageStatus::Legacy => Ok(None),
+            StorageStatus::Protected { locked: true, .. } => bail!("protected storage is locked"),
+            StorageStatus::Protected { .. } => {
+                let store = if let Some(path) = std::env::var_os("XANA_STORAGE_RECOVERY_KEY") {
+                    let identity = read_recovery_identity(Path::new(&path))?;
+                    Self::open_recovery(data_dir, &identity, false)?
+                } else {
+                    Self::open(data_dir, &OsCustody)?
+                };
+                Ok(Some(store))
+            }
+        }
     }
 
     pub(crate) fn status(data_dir: &Path) -> Result<StorageStatus> {

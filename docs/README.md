@@ -180,6 +180,10 @@ state a limitation, but it does not present a proposal as an upcoming feature.
 - [Desktop development](contributing/desktop-development.md) explains the
   native GPUI package, exact dependency boundary, source launch, checks, and
   troubleshooting for the M4 Workbench.
+- [Adapter command outcomes](user/adapter-outcomes.md) describes native
+  correlation, read-only crash reconciliation and the no-replay boundary.
+- [Adapter vision](user/adapter-vision.md) describes opt-in image staging,
+  exact specialist review and durable provenance for trusted local clients.
 - [Loaded-client fixture](../scripts/loaded-client-fixture.md) prepares an
   isolated synthetic history and streaming provider for TUI/Desktop acceptance.
   It separates automated storage/protocol checks from native interaction evidence.

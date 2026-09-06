@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 use uuid::Uuid;
 
-pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 13;
+pub(crate) const FRONTEND_PROTOCOL_VERSION: u16 = 14;
 const MAX_SNAPSHOT_MESSAGES: usize = 512;
 const MAX_SNAPSHOT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
@@ -70,6 +70,16 @@ impl ClientCommand {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum ClientCommandValue {
+    SubmitDerivedTurn {
+        operation_id: OperationId,
+        input: String,
+        owner_input: String,
+    },
+    SubmitCorrelatedTurn {
+        binding: crate::operation::adapter::DesktopCommandKey,
+        input: String,
+        images: Vec<ImageRef>,
+    },
     SubmitFiniteTurn {
         operation_id: OperationId,
         input: String,
@@ -128,6 +138,24 @@ pub(crate) enum ClientCommandValue {
 impl From<RuntimeCommand> for ClientCommandValue {
     fn from(command: RuntimeCommand) -> Self {
         match command {
+            RuntimeCommand::SubmitDerivedTurn {
+                operation_id,
+                input,
+                owner_input,
+            } => Self::SubmitDerivedTurn {
+                operation_id,
+                input,
+                owner_input,
+            },
+            RuntimeCommand::SubmitCorrelatedTurn {
+                binding,
+                input,
+                images,
+            } => Self::SubmitCorrelatedTurn {
+                binding,
+                input,
+                images,
+            },
             RuntimeCommand::SubmitFiniteTurn {
                 operation_id,
                 input,
@@ -218,6 +246,24 @@ impl From<RuntimeCommand> for ClientCommandValue {
 impl From<ClientCommandValue> for RuntimeCommand {
     fn from(command: ClientCommandValue) -> Self {
         match command {
+            ClientCommandValue::SubmitDerivedTurn {
+                operation_id,
+                input,
+                owner_input,
+            } => Self::SubmitDerivedTurn {
+                operation_id,
+                input,
+                owner_input,
+            },
+            ClientCommandValue::SubmitCorrelatedTurn {
+                binding,
+                input,
+                images,
+            } => Self::SubmitCorrelatedTurn {
+                binding,
+                input,
+                images,
+            },
             ClientCommandValue::SubmitFiniteTurn {
                 operation_id,
                 input,
@@ -310,7 +356,9 @@ impl ClientCommandValue {
         match self {
             Self::BrowserControl { .. } => "browser.control.v1",
             Self::SubmitTurn { .. } => "turn.submit.v1",
+            Self::SubmitDerivedTurn { .. } => "turn.submit.v1",
             Self::SubmitFiniteTurn { .. } => "turn.submit.v1",
+            Self::SubmitCorrelatedTurn { .. } => "turn.submit.v1",
             Self::ClearConversation => "conversation.clear.v1",
             Self::CompactConversation { .. } => "conversation.compact.v1",
             Self::ResumeOperation { .. } => "run.resume.v1",
@@ -350,6 +398,22 @@ impl ClientCommandValue {
         }
         if let Self::SubmitFiniteTurn { contract, .. } = self {
             contract.validate().map_err(|error| error.to_string())?;
+        }
+        if let Self::SubmitDerivedTurn {
+            input, owner_input, ..
+        } = self
+            && (input.trim().is_empty() || owner_input.trim().is_empty())
+        {
+            return Err("derived turns require the original authored input".into());
+        }
+        if let Self::SubmitCorrelatedTurn {
+            binding, images, ..
+        } = self
+        {
+            binding.validate().map_err(|error| error.to_string())?;
+            if images.len() > 8 {
+                return Err("a frontend turn may contain at most 8 images".into());
+            }
         }
         Ok(())
     }
@@ -1103,6 +1167,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::ConversationCompacted { .. } => "conversation compacted",
         AgentEvent::CompactionUnavailable { .. } => "compaction unavailable",
         AgentEvent::CommandRejected { .. } => "command rejection",
+        AgentEvent::TurnStartUnavailable { .. } => "turn start unavailable",
         AgentEvent::ChildLifecycleChanged { .. } => "child lifecycle",
         AgentEvent::ChildActivity { .. } => "child activity",
         AgentEvent::ChildReportCommitted { .. } => "child report",

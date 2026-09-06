@@ -46,6 +46,14 @@ cargo run --locked -p xana-desktop -- --catalog
 The catalog is deterministic and intentionally separate from final Workbench
 layout approval. See [Desktop visual system and component ownership](desktop-visual-system.md).
 
+For a non-GPUI local client, the repository-private `xana::desktop` facade also
+offers [durable command correlation](../user/adapter-outcomes.md) and
+[governed image turns](../user/adapter-vision.md). Use the matching workspace
+revision; this is not a remotely accessible or stable third-party SDK. These
+opt-in methods do not change the Workbench's ordinary submit/attachment flow.
+Outcome reads belong on a background executor, and an outcome is never
+permission to repeat an uncertain external effect.
+
 ## Required checks
 
 ```bash

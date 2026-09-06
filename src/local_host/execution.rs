@@ -445,7 +445,13 @@ async fn execute_native_command(
             "attached controllers cannot shut down the foreground host",
         );
     }
-    let starts_turn = matches!(command.value, ClientCommandValue::SubmitTurn { .. });
+    let starts_turn = matches!(
+        command.value,
+        ClientCommandValue::SubmitTurn { .. }
+            | ClientCommandValue::SubmitDerivedTurn { .. }
+            | ClientCommandValue::SubmitCorrelatedTurn { .. }
+            | ClientCommandValue::SubmitFiniteTurn { .. }
+    );
     if starts_turn && state.root_lease.is_none() {
         match workspace_host
             .acquire_foreground_root(conversation.clone())
@@ -502,7 +508,7 @@ async fn fail_closed_native(owner: &EmbeddedOwner, state: &mut NativeExecutionSt
 #[cfg(test)]
 #[derive(Debug)]
 pub(crate) enum FakeExecutionEvent {
-    Command(ClientCommand),
+    Command(Box<ClientCommand>),
     FailClosed,
     Shutdown,
 }
@@ -521,7 +527,9 @@ pub(crate) fn fake_execution(
             match request {
                 ExecutionRequest::Command { command, reply } => {
                     let result = ClientCommandResult::accepted(command.id);
-                    let _ = seen.send(FakeExecutionEvent::Command(command)).await;
+                    let _ = seen
+                        .send(FakeExecutionEvent::Command(Box::new(command)))
+                        .await;
                     let _ = reply.send(result);
                     let _ = hub.publish(super::protocol::HostEvent::ObserverCommandRejected {
                         command: "fake_managed_completion".into(),

@@ -453,7 +453,8 @@ impl TuiState {
             | AgentEvent::PermissionAudited { .. }
             | AgentEvent::ChildListSnapshot { .. }
             | AgentEvent::ChildInspectionSnapshot { .. }
-            | AgentEvent::ChildCancellationRequested { .. } => {}
+            | AgentEvent::ChildCancellationRequested { .. }
+            | AgentEvent::TurnStartUnavailable { .. } => {}
         }
         if viewing_background {
             let background = self.background_messages.get_or_insert_with(VecDeque::new);

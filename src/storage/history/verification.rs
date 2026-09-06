@@ -190,7 +190,8 @@ impl ProtectedStore {
                         ensure!(context.version == u64::try_from(previous)?.checked_add(1).context("context version overflow")?, "context versions are not monotonic");
                     }
                     SessionRecord::ContextViewRegistered {view} => verify_context(&tx,id,view.source,view.source_version,sequence)?,
-                    SessionRecord::OperationAccepted {input_entry_id,..} | SessionRecord::FiniteOperationAccepted {input_entry_id,..} => ensure!(entry_metadata(&tx,id,*input_entry_id)?.1 < sequence,"operation input references a future entry"),
+                    SessionRecord::OperationAccepted {input_entry_id,..} | SessionRecord::FiniteOperationAccepted {input_entry_id,..} | SessionRecord::AdapterOperationAccepted {input_entry_id,..} => ensure!(entry_metadata(&tx,id,*input_entry_id)?.1 < sequence,"operation input references a future entry"),
+                    SessionRecord::AdapterOperationFinished { result_entry: Some(result), .. } => ensure!(entry_metadata(&tx,id,result.entry_id.to_string().parse()?)?.1 < sequence && head.as_deref() == Some(result.entry_id.to_string().as_str()),"adapter result differs from its committed head"),
                     SessionRecord::StepStarted {assistant_entry_id,..} => ensure!(entry_metadata(&tx,id,*assistant_entry_id)?.1 < sequence,"operation step references a future entry"),
                     SessionRecord::InvocationResultAppended {result} => {
                         if let crate::operation::InvocationOutcome::Completed{output}=&result.outcome { verify_value(&tx,id,output,sequence)?; }
