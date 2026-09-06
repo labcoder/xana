@@ -128,23 +128,21 @@ impl OwnedBrowser {
                 if self.inner.exited() {
                     return Err(BrowserError::Process);
                 }
-                if let Ok(bytes) = crate::bounded_file::read(&file, 4096) {
-                    if let Ok(text) = std::str::from_utf8(&bytes) {
-                        let mut lines = text.lines();
-                        if let (Some(port), Some(path)) = (
-                            lines.next().and_then(|v| v.parse::<u16>().ok()),
-                            lines.next(),
-                        ) {
-                            if port != 0
-                                && path.starts_with("/devtools/browser/")
-                                && path.len() < 256
-                                && path
-                                    .bytes()
-                                    .all(|c| c.is_ascii_alphanumeric() || b"/-".contains(&c))
-                            {
-                                return Ok(format!("ws://127.0.0.1:{port}{path}"));
-                            }
-                        }
+                if let Ok(bytes) = crate::bounded_file::read(&file, 4096)
+                    && let Ok(text) = std::str::from_utf8(&bytes)
+                {
+                    let mut lines = text.lines();
+                    if let (Some(port), Some(path)) = (
+                        lines.next().and_then(|v| v.parse::<u16>().ok()),
+                        lines.next(),
+                    ) && port != 0
+                        && path.starts_with("/devtools/browser/")
+                        && path.len() < 256
+                        && path
+                            .bytes()
+                            .all(|c| c.is_ascii_alphanumeric() || b"/-".contains(&c))
+                    {
+                        return Ok(format!("ws://127.0.0.1:{port}{path}"));
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -165,7 +163,7 @@ impl OwnedBrowser {
             let path = &self.profile;
             // Only remove the exact fresh directory allocated by this owner.
             // Never follow a replacement symlink or recurse through a broad root.
-            let metadata = std::fs::symlink_metadata(&path).map_err(|_| BrowserError::Process)?;
+            let metadata = std::fs::symlink_metadata(path).map_err(|_| BrowserError::Process)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
                 return Err(BrowserError::Process);
             }

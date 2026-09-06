@@ -56,8 +56,12 @@ Terminal and TUI chat expose the same owner operations as `/autonomy ...`;
 their command palette opens the bounded overview. Long-running `host run` and
 `host observe` belong in a dedicated CLI process. Desktop's **Schedules** panel
 provides the same creation, inspection, pause/resume/cancel, and host controls.
-Desktop creation requires an exact preview and confirmation; changing the draft
-or resolved route invalidates that preview. Disk and configuration work happens
+Choose **Once**, **Daily**, **Selected files**, or **GitHub run** in Desktop's
+creation form. CI accepts an environment-variable name or stored credential ID,
+never a token pasted into this form. Preview does not contact GitHub or fetch
+the credential. Desktop creation requires an exact preview and confirmation;
+changing the draft, resolved route, credential reference or watched-root identity
+invalidates that preview. Disk and configuration work happens
 outside the UI thread. Refresh after edits to obtain the new revision.
 
 ## Selected files and named CI runs

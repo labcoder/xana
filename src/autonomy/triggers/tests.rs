@@ -161,7 +161,7 @@ fn selected_scope_refuses_state_overlap_and_outside_roots() {
             &store,
             &job.scope.workspace,
             &job.scope.workspace,
-            &[job.scope.workspace.clone()]
+            std::slice::from_ref(&job.scope.workspace)
         )
         .is_err()
     );

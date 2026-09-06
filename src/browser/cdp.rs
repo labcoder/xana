@@ -135,10 +135,10 @@ impl Cdp {
                     if let Some(error) = state.failure {
                         return Err(error);
                     }
-                    if let Some(session) = state.sessions.get(target) {
-                        if state.configured.contains(session) {
-                            return Ok(session.clone());
-                        }
+                    if let Some(session) = state.sessions.get(target)
+                        && state.configured.contains(session)
+                    {
+                        return Ok(session.clone());
                     }
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;

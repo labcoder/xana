@@ -161,7 +161,7 @@ pub(crate) enum EspejoViewEvent {
         needs_attention: bool,
     },
     OpenDiagnostics,
-    OpenScheduled(xana::desktop::DesktopScheduledTask),
+    OpenScheduled(Box<xana::desktop::DesktopScheduledTask>),
     OpenScheduledId(String),
 }
 

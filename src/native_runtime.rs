@@ -353,10 +353,10 @@ impl RuntimeHandle {
         if let RuntimeCommand::BrowserControl { action } = command {
             return self.browser_control(action).await;
         }
-        if matches!(command, RuntimeCommand::Shutdown) {
-            if let Some(browser) = &self.browser {
-                browser.request_shutdown();
-            }
+        if matches!(command, RuntimeCommand::Shutdown)
+            && let Some(browser) = &self.browser
+        {
+            browser.request_shutdown();
         }
         self.commands
             .send(command)

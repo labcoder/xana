@@ -1254,8 +1254,9 @@ impl Workbench {
             EspejoViewEvent::OpenDiagnostics => self.open_diagnostics(window, cx),
             EspejoViewEvent::OpenScheduled(task) => {
                 self.navigation = DesktopNavigationTarget::Conversation;
-                self.autonomy_view
-                    .update(cx, |view, cx| view.review_task(task.clone(), window, cx));
+                self.autonomy_view.update(cx, |view, cx| {
+                    view.review_task(task.as_ref().clone(), window, cx)
+                });
                 self.reopen_layout_panel(DesktopPanelId::Schedules, window, cx);
             }
             EspejoViewEvent::OpenScheduledId(id) => {

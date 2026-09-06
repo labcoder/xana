@@ -119,17 +119,16 @@ pub(super) async fn run(
                 {
                     continue;
                 }
-                if let Some(session) = value["sessionId"].as_str() {
-                    if let Some(epoch) = sender
+                if let Some(session) = value["sessionId"].as_str()
+                    && let Some(epoch) = sender
                         .shared
                         .state
                         .lock()
                         .expect("browser transport")
                         .epochs
                         .get_mut(session)
-                    {
-                        *epoch = epoch.saturating_add(1);
-                    }
+                {
+                    *epoch = epoch.saturating_add(1);
                 }
             }
             Some("Page.lifecycleEvent")

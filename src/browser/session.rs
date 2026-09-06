@@ -358,15 +358,14 @@ impl BrowserOwner {
                 {
                     return Err(BrowserError::TakenOver);
                 }
-                if live.started.elapsed().as_secs() >= MAX_TASK_SECONDS
-                    || live.actions >= MAX_ACTIONS
-                {
-                    if !matches!(
+                if (live.started.elapsed().as_secs() >= MAX_TASK_SECONDS
+                    || live.actions >= MAX_ACTIONS)
+                    && !matches!(
                         request,
                         BrowserRequest::Close {} | BrowserRequest::Takeover {}
-                    ) {
-                        return Err(BrowserError::Limit);
-                    }
+                    )
+                {
+                    return Err(BrowserError::Limit);
                 }
             }
         }
@@ -385,10 +384,10 @@ impl BrowserOwner {
                 {
                     return Err(BrowserError::InvalidInput);
                 }
-                if let BrowserEffect::Fill { text } = effect {
-                    if text.len() > 4096 || text.chars().any(|c| c == '\0') {
-                        return Err(BrowserError::Limit);
-                    }
+                if let BrowserEffect::Fill { text } = effect
+                    && (text.len() > 4096 || text.chars().any(|c| c == '\0'))
+                {
+                    return Err(BrowserError::Limit);
                 }
             }
             _ => {}
@@ -449,12 +448,10 @@ impl BrowserOwner {
         if !matches!(
             plan.request,
             BrowserRequest::Close {} | BrowserRequest::Takeover {} | BrowserRequest::Resume {}
-        ) {
-            if let (Some(live), Some(epoch)) = (slot.as_ref(), plan.epoch) {
-                if live.page.epoch()? != epoch {
-                    return Err(BrowserError::Stale);
-                }
-            }
+        ) && let (Some(live), Some(epoch)) = (slot.as_ref(), plan.epoch)
+            && live.page.epoch()? != epoch
+        {
+            return Err(BrowserError::Stale);
         }
         let launch_id = matches!(plan.request, BrowserRequest::Launch { .. }).then(Uuid::new_v4);
         let mut receipt = BrowserReceipt {

@@ -102,7 +102,9 @@ impl Render for ScheduledWorkView {
             .children(self.snapshot.iter().flat_map(|s|s.jobs.iter()).filter(|job|in_scope(job,&self.scope)).map(|job| {
                 let task=job.clone();
                 Button::new(gpui::SharedString::from(format!("espejo-work-{}",job.id))).label(format!("{} · {} · {} · next {} · {}",job.group.label(),job.name,job.trigger,job.next_at,job.receipt.unwrap_or("No execution receipt")))
-                    .disabled(self.busy).on_click(cx.listener(move|_,_,_,cx|cx.emit(EspejoViewEvent::OpenScheduled(task.clone()))))
+                    .disabled(self.busy).on_click(cx.listener(move |_, _, _, cx| {
+                        cx.emit(EspejoViewEvent::OpenScheduled(Box::new(task.clone())));
+                    }))
             }))
     }
 }
