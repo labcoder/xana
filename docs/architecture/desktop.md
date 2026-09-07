@@ -45,7 +45,11 @@ private atomic descriptor contains only protocol versions, canonical instance
 root, loopback endpoint, process ID, and a random 256-bit capability. Payloads
 and queues are bounded, and neither arbitrary commands nor paths cross this
 process boundary. An explicit primary-process workspace path never enters the
-forwarding protocol.
+forwarding protocol. The dedicated forwarding worker explicitly configures
+accepted sockets for blocking framed I/O with two-second read/write timeouts,
+independent of inherited listener flags. A fragmented TCP frame is not a
+rejection; only a complete, validated request may enter the bounded intent
+queue. Failure to configure the socket closes it without admitting an intent.
 
 The runtime also owns a bounded Desktop navigation projection assembled from
 the Project store and each available workspace host. It exposes Projects,

@@ -339,8 +339,17 @@ fn handle_connection(
     sender: &mpsc::SyncSender<DesktopLaunchIntent>,
     update_signal: &DesktopWakeSignal,
 ) {
-    let _ = stream.set_read_timeout(Some(IO_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(IO_TIMEOUT));
+    // An accepted socket may inherit the listener's nonblocking mode on BSD
+    // and Windows. Framed reads need bounded blocking I/O on this worker, or
+    // an ordinary split TCP frame is rejected before its remaining bytes arrive.
+    if stream
+        .set_nonblocking(false)
+        .and_then(|()| stream.set_read_timeout(Some(IO_TIMEOUT)))
+        .and_then(|()| stream.set_write_timeout(Some(IO_TIMEOUT)))
+        .is_err()
+    {
+        return;
+    }
     let request = read_frame(&mut stream).and_then(|bytes| {
         serde_json::from_slice::<ForwardRequest>(&bytes)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
@@ -651,37 +660,49 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let home = root.path().to_owned();
         let start = Arc::new(Barrier::new(LAUNCHES + 1));
-        let finish = Arc::new(Barrier::new(LAUNCHES + 1));
         let (sender, receiver) = mpsc::channel();
         let threads = (0..LAUNCHES)
             .map(|_| {
                 let home = home.clone();
                 let start = start.clone();
-                let finish = finish.clone();
                 let sender = sender.clone();
                 thread::spawn(move || {
                     start.wait();
-                    let claim = launch(&home)
-                        .claim_instance(DesktopLaunchIntent::Focus)
-                        .unwrap();
+                    let claim = launch(&home).claim_instance(DesktopLaunchIntent::Focus);
+                    // The coordinator retains the lease until every launch
+                    // settles, including errors; no finish barrier can strand
+                    // the primary after a secondary fails.
                     sender
-                        .send(matches!(claim, DesktopInstanceClaim::Primary(_)))
-                        .unwrap();
-                    finish.wait();
-                    drop(claim);
+                        .send(claim)
+                        .unwrap_or_else(|_| panic!("launch coordinator disappeared"));
                 })
             })
             .collect::<Vec<_>>();
         start.wait();
-        let primary_count = (0..LAUNCHES)
-            .map(|_| receiver.recv_timeout(IO_TIMEOUT).unwrap())
-            .filter(|primary| *primary)
-            .count();
-        finish.wait();
+        drop(sender);
+        let claims = (0..LAUNCHES)
+            .map(|_| receiver.recv_timeout(IO_TIMEOUT * 4))
+            .collect::<Result<Vec<_>, _>>();
         for thread in threads {
             thread.join().unwrap();
         }
-        assert_eq!(primary_count, 1);
+        let claims = claims
+            .expect("all bounded launch attempts must settle")
+            .into_iter()
+            .map(|claim| claim.unwrap_or_else(|error| panic!("concurrent launch failed: {error}")))
+            .collect::<Vec<_>>();
+        let primaries = claims
+            .iter()
+            .filter_map(|claim| match claim {
+                DesktopInstanceClaim::Primary(primary) => Some(primary),
+                DesktopInstanceClaim::Forwarded => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(primaries.len(), 1);
+        for _ in 1..LAUNCHES {
+            assert_eq!(primaries[0].try_next(), Some(DesktopLaunchIntent::Focus));
+        }
+        assert!(primaries[0].try_next().is_none());
     }
 
     #[test]
@@ -703,6 +724,81 @@ mod tests {
             .expect("bounded rejection response");
         assert!(!response.accepted);
         assert!(primary.try_next().is_none());
+    }
+
+    #[test]
+    fn fragmented_forwarding_waits_for_a_complete_frame_on_nonblocking_accept() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        // Force the inherited BSD/Windows mode on every test platform.
+        server.set_nonblocking(true).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let request = ForwardRequest {
+            version: FORWARD_PROTOCOL_VERSION,
+            capability: "test capability".to_owned(),
+            intent: DesktopLaunchIntent::Focus,
+        };
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &serde_json::to_vec(&request).unwrap()).unwrap();
+        client.write_all(&frame[..2]).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(FORWARD_CAPACITY);
+        let (started, ready) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            started.send(()).unwrap();
+            handle_connection(
+                server,
+                "test capability",
+                &sender,
+                &DesktopWakeSignal::default(),
+            );
+        });
+        ready.recv_timeout(IO_TIMEOUT).unwrap();
+        // A partial length prefix and a partial JSON body must both wait for
+        // the rest, rather than emitting a premature rejection response.
+        for fragment in [&frame[2..7], &frame[7..]] {
+            let error = client.peek(&mut [0_u8; 1]).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ));
+            client.write_all(fragment).unwrap();
+        }
+        client.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+        let response: ForwardResponse =
+            serde_json::from_slice(&read_frame(&mut client).unwrap()).unwrap();
+        worker.join().unwrap();
+        assert_eq!(response.version, FORWARD_PROTOCOL_VERSION);
+        assert!(response.accepted);
+        assert_eq!(receiver.try_recv().unwrap(), DesktopLaunchIntent::Focus);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    #[test]
+    fn incomplete_forwarding_is_rejected_without_admission() {
+        for disconnect in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let DesktopInstanceClaim::Primary(primary) = launch(root.path())
+                .claim_instance(DesktopLaunchIntent::Focus)
+                .unwrap()
+            else {
+                panic!("first launch must own the instance")
+            };
+            let mut client = TcpStream::connect(primary.endpoint).unwrap();
+            client.set_read_timeout(Some(IO_TIMEOUT * 4)).unwrap();
+            client.write_all(&[0, 0]).unwrap();
+            if disconnect {
+                client.shutdown(Shutdown::Write).unwrap();
+            }
+            // EOF and a stalled peer both reject without admitting an intent;
+            // switching accepted sockets to blocking must retain the timeout.
+            let response: ForwardResponse =
+                serde_json::from_slice(&read_frame(&mut client).unwrap()).unwrap();
+            assert!(!response.accepted);
+            assert!(primary.try_next().is_none());
+        }
     }
 
     #[test]
