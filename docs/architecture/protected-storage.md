@@ -60,6 +60,9 @@ saves/corrections; they do not prove semantic intent or sensitivity. Default-Ask
 admits eligible reads and ordinary explicit current-Conversation saves; broader,
 sensitive, uncertain, corrective/destructive operations use exact typed memory
 review. Explicit deny and background ceilings remain authoritative.
+The advertised update schema requires the model's risk interpretation. A caller
+that nevertheless omits it is treated as uncertain and still requires review;
+an ordinary label never bypasses independent scope or correction/forget review.
 
 `storage::memory::tools` commits privacy/source/controls/revision checks and a
 metadata-only idempotent receipt atomically. Receipts are bounded to 16 updates

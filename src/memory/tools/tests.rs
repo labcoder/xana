@@ -208,6 +208,15 @@ async fn receipts_prevent_repeat_inserts_even_after_reopen_and_tool_call_id_chan
 
 #[tokio::test]
 async fn broader_sensitive_and_unspecified_risk_require_review() {
+    // Advertise the field explicitly so an otherwise valid ordinary save does
+    // not prompt merely because the model skipped an optional field. Older or
+    // malformed callers that still omit it must retain the review fallback.
+    assert!(
+        schema::update().parameters["required"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("risk"))
+    );
     let fixture = Fixture::new();
     let turn = input("Remember that I prefer blue.");
     for args in [
