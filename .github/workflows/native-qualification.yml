@@ -1,4 +1,4 @@
-name: M6 Native Qualification
+name: Native Platform Qualification
 
 # Opt-in source/custody evidence, never a publishing or every-push workload.
 on:

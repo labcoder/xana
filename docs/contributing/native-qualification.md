@@ -1,18 +1,23 @@
-# On-demand native qualification
+# Native Platform Qualification
 
 > Audience: Contributors and coding agents
 > Authority: Descriptive workflow and evidence contract
 
-**M6 Native Qualification** (`native-qualification.yml`) is an opt-in GitHub
+**Native Platform Qualification** (`native-qualification.yml`) is an opt-in GitHub
 Actions workflow. It has only `workflow_dispatch`: it does not run on pushes,
 pull requests, tags or a schedule. Ordinary **CI** still runs on main/PR changes;
 it checks this workflow's inexpensive script contracts, not its native workload.
+
+Keep this workflow as a reusable qualification lane, not a milestone-specific
+check-in. Run it when native dependencies, protected storage, platform lifecycle
+behavior or release readiness warrant fresh native evidence. It need not run
+for every change; select the reviewed revision and preserve its exact results.
 
 ## Run it
 
 1. Push the reviewed commits to `main`. A new manual workflow must exist on the
    default branch before GitHub exposes its Run workflow control.
-2. Open **Actions → M6 Native Qualification → Run workflow**, select **main**,
+2. Open **Actions → Native Platform Qualification → Run workflow**, select **main**,
    and run once. All three native jobs run independently:
 
    | Runner | Native Rust host |
