@@ -351,6 +351,43 @@ async fn scripted_tool_turn_executes_in_model_order_with_correlated_results() {
 }
 
 #[tokio::test]
+async fn memory_regression_duplicate_invalid_calls_stop_without_dispatching_more_rounds() {
+    let workspace = tempdir().unwrap();
+    let calls = (0..15).map(|index| ContentBlock::ToolCall(ToolCall {
+        id: format!("call-{index}"), name: "read_file".into(),
+        arguments: serde_json::json!({"path":"preference.txt","start_line":1,"offset_bytes":0}),
+    })).collect();
+    let (provider, requests) = ScriptedChatTransport::new(vec![ScriptedResponse {
+        deltas: Vec::new(),
+        message: Message {
+            role: Role::Assistant,
+            content: calls,
+        },
+        usage: None,
+    }]);
+    let agent = make_agent(provider, workspace.path(), 8);
+    let (operation_id, permissions, events, _receiver) = operation_services();
+    let mut history = vec![Message::text(Role::User, "What is my favorite color?")];
+    let error = agent
+        .run_turn(operation_id, &mut history, permissions, events)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("repeated tool failures"),
+        "{error:#}"
+    );
+    assert_eq!(requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        history
+            .iter()
+            .filter(|message| message.role == Role::Tool)
+            .count(),
+        15,
+        "every already committed call needs a result, including skipped calls"
+    );
+}
+
+#[tokio::test]
 async fn tool_round_limit_finishes_failed() {
     let workspace = tempdir().expect("temporary workspace");
     fs::write(workspace.path().join("note.txt"), "contents").expect("fixture");

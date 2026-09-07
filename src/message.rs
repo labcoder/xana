@@ -21,6 +21,15 @@ pub(crate) struct ToolCall {
     pub(crate) arguments: Value,
 }
 
+impl ToolCall {
+    /// Correlate attempts independently of provider IDs and JSON object key order.
+    pub(crate) fn pattern_fingerprint(&self) -> blake3::Hash {
+        let mut arguments = self.arguments.clone();
+        arguments.sort_all_objects();
+        blake3::hash(&serde_json::to_vec(&(&self.name, arguments)).expect("JSON values serialize"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ToolResultStatus {
     Success,

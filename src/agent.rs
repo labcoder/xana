@@ -4,6 +4,8 @@
 //! values. Runtime services provide operation identity, permissions, and passive
 //! events; no frontend or process-global state enters here.
 
+mod progress;
+
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
     message::{ContentBlock, Message, ToolCall},
@@ -531,6 +533,7 @@ impl Agent {
             bail!("native tool-round tranche must contain at least one round");
         }
         let definitions = self.tools.definitions();
+        let mut progress = progress::ProgressGuard::default();
         let delta_sink = EventDeltaSink {
             operation_id,
             events: events.clone(),
@@ -657,7 +660,9 @@ impl Agent {
 
             for call in calls {
                 let invocation_id = ToolInvocationId::new();
-                let result = if let Some(durable) = &durable {
+                let result = if progress.stopped() {
+                    crate::message::ToolResult::error(call.id.clone(), progress::STOP_REASON)
+                } else if let Some(durable) = &durable {
                     OperationExecutor::new(
                         &self.tools,
                         &self.workspace_root,
@@ -684,6 +689,7 @@ impl Agent {
                         )
                         .await
                 };
+                progress.observe(&call, &result);
                 let result = if durable.is_none()
                     && let Some(recorder) = &self.output_recorder
                 {
@@ -715,6 +721,9 @@ impl Agent {
                     });
                 }
                 messages.push(result_message);
+            }
+            if progress.stopped() {
+                bail!(progress::STOP_REASON);
             }
         }
 

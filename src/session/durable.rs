@@ -837,6 +837,33 @@ impl DurableSession {
         self.restored.operation_details.get(&operation_id).cloned()
     }
 
+    /// Count requested calls, including rejected preparation, without inventing effects.
+    pub(crate) fn repeated_tool_patterns(&self, operation_id: OperationId) -> u32 {
+        let Some(operation) = self.restored.operation_details.get(&operation_id) else {
+            return 0;
+        };
+        let mut patterns = std::collections::BTreeMap::<[u8; 32], u32>::new();
+        let mut repeats = 0_u32;
+        for entry in operation
+            .steps
+            .values()
+            .filter_map(|id| self.restored.entries.get(id))
+        {
+            for block in &entry.message.content {
+                if let crate::message::ContentBlock::ToolCall(call) = block {
+                    let count = patterns
+                        .entry(*call.pattern_fingerprint().as_bytes())
+                        .or_default();
+                    if *count > 0 {
+                        repeats = repeats.saturating_add(1);
+                    }
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        repeats
+    }
+
     pub(crate) fn round_budget_suspension(
         &self,
     ) -> Option<crate::native_runtime::RoundBudgetSuspension> {

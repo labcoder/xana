@@ -39,7 +39,7 @@ use crate::{
 };
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
-use std::{collections::BTreeMap, error::Error, fmt, future::Future, sync::Arc};
+use std::{error::Error, fmt, future::Future, sync::Arc};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -1322,7 +1322,10 @@ impl Runtime {
                         results: usize_to_u32(operation.results.len()),
                     }
                 });
-        let repeated_tool_patterns = operation.as_ref().map_or(0, repeated_tool_pattern_count);
+        let repeated_tool_patterns = self
+            .session
+            .as_ref()
+            .map_or(0, |session| session.repeated_tool_patterns(operation_id));
         let (rounds_consumed, remaining_rounds, allowed_actions) =
             root_round_budget(rounds_consumed);
         RoundBudgetSuspension {
@@ -1917,26 +1920,6 @@ impl RoundBudgetCommitFacts {
             results: 0,
         }
     }
-}
-
-fn repeated_tool_pattern_count(operation: &crate::session::RestoredOperation) -> u32 {
-    let mut patterns = BTreeMap::<String, u32>::new();
-    for invocation_id in &operation.invocation_order {
-        let Some(intent) = operation.intents.get(invocation_id) else {
-            continue;
-        };
-        let Ok(pattern) = serde_json::to_string(&(&intent.target, &intent.final_arguments)) else {
-            continue;
-        };
-        patterns
-            .entry(pattern)
-            .and_modify(|count| *count = count.saturating_add(1))
-            .or_insert(1);
-    }
-    patterns
-        .values()
-        .map(|count| count.saturating_sub(1))
-        .fold(0, u32::saturating_add)
 }
 
 fn usize_to_u32(value: usize) -> u32 {
