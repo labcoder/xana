@@ -36,11 +36,19 @@ pub(crate) enum ToolResultStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ToolFailure {
+    PermissionDenied,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ToolResult {
     pub(crate) call_id: String,
     pub(crate) output: String,
     pub(crate) status: ToolResultStatus,
+    /// Set by the permission boundary, never inferred from tool output text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) failure: Option<ToolFailure>,
     /// Registered immutable evidence, never inferred from provider text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) artifact: Option<Box<crate::artifact::ArtifactRecord>>,
@@ -55,6 +63,7 @@ impl ToolResult {
             call_id: call_id.into(),
             output: output.into(),
             status: ToolResultStatus::Success,
+            failure: None,
             artifact: None,
             command_status: None,
         }
@@ -65,8 +74,16 @@ impl ToolResult {
             call_id: call_id.into(),
             output: output.into(),
             status: ToolResultStatus::Error,
+            failure: None,
             artifact: None,
             command_status: None,
+        }
+    }
+
+    pub(crate) fn denied(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            failure: Some(ToolFailure::PermissionDenied),
+            ..Self::error(call_id, output)
         }
     }
 }

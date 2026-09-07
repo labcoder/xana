@@ -661,8 +661,25 @@ same unresolved suspension identity rather than silently continuing. Stale,
 duplicate, mismatched, or disallowed decisions are rejected. A crash after a
 Continue decision has committed leaves explicit unfinished running work; the
 normal operation-recovery boundary can terminate it as interrupted but never
-replays another provider or tool call automatically. Repeated tool patterns
-are evidence only and do not create a hidden automatic loop policy.
+replays another provider or tool call automatically. The suspension's repetition
+metric includes requested calls rejected during preparation, not only execution
+intents. A separate, enforced no-progress guard fails a native turn after three
+matching failed calls in a 32-failure window or six consecutive tool errors.
+Successful work resets the consecutive-error count and matching failure history;
+successful polling and distinct successful pages do not trip the guard. The
+guard reconstructs from the current owner turn on tranche continuation. Remaining
+calls in an already-committed batch receive correlated skipped/error results, not
+effects or an invented successful answer. A new owner turn resets this guard.
+
+Permission denials are typed outcomes, not parsed tool prose. The broker also
+suppresses re-asking for the same operation and normalized prepared request,
+including omitted/null defaults and reordered object keys. It retains at most
+1,024 denial hashes per broker lifetime; at capacity, new Ask requests fail
+closed rather than evicting a denial. This is separate from session allow grants.
+Unfinished-operation audits and intents seed these denials on runtime restart;
+completed-operation audits leave the bounded execution projection. An older
+checkpoint's retained intents also preserve denial authority. Historical allow
+decisions never become new allow grants.
 
 The provider-neutral conversation model carries ordered text, image,
 tool-call, and tool-result content. Provider request and response shapes remain

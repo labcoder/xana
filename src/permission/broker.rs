@@ -6,13 +6,18 @@ use crate::{
     identity::{OperationId, ToolInvocationId},
     native_runtime::{AgentEvent, AgentEventSender, OperationState},
 };
-use std::{collections::HashMap, error::Error, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    error::Error,
+    fmt,
+};
 use tokio::{
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
 type PermissionKey = (OperationId, ToolInvocationId);
+const MAX_DENIALS: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Authorization {
@@ -28,6 +33,9 @@ pub(crate) struct PermissionBrokerHandle {
 pub(crate) struct PermissionBroker {
     policy: PermissionPolicy,
     grants: SessionGrants,
+    // Exact prepared requests, not provider IDs or raw/default argument spellings.
+    // Bounded for long-lived clients; exhaustion closes the Ask lane, not policy.
+    denials: HashSet<blake3::Hash>,
     pending: HashMap<PermissionKey, PendingRequest>,
     controller_present: bool,
     events: AgentEventSender,
@@ -66,27 +74,41 @@ impl PermissionBroker {
         controller_present: bool,
         events: impl Into<AgentEventSender>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
-        Self::spawn_with_audit_events(policy, controller_present, events.into(), true)
+        Self::spawn_with_audit_events(policy, controller_present, events.into(), true, [])
     }
 
-    pub(crate) fn spawn_for_durable_runtime(
+    pub(crate) fn spawn_for_durable_runtime<'a>(
         policy: PermissionPolicy,
         controller_present: bool,
         events: impl Into<AgentEventSender>,
+        committed: impl IntoIterator<Item = &'a PermissionAuditFact>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
-        Self::spawn_with_audit_events(policy, controller_present, events.into(), false)
+        Self::spawn_with_audit_events(policy, controller_present, events.into(), false, committed)
     }
 
-    fn spawn_with_audit_events(
+    fn spawn_with_audit_events<'a>(
         policy: PermissionPolicy,
         controller_present: bool,
         events: AgentEventSender,
         emit_audit_events: bool,
+        committed: impl IntoIterator<Item = &'a PermissionAuditFact>,
     ) -> (PermissionBrokerHandle, JoinHandle<()>) {
+        let mut denials = HashSet::new();
+        for fact in committed {
+            if fact.effective == PolicyDecision::Deny
+                && fact.controller_decision == Some(ControllerDecision::Deny)
+            {
+                denials.insert(denial_key(&fact.request));
+                if denials.len() == MAX_DENIALS {
+                    break;
+                }
+            }
+        }
         let (sender, receiver) = mpsc::unbounded_channel();
         let broker = Self {
             policy,
             grants: SessionGrants::default(),
+            denials,
             pending: HashMap::new(),
             controller_present,
             events,
@@ -135,6 +157,18 @@ impl PermissionBroker {
     fn authorize(&mut self, request: PermissionRequest, reply: oneshot::Sender<Authorization>) {
         let evaluation = self.policy.evaluate(&request, &self.grants);
         let policy_evaluation = evaluation.policy_decision();
+        if self.denials.contains(&denial_key(&request))
+            || (matches!(evaluation, Evaluation::Ask { .. }) && self.denials.len() >= MAX_DENIALS)
+        {
+            self.finish_immediate(
+                request,
+                policy_evaluation,
+                None,
+                PolicyDecision::Deny,
+                reply,
+            );
+            return;
+        }
         match evaluation {
             Evaluation::Denied { .. } => {
                 self.finish_immediate(
@@ -278,6 +312,9 @@ impl PermissionBroker {
                 PolicyDecision::Allow
             }
         };
+        if effective == PolicyDecision::Deny && self.denials.len() < MAX_DENIALS {
+            self.denials.insert(denial_key(&pending.request));
+        }
         let _ = self.events.send(AgentEvent::OperationStateChanged {
             operation_id,
             state: OperationState::Running,
@@ -320,6 +357,20 @@ impl PermissionBroker {
             );
         }
     }
+}
+
+fn denial_key(request: &PermissionRequest) -> blake3::Hash {
+    let mut value = serde_json::to_value((
+        request.operation_id,
+        &request.tool_name,
+        request.effect_class,
+        &request.scope,
+        &request.final_arguments,
+        &request.outbound_review,
+    ))
+    .expect("permission requests serialize");
+    value.sort_all_objects();
+    blake3::hash(&serde_json::to_vec(&value).expect("JSON values serialize"))
 }
 
 impl PermissionBrokerHandle {

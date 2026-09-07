@@ -285,11 +285,12 @@ impl RuntimeHandle {
         let (conversation_committer, conversation_commits) = ConversationCommitSender::channel();
         let (durable_operation_sender, durable_operations) = DurableOperationSender::channel();
         let (child_commit_sender, child_commits) = ChildCommitSender::channel();
-        let (permissions, _broker_task) = if session.is_some() {
+        let (permissions, _broker_task) = if let Some(session) = &session {
             PermissionBroker::spawn_for_durable_runtime(
                 policy,
                 controller_present,
                 broker_event_sender,
+                session.unfinished_permission_evidence(),
             )
         } else {
             PermissionBroker::spawn(policy, controller_present, broker_event_sender)

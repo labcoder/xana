@@ -7,6 +7,14 @@ read, write, or execute. The broker combines the configured default, matching
 user-owned rules, and memory-only session grants. Tools and model output cannot
 approve themselves.
 
+A denied native request is not automatically presented for approval again in
+the same operation. The broker compares normalized prepared arguments and scope,
+so a different call ID or adding an omitted `null` does not create another prompt.
+A genuinely new owner turn can ask again. These denial records are separate from
+session allow grants. The bounded broker can retain 1,024 distinct denials; if
+full, further Ask requests fail closed until a fresh runtime is opened.
+Repeated tool errors also trigger the [no-progress guard](workspace-tools.md#when-tools-make-no-progress).
+
 ## Default modes
 
 `permission_mode` is required and applies when no rule matches:

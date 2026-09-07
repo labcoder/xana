@@ -53,6 +53,16 @@ not the file's size: a three-byte file can use a 4,096-byte capacity or just
 `{"path":"notes.txt"}`. Line reads enforce the cap while reading chunks, even
 when a file contains a very long line.
 
+## When tools make no progress
+
+Xana stops a native turn after three matching failed calls in its recent
+32-failure window, or six consecutive tool errors. This includes invalid
+arguments rejected before execution. Continuation does not reset the guard;
+a new message does. Unexecuted calls in a committed batch receive error results
+so history remains consistent. Correct the reported error before retrying.
+Successful reads of different pages and successful polling are not blocked by
+this failure guard. A failure is not presented as a completed answer.
+
 ## Create and edit
 
 `write_file` always requires `mode = "create"` or `mode = "overwrite"`.

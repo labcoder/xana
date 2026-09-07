@@ -309,7 +309,7 @@ impl<'a> OperationExecutor<'a> {
         let (tool_result, outcome) = if matches!(authorization, Authorization::Denied(_)) {
             let reason = format!("permission denied for tool {:?}", planned.definition.name);
             (
-                ToolResult::error(planned.call_id.clone(), reason.clone()),
+                ToolResult::denied(planned.call_id.clone(), reason.clone()),
                 InvocationOutcome::Declined {
                     reason: bounded_diagnostic(reason),
                 },

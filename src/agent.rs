@@ -533,7 +533,10 @@ impl Agent {
             bail!("native tool-round tranche must contain at least one round");
         }
         let definitions = self.tools.definitions();
-        let mut progress = progress::ProgressGuard::default();
+        let mut progress = progress::ProgressGuard::from_history(messages);
+        if progress.stopped() {
+            bail!(progress::STOP_REASON);
+        }
         let delta_sink = EventDeltaSink {
             operation_id,
             events: events.clone(),
@@ -660,8 +663,8 @@ impl Agent {
 
             for call in calls {
                 let invocation_id = ToolInvocationId::new();
-                let result = if progress.stopped() {
-                    crate::message::ToolResult::error(call.id.clone(), progress::STOP_REASON)
+                let result = if let Some(blocked) = progress.blocked_result(&call) {
+                    blocked
                 } else if let Some(durable) = &durable {
                     OperationExecutor::new(
                         &self.tools,

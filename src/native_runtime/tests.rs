@@ -749,6 +749,7 @@ mod completion;
 mod context_performance;
 mod core;
 mod delegation;
+mod denial_resume;
 mod derived;
 mod hardening;
 mod memory;

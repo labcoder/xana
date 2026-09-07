@@ -183,8 +183,12 @@ async fn execute_recovery_command<W: Write>(
             )
             .context("could not resolve current recovery permission policy")?;
             let (events, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
-            let (permissions, broker) =
-                PermissionBroker::spawn_for_durable_runtime(policy, true, events);
+            let (permissions, broker) = PermissionBroker::spawn_for_durable_runtime(
+                policy,
+                true,
+                events,
+                durable.unfinished_permission_evidence(),
+            );
             let actions = execute_recovery(
                 &mut durable,
                 operation_id,

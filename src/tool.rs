@@ -607,7 +607,7 @@ impl ToolRegistry {
                 RuntimeTelemetryKind::ToolDenied,
                 &call.name,
             );
-            return ToolResult::error(
+            return ToolResult::denied(
                 call.id.clone(),
                 format!("permission denied for tool {:?}", call.name),
             );

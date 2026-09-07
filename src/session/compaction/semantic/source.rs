@@ -52,6 +52,7 @@ pub(crate) fn source_messages_with_limits(
                                 call_id: result.call_id.clone(),
                                 output: preview(&result.output),
                                 status: result.status,
+                                failure: result.failure,
                                 artifact: result.artifact.clone(),
                                 command_status: result.command_status,
                             })

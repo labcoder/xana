@@ -837,6 +837,31 @@ impl DurableSession {
         self.restored.operation_details.get(&operation_id).cloned()
     }
 
+    /// Restore denial authority for unfinished work without loading historical transcripts.
+    /// Intents also cover older execution checkpoints that discarded audit projections.
+    pub(crate) fn unfinished_permission_evidence(
+        &self,
+    ) -> impl Iterator<Item = &PermissionAuditFact> {
+        self.restored
+            .audits
+            .iter()
+            .filter(|fact| {
+                self.restored
+                    .operation_details
+                    .get(&fact.request.operation_id)
+                    .is_some_and(|operation| operation.finished.is_none())
+            })
+            .chain(
+                self.restored
+                    .operation_details
+                    .values()
+                    .filter(|operation| operation.finished.is_none())
+                    .flat_map(|operation| {
+                        operation.intents.values().map(|intent| &intent.permission)
+                    }),
+            )
+    }
+
     /// Count requested calls, including rejected preparation, without inventing effects.
     pub(crate) fn repeated_tool_patterns(&self, operation_id: OperationId) -> u32 {
         let Some(operation) = self.restored.operation_details.get(&operation_id) else {

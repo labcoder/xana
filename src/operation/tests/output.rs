@@ -40,6 +40,7 @@ async fn executor_keeps_complete_evidence_inspectable_and_compactable() {
         PermissionPolicy::new(PolicyDecision::Allow, vec![], Path::new(".")).unwrap(),
         true,
         events,
+        [],
     );
     let executor = OperationExecutor::new(
         &tools,
@@ -132,6 +133,7 @@ async fn explicit_recovery_prunes_a_new_large_result_only_after_registration() {
         PermissionPolicy::new(PolicyDecision::Allow, vec![], session.workspace_root()).unwrap(),
         true,
         events,
+        [],
     );
     execute_recovery(
         &mut session,

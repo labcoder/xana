@@ -801,6 +801,7 @@ mod tests {
                 })],
             },
             Message::tool_result(ToolResult {
+                failure: None,
                 command_status: None,
                 call_id: "call-1".into(),
                 output: "answer".into(),

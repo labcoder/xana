@@ -481,6 +481,149 @@ async fn ask_is_correlated_and_allow_once_does_not_grant_the_next_invocation() {
 }
 
 #[tokio::test]
+async fn denied_prepared_read_is_not_reprompted_by_null_defaults_or_new_call_ids() {
+    let workspace = tempdir().unwrap();
+    std::fs::write(workspace.path().join("notes.txt"), "red").unwrap();
+    let tools = crate::tool::ToolRegistry::builtins_for_tests().unwrap();
+    let operation = OperationId::new();
+    let prepare = |arguments| {
+        tools
+            .plan(
+                &crate::message::ToolCall {
+                    id: ToolInvocationId::new().to_string(),
+                    name: "read_file".into(),
+                    arguments,
+                },
+                workspace.path(),
+            )
+            .unwrap()
+            .permission_request(operation, ToolInvocationId::new())
+    };
+    let first = prepare(serde_json::json!({"path":"notes.txt"}));
+    let (events, mut receiver) = mpsc::unbounded_channel();
+    let (broker, task) = PermissionBroker::spawn(
+        policy(PolicyDecision::Ask, vec![], workspace.path()),
+        true,
+        events,
+    );
+    let waiter = {
+        let broker = broker.clone();
+        let first = first.clone();
+        tokio::spawn(async move { broker.authorize(first).await })
+    };
+    assert_eq!(next_request(&mut receiver).await, first);
+    broker
+        .decide(operation, first.invocation_id, ControllerDecision::Deny)
+        .await
+        .unwrap();
+    assert!(matches!(
+        waiter.await.unwrap().unwrap(),
+        Authorization::Denied(_)
+    ));
+    let retry = prepare(serde_json::json!({"max_bytes":null,"start_line":null,"path":"notes.txt"}));
+    assert_eq!(retry.final_arguments, first.final_arguments);
+    assert!(matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), broker.authorize(retry))
+            .await
+            .unwrap()
+            .unwrap(),
+        Authorization::Denied(_)
+    ));
+    while let Ok(event) = receiver.try_recv() {
+        assert!(!matches!(event, AgentEvent::PermissionRequested { .. }));
+    }
+    let mut fresh = prepare(serde_json::json!({"path":"notes.txt"}));
+    fresh.operation_id = OperationId::new();
+    let waiter = {
+        let broker = broker.clone();
+        let fresh = fresh.clone();
+        tokio::spawn(async move { broker.authorize(fresh).await })
+    };
+    assert_eq!(next_request(&mut receiver).await, fresh);
+    broker
+        .decide(
+            fresh.operation_id,
+            fresh.invocation_id,
+            ControllerDecision::AllowOnce,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        waiter.await.unwrap().unwrap(),
+        Authorization::Allowed(_)
+    ));
+    broker.shutdown();
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn restored_denial_capacity_fails_closed_without_reusing_an_allow_grant() {
+    let workspace = tempdir().unwrap();
+    let facts: Vec<_> = (0..1024)
+        .map(|_| PermissionAuditFact {
+            request: workspace_request(workspace.path()),
+            policy_evaluation: PolicyDecision::Ask,
+            controller_decision: Some(ControllerDecision::Deny),
+            effective: PolicyDecision::Deny,
+        })
+        .collect();
+    let (events, mut receiver) = mpsc::unbounded_channel();
+    let (broker, task) = PermissionBroker::spawn_for_durable_runtime(
+        policy(PolicyDecision::Ask, vec![], workspace.path()),
+        true,
+        events,
+        &facts,
+    );
+    assert!(matches!(
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            broker.authorize(workspace_request(workspace.path()))
+        )
+        .await
+        .unwrap()
+        .unwrap(),
+        Authorization::Denied(_)
+    ));
+    assert!(
+        receiver.try_recv().is_err(),
+        "no prompt after denial capacity is exhausted"
+    );
+    broker.shutdown();
+    task.await.unwrap();
+
+    let mut allow = facts[0].clone();
+    allow.controller_decision = Some(ControllerDecision::AllowOnce);
+    allow.effective = PolicyDecision::Allow;
+    let (events, mut receiver) = mpsc::unbounded_channel();
+    let (broker, task) = PermissionBroker::spawn_for_durable_runtime(
+        policy(PolicyDecision::Ask, vec![], workspace.path()),
+        true,
+        events,
+        [&allow],
+    );
+    let waiter = {
+        let broker = broker.clone();
+        let request = allow.request.clone();
+        tokio::spawn(async move { broker.authorize(request).await })
+    };
+    let request = next_request(&mut receiver).await;
+    broker
+        .decide(
+            request.operation_id,
+            request.invocation_id,
+            ControllerDecision::Deny,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        waiter.await.unwrap().unwrap(),
+        Authorization::Denied(_)
+    ));
+    broker.shutdown();
+    task.await.unwrap();
+}
+
+#[tokio::test]
 async fn session_grant_matches_only_the_bound_tool_effect_and_scope() {
     let workspace = tempdir().expect("workspace");
     let (events, mut receiver) = mpsc::unbounded_channel();

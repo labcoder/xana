@@ -401,7 +401,7 @@ async fn explicit_recovery_reauthorizes_and_replays_safe_effect_once() {
         .expect("allow policy");
     let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
     let (permissions, broker) =
-        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender);
+        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender, []);
 
     let actions = execute_recovery(
         &mut session,
@@ -465,7 +465,7 @@ async fn accepted_operation_without_an_intent_finishes_without_an_effect() {
         .expect("allow policy");
     let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
     let (permissions, broker) =
-        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender);
+        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender, []);
 
     let actions = execute_recovery(
         &mut session,
@@ -521,7 +521,7 @@ async fn recovery_denial_and_unsafe_unknown_never_repeat_effects() {
             .expect("recovery policy");
         let (event_sender, mut events) = tokio::sync::mpsc::unbounded_channel();
         let (permissions, broker) =
-            PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender);
+            PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender, []);
 
         execute_recovery(
             &mut session,
@@ -650,7 +650,7 @@ async fn invoke_until_crash(site: CrashSite) -> (Vec<SessionRecord>, usize, Oper
         .expect("allow policy");
     let (event_sender, _events) = tokio::sync::mpsc::unbounded_channel();
     let (permissions, broker) =
-        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender);
+        PermissionBroker::spawn_for_durable_runtime(policy, true, event_sender, []);
     let observer = Arc::new(InspectingCrashObserver {
         target: site,
         session_path,

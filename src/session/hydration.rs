@@ -43,8 +43,17 @@ pub(crate) fn trim_completed(state: &mut RestoredSession) {
         !(child.handle.lifecycle.is_terminal()
             && completed.contains(&child.handle.admission.attribution.parent_operation_id))
     });
-    // Audit history is durable evidence, not an input to future transition validation.
-    state.audits.clear();
+    // An explicit denial remains authority for unfinished work after restart,
+    // including a crash after its audit but before an invocation intent. Other
+    // audit history is queried from the journal, not kept in execution memory.
+    state.audits.retain(|fact| {
+        fact.effective == crate::permission::PolicyDecision::Deny
+            && fact.controller_decision == Some(crate::permission::ControllerDecision::Deny)
+            && state
+                .operation_details
+                .get(&fact.request.operation_id)
+                .is_some_and(|operation| operation.finished.is_none())
+    });
 }
 
 /// Called only at a completed compaction/clear boundary, not between a resource
