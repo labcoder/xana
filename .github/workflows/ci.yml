@@ -22,7 +22,8 @@ jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # A cold Windows SQLCipher/OpenSSL + Desktop test build exceeds 30 minutes.
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:

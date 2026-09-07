@@ -145,6 +145,24 @@ fn plist(registration: &Registration) -> Result<Vec<u8>> {
 mod tests {
     use super::*;
     #[test]
+    fn both_native_registration_formats_quote_paths_without_shell_interpolation() {
+        let registration = Registration {
+            name: "io.github.labcoder.xana-test".into(),
+            arguments: vec![
+                "/tmp/a b/xana".into(),
+                "--home".into(),
+                "/tmp/a&b<$HOME>".into(),
+            ],
+        };
+        let desktop = String::from_utf8(desktop_entry(&registration).unwrap()).unwrap();
+        assert!(desktop.contains("Exec=\"/tmp/a b/xana\" \"--home\""));
+        assert!(desktop.contains(r"\\$HOME"));
+        let xml = String::from_utf8(plist(&registration).unwrap()).unwrap();
+        assert!(xml.contains("<string>/tmp/a&amp;b&lt;$HOME&gt;</string>"));
+        assert!(xml.contains("<key>KeepAlive</key><false/>"));
+    }
+
+    #[test]
     fn file_registration_is_create_only_and_only_removes_its_exact_entry() {
         let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "fixture.desktop", b"owned", true).unwrap();

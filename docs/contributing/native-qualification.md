@@ -72,6 +72,16 @@ Empty selections and compile-only logs cannot pass a test gate; custody must
 execute its exact test once. Failed checks do not suppress independent later
 checks, and upload runs even after failure. A cancelled/timed-out/missing gate is
 incomplete evidence, not Pass. Jobs have a two-hour limit; custody has 15 minutes.
+Ordinary CI allows up to one hour per quality job so a cold Windows
+SQLCipher/OpenSSL plus Desktop build can finish without skipping test gates.
+The native Linux lane installs Fontconfig, xkbcommon/X11 and XCB development
+libraries for actual Desktop test linking, not just `cargo check`.
+
+Protected-storage regressions include legitimate ancestor aliases (such as
+macOS `/var`), while still rejecting a symlink at the database file itself.
+The vendored-source checksum contract hashes the pinned upstream LF bytes;
+changing an expected hash to match a platform's checkout conversion is not a
+valid way to approve source drift.
 
 Only `target/native-qualification/*.log` and `*.json` are uploaded. Never expand
 this to entire target/temp/home directories: they can contain encrypted homes,

@@ -60,7 +60,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends libfontconfig1-dev dbus-daemon libglib2.0-bin gnome-keyring
+          sudo apt-get install --yes --no-install-recommends libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev dbus-daemon libglib2.0-bin gnome-keyring
 
       - name: Record environment and require the native target
         id: environment

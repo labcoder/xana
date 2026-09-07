@@ -55,7 +55,7 @@ $ciRequired = @(
     "workflow_dispatch:",
     "concurrency:",
     "cancel-in-progress: true",
-    "timeout-minutes: 30",
+    "timeout-minutes: 60",
     "ubuntu-24.04",
     "macos-15",
     "windows-2025",

@@ -64,6 +64,7 @@ function Assert-NativeWorkflow {
         'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'timeout-minutes: 120',
         'timeout-minutes: 15', 'if: always()', 'retention-days: 7',
         'target/native-qualification/*.log', 'target/native-qualification/*.json'
+        'libfontconfig1-dev', 'libxkbcommon-dev', 'libxkbcommon-x11-dev', 'libxcb1-dev'
     )) {
         if (-not $Workflow.Contains($required)) { throw "missing native workflow contract: $required" }
     }
@@ -83,6 +84,7 @@ Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'contents: read', 'c
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'checkout@[0-9a-f]{40}', 'checkout@main') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '\*\.json', '**') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '-Check custody', '-Check format') }
+Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'libxkbcommon-x11-dev', '') }
 
 # The production custody script must refuse this synthetic call before touching
 # the OS. Use Git Bash explicitly on Windows, never the Windows WSL shim.
