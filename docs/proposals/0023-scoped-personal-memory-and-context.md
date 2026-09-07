@@ -62,6 +62,30 @@ Xana, including natural-language changes through the same governed commands.
 No SQL or Markdown editor is required. Corrections apply next eligible turn;
 already-dispatched work is not silently restarted.
 
+Free-form owner language is interpreted by the conversational model through
+`memory_lookup` and `memory_update`, not an English phrase recognizer or a hidden
+pre-turn classifier. Native and supported managed adapters share a scoped service
+with immutable host-bound owner input; tool arguments cannot invent identity,
+provenance or permission. Keep deterministic CLI/UI controls for offline recovery.
+Default-Ask may admit ordinary explicit current-Conversation saves without file
+approvals; explicit deny remains authoritative. Broader, sensitive, uncertain,
+corrective and destructive changes require exact review. Source attribution is
+not a guarantee that a model understood consent; qualify semantic failures too.
+
+Lookup is bounded and respects current scope/use/privacy controls. Mutation
+rechecks source eligibility, controls and revision inside the committing
+transaction, with durable idempotent receipts. Refresh native memory context
+before the next model request after a change; never append superseded records
+to an old prompt layer. Memory already handed off to a vendor cannot be erased by
+changing a local record. An unavailable tool must not fall back to workspace files.
+
+The background learner interprets language into closed ordinary preference values
+(response detail, examples, units, theme and supported development languages).
+Only canonical values with stated whole-source attribution may auto-activate;
+arbitrary prose, uncertain/inferred claims and sensitive suggestions do not gain
+that authority. Foreground saves retire background interpretation of the same
+owner input. Do not add a helper call merely to understand an explicit save.
+
 Forgetting invalidates recall, derived selections, pending extraction and stale
 jobs. Version/suppression checks prevent automatic relearning from old sources,
 compaction, task recall or backups. Raw-history deletion is a separate operation.

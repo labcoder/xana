@@ -1,9 +1,32 @@
-# Xana Documentation
+# Xana
 
-This glossary defines the audiences and authority carried by Xana's product
-documentation.
+This glossary defines Xana's shared domain terms and documentation authority.
 
 ## Language
+
+### Personal memory
+
+**Personal memory**: Durable scoped knowledge about the user, separate from task
+history, compaction, authored instructions and permission grants.
+_Avoid_: History, user-prefs file, identity prompt
+
+**Memory scope**: The boundary in which a fact may be used: User (all eligible
+Conversations), Profile-private, Project, or one Conversation. Scope does not
+describe how the fact was acquired.
+_Avoid_: Separate global/learned stores
+
+**Stated memory**: A fact attributed to owner-authored input; **inferred memory**
+is a model's interpretation and must not silently become an owner statement.
+
+**Learned memory**: Memory proposed by the separately authorized background
+learner, with source evidence and review state. It is not synonymous with global
+User scope or with an explicit foreground save.
+
+**Memory receipt**: The result of the governed memory operation, distinguishing
+a committed change from denied, unavailable or unchanged outcomes; model prose
+alone is not evidence of persistence.
+
+### Documentation
 
 **Architecture**:
 The descriptive engineering contract for behavior and boundaries that are
