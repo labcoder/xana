@@ -288,7 +288,10 @@ impl Provider {
 impl Drop for Provider {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        self.worker.take().unwrap().join().unwrap();
+        let result = self.worker.take().unwrap().join();
+        if !thread::panicking() {
+            result.expect("vision fixture worker panicked");
+        }
     }
 }
 trait FixtureIo: Read + Write {}

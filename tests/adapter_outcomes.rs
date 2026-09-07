@@ -133,12 +133,21 @@ impl Provider {
 impl Drop for Provider {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::SeqCst);
-        self.worker.take().unwrap().join().unwrap();
+        let result = self.worker.take().unwrap().join();
+        if !thread::panicking() {
+            result.expect("provider fixture worker panicked");
+        }
     }
 }
 fn read_request(stream: &mut TcpStream) {
+    // Windows can inherit the listener's nonblocking mode. The request reader
+    // needs bounded blocking I/O; a fragmented body is not a fixture failure.
+    stream.set_nonblocking(false).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let mut bytes = Vec::new();
     let mut buffer = [0u8; 4096];
@@ -164,6 +173,41 @@ fn read_request(stream: &mut TcpStream) {
         assert!(count > 0);
         bytes.extend_from_slice(&buffer[..count]);
     }
+}
+
+#[test]
+fn fixture_reads_fragmented_requests_on_an_inherited_nonblocking_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    // Force the inherited Windows state on every platform so the regression
+    // does not pass merely because Linux happened to reset the accepted socket.
+    server.set_nonblocking(true).unwrap();
+    let reader = thread::spawn(move || read_request(&mut server));
+    thread::sleep(Duration::from_millis(30));
+    client
+        .write_all(b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 4\r\n\r\n")
+        .unwrap();
+    thread::sleep(Duration::from_millis(30));
+    client.write_all(b"test").unwrap();
+    reader.join().unwrap();
+}
+
+#[test]
+fn provider_cleanup_does_not_abort_during_an_existing_test_panic() {
+    let result = std::panic::catch_unwind(|| {
+        let _provider = Provider {
+            url: String::new(),
+            calls: Arc::new(AtomicUsize::new(0)),
+            stop: Arc::new(AtomicBool::new(false)),
+            worker: Some(thread::spawn(|| panic!("synthetic worker failure"))),
+        };
+        panic!("original test failure");
+    });
+    assert_eq!(
+        result.unwrap_err().downcast_ref::<&str>(),
+        Some(&"original test failure")
+    );
 }
 
 #[test]
