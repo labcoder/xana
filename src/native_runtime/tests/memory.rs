@@ -9,15 +9,14 @@ async fn memory_regression_plain_request_survives_runtime_restart_without_file_t
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let root = workspace.path().canonicalize().unwrap();
-    let store = ProtectedStore::initialize(
-        data.path(),
-        &RecoveryIdentity::generate(),
-        &TestCustody::default(),
-    )
-    .unwrap();
+    let recovery = RecoveryIdentity::generate();
+    let store =
+        ProtectedStore::initialize(data.path(), &recovery, &TestCustody::default()).unwrap();
+    drop(store);
     let id = crate::identity::SessionId::new();
     let requests = Arc::new(Mutex::new(Vec::new()));
     for phase in 0..2 {
+        let store = ProtectedStore::recover(data.path(), &recovery).unwrap();
         let owner = MemoryOwner::new(
             store.clone(),
             MemoryContext {
@@ -89,6 +88,7 @@ async fn memory_regression_plain_request_survives_runtime_restart_without_file_t
     assert!(system.contains("personal_memory"));
     assert!(system.contains("my favorite color is red"));
     assert!(!workspace.path().join("user_prefs").exists());
+    let store = ProtectedStore::recover(data.path(), &recovery).unwrap();
     let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
     assert!(
         restored.audits.is_empty(),

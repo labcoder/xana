@@ -34,7 +34,10 @@ pub(crate) async fn prepare(
     input: &str,
 ) -> Result<String, String> {
     let Some(owner) = owner else {
-        return Ok(input.to_owned());
+        return Ok(with_readiness(
+            crate::memory::MemoryReadiness::Unavailable,
+            input,
+        ));
     };
     let mut owner = owner.clone();
     owner.context.conversation = Some(
@@ -54,6 +57,58 @@ pub(crate) async fn prepare(
         if owner.enqueue_user_statement(uuid::Uuid::new_v4(),&input).is_err() {
             owner.store.set_document("memory/learning-receipt",br#"{"state":"pending_attention","notice":"Learning admission failed; the user turn remains available and chat can continue. Inspect memory learning-status."}"#,4096)?;
         }
-        Ok(text)
+        Ok(with_readiness(if selection.use_enabled {
+            crate::memory::MemoryReadiness::Enabled
+        } else {
+            crate::memory::MemoryReadiness::UseDisabled
+        }, &text))
     }).await.map_err(|_|"memory selection worker stopped".to_owned())?.map_err(|error|format!("{error:#}"))
+}
+
+// Current readiness travels with the existing one-text handoff. This bounded
+// runtime notice makes absence/disablement explicit without a bridge model or
+// sending a memory inventory. Codex still owns the inner loop and its context.
+fn with_readiness(readiness: crate::memory::MemoryReadiness, input: &str) -> String {
+    format!(
+        "Xana runtime context:\n{}\n{}\n\n{}",
+        readiness.notice(),
+        crate::memory::MEMORY_GUIDANCE,
+        input
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn managed_memory_readiness_is_honest_even_without_selected_facts() {
+        let conversation = ConversationId::new();
+        let unavailable = prepare(None, conversation, "hello").await.unwrap();
+        assert!(unavailable.contains(crate::memory::MemoryReadiness::Unavailable.notice()));
+        assert!(unavailable.ends_with("hello"));
+        let directory = tempfile::tempdir().unwrap();
+        let store = crate::storage::ProtectedStore::initialize(
+            directory.path(),
+            &crate::storage::RecoveryIdentity::generate(),
+            &crate::storage::TestCustody::default(),
+        )
+        .unwrap();
+        let owner = MemoryOwner::new(store, crate::memory::MemoryContext::default());
+        let enabled = prepare(Some(&owner), conversation, "hello").await.unwrap();
+        assert!(enabled.contains(crate::memory::MemoryReadiness::Enabled.notice()));
+        owner
+            .controls(
+                crate::memory::MemoryScope::Conversation(conversation.to_string().parse().unwrap()),
+                crate::memory::MemoryControlEdit {
+                    no_memory: Some(true),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let disabled = prepare(Some(&owner), conversation, "hello").await.unwrap();
+        assert!(disabled.contains(crate::memory::MemoryReadiness::UseDisabled.notice()));
+        assert!(!disabled.contains(crate::memory::MemoryReadiness::Enabled.notice()));
+        assert!(crate::context::estimate_tokens(&disabled) < 512);
+    }
 }

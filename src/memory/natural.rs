@@ -193,14 +193,21 @@ impl MemoryOwner {
                     let ambiguous = scope.is_none();
                     let record =
                         self.remember(scope.map(Ok).unwrap_or_else(narrow)?, statement, None)?;
-                    (
-                        serde_json::to_value(record)?,
-                        if ambiguous {
-                            "Remembered for this Conversation only. Should this apply everywhere? You can say move memory UUID to user; nothing was widened."
-                        } else {
-                            "Remembered in the explicitly selected scope."
-                        },
-                    )
+                    let notice = if ambiguous {
+                        format!(
+                            "Remembered for this Conversation only. To apply everywhere, say move memory {} to user.",
+                            record.id
+                        )
+                    } else {
+                        format!(
+                            "Remembered in the explicitly selected scope: {}.",
+                            record.scope
+                        )
+                    };
+                    return Ok(format!(
+                        "Xana memory control (local; no model call)\n{notice}\n{}\nMemory ID: {}",
+                        record.statement, record.id
+                    ));
                 }
                 NaturalIntent::Inspect => {
                     let eligible = self.eligible()?;

@@ -1094,6 +1094,15 @@ mod tests {
         assert_eq!(fs::read(paths.config_file()).unwrap(), before);
         assert!(!paths.cache_dir().exists());
         assert!(!paths.runtime_dir().exists());
+        let memory = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == "storage.protected")
+            .unwrap();
+        assert_eq!(memory.severity, Severity::Warning);
+        assert!(memory.evidence.contains("Personal memory is unavailable"));
+        assert!(memory.action.as_deref().unwrap().contains("preview only"));
+        assert!(!paths.data_dir().join("protected").exists());
     }
 
     #[tokio::test]

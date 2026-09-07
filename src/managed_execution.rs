@@ -178,7 +178,14 @@ pub(crate) async fn run_codex_chat(
             .map_or_else(|| "provider default".into(), |value| value.to_string())
     );
     println!("workspace: {}", config.workspace.display());
-    println!("{}", crate::memory::learning::DISCLOSURE);
+    println!(
+        "{}",
+        if config.memory.is_some() {
+            crate::memory::learning::DISCLOSURE
+        } else {
+            crate::memory::UNAVAILABLE_NOTICE
+        }
+    );
     if let ManagedThreadState::NeedsResume {
         thread_id,
         identity_is_current,

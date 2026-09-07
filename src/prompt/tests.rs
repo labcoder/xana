@@ -78,6 +78,43 @@ fn approved_identity_matches_v1_fixture() {
 }
 
 #[test]
+fn memory_readiness_is_mandatory_budgeted_and_replaced_not_duplicated() {
+    use crate::memory::MemoryReadiness;
+    let base = snapshot(&[]);
+    let ready = base
+        .clone()
+        .with_memory_readiness(MemoryReadiness::Enabled)
+        .unwrap();
+    assert!(ready.system_tokens > base.system_tokens);
+    let disabled = ready
+        .with_memory_readiness(MemoryReadiness::UseDisabled)
+        .unwrap();
+    assert!(system_text(&disabled).contains(MemoryReadiness::UseDisabled.notice()));
+    assert!(!system_text(&disabled).contains(MemoryReadiness::Enabled.notice()));
+    assert_eq!(
+        disabled
+            .layers
+            .iter()
+            .filter(|layer| layer.source_id == "runtime:personal-memory")
+            .count(),
+        1
+    );
+    let unavailable = base
+        .clone()
+        .with_memory_readiness(MemoryReadiness::Unavailable)
+        .unwrap();
+    assert!(system_text(&unavailable).contains(crate::memory::MEMORY_GUIDANCE));
+    let mut small = base;
+    small.budget.total_tokens =
+        small.system_tokens + small.tool_schema_tokens + small.budget.conversation_reserve_tokens;
+    assert!(
+        small
+            .with_memory_readiness(MemoryReadiness::Unavailable)
+            .is_err()
+    );
+}
+
+#[test]
 fn approved_guidelines_match_v2_fixture() {
     assert_eq!(GUIDELINES, include_str!("fixtures/guidelines-v2.md"));
 }

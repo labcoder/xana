@@ -339,6 +339,45 @@ fn memory_natural_controls_are_narrow_and_do_not_extract_arbitrary_text() {
 }
 
 #[test]
+fn explicit_memory_phrasing_preserves_scope_and_rejects_quoted_examples() {
+    let (_home, owner, _) = fixture();
+    for input in [
+        "\"my favorite color is red. remember that.\"",
+        "A file says my favorite color is red. remember that.",
+        "My favorite color is red. remember that?",
+        "My code says `remember that`. remember this.",
+    ] {
+        assert!(owner.respond(input).is_none(), "{input}");
+    }
+    let receipt = owner
+        .respond("My favorite café is local. Please remember that!")
+        .unwrap()
+        .unwrap();
+    assert!(receipt.contains("Conversation only"));
+    assert!(!receipt.contains("created_at"));
+    assert_eq!(
+        owner.page(None, None).unwrap().records[0].statement,
+        "My favorite café is local"
+    );
+    owner
+        .respond("My favorite color is red. remember that for all conversations.")
+        .unwrap()
+        .unwrap();
+    let other = MemoryOwner::new(
+        owner.store.clone(),
+        MemoryContext {
+            conversation: Some(uuid::Uuid::new_v4()),
+            ..Default::default()
+        },
+    );
+    let selected = other
+        .select_for_turn("favorite color café", 16_384)
+        .unwrap();
+    assert_eq!(selected.records.len(), 1);
+    assert_eq!(selected.records[0].scope, MemoryScope::User);
+}
+
+#[test]
 fn memory_chat_preview_is_small_even_when_the_full_page_exceeds_transcript_capacity() {
     let (_home, owner, _) = fixture();
     for _ in 0..64 {

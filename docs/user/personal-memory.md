@@ -48,11 +48,14 @@ Restarting and resuming the same Conversation retains its scoped memories. A
 new Conversation receives user-wide memory but not another Conversation's private
 facts. Recall uses eligible memory data directly, without `read_file` approval.
 Xana does not use an ad-hoc workspace `user_prefs` file as its memory store.
+Saving returns a short receipt with the statement, scope and memory ID, not a
+model's promise. Use that ID to correct, move or forget the saved fact.
 
 On a legacy home, explicit remember requests fail locally with setup guidance;
 they do not ask a model to save a plaintext substitute. `xana doctor` warns that
-personal memory is unavailable, and the native prompt includes that readiness
-fact. Run `xana storage status` and `xana storage migrate` for a read-only preview;
+personal memory is unavailable. Native prompts and managed Codex turns include
+the current readiness fact and distinguish disabled use from unavailable storage.
+Run `xana storage status` and `xana storage migrate` for a read-only preview;
 application requires a recovery key and your exact reviewed digest. From a source
 checkout, use `cargo run -- storage status` or `cargo run -- storage migrate`.
 No migration happens merely by asking Xana to remember something.
