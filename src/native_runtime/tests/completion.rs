@@ -301,7 +301,10 @@ async fn actual_command_exit_status_defeats_false_final_claim() {
             .unwrap();
         let mut observed = false;
         let mut delivered = false;
-        tokio::time::timeout(Duration::from_secs(15), async {
+        // This is an exit-status contract, not a shell-startup benchmark. The
+        // real command has a 30 s execution limit; allow that limit plus bounded
+        // admission/journal time before the test watchdog declares a hang.
+        tokio::time::timeout(Duration::from_secs(45), async {
             loop {
                 match runtime.next_event().await.unwrap() {
                     AgentEvent::CompletionEvidenceRecorded { evidence, .. } => {
@@ -329,7 +332,7 @@ async fn actual_command_exit_status_defeats_false_final_claim() {
             }
         })
         .await
-        .unwrap();
+        .expect("command evidence settles within the execution limit plus orchestration grace");
         assert!(observed && delivered);
         runtime.shutdown_owned().await;
     }
