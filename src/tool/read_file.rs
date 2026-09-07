@@ -191,39 +191,40 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
     let limit = plan.args.max_bytes.unwrap_or(MAX_READ_BYTES);
 
     loop {
-        let mut line = Vec::new();
-
-        let bytes_read =
-            reader
-                .read_until(b'\n', &mut line)
-                .map_err(|source| ReadFileError::Unavailable {
-                    requested_path: requested_path.clone(),
-                    source,
-                })?;
-
-        if bytes_read == 0 {
+        // Inspect fixed-size chunks, including skipped lines. Never allocate an
+        // entire untrusted line before enforcing the requested output bound.
+        let available = reader
+            .fill_buf()
+            .map_err(|source| ReadFileError::Unavailable {
+                requested_path: requested_path.clone(),
+                source,
+            })?;
+        if available.is_empty() {
             break;
         }
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
 
         let in_range =
             line_number >= start_line && end_line.is_none_or(|end_line| line_number <= end_line);
 
         if in_range {
-            if line.len() > limit - selected.len() {
+            if consumed > limit - selected.len() {
                 return Err(ReadFileError::TooLarge {
                     requested_path,
                     limit,
                 });
             }
 
-            selected.extend_from_slice(&line);
+            selected.extend_from_slice(&available[..consumed]);
         }
-
-        if end_line == Some(line_number) {
-            break;
+        reader.consume(consumed);
+        if newline.is_some() {
+            if end_line == Some(line_number) {
+                break;
+            }
+            line_number = line_number.saturating_add(1);
         }
-
-        line_number = line_number.saturating_add(1);
     }
 
     String::from_utf8(selected).map_err(|source| ReadFileError::InvalidUtf8 {
@@ -264,6 +265,9 @@ fn execute_paged_read(mut file: File, plan: &ReadFilePlan) -> Result<String, Rea
             source,
         })?;
     let mut retained = bytes.len().min(max_bytes);
+    if offset > 0 && bytes.first().is_some_and(|byte| byte & 0xc0 == 0x80) {
+        return Err(ReadFileError::InvalidPaging);
+    }
     let content = loop {
         match std::str::from_utf8(&bytes[..retained]) {
             Ok(text) => break text.to_owned(),
@@ -458,7 +462,7 @@ mod tests {
                 &json!({"path": "utf8.txt", "offset_bytes": 1, "max_bytes": 4}),
                 workspace.path()
             ),
-            Err(ReadFileError::InvalidUtf8 { .. })
+            Err(ReadFileError::InvalidPaging)
         ));
     }
 
@@ -576,6 +580,43 @@ mod tests {
                 limit,
             }) if requested_path == "large.txt" && limit == MAX_READ_BYTES
         ));
+    }
+
+    #[test]
+    fn line_caps_bound_long_selected_lines_without_buffering_skipped_lines() {
+        let workspace = tempdir().unwrap();
+        let mut text = "x".repeat(2 * 1024 * 1024);
+        text.push_str("\nred");
+        fs::write(workspace.path().join("long.txt"), text).unwrap();
+        assert_eq!(
+            read_file(
+                &json!({"path":"long.txt","start_line":2,"end_line":2,"max_bytes":4}),
+                workspace.path()
+            )
+            .unwrap(),
+            "red"
+        );
+        assert!(matches!(
+            read_file(
+                &json!({"path":"long.txt","start_line":1,"max_bytes":4}),
+                workspace.path()
+            ),
+            Err(ReadFileError::TooLarge { limit: 4, .. })
+        ));
+        fs::write(workspace.path().join("tiny.txt"), "red").unwrap();
+        assert_eq!(read_file(&json!({"path":"tiny.txt","start_line":null,"end_line":null,"offset_bytes":null,"max_bytes":null}), workspace.path()).unwrap(), "red");
+        let page: Value = serde_json::from_str(
+            &read_file(&json!({"path":"tiny.txt","max_bytes":4}), workspace.path()).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page["content"], "red");
+        assert_eq!(page["next_offset_bytes"], Value::Null);
+        assert!(
+            read_file(&json!({"path":"tiny.txt","max_bytes":3}), workspace.path())
+                .unwrap_err()
+                .to_string()
+                .contains("capacity, not the file size")
+        );
     }
 
     #[cfg(unix)]

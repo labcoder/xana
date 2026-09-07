@@ -47,7 +47,11 @@ successful matches.
 `read_file` keeps its line-range form for small targeted reads. For a large
 file, pass `offset_bytes` and `max_bytes`; the JSON result includes the exact
 `next_offset_bytes`, total byte length, and truncation fact. Offsets are
-zero-based UTF-8 boundaries. Byte paging and line ranges cannot be combined.
+zero-based UTF-8 boundaries. `offset_bytes` cannot be combined with line ranges;
+`max_bytes` can also cap a line-range read. It is a capacity of 4–65,536 bytes,
+not the file's size: a three-byte file can use a 4,096-byte capacity or just
+`{"path":"notes.txt"}`. Line reads enforce the cap while reading chunks, even
+when a file contains a very long line.
 
 ## Create and edit
 
