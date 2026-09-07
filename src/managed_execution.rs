@@ -662,9 +662,9 @@ async fn run_codex_one_shot_inner(
     let thread_id = if request.continue_thread {
         match store.thread_id() {
             Some(thread_id) => {
-                require_memory_tools(&store, thread_id).map_err(|error| {
-                    OneShotFailure::new(ExitCategory::Connection, error.to_string())
-                })?;
+                require_memory_tools(&store, thread_id, config.memory.is_some()).map_err(
+                    |error| OneShotFailure::new(ExitCategory::Connection, error.to_string()),
+                )?;
                 server
                     .resume_thread(
                         thread_id,
@@ -702,7 +702,7 @@ async fn run_codex_one_shot_inner(
         .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
     if !request.continue_thread {
         store
-            .mark_memory_tools_current(&thread_id)
+            .mark_memory_tools_current(&thread_id, config.memory.is_some())
             .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
     }
 
@@ -898,7 +898,12 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     config: &ManagedChatConfig,
     handler: &mut H,
 ) -> Result<String, CodexError> {
-    if handler.memory_tool_definitions() != crate::memory::tools::definitions() {
+    let expected = if config.memory.is_some() {
+        crate::memory::tools::definitions()
+    } else {
+        Vec::new()
+    };
+    if handler.memory_tool_definitions() != expected {
         return Err(CodexError::Protocol("managed foreground thread requires the exact personal-memory tool definitions; no thread was opened".into()));
     }
     let id = match thread {
@@ -919,7 +924,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                 )
                 .map_err(|error| CodexError::Io(error.to_string()))?;
             store
-                .mark_memory_tools_current(&id)
+                .mark_memory_tools_current(&id, config.memory.is_some())
                 .map_err(|error| CodexError::Io(error.to_string()))?;
             (*conversation_id, id)
         }
@@ -928,7 +933,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
             thread_id,
             ..
         } => {
-            require_memory_tools(store, thread_id)?;
+            require_memory_tools(store, thread_id, config.memory.is_some())?;
             server
                 .resume_thread(
                     thread_id,
@@ -940,7 +945,10 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                 .await?;
             (*conversation_id, thread_id.clone())
         }
-        ManagedThreadState::Loaded { thread_id, .. } => return Ok(thread_id.clone()),
+        ManagedThreadState::Loaded { thread_id, .. } => {
+            require_memory_tools(store, thread_id, config.memory.is_some())?;
+            return Ok(thread_id.clone());
+        }
     };
     *thread = ManagedThreadState::Loaded {
         conversation_id: id.0,
@@ -949,10 +957,14 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     Ok(id.1)
 }
 
-fn require_memory_tools(store: &ManagedThreadStore, thread_id: &str) -> Result<(), CodexError> {
-    if !store.memory_tools_current(thread_id) {
+fn require_memory_tools(
+    store: &ManagedThreadStore,
+    thread_id: &str,
+    available: bool,
+) -> Result<(), CodexError> {
+    if !store.memory_tools_current(thread_id, available) {
         return Err(CodexError::Protocol(
-            "This managed thread predates Xana's semantic personal-memory tool contract. Start a new conversation (/clear in chat); the old Codex thread is retained. No turn was started.".into(),
+            "This managed thread's personal-memory tool registration is unknown or differs from current storage availability. Start a new conversation (/clear in chat); the old Codex thread is retained. No turn was started.".into(),
         ));
     }
     Ok(())
@@ -1079,14 +1091,32 @@ mod tests {
                 Some("identity-v1"),
             )
             .unwrap();
-        assert!(require_memory_tools(&store, "legacy-thread").is_err());
-        store.mark_memory_tools_current("legacy-thread").unwrap();
+        assert!(require_memory_tools(&store, "legacy-thread", true).is_err());
+        assert!(require_memory_tools(&store, "legacy-thread", false).is_err());
+        store
+            .mark_memory_tools_current("legacy-thread", true)
+            .unwrap();
         store.select_thread("legacy-thread").unwrap();
-        assert!(require_memory_tools(&store, "legacy-thread").is_ok());
+        assert!(require_memory_tools(&store, "legacy-thread", true).is_ok());
+        assert!(require_memory_tools(&store, "legacy-thread", false).is_err());
+        store
+            .set_thread(
+                Some(ConversationId::new()),
+                Some("without-memory".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        store
+            .mark_memory_tools_current("without-memory", false)
+            .unwrap();
+        assert!(require_memory_tools(&store, "without-memory", false).is_ok());
+        assert!(require_memory_tools(&store, "without-memory", true).is_err());
         drop(store);
         let reopened = ManagedThreadStore::open(home.path(), "codex", &workspace).unwrap();
-        assert!(require_memory_tools(&reopened, "legacy-thread").is_ok());
-        assert!(require_memory_tools(&reopened, "unknown-thread").is_err());
+        assert!(require_memory_tools(&reopened, "legacy-thread", true).is_ok());
+        assert!(require_memory_tools(&reopened, "unknown-thread", true).is_err());
+        assert!(require_memory_tools(&reopened, "without-memory", false).is_ok());
+        assert!(require_memory_tools(&reopened, "without-memory", true).is_err());
     }
 
     #[test]

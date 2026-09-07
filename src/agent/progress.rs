@@ -14,6 +14,7 @@ pub(super) const STOP_REASON: &str = "Stopped after repeated tool failures witho
 pub(super) struct ProgressGuard {
     failed: VecDeque<blake3::Hash>,
     denied: VecDeque<blake3::Hash>,
+    unavailable: VecDeque<blake3::Hash>,
     consecutive_errors: usize,
     stopped: bool,
 }
@@ -50,6 +51,14 @@ impl ProgressGuard {
     pub(super) fn blocked_result(&self, call: &ToolCall) -> Option<ToolResult> {
         if self.stopped {
             Some(ToolResult::error(call.id.clone(), STOP_REASON))
+        } else if self
+            .unavailable
+            .contains(&blake3::hash(call.name.as_bytes()))
+        {
+            Some(ToolResult::unavailable(
+                call.id.clone(),
+                "This capability is unavailable for this turn. Retrying cannot enable it; no tool was executed.",
+            ))
         } else if self.denied.contains(&call.pattern_fingerprint()) {
             Some(ToolResult::denied(
                 call.id.clone(),
@@ -70,6 +79,19 @@ impl ProgressGuard {
             self.consecutive_errors = 0;
             self.failed.retain(|value| *value != pattern);
             return;
+        }
+        if result.failure == Some(ToolFailure::Unavailable) {
+            // Permit an answer or useful alternative after the first rejection.
+            // A retry of the same capability is permanent even with new arguments.
+            let capability = blake3::hash(call.name.as_bytes());
+            if self.unavailable.contains(&capability) {
+                self.stopped = true;
+            } else {
+                if self.unavailable.len() == WINDOW {
+                    self.unavailable.pop_front();
+                }
+                self.unavailable.push_back(capability);
+            }
         }
         if result.failure == Some(ToolFailure::PermissionDenied) && !self.denied.contains(&pattern)
         {

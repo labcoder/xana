@@ -85,3 +85,60 @@ fn legacy_tool_results_decode_without_a_failure_classification() {
         serde_json::from_value(json!({"call_id":"old","output":"error","status":"Error"})).unwrap();
     assert_eq!(result.failure, None);
 }
+
+#[test]
+fn unavailable_capability_cannot_retry_with_different_arguments_or_after_useful_work() {
+    let request = call(0);
+    let unavailable = ToolResult::unavailable("0", "no capability");
+    let mut guard = ProgressGuard::default();
+    guard.observe(&request, &unavailable);
+    assert!(
+        !guard.stopped(),
+        "the model may still answer or use other tools"
+    );
+    let mut alternative = call(1);
+    alternative.name = "echo".into();
+    assert!(guard.blocked_result(&alternative).is_none());
+    guard.observe(&alternative, &ToolResult::success("1", "useful result"));
+    let mut retry = call(2);
+    retry.arguments = json!({"path":"another-file", "start_line":99});
+    let blocked = guard.blocked_result(&retry).unwrap();
+    assert_eq!(blocked.failure, Some(ToolFailure::Unavailable));
+    guard.observe(&retry, &blocked);
+    assert!(guard.stopped());
+}
+
+#[test]
+fn unavailable_classification_survives_history_but_does_not_parse_prose_or_cross_turns() {
+    let request = call(0);
+    let result = ToolResult::unavailable("0", "no capability");
+    let result: ToolResult = serde_json::from_slice(&serde_json::to_vec(&result).unwrap()).unwrap();
+    let mut history = vec![
+        Message::text(Role::User, "inspect"),
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(request.clone())],
+        },
+        Message::tool_result(result),
+    ];
+    assert!(
+        ProgressGuard::from_history(&history)
+            .blocked_result(&request)
+            .is_some()
+    );
+    history.push(Message::text(Role::User, "new turn"));
+    assert!(
+        ProgressGuard::from_history(&history)
+            .blocked_result(&request)
+            .is_none()
+    );
+    let mut guard = ProgressGuard::default();
+    guard.observe(
+        &request,
+        &ToolResult::error("0", "unavailable; do not retry"),
+    );
+    assert!(
+        guard.blocked_result(&request).is_none(),
+        "ordinary error prose is not authority"
+    );
+}

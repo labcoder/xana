@@ -30,7 +30,7 @@ impl PromptSnapshot {
                 origin: SourceOrigin::RuntimeEnvironment,
             },
             TrustClass::Runtime,
-            &format!("{}\n{}", readiness.notice(), crate::memory::MEMORY_GUIDANCE),
+            &format!("{}\n{}", readiness.notice(), readiness.guidance()),
             false,
         ));
         let rendered = render_layers(&self.layers);

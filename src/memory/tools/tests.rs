@@ -17,6 +17,15 @@ use uuid::Uuid;
 
 mod qualification;
 
+#[test]
+fn unavailable_memory_is_not_advertised() {
+    let mut registry = ToolRegistry::new();
+    register(&mut registry, None).unwrap();
+    assert!(registry.definitions().is_empty());
+    assert!(registry.definition("memory_lookup").is_none());
+    assert!(registry.definition("memory_update").is_none());
+}
+
 struct Fixture {
     home: tempfile::TempDir,
     workspace: tempfile::TempDir,
@@ -291,7 +300,15 @@ fn source_and_schema_fail_closed_without_foreground_authority() {
             .plan_in_turn(&request, fixture.workspace.path(), Some(&turn))
             .is_err()
     );
-    assert_eq!(registry.definitions().len(), 2);
+    assert!(registry.definitions().is_empty());
+    let rejected = registry
+        .plan_in_turn(&request, fixture.workspace.path(), Some(&turn))
+        .err()
+        .unwrap();
+    assert_eq!(
+        rejected.failure,
+        Some(crate::message::ToolFailure::Unavailable)
+    );
 }
 
 #[tokio::test]
@@ -522,6 +539,18 @@ async fn disabled_lookup_and_foreign_record_edits_never_reveal_memory() {
         .await;
     assert_eq!(result.status, ToolResultStatus::Error);
     assert!(result.output.contains("disabled"));
+    // Disabling eligible use is not a ban on explicit owner edits. No-memory
+    // is the separate, stronger fence covered by commit_rechecks_* above.
+    let turn = input("Remember for this conversation: I prefer tea.");
+    let result = fixture
+        .invoke(&remember("I prefer tea", &turn.text), &turn, false)
+        .await;
+    assert_eq!(
+        result.status,
+        ToolResultStatus::Success,
+        "{}",
+        result.output
+    );
 }
 
 #[tokio::test]

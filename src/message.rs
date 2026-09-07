@@ -39,6 +39,8 @@ pub(crate) enum ToolResultStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ToolFailure {
     PermissionDenied,
+    /// Absent from this runtime's immutable capability snapshot, not transient I/O.
+    Unavailable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,7 +48,7 @@ pub(crate) struct ToolResult {
     pub(crate) call_id: String,
     pub(crate) output: String,
     pub(crate) status: ToolResultStatus,
-    /// Set by the permission boundary, never inferred from tool output text.
+    /// Set by a trusted runtime boundary, never inferred from tool output text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) failure: Option<ToolFailure>,
     /// Registered immutable evidence, never inferred from provider text.
@@ -83,6 +85,13 @@ impl ToolResult {
     pub(crate) fn denied(call_id: impl Into<String>, output: impl Into<String>) -> Self {
         Self {
             failure: Some(ToolFailure::PermissionDenied),
+            ..Self::error(call_id, output)
+        }
+    }
+
+    pub(crate) fn unavailable(call_id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            failure: Some(ToolFailure::Unavailable),
             ..Self::error(call_id, output)
         }
     }

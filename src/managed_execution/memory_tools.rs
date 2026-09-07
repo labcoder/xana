@@ -129,7 +129,7 @@ impl<H: ManagedEventHandler> ManagedEventHandler for MemoryManagedHandler<'_, H>
     }
 
     fn memory_tool_definitions(&self) -> Vec<ToolDefinition> {
-        crate::memory::tools::definitions()
+        self.registry.definitions().into_iter().cloned().collect()
     }
 
     fn dynamic_tool<'a>(

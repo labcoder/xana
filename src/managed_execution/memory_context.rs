@@ -101,7 +101,7 @@ fn with_readiness(readiness: crate::memory::MemoryReadiness, input: &str) -> Str
     format!(
         "Xana runtime context:\n{}\n{}\n\n{}",
         readiness.notice(),
-        crate::memory::MEMORY_GUIDANCE,
+        readiness.guidance(),
         input
     )
 }
@@ -182,6 +182,8 @@ mod tests {
         let unavailable = prepare(None, conversation, "hello").await.unwrap();
         assert!(unavailable.contains(crate::memory::MemoryReadiness::Unavailable.notice()));
         assert!(unavailable.ends_with("hello"));
+        assert!(!unavailable.contains(crate::memory::MEMORY_GUIDANCE));
+        assert!(!unavailable.contains("memory_lookup"));
         let directory = tempfile::tempdir().unwrap();
         let store = crate::storage::ProtectedStore::initialize(
             directory.path(),
@@ -204,6 +206,7 @@ mod tests {
         let disabled = prepare(Some(&owner), conversation, "hello").await.unwrap();
         assert!(disabled.contains(crate::memory::MemoryReadiness::UseDisabled.notice()));
         assert!(!disabled.contains(crate::memory::MemoryReadiness::Enabled.notice()));
+        assert!(!disabled.contains(crate::memory::MEMORY_GUIDANCE));
         assert!(crate::context::estimate_tokens(&disabled) < 512);
     }
 }

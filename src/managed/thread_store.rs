@@ -65,7 +65,8 @@ struct ManagedThreadEntry {
     thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity_version: Option<String>,
-    /// Host receipt: this thread was started with the exact memory v1 tools.
+    /// Host receipt: 0 = explicitly no memory tools, 1 = exact v1 tools.
+    /// Absence is a legacy/unknown registration, never an inferred capability.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     memory_tools_version: Option<u32>,
 }
@@ -298,15 +299,16 @@ impl ManagedThreadStore {
             .and_then(|entry| entry.identity_version.as_deref())
     }
 
-    pub(crate) fn memory_tools_current(&self, thread_id: &str) -> bool {
-        self.threads
-            .iter()
-            .any(|entry| entry.thread_id == thread_id && entry.memory_tools_version == Some(1))
+    pub(crate) fn memory_tools_current(&self, thread_id: &str, available: bool) -> bool {
+        self.threads.iter().any(|entry| {
+            entry.thread_id == thread_id && entry.memory_tools_version == Some(u32::from(available))
+        })
     }
 
     pub(crate) fn mark_memory_tools_current(
         &mut self,
         thread_id: &str,
+        available: bool,
     ) -> Result<(), ManagedThreadStoreError> {
         let mut threads = self.threads.clone();
         let entry = threads
@@ -317,7 +319,7 @@ impl ManagedThreadStore {
                     "cannot mark memory tools for an unknown thread".into(),
                 )
             })?;
-        entry.memory_tools_version = Some(1);
+        entry.memory_tools_version = Some(u32::from(available));
         self.commit(
             self.conversation_id,
             self.thread_id.clone(),

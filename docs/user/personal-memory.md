@@ -54,8 +54,14 @@ The model interprets intent and sensitivity; exact source checks alone cannot pr
 it understood them correctly. Use explicit controls below for reliable recovery
 when a model struggles.
 
-Without unlocked protected storage, tools report unavailable and save nothing;
-they do not create a plaintext substitute or migrate your home.
+Without an attached protected store, the model is not offered memory tools.
+It receives a short readiness fact and should answer unknown-fact questions
+briefly from conversation context, not try to save a guess. Stale/hallucinated
+memory calls are rejected before permissions or effects. In native turns, the
+first rejection allows an answer or useful alternative; a repeated call to that
+unavailable tool stops the loop even if its arguments change. This bounds retries,
+not the selected model's generation time or comprehension.
+No plaintext substitute or automatic migration is created.
 `xana doctor` and `xana storage status` report readiness.
 `xana storage migrate` previews an existing-home migration; applying it requires
 your recovery key and exact reviewed digest. From this checkout use
@@ -72,10 +78,13 @@ Use/no-memory and restore-review gates apply to model lookup; explicit owner
 management remains available separately.
 
 Managed Codex uses its supported experimental dynamic-tool bridge; Codex still
-owns the inner loop. New Xana-created threads register the memory tools.
-Older threads without this registration are retained but require a new
-Conversation for the new contract; follow the displayed instruction instead of
-deleting vendor history. Real-account compatibility is a separate manual check
+owns the inner loop. New Xana-created threads register tools according to storage
+availability: a home without protected memory starts threads without memory tools.
+Older unknown registrations, or a change
+between available and unavailable memory, require a new Conversation because the
+vendor's tool list is fixed at thread creation. Prior threads are retained; follow
+the displayed instruction instead of deleting vendor history.
+Real-account compatibility is a separate manual check
 from protocol mocks.
 
 ## Terminal and Desktop controls

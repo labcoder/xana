@@ -78,6 +78,11 @@ transaction, with durable idempotent receipts. Refresh native memory context
 before the next model request after a change; never append superseded records
 to an old prompt layer. Memory already handed off to a vendor cannot be erased by
 changing a local record. An unavailable tool must not fall back to workspace files.
+Do not advertise personal-memory tools when no protected owner is attached.
+Readiness guidance must match the actual capabilities, and permanent
+unavailability must not be treated as an ordinary retryable argument error.
+Unknown-fact questions are not permission to write a guessed fact. Ordinary
+fresh setup remains distinct from explicitly initializing protected storage.
 
 The background learner interprets language into closed ordinary preference values
 (response detail, examples, units, theme and supported development languages).

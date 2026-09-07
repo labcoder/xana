@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::path::Path;
 use types::{LookupPlan, UpdatePlan};
 
-/// Stable declarations remain truthful even when protected storage is absent.
+/// Canonical declarations for a runtime with protected memory attached.
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
     vec![schema::lookup(), schema::update()]
 }
@@ -31,6 +31,11 @@ pub(crate) fn register(
     registry: &mut ToolRegistry,
     owner: Option<MemoryOwner>,
 ) -> Result<(), RegistryError> {
+    if owner.is_none() {
+        const REASON: &str = "Personal memory is unavailable in this Conversation. Do not retry; nothing was read or saved. Answer from current context without file workarounds. The owner can inspect `xana storage status` for setup help.";
+        registry.register_unavailable("memory_lookup", REASON)?;
+        return registry.register_unavailable("memory_update", REASON);
+    }
     registry.register(MemoryLookup {
         owner: owner.clone(),
     })?;

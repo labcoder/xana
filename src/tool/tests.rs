@@ -14,6 +14,38 @@ use tempfile::tempdir;
 
 struct Echo;
 
+#[test]
+fn unavailable_registration_reserves_names_without_a_schema_or_execution() {
+    let mut registry = ToolRegistry::new();
+    registry
+        .register_unavailable("echo", "not configured")
+        .unwrap();
+    assert!(registry.definitions().is_empty());
+    assert!(registry.register(Echo).is_err());
+    assert!(registry.register_unavailable("echo", "different").is_err());
+    let call = ToolCall {
+        id: "stale".into(),
+        name: "echo".into(),
+        arguments: json!({}),
+    };
+    let result = registry
+        .plan_in_turn(&call, Path::new("."), None)
+        .err()
+        .unwrap();
+    assert_eq!(
+        result.failure,
+        Some(crate::message::ToolFailure::Unavailable)
+    );
+    assert_eq!(result.call_id, "stale");
+    let mut registry = ToolRegistry::new();
+    registry.register(Echo).unwrap();
+    assert!(
+        registry
+            .register_unavailable("echo", "not configured")
+            .is_err()
+    );
+}
+
 impl Tool for Echo {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition {

@@ -28,6 +28,27 @@ transactions serialize checked edits; read transactions hold coherent eligible
 snapshots and exports. No SQL, provider, key-custody or filesystem work runs in
 Desktop render methods.
 
+Composition advertises memory schemas only when it supplies a `MemoryOwner`.
+An absent owner instead installs fixed, unadvertised registry rejections with
+typed `Unavailable` results; neither approval nor store I/O is attempted. Native
+and managed prompt assembly use availability-specific guidance rather than
+combining absent-memory facts with active-tool instructions. Explicit storage
+management retains detailed diagnostics; ordinary recall is not a save request.
+
+The native progress guard keeps bounded capability-name hashes for unavailable
+results in addition to its existing denial and transient-error windows. After
+one rejection it allows an answer or useful alternative; another attempt at that
+same unavailable capability stops the turn without dispatch, regardless of changed
+arguments. Current-turn history rebuilds that guard on continuation. A new owner
+turn resets it. Tool prose is never parsed into this failure classification.
+
+Managed foreground and eager-host registration use the same composition snapshot.
+The durable thread receipt records either no memory tools (0), exact v1 tools (1),
+or unknown legacy registration (absent). Resumption requires an exact match with
+current availability; a mismatch retains the old vendor thread and requests a new
+Conversation. Codex owns its retry loop; Xana supplies a short nonretryable error
+and retains the existing bounded callback contract, not a second hidden agent.
+
 Schema 3 adds memory tables to accounting schema 2. Canonical upgrades from 1/2
 require the exclusive lifecycle lease, commit atomically, close while exclusive,
 then reopen through lifecycle checks. Recovery inspection never upgrades.

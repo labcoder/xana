@@ -33,6 +33,7 @@ use futures::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::any::Any;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -454,6 +455,7 @@ struct RegisteredTool {
 
 pub(crate) struct ToolRegistry {
     tools: Vec<RegisteredTool>,
+    unavailable: BTreeMap<&'static str, &'static str>,
     telemetry: Arc<dyn RuntimeTelemetry>,
 }
 
@@ -461,6 +463,7 @@ impl Default for ToolRegistry {
     fn default() -> Self {
         Self {
             tools: Vec::new(),
+            unavailable: BTreeMap::new(),
             telemetry: Arc::new(NoopRuntimeTelemetry),
         }
     }
@@ -489,7 +492,9 @@ impl ToolRegistry {
     pub(crate) fn register_boxed(&mut self, tool: Box<dyn Tool>) -> Result<(), RegistryError> {
         let definition = tool.definition();
 
-        if self.definition(&definition.name).is_some() {
+        if self.definition(&definition.name).is_some()
+            || self.unavailable.contains_key(definition.name.as_str())
+        {
             return Err(RegistryError::DuplicateName {
                 name: definition.name,
             });
@@ -504,6 +509,20 @@ impl ToolRegistry {
 
     pub(crate) fn definitions(&self) -> Vec<&ToolDefinition> {
         self.tools.iter().map(|tool| &tool.definition).collect()
+    }
+
+    /// Retain a rejection for stale calls without advertising an unusable tool.
+    /// Only composition supplies these fixed facts; model input cannot add them.
+    pub(crate) fn register_unavailable(
+        &mut self,
+        name: &'static str,
+        reason: &'static str,
+    ) -> Result<(), RegistryError> {
+        if self.definition(name).is_some() || self.unavailable.contains_key(name) {
+            return Err(RegistryError::DuplicateName { name: name.into() });
+        }
+        self.unavailable.insert(name, reason);
+        Ok(())
     }
 
     /// Decorate execution without rebuilding or changing the exposed contracts.
@@ -703,6 +722,9 @@ impl ToolRegistry {
         workspace_root: &Path,
         owner_input: Option<&OwnerTurnInput>,
     ) -> Result<PreparedToolInvocation<'a>, ToolResult> {
+        if let Some(reason) = self.unavailable.get(call.name.as_str()) {
+            return Err(ToolResult::unavailable(call.id.clone(), *reason));
+        }
         let Some(tool) = self
             .tools
             .iter()

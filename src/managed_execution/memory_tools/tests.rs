@@ -24,14 +24,14 @@ impl ManagedEventHandler for Handler {
 }
 
 fn attached<'a>(
-    owner: MemoryOwner,
+    owner: Option<MemoryOwner>,
     workspace: &std::path::Path,
     input: OwnerTurnInput,
     handler: &'a mut Handler,
     review: MemoryReview,
 ) -> MemoryManagedHandler<'a, Handler> {
     let mut registry = ToolRegistry::new();
-    crate::memory::tools::register(&mut registry, Some(owner)).unwrap();
+    crate::memory::tools::register(&mut registry, owner).unwrap();
     let (sender, events) = mpsc::unbounded_channel();
     let (permissions, broker) = PermissionBroker::spawn(
         PermissionPolicy::new(PolicyDecision::Ask, vec![], workspace).unwrap(),
@@ -72,6 +72,43 @@ fn request(quote: &str, scope: &str) -> ManagedToolCall {
             "action":"remember","statement":"Prefiero respuestas cortas","quote":quote,"risk":"ordinary","scope":scope,
         }),
     }
+}
+
+#[tokio::test]
+async fn unavailable_managed_memory_has_no_definitions_or_permission_request() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mut inner = Handler;
+    let input = owner_input(
+        OperationId::new(),
+        "Do you know my name?",
+        CancellationToken::new(),
+    );
+    let mut handler = attached(
+        None,
+        workspace.path(),
+        input,
+        &mut inner,
+        MemoryReview::new(|_| panic!("unavailable capability must not request permission")),
+    );
+    assert!(handler.memory_tool_definitions().is_empty());
+    for name in ["memory_lookup", "memory_update"] {
+        let result = handler
+            .dynamic_tool(
+                ManagedToolCall {
+                    call_id: name.into(),
+                    name: name.into(),
+                    arguments: json!({}),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
+        assert!(result.text.contains("Do not retry"));
+        assert!(result.text.len() < 300);
+    }
+    handler.finish().await.unwrap();
+    assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);
 }
 
 #[tokio::test]
@@ -209,7 +246,7 @@ async fn managed_memory_callback_uses_shared_store_and_original_owner_provenance
     let reviews = Arc::new(AtomicUsize::new(0));
     let observed = reviews.clone();
     let mut handler = attached(
-        owner.clone(),
+        Some(owner.clone()),
         workspace.path(),
         input,
         &mut inner,
@@ -263,7 +300,13 @@ async fn managed_memory_scope_widening_uses_exact_xana_review_and_denial_has_no_
         Box::pin(async {})
     });
     let mut inner = Handler;
-    let mut handler = attached(owner.clone(), workspace.path(), input, &mut inner, review);
+    let mut handler = attached(
+        Some(owner.clone()),
+        workspace.path(),
+        input,
+        &mut inner,
+        review,
+    );
     let result = handler
         .dynamic_tool(request(text, "user"), CancellationToken::new())
         .await
@@ -291,7 +334,14 @@ async fn managed_memory_cancelled_review_and_enriched_source_spoof_cannot_write(
         })
     });
     let mut inner = Handler;
-    let mut handler = attached(owner.clone(), workspace.path(), input, &mut inner, review);
+    let mut handler = attached(
+        Some(owner.clone()),
+        workspace.path(),
+        input,
+        &mut inner,
+        review,
+    );
+
     let spoofed = handler
         .dynamic_tool(
             request(

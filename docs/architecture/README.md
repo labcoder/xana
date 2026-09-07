@@ -805,17 +805,14 @@ separates runtime facts, parent handoff, tool evidence, and conversation content
 Personal-memory selections now occupy their separately bounded data-only slot;
 retrieved evidence is accounted through its materialized source/tool content.
 Native prompt assembly also carries a budgeted runtime memory-readiness fact,
-including unavailable legacy homes and disabled use. Explicit owner remember
-controls separate explicit polite request wrappers, personal statements and
-short trailing remember clauses; punctuation/confirmation tags are not stored
-as facts. Recall questions remain nonmutating, while recognized contradictory
-save requests and unresolved scope qualifiers return local clarification.
-Canonical explicit commands retain literal code and multiline payload support.
-These bounded templates are not a general natural-language intent classifier.
-Recognized saves commit through
-the scoped protected service without a model/tool call, and report missing
-prerequisites locally. They do not authorize model output to mutate memory or
-create a workspace-file fallback.
+including unavailable legacy homes and disabled use. Free-form chat uses the
+selected model's ordinary `memory_lookup` / `memory_update` tool loop; there is
+no phrase interception or extra classifier call. Recall is nonmutating and does
+not authorize inventing a fact to save. Only explicit management commands (such
+as `memory say`) use the bounded phrase grammar and commit locally without a
+model call. Canonical commands retain literal code and multiline payload support.
+Both paths share scoped protected storage, provenance and consent checks, with
+no workspace-file fallback. See [protected storage](protected-storage.md).
 Output/reasoning reserves remain in the
 budget, not misreported as sent input. Authored instructions must fit completely
 or assembly rejects the request; optional evidence can still be omitted with

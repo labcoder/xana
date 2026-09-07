@@ -4,6 +4,7 @@ use crate::{
     storage::{ProtectedStore, RecoveryIdentity, TestCustody},
 };
 
+mod availability;
 mod semantic;
 
 fn memory_agent(

@@ -154,7 +154,7 @@ impl ManagedTuiDriver {
         let (command_tx, command_rx) = mpsc::channel(COMMAND_CAPACITY);
         let (event_tx, event_rx) = mpsc::channel(EVENT_CAPACITY);
         let initial_thread = if eager_thread {
-            let mut handler = TuiManagedHandler::new(event_tx.clone());
+            let mut handler = TuiManagedHandler::new(event_tx.clone(), config.memory.is_some());
             let thread_id =
                 ensure_thread_loaded(&mut server, &mut thread, &mut store, &config, &mut handler)
                     .await?;
@@ -357,7 +357,7 @@ async fn run_actor(
                     operation_id,
                     cancellation: cancellation.clone(),
                 });
-                let mut handler = TuiManagedHandler::new(events.clone());
+                let mut handler = TuiManagedHandler::new(events.clone(), config.memory.is_some());
                 let owner_input =
                     super::memory_tools::owner_input(operation_id, &input, cancellation.clone());
                 let mut memory_handler = super::memory_tools::MemoryManagedHandler::new(
@@ -547,6 +547,7 @@ async fn send_event(
 
 struct TuiManagedHandler {
     events: mpsc::Sender<ManagedTuiEvent>,
+    memory_available: bool,
 }
 
 fn memory_review(events: mpsc::Sender<ManagedTuiEvent>) -> super::memory_tools::MemoryReview {
@@ -577,17 +578,23 @@ fn memory_review(events: mpsc::Sender<ManagedTuiEvent>) -> super::memory_tools::
 }
 
 impl TuiManagedHandler {
-    fn new(events: mpsc::Sender<ManagedTuiEvent>) -> Self {
-        Self { events }
+    fn new(events: mpsc::Sender<ManagedTuiEvent>, memory_available: bool) -> Self {
+        Self {
+            events,
+            memory_available,
+        }
     }
 }
 
 impl ManagedEventHandler for TuiManagedHandler {
     fn memory_tool_definitions(&self) -> Vec<crate::tool::ToolDefinition> {
-        // Hosted clients open the thread before owner input exists. Advertising
-        // declarations grants no execution authority: this handler still uses
-        // the default-denying callback until a turn-bound wrapper is attached.
-        crate::memory::tools::definitions()
+        // Eager opening uses composition's capability snapshot, not a store read.
+        // Until a turn-bound wrapper is attached, callbacks still deny execution.
+        if self.memory_available {
+            crate::memory::tools::definitions()
+        } else {
+            Vec::new()
+        }
     }
 
     fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
@@ -625,7 +632,7 @@ mod memory_registration_tests {
     #[tokio::test]
     async fn eager_hosted_handler_registers_tools_without_owner_execution_authority() {
         let (sender, _receiver) = mpsc::channel(EVENT_CAPACITY);
-        let mut handler = TuiManagedHandler::new(sender);
+        let mut handler = TuiManagedHandler::new(sender.clone(), true);
         assert_eq!(
             handler.memory_tool_definitions(),
             crate::memory::tools::definitions()
@@ -642,5 +649,7 @@ mod memory_registration_tests {
             .await
             .unwrap();
         assert!(!result.success);
+        let unavailable = TuiManagedHandler::new(sender, false);
+        assert!(unavailable.memory_tool_definitions().is_empty());
     }
 }

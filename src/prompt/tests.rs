@@ -103,7 +103,8 @@ fn memory_readiness_is_mandatory_budgeted_and_replaced_not_duplicated() {
         .clone()
         .with_memory_readiness(MemoryReadiness::Unavailable)
         .unwrap();
-    assert!(system_text(&unavailable).contains(crate::memory::MEMORY_GUIDANCE));
+    assert!(!system_text(&unavailable).contains(crate::memory::MEMORY_GUIDANCE));
+    assert!(system_text(&unavailable).contains(MemoryReadiness::Unavailable.guidance()));
     let mut small = base;
     small.budget.total_tokens =
         small.system_tokens + small.tool_schema_tokens + small.budget.conversation_reserve_tokens;
