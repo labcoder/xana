@@ -7,6 +7,11 @@ reviewed migration. `xana storage status` inspects the format without
 unlocking it. `xana doctor` distinguishes legacy, locked, unavailable-key and
 invalid protected storage. No unavailable protected store falls back to plaintext.
 
+Ordinary first-time setup configures connections, not encryption. It does not
+silently generate a recovery key or enable personal memory. A new user who wants
+protected memory from the start should initialize an empty home **before** setup,
+as below. If setup/chat has already created data, use the reviewed migration path.
+
 ## Start a fresh protected home
 
 First choose an empty isolated Xana home. Keep the independent recovery key
@@ -15,7 +20,7 @@ outside its managed data directory, preferably backed up on another medium:
 ```text
 xana storage recovery-key --output /absolute/separate/location/xana-recovery.txt
 xana storage initialize --recovery-key /absolute/separate/location/xana-recovery.txt
-xana init
+xana setup
 xana
 ```
 
@@ -33,6 +38,45 @@ Unavailable custody is an error, not permission to write unencrypted data.
 launch set `XANA_STORAGE_RECOVERY_KEY` to the independent key **file path**.
 That variable explicitly selects recovery-file unlock, not a fallback or an
 inline secret. It does not bypass an explicit lock.
+
+### Isolated development test (PowerShell)
+
+Open a separate PowerShell window in the Xana checkout. These environment
+changes apply only to that window; closing it returns you to your usual home.
+Each run chooses a new test directory outside the repository. The recovery key
+is a sibling of the home, never inside its managed data:
+
+```powershell
+$xanaTestRoot = Join-Path $env:LOCALAPPDATA ('XanaTests/' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $xanaTestRoot | Out-Null
+$env:XANA_HOME = Join-Path $xanaTestRoot 'home'
+$xanaRecovery = Join-Path $xanaTestRoot 'recovery.key'
+Remove-Item Env:XANA_STORAGE_RECOVERY_KEY -ErrorAction SilentlyContinue
+cargo run -- storage recovery-key --output $xanaRecovery
+cargo run -- storage initialize --recovery-key $xanaRecovery
+cargo run -- setup
+cargo run -- storage status
+cargo run
+```
+
+Keep that window and the test paths to restart the same test home later. Setup
+requires a connection again; an isolated Xana home does not isolate third-party
+accounts such as Codex login. Ollama with an already downloaded model is a useful
+local test route. Do not reuse or overwrite your normal recovery key.
+
+To test ordinary fresh setup **without** protected storage instead, choose another
+new test root/home using the first four lines above, then run `cargo run -- setup`
+without recovery-key generation or initialization. Chat works, but personal
+memory remains unavailable. It should not require migration merely to chat.
+
+Suggested memory checks: ask for an unknown name (no save), explicitly remember
+a preference, quit/reopen the same Conversation and recall it, then create a new
+Conversation and verify the narrow memory does not carry across. Explicitly ask
+for a user-wide preference, approve the scope review, and verify cross-Conversation
+recall. These checks test model behavior as well as storage; inspect committed
+records with `/memory list` if the model gives an unexpected answer.
+
+## Unlock and recovery
 
 ```text
 xana storage verify
