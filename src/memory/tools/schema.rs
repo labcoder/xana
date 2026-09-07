@@ -10,7 +10,7 @@ pub(super) fn lookup() -> ToolDefinition {
             "type":"object", "additionalProperties":false,
             "properties":{
                 "query":{"type":"string","maxLength":256},
-                "scope":{"type":"string","enum":["conversation","project","profile","user"]},
+                "scope":{"type":"string","enum":["conversation","project","profile","user"],"description":"conversation: this chat; project: current project; profile: current profile; user: all conversations and projects. Omit to search all currently eligible scopes."},
                 "after":{"type":"integer","minimum":0},
                 "limit":{"type":"integer","minimum":1,"maximum":8}
             }
@@ -29,7 +29,7 @@ pub(super) fn update() -> ToolDefinition {
             "type":"object", "additionalProperties":false,"required":["action"],
             "properties":{
                 "action":{"type":"string","enum":["remember","correct","forget"]},
-                "scope":{"type":"string","enum":["conversation","project","profile","user"]},
+                "scope":{"type":"string","enum":["conversation","project","profile","user"],"description":"user means across ALL conversations/projects. project and profile mean the current named scope. conversation (default) means ONLY this chat. Follow explicit wider owner intent; review occurs before wider writes."},
                 "statement":{"type":"string","minLength":1,"maxLength":4096,"description":"Required for remember/correct: the fact to store, not the request wording. Omit for forget."},
                 "quote":{"type":"string","minLength":1,"maxLength":8192,"description":"Required for remember/correct: exact text from the current owner message, including the request and fact."},
                 "id":{"type":"string","format":"uuid","description":"Only for correct/forget: copy the existing memory UUID from memory_lookup. Omit for remember."},
