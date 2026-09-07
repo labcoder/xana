@@ -746,32 +746,34 @@ mod tests {
         client.write_all(&frame[..2]).unwrap();
         let (sender, receiver) = mpsc::sync_channel(FORWARD_CAPACITY);
         let (started, ready) = mpsc::channel();
-        let worker = thread::spawn(move || {
-            started.send(()).unwrap();
-            handle_connection(
-                server,
-                "test capability",
-                &sender,
-                &DesktopWakeSignal::default(),
-            );
+        thread::scope(|scope| {
+            let worker = scope.spawn(move || {
+                started.send(()).unwrap();
+                handle_connection(
+                    server,
+                    "test capability",
+                    &sender,
+                    &DesktopWakeSignal::default(),
+                );
+            });
+            ready.recv_timeout(IO_TIMEOUT).unwrap();
+            // A partial length prefix and a partial JSON body must both wait for
+            // the rest, rather than emitting a premature rejection response.
+            for fragment in [&frame[2..7], &frame[7..]] {
+                let error = client.peek(&mut [0_u8; 1]).unwrap_err();
+                assert!(matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ));
+                client.write_all(fragment).unwrap();
+            }
+            client.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+            let response: ForwardResponse =
+                serde_json::from_slice(&read_frame(&mut client).unwrap()).unwrap();
+            worker.join().unwrap();
+            assert_eq!(response.version, FORWARD_PROTOCOL_VERSION);
+            assert!(response.accepted);
         });
-        ready.recv_timeout(IO_TIMEOUT).unwrap();
-        // A partial length prefix and a partial JSON body must both wait for
-        // the rest, rather than emitting a premature rejection response.
-        for fragment in [&frame[2..7], &frame[7..]] {
-            let error = client.peek(&mut [0_u8; 1]).unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ));
-            client.write_all(fragment).unwrap();
-        }
-        client.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
-        let response: ForwardResponse =
-            serde_json::from_slice(&read_frame(&mut client).unwrap()).unwrap();
-        worker.join().unwrap();
-        assert_eq!(response.version, FORWARD_PROTOCOL_VERSION);
-        assert!(response.accepted);
         assert_eq!(receiver.try_recv().unwrap(), DesktopLaunchIntent::Focus);
         assert!(receiver.try_recv().is_err());
     }
