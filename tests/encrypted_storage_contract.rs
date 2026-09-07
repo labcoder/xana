@@ -18,7 +18,8 @@ fn reviewed_amalgamation_has_not_drifted() {
         ),
         (
             "sqlite3ext.h",
-            "a3ca6e430c8e97edf8cbd66867ac178ab179a41d85c04cad48889a8b84806dcd",
+            // Exact upstream/git bytes (LF), not a Windows checkout's CRLF copy.
+            "ac9645e5c9ff0cf176efdd6e75cb5e98f46295d38e02db5c4d208826a39ab4be",
         ),
     ] {
         let bytes = std::fs::read(root.join(file)).unwrap();

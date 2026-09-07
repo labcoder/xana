@@ -76,6 +76,38 @@ fn memory_corrupt_routing_and_oversized_blobs_fail_closed() {
 #[derive(Default)]
 pub(crate) struct Custody(Mutex<HashMap<Uuid, Zeroizing<Vec<u8>>>>);
 
+#[cfg(unix)]
+#[test]
+fn ancestor_aliases_open_but_database_symlinks_remain_rejected() {
+    use std::os::unix::fs::symlink;
+    let directory = tempfile::tempdir().unwrap();
+    let actual = directory.path().join("actual");
+    fs::create_dir(&actual).unwrap();
+    let alias = directory.path().join("alias");
+    symlink(&actual, &alias).unwrap();
+    let data = alias.join("data");
+    let recovery = RecoveryIdentity::generate();
+    let store = ProtectedStore::initialize(&data, &recovery, &Custody::default()).unwrap();
+    store
+        .set_document("alias-fixture", b"retained", 64)
+        .unwrap();
+    drop(store);
+    let store = ProtectedStore::recover(&data, &recovery).unwrap();
+    store.verify().unwrap();
+    drop(store);
+    let database = actual.join("data/protected/content.sqlite");
+    let moved = actual.join("saved.sqlite");
+    fs::rename(&database, &moved).unwrap();
+    symlink(&moved, &database).unwrap();
+    assert!(ProtectedStore::recover(&data, &recovery).is_err());
+    assert!(
+        fs::symlink_metadata(&database)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
 impl KeyCustody for Custody {
     fn load(&self, id: Uuid) -> Result<Option<Zeroizing<Vec<u8>>>> {
         Ok(self.0.lock().unwrap().get(&id).cloned())

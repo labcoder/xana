@@ -198,8 +198,19 @@ impl Database {
 
 fn connect(path: &Path, secrets: &Secrets) -> Result<Connection> {
     use std::fmt::Write;
+    // macOS /var and /tmp are legitimate ancestor aliases. Resolve only the
+    // directory: resolving the database itself would silently follow an attacker's
+    // replacement symlink and defeat SQLITE_OPEN_NOFOLLOW at the final component.
+    let parent = path
+        .parent()
+        .context("protected database has no parent")?
+        .canonicalize()?;
+    let path = parent.join(
+        path.file_name()
+            .context("protected database has no file name")?,
+    );
     let connection = Connection::open_with_flags(
-        path,
+        &path,
         OpenFlags::SQLITE_OPEN_READ_WRITE
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
             | OpenFlags::SQLITE_OPEN_NOFOLLOW,
