@@ -15,6 +15,8 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod qualification;
+
 struct Fixture {
     home: tempfile::TempDir,
     workspace: tempfile::TempDir,

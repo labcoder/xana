@@ -261,6 +261,19 @@ impl OpenAiCompatClient {
     }
 
     #[cfg(test)]
+    /// Fixture-only transport: never consult environment/OS proxies or follow
+    /// redirects. Callers still validate their explicitly selected endpoint.
+    pub(crate) fn with_fixture_direct_transport(mut self) -> Self {
+        self.client = crate::http_client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("static direct fixture HTTP client configuration is valid");
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_fixture_timeouts(
         mut self,
         response_start: Duration,
