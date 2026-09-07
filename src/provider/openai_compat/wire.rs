@@ -178,10 +178,29 @@ pub(super) struct WireStreamChoice {
 pub(super) struct WireDelta {
     #[serde(default)]
     pub(super) content: Option<String>,
-    #[serde(default, alias = "reasoning_content")]
+    #[serde(default)]
     pub(super) reasoning: Option<String>,
     #[serde(default)]
+    pub(super) reasoning_content: Option<String>,
+    #[serde(default)]
+    pub(super) reasoning_text: Option<String>,
+    #[serde(default)]
     pub(super) tool_calls: Option<Vec<WireToolCallDelta>>,
+}
+
+impl WireDelta {
+    /// Some compatible servers send more than one alias, often with empty
+    /// placeholders. Prefer one populated field; never duplicate the activity.
+    pub(super) fn take_reasoning(&mut self) -> Option<String> {
+        [
+            self.reasoning_content.take(),
+            self.reasoning.take(),
+            self.reasoning_text.take(),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|text| !text.is_empty())
+    }
 }
 
 #[derive(Debug, Deserialize)]

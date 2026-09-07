@@ -689,6 +689,12 @@ storage, and managed agent runtimes remain outside it. Native and managed
 composition are described in [Provider contracts](providers.md) and
 [Connections, models, and managed runtimes](models-and-managed-runtimes.md).
 
+The OpenAI-compatible adapter accepts coexisting `reasoning_content`, `reasoning`,
+and `reasoning_text` fields, preferring one populated field in that order. It
+streams that field to activity under a separate 2 MiB allowance; it does not add
+it to final answer text. Literal thinking tags inside untyped content are not
+stripped or interpreted as proof that arbitrary prose is internal reasoning.
+
 The native HTTP adapters share one incremental, line-oriented SSE decoder. It
 supports arbitrary chunk boundaries, LF and CRLF frames, comments, multi-line
 data, and bounded frames. Each adapter additionally caps aggregate text,

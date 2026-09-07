@@ -72,6 +72,61 @@ fn ollama_reasoning_delta_is_typed_separately_from_answer_text() {
 }
 
 #[test]
+fn reasoning_aliases_can_coexist_without_duplicating_or_hiding_literal_answer_text() {
+    for (fields, expected) in [
+        (
+            serde_json::json!({"reasoning":"","reasoning_content":"checking","reasoning_text":"duplicate"}),
+            "checking",
+        ),
+        (
+            serde_json::json!({"reasoning":"checking","reasoning_content":null}),
+            "checking",
+        ),
+        (serde_json::json!({"reasoning_text":"checking"}), "checking"),
+    ] {
+        let mut fields = fields;
+        fields["content"] = serde_json::json!("Literal example: `<think>x</think>` and </think>.");
+        let mut delta: WireDelta = serde_json::from_value(fields).unwrap();
+        assert_eq!(delta.take_reasoning().as_deref(), Some(expected));
+        assert_eq!(delta.take_reasoning(), None);
+        let mut stream = StreamAccumulator::default();
+        stream.observe_reasoning(expected).unwrap();
+        stream.apply(delta).unwrap();
+        assert_eq!(
+            stream.finish().unwrap(),
+            Message::text(
+                Role::Assistant,
+                "Literal example: `<think>x</think>` and </think>."
+            )
+        );
+    }
+}
+
+#[test]
+fn reasoning_is_bounded_independently_and_fresh_for_each_request() {
+    let mut stream = StreamAccumulator::default();
+    stream
+        .observe_reasoning(&"x".repeat(MAX_STREAMED_TEXT_BYTES))
+        .unwrap();
+    assert!(matches!(
+        stream.observe_reasoning("x"),
+        Err(StreamError::ReasoningTooLarge { .. })
+    ));
+    let mut stream = StreamAccumulator::default();
+    stream.observe_reasoning("checking").unwrap();
+    stream
+        .apply(WireDelta {
+            content: Some("answer".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        stream.finish().unwrap(),
+        Message::text(Role::Assistant, "answer")
+    );
+}
+
+#[test]
 fn decoder_rejects_incomplete_and_oversized_frames() {
     let mut incomplete = SseDecoder::default();
     assert!(
@@ -118,6 +173,7 @@ fn accumulator_joins_split_tool_identity_name_and_arguments() {
                 content: None,
                 reasoning: None,
                 tool_calls: Some(vec![delta]),
+                ..Default::default()
             })
             .expect("tool delta");
     }
@@ -147,6 +203,7 @@ fn accumulator_accepts_text_after_a_tool_delta_and_canonicalizes_the_message() {
                     arguments: Some(r#"{"path":"README.md"}"#.to_owned()),
                 }),
             }]),
+            ..Default::default()
         })
         .expect("tool delta");
 
@@ -156,6 +213,7 @@ fn accumulator_accepts_text_after_a_tool_delta_and_canonicalizes_the_message() {
                 content: Some("I will inspect it.".to_owned()),
                 reasoning: None,
                 tool_calls: None,
+                ..Default::default()
             })
             .expect("later text is a valid sibling field"),
         vec!["I will inspect it."]
@@ -188,6 +246,7 @@ fn accumulator_accepts_text_and_tools_in_the_same_delta() {
                     arguments: Some(r#"{"path":"."}"#.to_owned()),
                 }),
             }]),
+            ..Default::default()
         })
         .expect("sibling response fields");
 
@@ -213,6 +272,7 @@ fn accumulator_rejects_malformed_arguments_at_finish() {
                     arguments: Some("not JSON".to_owned()),
                 }),
             }]),
+            ..Default::default()
         })
         .expect("delta is accumulated before validation");
 

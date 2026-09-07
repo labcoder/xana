@@ -424,123 +424,125 @@ impl OpenAiCompatClient {
         })?;
         let request_affinity = request_affinity(&response);
 
-        let result = async {
-            let mut bytes = response.bytes_stream();
-            let mut decoder = SseDecoder::default();
-            let mut accumulator = StreamAccumulator::default();
-            let mut done = false;
-            let mut output_limited = false;
-            let mut unexpected_reasoning = false;
+        let result =
+            async {
+                let mut bytes = response.bytes_stream();
+                let mut decoder = SseDecoder::default();
+                let mut accumulator = StreamAccumulator::default();
+                let mut done = false;
+                let mut output_limited = false;
+                let mut unexpected_reasoning = false;
 
-            while let Some(chunk) = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
-                .await
-                .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "stream idle"))?
-            {
-                let chunk = chunk.map_err(|source| {
-                    OpenAiCompatError::http(
-                        OpenAiCompatErrorKind::Transport,
-                        &self.endpoint,
-                        source,
-                    )
-                })?;
-                for item in decoder
-                    .push(&chunk)
-                    .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+                while let Some(chunk) = tokio::time::timeout(self.stream_idle_timeout, bytes.next())
+                    .await
+                    .map_err(|_| OpenAiCompatError::timeout(&self.endpoint, "stream idle"))?
                 {
-                    match item {
-                        SseItem::Done => {
-                            done = true;
-                            break;
-                        }
-                        SseItem::Data(data) => {
-                            let response: WireStreamResponse = serde_json::from_slice(&data)
-                                .map_err(|source| {
-                                    OpenAiCompatError::stream(
-                                        &self.endpoint,
-                                        StreamError::InvalidJson(source),
-                                    )
-                                })?;
-                            let has_usage = response.usage.is_some();
-                            if let Some(usage) = response.usage {
-                                let prompt_details =
-                                    usage.prompt_tokens_details.unwrap_or_default();
-                                let completion_details =
-                                    usage.completion_tokens_details.unwrap_or_default();
-                                deltas.usage(ProviderUsage {
-                                    input_tokens: usage.prompt_tokens,
-                                    cached_input_tokens: prompt_details.cached_tokens,
-                                    cache_write_input_tokens: prompt_details.cache_write_tokens,
-                                    output_tokens: usage.completion_tokens,
-                                    reasoning_tokens: completion_details.reasoning_tokens,
-                                    tool_tokens: None,
-                                    total_tokens: usage.total_tokens,
-                                    cost_microunits: usage.cost.and_then(usd_microunits),
-                                    prompt_bytes,
-                                    tool_schema_bytes,
-                                    request_affinity,
-                                });
+                    let chunk = chunk.map_err(|source| {
+                        OpenAiCompatError::http(
+                            OpenAiCompatErrorKind::Transport,
+                            &self.endpoint,
+                            source,
+                        )
+                    })?;
+                    for item in decoder
+                        .push(&chunk)
+                        .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?
+                    {
+                        match item {
+                            SseItem::Done => {
+                                done = true;
+                                break;
                             }
-                            let Some(choice) = response.choices.into_iter().next() else {
-                                if has_usage {
-                                    continue;
+                            SseItem::Data(data) => {
+                                let response: WireStreamResponse = serde_json::from_slice(&data)
+                                    .map_err(|source| {
+                                        OpenAiCompatError::stream(
+                                            &self.endpoint,
+                                            StreamError::InvalidJson(source),
+                                        )
+                                    })?;
+                                let has_usage = response.usage.is_some();
+                                if let Some(usage) = response.usage {
+                                    let prompt_details =
+                                        usage.prompt_tokens_details.unwrap_or_default();
+                                    let completion_details =
+                                        usage.completion_tokens_details.unwrap_or_default();
+                                    deltas.usage(ProviderUsage {
+                                        input_tokens: usage.prompt_tokens,
+                                        cached_input_tokens: prompt_details.cached_tokens,
+                                        cache_write_input_tokens: prompt_details.cache_write_tokens,
+                                        output_tokens: usage.completion_tokens,
+                                        reasoning_tokens: completion_details.reasoning_tokens,
+                                        tool_tokens: None,
+                                        total_tokens: usage.total_tokens,
+                                        cost_microunits: usage.cost.and_then(usd_microunits),
+                                        prompt_bytes,
+                                        tool_schema_bytes,
+                                        request_affinity,
+                                    });
                                 }
-                                return Err(OpenAiCompatError::stream(
-                                    &self.endpoint,
-                                    StreamError::MissingChoice,
-                                ));
-                            };
-                            output_limited |= choice.finish_reason.as_deref() == Some("length");
-                            let mut delta = choice.delta;
-                            if let Some(reasoning) =
-                                delta.reasoning.take().filter(|text| !text.is_empty())
-                            {
-                                unexpected_reasoning |=
-                                    helper.is_some_and(|policy| policy.disable_reasoning);
-                                deltas.reasoning_delta(step_id, &reasoning);
-                            }
-                            for fragment in accumulator.apply(delta).map_err(|source| {
-                                OpenAiCompatError::stream(&self.endpoint, source)
-                            })? {
-                                deltas.text_delta(step_id, &fragment);
+                                let Some(choice) = response.choices.into_iter().next() else {
+                                    if has_usage {
+                                        continue;
+                                    }
+                                    return Err(OpenAiCompatError::stream(
+                                        &self.endpoint,
+                                        StreamError::MissingChoice,
+                                    ));
+                                };
+                                output_limited |= choice.finish_reason.as_deref() == Some("length");
+                                let mut delta = choice.delta;
+                                if let Some(reasoning) = delta.take_reasoning() {
+                                    accumulator.observe_reasoning(&reasoning).map_err(
+                                        |source| OpenAiCompatError::stream(&self.endpoint, source),
+                                    )?;
+                                    unexpected_reasoning |=
+                                        helper.is_some_and(|policy| policy.disable_reasoning);
+                                    deltas.reasoning_delta(step_id, &reasoning);
+                                }
+                                for fragment in accumulator.apply(delta).map_err(|source| {
+                                    OpenAiCompatError::stream(&self.endpoint, source)
+                                })? {
+                                    deltas.text_delta(step_id, &fragment);
+                                }
                             }
                         }
                     }
+                    if done {
+                        break;
+                    }
                 }
-                if done {
-                    break;
-                }
-            }
 
-            decoder
-                .finish()
-                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
-            if !done {
-                return Err(OpenAiCompatError::stream(
-                    &self.endpoint,
-                    StreamError::MissingDone,
-                ));
+                decoder
+                    .finish()
+                    .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))?;
+                if !done {
+                    return Err(OpenAiCompatError::stream(
+                        &self.endpoint,
+                        StreamError::MissingDone,
+                    ));
+                }
+                // Read through the terminal usage event before rejecting truncation.
+                // Even syntactically valid JSON at the cap is not a completed helper.
+                if helper.is_some() && output_limited {
+                    return Err(OpenAiCompatError {
+                        kind: OpenAiCompatErrorKind::OutputLimit,
+                        endpoint: self.endpoint.clone(),
+                        source: OpenAiCompatErrorSource::OutputLimit,
+                        response: None,
+                    });
+                }
+                if unexpected_reasoning {
+                    return Err(OpenAiCompatError::stream(
+                        &self.endpoint,
+                        StreamError::UnexpectedHelperReasoning,
+                    ));
+                }
+                accumulator
+                    .finish()
+                    .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))
             }
-            // Read through the terminal usage event before rejecting truncation.
-            // Even syntactically valid JSON at the cap is not a completed helper.
-            if helper.is_some() && output_limited {
-                return Err(OpenAiCompatError {
-                    kind: OpenAiCompatErrorKind::OutputLimit,
-                    endpoint: self.endpoint.clone(),
-                    source: OpenAiCompatErrorSource::OutputLimit,
-                    response: None,
-                });
-            }
-            if unexpected_reasoning {
-                return Err(OpenAiCompatError::stream(
-                    &self.endpoint,
-                    StreamError::UnexpectedHelperReasoning,
-                ));
-            }
-            accumulator
-                .finish()
-                .map_err(|source| OpenAiCompatError::stream(&self.endpoint, source))
-        }
-        .await;
+            .await;
         result.map_err(|error| error.with_response(response_metadata))
     }
 

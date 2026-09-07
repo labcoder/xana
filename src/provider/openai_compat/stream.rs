@@ -49,6 +49,7 @@ impl SseDecoder {
 #[derive(Debug, Default)]
 pub(super) struct StreamAccumulator {
     text: String,
+    reasoning_bytes: usize,
     tool_calls: BTreeMap<usize, PartialToolCall>,
     tool_bytes: usize,
 }
@@ -61,6 +62,17 @@ struct PartialToolCall {
 }
 
 impl StreamAccumulator {
+    /// Reasoning is streamed to activity, not retained in final text. Its own
+    /// allowance prevents an endless stream from evading the answer-size bound.
+    pub(super) fn observe_reasoning(&mut self, text: &str) -> Result<(), StreamError> {
+        self.reasoning_bytes = self.reasoning_bytes.saturating_add(text.len());
+        if self.reasoning_bytes > MAX_STREAMED_TEXT_BYTES {
+            return Err(StreamError::ReasoningTooLarge {
+                limit: MAX_STREAMED_TEXT_BYTES,
+            });
+        }
+        Ok(())
+    }
     pub(super) fn apply(&mut self, delta: WireDelta) -> Result<Vec<String>, StreamError> {
         let mut fragments = Vec::new();
         if let Some(text) = delta.content.filter(|text| !text.is_empty()) {
@@ -170,6 +182,9 @@ pub(super) enum StreamError {
     MissingChoice,
     MissingDone,
     UnexpectedHelperReasoning,
+    ReasoningTooLarge {
+        limit: usize,
+    },
     ResponseTextTooLarge {
         limit: usize,
     },
@@ -224,6 +239,9 @@ impl fmt::Display for StreamError {
             Self::ResponseTextTooLarge { limit } => {
                 write!(f, "streamed response text exceeds the {limit}-byte limit")
             }
+            Self::ReasoningTooLarge { limit } => {
+                write!(f, "streamed reasoning exceeds the {limit}-byte limit")
+            }
             Self::ToolDataTooLarge { limit } => {
                 write!(f, "streamed tool data exceeds the {limit}-byte limit")
             }
@@ -254,6 +272,7 @@ impl Error for StreamError {
             | Self::MissingChoice
             | Self::MissingDone
             | Self::UnexpectedHelperReasoning
+            | Self::ReasoningTooLarge { .. }
             | Self::ResponseTextTooLarge { .. }
             | Self::ToolDataTooLarge { .. }
             | Self::TooManyToolCalls { .. }
