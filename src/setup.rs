@@ -9,6 +9,7 @@ mod custom;
 mod desktop;
 mod readiness;
 mod state;
+mod storage;
 mod ui;
 
 pub(crate) use desktop::{
@@ -103,8 +104,9 @@ pub(crate) fn args_for_request(request: &str) -> Result<SetupArgs> {
             args.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes);
         }
         "appearance" => args.section = Some(crate::cli::SetupSectionChoice::Appearance),
+        "storage" => args.section = Some(crate::cli::SetupSectionChoice::Storage),
         value => bail!(
-            "unknown setup section {value:?}; use quick, full, blank, connection, permissions-shell, profiles-routes, or appearance"
+            "unknown setup section {value:?}; use quick, full, blank, connection, permissions-shell, profiles-routes, appearance, or storage"
         ),
     }
     Ok(args)
@@ -191,17 +193,22 @@ pub(crate) async fn run(
     profile: ResolvedPresentation,
 ) -> Result<SetupOutcome> {
     let rich = input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive;
+    let setup_ui = SetupUi { profile, rich };
+    // Keep non-secret lifecycle receipts outside the alternate-screen lifetime,
+    // including partial success followed by an export/configuration failure.
+    let mut receipts = Vec::new();
     if !rich {
         let result = run_once(
             args,
             paths,
             input_is_terminal,
-            output_is_terminal,
             input,
             output,
-            profile,
+            setup_ui,
+            &mut receipts,
         )
         .await;
+        ui::write_receipts(output, &receipts)?;
         return match result {
             Err(error) if error.downcast_ref::<SetupCancelled>().is_some() => {
                 writeln!(output, "Setup cancelled; no changes made.")?;
@@ -234,10 +241,10 @@ pub(crate) async fn run(
             &selected_args,
             paths,
             input_is_terminal,
-            output_is_terminal,
             input,
             output,
-            profile,
+            setup_ui,
+            &mut receipts,
         )
         .await
         {
@@ -251,6 +258,7 @@ pub(crate) async fn run(
     if let Err(error) = cleanup {
         return Err(error).context("could not restore the terminal after setup");
     }
+    ui::write_receipts(output, &receipts)?;
     match result {
         Err(error) if error.downcast_ref::<SetupCancelled>().is_some() => {
             writeln!(output, "Setup cancelled; no changes made.")?;
@@ -279,10 +287,10 @@ async fn run_once(
     args: &SetupArgs,
     paths: &XanaPaths,
     input_is_terminal: bool,
-    output_is_terminal: bool,
     input: &mut impl BufRead,
     output: &mut impl Write,
-    profile: ResolvedPresentation,
+    setup_ui: SetupUi,
+    receipts: &mut Vec<String>,
 ) -> Result<SetupOutcome> {
     if args.if_needed {
         bail!("--if-needed must be dispatched through Xana's readiness owner");
@@ -298,18 +306,18 @@ async fn run_once(
     if args.non_interactive && !args.dry_run && !args.yes {
         bail!("noninteractive setup requires --yes before changing durable state");
     }
-    let setup_ui = SetupUi {
-        profile,
-        rich: input_is_terminal && output_is_terminal && !args.plain && !args.non_interactive,
-    };
+    let profile = setup_ui.profile;
     let blank_available = crate::config::ConfigReadiness::inspect(paths.config_file())
         == crate::config::ConfigReadiness::Missing;
     let Some(args) = choose_setup_path(args, input, output, setup_ui, blank_available)? else {
         return Err(SetupCancelled.into());
     };
     let args = &args;
+    if args.section == Some(crate::cli::SetupSectionChoice::Storage) {
+        return storage::run(args, paths, input, output, setup_ui, receipts);
+    }
     if args.blank {
-        return run_blank_setup(args, paths, input, output, setup_ui);
+        return run_blank_setup(args, paths, input, output, setup_ui, receipts);
     }
     if args
         .section
@@ -410,6 +418,7 @@ async fn run_once(
             ui::preview_preferences(setup_ui, preferences)
         });
     let rendered = customization.config;
+    let storage = storage::fresh_plan(args, paths, input, output, setup_ui)?;
 
     let mut review = vec![
         format!("Connection   {}", draft.connection),
@@ -435,6 +444,7 @@ async fn run_once(
         review.push(format!("Reasoning    {effort}"));
     }
     review.push(format!("Permissions  {}", draft.permission_mode.as_str()));
+    review.push(storage.review());
     review.push(crate::memory::learning::DISCLOSURE.into());
     review.push(format!("Config       {}", paths.config_file().display()));
     for effect in &customization.effects {
@@ -458,6 +468,8 @@ async fn run_once(
         return Ok(SetupOutcome::Unchanged);
     }
 
+    storage.apply(paths, &crate::storage::OsCustody)?;
+    storage.record_receipt(receipts);
     let selection_path = paths.data_dir().join("selection.toml");
     install_with_preferences(
         paths.config_file(),
@@ -497,6 +509,7 @@ fn run_blank_setup(
     input: &mut impl BufRead,
     output: &mut impl Write,
     ui: SetupUi,
+    receipts: &mut Vec<String>,
 ) -> Result<SetupOutcome> {
     let allowed = SetupArgs {
         blank: true,
@@ -504,11 +517,13 @@ fn run_blank_setup(
         plain: args.plain,
         yes: args.yes,
         dry_run: args.dry_run,
+        legacy_storage: args.legacy_storage,
+        recovery_output: args.recovery_output.clone(),
         ..SetupArgs::default()
     };
     if *args != allowed {
         bail!(
-            "Blank setup accepts only --blank plus --plain, --non-interactive, --yes, or --dry-run; it cannot configure another domain"
+            "Blank setup accepts --plain, --non-interactive, --yes, --dry-run and storage choices; it cannot configure another domain"
         );
     }
     if crate::config::ConfigReadiness::inspect(paths.config_file())
@@ -518,11 +533,13 @@ fn run_blank_setup(
             "Blank is available only before a configuration exists; use `xana reset setup` before intentionally starting over"
         );
     }
+    let storage = storage::fresh_plan(args, paths, input, output, ui)?;
     let review = [
         "Connection   none".to_owned(),
         "Model        none".to_owned(),
         "Configuration not created".to_owned(),
         format!("Setup state  {}", paths.setup_state_file().display()),
+        storage.review(),
     ];
     if !ui.rich {
         writeln!(output)?;
@@ -546,6 +563,8 @@ fn run_blank_setup(
         writeln!(output, "No changes made.")?;
         return Ok(SetupOutcome::Unchanged);
     }
+    storage.apply(paths, &crate::storage::OsCustody)?;
+    storage.record_receipt(receipts);
     state::commit_blank(paths)?;
     Ok(SetupOutcome::Blank)
 }
@@ -1710,6 +1729,7 @@ mod tests {
             blank: true,
             non_interactive: true,
             yes: true,
+            legacy_storage: true, // This compatibility fixture never touches OS custody.
             ..SetupArgs::default()
         };
         let mut input = io::Cursor::new(Vec::<u8>::new());

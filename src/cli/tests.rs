@@ -1277,3 +1277,25 @@ fn no_banner_is_global() {
     assert!(bare.no_banner);
     assert!(init.no_banner);
 }
+#[test]
+fn managed_storage_cli_does_not_require_user_created_keys() {
+    for args in [
+        vec!["xana", "storage", "initialize"],
+        vec![
+            "xana", "storage", "migrate", "--apply", "--review", "digest",
+        ],
+        vec!["xana", "storage", "migrate", "--resume"],
+        vec!["xana", "setup", "--section", "storage"],
+        vec![
+            "xana",
+            "storage",
+            "recovery-export",
+            "--output",
+            "backup.key",
+        ],
+    ] {
+        assert!(Cli::try_parse_from(args).is_ok());
+    }
+    assert!(Cli::try_parse_from(["xana", "storage", "initialize", "--manual-unlock"]).is_err());
+    assert!(Cli::try_parse_from(["xana", "storage", "migrate", "--apply"]).is_err());
+}

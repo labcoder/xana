@@ -109,11 +109,37 @@ pub(crate) fn apply(
     apply_with(paths, identity, custody, review, |_| Ok(()))
 }
 
+pub(crate) fn apply_managed(
+    paths: &XanaPaths,
+    custody: &dyn KeyCustody,
+    review: &str,
+) -> Result<PathBuf> {
+    apply_inner(
+        paths,
+        &RecoveryIdentity::generate(),
+        custody,
+        review,
+        true,
+        |_| Ok(()),
+    )
+}
+
 fn apply_with(
     paths: &XanaPaths,
     identity: &RecoveryIdentity,
     custody: &dyn KeyCustody,
     review: &str,
+    fault: impl Fn(&str) -> Result<()>,
+) -> Result<PathBuf> {
+    apply_inner(paths, identity, custody, review, false, fault)
+}
+
+fn apply_inner(
+    paths: &XanaPaths,
+    identity: &RecoveryIdentity,
+    custody: &dyn KeyCustody,
+    review: &str,
+    managed: bool,
     fault: impl Fn(&str) -> Result<()>,
 ) -> Result<PathBuf> {
     let _config_lock = ConfigTransactionLock::acquire(paths.config_file())?;
@@ -137,7 +163,7 @@ fn apply_with(
     let id = Uuid::new_v4();
     let stage = sibling(paths.data_dir(), id, "prepared");
     // Recovery and custody are actually exercised before fencing the existing home.
-    let store = ProtectedStore::initialize(&stage, identity, custody)?;
+    let store = ProtectedStore::initialize_with(&stage, identity, custody, managed)?;
     store.set_document("migration/original-config", &original, 1024 * 1024)?;
     store.set_document(
         "migration/inventory",
@@ -177,6 +203,33 @@ pub(crate) fn resume(paths: &XanaPaths, identity: &RecoveryIdentity) -> Result<P
         "unsupported storage migration journal"
     );
     finish(paths, identity, &journal, &|_| Ok(()))
+}
+
+/// Resumes only the exact reviewed migration. It never generates replacement
+/// keys or treats a restore journal as a new migration.
+pub(crate) fn resume_managed(paths: &XanaPaths, custody: &dyn KeyCustody) -> Result<PathBuf> {
+    let _lock = ConfigTransactionLock::acquire(paths.config_file())?;
+    let journal: Journal = serde_json::from_slice(&crate::bounded_file::read(
+        &journal_path(paths.data_dir()),
+        4096,
+    )?)?;
+    ensure!(
+        journal.version == 1,
+        "unsupported storage migration journal"
+    );
+    let stage = sibling(paths.data_dir(), journal.id, "prepared");
+    let store = ProtectedStore::open(
+        if stage.exists() {
+            &stage
+        } else {
+            paths.data_dir()
+        },
+        custody,
+    )?;
+    ensure!(store.id() == journal.store, "migration generation differs");
+    let identity = store.managed_recovery_identity()?;
+    drop(store);
+    finish(paths, &identity, &journal, &|_| Ok(()))
 }
 
 fn finish(
@@ -388,7 +441,7 @@ fn inventory_bytes(entries: &[Entry]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub(super) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut output = atomic_write_file::AtomicWriteFile::open(path)?;
     output.write_all(bytes)?;
     output.commit()?;

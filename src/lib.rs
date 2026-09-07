@@ -114,18 +114,34 @@ fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
         _ => std::env::var_os("XANA_HOME"),
     };
     let paths = XanaPaths::resolve(home).context("could not resolve Xana paths")?;
-    let diagnostics_read_only = match &cli.command {
-        Some(
-            cli::Command::Doctor(_)
-            | cli::Command::Logs(_)
-            | cli::Command::Config(_)
-            | cli::Command::Capabilities(_)
-            | cli::Command::Storage(_),
-        ) => true,
-        Some(cli::Command::Setup(args)) => args.if_needed || args.dry_run,
-        Some(cli::Command::Reset(args)) => args.dry_run,
-        _ => false,
-    };
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("could not create Xana runtime")?;
+    // Bootstrap before writers create logs inside an otherwise empty data home.
+    // Reuse the application setup owner; normal chat diagnostics still start
+    // after a successful first setup, including that first conversation.
+    if cli.command.is_none()
+        && cli.print.is_none()
+        && config::ConfigReadiness::inspect(paths.config_file()) == config::ConfigReadiness::Missing
+        && setup::inspect_installation(&paths)? != setup::SetupInstallation::Blank
+    {
+        runtime.block_on(app::ensure_setup(&paths))?;
+    }
+    let diagnostics_read_only = !paths.config_file().exists()
+        || match &cli.command {
+            Some(
+                cli::Command::Doctor(_)
+                | cli::Command::Logs(_)
+                | cli::Command::Config(_)
+                | cli::Command::Capabilities(_)
+                | cli::Command::Storage(_),
+            ) => true,
+            // A migration cannot rename a generation containing our live log writer.
+            Some(cli::Command::Setup(_)) => true,
+            Some(cli::Command::Reset(args)) => args.dry_run,
+            _ => false,
+        };
     let diagnostic_runtime = if diagnostics_read_only {
         None
     } else {
@@ -189,10 +205,6 @@ fn run_cli_on_application_thread(mut cli: Cli) -> Result<()> {
             }
         }
     }
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context("could not create Xana runtime")?;
     let result = runtime.block_on(app::run(cli, paths));
     diagnostics::emit(diagnostics::DiagnosticFact::new(
         if result.is_ok() {

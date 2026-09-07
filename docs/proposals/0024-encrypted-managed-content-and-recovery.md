@@ -26,6 +26,16 @@ user-held recovery independent of the original machine. No vendor escrow,
 cloud-account requirement or plaintext fallback. An unlocked store changes no
 tool, client or source authority.
 
+Owner-approved onboarding amendment (2026-09-07): generate keys automatically for
+empty-home setup and optionally for reviewed existing-home migration. Offer
+Save recovery backup now or Later; disclose that without an independent export,
+machine/OS-key loss can make content unrecoverable. Retain recovery material only
+under encryption/OS custody until deliberate private export. Never print keys,
+silently downgrade protection, or rotate recovery identity on export. Preserve
+existing user-supplied keys. Show export status without claiming to verify
+off-device custody. Desktop may defer export with the warning and expose the
+terminal recovery-management path.
+
 Locking stops protected admission, pauses queued protected jobs, requests bounded
 safe cancellation/checkpoints, persists stopping/uncertain receipts while keys
 remain usable, detaches sensitive projections, then releases usable keys and
@@ -53,7 +63,7 @@ must be resolved or brought to the owner, not weakened silently.
 ## Migration and backup
 
 Use explicit format generations and one writer. Preflight space, custody and
-independent recovery; fence old writers; preserve IDs/artifact references;
+recovery-envelope verification (independent export may be deferred); fence old writers; preserve IDs/artifact references;
 verify the encrypted generation before atomic activation. Inject failures at
 write/flush/activation boundaries. Every interruption leaves a resumable or
 clearly recoverable state; older binaries must not silently write new formats.
@@ -72,7 +82,7 @@ requires deliberate user intent and a clear disclosed destination.
 ## Rationale and implementation
 
 [ADR 0004](../adr/0004-protect-managed-content-with-independent-recovery.md)
-records the privacy/recovery tradeoff. Fresh opt-in homes now use the
+records the privacy/recovery tradeoff and automatic-onboarding amendment. Fresh setup now uses the
 [protected storage facade](../architecture/protected-storage.md), including
 native records, private metadata, artifacts and explicit lock/recovery controls.
 Existing homes remain plaintext until the owner explicitly reviews and applies

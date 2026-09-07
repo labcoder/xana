@@ -37,3 +37,18 @@ usable keys. Backups and restore obey forgetting exclusions; external copies
 and OS/vendor stores remain explicit exceptions, not erased by policy wording.
 
 See the [accepted storage contract](../proposals/0024-encrypted-managed-content-and-recovery.md).
+
+## Owner-approved onboarding amendment — 2026-09-07
+
+Requiring people to create and manage a recovery key before using memory imposed
+too much onboarding friction. Empty-home setup now generates keys and uses OS
+custody automatically. Reviewed migration can use the same managed-key path.
+The owner accepts **Save recovery backup now** or **Later**, with a visible
+machine/OS-key-loss warning. Independent recovery remains supported, but is not
+assured until the user deliberately exports and retains a separate backup.
+
+The generated recovery identity stays encrypted in the content database until
+export. Nothing prints it or places an automatic plaintext copy beside the data.
+Exports reuse the same identity so prior snapshots remain recoverable. Existing
+user-supplied-key workflows remain valid. No fallback to plaintext, vendor escrow,
+cloud requirement, or implicit existing-home migration follows from this change.

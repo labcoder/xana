@@ -171,6 +171,10 @@ pub(super) fn choose_setup_path(
                 "Appearance",
                 "theme, glyphs, motion, composer, and activity",
             ),
+            SelectOption::new(
+                "Storage and memory",
+                "automatic encryption, reviewed migration, and recovery backup",
+            ),
             SelectOption::new("Cancel", "leave durable state unchanged"),
         ]);
         let Some(choice) = select(output, ui, "Choose a setup path", &options, 0)? else {
@@ -189,7 +193,8 @@ pub(super) fn choose_setup_path(
                 1 => selected.section = Some(crate::cli::SetupSectionChoice::PermissionsShell),
                 2 => selected.section = Some(crate::cli::SetupSectionChoice::ProfilesRoutes),
                 3 => selected.section = Some(crate::cli::SetupSectionChoice::Appearance),
-                4 => return Ok(None),
+                4 => selected.section = Some(crate::cli::SetupSectionChoice::Storage),
+                5 => return Ok(None),
                 _ => unreachable!("selector returned an unknown setup path"),
             }
         }
@@ -247,6 +252,10 @@ pub(super) fn choose_setup_path(
             "Appearance",
             "theme, glyphs, motion, composer, and activity",
         ),
+        (
+            "Storage and memory",
+            "automatic encryption, reviewed migration, and recovery backup",
+        ),
     ] {
         write_setup_choice(output, ui.profile, next, label, detail, false)?;
         next += 1;
@@ -286,6 +295,9 @@ pub(super) fn choose_setup_path(
             if value == (6 + usize::from(blank_available)).to_string() || value == "appearance" =>
         {
             selected.section = Some(crate::cli::SetupSectionChoice::Appearance);
+        }
+        value if value == (7 + usize::from(blank_available)).to_string() || value == "storage" => {
+            selected.section = Some(crate::cli::SetupSectionChoice::Storage);
         }
         value if value == next.to_string() || value == "cancel" => return Ok(None),
         _ => bail!("unknown setup path; use 1 through {next}"),
@@ -911,6 +923,13 @@ fn write_setup_choice(
     )
 }
 
+pub(super) fn write_receipts(output: &mut impl Write, receipts: &[String]) -> io::Result<()> {
+    for line in receipts {
+        writeln!(output, "{line}")?;
+    }
+    Ok(())
+}
+
 pub(super) fn write_completion_receipt(
     output: &mut impl Write,
     paths: &XanaPaths,
@@ -936,7 +955,7 @@ pub(super) fn write_completion_receipt(
     writeln!(output)?;
     writeln!(
         output,
-        "Xana committed the reviewed setup changes atomically."
+        "Xana completed the reviewed setup. Configuration replacement is atomic; storage transitions are verified and recoverable."
     )?;
     writeln!(output, "  Config:      {}", paths.config_file().display())?;
     if paths.config_file().with_extension("toml.bak").exists() {
@@ -947,6 +966,11 @@ pub(super) fn write_completion_receipt(
         )?;
     }
     writeln!(output, "  Data:        {}", paths.data_dir().display())?;
+    writeln!(
+        output,
+        "  Protection:  {}",
+        crate::storage::recovery::summary(paths.data_dir())
+    )?;
     writeln!(output, "  Cache:       {}", paths.cache_dir().display())?;
     writeln!(
         output,
@@ -956,6 +980,10 @@ pub(super) fn write_completion_receipt(
     writeln!(output, "Configuration:")?;
     writeln!(output, "  xana setup          Re-run guided setup")?;
     writeln!(output, "  xana setup --quick  Go directly to Quick Setup")?;
+    writeln!(
+        output,
+        "  xana setup --section storage  Protection and recovery backup"
+    )?;
     writeln!(
         output,
         "  xana config check   Validate the active configuration"
@@ -1000,7 +1028,7 @@ pub(super) fn write_blank_completion_receipt(
     writeln!(output)?;
     writeln!(
         output,
-        "Xana is initialized without a provider, connection, model, or credential."
+        "Xana is initialized without a provider, connection, model, or provider credential."
     )?;
     writeln!(
         output,
@@ -1008,6 +1036,11 @@ pub(super) fn write_blank_completion_receipt(
         paths.setup_state_file().display()
     )?;
     writeln!(output, "  Data:        {}", paths.data_dir().display())?;
+    writeln!(
+        output,
+        "  Protection:  {}",
+        crate::storage::recovery::summary(paths.data_dir())
+    )?;
     writeln!(output)?;
     writeln!(output, "Next:")?;
     writeln!(

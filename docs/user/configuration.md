@@ -217,6 +217,7 @@ xana setup --section permissions-shell
 xana setup --section profiles-routes
 xana setup --section appearance
 xana setup --section connection
+xana setup --section storage
 ```
 
 The connection section performs the same live availability and catalog checks
@@ -224,6 +225,11 @@ as Quick Setup, then structurally replaces only the chosen provider and
 default profile selection while preserving comments and unrelated config.
 Permissions/shell and profiles/routes use comment-preserving structured TOML
 edits. Appearance writes only `data/frontend/presentation.toml`.
+Storage reviews encryption/migration and recovery backup independently of model
+setup. Empty-home setup protects content with generated OS-managed keys by
+default; existing homes are never implicitly migrated. See
+[protected storage](protected-storage.md) for Save recovery backup now/Later,
+loss warnings, noninteractive choices and the manual-key compatibility path.
 
 An exact noninteractive example is:
 

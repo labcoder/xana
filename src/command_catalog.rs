@@ -1330,7 +1330,7 @@ pub(crate) const COMMANDS: &[CommandSpec] = &[
         Setup,
         "setup",
         &[],
-        "[quick|full|blank|connection|permissions-shell|profiles-routes|appearance]",
+        "[quick|full|blank|connection|permissions-shell|profiles-routes|appearance|storage]",
         "Run guided or focused setup",
         ArgumentSchema::Optional("section"),
         Owner,

@@ -2,40 +2,71 @@
 
 > Audience: People using Xana's encrypted local content store.
 
-Protected storage is opt-in. Existing homes remain unchanged until an explicitly
+Setup protects empty homes by default. Existing homes remain unchanged until an explicitly
 reviewed migration. `xana storage status` inspects the format without
 unlocking it. `xana doctor` distinguishes legacy, locked, unavailable-key and
 invalid protected storage. No unavailable protected store falls back to plaintext.
 
-Ordinary first-time setup configures connections, not encryption. It does not
-silently generate a recovery key or enable personal memory. A new user who wants
-protected memory from the start should initialize an empty home **before** setup,
-as below. If setup/chat has already created data, use the reviewed migration path.
+You do not need to invent a password or create a security key. Xana generates
+the keys and keeps normal unlock in your operating system's credential store.
+This enables protected memory storage, not permission for extra provider calls.
 
 ## Start a fresh protected home
 
-First choose an empty isolated Xana home. Keep the independent recovery key
-outside its managed data directory, preferably backed up on another medium:
+Start setup in an empty Xana home:
 
 ```text
-xana storage recovery-key --output /absolute/separate/location/xana-recovery.txt
-xana storage initialize --recovery-key /absolute/separate/location/xana-recovery.txt
 xana setup
+xana storage status
 xana
 ```
 
 For repository development, prefix commands with `cargo run --` and use the
 platform's absolute path syntax. Set `XANA_HOME` to the intended isolated home
-before these commands. Initialization refuses existing data. The recovery-key
-file is create-only and owner-accessible (Unix 0600 or a protected Windows DACL).
+before these commands. Setup offers **Save recovery backup now** or **Later**.
+Xana generates the backup; you only choose a new absolute file path outside the
+managed data directory. The exported key is create-only and owner-accessible
+(Unix 0600 or a protected Windows DACL).
 Anyone who obtains it **and** the encrypted store can recover the content.
 Do not put it in a chat, source repository, support bundle or shared folder.
+This exports a recovery **key**, not a copy of your conversations; keep encrypted
+data backups too (see [backups and reviewed restore](#backups-and-reviewed-restore)).
 
 Normal startup unlocks through local Windows Credential Manager, macOS
 Keychain, or Linux Secret Service, without authenticating every turn or file.
 Unavailable custody is an error, not permission to write unencrypted data.
-`--manual-unlock` on initialization deliberately skips OS custody; for each
-launch set `XANA_STORAGE_RECOVERY_KEY` to the independent key **file path**.
+With **Later**, the recovery identity remains inside the encrypted database.
+It is not an independent backup: losing the OS key can make the data
+unrecoverable even if the encrypted files remain. Export later with:
+
+```text
+xana setup --section storage
+# Or choose the exact destination directly:
+xana storage recovery-export --output /absolute/separate/location/xana-recovery.txt
+```
+
+Export does not rotate the key, so it also recovers older encrypted snapshots.
+`storage status`, Settings Overview and `doctor` show whether an export has been
+recorded. They cannot verify that you retained the file or backed it up off-device.
+Keys are never printed or automatically written as plaintext next to the database.
+
+Desktop setup also protects empty homes, deferring the recovery export with a
+visible warning. Use the terminal storage setup above for backup export or
+existing-home migration; the Desktop Settings Overview shows protection status.
+Noninteractive setup defaults to deferred export; pass `--recovery-output PATH`
+to save it explicitly. `--legacy-storage` deliberately retains legacy behavior
+for an empty terminal setup; it never downgrades a protected home. The deprecated
+`init` command remains a configuration-only compatibility path.
+
+For advanced/manual custody, existing explicit-key commands remain supported:
+
+```text
+xana storage recovery-key --output /absolute/separate/location/xana-recovery.txt
+xana storage initialize --recovery-key /absolute/separate/location/xana-recovery.txt --manual-unlock
+```
+
+`--manual-unlock` deliberately skips OS custody; for each launch set
+`XANA_STORAGE_RECOVERY_KEY` to the independent key **file path**.
 That variable explicitly selects recovery-file unlock, not a fallback or an
 inline secret. It does not bypass an explicit lock.
 
@@ -43,17 +74,13 @@ inline secret. It does not bypass an explicit lock.
 
 Open a separate PowerShell window in the Xana checkout. These environment
 changes apply only to that window; closing it returns you to your usual home.
-Each run chooses a new test directory outside the repository. The recovery key
-is a sibling of the home, never inside its managed data:
+Each run chooses a new test directory outside the repository:
 
 ```powershell
 $xanaTestRoot = Join-Path $env:LOCALAPPDATA ('XanaTests/' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $xanaTestRoot | Out-Null
 $env:XANA_HOME = Join-Path $xanaTestRoot 'home'
-$xanaRecovery = Join-Path $xanaTestRoot 'recovery.key'
 Remove-Item Env:XANA_STORAGE_RECOVERY_KEY -ErrorAction SilentlyContinue
-cargo run -- storage recovery-key --output $xanaRecovery
-cargo run -- storage initialize --recovery-key $xanaRecovery
 cargo run -- setup
 cargo run -- storage status
 cargo run
@@ -64,9 +91,9 @@ requires a connection again; an isolated Xana home does not isolate third-party
 accounts such as Codex login. Ollama with an already downloaded model is a useful
 local test route. Do not reuse or overwrite your normal recovery key.
 
-To test ordinary fresh setup **without** protected storage instead, choose another
-new test root/home using the first four lines above, then run `cargo run -- setup`
-without recovery-key generation or initialization. Chat works, but personal
+To test fresh setup **without** protected storage instead, choose another
+new test root/home, then run `cargo run -- setup --legacy-storage`.
+Chat works, but personal
 memory remains unavailable. It should not require migration merely to chat.
 
 Suggested memory checks: ask for an unknown name (no save), explicitly remember
@@ -88,8 +115,8 @@ xana storage unlock --recovery-key /absolute/separate/location/xana-recovery.txt
 
 `--remember` restores local OS custody after verified independent recovery.
 Without it, subsequent opens still need custody or the explicit recovery-file
-environment setting. A lost OS credential is recoverable; losing both custody
-and the recovery key is not.
+environment setting. A lost OS credential is recoverable only with a separately
+saved recovery key; losing both custody and the recovery key is not.
 
 ## Locking and active work
 
@@ -138,11 +165,24 @@ remain readable without automatic mutation.
 
 Close every Xana client/host using that home. First finish any pending
 `xana config migrate --apply` transaction and resolve invalid private records
-reported by doctor. Keep an independent recovery key outside the data directory.
+reported by doctor. The guided flow previews the inventory and asks for approval
+before converting anything. Choose Save recovery backup now or Later; no
+user-created key is required:
+
+```text
+xana setup --section storage
+xana storage verify
+```
+
+For your normal home from this checkout, close Xana and run
+`cargo run -- setup --section storage`, then `cargo run -- storage status`.
+Restart Xana afterward so the conversation attaches to protected storage.
+
+The scriptable path remains available:
 
 ```text
 xana storage migrate
-xana storage migrate --apply --review DIGEST_FROM_PREVIEW --recovery-key /separate/recovery.key
+xana storage migrate --apply --review DIGEST_FROM_PREVIEW
 xana storage verify
 ```
 
@@ -151,14 +191,18 @@ invalidate approval. Conversion preserves Conversation/record IDs, managed
 handles, project state, artifact references and original recency. Config schema
 5 fences old binaries. A restart journal and exclusive writer checks prevent
 competing writes while the verified encrypted generation is activated.
-Add `--manual-unlock` to deliberately select recovery-file rather than OS custody.
+Pass `--recovery-key PATH` to retain an existing user-owned-key workflow; add
+`--manual-unlock` to deliberately select recovery-file rather than OS custody.
 
-After interruption, use the same independent key:
+After interruption, reopen `xana setup --section storage` or resume directly.
+Automatically managed migrations recover their original key through OS custody:
 
 ```text
-xana storage migrate --resume --recovery-key /separate/recovery.key
+xana storage migrate --resume
 ```
 
+For a migration started with a user-supplied key, resume with that same
+`--recovery-key PATH`; Xana never invents a replacement key.
 The command reports the retained `data.legacy.UUID` plaintext generation.
 **It is not deleted automatically and is not encrypted retroactively.** Check
 recovery and your records before deciding whether to remove it. Secure SSD

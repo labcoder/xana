@@ -8,6 +8,24 @@ bundle behind an `Arc<Mutex<Option<Database>>>`. Clones share revocation, not a
 process-global key cache. The composition edge selects OS custody or the explicit
 recovery-file environment setting. `Agent` remains unaware of either.
 
+Fresh terminal and Desktop setup initialize empty homes with generated keys and
+OS custody; existing data requires explicit reviewed migration. Terminal setup's
+Storage section owns save-now/later recovery choice and migration review, sharing
+the same storage mechanisms as CLI and Desktop. No cryptography runs in rendering.
+Desktop defers recovery export with a warning and points to terminal management.
+
+`storage::recovery` retains the generated age identity as an encrypted SQLCipher
+document, not a plaintext sidecar or new OS credential format. A deliberately
+created private export verifies against the existing recovery envelope; it never
+rotates identity, preserving recovery of earlier backups. Export is serialized
+with handle revocation. Optional `protected/recovery-status` metadata records
+pending/exported (no secret or destination path); absent metadata denotes the
+older user-supplied-key workflow. Snapshots include this optional receipt, but
+an export receipt cannot attest off-device custody. Without export, machine/OS
+key loss can be unrecoverable. Migration resume retrieves the original generated
+identity from the exact journal generation using OS custody, then invokes the
+existing verified/fenced activation path; it never generates a replacement.
+
 `usage_budget` receives an owned store and dispatch attribution from composition;
 `storage::usage` serializes admission and settlement in immediate transactions.
 Per-request receipts, conservative unknown reservations and managed cumulative

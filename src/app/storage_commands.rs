@@ -96,45 +96,45 @@ pub(super) fn run(
             manual_unlock,
         } => {
             if *resume {
-                let key =
-                    read_recovery_key(recovery_key.as_deref().context("recovery key required")?)?;
-                let retained = crate::storage::migration::resume(paths, &key)?;
+                let retained = if let Some(path) = recovery_key {
+                    crate::storage::migration::resume(paths, &read_recovery_key(path)?)?
+                } else {
+                    crate::storage::migration::resume_managed(paths, &OsCustody)?
+                };
                 writeln!(
                     output,
                     "Protected migration recovered. Plaintext legacy generation retained at {}. No secure erasure or automatic effect replay.",
                     retained.display()
                 )?;
             } else if *apply {
-                ensure_independent_key(
-                    data,
-                    recovery_key.as_deref().context("recovery key required")?,
-                )?;
-                let key =
-                    read_recovery_key(recovery_key.as_deref().context("recovery key required")?)?;
-                let custody: &dyn crate::storage::KeyCustody = if *manual_unlock {
-                    &crate::storage::RecoveryOnlyCustody
+                let review = review
+                    .as_deref()
+                    .context("preview migration first and pass --review DIGEST")?;
+                let retained = if let Some(path) = recovery_key {
+                    ensure_independent_key(data, path)?;
+                    let key = read_recovery_key(path)?;
+                    let custody: &dyn crate::storage::KeyCustody = if *manual_unlock {
+                        &crate::storage::RecoveryOnlyCustody
+                    } else {
+                        &OsCustody
+                    };
+                    crate::storage::migration::apply(paths, &key, custody, review)?
                 } else {
-                    &OsCustody
+                    ensure!(!manual_unlock, "manual unlock requires a recovery key file");
+                    crate::storage::migration::apply_managed(paths, &OsCustody, review)?
                 };
-                let retained = crate::storage::migration::apply(
-                    paths,
-                    &key,
-                    custody,
-                    review
-                        .as_deref()
-                        .context("preview migration first and pass --review DIGEST")?,
-                )?;
                 writeln!(
                     output,
                     "Protected migration verified and activated. Plaintext legacy generation retained at {}. Remove it only after independently checking recovery; secure SSD erasure is not promised.",
                     retained.display()
                 )?;
+                write_recovery_status(data, output)?;
             } else {
                 let plan = crate::storage::migration::preview(paths)?;
                 serde_json::to_writer_pretty(&mut *output, &plan)?;
                 writeln!(
                     output,
-                    "\nNo changes made. Preserve the legacy copy; review unknown archived files before applying."
+                    "\nNo changes made. Preserve the legacy copy; review unknown archived files before applying. Without --recovery-key, Xana manages keys automatically in OS custody. Save a recovery backup afterward: without it, losing OS custody can make your data unrecoverable. For guided review use `xana setup --section storage`."
                 )?;
             }
         }
@@ -196,15 +196,18 @@ pub(super) fn run(
                 output,
                 "Storage: legacy (not application-encrypted). No migration has been performed."
             )?,
-            StorageStatus::Protected { id, locked } => writeln!(
-                output,
-                "Storage: protected {id}; {}",
-                if locked {
-                    "locked"
-                } else {
-                    "OS unlock available subject to custody"
-                }
-            )?,
+            StorageStatus::Protected { id, locked } => {
+                writeln!(
+                    output,
+                    "Storage: protected {id}; {}",
+                    if locked {
+                        "locked"
+                    } else {
+                        "OS unlock available subject to custody"
+                    }
+                )?;
+                write_recovery_status(data, output)?;
+            }
         },
         StorageCommand::RecoveryKey {
             output: destination,
@@ -233,27 +236,44 @@ pub(super) fn run(
                 destination.display()
             )?;
         }
+        StorageCommand::RecoveryExport {
+            output: destination,
+        } => {
+            ProtectedStore::configured(data)?
+                .context("protected storage required")?
+                .export_recovery(destination)?;
+            writeln!(
+                output,
+                "Recovery backup saved at {}. Keep it private and copy it to a separate safe location; anyone with it and your encrypted data can recover the content.",
+                destination.display()
+            )?;
+        }
         StorageCommand::Initialize {
             recovery_key,
             manual_unlock,
         } => {
-            ensure_independent_key(data, recovery_key)?;
-            let identity = read_recovery_key(recovery_key)?;
             ensure!(
                 !data.exists() || std::fs::read_dir(data)?.next().is_none(),
                 "existing Xana data requires reviewed storage migration; no changes made"
             );
             let _config_lock = crate::config::ConfigTransactionLock::acquire(paths.config_file())?;
             crate::storage::migration::fence_config(paths)?;
-            let custody: &dyn crate::storage::KeyCustody = if *manual_unlock {
-                &crate::storage::RecoveryOnlyCustody
+            let store = if let Some(recovery_key) = recovery_key {
+                ensure_independent_key(data, recovery_key)?;
+                let identity = read_recovery_key(recovery_key)?;
+                let custody: &dyn crate::storage::KeyCustody = if *manual_unlock {
+                    &crate::storage::RecoveryOnlyCustody
+                } else {
+                    &OsCustody
+                };
+                ProtectedStore::initialize(data, &identity, custody)?
             } else {
-                &OsCustody
+                ensure!(!manual_unlock, "manual unlock requires a recovery key file");
+                ProtectedStore::initialize_managed(data, &OsCustody)?
             };
-            let store = ProtectedStore::initialize(data, &identity, custody)?;
             writeln!(
                 output,
-                "Protected store {} initialized. {} Independent recovery verified; existing homes were not migrated.",
+                "Protected store {} initialized. {} Recovery envelope verified; existing homes were not migrated.",
                 store.id(),
                 if *manual_unlock {
                     "Portable manual unlock selected; set XANA_STORAGE_RECOVERY_KEY to the independent key file for each launch."
@@ -261,6 +281,7 @@ pub(super) fn run(
                     "OS custody verified."
                 }
             )?;
+            write_recovery_status(data, output)?;
         }
         StorageCommand::Verify => {
             ProtectedStore::configured(data)?
@@ -306,6 +327,24 @@ pub(super) fn run(
             )?;
         }
     }
+    Ok(())
+}
+
+fn write_recovery_status(data: &Path, output: &mut dyn Write) -> Result<()> {
+    writeln!(
+        output,
+        "Key management: {}. Explicit manual-unlock homes still require their recovery file.",
+        crate::storage::recovery::custody_label()
+    )?;
+    writeln!(
+        output,
+        "Recovery backup: {}",
+        crate::storage::recovery::status(data)?.description()
+    )?;
+    writeln!(
+        output,
+        "Manage protection and backup: xana setup --section storage"
+    )?;
     Ok(())
 }
 

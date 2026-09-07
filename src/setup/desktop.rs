@@ -77,6 +77,7 @@ pub(crate) async fn commit_for_desktop(
         .context("could not render the validated setup configuration")?;
     let rendered = super::custom::merge_existing_connection_if_valid(paths, rendered)
         .context("could not merge the setup connection into existing configuration")?;
+    super::storage::FreshPlan::automatic(paths)?.apply(paths, &crate::storage::OsCustody)?;
     let selection_path = paths.data_dir().join("selection.toml");
     let stored = match (&concrete.credential, concrete.staged_secret.as_ref()) {
         (SetupCredential::Stored { id }, Some(secret)) => Some((id.as_str(), secret)),
@@ -110,6 +111,12 @@ pub(crate) async fn commit_for_desktop(
 }
 
 pub(crate) fn commit_blank_for_desktop(paths: &XanaPaths) -> Result<()> {
+    anyhow::ensure!(
+        crate::config::ConfigReadiness::inspect(paths.config_file())
+            == crate::config::ConfigReadiness::Missing,
+        "blank setup requires an unconfigured home"
+    );
+    super::storage::FreshPlan::automatic(paths)?.apply(paths, &crate::storage::OsCustody)?;
     super::state::commit_blank(paths)
 }
 

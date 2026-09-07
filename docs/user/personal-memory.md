@@ -63,8 +63,11 @@ unavailable tool stops the loop even if its arguments change. This bounds retrie
 not the selected model's generation time or comprehension.
 No plaintext substitute or automatic migration is created.
 `xana doctor` and `xana storage status` report readiness.
-`xana storage migrate` previews an existing-home migration; applying it requires
-your recovery key and exact reviewed digest. From this checkout use
+`xana setup --section storage` reviews an existing-home migration and generates
+OS-managed keys for you, with a save-now/later recovery-backup choice.
+Fresh setup protects empty homes automatically. The scriptable `storage migrate`
+path still requires an exact reviewed digest, but not a user-created key.
+From this checkout use
 `cargo run -- storage status`. There is no extra authentication while the
 protected home is already unlocked.
 

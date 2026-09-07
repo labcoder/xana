@@ -178,7 +178,9 @@ pub(super) fn run_section(
             )?;
             "new conversation (profile/route snapshot changed)"
         }
-        SetupSectionChoice::Connection | SetupSectionChoice::Appearance => unreachable!(),
+        SetupSectionChoice::Connection
+        | SetupSectionChoice::Appearance
+        | SetupSectionChoice::Storage => unreachable!(),
     };
     let rendered = validate_document(document)?;
     let mut review = vec![
@@ -742,6 +744,7 @@ fn section_name(section: SetupSectionChoice) -> &'static str {
         SetupSectionChoice::PermissionsShell => "permissions/shell",
         SetupSectionChoice::ProfilesRoutes => "profiles/routes",
         SetupSectionChoice::Appearance => "appearance",
+        SetupSectionChoice::Storage => "storage",
     }
 }
 

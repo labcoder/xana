@@ -903,6 +903,10 @@ fn diagnostic_commands_list_and_export_metadata_without_starting_another_log() {
     let directory = tempdir().expect("temporary Xana home");
     let home = canonical_temp_root(&directory).join("xana-home");
     init_native(&home, "http://127.0.0.1:9/v1");
+    // Setup must not write logs into an empty home before protection is planned.
+    // An ordinary application launch owns diagnostics; EOF makes no model call.
+    let launch = xana(&home).stdin(Stdio::null()).output().unwrap();
+    assert_success(&launch);
 
     let listed = xana(&home)
         .args(["logs", "list"])
@@ -1588,4 +1592,27 @@ fn a_second_process_cannot_start_a_competing_workspace_root() {
     worker.join().expect("blocking provider worker");
     assert_success(&first);
     assert_eq!(String::from_utf8_lossy(&first.stdout), "finished\n");
+}
+#[test]
+fn invalid_recovery_setup_never_creates_logs_or_misclassifies_a_fresh_home() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("fresh");
+    let output = xana(&home)
+        .args([
+            "setup",
+            "--blank",
+            "--non-interactive",
+            "--yes",
+            "--recovery-output",
+            "relative.key",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("absolute destination"));
+    assert!(
+        !home.exists(),
+        "setup must not create logs before reviewing fresh protection"
+    );
 }

@@ -17,6 +17,7 @@ mod learning;
 mod memory;
 mod priority;
 mod recall;
+pub(crate) mod recovery;
 mod retained;
 #[cfg(test)]
 pub(crate) use history::AdmissionFault;
@@ -182,6 +183,21 @@ impl ProtectedStore {
         recovery: &RecoveryIdentity,
         custody: &dyn KeyCustody,
     ) -> Result<Self> {
+        Self::initialize_with(data_dir, recovery, custody, false)
+    }
+
+    /// Automatic custody retains the recovery identity only inside SQLCipher.
+    /// It is not an independent backup until the owner explicitly exports it.
+    pub(crate) fn initialize_managed(data_dir: &Path, custody: &dyn KeyCustody) -> Result<Self> {
+        Self::initialize_with(data_dir, &RecoveryIdentity::generate(), custody, true)
+    }
+
+    fn initialize_with(
+        data_dir: &Path,
+        recovery: &RecoveryIdentity,
+        custody: &dyn KeyCustody,
+        managed: bool,
+    ) -> Result<Self> {
         fs::create_dir_all(data_dir).context("could not create Xana data directory")?;
         ensure!(
             fs::read_dir(data_dir)?.next().is_none(),
@@ -207,6 +223,10 @@ impl ProtectedStore {
                 *recovered.database == *database.secrets.database,
                 "recovery verification differs"
             );
+            if managed {
+                recovery::retain_identity(&database.connection, recovery)?;
+                write_new_synced(&root.join(recovery::STATUS_FILE), b"pending\n")?;
+            }
             database.verify()?;
             custody.store(id, &database.secrets.encode()?)?;
             fs::rename(root.join("pending.json"), root.join("store.json"))?;

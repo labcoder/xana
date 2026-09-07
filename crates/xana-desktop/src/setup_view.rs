@@ -344,6 +344,9 @@ impl SetupView {
             .child(div().text_color(cx.theme().muted_foreground).child(
                 "Choose how much to configure now. Xana does not recommend or preselect a vendor.",
             ))
+            .child(div().text_color(cx.theme().muted_foreground).child(
+                "An empty home is encrypted with OS-managed keys. Recovery backup starts as Later: losing the OS key can make data unrecoverable. Save a private backup with xana setup --section storage. Existing homes are not migrated automatically.",
+            ))
             .children(options.into_iter().map(|(mode, title, description)| {
                 Button::new(format!("setup-mode-{mode:?}"))
                     .w_full()
@@ -547,6 +550,7 @@ impl SetupView {
                     .unwrap_or_else(|| "Not selected".to_owned()),
             ),
             ("Permissions", self.permission.id().to_owned()),
+            ("Storage", "Empty homes use encrypted storage and OS-managed keys. Recovery backup is deferred; use xana setup --section storage to save it. Until then, losing the OS key can make data unrecoverable. Existing homes are unchanged.".into()),
             ("Personal memory", "Automatic learning is disclosed and optional; disable learning independently in Memory controls. Without an explicitly authorized native helper, sources stay pending. No ambient computer monitoring.".into()),
             (
                 "Credential",

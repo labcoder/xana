@@ -671,6 +671,11 @@ fn build_snapshot(
 
     let mut entries = Vec::new();
     entries.push(SettingEntry::new(
+        "overview.storage", SettingsSection::Overview, "Storage protection and recovery",
+        "Automatic protection uses OS-managed keys. An independent recovery export protects against losing OS custody; no secret is shown here.",
+        SettingValue::summary(crate::storage::recovery::summary(paths.data_dir())),
+    ).action("xana setup --section storage"));
+    entries.push(SettingEntry::new(
         "overview.health",
         SettingsSection::Overview,
         "Configuration health",

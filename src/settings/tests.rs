@@ -42,6 +42,8 @@ fn snapshot_exposes_stable_keys_without_configuration_secrets() {
     assert!(snapshot.entry(PERMISSIONS_DEFAULT).is_some());
     assert!(snapshot.entry(NOTIFICATIONS_COMPLETIONS).is_some());
     assert!(snapshot.entry("connections.manage").is_some());
+    assert!(snapshot.entry("overview.storage").is_some());
+    assert!(encoded.contains("setup --section storage"));
     assert!(encoded.contains("qwen3:1.7b"));
     assert!(!encoded.contains("private-secret-reference"));
     assert_eq!(snapshot.revision.len(), 16);

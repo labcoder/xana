@@ -725,6 +725,10 @@ mod tests {
     #[test]
     fn blank_commit_is_explicit_and_never_creates_config() {
         let (_directory, control) = control();
+        // Existing-home compatibility path; fresh protection uses injected
+        // custody in setup::storage tests, never the developer's key store.
+        fs::create_dir_all(control.paths.data_dir()).unwrap();
+        fs::write(control.paths.data_dir().join("retained"), b"existing").unwrap();
         let receipt = control.commit_blank().unwrap();
         assert_eq!(receipt.semantic_code, "setup.blank.completed.v1");
         assert!(control.setup_snapshot().unwrap().intentionally_blank);

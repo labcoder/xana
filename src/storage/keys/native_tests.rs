@@ -87,15 +87,30 @@ impl Drop for FixtureCustody {
 #[test]
 #[ignore = "explicit disposable production credential; requires an ordinary unlocked native user session"]
 fn production_os_custody_unlock_loss_lock_and_independent_recovery() -> Result<()> {
+    exercise_custody(false)
+}
+
+#[test]
+#[ignore = "writes and removes one generated native credential; explicit disposable qualification only"]
+fn automatic_keys_restart_late_export_and_os_loss_recovery() -> Result<()> {
+    exercise_custody(true)
+}
+
+fn exercise_custody(managed: bool) -> Result<()> {
     let scratch = tempfile::Builder::new()
         .prefix("xana-m6-native-custody-")
         .tempdir()?;
     let canonical = scratch.path().canonicalize()?;
     let identity = same_file::Handle::from_path(&canonical)?;
     let custody = FixtureCustody::default();
-    let recovery = RecoveryIdentity::generate();
+    let mut recovery = RecoveryIdentity::generate();
+    let data = canonical.join("data");
     let outcome = (|| -> Result<()> {
-        let store = ProtectedStore::initialize(&canonical, &recovery, &custody)?;
+        let store = if managed {
+            ProtectedStore::initialize_managed(&data, &custody)?
+        } else {
+            ProtectedStore::initialize(&data, &recovery, &custody)?
+        };
         let id = store.id();
         store.set_document(
             "native-custody-fixture",
@@ -103,24 +118,29 @@ fn production_os_custody_unlock_loss_lock_and_independent_recovery() -> Result<(
             1024,
         )?;
         drop(store);
-        let opened = ProtectedStore::open(&canonical, &custody)?;
+        let opened = ProtectedStore::open(&data, &custody)?;
+        if managed {
+            let destination = canonical.join("recovery.key");
+            opened.export_recovery(&destination)?;
+            recovery = crate::storage::read_recovery_identity(&destination)?;
+        }
         ensure!(opened.id() == id, "native reopened identity differs");
         opened.verify()?;
         opened.lock()?;
         drop(opened);
         ensure!(
-            ProtectedStore::open(&canonical, &custody).is_err(),
+            ProtectedStore::open(&data, &custody).is_err(),
             "explicit lock was bypassed"
         );
-        let unlocked = ProtectedStore::unlock(&canonical, &custody)?;
+        let unlocked = ProtectedStore::unlock(&data, &custody)?;
         unlocked.verify()?;
         drop(unlocked);
         custody.remove_exact()?;
         ensure!(
-            ProtectedStore::open(&canonical, &custody).is_err(),
+            ProtectedStore::open(&data, &custody).is_err(),
             "missing native credential did not fail closed"
         );
-        let recovered = ProtectedStore::recover(&canonical, &recovery)?;
+        let recovered = ProtectedStore::recover(&data, &recovery)?;
         ensure!(
             recovered.id() == id,
             "independently recovered identity differs"

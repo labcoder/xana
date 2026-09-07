@@ -107,6 +107,47 @@ fn reviewed_migration_preserves_ids_and_requires_current_inventory() {
 }
 
 #[test]
+fn managed_migration_resumes_at_every_boundary_with_original_os_custody() {
+    for point in [
+        "journal",
+        "config-fence",
+        "source-renamed",
+        "source-fenced",
+        "imported-file",
+        "verified",
+        "before-activation",
+        "activated",
+    ] {
+        let (directory, paths, id) = fixture();
+        let review = preview(&paths).unwrap().review;
+        let custody = TestCustody::default();
+        let key = RecoveryIdentity::generate();
+        assert!(
+            apply_inner(&paths, &key, &custody, &review, true, |stage| {
+                if stage == point {
+                    anyhow::bail!("injected interruption");
+                }
+                Ok(())
+            })
+            .is_err(),
+            "{point}"
+        );
+        let retained = resume_managed(&paths, &custody).unwrap();
+        assert!(retained.is_dir());
+        let store = ProtectedStore::open(paths.data_dir(), &custody).unwrap();
+        assert!(SessionStore::inspect_protected(&store, id).is_ok());
+        assert_eq!(
+            super::super::recovery::status(paths.data_dir()).unwrap(),
+            super::super::recovery::RecoveryStatus::Pending
+        );
+        let export = directory.path().join("auto-recovery.key");
+        store.export_recovery(&export).unwrap();
+        let recovered = super::super::read_recovery_identity(&export).unwrap();
+        assert_eq!(recovered.to_public(), key.to_public());
+    }
+}
+
+#[test]
 fn every_activation_boundary_recovers_without_os_custody_or_replaying_history() {
     for point in [
         "journal",

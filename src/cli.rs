@@ -84,6 +84,7 @@ pub(crate) enum SetupSectionChoice {
     #[value(name = "profiles-routes")]
     ProfilesRoutes,
     Appearance,
+    Storage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -321,13 +322,13 @@ pub(crate) enum StorageCommand {
     Migrate {
         #[arg(long)]
         recovery_key: Option<PathBuf>,
-        #[arg(long, requires = "recovery_key", conflicts_with = "resume")]
+        #[arg(long, requires = "review", conflicts_with = "resume")]
         apply: bool,
         #[arg(long, requires = "apply")]
         review: Option<String>,
-        #[arg(long, requires = "recovery_key")]
-        resume: bool,
         #[arg(long)]
+        resume: bool,
+        #[arg(long, requires = "recovery_key")]
         manual_unlock: bool,
     },
     /// Create and verify an encrypted snapshot, then prune only covered old backups.
@@ -377,12 +378,17 @@ pub(crate) enum StorageCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Save this home's automatically managed recovery key to a new private file.
+    RecoveryExport {
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Protect a fresh, empty data home; existing data requires migration.
     Initialize {
         #[arg(long)]
-        recovery_key: PathBuf,
+        recovery_key: Option<PathBuf>,
         /// Do not bind OS custody; each launch requires XANA_STORAGE_RECOVERY_KEY.
-        #[arg(long)]
+        #[arg(long, requires = "recovery_key")]
         manual_unlock: bool,
     },
     /// Verify encrypted database integrity without exposing content.
@@ -855,6 +861,14 @@ pub(crate) struct SetupArgs {
         help_heading = "Setup mode"
     )]
     pub(crate) blank: bool,
+
+    /// Keep a fresh home unencrypted (personal memory unavailable); never disables existing protection.
+    #[arg(long, help_heading = "Storage", conflicts_with = "recovery_output")]
+    pub(crate) legacy_storage: bool,
+
+    /// Save an automatically generated recovery backup to a new private file.
+    #[arg(long, value_name = "PATH", help_heading = "Storage")]
+    pub(crate) recovery_output: Option<PathBuf>,
 
     /// Select a provider or managed-runtime kind.
     #[arg(long, value_enum, value_name = "KIND", help_heading = "Connection")]

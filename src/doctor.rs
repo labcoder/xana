@@ -175,7 +175,7 @@ fn inspect_storage(paths: &XanaPaths, report: &mut DoctorReport) {
                 Severity::Warning,
                 "managed storage is legacy plaintext",
                 "Personal memory is unavailable; no protected generation is active. Chat history is separate and remains usable.".into(),
-                Some("xana storage status; xana storage migrate (preview only)".into()),
+                Some("xana storage status; xana setup --section storage (review before migration)".into()),
             ),
             Ok(StorageStatus::Protected { locked: true, .. }) => (
                 Severity::Info,
@@ -221,6 +221,24 @@ fn inspect_storage(paths: &XanaPaths, report: &mut DoctorReport) {
         evidence,
         action,
     ));
+    if matches!(
+        ProtectedStore::status(paths.data_dir()),
+        Ok(StorageStatus::Protected { .. })
+    ) {
+        match crate::storage::recovery::status(paths.data_dir()) {
+            Ok(crate::storage::recovery::RecoveryStatus::Pending) => report.push(Finding::new(
+                "storage.recovery", Severity::Warning, "recovery backup has not been exported",
+                "Normal OS unlock is independent of this warning. Losing the OS key before exporting recovery can make your data unrecoverable.",
+                Some("xana setup --section storage".into()),
+            )),
+            Err(_) => report.push(Finding::new(
+                "storage.recovery", Severity::Warning, "recovery backup status is unavailable",
+                "No backup assurance is available; no keys were printed or replaced.",
+                Some("xana storage status".into()),
+            )),
+            _ => {},
+        }
+    }
 }
 
 fn protected_home(paths: &XanaPaths) -> bool {
@@ -1101,8 +1119,54 @@ mod tests {
             .unwrap();
         assert_eq!(memory.severity, Severity::Warning);
         assert!(memory.evidence.contains("Personal memory is unavailable"));
-        assert!(memory.action.as_deref().unwrap().contains("preview only"));
+        assert!(
+            memory
+                .action
+                .as_deref()
+                .unwrap()
+                .contains("review before migration")
+        );
         assert!(!paths.data_dir().join("protected").exists());
+    }
+
+    #[tokio::test]
+    async fn deferred_recovery_remains_visible_while_locked_without_unlocking() {
+        let (_directory, paths) = fixture();
+        let store = crate::storage::ProtectedStore::initialize_managed(
+            paths.data_dir(),
+            &crate::storage::TestCustody::default(),
+        )
+        .unwrap();
+        store.lock().unwrap();
+        let report = inspect(
+            &paths,
+            TerminalHealth {
+                input_is_terminal: false,
+                output_is_terminal: false,
+                dumb: false,
+            },
+            false,
+        )
+        .await;
+        let recovery = report
+            .findings
+            .iter()
+            .find(|finding| finding.code == "storage.recovery")
+            .unwrap();
+        assert_eq!(recovery.severity, Severity::Warning);
+        assert_eq!(
+            recovery.action.as_deref(),
+            Some("xana setup --section storage")
+        );
+        assert!(
+            !serde_json::to_string(&report)
+                .unwrap()
+                .contains("AGE-SECRET-KEY")
+        );
+        assert!(matches!(
+            crate::storage::ProtectedStore::status(paths.data_dir()).unwrap(),
+            crate::storage::StorageStatus::Protected { locked: true, .. }
+        ));
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@
 mod tests;
 
 use super::{ProtectedStore, database::Database, keys::Secrets};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -305,6 +305,17 @@ impl ProtectedStore {
             super::write_new_synced(&root.join(name), &content)?;
             bytes += content.len() as u64;
         }
+        if self.inner.root.join(super::recovery::STATUS_FILE).exists() {
+            super::recovery::status(self.inner.root.parent().context("missing data directory")?)?;
+            let content =
+                crate::bounded_file::read(&self.inner.root.join(super::recovery::STATUS_FILE), 32)?;
+            super::write_new_synced(&root.join(super::recovery::STATUS_FILE), &content)?;
+            bytes += content.len() as u64;
+        }
+        ensure!(
+            bytes <= cap,
+            "backup bootstrap exceeds byte cap; prior recovery copy retained"
+        );
         fault("backup-bootstrap")?;
         fs::create_dir(root.join("objects"))?;
         for (_, id, _) in copied.object_inventory()? {
@@ -420,6 +431,7 @@ fn validate_snapshot_tree(path: &Path, stamp: &Stamp) -> Result<()> {
                             "snapshot.json"
                                 | "protected/store.json"
                                 | "protected/recovery.age"
+                                | "protected/recovery-status"
                                 | "protected/owner.lock"
                                 | "protected/content.sqlite"
                                 | "protected/content.sqlite-wal"

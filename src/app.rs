@@ -395,7 +395,7 @@ pub(crate) async fn run_desktop(
     .map(|_| ())
 }
 
-async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
+pub(super) async fn ensure_setup(paths: &XanaPaths) -> Result<()> {
     match XanaConfig::load_from(paths.config_file()) {
         Ok(_) => Ok(()),
         Err(error) => {
@@ -427,7 +427,7 @@ fn write_blank_home(paths: &XanaPaths, output: &mut impl Write) -> Result<()> {
     writeln!(output, "Xana is ready, with no connection selected.")?;
     writeln!(
         output,
-        "Blank setup created no provider, connection, model, or credential."
+        "Blank setup created no provider, connection, model, or provider credential."
     )?;
     writeln!(
         output,
