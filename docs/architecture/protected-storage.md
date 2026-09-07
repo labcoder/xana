@@ -203,6 +203,13 @@ backup/restore use this bounded verification; old recovery snapshots retain thei
 original read-only bounded verification path. These are storage/execution bounds,
 not a claim about native GUI FPS or process RSS.
 
+Image messages carry their artifact references inline; they do not require a
+separate `ArtifactRegistered` record. Offline verification checks their content
+hash/size and image metadata, then authenticates the encrypted bytes. Tool-result
+evidence, context and vision receipts retain their preceding-registration
+requirements. Migration preserves these original message forms and IDs rather
+than synthesizing registrations or rewriting history.
+
 Artifacts use opaque UUID filenames, an encrypted content-hash manifest and
 standard age streaming encryption. Whole-object authentication, length/hash and
 file identity checks precede successful ranges/exports. Explicit export is

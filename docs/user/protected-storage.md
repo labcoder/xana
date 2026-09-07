@@ -27,6 +27,11 @@ before these commands. Setup offers **Save recovery backup now** or **Later**.
 Xana generates the backup; you only choose a new absolute file path outside the
 managed data directory. The exported key is create-only and owner-accessible
 (Unix 0600 or a protected Windows DACL).
+For **Save recovery backup now**, enter a full new filename such as
+`C:\Users\you\Documents\xana-recovery.txt` on Windows or
+`/home/you/Documents/xana-recovery.txt` on Linux. Replace the example with your
+own private location; the parent folder must already exist. Enter neither a
+folder alone nor an existing key: Xana creates the file and its contents.
 Anyone who obtains it **and** the encrypted store can recover the content.
 Do not put it in a chat, source repository, support bundle or shared folder.
 This exports a recovery **key**, not a copy of your conversations; keep encrypted
@@ -208,6 +213,14 @@ The command reports the retained `data.legacy.UUID` plaintext generation.
 recovery and your records before deciding whether to remove it. Secure SSD
 erasure is not promised. An unexpected changed source/destination stops recovery
 with both generations retained; do not remove the journal to force startup.
+
+If conversion fails during verification, activation stays blocked and the
+error identifies the failing check (and Conversation when applicable). Keep both
+generations and the restart journal. After the cause is fixed, reopen the
+storage setup to resume with the original key; do not reset the home or generate
+a replacement key. Choosing **Later** only defers the separate recovery-key
+export, not migration or integrity verification. After a successful resume, you
+can reopen storage setup again to export your recovery key.
 
 Unknown derived files and torn journal tails are kept as encrypted archives,
 not installed as live plaintext files. Inspect/export them explicitly:

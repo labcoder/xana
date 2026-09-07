@@ -6,6 +6,8 @@ use crate::{
     storage::{RecoveryIdentity, TestCustody},
 };
 
+mod attachments;
+
 fn fixture() -> (tempfile::TempDir, ProtectedStore, DurableSession) {
     let directory = tempfile::tempdir().unwrap();
     let store = ProtectedStore::initialize(

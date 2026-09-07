@@ -119,7 +119,7 @@ fn choose_backup(
         let options = [
             SelectOption::new(
                 "Save recovery backup now",
-                "Xana generates it; choose a private destination outside the data directory",
+                "Xana creates a recovery-key file; choose its full filename, not an existing key or folder",
             ),
             SelectOption::new("Later", LOSS_WARNING),
         ];
@@ -146,17 +146,16 @@ fn choose_backup(
     if !save {
         return Ok(None);
     }
-    let path = ui::prompt_value(
-        input,
-        output,
-        ui,
-        "Recovery backup (new absolute file, outside Xana data)",
-        "",
-        true,
-        false,
-    )?;
+    let destination_hint = if cfg!(windows) {
+        "Xana creates the key. New file, e.g. C:\\Users\\you\\Documents\\xana-recovery.txt"
+    } else {
+        "Xana creates the key. New file, e.g. /home/you/Documents/xana-recovery.txt"
+    };
+    let path = ui::prompt_value(input, output, ui, destination_hint, "", true, false)?;
     let path = PathBuf::from(path);
-    recovery::validate_destination(paths.data_dir(), &path)?;
+    recovery::validate_destination(paths.data_dir(), &path).context(
+        "choose a new recovery-key filename in an existing folder outside Xana data; do not enter a folder or an existing key",
+    )?;
     Ok(Some(path))
 }
 

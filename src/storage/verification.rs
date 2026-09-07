@@ -2,7 +2,7 @@
 
 use super::{ProtectedStore, database::read_u64};
 use crate::{artifact::ContentHash, identity::SessionId, session::SessionStore};
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 
 impl ProtectedStore {
     pub(crate) fn verify_content(&self) -> Result<()> {
@@ -46,7 +46,10 @@ impl ProtectedStore {
                     &lengths,
                     #[cfg(test)]
                     timing.enabled,
-                )?;
+                )
+                .with_context(|| {
+                    format!("could not verify immutable history for Conversation {id}")
+                })?;
                 #[cfg(test)]
                 timing.record("immutable_history", started);
                 #[cfg(test)]

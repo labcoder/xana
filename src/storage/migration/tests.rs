@@ -51,6 +51,89 @@ fn fixture() -> (tempfile::TempDir, XanaPaths, crate::identity::SessionId) {
 }
 
 #[test]
+fn managed_migration_preserves_inline_image_artifacts() {
+    let (_directory, paths, id) = fixture();
+    let (mut session, _) = DurableSession::resume(paths.data_dir(), id).unwrap();
+    let artifacts = crate::artifact::ArtifactStore::open(paths.data_dir()).unwrap();
+    let (artifact, _) = artifacts
+        .put(b"image evidence", "image/png", session.artifact_owner())
+        .unwrap();
+    session
+        .append_message(Message {
+            role: Role::User,
+            content: vec![crate::message::ContentBlock::Image(
+                crate::vision::ImageRef {
+                    media_type: artifact.media_type.clone(),
+                    byte_len: artifact.byte_len,
+                    artifact,
+                    width: Some(1),
+                    height: Some(1),
+                },
+            )],
+        })
+        .unwrap();
+    drop(session);
+    let original = SessionStore::inspect(
+        &paths
+            .data_dir()
+            .join("sessions")
+            .join(format!("{id}.jsonl")),
+    )
+    .unwrap();
+    let review = preview(&paths).unwrap().review;
+    let custody = TestCustody::default();
+    // Revisit a fully imported but unactivated generation with the same key,
+    // just as setup must do after a verification failure. No history rewrite.
+    let key = RecoveryIdentity::generate();
+    let error = apply_inner(&paths, &key, &custody, &review, true, |stage| {
+        if stage == "verified" {
+            anyhow::bail!("fixture: stop before activation");
+        }
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(error.to_string(), "fixture: stop before activation");
+    let retained = resume_managed(&paths, &custody).unwrap();
+    let store = ProtectedStore::open(paths.data_dir(), &custody).unwrap();
+    assert_eq!(
+        SessionStore::inspect_protected(&store, id).unwrap().records,
+        original.records
+    );
+    assert_eq!(
+        SessionStore::inspect(&retained.join("sessions").join(format!("{id}.jsonl")))
+            .unwrap()
+            .records,
+        original.records
+    );
+    assert_eq!(
+        store.managed_recovery_identity().unwrap().to_public(),
+        key.to_public()
+    );
+    store.verify_content().unwrap();
+}
+
+#[test]
+fn managed_migration_accepts_created_but_empty_conversations() {
+    let (_directory, paths, _) = fixture();
+    let empty = DurableSession::create(paths.data_dir(), PathBuf::from("empty-workspace")).unwrap();
+    let empty_id = empty.session_id();
+    drop(empty);
+    let custody = TestCustody::default();
+    let review = preview(&paths).unwrap().review;
+    let retained = apply_managed(&paths, &custody, &review)
+        .unwrap_or_else(|error| panic!("migration of an empty Conversation failed: {error:#}"));
+    let store = ProtectedStore::open(paths.data_dir(), &custody).unwrap();
+    assert_eq!(
+        SessionStore::inspect_protected(&store, empty_id)
+            .unwrap()
+            .records
+            .len(),
+        1
+    );
+    assert!(retained.is_dir());
+}
+
+#[test]
 fn reviewed_migration_preserves_ids_and_requires_current_inventory() {
     let (_directory, paths, id) = fixture();
     let plan = preview(&paths).unwrap();

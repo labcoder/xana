@@ -318,7 +318,7 @@ fn finish(
         inventory::scan(&source)? == entries,
         "source changed during conversion; no activation"
     );
-    store.verify_content()?;
+    store.verify_content().context("prepared migration failed verification; original data and prepared storage are retained, with activation blocked; after resolving the cause, rerun xana setup --section storage to resume")?;
     store.set_document(
         "migration/receipt",
         b"Verified migration; plaintext prior generation retained; no automatic effect replay.",

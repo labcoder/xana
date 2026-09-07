@@ -72,6 +72,9 @@ fn save_now_generates_and_verifies_a_private_backup_without_showing_the_key() {
     let mut output = Vec::new();
     let plan = fresh_plan(&SetupArgs::default(), &paths, &mut input, &mut output, ui()).unwrap();
     assert!(!destination.exists());
+    let prompt = String::from_utf8_lossy(&output);
+    assert!(prompt.contains("Xana creates the key"));
+    assert!(prompt.contains("xana-recovery.txt"));
     plan.apply(&paths, &TestCustody::default()).unwrap();
     let mut receipts = Vec::new();
     plan.record_receipt(&mut receipts);

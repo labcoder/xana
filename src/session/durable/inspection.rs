@@ -211,8 +211,14 @@ pub(super) fn dependencies(
             }
         }
         SessionRecord::ConversationEntryAppended { entry } => {
-            for item in entry.message.artifacts() {
-                artifact(home, state, item.reference.id)?;
+            // Match the canonical reducer: tool evidence depends on a prior
+            // registration; images carry their artifact reference inline.
+            for block in &entry.message.content {
+                if let crate::message::ContentBlock::ToolResult(result) = block
+                    && let Some(reference) = &result.artifact
+                {
+                    artifact(home, state, reference.reference.id)?;
+                }
             }
         }
         SessionRecord::ContextRegistered { context } => {

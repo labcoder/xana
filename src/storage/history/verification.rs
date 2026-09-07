@@ -157,13 +157,20 @@ impl ProtectedStore {
                         ensure!(edge.0 == entry.parent && edge.1 == sequence, "Conversation entry index differs from immutable body");
                         if let Some(parent) = entry.parent { ensure!(entry_metadata(&tx,id,parent)?.1 < sequence, "Conversation entry has forward or cyclic ancestry"); }
                         for block in &entry.message.content {
-                            let reference = match block {
-                                crate::message::ContentBlock::Image(image) => Some(&image.artifact),
-                                crate::message::ContentBlock::ToolResult(result) => result.artifact.as_deref(),
-                                _ => None,
-                            };
-                            if let Some(reference) = reference {
-                                ensure!(registered_artifact(&tx, id, reference.reference.id, sequence)? == *reference, "Conversation attachment differs from its registered artifact");
+                            match block {
+                                // Image ingestion stores its reference directly in the message;
+                                // unlike tool evidence, reduction requires no separate registration.
+                                crate::message::ContentBlock::Image(image) => {
+                                    verify_artifact_content(&image.artifact, objects)?;
+                                    ensure!(image.byte_len == image.artifact.byte_len && image.media_type == image.artifact.media_type,
+                                        "image metadata differs from its artifact");
+                                }
+                                crate::message::ContentBlock::ToolResult(result) => {
+                                    if let Some(reference) = result.artifact.as_deref() {
+                                        ensure!(registered_artifact(&tx, id, reference.reference.id, sequence)? == *reference, "Conversation attachment differs from its registered artifact");
+                                    }
+                                }
+                                _ => (),
                             }
                         }
                         entries += 1;
@@ -179,10 +186,7 @@ impl ProtectedStore {
                         } else { verified_prefix = None; }
                         head = next.map(|id| id.to_string());
                     }
-                    SessionRecord::ArtifactRegistered {artifact} => {
-                        ContentHash::parse(artifact.reference.content_hash.as_str().to_owned()).map_err(anyhow::Error::msg)?;
-                        ensure!(objects.get(artifact.reference.content_hash.as_str()) == Some(&artifact.byte_len), "Conversation references a missing or mismatched artifact");
-                    }
+                    SessionRecord::ArtifactRegistered {artifact} => verify_artifact_content(artifact, objects)?,
                     SessionRecord::ContextRegistered {context} => {
                         let artifact = registered_artifact(&tx,id,context.artifact.id,sequence)?;
                         ensure!(artifact.reference == context.artifact && artifact.reference.content_hash == context.content_hash && artifact.byte_len == context.logical_size, "context source hash or size differs from its artifact");
@@ -448,13 +452,25 @@ fn ancestor_on_path(
     anyhow::bail!("historical active path exceeds its bound")
 }
 
+fn verify_artifact_content(artifact: &ArtifactRecord, objects: &HashMap<&str, u64>) -> Result<()> {
+    ContentHash::parse(artifact.reference.content_hash.as_str().to_owned())
+        .map_err(anyhow::Error::msg)?;
+    ensure!(
+        objects.get(artifact.reference.content_hash.as_str()) == Some(&artifact.byte_len),
+        "Conversation references a missing or mismatched artifact"
+    );
+    Ok(())
+}
+
 fn registered_artifact(
     tx: &Transaction<'_>,
     session: SessionId,
     artifact: ArtifactId,
     before: usize,
 ) -> Result<ArtifactRecord> {
-    let sequence = tx.query_row("SELECT sequence FROM native_subjects WHERE session=?1 AND kind='artifact' AND subject=?2 AND sequence<?3 ORDER BY sequence DESC LIMIT 1", params![session.to_string(),artifact.to_string(),i64::try_from(before)?],|r|read_usize(r,0))?;
+    let sequence = tx.query_row("SELECT sequence FROM native_subjects WHERE session=?1 AND kind='artifact' AND subject=?2 AND sequence<?3 ORDER BY sequence DESC LIMIT 1", params![session.to_string(),artifact.to_string(),i64::try_from(before)?],|r|read_usize(r,0))
+        .optional()?
+        .with_context(|| format!("artifact {artifact} has no registration before record {before}"))?;
     let record = original_record(tx, session, sequence)?;
     let SessionRecord::ArtifactRegistered { artifact: record } = record.record else {
         anyhow::bail!("artifact source is not registered");
