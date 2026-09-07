@@ -1,5 +1,42 @@
 use super::*;
 
+#[tokio::test]
+async fn explicit_close_releases_listener_and_joins_an_active_tunnel() {
+    let upstream = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let policy = EgressPolicy::fixture(
+        "https://fixture.invalid",
+        Some(upstream.local_addr().unwrap()),
+    );
+    let mut proxy = Proxy::start(policy, CancellationToken::new())
+        .await
+        .unwrap();
+    let mut client = request(
+        proxy.address,
+        b"CONNECT fixture.invalid:443 HTTP/1.1\r\n\r\n",
+    )
+    .await;
+    let (mut peer, _) = upstream.accept().await.unwrap();
+    let mut head = [0; 39];
+    client.read_exact(&mut head).await.unwrap();
+    tokio::time::timeout(Duration::from_secs(2), proxy.close())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(proxy.task.is_finished());
+    let listener = TcpListener::bind(proxy.address).await.unwrap();
+    let mut byte = [0];
+    for stream in [&mut client, &mut peer] {
+        let read = tokio::time::timeout(Duration::from_secs(2), stream.read(&mut byte))
+            .await
+            .unwrap();
+        assert!(
+            matches!(read, Ok(0) | Err(_)),
+            "closed tunnel must not retain data or sockets"
+        );
+    }
+    drop(listener);
+}
+
 async fn request(address: SocketAddr, head: &[u8]) -> TcpStream {
     let mut stream = TcpStream::connect(address).await.unwrap();
     stream.write_all(head).await.unwrap();

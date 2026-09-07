@@ -138,6 +138,12 @@ impl Drop for Proxy {
     }
 }
 impl Proxy {
+    pub(super) async fn close(&mut self) -> Result<(), BrowserError> {
+        self.cancellation.cancel();
+        // The listener joins every tunnel before acknowledging shutdown.
+        (&mut self.task).await.map_err(|_| BrowserError::Process)
+    }
+
     pub(super) async fn start(
         policy: EgressPolicy,
         cancellation: CancellationToken,

@@ -2,6 +2,65 @@ use super::*;
 use futures::StreamExt;
 
 #[tokio::test]
+async fn explicit_close_joins_pending_policy_tasks_and_releases_the_socket() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (sent, received) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+        socket
+            .send(Message::Text(
+                json!({
+                    "method":"Target.attachedToTarget", "params":{
+                        "sessionId":"session", "targetInfo":{"targetId":"target","type":"page"}
+                    }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        socket.next().await.unwrap().unwrap();
+        sent.send(()).unwrap();
+        // Withhold the policy reply: close must cancel it, not wait five seconds.
+        assert!(socket.next().await.is_none_or(|result| result.is_err()));
+    });
+    let mut owner = CdpOwner::connect(
+        &format!("ws://{address}/devtools/browser/test"),
+        EgressPolicy::fixture("https://example.com", None),
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), received)
+        .await
+        .unwrap()
+        .unwrap();
+    // A retained Page/Cdp handle must not retain the socket after close.
+    let connection = owner.connection.clone();
+    tokio::time::timeout(Duration::from_secs(2), owner.close())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        Arc::strong_count(&connection.shared),
+        2,
+        "reader and controls have been destroyed"
+    );
+    assert!(
+        connection
+            .call("after-close", json!({}), None)
+            .await
+            .is_err()
+    );
+    tokio::time::timeout(Duration::from_secs(2), server)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
+#[tokio::test]
 async fn oversized_frame_fails_closed_without_a_second_dispatch() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

@@ -64,10 +64,10 @@ struct Owner {
 }
 struct Session {
     id: Uuid,
-    _transport: CdpOwner,
+    transport: CdpOwner,
     page: Page,
     process: Option<OwnedBrowser>,
-    _proxy: Proxy,
+    proxy: Proxy,
     stop: CancellationToken,
     started: Instant,
     actions: u32,

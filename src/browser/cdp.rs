@@ -44,7 +44,7 @@ struct State {
     suppressed_reply: Option<u64>,
 }
 struct Shared {
-    writer: AsyncMutex<Writer>,
+    writer: AsyncMutex<Option<Writer>>,
     state: Mutex<State>,
     cancelled: CancellationToken,
     policy: EgressPolicy,
@@ -65,6 +65,15 @@ impl Drop for CdpOwner {
 }
 
 impl CdpOwner {
+    pub(super) async fn close(&mut self) -> Result<(), BrowserError> {
+        self.connection.shared.cancelled.cancel();
+        // The reader joins its policy tasks before returning. Abort-on-drop is
+        // only a fallback, never evidence for a successful close receipt.
+        let result = (&mut self.reader).await.map_err(|_| BrowserError::Process);
+        self.connection.shared.writer.lock().await.take();
+        result
+    }
+
     pub(super) async fn connect(
         endpoint: &str,
         policy: EgressPolicy,
@@ -93,7 +102,7 @@ impl CdpOwner {
         let (writer, reader) = futures::StreamExt::split(socket);
         let connection = Cdp {
             shared: Arc::new(Shared {
-                writer: AsyncMutex::new(writer),
+                writer: AsyncMutex::new(Some(writer)),
                 state: Mutex::new(State::default()),
                 cancelled,
                 policy,
@@ -278,15 +287,19 @@ impl Cdp {
             armed: true,
         };
         let result = tokio::time::timeout(Duration::from_secs(5), async {
-            self.shared
-                .writer
-                .lock()
-                .await
-                .send(Message::Text(
-                    String::from_utf8(bytes).expect("JSON UTF8").into(),
-                ))
-                .await
-                .map_err(|_| BrowserError::Uncertain)?;
+            tokio::select! {
+                biased;
+                () = self.shared.cancelled.cancelled() => return Err(BrowserError::Cancelled),
+                sent = async {
+                    self.shared.writer.lock().await.as_mut()
+                        .ok_or(BrowserError::Cancelled)?
+                        .send(Message::Text(String::from_utf8(bytes).expect("JSON UTF8").into()))
+                        .await.map_err(|_| BrowserError::Uncertain)
+                } => sent?,
+            }
+            // A known reply wins over later connection closure. The reader's
+            // shutdown drains unresolved replies; cancellation cannot erase an
+            // acknowledgement that it already delivered.
             receive.await.map_err(|_| BrowserError::Uncertain)?
         })
         .await

@@ -88,6 +88,8 @@ join pending cleanup again. A failed cleanup stays visible as `cleanup_failed`
 and prevents silently starting a replacement task. An uncertain
 action is never automatically replayed. Closing Xana's owning runtime also
 shuts down this browser; merely detaching an observer is different.
+Successful close waits for the browser descendants, transport tasks and proxy
+connections to finish, not just for a cancellation request to be sent.
 
 ## Limits and trust boundary
 

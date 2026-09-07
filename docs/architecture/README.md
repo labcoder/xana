@@ -313,6 +313,10 @@ Page identity changes or takeover invalidate references before an effect.
 The Windows adapter assigns the suspended process to its owned Job Object
 before execution. Cleanup joins owned descendants and verifies profile identity
 before removal. Failed cleanup remains a failed state, not an idle success.
+The same close barrier joins the CDP reader and its policy tasks, closes the
+transport writer even when page handles remain, and joins the proxy listener
+and active tunnels. Startup failure uses this barrier too; abort-on-drop alone
+is not evidence of a successful close.
 Tracked ownership starts before process/profile allocation, survives a dropped
 request, and fences new admission until shutdown joins the cleanup result.
 Receipts/screenshots use protected storage; browser cache/login material is a

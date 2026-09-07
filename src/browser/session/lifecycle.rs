@@ -41,11 +41,6 @@ impl BrowserOwner {
             policy = self.resolve_policy(origins) => policy?,
         };
         *self.inner.control_stop.lock().expect("browser owner") = Some(stop.clone());
-        let proxy = tokio::select! {
-            biased;
-            () = stop.cancelled() => return Err(BrowserError::Cancelled),
-            proxy = Proxy::start(policy.clone(), stop.clone()) => proxy?,
-        };
         let profile = self
             .inner
             .paths
@@ -55,16 +50,25 @@ impl BrowserOwner {
         std::fs::create_dir_all(profile.parent().ok_or(BrowserError::Process)?)
             .map_err(|_| BrowserError::Process)?;
         std::fs::create_dir(&profile).map_err(|_| BrowserError::Process)?;
+        let mut proxy = match tokio::select! {
+            biased;
+            () = stop.cancelled() => Err(BrowserError::Cancelled),
+            proxy = Proxy::start(policy.clone(), stop.clone()) => proxy,
+        } {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                self.remove_empty_profile(&profile, id)?;
+                return Err(error);
+            }
+        };
         let process = match self.launch_process(executable, profile.clone(), proxy.address) {
             Ok(process) => process,
             Err(error) => {
                 // A failed suspended launch may leave only our empty allocation.
                 // Never recurse after losing process/profile ownership evidence.
-                if std::fs::remove_dir(&profile).is_err() {
-                    let mut snapshot = self.inner.snapshot.lock().expect("browser owner");
-                    snapshot.task = Some(id);
-                    snapshot.state = "cleanup_failed".into();
-                }
+                let proxy_cleanup = proxy.close().await;
+                self.remove_empty_profile(&profile, id)?;
+                self.record_cleanup(proxy_cleanup, id)?;
                 return Err(error);
             }
         };
@@ -76,6 +80,9 @@ impl BrowserOwner {
             }
             process
         };
+        // Keep the transport outside the cancellable initialization future, so
+        // failed Page::start and interrupted startup can still join its tasks.
+        let mut transport = None;
         let initialized = tokio::select! {
           biased;
           () = stop.cancelled() => Err(BrowserError::Cancelled),
@@ -91,21 +98,23 @@ impl BrowserOwner {
                 }
             }
             let endpoint = process.endpoint().await?;
-            let transport = CdpOwner::connect(&endpoint, policy.clone(), stop.clone()).await?;
-            let page = Page::start(transport.connection.clone(), policy.clone()).await?;
-            Ok::<_, BrowserError>((transport, page))
+            transport = Some(CdpOwner::connect(&endpoint, policy.clone(), stop.clone()).await?);
+            Page::start(transport.as_ref().expect("connected transport").connection.clone(), policy.clone()).await
           } => result,
         };
-        let (transport, page) = match initialized {
+        let page = match initialized {
             Ok(value) => value,
             Err(error) => {
                 self.inner.snapshot.lock().expect("browser owner").state = "cleaning_up".into();
-                if process.close().await.is_err() {
-                    let mut snapshot = self.inner.snapshot.lock().expect("browser owner");
-                    snapshot.task = Some(id);
-                    snapshot.state = "cleanup_failed".into();
-                    return Err(BrowserError::Process);
-                }
+                stop.cancel();
+                let (process, proxy, transport) =
+                    tokio::join!(process.close(), proxy.close(), async {
+                        match transport.as_mut() {
+                            Some(transport) => transport.close().await,
+                            None => Ok(()),
+                        }
+                    });
+                self.record_cleanup(process.and(proxy).and(transport), id)?;
                 return Err(error);
             }
         };
@@ -134,10 +143,10 @@ impl BrowserOwner {
         });
         Ok(Session {
             id,
-            _transport: transport,
+            transport: transport.expect("initialized transport"),
             page,
             process: Some(process),
-            _proxy: proxy,
+            proxy,
             stop,
             started: Instant::now(),
             actions: 0,
@@ -156,21 +165,47 @@ impl BrowserOwner {
             return self.cleanup_status();
         };
         live.stop.cancel();
-        let result = match live.process.take() {
-            Some(process) => {
-                self.inner.snapshot.lock().expect("browser owner").state = "cleaning_up".into();
-                process.close().await
+        let process = async {
+            match live.process.take() {
+                Some(process) => {
+                    self.inner.snapshot.lock().expect("browser owner").state = "cleaning_up".into();
+                    process.close().await
+                }
+                None => Ok(()),
             }
-            None => Ok(()),
         };
-        self.publish(None);
+        let (process, transport, proxy) =
+            tokio::join!(process, live.transport.close(), live.proxy.close());
+        let result = process.and(transport).and(proxy);
+        let result = self.record_cleanup(result, live.id);
+        if result.is_ok() {
+            self.publish(None);
+        }
         let mut snapshot = self.inner.snapshot.lock().expect("browser owner");
         snapshot.revision = snapshot.revision.saturating_add(1);
+        result
+    }
+    fn record_cleanup(
+        &self,
+        result: Result<(), BrowserError>,
+        id: Uuid,
+    ) -> Result<(), BrowserError> {
         if result.is_err() {
-            snapshot.task = Some(live.id);
+            let mut snapshot = self.inner.snapshot.lock().expect("browser owner");
+            snapshot.task = Some(id);
             snapshot.state = "cleanup_failed".into();
         }
         result
+    }
+    fn remove_empty_profile(
+        &self,
+        profile: &std::path::Path,
+        id: Uuid,
+    ) -> Result<(), BrowserError> {
+        self.record_cleanup(
+            std::fs::remove_dir(profile).map_err(|_| BrowserError::Process),
+            id,
+        )
     }
     pub(super) async fn terminal_receipt(
         &self,
