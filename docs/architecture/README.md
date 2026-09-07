@@ -806,7 +806,13 @@ Personal-memory selections now occupy their separately bounded data-only slot;
 retrieved evidence is accounted through its materialized source/tool content.
 Native prompt assembly also carries a budgeted runtime memory-readiness fact,
 including unavailable legacy homes and disabled use. Explicit owner remember
-controls accept common prefix and personal-statement suffix forms, commit through
+controls separate explicit polite request wrappers, personal statements and
+short trailing remember clauses; punctuation/confirmation tags are not stored
+as facts. Recall questions remain nonmutating, while recognized contradictory
+save requests and unresolved scope qualifiers return local clarification.
+Canonical explicit commands retain literal code and multiline payload support.
+These bounded templates are not a general natural-language intent classifier.
+Recognized saves commit through
 the scoped protected service without a model/tool call, and report missing
 prerequisites locally. They do not authorize model output to mutate memory or
 create a workspace-file fallback.

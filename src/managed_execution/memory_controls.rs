@@ -53,12 +53,13 @@ mod tests {
         let reply = local_memory_reply(
             Some(&owner),
             conversation,
-            "remember that I prefer concise replies",
+            "my favorite color is red, remember that, ok?",
         )
         .await
         .unwrap();
         assert!(reply.contains("no model call"));
         let record = owner.page(None, None).unwrap().records.remove(0);
+        assert_eq!(record.statement, "my favorite color is red");
         assert_eq!(
             record.scope,
             MemoryScope::Conversation(conversation.to_string().parse().unwrap())

@@ -6,9 +6,20 @@ use crate::{
 
 #[tokio::test]
 async fn memory_regression_plain_request_survives_runtime_restart_without_file_tools() {
+    assert_memory_request_survives_restart("my favorite color is red. remember that.").await;
+}
+
+#[tokio::test]
+async fn memory_regression_polite_suffix_survives_restart_without_file_tools() {
+    assert_memory_request_survives_restart("my favorite color is red, remember that, ok?").await;
+}
+
+async fn assert_memory_request_survives_restart(remember: &str) {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let root = workspace.path().canonicalize().unwrap();
+    let instructions = "# Workspace instructions\nPersonal preferences do not belong here.\n";
+    std::fs::write(root.join("AGENTS.md"), instructions).unwrap();
     let recovery = RecoveryIdentity::generate();
     let store =
         ProtectedStore::initialize(data.path(), &recovery, &TestCustody::default()).unwrap();
@@ -59,7 +70,7 @@ async fn memory_regression_plain_request_survives_runtime_restart_without_file_t
             .send(RuntimeCommand::SubmitTurn {
                 operation_id: operation,
                 input: if phase == 0 {
-                    "my favorite color is red. remember that."
+                    remember
                 } else {
                     "what is my favorite color?"
                 }
@@ -87,7 +98,11 @@ async fn memory_regression_plain_request_survives_runtime_restart_without_file_t
     let system = crate::completion_evidence::message_text(&requests[0][0]);
     assert!(system.contains("personal_memory"));
     assert!(system.contains("my favorite color is red"));
-    assert!(!workspace.path().join("user_prefs").exists());
+    assert_eq!(
+        std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+        instructions
+    );
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
     let store = ProtectedStore::recover(data.path(), &recovery).unwrap();
     let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
     assert!(
@@ -113,23 +128,29 @@ async fn memory_regression_legacy_home_rejects_remember_without_calling_a_model(
     let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
     let mut runtime =
         RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None).unwrap();
-    let operation = OperationId::new();
-    runtime
-        .send(RuntimeCommand::SubmitTurn {
-            operation_id: operation,
-            input: "my favorite color is red. remember that.".into(),
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            receive_finished(&mut runtime, operation)
-        )
-        .await
-        .unwrap(),
-        OperationOutcome::Failed
-    );
+    for input in [
+        "my favorite color is red. remember that.",
+        "my favorite color is red, remember that, ok?",
+        "Could you please remember that my favorite color is red?",
+    ] {
+        let operation = OperationId::new();
+        runtime
+            .send(RuntimeCommand::SubmitTurn {
+                operation_id: operation,
+                input: input.into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                receive_finished(&mut runtime, operation)
+            )
+            .await
+            .unwrap(),
+            OperationOutcome::Failed
+        );
+    }
     assert!(requests.lock().unwrap().is_empty());
     assert!(!workspace.path().join("user_prefs").exists());
     assert!(runtime.shutdown_owned().await);

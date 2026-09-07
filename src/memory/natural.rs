@@ -2,11 +2,16 @@
 
 use super::*;
 
+#[cfg(test)]
+mod tests;
+
 pub(crate) enum NaturalIntent {
     Remember {
         scope: Option<MemoryScope>,
         statement: String,
     },
+    ClarifyRememberScope,
+    ClarifyRememberRequest,
     Inspect,
     Correct {
         id: Uuid,
@@ -42,20 +47,19 @@ pub(crate) fn parse_natural(input: &str) -> Option<Result<NaturalIntent>> {
     if lower == "enable memory for this conversation" {
         return Some(Ok(NaturalIntent::NoMemory(false)));
     }
+    if let Some(intent) = conversational_remember(input) {
+        return Some(Ok(intent));
+    }
+    // Established explicit command forms accept literal code, punctuation and
+    // multiline facts even when the conversational templates cannot parse them.
     for (prefix, scope) in [
         ("remember that ", None),
         ("remember for this conversation: ", None),
         ("remember for all conversations: ", Some(MemoryScope::User)),
     ] {
         if lower.starts_with(prefix) {
-            return Some(Ok(NaturalIntent::Remember {
-                scope,
-                statement: input[prefix.len()..].trim().to_owned(),
-            }));
+            return Some(Ok(remember_intent(scope, input[prefix.len()..].trim())));
         }
-    }
-    if let Some(intent) = conversational_remember(input) {
-        return Some(Ok(intent));
     }
     if lower.starts_with("remember in ") {
         return Some((|| {
@@ -119,63 +123,161 @@ pub(crate) fn parse_natural(input: &str) -> Option<Result<NaturalIntent>> {
 }
 
 /// Explicit owner imperatives only. This is not inference over arbitrary prose:
-/// quoted examples, questions and third-party content are not memory commands.
+/// quoted examples, recall questions and third-party content are not commands.
 fn conversational_remember(input: &str) -> Option<NaturalIntent> {
-    let input = input.trim().trim_end_matches(['.', '!']).trim_end();
-    let lower = input.to_ascii_lowercase();
-    if lower.ends_with('?') || input.contains(['\n', '`']) {
+    if input.contains(['\n', '\r', '`']) {
         return None;
     }
-    for prefix in [
-        "please remember that ",
-        "remember this: ",
-        "please remember this: ",
-    ] {
-        if lower.starts_with(prefix) {
-            return Some(NaturalIntent::Remember {
-                scope: None,
-                statement: input[prefix.len()..].trim().to_owned(),
-            });
+    if let Some(request) = remember_request(input) {
+        let lower = request.to_ascii_lowercase();
+        for (prefix, scope) in [
+            ("remember that ", None),
+            ("remember this: ", None),
+            ("remember for this conversation: ", None),
+            ("remember for all conversations: ", Some(MemoryScope::User)),
+        ] {
+            if lower.starts_with(prefix) {
+                return Some(remember_intent(scope, request[prefix.len()..].trim()));
+            }
         }
-    }
-    for prefix in ["remember ", "please remember "] {
-        if lower.starts_with(prefix) && personal_statement(&lower[prefix.len()..]) {
-            return Some(NaturalIntent::Remember {
-                scope: None,
-                statement: input[prefix.len()..].trim().to_owned(),
-            });
-        }
-    }
-    for (suffix, scope) in [
-        (
-            ". remember that for all conversations",
-            Some(MemoryScope::User),
-        ),
-        (
-            ". remember this for all conversations",
-            Some(MemoryScope::User),
-        ),
-        (". remember that", None),
-        (". remember this", None),
-        (". please remember that", None),
-        (". please remember this", None),
-    ] {
-        if let Some(statement) = lower.strip_suffix(suffix)
-            && personal_statement(statement)
+        if let Some(fact) = lower.strip_prefix("remember ")
+            && personal_statement(fact)
+            && !request_question(input)
         {
-            return Some(NaturalIntent::Remember {
-                scope,
-                statement: input[..statement.len()].trim().to_owned(),
-            });
+            return Some(remember_intent(None, request["remember ".len()..].trim()));
         }
+    }
+    // Split fact from request, not on a fixed sentence spelling. A later comma
+    // can belong to a polite tag, so examine separators from the end. Only an
+    // exact reference clause may consume the remainder of the owner input.
+    for (index, separator) in input.char_indices().rev() {
+        if !matches!(separator, '.' | ',' | ';' | '—') {
+            continue;
+        }
+        let clause = &input[index + separator.len_utf8()..];
+        // Only the short request clause is interpreted. Long pasted personal
+        // text with many separators must not cause quadratic normalization.
+        if clause.len() > 128 {
+            break;
+        }
+        let statement = input[..index].trim();
+        if !personal_statement(statement) {
+            continue;
+        }
+        let Some(request) = remember_request(clause) else {
+            continue;
+        };
+        let request = request.to_ascii_lowercase();
+        let (reference, scope) = match request.strip_suffix(" for all conversations") {
+            Some(reference) => (reference, Some(MemoryScope::User)),
+            None => (request.as_str(), None),
+        };
+        if !matches!(reference, "remember that" | "remember this" | "remember it") {
+            if [
+                "remember that for ",
+                "remember this for ",
+                "remember it for ",
+            ]
+            .iter()
+            .any(|prefix| request.starts_with(prefix))
+            {
+                return Some(NaturalIntent::ClarifyRememberScope);
+            }
+            continue;
+        }
+        return Some(remember_intent(scope, statement));
     }
     None
 }
 
-fn personal_statement(text: &str) -> bool {
-    ["i ", "i'm ", "my ", "we ", "our "]
+fn remember_intent(scope: Option<MemoryScope>, statement: &str) -> NaturalIntent {
+    let lower = statement.to_ascii_lowercase();
+    // A request with a deferred/contradictory save condition needs an owner
+    // clarification, not partial execution. Fact negation (e.g. "not red") is
+    // ordinary data and deliberately does not match these save-specific cues.
+    if [
+        "only if",
+        "if i approve",
+        "do not save",
+        "don't save",
+        "don’t save",
+        "do not store",
+        "don't store",
+        "don’t store",
+        "do not remember",
+        "don't remember",
+        "don’t remember",
+        "not yet",
+    ]
+    .iter()
+    .any(|cue| lower.contains(cue))
+    {
+        return NaturalIntent::ClarifyRememberRequest;
+    }
+    if scope.is_none()
+        && [
+            " for all conversations",
+            " for this project",
+            " globally",
+            " everywhere",
+        ]
         .iter()
-        .any(|prefix| text.starts_with(prefix))
+        .any(|suffix| lower.ends_with(suffix))
+    {
+        return NaturalIntent::ClarifyRememberScope;
+    }
+    NaturalIntent::Remember {
+        scope,
+        statement: statement.to_owned(),
+    }
+}
+
+fn request_question(input: &str) -> bool {
+    let lower = input.trim_start().to_ascii_lowercase();
+    ["can you ", "could you ", "would you ", "will you "]
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Strip only explicit request wrappers. A recall question is not permission
+/// to save, and an embedded question/compound request must not be partly run.
+fn remember_request(input: &str) -> Option<&str> {
+    let mut input = input.trim().trim_end_matches(['.', '!']).trim_end();
+    let lower = input.to_ascii_lowercase();
+    for suffix in [
+        ", ok?",
+        ", okay?",
+        ", please?",
+        ", please",
+        ", ok",
+        ", okay",
+    ] {
+        if lower.ends_with(suffix) {
+            input = input[..input.len() - suffix.len()].trim_end();
+            break;
+        }
+    }
+    let lower = input.to_ascii_lowercase();
+    for prefix in ["can you ", "could you ", "would you ", "will you "] {
+        if lower.starts_with(prefix) {
+            input = input[prefix.len()..].trim_end_matches('?').trim_end();
+            break;
+        }
+    }
+    if input.contains('?') {
+        return None;
+    }
+    if input.to_ascii_lowercase().starts_with("please ") {
+        input = &input["please ".len()..];
+    }
+    Some(input)
+}
+
+fn personal_statement(text: &str) -> bool {
+    ["i ", "i'm ", "my ", "we ", "our "].iter().any(|prefix| {
+        text.get(..prefix.len())
+            .is_some_and(|s| s.eq_ignore_ascii_case(prefix))
+    })
 }
 
 use anyhow::Context as _;
@@ -189,6 +291,12 @@ impl MemoryOwner {
                 self.context.conversation.map(MemoryScope::Conversation).context("This control needs a Conversation identity; choose an explicit scope with xana memory instead")
             };
             let (value, notice) = match intent {
+                NaturalIntent::ClarifyRememberRequest => {
+                    return Ok("Xana memory control (local; no model call)\nNothing was saved: this request contains a condition or instruction not to save. Please clarify the fact and whether you want it saved now. No workspace files were read or changed.".into());
+                }
+                NaturalIntent::ClarifyRememberScope => {
+                    return Ok("Xana memory control (local; no model call)\nNothing was saved: I could not resolve the requested memory scope. Say `remember for this conversation: FACT`, `remember for all conversations: FACT`, or `remember in SCOPE that FACT` with an exact scope ID. No workspace files were read or changed.".into());
+                }
                 NaturalIntent::Remember { scope, statement } => {
                     let ambiguous = scope.is_none();
                     let record =

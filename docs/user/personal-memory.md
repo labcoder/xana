@@ -17,6 +17,8 @@ In plain chat, TUI or Desktop chat, these direct requests are local controls:
 ```text
 remember that I prefer short examples
 my favorite color is red. remember that.
+my favorite color is red, remember that, ok?
+could you please remember that I prefer short examples?
 please remember my preference for short examples
 remember for all conversations: I prefer Rust examples
 what do you remember?
@@ -33,8 +35,16 @@ enable memory for this conversation
 should apply everywhere without blocking or broadening it. `remember for this
 conversation: ...` is also accepted. `remember in SCOPE that FACT` names an
 explicit scope. This is a small deterministic grammar, not general natural-
-language extraction: common explicit prefix and personal-statement suffix forms
-also work, but other wording remains ordinary model input. A suffix request
+language extraction: it separates explicit request wrappers (`please`, `can you`,
+`could you`, `would you`, `will you`) from a stated fact, and accepts personal
+statements followed by a comma, period, semicolon or em dash and `remember
+that/this/it`. Polite tags such as `, please` and `, ok?` are not part of the
+saved fact. Bare recall questions such as `Can you remember my favorite color?`
+do not save a new record. Recognized conditional or contradictory save requests
+and unresolved scope qualifiers ask for clarification locally without saving or
+dispatching file tools. These checks are conservative templates, not a general
+language or consent classifier; other wording remains ordinary model input.
+A suffix request
 defaults to this Conversation; `My favorite color is red. Remember that for all
 conversations.` explicitly selects user scope. Quoted/tool/
 child output is never processed as an owner memory command. Attached-image turns
@@ -47,7 +57,11 @@ for personal-memory selection and learning.
 Restarting and resuming the same Conversation retains its scoped memories. A
 new Conversation receives user-wide memory but not another Conversation's private
 facts. Recall uses eligible memory data directly, without `read_file` approval.
-Xana does not use an ad-hoc workspace `user_prefs` file as its memory store.
+Xana does not use `AGENTS.md`, instruction files, or an ad-hoc workspace
+`user_prefs` file as its memory store. Listing or editing workspace files is
+not part of saving a personal fact; you should not need to approve file tools
+for a recognized memory control. Ordinary filesystem work still follows your
+[permission policy](permissions.md).
 Saving returns a short receipt with the statement, scope and memory ID, not a
 model's promise. Use that ID to correct, move or forget the saved fact.
 

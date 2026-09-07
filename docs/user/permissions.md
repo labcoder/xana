@@ -91,6 +91,29 @@ they are resolved to existing canonical paths when chat starts. Absolute,
 missing, escaping, and parent-traversing workspace rules fail startup. Command
 matching is an exact string comparison, not shell parsing or wildcard syntax.
 
+### Allow workspace listings without allowing other file operations
+
+With `permission_mode = "ask"`, listing a directory asks unless a rule or session
+grant allows it. To permit only names/types listed by `list_files` inside the
+current workspace, add this top-level rule to your configuration:
+
+```toml
+[[permission_rules]]
+id = "allow-workspace-listing"
+decision = "allow"
+tool = "list_files"
+effect = "read"
+workspace = "."
+```
+
+This does not allow reading file contents, writing, running commands, external
+paths or MCP tools. In global configuration, `.` follows each Conversation's
+chosen workspace; it is not restricted to the Xana source checkout. Explicit
+matching `ask` and `deny` rules still win. Run `xana config check` and start a new
+Conversation to use the updated policy. In a checkout use `cargo run -- config
+check`. Personal-memory controls need no filesystem tool or file permission;
+allowing listings is not a prerequisite for remembering a fact.
+
 ## What an ask means
 
 For `ask`, the terminal shows a user-facing action name, effect, and one

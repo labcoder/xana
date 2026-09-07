@@ -289,6 +289,18 @@ fn memory_regression_remember_suffix_uses_governed_conversation_memory() {
 }
 
 #[test]
+fn unresolved_remember_scope_returns_no_save_receipt() {
+    let (_home, owner, _) = fixture();
+    let reply = owner
+        .respond("my favorite color is red, remember that for this project, ok?")
+        .unwrap()
+        .unwrap();
+    assert!(reply.contains("Nothing was saved"));
+    assert!(reply.contains("No workspace files were read or changed"));
+    assert!(owner.page(None, None).unwrap().records.is_empty());
+}
+
+#[test]
 fn memory_natural_controls_are_narrow_and_do_not_extract_arbitrary_text() {
     let (_home, owner, _) = fixture();
     assert!(
