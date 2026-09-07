@@ -85,6 +85,7 @@ pub struct CandidateSource {
 pub enum CandidateValidation {
     ExactOwnerQuote,
     OrdinaryStatedAllowlistV1,
+    OrdinaryPreferenceV2,
     OwnerDraftInertOnly,
     LegacyEvidenceUnavailable,
     SensitiveContentNotRetained,

@@ -116,6 +116,11 @@ impl ApprovalPrompt {
             crate::permission::PermissionScope::External { .. }
         );
         let exact_external = external_scope && request.outbound_review.is_some();
+        let exact_only = external_scope
+            || matches!(
+                request.scope,
+                crate::permission::PermissionScope::PersonalMemory { .. }
+            );
         let details = request.outbound_review.as_ref().map_or_else(
             || permission_details(&request),
             |review| {
@@ -132,7 +137,7 @@ impl ApprovalPrompt {
             details,
             target: ApprovalTarget::Native(request),
             allow_once: true,
-            allow_session: !external_scope,
+            allow_session: !exact_only,
             save_allow: exact_external,
             save_deny: exact_external,
             deny: true,
@@ -149,6 +154,11 @@ impl ApprovalPrompt {
             crate::permission::PermissionScope::External { .. }
         );
         let exact_external = external_scope && request.outbound_review.is_some();
+        let exact_only = external_scope
+            || matches!(
+                request.scope,
+                crate::permission::PermissionScope::PersonalMemory { .. }
+            );
         let details = request.outbound_review.as_ref().map_or_else(
             || permission_details(&request),
             |review| {
@@ -168,7 +178,7 @@ impl ApprovalPrompt {
                 request,
             },
             allow_once: true,
-            allow_session: !external_scope,
+            allow_session: !exact_only,
             save_allow: exact_external,
             save_deny: exact_external,
             deny: true,
@@ -236,6 +246,10 @@ fn permission_details(request: &PermissionRequest) -> Vec<String> {
         }
         PermissionScope::BuiltInResource { id } => {
             details.push(format!("Built-in resource: {id}"));
+        }
+        PermissionScope::PersonalMemory { scope, .. } => {
+            details.push(format!("Personal memory: {scope}"));
+            details.extend(argument_details(&request.final_arguments));
         }
         PermissionScope::Unscoped => {
             details.push("Scope: no narrower resource scope was declared".to_owned());

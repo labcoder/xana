@@ -4,7 +4,7 @@
 
 Every built-in tool invocation crosses one permission broker before it can
 read, write, or execute. The broker combines the configured default, matching
-user-owned rules, and memory-only session grants. Tools and model output cannot
+user-owned rules, and in-process session grants. Tools and model output cannot
 approve themselves.
 
 A denied native request is not automatically presented for approval again in
@@ -32,6 +32,16 @@ file, process, workspace, credential, or network resource. An explicit
 matching `ask` or `deny` rule still wins, and `permission_mode = "deny"` still
 denies it. All ordinary workspace, external-path, command, network, and
 external-service effects keep the configured behavior above.
+
+Personal-memory tools use a separate typed scope, never a workspace-file grant.
+With the `ask` default and no matching rule, `memory_lookup` can read eligible
+current scopes and `memory_update` can save an ordinary explicit fact in the
+current Conversation. Broader, sensitive, uncertain, corrective or destructive
+changes require exact review even under `allow`; deny still wins. The model
+interprets the request, but cannot supply caller identity, change scope controls
+or fabricate approval. Memory reviews are once-only, not reusable session grants.
+They show the proposed action and fact; no file permission is needed just to
+save a preference. See [personal memory](personal-memory.md).
 
 Existing version 1 files that explicitly use `allow` remain valid and retain
 automatic authority. To adopt the safer interactive default, change the value

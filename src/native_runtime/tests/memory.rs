@@ -4,6 +4,48 @@ use crate::{
     storage::{ProtectedStore, RecoveryIdentity, TestCustody},
 };
 
+mod semantic;
+
+fn memory_agent(
+    provider: Box<dyn ConversationalProvider>,
+    workspace: std::path::PathBuf,
+    owner: Option<MemoryOwner>,
+) -> (Agent, PromptAssembler) {
+    let mut tools = ToolRegistry::new();
+    crate::memory::tools::register(&mut tools, owner).unwrap();
+    let assembler = PromptAssembler::new(
+        tools.definitions().into_iter().cloned().collect(),
+        PromptEnvironment {
+            connection: "memory-fixture".into(),
+            model: "scripted".into(),
+            operating_system: "test".into(),
+            working_directory: workspace.clone(),
+            configured_shell: "unused".into(),
+            surface: PromptSurface::Cli,
+        },
+        None,
+        ContextBudget {
+            total_tokens: 32_768,
+            conversation_reserve_tokens: 4096,
+        },
+    );
+    let prompt = assembler.assemble(&[]).unwrap();
+    (Agent::new(provider, tools, workspace, prompt, 4), assembler)
+}
+
+fn save_request(quote: &str, statement: &str) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: vec![crate::message::ContentBlock::ToolCall(
+            crate::message::ToolCall {
+                id: "save-memory".into(),
+                name: "memory_update".into(),
+                arguments: serde_json::json!({"action":"remember", "statement":statement, "quote":quote, "risk":"ordinary"}),
+            },
+        )],
+    }
+}
+
 #[tokio::test]
 async fn memory_regression_plain_request_survives_runtime_restart_without_file_tools() {
     assert_memory_request_survives_restart("my favorite color is red. remember that.").await;
@@ -12,6 +54,14 @@ async fn memory_regression_plain_request_survives_runtime_restart_without_file_t
 #[tokio::test]
 async fn memory_regression_polite_suffix_survives_restart_without_file_tools() {
     assert_memory_request_survives_restart("my favorite color is red, remember that, ok?").await;
+}
+
+#[tokio::test]
+async fn multilingual_owner_request_uses_the_same_semantic_tool_loop() {
+    assert_memory_request_survives_restart(
+        "Mi color favorito es el rojo; guárdalo para esta conversación.",
+    )
+    .await;
 }
 
 async fn assert_memory_request_survives_restart(remember: &str) {
@@ -44,18 +94,25 @@ async fn assert_memory_request_survives_restart(remember: &str) {
         };
         let provider = QueueTransport {
             responses: Mutex::new(
-                vec![Ok(Message::text(
+                (if phase == 0 {
+                    vec![Ok(save_request(remember, "my favorite color is red"))]
+                } else {
+                    vec![]
+                })
+                .into_iter()
+                .chain([Ok(Message::text(
                     Role::Assistant,
                     "Your favorite color is red.",
-                ))]
-                .into(),
+                ))])
+                .collect(),
             ),
             requests: requests.clone(),
             completed: Arc::new(AtomicBool::new(false)),
             deltas: vec![],
         };
-        let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
-        let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
+        let (agent, assembler) =
+            memory_agent(Box::new(provider), root.clone(), Some(owner.clone()));
+        let policy = PermissionPolicy::new(PolicyDecision::Ask, vec![], &root).unwrap();
         let mut runtime = RuntimeHandle::spawn_persistent(
             agent,
             policy,
@@ -87,7 +144,7 @@ async fn assert_memory_request_survives_restart(remember: &str) {
             .unwrap(),
             OperationOutcome::Completed
         );
-        assert_eq!(requests.lock().unwrap().len(), phase);
+        assert_eq!(requests.lock().unwrap().len(), phase + 2);
         assert_eq!(
             owner.page(None, None).unwrap().records[0].statement,
             "my favorite color is red"
@@ -95,9 +152,14 @@ async fn assert_memory_request_survives_restart(remember: &str) {
         assert!(runtime.shutdown_owned().await);
     }
     let requests = requests.lock().unwrap();
-    let system = crate::completion_evidence::message_text(&requests[0][0]);
+    let system = crate::completion_evidence::message_text(&requests[1][0]);
     assert!(system.contains("personal_memory"));
     assert!(system.contains("my favorite color is red"));
+    assert_eq!(
+        system.matches("kind=\"personal_memory\"").count(),
+        1,
+        "refresh replaces memory layers"
+    );
     assert_eq!(
         std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
         instructions
@@ -106,33 +168,52 @@ async fn assert_memory_request_survives_restart(remember: &str) {
     let store = ProtectedStore::recover(data.path(), &recovery).unwrap();
     let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
     assert!(
-        restored.audits.is_empty(),
-        "owned memory should not require file approvals"
+        restored
+            .audits
+            .iter()
+            .all(|fact| fact.request.tool_name == "memory_update"
+                && fact.effective == PolicyDecision::Allow
+                && fact.controller_decision.is_none()),
+        "ordinary owner memory uses policy receipts without file approvals"
     );
 }
 
 #[tokio::test]
-async fn memory_regression_legacy_home_rejects_remember_without_calling_a_model() {
+async fn memory_regression_legacy_home_reports_unavailable_through_semantic_tools() {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let root = workspace.path().canonicalize().unwrap();
     let session = DurableSession::create(data.path(), root.clone()).unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
+    let inputs = [
+        "my favorite color is red. remember that.",
+        "my favorite color is red, remember that, ok?",
+        "Could you please remember that my favorite color is red?",
+    ];
     let provider = QueueTransport {
-        responses: Mutex::new(VecDeque::new()),
+        responses: Mutex::new(
+            inputs
+                .iter()
+                .flat_map(|input| {
+                    [
+                        Ok(save_request(input, "my favorite color is red")),
+                        Ok(Message::text(
+                            Role::Assistant,
+                            "Personal memory is unavailable; nothing was saved.",
+                        )),
+                    ]
+                })
+                .collect(),
+        ),
         requests: requests.clone(),
         completed: Arc::new(AtomicBool::new(false)),
         deltas: vec![],
     };
-    let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
-    let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
+    let (agent, assembler) = memory_agent(Box::new(provider), root.clone(), None);
+    let policy = PermissionPolicy::new(PolicyDecision::Ask, vec![], &root).unwrap();
     let mut runtime =
         RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None).unwrap();
-    for input in [
-        "my favorite color is red. remember that.",
-        "my favorite color is red, remember that, ok?",
-        "Could you please remember that my favorite color is red?",
-    ] {
+    for input in inputs {
         let operation = OperationId::new();
         runtime
             .send(RuntimeCommand::SubmitTurn {
@@ -148,10 +229,10 @@ async fn memory_regression_legacy_home_rejects_remember_without_calling_a_model(
             )
             .await
             .unwrap(),
-            OperationOutcome::Failed
+            OperationOutcome::Completed
         );
     }
-    assert!(requests.lock().unwrap().is_empty());
+    assert_eq!(requests.lock().unwrap().len(), 6);
     assert!(!workspace.path().join("user_prefs").exists());
     assert!(runtime.shutdown_owned().await);
 }
@@ -171,7 +252,14 @@ async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
     )
     .unwrap();
     let id = crate::identity::SessionId::new();
-    let owner = MemoryOwner::new(store.clone(), MemoryContext::default());
+    let conversation = id.to_string().parse().unwrap();
+    let owner = MemoryOwner::new(
+        store.clone(),
+        MemoryContext {
+            conversation: Some(conversation),
+            ..Default::default()
+        },
+    );
     let session = DurableSession::create_protected(store.clone(), root.clone(), id).unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let provider = QueueTransport {
@@ -182,9 +270,15 @@ async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
     };
     let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
     let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
-    let mut runtime =
-        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, Some(owner))
-            .unwrap();
+    let mut runtime = RuntimeHandle::spawn_persistent(
+        agent,
+        policy,
+        true,
+        session,
+        assembler,
+        Some(owner.clone()),
+    )
+    .unwrap();
     for declared in [false, true] {
         let operation_id = OperationId::new();
         let conditions = if declared {
@@ -198,7 +292,7 @@ async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
         runtime
             .send(RuntimeCommand::SubmitFiniteTurn {
                 operation_id,
-                input: "what do you remember?".into(),
+                input: "disable memory for this conversation".into(),
                 kind: WorkKind::Root,
                 contract: CompletionContract { conditions },
             })
@@ -218,6 +312,16 @@ async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
             }
         );
         let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
+        assert!(
+            owner
+                .controls(
+                    MemoryScope::Conversation(conversation),
+                    crate::memory::MemoryControlEdit::default(),
+                )
+                .unwrap()
+                .no_memory,
+            "the local control must actually commit, independently of completion claims"
+        );
         let evidence = restored
             .completion_evidence
             .iter()
@@ -237,7 +341,7 @@ async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
 }
 
 #[tokio::test]
-async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
+async fn memory_controls_stay_local_and_model_output_cannot_exercise_owner_controls() {
     let data = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let root = workspace.path().canonicalize().unwrap();
@@ -256,6 +360,13 @@ async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
         },
     );
     let session = DurableSession::create_protected(home.clone(), root.clone(), id).unwrap();
+    owner
+        .remember(
+            MemoryScope::Conversation(id.to_string().parse().unwrap()),
+            "I prefer examples".into(),
+            None,
+        )
+        .unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     // A provider reply resembling an owner control must remain ordinary output.
     let provider = QueueTransport {
@@ -282,8 +393,8 @@ async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
     )
     .unwrap();
     for (index, input) in [
-        "remember that I prefer examples",
-        "what do you remember?",
+        "disable memory for this conversation",
+        "enable memory for this conversation",
         "Explain what you can do",
     ]
     .into_iter()
@@ -348,6 +459,7 @@ async fn memory_owner_requests_complete_durably_without_model_or_tool_calls() {
                     quote: sources[0].text.clone(),
                     claim: crate::memory::MemoryClaim::Inferred,
                     sensitive: false,
+                    preference: None,
                 }])
                 .unwrap(),
             ))]

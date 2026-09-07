@@ -149,9 +149,24 @@ async fn derived_turn_learns_only_original_owner_text_and_never_runs_memory_cont
         assert!(serde_json::to_string(user).unwrap().contains(DERIVATIVE));
     }
     let sources = store.learning_batch().unwrap();
-    assert_eq!(sources.len(), 1, "direct-control syntax is not learned");
-    assert_eq!(sources[0].text, "I prefer examples");
-    assert!(!sources[0].text.contains(DERIVATIVE));
+    let source_texts: std::collections::BTreeSet<_> =
+        sources.iter().map(|source| source.text.as_str()).collect();
+    assert_eq!(sources.len(), 2, "both original owner inputs are eligible");
+    assert_eq!(
+        source_texts,
+        std::collections::BTreeSet::from(["I prefer examples", "remember that I use Python"])
+    );
+    for source in &sources {
+        assert!(!source.text.contains(DERIVATIVE));
+        assert_eq!(
+            source.context.conversation,
+            Some(session_id.to_string().parse().unwrap())
+        );
+        assert_eq!(
+            source.hash,
+            blake3::hash(source.text.as_bytes()).to_hex().to_string()
+        );
+    }
     assert!(owner.page(None, None).unwrap().records.is_empty());
     let (_, restored) = DurableSession::inspect_protected(&store, session_id).unwrap();
     assert_eq!(restored.conversation_path().unwrap().len(), 4);

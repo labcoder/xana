@@ -43,7 +43,7 @@ impl Fixture {
         }
         let initialize = json!({"id":1,"result":{"codexHome":self.directory.path()}});
         let script = format!(
-            "READ \"method\":\"initialize\"\nHAS \"experimentalApi\":false\nSEND {initialize}\nREAD \"method\":\"initialized\"\n{script}"
+            "READ \"method\":\"initialize\"\nHAS \"experimentalApi\":true\nSEND {initialize}\nREAD \"method\":\"initialized\"\n{script}"
         );
         std::fs::write(self.directory.path().join("script"), script).expect("write script");
         CodexAppServer::spawn(&CodexLaunchConfig {

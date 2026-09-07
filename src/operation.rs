@@ -223,6 +223,7 @@ pub(crate) struct OperationExecutor<'a> {
     observer: Arc<dyn BoundaryObserver>,
     events: Option<crate::native_runtime::AgentEventSender>,
     cleanup: DeferredCleanup,
+    owner_input: Option<&'a crate::tool::OwnerTurnInput>,
 }
 
 impl<'a> OperationExecutor<'a> {
@@ -243,7 +244,16 @@ impl<'a> OperationExecutor<'a> {
             observer,
             events,
             cleanup,
+            owner_input: None,
         }
+    }
+
+    pub(crate) fn with_owner_input(
+        mut self,
+        owner_input: Option<&'a crate::tool::OwnerTurnInput>,
+    ) -> Self {
+        self.owner_input = owner_input;
+        self
     }
 
     pub(crate) async fn invoke_tool(
@@ -253,7 +263,16 @@ impl<'a> OperationExecutor<'a> {
         invocation_id: ToolInvocationId,
         call: ToolCall,
     ) -> Result<ToolResult> {
-        let planned = match self.tools.plan(&call, self.workspace_root) {
+        if self
+            .owner_input
+            .is_some_and(|input| input.operation_id != operation_id)
+        {
+            bail!("owner input belongs to another operation");
+        }
+        let planned = match self
+            .tools
+            .plan_in_turn(&call, self.workspace_root, self.owner_input)
+        {
             Ok(planned) => planned,
             Err(result) => return Ok(result),
         };

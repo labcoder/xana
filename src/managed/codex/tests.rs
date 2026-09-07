@@ -4,6 +4,7 @@ use tokio::io::{BufReader, duplex, sink, split};
 use tokio::sync::Notify;
 
 mod lifecycle;
+mod memory_bridge;
 mod turn_control;
 
 #[tokio::test]

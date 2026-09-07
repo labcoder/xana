@@ -1,6 +1,7 @@
 //! Codex app-server adapter using the vendor-owned JSONL protocol.
 
 mod approvals;
+mod dynamic_tools;
 mod events;
 mod thread_policy;
 
@@ -295,6 +296,38 @@ pub(crate) trait ManagedEventHandler {
         &'a mut self,
         request: ApprovalRequest,
     ) -> BoxFuture<'a, Result<ApprovalDecision, CodexError>>;
+
+    /// Only Xana's fixed personal-memory tools can cross this adapter. Child
+    /// runtimes and other handlers have no owner-input capability by default.
+    fn memory_tool_definitions(&self) -> Vec<crate::tool::ToolDefinition> {
+        Vec::new()
+    }
+
+    fn dynamic_tool<'a>(
+        &'a mut self,
+        _call: ManagedToolCall,
+        _cancellation: CancellationToken,
+    ) -> BoxFuture<'a, Result<ManagedToolResult, CodexError>> {
+        Box::pin(async {
+            Ok(ManagedToolResult {
+                text: "Personal-memory tools are not attached to this owner turn.".into(),
+                success: false,
+            })
+        })
+    }
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct ManagedToolCall {
+    pub(crate) call_id: String,
+    pub(crate) name: String,
+    pub(crate) arguments: Value,
+}
+
+#[derive(Clone, PartialEq)]
+pub(crate) struct ManagedToolResult {
+    pub(crate) text: String,
+    pub(crate) success: bool,
 }
 
 #[derive(Debug)]
@@ -557,6 +590,7 @@ where
         let mut interruption: Option<TurnInterruption> = None;
         let mut terminal_seen = false;
         let mut seen_approvals = HashSet::new();
+        let mut tool_receipts = dynamic_tools::TurnReceipts::default();
         loop {
             let message = if let Some(interruption) = &interruption {
                 let deadline = interruption.deadline;
@@ -597,6 +631,38 @@ where
             {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
                 approvals::validate_scope(id, &params, thread_id, turn_id, &mut seen_approvals)?;
+                if method == "item/tool/call" {
+                    let call = dynamic_tools::decode(&params)?;
+                    let result = if let Some(result) = tool_receipts.existing(&call)? {
+                        result
+                    } else if interruption.is_some() || terminal_seen {
+                        dynamic_tools::cancelled()
+                    } else {
+                        // The callback owns cancellation of approval waits. Never
+                        // drop an executing local commit and guess its outcome.
+                        let result = handler
+                            .dynamic_tool(call.clone(), cancellation.cloned().unwrap_or_default())
+                            .await?;
+                        tool_receipts.record(call, result.clone())?;
+                        result
+                    };
+                    if interruption.is_none()
+                        && cancellation.is_some_and(CancellationToken::is_cancelled)
+                    {
+                        interruption = Some(self.interrupt_turn(thread_id, turn_id).await?);
+                    }
+                    let response = json!({"id":id,"result":dynamic_tools::encode(result)?});
+                    // A write error retires the peer; the committed tool receipt
+                    // remains evidence even when Codex cannot receive it.
+                    if let Some(interruption) = &interruption {
+                        tokio::time::timeout_at(interruption.deadline, self.send(&response))
+                            .await
+                            .map_err(|_| CodexError::Timeout("turn interruption"))??;
+                    } else {
+                        self.send(&response).await?;
+                    }
+                    continue;
+                }
                 let request = approvals::decode(method, &params)?;
                 let result = if interruption.is_some() {
                     approvals::cancel(&request)?
@@ -903,7 +969,7 @@ impl CodexAppServer {
                         "title": "Xana",
                         "version": env!("CARGO_PKG_VERSION")
                     },
-                    "capabilities": { "experimentalApi": false }
+                    "capabilities": { "experimentalApi": true }
                 }),
                 &mut handler,
             ),
@@ -1138,13 +1204,12 @@ impl CodexAppServer {
         policy: ManagedThreadPolicy,
         handler: &mut H,
     ) -> Result<String, CodexError> {
-        let result = self
-            .request(
-                "thread/start",
-                thread_start_params(model, workspace, developer_instructions, policy),
-                handler,
-            )
-            .await?;
+        let mut params = thread_start_params(model, workspace, developer_instructions, policy);
+        let tools = dynamic_tools::definitions(handler.memory_tool_definitions())?;
+        if !tools.is_empty() {
+            params["dynamicTools"] = Value::Array(tools);
+        }
+        let result = self.request("thread/start", params, handler).await?;
         let thread = checked_thread_id(&result, "thread/start", workspace, policy, None);
         if thread.is_err() {
             self.protocol_usable = false;

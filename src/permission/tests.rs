@@ -99,6 +99,90 @@ fn unattended_ceiling_denies_external_reads_and_effects_even_under_allow() {
 }
 
 #[test]
+fn personal_memory_default_ask_honors_explicit_rules_and_exact_review() {
+    let workspace = tempdir().unwrap();
+    let mut memory = request(PermissionScope::PersonalMemory {
+        scope: format!("conversation:{}", uuid::Uuid::new_v4()),
+        review: false,
+    });
+    memory.tool_name = "memory_update".into();
+    memory.effect_class = EffectClass::Write;
+    assert_eq!(
+        policy(PolicyDecision::Ask, vec![], workspace.path())
+            .explain(&memory)
+            .winning_decision,
+        PolicyDecision::Allow
+    );
+    for decision in [PolicyDecision::Deny, PolicyDecision::Ask] {
+        let mut explicit = rule("memory-policy", decision);
+        explicit.tool = Some("memory_update".into());
+        assert_eq!(
+            policy(PolicyDecision::Allow, vec![explicit], workspace.path())
+                .explain(&memory)
+                .winning_decision,
+            decision
+        );
+    }
+    memory.scope = PermissionScope::PersonalMemory {
+        scope: "user".into(),
+        review: true,
+    };
+    for default in [PolicyDecision::Ask, PolicyDecision::Allow] {
+        assert_eq!(
+            policy(default, vec![], workspace.path())
+                .explain(&memory)
+                .winning_decision,
+            PolicyDecision::Ask
+        );
+    }
+    assert_eq!(
+        policy(PolicyDecision::Deny, vec![], workspace.path())
+            .explain(&memory)
+            .winning_decision,
+        PolicyDecision::Deny
+    );
+    assert!(
+        !scope_contains(&memory.scope, &memory.scope),
+        "memory review is never a reusable scope grant"
+    );
+    assert!(
+        policy::SessionGrants::default()
+            .insert(&memory, memory.scope.clone())
+            .is_err()
+    );
+}
+
+#[test]
+fn personal_memory_scope_does_not_exempt_other_tools_or_unattended_work() {
+    let workspace = tempdir().unwrap();
+    let mut memory = request(PermissionScope::PersonalMemory {
+        scope: "conversation:fixture".into(),
+        review: false,
+    });
+    assert_eq!(
+        policy(PolicyDecision::Ask, vec![], workspace.path())
+            .explain(&memory)
+            .winning_decision,
+        PolicyDecision::Ask
+    );
+    memory.tool_name = "memory_lookup".into();
+    assert_eq!(
+        policy(PolicyDecision::Allow, vec![], workspace.path())
+            .workspace_reads_only()
+            .explain(&memory)
+            .winning_decision,
+        PolicyDecision::Deny
+    );
+    memory.effect_class = EffectClass::Execute;
+    assert_eq!(
+        policy(PolicyDecision::Ask, vec![], workspace.path())
+            .explain(&memory)
+            .winning_decision,
+        PolicyDecision::Ask
+    );
+}
+
+#[test]
 fn embedded_product_documentation_does_not_prompt_under_the_ask_default() {
     let workspace = tempdir().expect("workspace");
     let mut docs = request(PermissionScope::BuiltInResource {

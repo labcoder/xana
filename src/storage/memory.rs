@@ -1,5 +1,7 @@
 //! Indexed personal records with transactional revision/eligibility boundaries.
 
+mod tools;
+
 use super::ProtectedStore;
 use crate::memory::*;
 use anyhow::{Context, Result, ensure};

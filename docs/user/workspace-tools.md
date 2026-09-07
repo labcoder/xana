@@ -7,6 +7,10 @@ These tools share the same permission broker, durable operation records, path
 checks, and immutable per-turn schema. Managed Codex owns a different inner
 tool loop; the contracts below apply only when Xana is the execution owner.
 
+Personal facts use separate [memory tools](personal-memory.md), not workspace
+files. `memory_lookup` and `memory_update` share Xana's protected memory policy
+and are also exposed through its narrow managed Codex bridge.
+
 ## Tool contracts
 
 | Tool | Purpose | Important bounds | Replay declaration |

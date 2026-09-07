@@ -6,10 +6,9 @@
 mod activity;
 mod failure;
 mod memory_context;
-mod memory_controls;
+mod memory_tools;
 #[cfg(test)]
 pub(crate) use memory_context::prepare as prepare_memory_for_test;
-use memory_controls::local_memory_reply;
 mod tui_driver;
 
 pub(crate) use tui_driver::{ManagedTuiDriver, ManagedTuiEvent};
@@ -38,6 +37,8 @@ use std::path::PathBuf;
 #[derive(Clone)]
 pub(crate) struct ManagedChatConfig {
     pub(crate) memory: Option<crate::memory::MemoryOwner>,
+    pub(crate) permission_default: crate::permission::PolicyDecision,
+    pub(crate) permission_rules: Vec<crate::permission::PermissionRule>,
     pub(crate) connection: String,
     pub(crate) model: String,
     pub(crate) profile_name: String,
@@ -232,15 +233,6 @@ pub(crate) async fn run_codex_chat(
         if let Some(command) = local_control(input) {
             exit = command;
             break;
-        }
-        if pending.len() == 0 && crate::memory::parse_natural(input).is_some() {
-            println!(
-                "xana> {}",
-                local_memory_reply(config.memory.as_ref(), thread.conversation_id(), input)
-                    .await
-                    .unwrap_or_else(|error| format!("Memory control failed: {error}"))
-            );
-            continue;
         }
         if input == "/doctor" {
             exit = ChatExit::Doctor(None);
@@ -482,12 +474,21 @@ pub(crate) async fn run_codex_chat(
             }
         };
         let mut handler = TerminalManagedHandler::new(activity);
+        let operation_id = crate::identity::OperationId::new();
+        let owner_input = memory_tools::owner_input(operation_id, input, Default::default());
+        let mut memory_handler = memory_tools::MemoryManagedHandler::new(
+            &config,
+            thread.conversation_id(),
+            owner_input.clone(),
+            &mut handler,
+            activity::memory_review(),
+        )?;
         let loaded_thread_id = match ensure_thread_loaded(
             &mut server,
             &mut thread,
             &mut thread_store,
             &config,
-            &mut handler,
+            &mut memory_handler,
         )
         .await
         {
@@ -503,22 +504,24 @@ pub(crate) async fn run_codex_chat(
                 continue;
             }
         };
-        let operation_id = crate::identity::OperationId::new();
         server.set_usage_identity(thread.conversation_id().to_string(), operation_id);
         let _foreground = memory_context::foreground(config.memory.as_ref())?;
-        let managed_input =
-            match memory_context::prepare(config.memory.as_ref(), thread.conversation_id(), input)
-                .await
-            {
-                Ok(text) => text,
-                Err(error) => {
-                    for attachment in attachments {
-                        pending.push(attachment);
-                    }
-                    println!("xana> {error}");
-                    continue;
+        let managed_input = match memory_context::prepare_turn(
+            config.memory.as_ref(),
+            thread.conversation_id(),
+            &owner_input,
+        )
+        .await
+        {
+            Ok(text) => text,
+            Err(error) => {
+                for attachment in attachments {
+                    pending.push(attachment);
                 }
-            };
+                println!("xana> {error}");
+                continue;
+            }
+        };
         let result = server
             .run_turn(
                 &loaded_thread_id,
@@ -531,9 +534,10 @@ pub(crate) async fn run_codex_chat(
                     text: managed_input,
                     image_urls,
                 },
-                &mut handler,
+                &mut memory_handler,
             )
             .await;
+        memory_handler.finish().await?;
         if let Err(error) = &result {
             crate::diagnostics::emit_terminal(failure::diagnostic(
                 error,
@@ -605,17 +609,6 @@ async fn run_codex_one_shot_inner(
         .conversation
         .conversation_id()
         .expect("composed managed one-shot has a Conversation identity");
-    if crate::memory::parse_natural(&request.input).is_some() {
-        let text = local_memory_reply(config.memory.as_ref(), conversation_id, &request.input)
-            .await
-            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
-        return Ok(OneShotSuccess {
-            text,
-            session_id: None,
-            conversation_id,
-            execution_owner: "xana_memory_control",
-        });
-    }
     let account = server
         .account_status()
         .await
@@ -646,17 +639,39 @@ async fn run_codex_one_shot_inner(
     let mut store =
         ManagedThreadStore::open(&config.data_root, &config.connection, &config.workspace)
             .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    if request.continue_thread {
+        require_one_shot_target(&store, &request.conversation, &config.connection)
+            .map_err(|error| OneShotFailure::new(ExitCategory::InvalidInput, error.to_string()))?;
+    }
     let mut handler = OneShotManagedHandler::new(reporter);
+    let operation_id = crate::identity::OperationId::new();
+    let owner_input = memory_tools::owner_input(operation_id, &request.input, Default::default());
+    let memory_approval_required = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let required = memory_approval_required.clone();
+    let mut memory_handler = memory_tools::MemoryManagedHandler::new(
+        config,
+        conversation_id,
+        owner_input.clone(),
+        &mut handler,
+        memory_tools::MemoryReview::new(move |_| {
+            required.store(true, std::sync::atomic::Ordering::Release);
+            Box::pin(async { crate::permission::ControllerDecision::Deny })
+        }),
+    )
+    .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let thread_id = if request.continue_thread {
         match store.thread_id() {
             Some(thread_id) => {
+                require_memory_tools(&store, thread_id).map_err(|error| {
+                    OneShotFailure::new(ExitCategory::Connection, error.to_string())
+                })?;
                 server
                     .resume_thread(
                         thread_id,
                         &config.model,
                         &config.workspace,
                         &config.developer_instructions,
-                        &mut handler,
+                        &mut memory_handler,
                     )
                     .await
             }
@@ -673,7 +688,7 @@ async fn run_codex_one_shot_inner(
                 &config.model,
                 &config.workspace,
                 &config.developer_instructions,
-                &mut handler,
+                &mut memory_handler,
             )
             .await
     }
@@ -685,6 +700,11 @@ async fn run_codex_one_shot_inner(
             Some(config.identity_version),
         )
         .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    if !request.continue_thread {
+        store
+            .mark_memory_tools_current(&thread_id)
+            .map_err(|error| OneShotFailure::new(ExitCategory::Configuration, error.to_string()))?;
+    }
 
     let _root_lease = workspace_host
         .acquire_foreground_root(request.conversation)
@@ -693,10 +713,9 @@ async fn run_codex_one_shot_inner(
     let _foreground = memory_context::foreground(config.memory.as_ref())
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let managed_input =
-        memory_context::prepare(config.memory.as_ref(), conversation_id, &request.input)
+        memory_context::prepare_turn(config.memory.as_ref(), conversation_id, &owner_input)
             .await
             .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
-    let operation_id = crate::identity::OperationId::new();
     server.set_usage_identity(conversation_id.to_string(), operation_id);
     let turn = server
         .run_turn(
@@ -710,9 +729,15 @@ async fn run_codex_one_shot_inner(
                 text: managed_input,
                 image_urls: Vec::new(),
             },
-            &mut handler,
+            &mut memory_handler,
         )
         .await;
+    memory_handler
+        .finish()
+        .await
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
+    handler.approval_required |=
+        memory_approval_required.load(std::sync::atomic::Ordering::Acquire);
     if let Err(error) = &turn {
         let diagnostic = failure::diagnostic(error, Some(operation_id), conversation_id, config);
         crate::diagnostics::emit_terminal(diagnostic.clone());
@@ -873,6 +898,9 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
     config: &ManagedChatConfig,
     handler: &mut H,
 ) -> Result<String, CodexError> {
+    if handler.memory_tool_definitions() != crate::memory::tools::definitions() {
+        return Err(CodexError::Protocol("managed foreground thread requires the exact personal-memory tool definitions; no thread was opened".into()));
+    }
     let id = match thread {
         ManagedThreadState::New { conversation_id } => {
             let id = server
@@ -890,6 +918,9 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
                     Some(config.identity_version),
                 )
                 .map_err(|error| CodexError::Io(error.to_string()))?;
+            store
+                .mark_memory_tools_current(&id)
+                .map_err(|error| CodexError::Io(error.to_string()))?;
             (*conversation_id, id)
         }
         ManagedThreadState::NeedsResume {
@@ -897,6 +928,7 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
             thread_id,
             ..
         } => {
+            require_memory_tools(store, thread_id)?;
             server
                 .resume_thread(
                     thread_id,
@@ -915,6 +947,36 @@ async fn ensure_thread_loaded<H: crate::managed::codex::ManagedEventHandler>(
         thread_id: id.1.clone(),
     };
     Ok(id.1)
+}
+
+fn require_memory_tools(store: &ManagedThreadStore, thread_id: &str) -> Result<(), CodexError> {
+    if !store.memory_tools_current(thread_id) {
+        return Err(CodexError::Protocol(
+            "This managed thread predates Xana's semantic personal-memory tool contract. Start a new conversation (/clear in chat); the old Codex thread is retained. No turn was started.".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_one_shot_target(
+    store: &ManagedThreadStore,
+    conversation: &ConversationRef,
+    connection: &str,
+) -> Result<(), CodexError> {
+    if let ConversationRef::Managed {
+        conversation_id,
+        connection: requested,
+        thread_id,
+    } = conversation
+        && requested == connection
+        && store.conversation_id() == Some(*conversation_id)
+        && store.thread_id() == Some(thread_id.as_str())
+    {
+        return Ok(());
+    }
+    Err(CodexError::Protocol(
+        "--continue requires the selected managed thread to match the requested Conversation and connection; no owner input or model turn was sent. Select the intended conversation or start a new one.".into(),
+    ))
 }
 
 fn print_models(models: &[crate::model_catalog::ModelDescriptor], selected: &str) {
@@ -1002,6 +1064,66 @@ mod tests {
     };
     use std::collections::BTreeSet;
     use tempfile::tempdir;
+
+    #[test]
+    fn managed_memory_contract_receipt_gates_legacy_resume_and_survives_selection() {
+        let home = tempdir().unwrap();
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let conversation = ConversationId::new();
+        let mut store = ManagedThreadStore::open(home.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(
+                Some(conversation),
+                Some("legacy-thread".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        assert!(require_memory_tools(&store, "legacy-thread").is_err());
+        store.mark_memory_tools_current("legacy-thread").unwrap();
+        store.select_thread("legacy-thread").unwrap();
+        assert!(require_memory_tools(&store, "legacy-thread").is_ok());
+        drop(store);
+        let reopened = ManagedThreadStore::open(home.path(), "codex", &workspace).unwrap();
+        assert!(require_memory_tools(&reopened, "legacy-thread").is_ok());
+        assert!(require_memory_tools(&reopened, "unknown-thread").is_err());
+    }
+
+    #[test]
+    fn managed_one_shot_owner_source_cannot_follow_a_different_selected_thread() {
+        let home = tempdir().unwrap();
+        let workspace = home.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let conversation_id = ConversationId::new();
+        let mut store = ManagedThreadStore::open(home.path(), "codex", &workspace).unwrap();
+        store
+            .set_thread(
+                Some(conversation_id),
+                Some("selected-thread".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        let target = |conversation_id, connection: &str, thread: &str| ConversationRef::Managed {
+            conversation_id,
+            connection: connection.into(),
+            thread_id: thread.into(),
+        };
+        assert!(
+            require_one_shot_target(
+                &store,
+                &target(conversation_id, "codex", "selected-thread"),
+                "codex"
+            )
+            .is_ok()
+        );
+        for requested in [
+            target(ConversationId::new(), "codex", "selected-thread"),
+            target(conversation_id, "codex", "another-thread"),
+            target(conversation_id, "another-connection", "selected-thread"),
+        ] {
+            assert!(require_one_shot_target(&store, &requested, "codex").is_err());
+        }
+    }
 
     #[test]
     fn local_accounting_commands_never_become_managed_prompts() {

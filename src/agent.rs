@@ -46,6 +46,14 @@ pub(crate) struct ConversationCommit {
 pub(crate) struct DurableTurnServices {
     conversations: ConversationCommitSender,
     operations: DurableOperationSender,
+    owner_input: Option<crate::tool::OwnerTurnInput>,
+    prompt_refresh: Option<Arc<dyn RequestPromptRefresh>>,
+}
+
+/// Application-owned request context. The engine consumes an owned, budgeted
+/// snapshot without learning how context is stored or authorized.
+pub(crate) trait RequestPromptRefresh: Send + Sync {
+    fn refresh(&self, prompt: &PromptSnapshot) -> Result<PromptSnapshot>;
 }
 
 impl DurableTurnServices {
@@ -56,7 +64,22 @@ impl DurableTurnServices {
         Self {
             conversations,
             operations,
+            owner_input: None,
+            prompt_refresh: None,
         }
+    }
+
+    pub(crate) fn with_owner_input(mut self, input: Option<crate::tool::OwnerTurnInput>) -> Self {
+        self.owner_input = input;
+        self
+    }
+
+    pub(crate) fn with_prompt_refresh(
+        mut self,
+        refresh: Option<Arc<dyn RequestPromptRefresh>>,
+    ) -> Self {
+        self.prompt_refresh = refresh;
+        self
     }
 }
 
@@ -544,6 +567,12 @@ impl Agent {
         };
 
         for _ in 0..round_limit {
+            let refreshed = durable
+                .as_ref()
+                .and_then(|services| services.prompt_refresh.as_ref())
+                .map(|refresh| refresh.refresh(prompt))
+                .transpose()?;
+            let prompt = refreshed.as_ref().unwrap_or(prompt);
             let request_messages = prompt.messages_for_request(messages)?;
             if let Some(ledger) = prompt.ledger(messages.iter()) {
                 // Tool results change the tail within a turn. Report each
@@ -675,6 +704,7 @@ impl Agent {
                         Some(events.clone()),
                         cleanup.clone(),
                     )
+                    .with_owner_input(durable.owner_input.as_ref())
                     .invoke_tool(operation_id, step_id, invocation_id, call.clone())
                     .await?
                 } else {

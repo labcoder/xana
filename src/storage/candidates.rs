@@ -205,7 +205,11 @@ fn encode(stored: &StoredCandidate) -> Result<Vec<u8>> {
                     && (matches!(event.actor, CandidateActor::Owner)
                         || (event.revision == 1
                             && event.state == CandidateState::AutoApplied
-                            && r.validation == CandidateValidation::OrdinaryStatedAllowlistV1)),
+                            && matches!(
+                                r.validation,
+                                CandidateValidation::OrdinaryStatedAllowlistV1
+                                    | CandidateValidation::OrdinaryPreferenceV2
+                            ))),
                 "invalid candidate promotion actor"
             );
         }
@@ -587,7 +591,7 @@ pub(super) fn learned(
         validation: if suggestion.sensitive {
             CandidateValidation::SensitiveContentNotRetained
         } else if auto {
-            CandidateValidation::OrdinaryStatedAllowlistV1
+            CandidateValidation::OrdinaryPreferenceV2
         } else {
             CandidateValidation::ExactOwnerQuote
         },

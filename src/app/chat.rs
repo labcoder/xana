@@ -601,6 +601,8 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         )?;
         let managed_config = ManagedChatConfig {
             memory,
+            permission_default: permission_mode.into(),
+            permission_rules,
             connection: provider_name,
             model,
             profile_name,
@@ -981,6 +983,18 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         configured_shell,
         surface: PromptSurface::Cli,
     };
+    let memory = super::memory_commands::compose(
+        paths,
+        &artifact_store,
+        &session.session_id().to_string(),
+        frozen_profile
+            .as_ref()
+            .or(launch_profile.as_ref())
+            .context("memory needs a resolved Profile")?
+            .profile_id,
+    )?;
+    crate::memory::tools::register(&mut tools, memory.clone())
+        .context("could not register personal memory tools")?;
     let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
     let prompt_assembler = PromptAssembler::new(
         definitions,
@@ -1035,16 +1049,6 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
     let round_budget_suspension = session.round_budget_suspension();
-    let memory = super::memory_commands::compose(
-        paths,
-        &artifact_store,
-        &session_id.to_string(),
-        frozen_profile
-            .as_ref()
-            .or(launch_profile.as_ref())
-            .context("memory needs a resolved Profile")?
-            .profile_id,
-    )?;
     if memory.is_some() {
         context_report.push_str(crate::memory::learning::DISCLOSURE);
     } else {

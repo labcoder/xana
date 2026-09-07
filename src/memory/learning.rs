@@ -1,11 +1,13 @@
 //! Incremental personal learning from owner-authored input only. Providers
 //! propose data; deterministic eligibility, provenance and commit authority stay local.
+mod preferences;
 mod processing;
 #[cfg(test)]
 mod tests;
 use super::*;
 use crate::provider::ConversationalProvider;
 use anyhow::Context;
+pub(crate) use preferences::OrdinaryPreference;
 use std::sync::Arc;
 
 pub(crate) const QUEUE_LIMIT: usize = 1000;
@@ -47,6 +49,9 @@ pub(crate) struct Suggestion {
     pub(crate) quote: String,
     pub(crate) claim: MemoryClaim,
     pub(crate) sensitive: bool,
+    /// Closed, harmless values may activate; arbitrary helper prose never does.
+    #[serde(default)]
+    pub(crate) preference: Option<OrdinaryPreference>,
 }
 
 #[derive(Debug, Serialize)]
@@ -71,10 +76,7 @@ pub(crate) struct LearningRetirement {
 impl MemoryOwner {
     pub(crate) fn enqueue_user_statement(&self, id: Uuid, text: &str) -> Result<bool> {
         ensure!(!id.is_nil(), "learning source identity must not be nil");
-        if text.len() > SOURCE_BYTES
-            || text.trim().is_empty()
-            || super::parse_natural(text).is_some()
-        {
+        if text.len() > SOURCE_BYTES || text.trim().is_empty() {
             return Ok(false);
         }
         let Some(conversation) = self.context.conversation else {
@@ -96,8 +98,9 @@ impl MemoryOwner {
     }
 }
 
-/// A deliberately small transparent allowlist for ordinary durable preferences.
-/// Everything else stays staged; helper confidence is never consent.
+/// Language interpretation belongs to the authorized helper. Local activation
+/// accepts only closed ordinary values with a whole-source stated attribution.
+/// This is a bounded semantic policy, not proof that a model understood intent.
 pub(crate) fn auto_eligible(source: &LearningSource, suggestion: &Suggestion) -> bool {
     if suggestion.sensitive
         || suggestion.claim != MemoryClaim::Stated
@@ -106,20 +109,7 @@ pub(crate) fn auto_eligible(source: &LearningSource, suggestion: &Suggestion) ->
     {
         return false;
     }
-    let text = suggestion.quote.trim().to_lowercase();
-    let ordinary = [
-        "i prefer concise responses",
-        "i prefer detailed responses",
-        "i prefer examples",
-        "i prefer metric units",
-        "i prefer dark mode",
-        "i prefer light mode",
-        "i use rust",
-        "i use python",
-        "i use typescript",
-    ];
-    ordinary.contains(&text.trim_end_matches(['.', '!']))
-        && source.text.trim().eq(suggestion.quote.trim())
+    suggestion.preference.is_some() && source.text.trim().eq(suggestion.quote.trim())
 }
 
 pub(crate) fn record_for(source: &LearningSource, suggestion: &Suggestion) -> Result<MemoryRecord> {
@@ -146,7 +136,17 @@ pub(crate) fn record_for(source: &LearningSource, suggestion: &Suggestion) -> Re
         id: Uuid::new_v4(),
         revision: 1,
         scope,
-        statement: suggestion.quote.clone(),
+        // Never promote arbitrary extracted text into an active preference.
+        // The exact quotation remains source/candidate evidence, not authority.
+        statement: if active {
+            suggestion
+                .preference
+                .expect("checked preference")
+                .statement()
+                .into()
+        } else {
+            suggestion.quote.clone()
+        },
         claim: suggestion.claim,
         state: if active {
             MemoryState::Active

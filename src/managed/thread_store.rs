@@ -65,6 +65,9 @@ struct ManagedThreadEntry {
     thread_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity_version: Option<String>,
+    /// Host receipt: this thread was started with the exact memory v1 tools.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    memory_tools_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -237,12 +240,17 @@ impl ManagedThreadStore {
         let mut threads = self.threads.clone();
         if let Some(id) = thread_id.as_deref() {
             let conversation_id = conversation_id.expect("validated managed Conversation id");
+            let memory_tools_version = threads
+                .iter()
+                .find(|entry| entry.thread_id == id && entry.conversation_id == conversation_id)
+                .and_then(|entry| entry.memory_tools_version);
             threads
                 .retain(|entry| entry.thread_id != id && entry.conversation_id != conversation_id);
             threads.push(ManagedThreadEntry {
                 conversation_id,
                 thread_id: id.to_owned(),
                 identity_version: identity_version.clone(),
+                memory_tools_version,
             });
             if threads.len() > MAX_THREADS {
                 threads.remove(0);
@@ -259,6 +267,10 @@ impl ManagedThreadStore {
     ) -> Result<(), ManagedThreadStoreError> {
         validate_thread_state(Some(conversation_id), Some(&thread_id), identity_version)?;
         let mut threads = self.threads.clone();
+        let memory_tools_version = threads
+            .iter()
+            .find(|entry| entry.thread_id == thread_id && entry.conversation_id == conversation_id)
+            .and_then(|entry| entry.memory_tools_version);
         threads.retain(|entry| {
             entry.thread_id != thread_id && entry.conversation_id != conversation_id
         });
@@ -266,6 +278,7 @@ impl ManagedThreadStore {
             conversation_id,
             thread_id,
             identity_version: identity_version.map(str::to_owned),
+            memory_tools_version,
         });
         if threads.len() > MAX_THREADS {
             threads.remove(0);
@@ -283,6 +296,34 @@ impl ManagedThreadStore {
             .iter()
             .find(|entry| entry.thread_id == thread_id)
             .and_then(|entry| entry.identity_version.as_deref())
+    }
+
+    pub(crate) fn memory_tools_current(&self, thread_id: &str) -> bool {
+        self.threads
+            .iter()
+            .any(|entry| entry.thread_id == thread_id && entry.memory_tools_version == Some(1))
+    }
+
+    pub(crate) fn mark_memory_tools_current(
+        &mut self,
+        thread_id: &str,
+    ) -> Result<(), ManagedThreadStoreError> {
+        let mut threads = self.threads.clone();
+        let entry = threads
+            .iter_mut()
+            .find(|entry| entry.thread_id == thread_id)
+            .ok_or_else(|| {
+                ManagedThreadStoreError::Invalid(
+                    "cannot mark memory tools for an unknown thread".into(),
+                )
+            })?;
+        entry.memory_tools_version = Some(1);
+        self.commit(
+            self.conversation_id,
+            self.thread_id.clone(),
+            self.identity_version.clone(),
+            threads,
+        )
     }
 
     pub(crate) fn archive_thread(
@@ -572,6 +613,7 @@ fn decode_catalog_document(
                     conversation_id: conversation_id.expect("legacy thread has derived identity"),
                     thread_id: thread_id.clone(),
                     identity_version: document.identity_version.clone(),
+                    memory_tools_version: None,
                 })
                 .into_iter()
                 .collect();
@@ -604,6 +646,7 @@ fn decode_catalog_document(
                     ),
                     thread_id: thread.thread_id,
                     identity_version: thread.identity_version,
+                    memory_tools_version: None,
                 })
                 .collect::<Vec<_>>();
             decoded_document(document.connection, document.current_thread_id, threads)

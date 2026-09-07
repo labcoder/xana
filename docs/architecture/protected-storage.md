@@ -16,10 +16,12 @@ Canonical opens upgrade the accounting schema under an exclusive owner lease;
 inspection of a recovery snapshot does not upgrade its schema. See the
 [usage policy guide](../user/usage-budgets.md).
 
-`memory::MemoryOwner` is a capability injected only into trusted owner-input
-adapters. CLI/plain/TUI and Desktop management share it; native owner turns and
-managed owner turns intercept the bounded direct-control grammar outside the
-Agent loop. It is never a model tool or child-Agent dependency. `storage::memory`
+`memory::MemoryOwner` is injected into trusted owner management and the narrow
+`memory::tools` adapter. CLI/plain/TUI and Desktop management remain local.
+Free-form owner requests use model-selected `memory_lookup` / `memory_update`
+through the ordinary native registry or managed Codex dynamic-tool bridge, not
+an English interception grammar or a pre-turn classifier. Children and background
+work receive no foreground owner-input capability. `storage::memory`
 owns indexed records, immutable revision history and scoped controls. Current
 records validate their indexed ID/revision/scope before exposure. Immediate
 transactions serialize checked edits; read transactions hold coherent eligible
@@ -49,6 +51,34 @@ transactional forgetting also invalidates derived work and persists restore
 suppression. See [personal memory](../user/personal-memory.md) for the implemented
 selection, learning and forgetting policies and their limits.
 
+Semantic tools receive an immutable host-created `OwnerTurnInput`: operation,
+source ID, original owner text and cancellation. Native source IDs refer to the
+committed user entry; managed source IDs are Xana request identities, not invented
+local/vendor transcript entries. The model chooses action and scope aliases, not
+provenance or arbitrary Profile/Project IDs. Exact current-source quotations bind
+saves/corrections; they do not prove semantic intent or sensitivity. Default-Ask
+admits eligible reads and ordinary explicit current-Conversation saves; broader,
+sensitive, uncertain, corrective/destructive operations use exact typed memory
+review. Explicit deny and background ceilings remain authoritative.
+
+`storage::memory::tools` commits privacy/source/controls/revision checks and a
+metadata-only idempotent receipt atomically. Receipts are bounded to 16 updates
+per owner operation. A successful save/correction marks its source explicitly
+handled, preventing queued or in-flight background extraction from duplicating it.
+Lookup searches at most 64 scope-indexed records and returns up to eight previews
+plus continuation; disclosure IDs are committed with the read. No plaintext
+memory file, embedding model or helper request is introduced.
+The disclosure ledger separately rechecks up to 1,024 previously exposed record
+identities for forgetting; the 64-record search bound does not include those
+privacy checks. Reaching the disclosure ceiling requires a fresh Conversation.
+
+Native per-request prompt refresh strips prior PersonalMemory layers and reselects
+under existing budgets before dispatch. Managed Codex owns its inner context;
+it receives current tool results and next-turn bounded selection. Its bridge
+registers only these two tools, validates acknowledged thread/turn/call identity,
+bounds callbacks and arguments, and refuses legacy threads lacking a registration
+receipt. Vendor file tools do not become a second path into Xana memory.
+
 ```mermaid
 flowchart TD
     APP[Application / Desktop control plane] --> CUSTODY[OS custody or independent age recovery]
@@ -56,6 +86,11 @@ flowchart TD
     SESSION[DurableSession / existing reducer] --> STORE
     RECORDS[Private records / managed handles / composer history] --> STORE
     OWNER[Owner memory controls: CLI / TUI / Desktop] --> MEMORY[MemoryOwner: scopes, checked revisions, eligibility]
+    NATIVE[Native model tool loop] --> TOOLS[Turn-bound memory tools]
+    CODEX[Codex dynamic-tool callback] --> TOOLS
+    INPUT[Original owner input + current scopes] --> TOOLS
+    TOOLS --> POLICY[Typed exact review + commit fences]
+    POLICY --> MEMORY
     MEMORY --> STORE
     STORE --> DB[SQLCipher: records, ancestry, bounded catalogs]
     ART[ArtifactStore: existing authority and immutable IDs] --> STORE
@@ -192,11 +227,17 @@ initial automatic-activation policy and residual-copy limits.
 `storage::candidates` owns their indexed encrypted envelope and immediate
 publication transaction. The existing learning worker inserts a memory target
 and its candidate proof in the same transaction. Ordinary whole-owner-statement
-activation records its deterministic allowlist validation; inferred/ambiguous
+activation records its closed ordinary-preference validation; inferred/ambiguous
 facts remain staged. Conflicting duplicate inferred classifications stay staged,
 independent of suggestion order. A sensitive helper result creates metadata only,
 including when a duplicate suggests a less restrictive classification. Explicit
 owner `remember` stays on the separate direct governed path.
+
+The helper proposes a closed preference enum rather than matching English
+sentences. Only stated whole-source nonsensitive suggestions can activate a
+canonical ordinary value; arbitrary prose stays inactive. Conflicting preference
+classifications also stay staged. `OrdinaryPreferenceV2` distinguishes new proof
+from historical `OrdinaryStatedAllowlistV1` without rewriting old records.
 
 The envelope binds candidate/target revisions, source IDs/hashes, typed origin,
 scope/consent/privacy generation, payload hash, risk, declared validation and

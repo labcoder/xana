@@ -3,6 +3,17 @@
 use super::*;
 
 impl PromptSnapshot {
+    /// Replaceable personal data must not accumulate across provider rounds.
+    pub(crate) fn without_personal_memory(mut self) -> Self {
+        self.layers
+            .retain(|layer| layer.kind != PromptLayerKind::PersonalMemory);
+        let rendered = render_layers(&self.layers);
+        self.system_tokens = estimate_tokens(&rendered);
+        self.system_message = Message::text(Role::System, rendered);
+        refresh_layer_costs(&mut self.layers);
+        self
+    }
+
     /// A runtime fact, not optional retrieved data; account for it before selecting memory.
     pub(crate) fn with_memory_readiness(
         mut self,

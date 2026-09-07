@@ -20,6 +20,7 @@ fn automatic_activation_requires_exact_ordinary_stated_preference_not_quoted_or_
         quote: original.text.clone(),
         claim: MemoryClaim::Stated,
         sensitive: false,
+        preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
     };
     assert!(auto_eligible(&original, &suggestion));
     assert_eq!(
@@ -40,6 +41,114 @@ fn automatic_activation_requires_exact_ordinary_stated_preference_not_quoted_or_
     assert!(!auto_eligible(&quoted, &suggestion));
     suggestion.source = Uuid::new_v4();
     assert!(record_for(&quoted, &suggestion).is_err());
+}
+
+#[test]
+fn typed_preferences_are_language_independent_and_never_activate_arbitrary_prose() {
+    for text in [
+        "I like short answers",
+        "Prefiero respuestas breves",
+        "Ich bevorzuge kurze Antworten",
+        "Je préfère les réponses courtes",
+        "短い回答が好きです",
+        "我喜欢简短的回答",
+        "أفضّل الإجابات المختصرة",
+        "Prefiro respostas curtas",
+        "짧은 답변을 선호합니다",
+        "Мне нравятся краткие ответы",
+    ] {
+        let original = source(text);
+        let mut suggestion = Suggestion {
+            source: original.id,
+            quote: text.into(),
+            claim: MemoryClaim::Stated,
+            sensitive: false,
+            preference: Some(OrdinaryPreference::ConciseResponses),
+        };
+        let record = record_for(&original, &suggestion).unwrap();
+        assert_eq!(record.state, MemoryState::Active);
+        assert_eq!(record.statement, "I prefer concise responses");
+        assert_eq!(record.created.owner_request, original.id);
+        assert_eq!(
+            record.scope,
+            MemoryScope::Conversation(original.context.conversation.unwrap())
+        );
+        suggestion.preference = None;
+        assert_eq!(
+            record_for(&original, &suggestion).unwrap().state,
+            MemoryState::Candidate
+        );
+    }
+    // This verifies typed decoding/authority, not actual helper comprehension.
+    let invalid = serde_json::json!({"source":Uuid::new_v4(),"quote":"sensitive arbitrary value",
+        "claim":"stated","sensitive":false,"preference":"medical_condition"});
+    assert!(serde_json::from_value::<Suggestion>(invalid).is_err());
+}
+
+#[test]
+fn foreground_receipt_retires_queued_source_and_rejects_an_inflight_helper() {
+    let (_home, owner, route) = fixture();
+    let id = Uuid::new_v4();
+    owner
+        .enqueue_user_statement(id, "Prefiero respuestas breves")
+        .unwrap();
+    let batch = owner.store.learning_batch().unwrap();
+    // Same marker installed atomically by the foreground memory transaction.
+    owner
+        .store
+        .set_document(
+            &format!("memory/explicit-source/{id}"),
+            b"{\"version\":1}",
+            1024,
+        )
+        .unwrap();
+    assert!(owner.store.learning_batch().unwrap().is_empty());
+    assert!(owner.store.commit_learning(&batch, &[], &route).is_err());
+    owner.store.retire_stale_learning().unwrap();
+    assert_eq!(owner.store.learning_status().unwrap().pending, 0);
+    assert_eq!(
+        owner.store.learning_status().unwrap().excluded_after_change,
+        1
+    );
+    assert!(
+        !owner
+            .enqueue_user_statement(id, "Prefiero respuestas breves")
+            .unwrap()
+    );
+}
+
+#[test]
+fn conflicting_preference_classification_cannot_activate_in_either_order() {
+    for values in [
+        [Some(OrdinaryPreference::ConciseResponses), None],
+        [None, Some(OrdinaryPreference::ConciseResponses)],
+        [
+            Some(OrdinaryPreference::ConciseResponses),
+            Some(OrdinaryPreference::DetailedResponses),
+        ],
+    ] {
+        let (_home, owner, route) = fixture();
+        let id = Uuid::new_v4();
+        owner
+            .enqueue_user_statement(id, "Short or long answers, I am not sure")
+            .unwrap();
+        let batch = owner.store.learning_batch().unwrap();
+        let suggestions = values.map(|preference| Suggestion {
+            source: id,
+            quote: batch[0].text.clone(),
+            claim: MemoryClaim::Stated,
+            sensitive: false,
+            preference,
+        });
+        assert_eq!(
+            owner
+                .store
+                .commit_learning(&batch, &suggestions, &route)
+                .unwrap(),
+            1
+        );
+        assert!(owner.eligible().unwrap().records.is_empty());
+    }
 }
 
 fn fixture() -> (tempfile::TempDir, MemoryOwner, LearningRoute) {
@@ -103,6 +212,7 @@ fn incremental_admission_is_idempotent_and_independent_of_use_controls() {
         quote: "I prefer examples".into(),
         claim: MemoryClaim::Stated,
         sensitive: false,
+        preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
     };
     assert_eq!(
         owner
@@ -138,12 +248,14 @@ fn sensitive_output_is_not_copied_and_inferred_output_is_inactive() {
             quote: "I prefer examples".into(),
             claim: MemoryClaim::Stated,
             sensitive: true,
+            preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
         },
         Suggestion {
             source: id,
             quote: "I prefer examples".into(),
             claim: MemoryClaim::Inferred,
             sensitive: false,
+            preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
         },
     ];
     assert_eq!(
@@ -234,7 +346,8 @@ fn forgotten_text_cannot_reenter_from_another_source_or_stale_job() {
                     source: id,
                     quote: "I use Rust".into(),
                     claim: MemoryClaim::Stated,
-                    sensitive: false
+                    sensitive: false,
+                    preference: Some(crate::memory::learning::OrdinaryPreference::Rust),
                 }],
                 &route
             )
@@ -291,6 +404,7 @@ impl ConversationalProvider for FakeHelper {
                     quote: source.text,
                     claim: MemoryClaim::Stated,
                     sensitive: false,
+                    preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
                 })
                 .collect::<Vec<_>>();
             sink.usage(crate::provider::ProviderUsage {

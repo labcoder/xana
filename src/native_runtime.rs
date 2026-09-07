@@ -9,7 +9,10 @@ mod browser_controls;
 mod completion;
 mod failure;
 mod memory_controls;
+mod memory_prompt;
 mod protocol;
+
+use memory_prompt::MemoryPromptRefresh;
 
 pub(crate) use protocol::{
     AgentEvent, AgentEventSender, DroppedAgentEvents, OperationOutcome, OperationState,
@@ -76,6 +79,7 @@ struct Runtime {
     compaction_cancelled: bool,
     stop_after_verification: bool,
     memory: Option<crate::memory::MemoryOwner>,
+    owner_turn_input: Option<crate::tool::OwnerTurnInput>,
     agent: Arc<Agent>,
     history: Vec<Message>,
     active: Option<ActiveOperation>,
@@ -313,6 +317,7 @@ impl RuntimeHandle {
             compaction_cancelled: false,
             stop_after_verification: false,
             memory,
+            owner_turn_input: None,
             agent: Arc::new(agent),
             history,
             active: None,
@@ -430,6 +435,9 @@ impl RuntimeHandle {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
+        if let Some(input) = &self.owner_turn_input {
+            input.cancellation.cancel();
+        }
         if let Some(task) = &self.memory_maintenance {
             task.abort();
         }
@@ -800,7 +808,10 @@ impl Runtime {
 
         if owner_input.is_none()
             && images.is_empty()
-            && crate::memory::parse_natural(&input).is_some()
+            && matches!(
+                input.trim().to_ascii_lowercase().as_str(),
+                "disable memory for this conversation" | "enable memory for this conversation"
+            )
         {
             if !self.automatic_learning {
                 self.emit(AgentEvent::CommandRejected{reason:"Scheduled work cannot exercise owner-only personal memory controls; return to the owner for review".into()});
@@ -1000,6 +1011,19 @@ impl Runtime {
             operation_id,
             state: OperationState::Running,
         });
+        self.owner_turn_input = if self.automatic_learning {
+            input_entry_id.map(|entry_id| crate::tool::OwnerTurnInput {
+                operation_id,
+                source_id: entry_id
+                    .to_string()
+                    .parse()
+                    .expect("conversation entry UUID"),
+                text: Arc::from(query),
+                cancellation: tokio_util::sync::CancellationToken::new(),
+            })
+        } else {
+            None
+        };
         let persist_from = self.history.len();
         let round_limit = self.agent.max_tool_rounds();
         self.spawn_tranche(
@@ -1033,6 +1057,19 @@ impl Runtime {
         let mut history = self.history.clone();
         let cleanup = DeferredCleanup::default();
         let operation_cleanup = cleanup.clone();
+        let owner_input = self
+            .owner_turn_input
+            .clone()
+            .filter(|input| input.operation_id == operation_id);
+        let prompt_refresh = self.memory.clone().map(|owner| {
+            Arc::new(MemoryPromptRefresh {
+                owner,
+                query: owner_input
+                    .as_ref()
+                    .map(|input| Arc::clone(&input.text))
+                    .unwrap_or_else(|| Arc::from("")),
+            }) as Arc<dyn crate::agent::RequestPromptRefresh>
+        });
         let foreground_store = self
             .automatic_learning
             .then(|| self.memory.as_ref().map(|owner| owner.store.clone()))
@@ -1052,10 +1089,14 @@ impl Runtime {
                                 &prompt,
                                 permissions,
                                 events.into(),
-                                Some(DurableTurnServices::new(
-                                    conversation_committer,
-                                    durable_operation_sender,
-                                )),
+                                Some(
+                                    DurableTurnServices::new(
+                                        conversation_committer,
+                                        durable_operation_sender,
+                                    )
+                                    .with_owner_input(owner_input)
+                                    .with_prompt_refresh(prompt_refresh),
+                                ),
                                 operation_cleanup,
                                 round_limit,
                             )
@@ -1104,6 +1145,13 @@ impl Runtime {
         let Some(active) = self.active.take() else {
             return;
         };
+        if !matches!(
+            &completion.result,
+            Ok(AgentTurnOutcome::RoundBudgetReached { .. })
+        ) && let Some(input) = self.owner_turn_input.take()
+        {
+            input.cancellation.cancel();
+        }
         if active.operation_id != completion.operation_id {
             active.task.abort();
             let _ = active.task.await;
@@ -1445,6 +1493,9 @@ impl Runtime {
                 );
             }
             RoundBudgetAction::Stop => {
+                if let Some(input) = self.owner_turn_input.take() {
+                    input.cancellation.cancel();
+                }
                 let _ = self
                     .record_completion_evidence(
                         operation_id,
@@ -1474,6 +1525,9 @@ impl Runtime {
 
     async fn interrupt_active(&mut self, category: crate::failure::FailureCategory) {
         if let Some(active) = self.active.take() {
+            if let Some(input) = self.owner_turn_input.take() {
+                input.cancellation.cancel();
+            }
             let ActiveOperation {
                 operation_id,
                 progress_committed,

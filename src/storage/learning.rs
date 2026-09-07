@@ -141,6 +141,9 @@ impl ProtectedStore {
                     if other.claim == crate::memory::MemoryClaim::Inferred {
                         combined.claim = crate::memory::MemoryClaim::Inferred;
                     }
+                    if other.preference != suggestion.preference {
+                        combined.preference = None;
+                    }
                 }
                 let suggestion = &combined;
                 if suggestion.sensitive {
@@ -148,7 +151,7 @@ impl ProtectedStore {
                     continue;
                 }
                 let record=record_for(source,suggestion)?;
-                if super::forgetting::statement_suppressed(&tx,&record.statement)? {continue;}
+                if super::forgetting::statement_suppressed(&tx,&record.statement)? || super::forgetting::statement_suppressed(&tx,&suggestion.quote)? {continue;}
                 let body=serde_json::to_vec(&record)?;ensure!(body.len()<=RECORD_BYTES,"learned record exceeds bound");
                 tx.execute("INSERT INTO memory_entries(id,revision,scope,body) VALUES(?1,1,?2,?3)",params![record.id.to_string(),record.scope.to_string(),body])?;
                 super::candidates::learned(&tx,source,suggestion,route,Some(&record))?;
@@ -196,6 +199,16 @@ impl ProtectedStore {
     }
 }
 fn source_current(db: &rusqlite::Connection, source: &LearningSource) -> Result<bool> {
+    // Explicit foreground handling wins over queued background interpretation.
+    // Rechecked in the committing transaction, so an in-flight helper cannot
+    // publish duplicate or differently scoped facts from the same owner input.
+    if db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM documents WHERE name=?1)",
+        [format!("memory/explicit-source/{}", source.id)],
+        |r| r.get::<_, bool>(0),
+    )? {
+        return Ok(false);
+    }
     let generation = db.query_row(
         "SELECT revision FROM privacy_generation WHERE singleton=1",
         [],

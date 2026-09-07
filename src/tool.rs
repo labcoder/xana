@@ -147,6 +147,17 @@ pub(crate) trait Tool: Send + Sync {
         workspace_root: &Path,
     ) -> Result<PlannedToolInvocation, String>;
 
+    /// Owner input is attached by the application, never reconstructed from
+    /// model arguments, tool output, or a child's conversation.
+    fn plan_in_turn(
+        &self,
+        arguments: &Value,
+        workspace_root: &Path,
+        _owner_input: Option<&OwnerTurnInput>,
+    ) -> Result<PlannedToolInvocation, String> {
+        self.plan(arguments, workspace_root)
+    }
+
     fn execute<'a>(
         &'a self,
         planned: &'a PlannedToolInvocation,
@@ -162,6 +173,16 @@ pub(crate) trait Tool: Send + Sync {
     ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
         Ok(None)
     }
+}
+
+/// Immutable authority facts for one admitted foreground owner turn. This is
+/// deliberately not serializable: resumption cannot manufacture fresh consent.
+#[derive(Clone)]
+pub(crate) struct OwnerTurnInput {
+    pub(crate) operation_id: OperationId,
+    pub(crate) source_id: uuid::Uuid,
+    pub(crate) text: Arc<str>,
+    pub(crate) cancellation: tokio_util::sync::CancellationToken,
 }
 
 #[derive(Clone)]
@@ -510,7 +531,19 @@ impl ToolRegistry {
     }
 
     pub(crate) async fn invoke(&self, call: &ToolCall, context: ToolContext<'_>) -> ToolResult {
-        let planned = match self.plan(call, context.workspace_root) {
+        self.invoke_in_turn(call, context, None).await
+    }
+
+    pub(crate) async fn invoke_in_turn(
+        &self,
+        call: &ToolCall,
+        context: ToolContext<'_>,
+        owner_input: Option<&OwnerTurnInput>,
+    ) -> ToolResult {
+        if owner_input.is_some_and(|input| input.operation_id != context.operation_id) {
+            return ToolResult::error(call.id.clone(), "owner input belongs to another operation");
+        }
+        let planned = match self.plan_in_turn(call, context.workspace_root, owner_input) {
             Ok(planned) => planned,
             Err(result) => {
                 self.record_tool_event(
@@ -661,6 +694,15 @@ impl ToolRegistry {
         call: &ToolCall,
         workspace_root: &Path,
     ) -> Result<PreparedToolInvocation<'a>, ToolResult> {
+        self.plan_in_turn(call, workspace_root, None)
+    }
+
+    pub(crate) fn plan_in_turn<'a>(
+        &'a self,
+        call: &ToolCall,
+        workspace_root: &Path,
+        owner_input: Option<&OwnerTurnInput>,
+    ) -> Result<PreparedToolInvocation<'a>, ToolResult> {
         let Some(tool) = self
             .tools
             .iter()
@@ -672,10 +714,14 @@ impl ToolRegistry {
             ));
         };
 
-        let planned = match tool.implementation.plan(&call.arguments, workspace_root) {
-            Ok(planned) => planned,
-            Err(error) => return Err(ToolResult::error(call.id.clone(), error)),
-        };
+        let planned =
+            match tool
+                .implementation
+                .plan_in_turn(&call.arguments, workspace_root, owner_input)
+            {
+                Ok(planned) => planned,
+                Err(error) => return Err(ToolResult::error(call.id.clone(), error)),
+            };
         Ok(PreparedToolInvocation {
             call_id: call.id.clone(),
             definition: &tool.definition,

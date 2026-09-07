@@ -3633,7 +3633,10 @@ fn project_frontend_snapshot(
                 id: DesktopPermissionId::native(approval.operation_id, approval.invocation_id),
                 tool: approval.tool_name.clone(),
                 effect: format!("{:?}", approval.effect_class).to_ascii_lowercase(),
-                scope: permission_scope_label(&approval.scope),
+                scope: permission_scope_with_proposal(
+                    &approval.scope,
+                    approval.memory_proposal.as_ref(),
+                ),
             })
             .collect(),
         activity_count: snapshot.activity_count,
@@ -4019,8 +4022,25 @@ fn project_permission(request: &PermissionRequest) -> DesktopEvent {
         permission_id: DesktopPermissionId::native(request.operation_id, request.invocation_id),
         tool: request.tool_name.clone(),
         effect: format!("{:?}", request.effect_class).to_ascii_lowercase(),
-        scope: permission_scope_label(&request.scope),
+        scope: permission_review_label(request),
     }
+}
+
+fn permission_review_label(request: &PermissionRequest) -> String {
+    permission_scope_with_proposal(
+        &request.scope,
+        crate::frontend::MemoryPermissionProposal::from_request(request).as_ref(),
+    )
+}
+
+fn permission_scope_with_proposal(
+    scope: &PermissionScope,
+    proposal: Option<&crate::frontend::MemoryPermissionProposal>,
+) -> String {
+    let label = permission_scope_label(scope);
+    proposal.map_or(label.clone(), |proposal| {
+        format!("{label}\n{}", proposal.review_text())
+    })
 }
 
 fn permission_scope_label(scope: &PermissionScope) -> String {
@@ -4040,6 +4060,7 @@ fn permission_scope_label(scope: &PermissionScope) -> String {
             format!("external recipient for {operation}")
         }
         PermissionScope::BuiltInResource { id } => format!("built-in resource {id}"),
+        PermissionScope::PersonalMemory { scope, .. } => format!("personal memory {scope}"),
         PermissionScope::Unscoped => "unscoped".to_owned(),
     }
 }

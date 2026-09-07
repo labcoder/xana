@@ -126,6 +126,10 @@ async fn run_managed_execution(
 ) {
     let mut active_operation = None;
     let mut approvals = HashMap::new();
+    let mut memory_approvals: HashMap<
+        (OperationId, ToolInvocationId),
+        oneshot::Sender<ControllerDecision>,
+    > = HashMap::new();
     loop {
         tokio::select! {
             biased;
@@ -137,7 +141,12 @@ async fn run_managed_execution(
                 };
                 match request {
                     ExecutionRequest::Command { command, reply } => {
-                        let result = execute_managed_command(&driver, &mut active_operation, command).await;
+                        let result = if let ClientCommandValue::DecidePermission { operation_id, invocation_id, decision } = &command.value {
+                            let delivered = memory_approvals.remove(&(*operation_id, *invocation_id))
+                                .is_some_and(|pending| active_operation == Some(*operation_id) && pending.send(decision.clone()).is_ok());
+                            if delivered { ClientCommandResult::accepted(command.id) }
+                            else { ClientCommandResult::rejected(command.id, "memory approval is stale or no longer pending") }
+                        } else { execute_managed_command(&driver, &mut active_operation, command).await };
                         let _ = reply.send(result);
                     }
                     ExecutionRequest::ManagedApproval { approval_id, decision, reply } => {
@@ -153,9 +162,11 @@ async fn run_managed_execution(
                         let _ = reply.send(result);
                     }
                     ExecutionRequest::FailClosed => {
+                        memory_approvals.clear();
                         fail_closed_managed(&driver, &mut active_operation, &mut approvals);
                     }
                     ExecutionRequest::Shutdown { complete } => {
+                        memory_approvals.clear();
                         fail_closed_managed(&driver, &mut active_operation, &mut approvals);
                         let _ = driver.shutdown().await;
                         let _ = complete.send(());
@@ -166,6 +177,10 @@ async fn run_managed_execution(
             event = driver.next_event() => {
                 let Some(event) = event else { return; };
                 match event {
+                    ManagedTuiEvent::MemoryAudit(fact) => {
+                        memory_approvals.remove(&(fact.request.operation_id, fact.request.invocation_id));
+                        let _ = hub.publish_frontend(ClientEvent::Runtime(Box::new(AgentEvent::PermissionAudited { fact })));
+                    }
                     ManagedTuiEvent::Notification(event) => {
                         let _ = hub.publish_frontend(ClientEvent::Managed(Box::new(event)));
                     }
@@ -184,6 +199,7 @@ async fn run_managed_execution(
                         let _ = hub.publish(super::protocol::HostEvent::ManagedApprovalRequested(request));
                     }
                     ManagedTuiEvent::TurnFinished { operation_id, error } => {
+                        memory_approvals.clear();
                         if active_operation == Some(operation_id) {
                             active_operation = None;
                         }
@@ -196,6 +212,14 @@ async fn run_managed_execution(
                         });
                     }
                     ManagedTuiEvent::ThreadOpened(_) | ManagedTuiEvent::Cleared => {}
+                    ManagedTuiEvent::MemoryApproval { request, reply } => {
+                        if active_operation != Some(request.operation_id) || memory_approvals.len() >= 16 {
+                            let _ = reply.send(ControllerDecision::Deny);
+                            continue;
+                        }
+                        memory_approvals.insert((request.operation_id, request.invocation_id), reply);
+                        let _ = hub.publish_frontend(ClientEvent::Runtime(Box::new(AgentEvent::PermissionRequested { request })));
+                    }
                 }
             }
         }

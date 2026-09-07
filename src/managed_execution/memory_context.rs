@@ -28,24 +28,53 @@ pub(super) fn foreground(
         .transpose()
 }
 
+/// The launch snapshot's Project comes from explicit Conversation membership,
+/// never merely from sharing a workspace. A new /clear Conversation is Ungrouped
+/// until application composition resolves an explicit membership for it.
+pub(super) fn for_conversation(
+    owner: Option<&MemoryOwner>,
+    conversation: ConversationId,
+) -> Option<MemoryOwner> {
+    owner.map(|owner| {
+        let mut owner = owner.clone();
+        let conversation = conversation.as_uuid();
+        if owner.context.conversation != Some(conversation) {
+            owner.context.project = None;
+        }
+        owner.context.conversation = Some(conversation);
+        owner
+    })
+}
+
+#[cfg(test)]
 pub(crate) async fn prepare(
     owner: Option<&MemoryOwner>,
     conversation: ConversationId,
     input: &str,
 ) -> Result<String, String> {
-    let Some(owner) = owner else {
+    prepare_with_source(owner, conversation, input, uuid::Uuid::new_v4()).await
+}
+
+pub(super) async fn prepare_turn(
+    owner: Option<&MemoryOwner>,
+    conversation: ConversationId,
+    input: &crate::tool::OwnerTurnInput,
+) -> Result<String, String> {
+    prepare_with_source(owner, conversation, &input.text, input.source_id).await
+}
+
+async fn prepare_with_source(
+    owner: Option<&MemoryOwner>,
+    conversation: ConversationId,
+    input: &str,
+    source_id: uuid::Uuid,
+) -> Result<String, String> {
+    let Some(owner) = for_conversation(owner, conversation) else {
         return Ok(with_readiness(
             crate::memory::MemoryReadiness::Unavailable,
             input,
         ));
     };
-    let mut owner = owner.clone();
-    owner.context.conversation = Some(
-        conversation
-            .to_string()
-            .parse()
-            .map_err(|_| "invalid managed Conversation identity")?,
-    );
     let input = input.to_owned();
     tokio::task::spawn_blocking(move ||->anyhow::Result<String> {
         // Codex owns its actual context window. 16,384 is Xana's conservative
@@ -54,7 +83,7 @@ pub(crate) async fn prepare(
         let (text,ids)=selection.managed_text(&input,16_384)?;
         owner.record_selection(&selection,&ids)?;
         // Only this owner-input edge can enqueue; vendor output never does.
-        if owner.enqueue_user_statement(uuid::Uuid::new_v4(),&input).is_err() {
+        if owner.enqueue_user_statement(source_id,&input).is_err() {
             owner.store.set_document("memory/learning-receipt",br#"{"state":"pending_attention","notice":"Learning admission failed; the user turn remains available and chat can continue. Inspect memory learning-status."}"#,4096)?;
         }
         Ok(with_readiness(if selection.use_enabled {
@@ -80,6 +109,72 @@ fn with_readiness(readiness: crate::memory::MemoryReadiness, input: &str) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cleared_managed_conversation_drops_prior_project_prompt_memory() {
+        use crate::{
+            memory::{MemoryContext, MemoryScope},
+            storage::{ProtectedStore, RecoveryIdentity, TestCustody},
+        };
+        let home = tempfile::tempdir().unwrap();
+        let store = ProtectedStore::initialize(
+            home.path(),
+            &RecoveryIdentity::generate(),
+            &TestCustody::default(),
+        )
+        .unwrap();
+        let previous = ConversationId::new();
+        let project = uuid::Uuid::new_v4();
+        let profile = uuid::Uuid::new_v4();
+        let owner = MemoryOwner::new(
+            store,
+            MemoryContext {
+                conversation: Some(previous.as_uuid()),
+                project: Some(project),
+                profile: Some(profile),
+            },
+        );
+        for (scope, statement) in [
+            (
+                MemoryScope::Project(project),
+                "PRIOR_PROJECT_CANARY prefer diagrams",
+            ),
+            (
+                MemoryScope::Conversation(previous.as_uuid()),
+                "PRIOR_CONVERSATION_CANARY prefer tables",
+            ),
+            (
+                MemoryScope::Profile(profile),
+                "CURRENT_PROFILE_CANARY prefer short replies",
+            ),
+            (MemoryScope::User, "GLOBAL_USER_CANARY prefer examples"),
+        ] {
+            owner.remember(scope, statement.into(), None).unwrap();
+        }
+        // /clear creates a new, ungrouped Conversation without replacing the
+        // launch config's immutable owner snapshot.
+        let cleared = ConversationId::new();
+        // The bounded handoff need not fit every eligible record at once.
+        // Target each record without echoing its canary in the owner input.
+        for (query, canary, retained) in [
+            ("diagrams", "PRIOR_PROJECT_CANARY", false),
+            ("tables", "PRIOR_CONVERSATION_CANARY", false),
+            ("short", "CURRENT_PROFILE_CANARY", true),
+            ("examples", "GLOBAL_USER_CANARY", true),
+        ] {
+            let before = prepare(Some(&owner), previous, query).await.unwrap();
+            assert!(
+                before.contains(canary),
+                "missing original scope for {query}"
+            );
+            let after = prepare(Some(&owner), cleared, query).await.unwrap();
+            assert_eq!(after.contains(canary), retained, "wrong scope for {query}");
+            assert!(!after.contains("PRIOR_PROJECT_CANARY"));
+            assert!(!after.contains("PRIOR_CONVERSATION_CANARY"));
+        }
+        assert_eq!(owner.context.conversation, Some(previous.as_uuid()));
+        assert_eq!(owner.context.project, Some(project));
+    }
 
     #[tokio::test]
     async fn managed_memory_readiness_is_honest_even_without_selected_facts() {

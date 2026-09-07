@@ -22,9 +22,104 @@ const MAX_MANAGED_TRANSCRIPT_BYTES: usize = 2 * 1024 * 1024;
 const MAX_MANAGED_ACTIVITY: usize = 128;
 const MAX_MANAGED_RECEIPTS: usize = 128;
 
-struct PendingApproval {
-    request: ApprovalRequest,
-    reply: oneshot::Sender<ApprovalDecision>,
+enum PendingApproval {
+    Vendor {
+        request: ApprovalRequest,
+        reply: oneshot::Sender<ApprovalDecision>,
+    },
+    Memory {
+        request: Box<crate::permission::PermissionRequest>,
+        reply: oneshot::Sender<crate::permission::ControllerDecision>,
+    },
+}
+
+#[cfg(test)]
+mod memory_approval_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn exact_memory_proposal_is_visible_and_uses_xana_once_only_decisions() {
+        for allow_once in [false, true] {
+            let operation = OperationId::new();
+            let request = crate::permission::PermissionRequest {
+                operation_id: operation,
+                invocation_id: crate::identity::ToolInvocationId::new(),
+                tool_name: "memory_update".into(),
+                effect_class: crate::tool::EffectClass::Write,
+                final_arguments: serde_json::json!({"action":"remember","statement":"I prefer red","quote":"private original owner wording","source_id":"private-source"}),
+                scope: crate::permission::PermissionScope::PersonalMemory {
+                    scope: "user".into(),
+                    review: true,
+                },
+                outbound_review: None,
+            };
+            let (reply, receiver) = oneshot::channel();
+            let pending = PendingApproval::Memory {
+                request: Box::new(request),
+                reply,
+            };
+            let projection = pending.projection(operation, 1);
+            assert_eq!(projection.tool, "Xana memory_update");
+            assert!(projection.scope.contains("user"));
+            assert!(projection.scope.contains("I prefer red"));
+            assert!(!projection.scope.contains("private original"));
+            assert!(!projection.scope.contains("private-source"));
+            pending.resolve(allow_once).unwrap();
+            assert_eq!(
+                receiver.await.unwrap(),
+                if allow_once {
+                    crate::permission::ControllerDecision::AllowOnce
+                } else {
+                    crate::permission::ControllerDecision::Deny
+                }
+            );
+        }
+    }
+}
+
+impl PendingApproval {
+    fn projection(&self, operation: OperationId, id: u64) -> DesktopPendingApproval {
+        match self {
+            Self::Vendor { request, .. } => project_managed_approval(operation, id, request),
+            Self::Memory { request, .. } => DesktopPendingApproval {
+                id: DesktopPermissionId::managed(operation, id),
+                tool: bounded_text(format!("Xana {}", request.tool_name), MAX_PUBLIC_TEXT_BYTES),
+                effect: format!("{:?}", request.effect_class).to_ascii_lowercase(),
+                scope: bounded_text(
+                    super::permission_review_label(request),
+                    MAX_PUBLIC_TEXT_BYTES,
+                ),
+            },
+        }
+    }
+
+    fn resolve(self, allow_once: bool) -> Result<(), DesktopError> {
+        let delivered = match self {
+            Self::Vendor { request, reply } => {
+                let decision = if allow_once {
+                    ApprovalDecision::AcceptOnce
+                } else if request.available_decisions.contains("decline") {
+                    ApprovalDecision::Decline
+                } else {
+                    ApprovalDecision::Cancel
+                };
+                reply.send(decision).is_ok()
+            }
+            Self::Memory { reply, .. } => reply
+                .send(if allow_once {
+                    crate::permission::ControllerDecision::AllowOnce
+                } else {
+                    crate::permission::ControllerDecision::Deny
+                })
+                .is_ok(),
+        };
+        delivered.then_some(()).ok_or_else(|| {
+            DesktopError::new(
+                DesktopErrorCode::RuntimeUnavailable,
+                "managed runtime stopped before receiving the approval decision",
+            )
+        })
+    }
 }
 
 struct ManagedDesktopState {
@@ -166,11 +261,7 @@ impl ManagedDesktopState {
             .iter()
             .filter_map(|(request_id, pending)| {
                 let operation_id = self.active_operation?;
-                Some(project_managed_approval(
-                    operation_id,
-                    *request_id,
-                    &pending.request,
-                ))
+                Some(pending.projection(operation_id, *request_id))
             })
             .collect();
         snapshot
@@ -267,6 +358,7 @@ impl ManagedDesktopState {
     }
 
     fn finish_run(&mut self, operation_id: OperationId, error: Option<String>) -> DesktopMessage {
+        self.pending_approvals.clear();
         let (reported_status, reported_error) = self.turn_status.take().unwrap_or_else(|| {
             (
                 if error.is_some() {
@@ -1318,19 +1410,14 @@ impl Bridge {
                     .await?;
                     return Ok(None);
                 };
-                let decision = if allow_once {
-                    ApprovalDecision::AcceptOnce
-                } else if pending.request.available_decisions.contains("decline") {
-                    ApprovalDecision::Decline
+                let result = if state.active_operation == Some(operation_id) {
+                    pending.resolve(allow_once)
                 } else {
-                    ApprovalDecision::Cancel
+                    Err(DesktopError::new(
+                        DesktopErrorCode::StateInvalid,
+                        "memory or managed approval belongs to an inactive operation",
+                    ))
                 };
-                let result = pending.reply.send(decision).map_err(|_| {
-                    DesktopError::new(
-                        DesktopErrorCode::RuntimeUnavailable,
-                        "managed runtime stopped before receiving the approval decision",
-                    )
-                });
                 if result.is_ok() {
                     self.publish_critical(DesktopUpdate::Observation(state.observation(
                         DesktopEvent::PermissionResolved {
@@ -1365,6 +1452,22 @@ impl Bridge {
         active_run: &mut Option<HostedRun>,
     ) -> Result<(), DesktopError> {
         match event {
+            ManagedTuiEvent::MemoryAudit(fact) => {
+                let activity = state.activity(
+                    "memory_permission",
+                    DesktopActivityState::Completed,
+                    "memory.permission",
+                    Some(&format!(
+                        "Xana {}: {:?}",
+                        fact.request.tool_name, fact.effective
+                    )),
+                    DesktopActivityDisclosure::Summary,
+                );
+                self.publish_critical(DesktopUpdate::Observation(
+                    state.observation(DesktopEvent::ActivityUpserted(activity)),
+                ))
+                .await?;
+            }
             ManagedTuiEvent::Notification(event) => {
                 state.record_managed(execution_host, &event)?;
                 let projected = project_managed_event(state, &event);
@@ -1384,7 +1487,31 @@ impl Bridge {
                 let approval = project_managed_approval(operation_id, request_id, &request);
                 state
                     .pending_approvals
-                    .insert(request_id, PendingApproval { request, reply });
+                    .insert(request_id, PendingApproval::Vendor { request, reply });
+                self.publish_critical(DesktopUpdate::Observation(state.observation(
+                    DesktopEvent::PermissionRequired {
+                        permission_id: approval.id,
+                        tool: approval.tool,
+                        effect: approval.effect,
+                        scope: approval.scope,
+                    },
+                )))
+                .await?;
+            }
+            ManagedTuiEvent::MemoryApproval { request, reply } => {
+                let operation_id = request.operation_id;
+                if state.active_operation != Some(operation_id) {
+                    let _ = reply.send(crate::permission::ControllerDecision::Deny);
+                    return Ok(());
+                }
+                let request_id = state.next_approval_id;
+                state.next_approval_id = state.next_approval_id.saturating_add(1);
+                let pending = PendingApproval::Memory {
+                    request: Box::new(request),
+                    reply,
+                };
+                let approval = pending.projection(operation_id, request_id);
+                state.pending_approvals.insert(request_id, pending);
                 self.publish_critical(DesktopUpdate::Observation(state.observation(
                     DesktopEvent::PermissionRequired {
                         permission_id: approval.id,

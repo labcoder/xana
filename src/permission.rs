@@ -45,6 +45,11 @@ pub(crate) enum PermissionScope {
     BuiltInResource {
         id: String,
     },
+    /// Application-validated personal-memory intent, never a filesystem grant.
+    PersonalMemory {
+        scope: String,
+        review: bool,
+    },
     Unscoped,
 }
 

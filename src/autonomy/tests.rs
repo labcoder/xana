@@ -215,6 +215,7 @@ struct NativeFixture {
     requests: Arc<Mutex<Vec<Vec<Message>>>>,
     permission: PolicyDecision,
     lose_response: bool,
+    memory_probe: bool,
 }
 struct FakeProvider {
     replies: Mutex<VecDeque<Message>>,
@@ -246,10 +247,25 @@ impl runner::TaskExecutor for NativeFixture {
     ) -> BoxFuture<'a, Result<(RunOutcome, String)>> {
         Box::pin(async move {
             let names = ["read_file".to_owned()].into_iter().collect();
-            let tools = ToolRegistry::builtins_from_names(
+            let mut tools = ToolRegistry::builtins_from_names(
                 crate::shell::Shell::resolve(crate::shell::ShellConfig::default())?,
                 &names,
             )?;
+            if self.memory_probe {
+                // Even an accidentally exposed foreground tool must not gain
+                // owner authority from a scheduled prompt or permissive policy.
+                crate::memory::tools::register(
+                    &mut tools,
+                    Some(crate::memory::MemoryOwner::new(
+                        self.store.clone(),
+                        crate::memory::MemoryContext {
+                            conversation: Some(job.conversation),
+                            profile: Some(job.scope.profile_id),
+                            project: job.scope.project,
+                        },
+                    )),
+                )?;
+            }
             let assembler = PromptAssembler::new(
                 tools.definitions().into_iter().cloned().collect(),
                 PromptEnvironment {
@@ -268,10 +284,24 @@ impl runner::TaskExecutor for NativeFixture {
             );
             let mut replies = VecDeque::from([Message {
                 role: Role::Assistant,
-                content: vec![ContentBlock::ToolCall(ToolCall {
-                    id: "read-1".into(),
-                    name: "read_file".into(),
-                    arguments: serde_json::json!({"path":"note.txt"}),
+                content: vec![ContentBlock::ToolCall(if self.memory_probe {
+                    ToolCall {
+                        id: "memory-1".into(),
+                        name: "memory_update".into(),
+                        arguments: serde_json::json!({
+                            "action":"remember",
+                            "scope":"conversation",
+                            "statement":"I prefer Rust examples",
+                            "quote":"remember that I prefer Rust examples",
+                            "risk":"ordinary"
+                        }),
+                    }
+                } else {
+                    ToolCall {
+                        id: "read-1".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path":"note.txt"}),
+                    }
                 })],
             }]);
             if !self.lose_response {
@@ -331,6 +361,7 @@ async fn scheduled_native_runtime_reads_only_pre_authorized_data_and_reopens_rec
             requests: requests.clone(),
             permission,
             lose_response: false,
+            memory_probe: false,
         };
         let finished = tokio::time::timeout(
             Duration::from_secs(10),
@@ -389,6 +420,7 @@ async fn scheduled_false_claim_after_failed_read_finishes_needs_you_with_budget_
         requests: Arc::new(Mutex::new(vec![])),
         permission: PolicyDecision::Allow,
         lose_response: false,
+        memory_probe: false,
     };
     let finished = tokio::time::timeout(
         Duration::from_secs(10),
@@ -477,6 +509,7 @@ async fn owned_host_survives_observer_detach_and_refuses_a_competing_owner() {
         requests: Arc::new(Mutex::new(vec![])),
         permission: PolicyDecision::Allow,
         lose_response: false,
+        memory_probe: false,
     };
     let clients = async {
         let observer = tokio::time::timeout(Duration::from_secs(3), async {
@@ -581,6 +614,7 @@ async fn lost_native_response_keeps_uncertain_usage_and_never_replays() {
         requests: requests.clone(),
         permission: PolicyDecision::Allow,
         lose_response: true,
+        memory_probe: false,
     };
     let finished = tokio::time::timeout(
         Duration::from_secs(10),
@@ -710,6 +744,7 @@ async fn background_native_prompt_cannot_become_an_owner_memory_control() {
         requests: requests.clone(),
         permission: PolicyDecision::Allow,
         lose_response: false,
+        memory_probe: true,
     };
     let finished = tokio::time::timeout(
         Duration::from_secs(3),
@@ -725,9 +760,32 @@ async fn background_native_prompt_cannot_become_an_owner_memory_control() {
     .unwrap()
     .unwrap();
     assert_eq!(finished.state, JobState::NeedsYou);
-    assert!(requests.lock().unwrap().is_empty());
+    let captured = requests.lock().unwrap();
+    assert_eq!(
+        captured.len(),
+        2,
+        "ordinary prose reaches the normal tool loop"
+    );
+    let rejection = captured[1]
+        .iter()
+        .flat_map(|message| &message.content)
+        .find_map(|block| match block {
+            ContentBlock::ToolResult(result) if result.call_id == "memory-1" => Some(result),
+            _ => None,
+        })
+        .expect("the attempted memory write returns observed rejection evidence");
+    assert_eq!(rejection.status, crate::message::ToolResultStatus::Error);
+    assert!(
+        rejection
+            .output
+            .contains("current foreground owner's input")
+    );
+    let receipt = finished.last_receipt.unwrap();
+    assert_eq!(receipt.outcome, RunOutcome::NeedsYou);
+    assert!(!receipt.completion.unwrap().supported());
     assert!(store.memory_page(None, None).unwrap().records.is_empty());
-    assert!(store.usage_page(None, None, None).unwrap().is_empty());
+    assert!(store.learning_batch().unwrap().is_empty());
+    assert!(!store.usage_page(None, None, None).unwrap().is_empty());
 }
 
 struct DrainingFixture {

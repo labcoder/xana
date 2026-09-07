@@ -665,6 +665,12 @@ struct ManagedOwner {
     owner: crate::identity::PrincipalId,
     connection: String,
     pending_approval: Option<oneshot::Sender<ApprovalDecision>>,
+    pending_memory: Option<ManagedMemoryApproval>,
+}
+
+struct ManagedMemoryApproval {
+    request: crate::permission::PermissionRequest,
+    reply: oneshot::Sender<crate::permission::ControllerDecision>,
 }
 
 impl ExecutionOwner for ManagedOwner {
@@ -688,11 +694,24 @@ impl ExecutionOwner for ManagedOwner {
     async fn apply_event(&mut self, state: &mut TuiState, event: Self::Event) -> Result<()> {
         match event {
             ManagedTuiEvent::Notification(event) => state.apply_managed_event(&event),
+            ManagedTuiEvent::MemoryAudit(fact) => {
+                state.apply_runtime(&crate::native_runtime::AgentEvent::PermissionAudited { fact })
+            }
             ManagedTuiEvent::Approval { request, reply } => {
                 if let Some(stale) = self.pending_approval.replace(reply) {
                     let _ = stale.send(ApprovalDecision::Cancel);
                 }
                 state.open_managed_approval(request);
+            }
+            ManagedTuiEvent::MemoryApproval { request, reply } => {
+                if state.active_operation != Some(request.operation_id) {
+                    let _ = reply.send(crate::permission::ControllerDecision::Deny);
+                } else {
+                    state.apply_runtime(&crate::native_runtime::AgentEvent::PermissionRequested {
+                        request: request.clone(),
+                    });
+                    self.pending_memory = Some(ManagedMemoryApproval { request, reply });
+                }
             }
             ManagedTuiEvent::ThreadOpened(thread_id) => {
                 state.set_managed_thread(&self.connection, thread_id);
@@ -703,6 +722,7 @@ impl ExecutionOwner for ManagedOwner {
             } => {
                 state.finish_managed_turn(operation_id, error);
                 self.pending_approval = None;
+                self.pending_memory = None;
             }
             ManagedTuiEvent::Cleared => state.managed_cleared(&self.connection),
         }
@@ -720,6 +740,24 @@ impl ExecutionOwner for ManagedOwner {
         session_preferences: &mut session::SessionPreferenceStore,
         clipboard: &mut clipboard::Clipboard,
     ) -> Result<Option<ChatExit>> {
+        if let UpdateEffect::DecideNativeApproval {
+            operation_id,
+            invocation_id,
+            decision,
+        } = effect
+        {
+            let matches = self.pending_memory.as_ref().is_some_and(|pending| {
+                pending.request.operation_id == operation_id
+                    && pending.request.invocation_id == invocation_id
+            });
+            if matches {
+                let pending = self.pending_memory.take().expect("matched pending request");
+                let _ = pending.reply.send(decision);
+            } else {
+                state.status = "Memory approval is no longer pending".into();
+            }
+            return Ok(None);
+        }
         dispatch_managed_effect(
             effect,
             state,
@@ -743,6 +781,7 @@ impl ExecutionOwner for ManagedOwner {
         if let Some(reply) = self.pending_approval.take() {
             let _ = reply.send(ApprovalDecision::Cancel);
         }
+        self.pending_memory = None;
         self.driver.shutdown().await.map_err(anyhow::Error::new)
     }
 
@@ -883,6 +922,7 @@ pub(crate) async fn run_managed(
             owner: principal,
             connection,
             pending_approval: None,
+            pending_memory: None,
         },
         session_preferences,
         composer_history,

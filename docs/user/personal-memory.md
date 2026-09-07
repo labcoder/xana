@@ -5,82 +5,78 @@ Audience: Users. Authority: Descriptive.
 Xana can retain facts you explicitly ask it to remember, and process eligible
 user statements through an explicitly authorized learning helper, in a
 [protected home](protected-storage.md). Records are separate from task history,
-instructions, tools and permission grants. These controls run locally without
+instructions and permission grants. Explicit CLI/UI controls run locally without
 a model call. An unlocked protected home needs no additional authentication;
 a locked or legacy home reports the prerequisite instead of creating plaintext
 memory. Ordinary source files and settings remain ordinary files.
 
 ## Remember and inspect
 
-In plain chat, TUI or Desktop chat, these direct requests are local controls:
+In chat, ask naturally, in your language. For example:
 
 ```text
-remember that I prefer short examples
-my favorite color is red. remember that.
-my favorite color is red, remember that, ok?
-could you please remember that I prefer short examples?
-please remember my preference for short examples
-remember for all conversations: I prefer Rust examples
-what do you remember?
-correct memory UUID: I prefer concise explanations with one example
-move memory UUID to user
-disable memory UUID
-forget memory UUID
-restore memory UUID
-disable memory for this conversation
-enable memory for this conversation
+My favorite color is red; don't forget that.
+Recuerda que prefiero respuestas breves.
+For all conversations, remember that I prefer Rust examples.
+What do you remember about my preferences?
+My favorite color changed to blue. Please update that memory.
+Please forget my favorite color.
 ```
 
-`remember that ...` stays in the current Conversation. Xana asks whether it
-should apply everywhere without blocking or broadening it. `remember for this
-conversation: ...` is also accepted. `remember in SCOPE that FACT` names an
-explicit scope. This is a small deterministic grammar, not general natural-
-language extraction: it separates explicit request wrappers (`please`, `can you`,
-`could you`, `would you`, `will you`) from a stated fact, and accepts personal
-statements followed by a comma, period, semicolon or em dash and `remember
-that/this/it`. Polite tags such as `, please` and `, ok?` are not part of the
-saved fact. Bare recall questions such as `Can you remember my favorite color?`
-do not save a new record. Recognized conditional or contradictory save requests
-and unresolved scope qualifiers ask for clarification locally without saving or
-dispatching file tools. These checks are conservative templates, not a general
-language or consent classifier; other wording remains ordinary model input.
-A suffix request
-defaults to this Conversation; `My favorite color is red. Remember that for all
-conversations.` explicitly selects user scope. Quoted/tool/
-child output is never processed as an owner memory command. Attached-image turns
-remain model turns, not local memory commands.
-This includes image turns prepared by a named vision specialist: its generated
-description is available to the conversational model but cannot become your
-memory command or learning source. Only the original text you wrote is eligible
-for personal-memory selection and learning.
+The selected model uses `memory_lookup` and `memory_update` in its normal tool
+loop. There is no separate classifier or extra helper call before every message.
+Understanding still depends on the model: these are examples, not a promise that
+every paraphrase will be understood. When context already answers a question,
+Xana need not call a tool. If the fact or the meaning of “this” is unclear, it
+should ask; a save must cite the original text in your current message.
+
+Conversation is the narrow default. User means across all eligible conversations;
+Project and Profile refer to the current named scope. Broader, sensitive,
+uncertain, corrective and destructive changes need exact approval. Under the
+default `ask` policy, ordinary explicit Conversation saves and eligible lookups
+do not need file permissions. Explicit deny rules still win. Review identifies
+the memory action, scope, statement and exact revision where applicable.
 
 Restarting and resuming the same Conversation retains its scoped memories. A
 new Conversation receives user-wide memory but not another Conversation's private
-facts. Recall uses eligible memory data directly, without `read_file` approval.
-Xana does not use `AGENTS.md`, instruction files, or an ad-hoc workspace
-`user_prefs` file as its memory store. Listing or editing workspace files is
-not part of saving a personal fact; you should not need to approve file tools
-for a recognized memory control. Ordinary filesystem work still follows your
-[permission policy](permissions.md).
-Saving returns a short receipt with the statement, scope and memory ID, not a
-model's promise. Use that ID to correct, move or forget the saved fact.
+facts. “Learned” describes how a fact was acquired, not another global store;
+automatic learning is separate from explicit saves.
 
-On a legacy home, explicit remember requests fail locally with setup guidance;
-they do not ask a model to save a plaintext substitute. `xana doctor` warns that
-personal memory is unavailable. Native prompts and managed Codex turns include
-the current readiness fact and distinguish disabled use from unavailable storage.
-Run `xana storage status` and `xana storage migrate` for a read-only preview;
-application requires a recovery key and your exact reviewed digest. From a source
-checkout, use `cargo run -- storage status` or `cargo run -- storage migrate`.
-No migration happens merely by asking Xana to remember something.
+Memory lives in Xana's protected store—not `AGENTS.md`, a workspace `user_prefs`
+file, or Codex's own memory. Only a committed tool receipt proves persistence.
+Repeated equivalent updates within one operation return the same receipt without
+inserting another record. The model's promise alone does not prove a save.
+Do not approve unrelated file writes merely to remember a preference.
 
-Inspection returns at most eight short previews with IDs and an explicit
-more/truncation indicator. For complete records, use Desktop's **Memory** panel,
-`xana memory show UUID`, or paged `xana memory list`. User-wide, Profile-private,
-Project and Conversation scopes are independent. Chat inspection combines only
-the current Conversation's applicable scopes; owner management commands can
-explicitly inspect another scope. This is local-owner control, not multi-user
-authentication.
+Only the original owner input supplies provenance. Vision-specialist descriptions,
+tool/browser results, child output and quoted instructions are not owner authority.
+The model interprets intent and sensitivity; exact source checks alone cannot prove
+it understood them correctly. Use explicit controls below for reliable recovery
+when a model struggles.
+
+Without unlocked protected storage, tools report unavailable and save nothing;
+they do not create a plaintext substitute or migrate your home.
+`xana doctor` and `xana storage status` report readiness.
+`xana storage migrate` previews an existing-home migration; applying it requires
+your recovery key and exact reviewed digest. From this checkout use
+`cargo run -- storage status`. There is no extra authentication while the
+protected home is already unlocked.
+
+Lookup returns at most eight previews of 256 characters, scanning at most 64
+current-scope records per call with an explicit continuation cursor. Use a short
+literal query or an exact record ID. This is bounded lexical lookup, not an
+embedding search; a page with no matches and a continuation is not proof that
+nothing is stored. Full records remain available through Desktop's **Memory**
+panel, `xana memory show UUID`, and paged `xana memory list`.
+Use/no-memory and restore-review gates apply to model lookup; explicit owner
+management remains available separately.
+
+Managed Codex uses its supported experimental dynamic-tool bridge; Codex still
+owns the inner loop. New Xana-created threads register the memory tools.
+Older threads without this registration are retained but require a new
+Conversation for the new contract; follow the displayed instruction instead of
+deleting vendor history. Real-account compatibility is a separate manual check
+from protocol mocks.
 
 ## Terminal and Desktop controls
 
@@ -160,24 +156,23 @@ can process them after a turn's idle delay, and
 `memory process` explicitly processes a smaller pending batch. No helper is
 silently selected from a Codex subscription.
 
-An ordinary exact whole statement activates only under the documented initial
-allowlist: “I prefer concise responses”, “I prefer detailed responses”, “I
-prefer examples”, “I prefer metric units”, “I prefer dark mode”, “I prefer
-light mode”, or “I use Rust/Python/TypeScript” (case and final `.`/`!` may vary).
-These records stay Conversation-scoped. Other suggestions not flagged sensitive,
-including inferences, are inactive candidates, never instructions or permission.
-For suggestions the helper flags as sensitive, Xana retains only a redacted
-candidate envelope, not the quoted fact; an explicit owner remember request is
-required for intentional sensitive retention. Conflicting duplicate suggestions
-use the sensitive classification rather than copying a less restrictive version,
-and any conflicting inferred classification keeps the quote staged regardless
-of suggestion order. Classification
-can be wrong: an unflagged sensitive quotation can remain in an inactive,
-encrypted candidate. It cannot pass the ordinary-statement allowlist or become
-eligible context automatically, but inactive does not mean absent from storage.
-Inspect and forget unwanted candidates, or disable learning when this residual
-risk is unacceptable. This policy does not infer a global preference from one
-task instruction, and no-memory does not erase the original Conversation.
+The authorized helper can interpret different languages into closed ordinary
+preferences: concise/detailed responses, examples, metric/imperial units,
+dark/light theme, and Rust/Python/TypeScript use. Only stated, nonsensitive,
+whole-source suggestions with one of these values activate automatically, in
+Conversation scope. Active text is the canonical preference value, not arbitrary
+helper prose; the original source identity remains attributable. This replaces
+the old English sentence allowlist.
+
+Other suggestions remain inactive candidates. Sensitive classifications produce
+redacted metadata, not a copied quotation; intentional sensitive retention needs
+fresh explicit owner review. Conflicting duplicate claims or preference values
+cannot activate by arriving first. Classification can be wrong: an unflagged
+sensitive quotation may be retained as an encrypted inactive candidate, and a
+model can misclassify a preference. Inactive does not mean absent from storage.
+Inspect/forget unwanted candidates or disable learning if this residual risk is
+unacceptable. A successful explicit save retires background processing of that
+same input, including a helper result already in flight.
 
 Inspection shows stated/inferred classification and source identity. Scope,
 control, source, route and forgetting checks run again before the transaction
@@ -228,7 +223,7 @@ its stated/inferred classification and exact scope; it cannot choose a broader
 scope, change permissions, select a provider or install a tool. Explicit memory
 correction/scope commands remain separate owner actions.
 
-Automatically activated allowlisted facts also have candidate records with the
+Automatically activated typed preferences also have candidate records with the
 deterministic rule and source proof. **Undo** revokes the unchanged published
 fact; it never restores old text over a subsequent correction. **Reject** retires
 a pending proposal without changing a memory target. **Archive** retains review
@@ -283,8 +278,9 @@ instructions; the context ledger reports their cost. Codex receives the bounded
 current records with the actual user message through its supported text input,
 not through a second agent turn. IDs, revisions, scopes and provenance travel
 with selected records, not the whole memory store. Model changes still use the
-same vendor thread. Corrections apply on the next turn, without interrupting an
-answer already underway. Previously transmitted vendor content remains
+same vendor thread. Native context is reselected before each model request, replacing old personal
+memory layers after a correction. Codex receives corrections in tool results and
+fresh selection on its next turn; Xana cannot rewrite its already-sent context. Previously transmitted vendor content remains
 vendor-owned and cannot be claimed erased.
 
 ## Forgetting, source deletion and restored backups
@@ -336,8 +332,9 @@ snapshots and in-flight work are not restarted. Governed candidate review and
 inert Skill drafts do not rewrite identity, installed Skills or permissions. Task recall remains a
 separate source-evidence system, not personal truth.
 
-Native local-control acknowledgements are saved in the Conversation. Managed
-Codex controls acknowledge locally and store the memory record; they do not
-send a vendor turn or manufacture vendor transcript history. After reopening,
-inspect Memory for the durable result. If a receipt fails after a change,
-inspect its record before retrying; there is no automatic effect replay.
+Native semantic tool calls/results are saved in the Conversation. Managed
+Codex retains its own tool transcript; Xana stores committed mutation receipts
+with its original owner-request identity, not a fabricated vendor transcript.
+Explicit CLI/UI management remains local. After reopening, inspect Memory for
+the durable result. If a response is interrupted after a possible change, inspect
+its record before starting a new request; Xana does not replay uncertain effects.

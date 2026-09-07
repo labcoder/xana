@@ -18,6 +18,36 @@ const MAX_RETAINED_ACTIVITY_BYTES: usize = 256 * 1024;
 const MAX_RETAINED_ACTIVITY_EVENTS: usize = 512;
 const MAX_PENDING_ITEMS: usize = 128;
 
+pub(super) fn memory_review() -> super::memory_tools::MemoryReview {
+    let mut review = super::memory_tools::MemoryReview::new(|request| {
+        use crate::permission::ControllerDecision;
+        // This is a local exact memory review, not a vendor sandbox prompt.
+        let decision = if !io::stdin().is_terminal() {
+            ControllerDecision::Deny
+        } else {
+            println!("\nxana> Personal memory requests exact owner review");
+            println!("tool: {}", request.tool_name);
+            println!("proposed change: {}", request.final_arguments);
+            print!("Allow this exact change once? [y/N]: ");
+            let mut answer = String::new();
+            if io::stdout().flush().is_ok()
+                && io::stdin().read_line(&mut answer).is_ok()
+                && matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+            {
+                ControllerDecision::AllowOnce
+            } else {
+                ControllerDecision::Deny
+            }
+        };
+        Box::pin(async move { decision })
+    });
+    review.audit = Box::new(|fact| {
+        println!("xana> personal-memory permission: {:?}", fact.effective);
+        Box::pin(async {})
+    });
+    review
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ActivityLevel {
     Quiet,

@@ -32,6 +32,11 @@ pub(crate) enum ManagedTuiEvent {
         request: ApprovalRequest,
         reply: oneshot::Sender<ApprovalDecision>,
     },
+    MemoryApproval {
+        request: crate::permission::PermissionRequest,
+        reply: oneshot::Sender<crate::permission::ControllerDecision>,
+    },
+    MemoryAudit(crate::permission::PermissionAuditFact),
     ThreadOpened(String),
     TurnFinished {
         operation_id: OperationId,
@@ -300,45 +305,6 @@ async fn run_actor(
                 input,
                 images,
             } => {
-                if images.is_empty() && crate::memory::parse_natural(&input).is_some() {
-                    let result = super::local_memory_reply(
-                        config.memory.as_ref(),
-                        thread.conversation_id(),
-                        &input,
-                    )
-                    .await;
-                    let (text, error) = match result {
-                        Ok(text) => (text, None),
-                        Err(error) => (format!("Memory control failed: {error}"), Some(error)),
-                    };
-                    send_event(
-                        &events,
-                        ManagedTuiEvent::Notification(ManagedClientEvent::AssistantDelta(text)),
-                    )
-                    .await?;
-                    send_event(
-                        &events,
-                        ManagedTuiEvent::Notification(ManagedClientEvent::TurnCompleted {
-                            status: if error.is_some() {
-                                "failed"
-                            } else {
-                                "completed"
-                            }
-                            .into(),
-                            error: error.clone(),
-                        }),
-                    )
-                    .await?;
-                    send_event(
-                        &events,
-                        ManagedTuiEvent::TurnFinished {
-                            operation_id,
-                            error,
-                        },
-                    )
-                    .await?;
-                    continue;
-                }
                 let lease = if let Some(workspace_host) = workspace_host.as_ref() {
                     match workspace_host
                         .acquire_foreground_root(conversation.clone())
@@ -392,12 +358,21 @@ async fn run_actor(
                     cancellation: cancellation.clone(),
                 });
                 let mut handler = TuiManagedHandler::new(events.clone());
+                let owner_input =
+                    super::memory_tools::owner_input(operation_id, &input, cancellation.clone());
+                let mut memory_handler = super::memory_tools::MemoryManagedHandler::new(
+                    &config,
+                    thread.conversation_id(),
+                    owner_input.clone(),
+                    &mut handler,
+                    memory_review(events.clone()),
+                )?;
                 let thread_id = match ensure_thread_loaded(
                     &mut server,
                     &mut thread,
                     &mut store,
                     &config,
-                    &mut handler,
+                    &mut memory_handler,
                 )
                 .await
                 {
@@ -439,10 +414,10 @@ async fn run_actor(
                         continue;
                     }
                 };
-                let input = match super::memory_context::prepare(
+                let input = match super::memory_context::prepare_turn(
                     config.memory.as_ref(),
                     thread.conversation_id(),
-                    &input,
+                    &owner_input,
                 )
                 .await
                 {
@@ -474,9 +449,10 @@ async fn run_actor(
                             image_urls,
                         },
                         &cancellation,
-                        &mut handler,
+                        &mut memory_handler,
                     )
                     .await;
+                memory_handler.finish().await?;
                 if let Err(error) = &result {
                     let diagnostic = super::failure::diagnostic(
                         error,
@@ -573,6 +549,33 @@ struct TuiManagedHandler {
     events: mpsc::Sender<ManagedTuiEvent>,
 }
 
+fn memory_review(events: mpsc::Sender<ManagedTuiEvent>) -> super::memory_tools::MemoryReview {
+    let audit_events = events.clone();
+    let mut review = super::memory_tools::MemoryReview::new(move |request| {
+        let events = events.clone();
+        Box::pin(async move {
+            let (reply, decision) = oneshot::channel();
+            if events
+                .send(ManagedTuiEvent::MemoryApproval { request, reply })
+                .await
+                .is_err()
+            {
+                return crate::permission::ControllerDecision::Deny;
+            }
+            decision
+                .await
+                .unwrap_or(crate::permission::ControllerDecision::Deny)
+        })
+    });
+    review.audit = Box::new(move |fact| {
+        let events = audit_events.clone();
+        Box::pin(async move {
+            let _ = events.send(ManagedTuiEvent::MemoryAudit(fact)).await;
+        })
+    });
+    review
+}
+
 impl TuiManagedHandler {
     fn new(events: mpsc::Sender<ManagedTuiEvent>) -> Self {
         Self { events }
@@ -580,6 +583,13 @@ impl TuiManagedHandler {
 }
 
 impl ManagedEventHandler for TuiManagedHandler {
+    fn memory_tool_definitions(&self) -> Vec<crate::tool::ToolDefinition> {
+        // Hosted clients open the thread before owner input exists. Advertising
+        // declarations grants no execution authority: this handler still uses
+        // the default-denying callback until a turn-bound wrapper is attached.
+        crate::memory::tools::definitions()
+    }
+
     fn notification(&mut self, notification: ManagedNotification) -> Result<(), CodexError> {
         let Some(event) = ManagedClientEvent::from_notification(notification) else {
             return Ok(());
@@ -605,5 +615,32 @@ impl ManagedEventHandler for TuiManagedHandler {
                 .await
                 .map_err(|_| CodexError::RequestCancelled("managed approval decision"))
         })
+    }
+}
+
+#[cfg(test)]
+mod memory_registration_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn eager_hosted_handler_registers_tools_without_owner_execution_authority() {
+        let (sender, _receiver) = mpsc::channel(EVENT_CAPACITY);
+        let mut handler = TuiManagedHandler::new(sender);
+        assert_eq!(
+            handler.memory_tool_definitions(),
+            crate::memory::tools::definitions()
+        );
+        let result = handler
+            .dynamic_tool(
+                crate::managed::codex::ManagedToolCall {
+                    call_id: "not-an-owner-turn".into(),
+                    name: "memory_update".into(),
+                    arguments: serde_json::json!({}),
+                },
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert!(!result.success);
     }
 }

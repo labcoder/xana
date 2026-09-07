@@ -52,6 +52,7 @@ impl PermissionPolicy {
             }
             if let Some(tool) = &rule.tool
                 && !BUILTIN_TOOL_NAMES.contains(&tool.as_str())
+                && !matches!(tool.as_str(), "memory_lookup" | "memory_update")
             {
                 return Err(PolicyError::UnknownTool {
                     rule_id: id.to_owned(),
@@ -164,17 +165,21 @@ impl PermissionPolicy {
             .any(|rule| rule.decision == PolicyDecision::Allow)
         {
             PolicyDecision::Allow
-        } else if self.default == PolicyDecision::Ask && is_safe_built_in_read(request) {
-            // Immutable resources compiled into Xana cross no host, process,
-            // workspace, or network authority boundary. Explicit matching
-            // rules may still deny or review them.
+        } else if self.default == PolicyDecision::Ask
+            && (is_safe_built_in_read(request) || is_direct_memory_request(request))
+        {
+            // Built-in immutable reads and application-validated direct memory
+            // intents need no redundant host/file review. Explicit matching
+            // rules still deny or review them.
             PolicyDecision::Allow
         } else {
             self.default
         };
         if matches!(
             request.scope,
-            PermissionScope::ExternalPath { .. } | PermissionScope::External { .. }
+            PermissionScope::ExternalPath { .. }
+                | PermissionScope::External { .. }
+                | PermissionScope::PersonalMemory { review: true, .. }
         ) && winning_decision == PolicyDecision::Allow
         {
             winning_decision = PolicyDecision::Ask;
@@ -184,6 +189,16 @@ impl PermissionPolicy {
             winning_decision,
         }
     }
+}
+
+fn is_direct_memory_request(request: &PermissionRequest) -> bool {
+    matches!(
+        (request.tool_name.as_str(), request.effect_class),
+        ("memory_lookup", EffectClass::Read) | ("memory_update", EffectClass::Write)
+    ) && matches!(
+        request.scope,
+        PermissionScope::PersonalMemory { review: false, .. }
+    )
 }
 
 fn is_safe_built_in_read(request: &PermissionRequest) -> bool {
@@ -216,6 +231,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             PermissionScope::ExternalPath { .. } => return false,
             PermissionScope::External { .. } => return false,
             PermissionScope::BuiltInResource { .. } => return false,
+            PermissionScope::PersonalMemory { .. } => return false,
             PermissionScope::Unscoped => return false,
         };
         if !request_path.starts_with(workspace) {
@@ -230,6 +246,7 @@ fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
             | PermissionScope::ExternalPath { .. }
             | PermissionScope::External { .. }
             | PermissionScope::BuiltInResource { .. }
+            | PermissionScope::PersonalMemory { .. }
             | PermissionScope::Unscoped => return false,
         }
     }
@@ -250,6 +267,9 @@ impl SessionGrants {
         request: &PermissionRequest,
         scope: PermissionScope,
     ) -> Result<String, ()> {
+        if matches!(scope, PermissionScope::PersonalMemory { .. }) {
+            return Err(());
+        }
         if let Some(existing) = self.grants.iter().find(|grant| {
             grant.tool_name == request.tool_name
                 && grant.effect_class == request.effect_class

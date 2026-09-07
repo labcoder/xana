@@ -17,5 +17,5 @@ pub(crate) use embedded::{EmbeddedClient, EmbeddedObserver, EmbeddedOwner};
 pub(crate) use managed::{ManagedClientEvent, ManagedClientItem};
 pub(crate) use protocol::{
     ClientCommand, ClientCommandResult, ClientCommandValue, ClientEvent, ClientObservation,
-    ClientSnapshot, ClientSnapshotSeed, FRONTEND_PROTOCOL_VERSION,
+    ClientSnapshot, ClientSnapshotSeed, FRONTEND_PROTOCOL_VERSION, MemoryPermissionProposal,
 };

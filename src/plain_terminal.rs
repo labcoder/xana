@@ -1780,6 +1780,8 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
     output: &mut W,
 ) -> io::Result<ControllerDecision> {
     let external_scope = matches!(request.scope, PermissionScope::External { .. });
+    let exact_only =
+        external_scope || matches!(request.scope, PermissionScope::PersonalMemory { .. });
     let exact_external = external_scope && request.outbound_review.is_some();
     if exact_external {
         write!(
@@ -1788,7 +1790,7 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
         )?;
     } else {
         write!(output, "decision [d=deny/o=once")?;
-        if !external_scope {
+        if !exact_only {
             write!(output, "/s=session")?;
         }
         write!(output, "; default d]: ")?;
@@ -1802,7 +1804,7 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
 
     Ok(match answer.trim().to_ascii_lowercase().as_str() {
         "o" | "once" | "y" | "yes" => ControllerDecision::AllowOnce,
-        "s" | "session" if !external_scope => ControllerDecision::AllowSession {
+        "s" | "session" if !exact_only => ControllerDecision::AllowSession {
             scope: request.scope.clone(),
         },
         "a" | "always" | "allow" if exact_external => ControllerDecision::SaveOutboundAllow,
@@ -1827,7 +1829,10 @@ fn render_permission_request(
         writeln!(output, "{}", review.render())?;
     } else {
         writeln!(output, "scope: {}", display_scope(&request.scope))?;
-        if matches!(request.scope, PermissionScope::Unscoped) {
+        if matches!(
+            request.scope,
+            PermissionScope::Unscoped | PermissionScope::PersonalMemory { .. }
+        ) {
             writeln!(output, "arguments: {}", request.final_arguments)?;
         }
     }
@@ -1863,6 +1868,7 @@ fn display_scope(scope: &PermissionScope) -> String {
         PermissionScope::BuiltInResource { id } => {
             format!("immutable built-in resource {id}")
         }
+        PermissionScope::PersonalMemory { scope, .. } => format!("personal memory {scope}"),
         PermissionScope::Unscoped => "unscoped".to_owned(),
     }
 }

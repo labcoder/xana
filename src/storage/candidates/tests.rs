@@ -51,6 +51,7 @@ fn learn(
                 quote: quote.into(),
                 claim,
                 sensitive,
+                preference: Some(crate::memory::learning::OrdinaryPreference::Rust),
             }],
             route,
         )
@@ -91,7 +92,7 @@ fn explicit_remember_stays_direct_and_auto_fact_has_restart_safe_proof_and_undo(
     assert_eq!(candidate.state, CandidateState::AutoApplied);
     assert_eq!(
         candidate.validation,
-        CandidateValidation::OrdinaryStatedAllowlistV1
+        CandidateValidation::OrdinaryPreferenceV2
     );
     assert_eq!(candidate.events.len(), 1);
     assert_eq!(
@@ -216,12 +217,14 @@ fn sensitive_duplicate_cannot_copy_text_or_downgrade_into_an_inferred_payload() 
             quote: text.into(),
             claim: MemoryClaim::Inferred,
             sensitive: false,
+            preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
         },
         Suggestion {
             source: id,
             quote: text.into(),
             claim: MemoryClaim::Stated,
             sensitive: true,
+            preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
         },
     ];
     assert_eq!(
@@ -281,6 +284,7 @@ fn conflicting_duplicate_claims_remain_inferred_in_either_order() {
             quote: text.into(),
             claim,
             sensitive: false,
+            preference: Some(crate::memory::learning::OrdinaryPreference::Examples),
         });
         assert_eq!(
             owner

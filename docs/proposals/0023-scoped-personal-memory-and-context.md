@@ -143,9 +143,11 @@ for the current behavior. This proposal remains Accepted, not Implemented:
 explicit owner memory controls now persist scoped stated facts, immutable
 revision history, temporal eligibility, independent use/learning/no-memory
 flags and safe readable exports. CLI/plain/TUI/Desktop share the same governed
-backend and direct owner-input grammar. See [personal memory](../user/personal-memory.md).
-Corrections apply to next-turn selection. Bounded automatic learning now uses
-explicit native helper approval, deterministic ordinary-statement activation,
+backend. Free-form requests now use turn-bound semantic memory tools; explicit
+CLI/UI management remains deterministic. See [personal memory](../user/personal-memory.md).
+Corrections apply before the next native model request and next managed turn.
+Bounded automatic learning now uses
+explicit native helper approval, typed ordinary-preference activation,
 inactive ambiguous/inferred candidates and source/consent fences; sensitive
 suggestions are not copied without explicit retention permission. Forgetting
 persists suppression, separates reviewed native source deletion, and reconciles
@@ -153,7 +155,7 @@ known later exclusions on restore. Supported managed text handoff includes
 current scoped records without an extra turn and makes no vendor erasure claim.
 The narrow governed-candidate workflow now shares protected Memory/inert-Skill
 envelopes, exact review/diff/reject/archive/undo and stale source/base/privacy
-checks across owner clients. Allowlisted automatic facts carry candidate proof;
+checks across owner clients. Typed automatic preferences carry candidate proof;
 sensitive helper payloads are not copied. Explicit owner Skill drafts remain
 database-only and review never installs, loads or executes them. General harness
 promotion and remaining integrated quality/native platform evidence are not
@@ -184,3 +186,5 @@ Existing native branches inherit ancestor quarantine for automatic reuse.
 See [implemented recall architecture](../architecture/recall.md) and
 [owner controls](../user/project-recall.md); broad embedding/media ingestion
 and general managed-agent tool bridging remain outside this implementation.
+The supported Codex bridge is deliberately restricted to the two personal-memory
+tools and does not delegate arbitrary Xana tools to the managed inner loop.

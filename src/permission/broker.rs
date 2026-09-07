@@ -272,7 +272,11 @@ impl PermissionBroker {
             });
         };
         if let ControllerDecision::AllowSession { scope } = &decision
-            && scope != &pending.request.scope
+            && (scope != &pending.request.scope
+                || matches!(
+                    scope,
+                    crate::permission::PermissionScope::PersonalMemory { .. }
+                ))
         {
             return Err(DecisionError::ScopeMismatch {
                 operation_id,

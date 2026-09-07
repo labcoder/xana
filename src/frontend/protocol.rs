@@ -527,6 +527,99 @@ pub(crate) struct PendingPermissionProjection {
     pub(crate) tool_name: String,
     pub(crate) effect_class: crate::tool::EffectClass,
     pub(crate) scope: crate::permission::PermissionScope,
+    /// Exact bounded memory proposal needed for review after controller attach.
+    /// Generic arguments and the original owner quotation remain excluded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) memory_proposal: Option<MemoryPermissionProposal>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MemoryPermissionAction {
+    Remember,
+    Correct,
+    Forget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct MemoryPermissionProposal {
+    pub(crate) action: MemoryPermissionAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) statement: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) id: Option<Uuid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) revision: Option<u64>,
+}
+
+impl MemoryPermissionProposal {
+    pub(crate) fn from_request(request: &crate::permission::PermissionRequest) -> Option<Self> {
+        if request.tool_name != "memory_update"
+            || !matches!(
+                request.scope,
+                crate::permission::PermissionScope::PersonalMemory { .. }
+            )
+        {
+            return None;
+        }
+        let args = &request.final_arguments;
+        let action = match args.get("action")?.as_str()? {
+            "remember" => MemoryPermissionAction::Remember,
+            "correct" => MemoryPermissionAction::Correct,
+            "forget" => MemoryPermissionAction::Forget,
+            _ => return None,
+        };
+        let statement = if action == MemoryPermissionAction::Forget {
+            None
+        } else {
+            let statement = args.get("statement")?.as_str()?;
+            if statement.trim().is_empty()
+                || statement.len() > 4096
+                || statement
+                    .chars()
+                    .any(|ch| ch.is_control() && ch != '\n' && ch != '\t')
+            {
+                return None;
+            }
+            Some(statement.to_owned())
+        };
+        let (id, revision) = if action == MemoryPermissionAction::Remember {
+            (None, None)
+        } else {
+            let id = args.get("id")?.as_str()?.parse::<Uuid>().ok()?;
+            let revision = args.get("revision")?.as_u64()?;
+            if id.is_nil() || revision == 0 || revision >= i64::MAX as u64 {
+                return None;
+            }
+            (Some(id), Some(revision))
+        };
+        Some(Self {
+            action,
+            statement,
+            id,
+            revision,
+        })
+    }
+
+    pub(crate) fn review_text(&self) -> String {
+        let action = match self.action {
+            MemoryPermissionAction::Remember => "Remember",
+            MemoryPermissionAction::Correct => "Correct",
+            MemoryPermissionAction::Forget => "Forget",
+        };
+        let mut text = action.to_owned();
+        if let Some(id) = self.id {
+            text.push_str(&format!(
+                " memory {id} at revision {}",
+                self.revision.unwrap_or(0)
+            ));
+        }
+        if let Some(statement) = &self.statement {
+            text.push_str(&format!("\nExact statement: {statement}"));
+        }
+        text
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -748,6 +841,7 @@ impl ClientSnapshot {
                         ),
                         effect_class: request.effect_class,
                         scope: request.scope.clone(),
+                        memory_proposal: MemoryPermissionProposal::from_request(request),
                     };
                     if let Some(existing) = self.pending_approvals.iter_mut().find(|candidate| {
                         candidate.operation_id == projection.operation_id
@@ -1640,6 +1734,81 @@ mod tests {
         );
         assert!(snapshot.pending_approvals.is_empty());
         assert_eq!(snapshot.pending_approval_count, 0);
+    }
+
+    #[test]
+    fn memory_snapshot_retains_exact_proposal_without_owner_source_or_generic_arguments() {
+        let id = Uuid::new_v4();
+        let request = PermissionRequest {
+            operation_id: OperationId::new(),
+            invocation_id: ToolInvocationId::new(),
+            tool_name: "memory_update".into(),
+            effect_class: EffectClass::Write,
+            final_arguments: serde_json::json!({
+                "action":"correct", "statement":"My favorite color is blue",
+                "id":id, "revision":7, "quote":"OWNER_SOURCE_MUST_NOT_ENTER_SNAPSHOT",
+                "source_id":Uuid::new_v4(), "extra":"GENERIC_ARGUMENT_MUST_NOT_ENTER_SNAPSHOT"
+            }),
+            scope: crate::permission::PermissionScope::PersonalMemory {
+                scope: "user".into(),
+                review: true,
+            },
+            outbound_review: None,
+        };
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: SessionId::new(),
+                connection: "local".into(),
+                execution_owner: "native".into(),
+                model: "test".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "ask".into(),
+                children: vec![],
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            vec![],
+        );
+        snapshot.apply(
+            &ClientEvent::bounded(AgentEvent::PermissionRequested {
+                request: request.clone(),
+            }),
+            1,
+        );
+        let proposal = snapshot.pending_approvals[0]
+            .memory_proposal
+            .as_ref()
+            .unwrap();
+        assert_eq!(proposal.action, MemoryPermissionAction::Correct);
+        assert_eq!(proposal.id, Some(id));
+        assert_eq!(proposal.revision, Some(7));
+        assert!(proposal.review_text().contains("My favorite color is blue"));
+        let encoded = serde_json::to_string(&snapshot).unwrap();
+        assert!(encoded.contains("My favorite color is blue"));
+        assert!(!encoded.contains("OWNER_SOURCE_MUST_NOT_ENTER_SNAPSHOT"));
+        assert!(!encoded.contains("GENERIC_ARGUMENT_MUST_NOT_ENTER_SNAPSHOT"));
+        assert!(!encoded.contains("final_arguments"));
+        let mut bounded = request.clone();
+        bounded.final_arguments["statement"] = serde_json::json!("é".repeat(2049));
+        assert!(MemoryPermissionProposal::from_request(&bounded).is_none());
+        bounded.final_arguments["statement"] = serde_json::json!("é".repeat(2048));
+        assert_eq!(
+            MemoryPermissionProposal::from_request(&bounded)
+                .unwrap()
+                .statement
+                .unwrap()
+                .len(),
+            4096
+        );
+        bounded.tool_name = "write_file".into();
+        assert!(MemoryPermissionProposal::from_request(&bounded).is_none());
+        let mut old = serde_json::to_value(&snapshot.pending_approvals[0]).unwrap();
+        old.as_object_mut().unwrap().remove("memory_proposal");
+        let old: PendingPermissionProjection = serde_json::from_value(old).unwrap();
+        assert!(
+            old.memory_proposal.is_none(),
+            "additive field preserves older snapshots"
+        );
     }
 
     #[test]
