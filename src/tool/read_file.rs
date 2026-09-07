@@ -79,7 +79,7 @@ impl fmt::Display for ReadFileError {
             ),
             Self::InvalidPaging => write!(
                 f,
-                "byte paging requires max_bytes in 4..={MAX_READ_BYTES}, an in-range UTF-8 boundary offset, and no line range"
+                "read_file: max_bytes must be 4..={MAX_READ_BYTES} (a capacity, not the file size). offset_bytes cannot be combined with start_line/end_line and must be an in-range UTF-8 boundary. For a small file use only {{\"path\":\"FILE\"}}; for pages use {{\"path\":\"FILE\",\"offset_bytes\":0,\"max_bytes\":4096}}"
             ),
             Self::Unavailable { requested_path, .. } => {
                 write!(f, "file {requested_path:?} is unavailable")
@@ -122,7 +122,6 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
 
     let start_line = args.start_line.unwrap_or(1);
     let end_line = args.end_line;
-    let paging = args.offset_bytes.is_some() || args.max_bytes.is_some();
 
     if start_line == 0
         || end_line == Some(0)
@@ -133,10 +132,8 @@ fn plan_read_file(arguments: &Value, workspace_root: &Path) -> Result<ReadFilePl
             end_line: args.end_line,
         });
     }
-    if paging
-        && (args.start_line.is_some()
-            || args.end_line.is_some()
-            || !(4..=MAX_READ_BYTES).contains(&args.max_bytes.unwrap_or(MAX_READ_BYTES)))
+    if (args.offset_bytes.is_some() && (args.start_line.is_some() || args.end_line.is_some()))
+        || !(4..=MAX_READ_BYTES).contains(&args.max_bytes.unwrap_or(MAX_READ_BYTES))
     {
         return Err(ReadFileError::InvalidPaging);
     }
@@ -180,13 +177,18 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
     })?;
     verify_open_file(&requested_path, &file, &plan.identity).map_err(ReadFileError::Path)?;
 
-    if plan.args.offset_bytes.is_some() || plan.args.max_bytes.is_some() {
+    if plan.args.offset_bytes.is_some()
+        || (plan.args.max_bytes.is_some()
+            && plan.args.start_line.is_none()
+            && plan.args.end_line.is_none())
+    {
         return execute_paged_read(file, plan);
     }
 
     let mut reader = BufReader::new(file);
     let mut selected = Vec::new();
     let mut line_number = 1_usize;
+    let limit = plan.args.max_bytes.unwrap_or(MAX_READ_BYTES);
 
     loop {
         let mut line = Vec::new();
@@ -207,10 +209,10 @@ fn execute_read_file(plan: &ReadFilePlan) -> Result<String, ReadFileError> {
             line_number >= start_line && end_line.is_none_or(|end_line| line_number <= end_line);
 
         if in_range {
-            if line.len() > MAX_READ_BYTES - selected.len() {
+            if line.len() > limit - selected.len() {
                 return Err(ReadFileError::TooLarge {
                     requested_path,
-                    limit: MAX_READ_BYTES,
+                    limit,
                 });
             }
 
@@ -303,7 +305,7 @@ impl Tool for ReadFile {
         ToolDefinition {
             name: "read_file".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Read a UTF-8 file. Use offset_bytes/max_bytes for deterministic bounded pages of large files; line ranges retain the concise legacy text result. Workspace-relative paths use normal workspace policy and absolute external paths require exact approval.".into(),
+            description: "Read a UTF-8 file. Small file: {path: FILE}. Lines: {path: FILE, start_line: 1, end_line: 20, max_bytes: 4096}. Byte page: {path: FILE, offset_bytes: 0, max_bytes: 4096}. Do not mix offset_bytes with line numbers. Workspace-relative paths use workspace policy; absolute external paths require exact approval.".into(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -332,7 +334,7 @@ impl Tool for ReadFile {
                         "type": "integer",
                         "minimum": 4,
                         "maximum": MAX_READ_BYTES,
-                        "description": "Maximum UTF-8 bytes returned in paged mode; result includes the next offset and truncation facts"
+                        "description": "Output capacity, not file size (a 3-byte file can use 4096). Also caps line reads. Without line numbers selects paged JSON with next offset and truncation facts."
                     }
                 }
             }),
@@ -386,6 +388,20 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn memory_regression_line_read_accepts_a_byte_cap_for_a_tiny_file() {
+        let workspace = tempdir().unwrap();
+        fs::write(workspace.path().join("preference.txt"), "red").unwrap();
+        let output = read_file(
+            &json!({
+                "path": "preference.txt", "start_line": 1, "end_line": 1, "max_bytes": 1024
+            }),
+            workspace.path(),
+        )
+        .expect("a byte cap is not a byte offset");
+        assert_eq!(output, "red");
+    }
 
     #[test]
     fn reads_nested_utf8_file() {
