@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('format', 'contracts', 'lint', 'all-features', 'no-default', 'root-no-default', 'custody', 'source-package')]
+    [ValidateSet('format', 'contracts', 'lint', 'all-features', 'no-default', 'root-no-default', 'custody', 'source-package', 'resources')]
     [string]$Check
 )
 $ErrorActionPreference = 'Stop'

@@ -14,6 +14,7 @@ function Get-NativeQualificationCommand {
         'no-default' { return @{ Program = 'cargo'; Arguments = $test + @('--workspace', '--all-targets', '--no-default-features') } }
         'root-no-default' { return @{ Program = 'cargo'; Arguments = $test + @('-p', 'xana', '--all-targets', '--no-default-features') } }
         'custody' { return @{ Program = 'bash'; Arguments = @('scripts/qualify-native-custody.sh') } }
+        'resources' { return @{ Program = 'pwsh'; Arguments = @('-NoProfile', '-File', 'scripts/qualify-native-resources.ps1') } }
         default { throw "unknown native qualification check: $Check" }
     }
 }

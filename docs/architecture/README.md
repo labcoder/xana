@@ -2215,10 +2215,13 @@ entries. Tag pushes do not start a duplicate ordinary CI run.
 
 The manual-only [native qualification workflow](../contributing/native-qualification.md)
 executes full workspace/root test modes on Linux and both macOS architectures,
-plus disposable production OS-custody and source-installation checks. It has
+plus disposable production OS-custody and source-installation checks. Its
+explicit resource gate runs optimized protected-history fixtures at 10k/100k
+messages with five independent opens, sampled process RSS/CPU, backup/restore,
+and release CLI/Desktop executable sizes. It has
 read-only repository permissions and uploads only synthetic test logs/metadata.
 It does not publish artifacts as releases or claim native browser parity,
-interactive OS consent, resource benchmarks, or graphical acceptance.
+interactive OS consent, OS-cold-cache latency, graphical performance or acceptance.
 
 The dedicated Release Preview workflow first requires a successful ordinary
 CI push run for the exact commit being released, then binds the exact tag/input

@@ -1,5 +1,7 @@
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/native-qualification.ps1"
+& "$PSScriptRoot/test-history-resource-evidence.ps1"
+& "$PSScriptRoot/test-history-resource-sampler.ps1"
 
 function Assert-Rejected {
     param([scriptblock]$Action)
@@ -61,14 +63,14 @@ function Assert-NativeWorkflow {
     foreach ($required in @(
         'contents: read', 'persist-credentials: false', 'save-if: false', 'fail-fast: false',
         'ubuntu-24.04', 'macos-15', 'macos-15-intel', 'aarch64-apple-darwin',
-        'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'timeout-minutes: 120',
+        'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'timeout-minutes: 180', 'timeout-minutes: 90',
         'timeout-minutes: 15', 'if: always()', 'retention-days: 7',
         'target/native-qualification/*.log', 'target/native-qualification/*.json'
         'libfontconfig1-dev', 'libxkbcommon-dev', 'libxkbcommon-x11-dev', 'libxcb1-dev'
     )) {
         if (-not $Workflow.Contains($required)) { throw "missing native workflow contract: $required" }
     }
-    foreach ($check in @('contracts', 'format', 'lint', 'all-features', 'no-default', 'root-no-default', 'custody', 'source-package')) {
+    foreach ($check in @('contracts', 'format', 'lint', 'all-features', 'no-default', 'root-no-default', 'custody', 'source-package', 'resources')) {
         if (-not $Workflow.Contains("run-native-qualification.ps1 -Check $check")) { throw "missing native gate: $check" }
     }
     $paths = [regex]::Match($Workflow, '(?ms)^\s{10}path: \|\r?\n(.*?)(?=^\s{10}\S)').Groups[1].Value
@@ -84,6 +86,7 @@ Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'contents: read', 'c
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'checkout@[0-9a-f]{40}', 'checkout@main') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '\*\.json', '**') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '-Check custody', '-Check format') }
+Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '-Check resources', '-Check format') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'libxkbcommon-x11-dev', '') }
 
 # The production custody script must refuse this synthetic call before touching

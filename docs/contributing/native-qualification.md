@@ -64,6 +64,10 @@ provider call. GitHub's standard hosted-runner/billing policies still apply.
   native debug source installation, **not** a release archive or installer audit.
   Desktop is compiled and tested headlessly by the workspace gates, not launched
   in a graphical login session.
+- An explicit release-profile resource gate: one optimized library-test build,
+  then separate 10k/100k protected-history processes. Each records five independent
+  database opens and resume windows, verification, backup and restore. The gate
+  also builds CLI/Desktop release executables and records their sizes and hashes.
 
 Each check records the commit, dirty-tree flag, lockfile hash, toolchain,
 OS/architecture, CPU count, runtime-available memory, runner image, start/end,
@@ -71,7 +75,8 @@ status, and test totals where applicable. Command output is streamed to logs.
 Empty selections and compile-only logs cannot pass a test gate; custody must
 execute its exact test once. Failed checks do not suppress independent later
 checks, and upload runs even after failure. A cancelled/timed-out/missing gate is
-incomplete evidence, not Pass. Jobs have a two-hour limit; custody has 15 minutes.
+incomplete evidence, not Pass. Jobs have a three-hour limit; custody has 15 minutes
+and the resource gate has 90 minutes. Each history process has a 30-minute limit.
 Ordinary CI allows up to one hour per quality job so a cold Windows
 SQLCipher/OpenSSL plus Desktop build can finish without skipping test gates.
 The native Linux lane installs Fontconfig, xkbcommon/X11 and XCB development
@@ -111,6 +116,35 @@ owns a single generated credential and no existing Xana home. Local shell tests
 stub the OS commands to test isolation, failure propagation and cleanup; those
 tests **are not native custody qualification**.
 
+## Resource evidence
+
+`qualify-native-resources.ps1` reuses the existing protected-history fixture.
+It builds once with the unchanged release profile and runs the exact ignored
+test through `measure-history-resources.ps1`; unrelated ignored tests do not run.
+The sampler removes a profile-only override from the child environment. It
+requires the exact successful test, five distinct trials and all
+generation/verification/backup/restore markers before accepting a measurement.
+
+The report preserves all five trials and median/p95 open/resume durations.
+These are independent database opens in a fresh process, **not five OS-cold-cache
+runs**. RSS and cumulative CPU are sampled every 100 ms across fixture generation,
+verification and backup/restore. The maximum observed current working set is not
+a guaranteed peak, and the final CPU sample can precede process exit. Desktop
+executable size is not an installer size or a GUI-performance measurement.
+
+Failure, malformed output, timeout and incomplete cleanup remain failed reports.
+The sampler terminates and waits for its exact owned process before reporting
+cleanup; disposing a process handle alone is insufficient. Abrupt runner loss
+still relies on disposable VM cleanup and leaves qualification incomplete.
+Only synthetic logs and reports are uploaded, never the fixture database/home.
+The small offline sampler test exercises real process exit and timeout with a
+synthetic worker; it does not count as a protected-history resource run.
+
+Resource artifacts include `history-10000.json`, `history-100000.json` and
+`resource-packages.json`, tied to the source/toolchain envelope in `resources.json`.
+Preserve the corresponding logs as well as summaries. A past workflow run without
+this gate does not establish these measurements for a newer revision.
+
 ## What a green result does not establish
 
 - Unix browser support: production browser process ownership is currently
@@ -120,9 +154,9 @@ tests **are not native custody qualification**.
   sleep/wake, dedicated-browser manual sign-in, and genuine account integrations.
 - Real TUI/Desktop selection, clipboard, scroll, keyboard/IME/accessibility,
   visual quality or FPS. Headless tests cannot establish those results.
-- Release-profile resource measurements and the full native archive/release
-  workflow. Existing ignored resource probes are not silently counted as runs.
-  These are separate acceptance checks; ordinary source CI is not release proof.
+- Full native archive/release workflow, browser or loaded-client resource
+  measurements, and end-user performance acceptance. The backend resource gate
+  does not replace those checks; ordinary source CI is not release proof.
 
 Do not remove a remaining acceptance gate solely because this workflow is green.
 
