@@ -777,6 +777,12 @@ content. It updates at every provider request, including tool rounds, and
 separates runtime facts, parent handoff, tool evidence, and conversation content.
 Personal-memory selections now occupy their separately bounded data-only slot;
 retrieved evidence is accounted through its materialized source/tool content.
+Native prompt assembly also carries a budgeted runtime memory-readiness fact,
+including unavailable legacy homes and disabled use. Explicit owner remember
+controls accept common prefix and personal-statement suffix forms, commit through
+the scoped protected service without a model/tool call, and report missing
+prerequisites locally. They do not authorize model output to mutate memory or
+create a workspace-file fallback.
 Output/reasoning reserves remain in the
 budget, not misreported as sent input. Authored instructions must fit completely
 or assembly rejects the request; optional evidence can still be omitted with

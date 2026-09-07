@@ -16,6 +16,8 @@ In plain chat, TUI or Desktop chat, these direct requests are local controls:
 
 ```text
 remember that I prefer short examples
+my favorite color is red. remember that.
+please remember my preference for short examples
 remember for all conversations: I prefer Rust examples
 what do you remember?
 correct memory UUID: I prefer concise explanations with one example
@@ -31,13 +33,29 @@ enable memory for this conversation
 should apply everywhere without blocking or broadening it. `remember for this
 conversation: ...` is also accepted. `remember in SCOPE that FACT` names an
 explicit scope. This is a small deterministic grammar, not general natural-
-language extraction: other wording remains ordinary model input. Quoted/tool/
+language extraction: common explicit prefix and personal-statement suffix forms
+also work, but other wording remains ordinary model input. A suffix request
+defaults to this Conversation; `My favorite color is red. Remember that for all
+conversations.` explicitly selects user scope. Quoted/tool/
 child output is never processed as an owner memory command. Attached-image turns
 remain model turns, not local memory commands.
 This includes image turns prepared by a named vision specialist: its generated
 description is available to the conversational model but cannot become your
 memory command or learning source. Only the original text you wrote is eligible
 for personal-memory selection and learning.
+
+Restarting and resuming the same Conversation retains its scoped memories. A
+new Conversation receives user-wide memory but not another Conversation's private
+facts. Recall uses eligible memory data directly, without `read_file` approval.
+Xana does not use an ad-hoc workspace `user_prefs` file as its memory store.
+
+On a legacy home, explicit remember requests fail locally with setup guidance;
+they do not ask a model to save a plaintext substitute. `xana doctor` warns that
+personal memory is unavailable, and the native prompt includes that readiness
+fact. Run `xana storage status` and `xana storage migrate` for a read-only preview;
+application requires a recovery key and your exact reviewed digest. From a source
+checkout, use `cargo run -- storage status` or `cargo run -- storage migrate`.
+No migration happens merely by asking Xana to remember something.
 
 Inspection returns at most eight short previews with IDs and an explicit
 more/truncation indicator. For complete records, use Desktop's **Memory** panel,

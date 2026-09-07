@@ -1007,7 +1007,6 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         .as_str()
         .to_owned();
     context_report.push('\n');
-    context_report.push_str(crate::memory::learning::DISCLOSURE);
     let agent = Agent::new(
         provider,
         tools,
@@ -1046,6 +1045,11 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             .context("memory needs a resolved Profile")?
             .profile_id,
     )?;
+    if memory.is_some() {
+        context_report.push_str(crate::memory::learning::DISCLOSURE);
+    } else {
+        context_report.push_str(crate::memory::UNAVAILABLE_NOTICE);
+    }
     let runtime = match child_supervisor {
         Some((handle, supervisor)) => RuntimeHandle::spawn_persistent_with_supervisor(
             agent,

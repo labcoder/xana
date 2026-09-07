@@ -54,6 +54,9 @@ pub(crate) fn parse_natural(input: &str) -> Option<Result<NaturalIntent>> {
             }));
         }
     }
+    if let Some(intent) = conversational_remember(input) {
+        return Some(Ok(intent));
+    }
     if lower.starts_with("remember in ") {
         return Some((|| {
             let rest = &input["remember in ".len()..];
@@ -113,6 +116,66 @@ pub(crate) fn parse_natural(input: &str) -> Option<Result<NaturalIntent>> {
         })());
     }
     None
+}
+
+/// Explicit owner imperatives only. This is not inference over arbitrary prose:
+/// quoted examples, questions and third-party content are not memory commands.
+fn conversational_remember(input: &str) -> Option<NaturalIntent> {
+    let input = input.trim().trim_end_matches(['.', '!']).trim_end();
+    let lower = input.to_ascii_lowercase();
+    if lower.ends_with('?') || input.contains(['\n', '`']) {
+        return None;
+    }
+    for prefix in [
+        "please remember that ",
+        "remember this: ",
+        "please remember this: ",
+    ] {
+        if lower.starts_with(prefix) {
+            return Some(NaturalIntent::Remember {
+                scope: None,
+                statement: input[prefix.len()..].trim().to_owned(),
+            });
+        }
+    }
+    for prefix in ["remember ", "please remember "] {
+        if lower.starts_with(prefix) && personal_statement(&lower[prefix.len()..]) {
+            return Some(NaturalIntent::Remember {
+                scope: None,
+                statement: input[prefix.len()..].trim().to_owned(),
+            });
+        }
+    }
+    for (suffix, scope) in [
+        (
+            ". remember that for all conversations",
+            Some(MemoryScope::User),
+        ),
+        (
+            ". remember this for all conversations",
+            Some(MemoryScope::User),
+        ),
+        (". remember that", None),
+        (". remember this", None),
+        (". please remember that", None),
+        (". please remember this", None),
+    ] {
+        if let Some(statement) = lower.strip_suffix(suffix)
+            && personal_statement(statement)
+        {
+            return Some(NaturalIntent::Remember {
+                scope,
+                statement: input[..statement.len()].trim().to_owned(),
+            });
+        }
+    }
+    None
+}
+
+fn personal_statement(text: &str) -> bool {
+    ["i ", "i'm ", "my ", "we ", "our "]
+        .iter()
+        .any(|prefix| text.starts_with(prefix))
 }
 
 use anyhow::Context as _;

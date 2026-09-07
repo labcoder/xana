@@ -3,6 +3,41 @@
 use super::*;
 
 impl PromptSnapshot {
+    /// A runtime fact, not optional retrieved data; account for it before selecting memory.
+    pub(crate) fn with_memory_readiness(
+        mut self,
+        readiness: crate::memory::MemoryReadiness,
+    ) -> Result<Self, PromptError> {
+        self.layers
+            .retain(|layer| layer.source_id != "runtime:personal-memory");
+        self.layers.push(layer(
+            PromptLayerKind::Environment,
+            "runtime:personal-memory",
+            SourceProvenance {
+                display_name: "Personal memory readiness".into(),
+                path: None,
+                origin: SourceOrigin::RuntimeEnvironment,
+            },
+            TrustClass::Runtime,
+            &format!("{}\n{}", readiness.notice(), crate::memory::MEMORY_GUIDANCE),
+            false,
+        ));
+        let rendered = render_layers(&self.layers);
+        let required = estimate_tokens(&rendered)
+            .saturating_add(self.tool_schema_tokens)
+            .saturating_add(self.budget.conversation_reserve_tokens);
+        if required > self.budget.total_tokens {
+            return Err(PromptError::RequiredLayersExceedBudget {
+                required_tokens: required,
+                total_tokens: self.budget.total_tokens,
+            });
+        }
+        self.system_tokens = estimate_tokens(&rendered);
+        self.system_message = Message::text(Role::System, rendered);
+        refresh_layer_costs(&mut self.layers);
+        Ok(self)
+    }
+
     pub(crate) fn with_personal_memory(
         mut self,
         selection: &crate::memory::MemorySelection,

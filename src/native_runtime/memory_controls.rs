@@ -76,10 +76,13 @@ impl Runtime {
             state: OperationState::Running,
         });
         let owner = self.memory.clone();
-        let result=tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
-            let owner=owner.ok_or_else(|| anyhow::anyhow!("Personal memory requires an unlocked protected home; no plaintext memory was created"))?;
-            owner.respond(&input).ok_or_else(|| anyhow::anyhow!("Unknown local memory command"))?
-        }).await;
+        let result = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            let owner = owner.ok_or_else(|| anyhow::anyhow!(crate::memory::UNAVAILABLE_NOTICE))?;
+            owner
+                .respond(&input)
+                .ok_or_else(|| anyhow::anyhow!("Unknown local memory command"))?
+        })
+        .await;
         let (reply, outcome) = match result {
             Ok(Ok(reply)) => (reply, OperationOutcome::Completed),
             Ok(Err(error)) => (

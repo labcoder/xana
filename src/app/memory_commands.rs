@@ -93,7 +93,8 @@ pub(super) async fn run<W: Write>(
     paths: &XanaPaths,
     output: &mut W,
 ) -> Result<()> {
-    let store=ProtectedStore::configured(paths.data_dir())?.context("Personal memory requires protected storage; inspect xana storage status. No plaintext memory was created")?;
+    let store =
+        ProtectedStore::configured(paths.data_dir())?.context(crate::memory::UNAVAILABLE_NOTICE)?;
     let owner = MemoryOwner::new(store, MemoryContext::default());
     let value = match args.command {
         MemoryCommand::Candidate { command } => candidate(&owner, command)?,

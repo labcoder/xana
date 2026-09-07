@@ -6,10 +6,9 @@ pub(super) async fn local_memory_reply(
     conversation: ConversationId,
     input: &str,
 ) -> Result<String, String> {
-    let mut owner = owner.cloned().ok_or_else(|| {
-        "Personal memory requires an unlocked protected home; no plaintext memory was created"
-            .to_owned()
-    })?;
+    let mut owner = owner
+        .cloned()
+        .ok_or_else(|| crate::memory::UNAVAILABLE_NOTICE.to_owned())?;
     owner.context.conversation = Some(
         conversation
             .to_string()

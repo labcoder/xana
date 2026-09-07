@@ -5,6 +5,137 @@ use crate::{
 };
 
 #[tokio::test]
+async fn memory_regression_plain_request_survives_runtime_restart_without_file_tools() {
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let store = ProtectedStore::initialize(
+        data.path(),
+        &RecoveryIdentity::generate(),
+        &TestCustody::default(),
+    )
+    .unwrap();
+    let id = crate::identity::SessionId::new();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    for phase in 0..2 {
+        let owner = MemoryOwner::new(
+            store.clone(),
+            MemoryContext {
+                conversation: Some(id.to_string().parse().unwrap()),
+                ..Default::default()
+            },
+        );
+        let session = if phase == 0 {
+            DurableSession::create_protected(store.clone(), root.clone(), id).unwrap()
+        } else {
+            DurableSession::resume_protected(store.clone(), id)
+                .unwrap()
+                .0
+        };
+        let provider = QueueTransport {
+            responses: Mutex::new(
+                vec![Ok(Message::text(
+                    Role::Assistant,
+                    "Your favorite color is red.",
+                ))]
+                .into(),
+            ),
+            requests: requests.clone(),
+            completed: Arc::new(AtomicBool::new(false)),
+            deltas: vec![],
+        };
+        let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
+        let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
+        let mut runtime = RuntimeHandle::spawn_persistent(
+            agent,
+            policy,
+            true,
+            session,
+            assembler,
+            Some(owner.clone()),
+        )
+        .unwrap();
+        let operation = OperationId::new();
+        runtime
+            .send(RuntimeCommand::SubmitTurn {
+                operation_id: operation,
+                input: if phase == 0 {
+                    "my favorite color is red. remember that."
+                } else {
+                    "what is my favorite color?"
+                }
+                .into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(5),
+                receive_finished(&mut runtime, operation)
+            )
+            .await
+            .unwrap(),
+            OperationOutcome::Completed
+        );
+        assert_eq!(requests.lock().unwrap().len(), phase);
+        assert_eq!(
+            owner.page(None, None).unwrap().records[0].statement,
+            "my favorite color is red"
+        );
+        assert!(runtime.shutdown_owned().await);
+    }
+    let requests = requests.lock().unwrap();
+    let system = crate::completion_evidence::message_text(&requests[0][0]);
+    assert!(system.contains("personal_memory"));
+    assert!(system.contains("my favorite color is red"));
+    assert!(!workspace.path().join("user_prefs").exists());
+    let (_, restored) = DurableSession::inspect_protected(&store, id).unwrap();
+    assert!(
+        restored.audits.is_empty(),
+        "owned memory should not require file approvals"
+    );
+}
+
+#[tokio::test]
+async fn memory_regression_legacy_home_rejects_remember_without_calling_a_model() {
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let root = workspace.path().canonicalize().unwrap();
+    let session = DurableSession::create(data.path(), root.clone()).unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = QueueTransport {
+        responses: Mutex::new(VecDeque::new()),
+        requests: requests.clone(),
+        completed: Arc::new(AtomicBool::new(false)),
+        deltas: vec![],
+    };
+    let (agent, assembler) = persistent_agent(Box::new(provider), root.clone());
+    let policy = PermissionPolicy::new(PolicyDecision::Deny, vec![], &root).unwrap();
+    let mut runtime =
+        RuntimeHandle::spawn_persistent(agent, policy, true, session, assembler, None).unwrap();
+    let operation = OperationId::new();
+    runtime
+        .send(RuntimeCommand::SubmitTurn {
+            operation_id: operation,
+            input: "my favorite color is red. remember that.".into(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            receive_finished(&mut runtime, operation)
+        )
+        .await
+        .unwrap(),
+        OperationOutcome::Failed
+    );
+    assert!(requests.lock().unwrap().is_empty());
+    assert!(!workspace.path().join("user_prefs").exists());
+    assert!(runtime.shutdown_owned().await);
+}
+
+#[tokio::test]
 async fn finite_memory_control_cannot_bypass_declared_checks_or_call_a_model() {
     use crate::completion_evidence::{
         AcceptanceCondition, CompletionContract, EvidenceOutcome, WorkKind,

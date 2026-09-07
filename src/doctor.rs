@@ -172,10 +172,10 @@ fn inspect_storage(paths: &XanaPaths, report: &mut DoctorReport) {
     let (severity, summary, evidence, action): (Severity, &str, String, Option<String>) =
         match ProtectedStore::status(paths.data_dir()) {
             Ok(StorageStatus::Legacy) => (
-                Severity::Info,
+                Severity::Warning,
                 "managed storage is legacy plaintext",
-                "no protected generation is active".into(),
-                Some("xana storage status".into()),
+                "Personal memory is unavailable; no protected generation is active. Chat history is separate and remains usable.".into(),
+                Some("xana storage status; xana storage migrate (preview only)".into()),
             ),
             Ok(StorageStatus::Protected { locked: true, .. }) => (
                 Severity::Info,

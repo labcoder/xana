@@ -272,6 +272,23 @@ fn memory_pages_export_bounds_and_no_plaintext_mirror() {
 }
 
 #[test]
+fn memory_regression_remember_suffix_uses_governed_conversation_memory() {
+    let (_home, owner, _) = fixture();
+    let reply = owner
+        .respond("my favorite color is red. remember that.")
+        .expect("ordinary explicit owner request must not fall through to file tools")
+        .expect("remember");
+    assert!(reply.contains("Conversation only"));
+    let records = owner.page(None, None).unwrap().records;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].statement, "my favorite color is red");
+    assert_eq!(
+        records[0].scope,
+        MemoryScope::Conversation(owner.context.conversation.unwrap())
+    );
+}
+
+#[test]
 fn memory_natural_controls_are_narrow_and_do_not_extract_arbitrary_text() {
     let (_home, owner, _) = fixture();
     assert!(
