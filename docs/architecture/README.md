@@ -2176,6 +2176,13 @@ requests. Its three-platform matrix uses a commit-pinned, dependency-only Rust
 cache; pull requests can restore but only trusted `main` pushes can save cache
 entries. Tag pushes do not start a duplicate ordinary CI run.
 
+The manual-only [native qualification workflow](../contributing/native-qualification.md)
+executes full workspace/root test modes on Linux and both macOS architectures,
+plus disposable production OS-custody and source-installation checks. It has
+read-only repository permissions and uploads only synthetic test logs/metadata.
+It does not publish artifacts as releases or claim native browser parity,
+interactive OS consent, resource benchmarks, or graphical acceptance.
+
 The dedicated Release Preview workflow first requires a successful ordinary
 CI push run for the exact commit being released, then binds the exact tag/input
 to Cargo and the pinned dist plan. It rebuilds all four native archives from

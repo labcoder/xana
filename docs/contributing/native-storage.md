@@ -52,6 +52,11 @@ continues to govern migration, lock and no-plaintext-fallback behavior.
 
 ## Opt-in native custody check
 
+The [on-demand native workflow](native-qualification.md) provisions disposable
+GitHub-hosted Linux/macOS environments and runs this exact fixture without
+requiring access to the owner's machines or accounts. Workflow success covers
+the named automated checks, not interactive OS prompts or browser parity.
+
 Normal tests use disposable in-memory custody and never access the OS key store.
 An ignored production-seam test is available for an explicitly authorized native
 check in an ordinary logged-in user session:

@@ -1,0 +1,121 @@
+name: M6 Native Qualification
+
+# Opt-in source/custody evidence, never a publishing or every-push workload.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-qualification-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_BUILD_JOBS: "1"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+
+jobs:
+  native:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out exact selected revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@032958afbdc797a9164d3bc0b56325c1308924a5 # 1.97.1
+        with:
+          components: rustfmt, clippy
+
+      - name: Restore dependency cache without publishing cache changes
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          cache-bin: false
+          save-if: false
+
+      - name: Provision disposable Linux runner dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libfontconfig1-dev dbus-daemon libglib2.0-bin gnome-keyring
+
+      - name: Record environment and require the native target
+        id: environment
+        env:
+          QUALIFICATION_TARGET: ${{ matrix.target }}
+        run: |
+          New-Item -ItemType Directory -Path target/native-qualification -Force | Out-Null
+          ./scripts/report-ci-environment.ps1 | Tee-Object -FilePath target/native-qualification/environment.log
+          $hostLine = & rustc -vV | Select-String '^host: '
+          if ($LASTEXITCODE -ne 0 -or "$hostLine" -ne "host: $env:QUALIFICATION_TARGET") {
+            throw 'qualification must execute on the declared native Rust host'
+          }
+
+      - name: Verify workflow and script contracts
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check contracts
+
+      - name: Strict workspace lint
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check lint
+
+      - name: Check formatting
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check format
+
+      - name: Execute all-feature workspace tests including Linux unit tests
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check all-features
+
+      - name: Execute no-default workspace tests
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check no-default
+
+      - name: Execute true root no-default tests
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check root-no-default
+
+      - name: Qualify disposable production OS custody
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        timeout-minutes: 15
+        run: ./scripts/run-native-qualification.ps1 -Check custody
+
+      - name: Verify source packaging and native source installation
+        if: ${{ !cancelled() && steps.environment.outcome == 'success' }}
+        run: ./scripts/run-native-qualification.ps1 -Check source-package
+
+      # Never upload test homes, credentials, keychains, databases or process dumps.
+      - name: Preserve qualification evidence even after failure
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: native-qualification-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            target/native-qualification/*.log
+            target/native-qualification/*.json
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 6

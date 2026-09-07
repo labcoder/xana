@@ -177,6 +177,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   policy for modules, tests, comments, formatting, and tooling.
 - [Native storage dependencies](contributing/native-storage.md) records cipher,
   custody and artifact-library pins, source-build prerequisites and acceptance.
+- [On-demand native qualification](contributing/native-qualification.md) explains
+  the manual Linux/macOS workflow, disposable OS custody, evidence artifacts and
+  the remaining native-browser, resource and human verification boundaries.
 - [Desktop development](contributing/desktop-development.md) explains the
   native GPUI package, exact dependency boundary, source launch, checks, and
   troubleshooting for the M4 Workbench.
