@@ -2199,6 +2199,10 @@ failure-safe replacement. User PATH updates preserve the raw unrelated value
 and are idempotent; failure restores the prior executable. Reparse points,
 emulated or unsupported architectures, locked destinations, and unsigned or
 incorrect staged executables fail closed.
+Executable replacement and rollback retry only Windows sharing/lock violations,
+with at most two seconds of backoff and unchanged source/destination presence.
+Partial-rename errors are not retried. A persistent lock remains an error; the
+installer never kills the process holding it or silently abandons a backup.
 
 Ordinary CI is the source-quality authority for pushes to `main` and pull
 requests. Its three-platform matrix uses a commit-pinned, dependency-only Rust

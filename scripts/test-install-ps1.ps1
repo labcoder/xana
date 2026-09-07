@@ -4,6 +4,8 @@ param()
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+& (Join-Path $PSScriptRoot 'test-installer-replacement.ps1')
+
 $repository = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $installer = Join-Path $repository "install\install.ps1"
 $powerShellExecutable = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName

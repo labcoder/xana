@@ -377,6 +377,30 @@ function Update-UserPath {
     Write-Output "PATH: added $Directory to the user PATH; open a new terminal."
 }
 
+function Replace-InstallerExecutable {
+    param([string]$Source, [string]$Destination, [AllowNull()][string]$Backup)
+    # PowerShell converts $null to an empty string for this .NET parameter.
+    $backupFile = if ([string]::IsNullOrEmpty($Backup)) { [NullString]::Value } else { $Backup }
+    for ($attempt = 0; ; $attempt++) {
+        try {
+            [IO.File]::Replace($Source, $Destination, $backupFile, $true)
+            return
+        } catch {
+            $cause = $_.Exception.GetBaseException()
+            # Image scanning/teardown can briefly deny sharing after a smoke.
+            # Retry only sharing/lock violations (two seconds total backoff).
+            # ReplaceFile's partial-rename errors 1175-1177 are NOT retryable.
+            if ($cause -isnot [IO.IOException] -or
+                ($cause.HResult -band 0xffff) -notin @(32, 33) -or $attempt -ge 20 -or
+                -not [IO.File]::Exists($Source) -or -not [IO.File]::Exists($Destination) -or
+                (-not [string]::IsNullOrEmpty($Backup) -and [IO.File]::Exists($Backup))) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+}
+
 function Remove-SafeDirectory {
     param([string]$Path, [string]$RequiredParent, [string]$RequiredPrefix)
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Container)) {
@@ -554,7 +578,7 @@ try {
     $activationStarted = $true
     if ($hadPrevious) {
         $backupPath = Join-Path $InstallDir (".xana-backup-" + [Guid]::NewGuid().ToString("N"))
-        [IO.File]::Replace($stagedExecutable, $finalPath, $backupPath, $true)
+        Replace-InstallerExecutable $stagedExecutable $finalPath $backupPath
     } else {
         [IO.File]::Move($stagedExecutable, $finalPath)
     }
@@ -562,7 +586,7 @@ try {
         Update-UserPath -Directory $InstallDir
     } catch {
         if ($hadPrevious -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
-            [IO.File]::Replace($backupPath, $finalPath, $null, $true)
+            Replace-InstallerExecutable $backupPath $finalPath $null
             $backupPath = $null
         } elseif (-not $hadPrevious -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
             [IO.File]::Delete($finalPath)
@@ -599,7 +623,7 @@ try {
     if ($activationStarted -and -not $activationCommitted -and $null -ne $finalPath) {
         try {
             if ($hadPrevious -and $null -ne $backupPath -and (Test-Path -LiteralPath $backupPath -PathType Leaf)) {
-                [IO.File]::Replace($backupPath, $finalPath, $null, $true)
+                Replace-InstallerExecutable $backupPath $finalPath $null
                 $backupPath = $null
             } elseif (-not $hadPrevious -and (Test-Path -LiteralPath $finalPath -PathType Leaf)) {
                 [IO.File]::Delete($finalPath)

@@ -318,7 +318,10 @@ preserve Xana-owned and vendor-owned personal state.
 - **Command not found after installation:** open a new terminal. If PATH was not
   accepted, add the reported directory manually or invoke the absolute binary.
 - **Locked Windows destination:** close running Xana processes and retry. The
-  installer preserves the prior executable when replacement cannot occur.
+  installer gives transient sharing/lock violations up to two seconds of retry
+  backoff during replacement and rollback. A persistent lock still fails without
+  forcing a running process closed; the prior executable is preserved when
+  replacement cannot occur. Other replacement errors are not blindly retried.
 - **Setup pending:** binary installation succeeded. Run `xana setup`, then
   `xana doctor`. Invalid/incompatible repair remains explicit, confirmed,
   backed up, and atomic.
