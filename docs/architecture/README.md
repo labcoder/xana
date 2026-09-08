@@ -806,7 +806,8 @@ Personal-memory selections now occupy their separately bounded data-only slot;
 retrieved evidence is accounted through its materialized source/tool content.
 Native prompt assembly also carries a budgeted runtime memory-readiness fact,
 including unavailable legacy homes and disabled use. Free-form chat uses the
-selected model's ordinary `memory_lookup` / `memory_update` tool loop; there is
+selected model's ordinary `memory_lookup`, `memory_remember`, `memory_correct`
+and `memory_forget` tool loop; there is
 no phrase interception or extra classifier call. Recall is nonmutating and does
 not authorize inventing a fact to save. Only explicit management commands (such
 as `memory say`) use the bounded phrase grammar and commit locally without a

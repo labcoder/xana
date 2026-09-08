@@ -7,6 +7,12 @@ directory. With `XANA_HOME`, the defaults are `XANA_HOME/data/logs` and
 `XANA_HOME/data/crashes`; platform installs use their ordinary Xana data
 directory. Nothing is uploaded and logs are not a transcript.
 
+Native `provider_timing` records separate total generation and first observed
+text/reasoning delta, including the bounded answer-recovery phase. Prompt
+preparation remains a separate `context_phase` record. A missing first delta
+means none was observed, not zero latency. These timings contain no response
+content and do not count a timed-out recovery as a completed answer.
+
 ```console
 xana logs path
 xana logs list

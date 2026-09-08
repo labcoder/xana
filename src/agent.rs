@@ -5,6 +5,7 @@
 //! events; no frontend or process-global state enters here.
 
 mod progress;
+pub(crate) mod recovery;
 
 use crate::{
     identity::{OperationId, StepId, ToolInvocationId},
@@ -557,7 +558,7 @@ impl Agent {
         }
         let definitions = self.tools.definitions();
         let mut progress = progress::ProgressGuard::from_history(messages);
-        if progress.stopped() {
+        if progress.stopped() && !progress.memory_recovery_needed() {
             bail!(progress::STOP_REASON);
         }
         let delta_sink = EventDeltaSink {
@@ -565,6 +566,19 @@ impl Agent {
             events: events.clone(),
             usage: Mutex::new(UsageAccumulator::default()),
         };
+
+        if progress.memory_recovery_needed() {
+            return self
+                .recover_memory_answer(
+                    operation_id,
+                    messages,
+                    prompt,
+                    durable.as_ref(),
+                    &events,
+                    &delta_sink,
+                )
+                .await;
+        }
 
         for _ in 0..round_limit {
             let refreshed = durable
@@ -602,6 +616,8 @@ impl Agent {
                 .provider
                 .stream_message(&request_messages, &definitions, step_id, &delta_sink)
                 .await;
+            self.telemetry
+                .generation_timing(delta_sink.timing(false, response.is_ok()));
             if let Err(error) = &response {
                 // Publish the observed origin before accounting or a queued
                 // Shutdown can replace the operation's final owner outcome.
@@ -723,6 +739,16 @@ impl Agent {
                         .await
                 };
                 progress.observe(&call, &result);
+                if let Some(failure) = result
+                    .failure
+                    .filter(|failure| failure.is_memory_rejection())
+                {
+                    self.telemetry.record(RuntimeTelemetryEvent {
+                        operation_id,
+                        kind: RuntimeTelemetryKind::ToolFailed,
+                        subject: format!("{failure:?}"),
+                    });
+                }
                 let result = if durable.is_none()
                     && let Some(recorder) = &self.output_recorder
                 {
@@ -755,8 +781,20 @@ impl Agent {
                 }
                 messages.push(result_message);
             }
-            if progress.stopped() {
+            if progress.stopped() && !progress.memory_recovery_needed() {
                 bail!(progress::STOP_REASON);
+            }
+            if progress.memory_recovery_needed() {
+                return self
+                    .recover_memory_answer(
+                        operation_id,
+                        messages,
+                        prompt,
+                        durable.as_ref(),
+                        &events,
+                        &delta_sink,
+                    )
+                    .await;
             }
         }
 
@@ -830,6 +868,8 @@ struct EventDeltaSink {
 #[derive(Default)]
 struct UsageAccumulator {
     requests: Vec<Option<ProviderUsage>>,
+    started: Option<std::time::Instant>,
+    first_delta: Option<std::time::Duration>,
 }
 
 impl EventDeltaSink {
@@ -843,11 +883,43 @@ impl EventDeltaSink {
             .flatten()
     }
     fn begin_request(&self) {
-        self.usage
+        let mut usage = self
+            .usage
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .requests
-            .push(None);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        usage.requests.push(None);
+        usage.started = Some(std::time::Instant::now());
+        usage.first_delta = None;
+    }
+
+    fn observe_delta(&self, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        let mut usage = self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if usage.first_delta.is_none() {
+            usage.first_delta = usage.started.map(|started| started.elapsed());
+        }
+    }
+
+    fn timing(&self, recovery: bool, succeeded: bool) -> crate::telemetry::GenerationTiming {
+        let usage = self
+            .usage
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        crate::telemetry::GenerationTiming {
+            operation_id: self.operation_id,
+            first_delta: usage.first_delta,
+            elapsed: usage
+                .started
+                .map(|started| started.elapsed())
+                .unwrap_or_default(),
+            recovery,
+            succeeded,
+        }
     }
 
     fn usage(&self) -> AgentTurnUsage {
@@ -890,6 +962,7 @@ fn complete_sum(
 
 impl DeltaSink for EventDeltaSink {
     fn text_delta(&self, step_id: StepId, text: &str) {
+        self.observe_delta(text);
         let _ = self.events.send(AgentEvent::AssistantTextDelta {
             operation_id: self.operation_id,
             step_id,
@@ -898,6 +971,7 @@ impl DeltaSink for EventDeltaSink {
     }
 
     fn reasoning_delta(&self, step_id: StepId, text: &str) {
+        self.observe_delta(text);
         let _ = self.events.send(AgentEvent::ProviderReasoningDelta {
             operation_id: self.operation_id,
             step_id,

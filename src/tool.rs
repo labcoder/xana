@@ -155,8 +155,8 @@ pub(crate) trait Tool: Send + Sync {
         arguments: &Value,
         workspace_root: &Path,
         _owner_input: Option<&OwnerTurnInput>,
-    ) -> Result<PlannedToolInvocation, String> {
-        self.plan(arguments, workspace_root)
+    ) -> Result<PlannedToolInvocation, ToolPlanningError> {
+        self.plan(arguments, workspace_root).map_err(Into::into)
     }
 
     fn execute<'a>(
@@ -173,6 +173,22 @@ pub(crate) trait Tool: Send + Sync {
         _planned: &PlannedToolInvocation,
     ) -> Result<Option<crate::outbound::OutboundDisposition>, String> {
         Ok(None)
+    }
+}
+
+/// Preserve a trusted planning category separately from model-visible wording.
+#[derive(Debug)]
+pub(crate) struct ToolPlanningError {
+    pub(crate) message: String,
+    pub(crate) failure: Option<crate::message::ToolFailure>,
+}
+
+impl From<String> for ToolPlanningError {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            failure: None,
+        }
     }
 }
 
@@ -451,6 +467,7 @@ impl Error for RegistryError {}
 struct RegisteredTool {
     definition: ToolDefinition,
     implementation: Box<dyn Tool>,
+    advertised: bool,
 }
 
 pub(crate) struct ToolRegistry {
@@ -503,12 +520,27 @@ impl ToolRegistry {
         self.tools.push(RegisteredTool {
             definition,
             implementation: tool,
+            advertised: true,
         });
         Ok(())
     }
 
+    /// Decode historical contracts without offering them for new model choices.
+    pub(crate) fn register_legacy<T: Tool + 'static>(
+        &mut self,
+        tool: T,
+    ) -> Result<(), RegistryError> {
+        self.register(tool)?;
+        self.tools.last_mut().expect("registered tool").advertised = false;
+        Ok(())
+    }
+
     pub(crate) fn definitions(&self) -> Vec<&ToolDefinition> {
-        self.tools.iter().map(|tool| &tool.definition).collect()
+        self.tools
+            .iter()
+            .filter(|tool| tool.advertised)
+            .map(|tool| &tool.definition)
+            .collect()
     }
 
     /// Retain a rejection for stale calls without advertising an unusable tool.
@@ -537,6 +569,7 @@ impl ToolRegistry {
             .map(|registered| RegisteredTool {
                 definition: registered.definition,
                 implementation: decorate(registered.implementation),
+                advertised: registered.advertised,
             })
             .collect();
         self
@@ -742,7 +775,12 @@ impl ToolRegistry {
                 .plan_in_turn(&call.arguments, workspace_root, owner_input)
             {
                 Ok(planned) => planned,
-                Err(error) => return Err(ToolResult::error(call.id.clone(), error)),
+                Err(error) => {
+                    return Err(ToolResult {
+                        failure: error.failure,
+                        ..ToolResult::error(call.id.clone(), error.message)
+                    });
+                }
             };
         Ok(PreparedToolInvocation {
             call_id: call.id.clone(),

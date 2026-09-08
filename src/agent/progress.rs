@@ -8,6 +8,16 @@ use std::collections::VecDeque;
 const WINDOW: usize = 32;
 const REPEAT_LIMIT: usize = 3;
 const CONSECUTIVE_ERROR_LIMIT: usize = 6;
+
+fn unavailable_capability(name: &str) -> blake3::Hash {
+    // All memory actions share one protected-home prerequisite. Renaming a
+    // stale call cannot enable that missing capability.
+    blake3::hash(if crate::memory::tools::is_mutation(name) {
+        b"memory_lookup"
+    } else {
+        name.as_bytes()
+    })
+}
 pub(super) const STOP_REASON: &str = "Stopped after repeated tool failures without progress. Remaining tools in this batch were not executed. Review the tool errors and correct the request before retrying; repeating failed calls will not fix them.";
 
 #[derive(Default)]
@@ -17,6 +27,7 @@ pub(super) struct ProgressGuard {
     unavailable: VecDeque<blake3::Hash>,
     consecutive_errors: usize,
     stopped: bool,
+    memory_rejections: u8,
 }
 
 impl ProgressGuard {
@@ -49,11 +60,20 @@ impl ProgressGuard {
     }
 
     pub(super) fn blocked_result(&self, call: &ToolCall) -> Option<ToolResult> {
+        if self.memory_recovery_needed() && crate::memory::tools::is_mutation(&call.name) {
+            return Some(ToolResult {
+                failure: Some(ToolFailure::InvalidMemoryArguments),
+                ..ToolResult::error(
+                    call.id.clone(),
+                    "Memory mutation repair allowance exhausted; no tool was executed. Answer from known facts without more mutations.",
+                )
+            });
+        }
         if self.stopped {
             Some(ToolResult::error(call.id.clone(), STOP_REASON))
         } else if self
             .unavailable
-            .contains(&blake3::hash(call.name.as_bytes()))
+            .contains(&unavailable_capability(&call.name))
         {
             Some(ToolResult::unavailable(
                 call.id.clone(),
@@ -73,8 +93,15 @@ impl ProgressGuard {
         self.stopped
     }
 
+    pub(super) fn memory_recovery_needed(&self) -> bool {
+        self.memory_rejections >= 2
+    }
+
     pub(super) fn observe(&mut self, call: &ToolCall, result: &ToolResult) {
         let pattern = call.pattern_fingerprint();
+        if result.failure.is_some_and(ToolFailure::is_memory_rejection) {
+            self.memory_rejections = self.memory_rejections.saturating_add(1);
+        }
         if result.status == ToolResultStatus::Success {
             self.consecutive_errors = 0;
             self.failed.retain(|value| *value != pattern);
@@ -83,7 +110,7 @@ impl ProgressGuard {
         if result.failure == Some(ToolFailure::Unavailable) {
             // Permit an answer or useful alternative after the first rejection.
             // A retry of the same capability is permanent even with new arguments.
-            let capability = blake3::hash(call.name.as_bytes());
+            let capability = unavailable_capability(&call.name);
             if self.unavailable.contains(&capability) {
                 self.stopped = true;
             } else {

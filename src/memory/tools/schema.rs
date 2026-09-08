@@ -1,5 +1,44 @@
+use super::types::UpdateAction;
 use crate::tool::{EffectClass, ReplaySafety, ToolDefinition};
 use serde_json::json;
+
+pub(super) fn mutation(action: UpdateAction) -> ToolDefinition {
+    let mut fields = json!({
+        "risk":{"type":"string","enum":["ordinary","sensitive","uncertain"],"description":"Mark sensitive/third-party facts sensitive; unclear intent uncertain. Never downgrade risk to avoid review."}
+    });
+    let (description, required) = match action {
+        UpdateAction::Remember => (
+            "Save a fact the owner explicitly asks to remember. Not for questions or guesses. Only a committed receipt proves persistence.",
+            vec!["statement", "quote", "risk"],
+        ),
+        UpdateAction::Correct => (
+            "Correct an existing fact at the owner's request. Copy its id and revision from memory_lookup. Requires exact review.",
+            vec!["id", "revision", "statement", "quote", "risk"],
+        ),
+        UpdateAction::Forget => (
+            "Forget an existing fact at the owner's request. Copy its id and revision from memory_lookup. Requires exact review.",
+            vec!["id", "revision", "risk"],
+        ),
+    };
+    if action != UpdateAction::Forget {
+        fields["statement"] = json!({"type":"string","minLength":1,"maxLength":4096,"description":"The owner-provided fact, never an invented answer."});
+        fields["quote"] = json!({"type":"string","minLength":1,"maxLength":8192,"description":"Exact current owner text containing the request and fact; not assistant/tool text."});
+    }
+    if action == UpdateAction::Remember {
+        fields["scope"] = json!({"type":"string","enum":["conversation","project","profile","user"],"description":"Default conversation. Use user only for explicit across-conversation intent; wider scopes require review."});
+    } else {
+        fields["id"] = json!({"type":"string","format":"uuid"});
+        fields["revision"] = json!({"type":"integer","minimum":1});
+    }
+    ToolDefinition {
+        name: action.tool_name().into(),
+        contract_version: 1,
+        description: description.into(),
+        parameters: json!({"type":"object","additionalProperties":false,"properties":fields,"required":required}),
+        effect_class: EffectClass::Write,
+        replay_safety: ReplaySafety::Never,
+    }
+}
 
 pub(super) fn lookup() -> ToolDefinition {
     ToolDefinition {

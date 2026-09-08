@@ -585,6 +585,12 @@ mod tests {
             "record 1025 remains beyond the read limit"
         );
         assert!(selection.has_more);
+        let owner = crate::memory::MemoryOwner::new(store, MemoryContext::default());
+        assert_eq!(
+            owner.select_for_turn("name", 32_768).unwrap().readiness(),
+            crate::memory::MemoryReadiness::Enabled,
+            "an exhausted index inspection must not advertise an empty catalog"
+        );
     }
 
     #[test]

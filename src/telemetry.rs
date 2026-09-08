@@ -28,6 +28,17 @@ pub(crate) trait RuntimeTelemetry: Send + Sync {
     fn terminal(&self, _diagnostic: crate::failure::TerminalDiagnostic) {}
 
     fn context_phase(&self, _event: ContextPhaseEvent) {}
+
+    fn generation_timing(&self, _event: GenerationTiming) {}
+}
+
+/// Timings only: no prompt, token text, path, model output or tool arguments.
+pub(crate) struct GenerationTiming {
+    pub(crate) operation_id: OperationId,
+    pub(crate) first_delta: Option<std::time::Duration>,
+    pub(crate) elapsed: std::time::Duration,
+    pub(crate) recovery: bool,
+    pub(crate) succeeded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -15,7 +15,38 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod contract;
 mod qualification;
+
+#[test]
+fn advertised_mutations_require_the_fields_execution_needs() {
+    let fixture = Fixture::new();
+    let definitions = fixture.registry.definitions();
+    assert!(!definitions.iter().any(|tool| tool.name == "memory_update"));
+    for (name, required) in [
+        ("memory_remember", vec!["statement", "quote", "risk"]),
+        (
+            "memory_correct",
+            vec!["id", "revision", "statement", "quote", "risk"],
+        ),
+        ("memory_forget", vec!["id", "revision", "risk"]),
+    ] {
+        let tool = definitions
+            .iter()
+            .find(|tool| tool.name == name)
+            .expect(name);
+        for field in required {
+            assert!(
+                tool.parameters["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!(field)),
+                "{name}: {field}"
+            );
+        }
+        assert!(tool.parameters["properties"].get("action").is_none());
+    }
+}
 
 #[test]
 fn unavailable_memory_is_not_advertised() {

@@ -63,6 +63,7 @@ pub enum FailureCategory {
     OutputLimit,
     PermissionDeclined,
     RoundBudget,
+    ToolNoProgress,
     Cancelled,
     Interrupted,
     Storage,

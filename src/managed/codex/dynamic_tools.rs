@@ -7,7 +7,12 @@ use std::collections::BTreeMap;
 const MAX_CALLS: usize = 32;
 const MAX_ARGUMENT_BYTES: usize = 16 * 1024;
 const MAX_RESULT_BYTES: usize = 32 * 1024;
-const TOOL_NAMES: &[&str] = &["memory_lookup", "memory_update"];
+const TOOL_NAMES: &[&str] = &[
+    "memory_lookup",
+    "memory_remember",
+    "memory_correct",
+    "memory_forget",
+];
 
 pub(super) fn definitions(
     definitions: Vec<crate::tool::ToolDefinition>,
@@ -46,7 +51,7 @@ pub(super) fn decode(params: &Value) -> Result<ManagedToolCall, CodexError> {
     };
     let call_id = string("callId")?;
     let name = string("tool")?;
-    if !TOOL_NAMES.contains(&name.as_str())
+    if (!TOOL_NAMES.contains(&name.as_str()) && name != "memory_update")
         || params
             .get("namespace")
             .is_some_and(|value| !value.is_null())
@@ -127,7 +132,7 @@ impl TurnReceipts {
         result: ManagedToolResult,
     ) -> Result<(), CodexError> {
         encode(result.clone())?;
-        let receipt = (call.name == "memory_update").then_some(result);
+        let receipt = crate::memory::tools::is_mutation(&call.name).then_some(result);
         self.receipts.insert(call.call_id.clone(), (call, receipt));
         Ok(())
     }

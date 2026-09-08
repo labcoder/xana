@@ -1609,11 +1609,7 @@ impl Runtime {
                 .select_for_turn(input, snapshot.budget.total_tokens)
                 .map_err(|error| format!("Memory context unavailable: {error:#}"))?;
             snapshot = snapshot
-                .with_memory_readiness(if selection.use_enabled {
-                    crate::memory::MemoryReadiness::Enabled
-                } else {
-                    crate::memory::MemoryReadiness::UseDisabled
-                })
+                .with_memory_readiness(selection.readiness())
                 .map_err(|error| format!("Memory readiness does not fit the prompt: {error}"))?;
             let (selected, ids) = snapshot.with_personal_memory(&selection);
             owner

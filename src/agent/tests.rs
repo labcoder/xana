@@ -16,6 +16,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 use tempfile::tempdir;
+mod recovery;
 
 #[derive(Clone)]
 struct ScriptedResponse {

@@ -301,7 +301,8 @@ impl ManagedThreadStore {
 
     pub(crate) fn memory_tools_current(&self, thread_id: &str, available: bool) -> bool {
         self.threads.iter().any(|entry| {
-            entry.thread_id == thread_id && entry.memory_tools_version == Some(u32::from(available))
+            entry.thread_id == thread_id
+                && entry.memory_tools_version == Some(if available { 2 } else { 0 })
         })
     }
 
@@ -319,7 +320,9 @@ impl ManagedThreadStore {
                     "cannot mark memory tools for an unknown thread".into(),
                 )
             })?;
-        entry.memory_tools_version = Some(u32::from(available));
+        // v1 registered lookup/update; v2 registers the three separate mutations.
+        // Vendor tool lists are fixed at thread creation, not changed by resume.
+        entry.memory_tools_version = Some(if available { 2 } else { 0 });
         self.commit(
             self.conversation_id,
             self.thread_id.clone(),
@@ -774,6 +777,31 @@ fn validate_thread_id(thread_id: &str) -> Result<(), ManagedThreadStoreError> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn split_memory_contract_never_claims_an_old_fixed_registration_is_current() {
+        let directory = tempdir().unwrap();
+        let mut store =
+            ManagedThreadStore::open(directory.path(), "codex", directory.path()).unwrap();
+        store
+            .set_thread(
+                Some(ConversationId::new()),
+                Some("old-memory".into()),
+                Some("identity-v1"),
+            )
+            .unwrap();
+        store.threads[0].memory_tools_version = Some(1);
+        assert!(!store.memory_tools_current("old-memory", true));
+        assert!(!store.memory_tools_current("old-memory", false));
+        store.mark_memory_tools_current("old-memory", true).unwrap();
+        assert_eq!(store.threads[0].memory_tools_version, Some(2));
+        assert!(store.memory_tools_current("old-memory", true));
+        assert_eq!(
+            store.thread_id(),
+            Some("old-memory"),
+            "the vendor handle is not deleted"
+        );
+    }
 
     #[test]
     fn managed_handle_round_trips_and_clear_keeps_route_identity() {

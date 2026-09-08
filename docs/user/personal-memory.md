@@ -23,8 +23,9 @@ My favorite color changed to blue. Please update that memory.
 Please forget my favorite color.
 ```
 
-The selected model uses `memory_lookup` and `memory_update` in its normal tool
-loop. There is no separate classifier or extra helper call before every message.
+The selected model uses `memory_lookup`, `memory_remember`, `memory_correct` and
+`memory_forget` in its normal tool loop. Each mutation declares the fields it
+actually requires. There is no separate classifier or extra helper call before every message.
 Understanding still depends on the model: these are examples, not a promise that
 every paraphrase will be understood. When context already answers a question,
 Xana need not call a tool. If the fact or the meaning of “this” is unclear, it
@@ -48,6 +49,22 @@ Repeated equivalent updates within one operation return the same receipt without
 inserting another record. The model's promise alone does not prove a save.
 Do not approve unrelated file writes merely to remember a preference.
 
+When the entire eligible catalog is empty, Xana tells the model that directly.
+An empty prompt selection caused by limits, disabled use or a partial scan is
+not treated as proof that no facts exist. Unknown personal facts should get a
+brief answer, not a guessed save or a filesystem investigation.
+
+In native turns, two host-classified invalid memory mutations exhaust the repair
+allowance, even if the model changes arguments or tool names. Xana then permits
+one answer-only request on the same provider, with no tools, a 1,024-output-token
+ceiling and a 15-second deadline. This does not change your reasoning preference.
+An empty, truncated, tool-calling or timed-out recovery fails visibly in the
+conversation instead of being counted as a successful answer. These limits apply
+to recovery, not to ordinary model generation or useful successful tool work.
+No model is guaranteed to understand every request; use explicit memory controls
+if it repeatedly fails. Existing `memory_update` permission rules still apply to
+all three mutations, and historical calls retain the same checked execution path.
+
 Only the original owner input supplies provenance. Vision-specialist descriptions,
 tool/browser results, child output and quoted instructions are not owner authority.
 The model interprets intent and sensitivity; exact source checks alone cannot prove
@@ -58,8 +75,8 @@ Without an attached protected store, the model is not offered memory tools.
 It receives a short readiness fact and should answer unknown-fact questions
 briefly from conversation context, not try to save a guess. Stale/hallucinated
 memory calls are rejected before permissions or effects. In native turns, the
-first rejection allows an answer or useful alternative; a repeated call to that
-unavailable tool stops the loop even if its arguments change. This bounds retries,
+first rejection allows an answer or useful alternative; another call to unavailable
+memory stops the loop even if the model changes arguments or memory tool names. This bounds retries,
 not the selected model's generation time or comprehension.
 No plaintext substitute or automatic migration is created.
 `xana doctor` and `xana storage status` report readiness.
@@ -83,7 +100,7 @@ management remains available separately.
 Managed Codex uses its supported experimental dynamic-tool bridge; Codex still
 owns the inner loop. New Xana-created threads register tools according to storage
 availability: a home without protected memory starts threads without memory tools.
-Older unknown registrations, or a change
+Older unknown or two-tool registrations, or a change
 between available and unavailable memory, require a new Conversation because the
 vendor's tool list is fixed at thread creation. Prior threads are retained; follow
 the displayed instruction instead of deleting vendor history.

@@ -86,11 +86,7 @@ async fn prepare_with_source(
         if owner.enqueue_user_statement(source_id,&input).is_err() {
             owner.store.set_document("memory/learning-receipt",br#"{"state":"pending_attention","notice":"Learning admission failed; the user turn remains available and chat can continue. Inspect memory learning-status."}"#,4096)?;
         }
-        Ok(with_readiness(if selection.use_enabled {
-            crate::memory::MemoryReadiness::Enabled
-        } else {
-            crate::memory::MemoryReadiness::UseDisabled
-        }, &text))
+        Ok(with_readiness(selection.readiness(), &text))
     }).await.map_err(|_|"memory selection worker stopped".to_owned())?.map_err(|error|format!("{error:#}"))
 }
 
@@ -193,7 +189,7 @@ mod tests {
         .unwrap();
         let owner = MemoryOwner::new(store, crate::memory::MemoryContext::default());
         let enabled = prepare(Some(&owner), conversation, "hello").await.unwrap();
-        assert!(enabled.contains(crate::memory::MemoryReadiness::Enabled.notice()));
+        assert!(enabled.contains(crate::memory::MemoryReadiness::Empty.notice()));
         owner
             .controls(
                 crate::memory::MemoryScope::Conversation(conversation.to_string().parse().unwrap()),

@@ -36,7 +36,8 @@ inspection of a recovery snapshot does not upgrade its schema. See the
 
 `memory::MemoryOwner` is injected into trusted owner management and the narrow
 `memory::tools` adapter. CLI/plain/TUI and Desktop management remain local.
-Free-form owner requests use model-selected `memory_lookup` / `memory_update`
+Free-form owner requests use model-selected `memory_lookup`, `memory_remember`,
+`memory_correct` and `memory_forget`
 through the ordinary native registry or managed Codex dynamic-tool bridge, not
 an English interception grammar or a pre-turn classifier. Children and background
 work receive no foreground owner-input capability. `storage::memory`
@@ -53,16 +54,37 @@ and managed prompt assembly use availability-specific guidance rather than
 combining absent-memory facts with active-tool instructions. Explicit storage
 management retains detailed diagnostics; ordinary recall is not a save request.
 
+Readiness distinguishes a fully inspected empty eligible catalog from a bounded
+selection with no included records. Ranking and token omissions do not claim
+global absence; disabled use stays explicit. This reuses the existing scoped
+snapshot and performs no additional catalog scan or classifier request.
+
+Native memory validation carries typed argument/source rejections. Two rejected
+mutations across names or changed arguments exhaust the per-owner-turn repair
+allowance. Remaining batched mutations are blocked before planning; the guard is
+rebuilt from typed current-turn history on continuation. One no-tool generation
+on the same provider may then answer, bounded to 1,024 output tokens and 15 seconds,
+with the configured reasoning policy unchanged and normal usage admission and
+settlement. Empty/truncated/tool-calling/timeout responses retain a visible failure
+message and a Failed outcome with the `tool_no_progress` failure category, never
+a fabricated success.
+Privacy refresh and prompt bounds still apply. Ordinary generation is not given
+this recovery deadline. Content-free provider timings distinguish first delta,
+total generation and recovery from prompt preparation.
+
 The native progress guard keeps bounded capability-name hashes for unavailable
 results in addition to its existing denial and transient-error windows. After
 one rejection it allows an answer or useful alternative; another attempt at that
 same unavailable capability stops the turn without dispatch, regardless of changed
 arguments. Current-turn history rebuilds that guard on continuation. A new owner
 turn resets it. Tool prose is never parsed into this failure classification.
+The old and new memory action names share the same unavailable-home prerequisite;
+switching names cannot obtain another attempt at an absent store.
 
 Managed foreground and eager-host registration use the same composition snapshot.
-The durable thread receipt records either no memory tools (0), exact v1 tools (1),
-or unknown legacy registration (absent). Resumption requires an exact match with
+The durable thread receipt records either no memory tools (0), legacy two-tool
+registration (1), split four-tool registration (2), or unknown registration
+(absent). Resumption requires an exact match with
 current availability; a mismatch retains the old vendor thread and requests a new
 Conversation. Codex owns its retry loop; Xana supplies a short nonretryable error
 and retains the existing bounded callback contract, not a second hidden agent.
@@ -99,9 +121,12 @@ saves/corrections; they do not prove semantic intent or sensitivity. Default-Ask
 admits eligible reads and ordinary explicit current-Conversation saves; broader,
 sensitive, uncertain, corrective/destructive operations use exact typed memory
 review. Explicit deny and background ceilings remain authoritative.
-The advertised update schema requires the model's risk interpretation. A caller
-that nevertheless omits it is treated as uncertain and still requires review;
-an ordinary label never bypasses independent scope or correction/forget review.
+The separate mutation schemas require actual action-specific fields and risk.
+Missing required fields reject before execution. An unadvertised legacy
+`memory_update` handler retains its old parsing contract (missing risk means
+uncertain), current validation and permissions. Old umbrella rules cover all new
+mutations; new action rules also match normalized legacy plans. An ordinary
+label never bypasses independent scope or correction/forget review.
 
 `storage::memory::tools` commits privacy/source/controls/revision checks and a
 metadata-only idempotent receipt atomically. Receipts are bounded to 16 updates
@@ -117,7 +142,7 @@ privacy checks. Reaching the disclosure ceiling requires a fresh Conversation.
 Native per-request prompt refresh strips prior PersonalMemory layers and reselects
 under existing budgets before dispatch. Managed Codex owns its inner context;
 it receives current tool results and next-turn bounded selection. Its bridge
-registers only these two tools, validates acknowledged thread/turn/call identity,
+registers only these four tools, validates acknowledged thread/turn/call identity,
 bounds callbacks and arguments, and refuses legacy threads lacking a registration
 receipt. Vendor file tools do not become a second path into Xana memory.
 

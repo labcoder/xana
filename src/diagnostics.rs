@@ -92,6 +92,37 @@ impl crate::outbound::OutboundAuditObserver for DiagnosticOutboundAudit {
 struct DiagnosticTelemetry;
 
 impl crate::telemetry::RuntimeTelemetry for DiagnosticTelemetry {
+    fn generation_timing(&self, event: crate::telemetry::GenerationTiming) {
+        for (stage, elapsed) in [
+            ("first_delta", event.first_delta),
+            ("total", Some(event.elapsed)),
+        ] {
+            let Some(elapsed) = elapsed else {
+                continue;
+            };
+            let mut fact = DiagnosticFact::new(
+                DiagnosticLevel::Info,
+                DiagnosticTarget::Provider,
+                EventKind::ProviderTiming,
+                if event.succeeded {
+                    EventOutcome::Completed
+                } else {
+                    EventOutcome::Failed
+                },
+            )
+            .subject(format!(
+                "{}:{stage}",
+                if event.recovery {
+                    "answer_recovery"
+                } else {
+                    "generation"
+                }
+            ))
+            .correlation(event.operation_id.to_string());
+            fact.duration_ms = Some(elapsed.as_millis().min(u128::from(u64::MAX)) as u64);
+            emit(fact);
+        }
+    }
     fn provider_failure(
         &self,
         operation: crate::identity::OperationId,
@@ -185,6 +216,7 @@ static PANIC_HOOK: OnceLock<()> = OnceLock::new();
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EventKind {
+    ProviderTiming,
     TerminalDiagnostic,
     ContextPhase,
     ApplicationStarted,

@@ -5,6 +5,7 @@ use crate::{
 };
 
 mod availability;
+mod recall;
 mod semantic;
 
 fn memory_agent(

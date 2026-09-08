@@ -41,6 +41,18 @@ pub(crate) enum ToolFailure {
     PermissionDenied,
     /// Absent from this runtime's immutable capability snapshot, not transient I/O.
     Unavailable,
+    /// Host-classified memory validation failures, never parsed from prose.
+    InvalidMemoryArguments,
+    InvalidMemorySource,
+}
+
+impl ToolFailure {
+    pub(crate) fn is_memory_rejection(self) -> bool {
+        matches!(
+            self,
+            Self::InvalidMemoryArguments | Self::InvalidMemorySource
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

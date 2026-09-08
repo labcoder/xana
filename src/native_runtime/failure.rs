@@ -13,7 +13,7 @@ pub(super) struct OperationFailure {
 
 impl OperationFailure {
     pub(super) fn from_error(error: anyhow::Error) -> Self {
-        let failure = error
+        let mut failure = error
             .downcast_ref::<crate::provider::ProviderError>()
             .map(crate::provider::ProviderError::failure)
             .unwrap_or_else(|| {
@@ -22,7 +22,9 @@ impl OperationFailure {
                         .downcast_ref::<crate::failure::PersistenceFailure>()
                         .is_some();
                 FailureDetails::new(
-                    if storage {
+                    if error.is::<crate::agent::recovery::MemoryRecoveryFailure>() {
+                        FailureCategory::ToolNoProgress
+                    } else if storage {
                         FailureCategory::Storage
                     } else {
                         FailureCategory::Unknown
@@ -34,6 +36,9 @@ impl OperationFailure {
                     },
                 )
             });
+        if failure.category == FailureCategory::ToolNoProgress {
+            failure.retry = crate::failure::RetryAdvice::NotRecommended;
+        }
         Self {
             reason: format!("{error:#}"),
             failure,

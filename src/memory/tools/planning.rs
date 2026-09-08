@@ -10,6 +10,34 @@ use anyhow::{Context, Result, ensure};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
+#[derive(Debug)]
+enum MutationRejection {
+    Arguments,
+    Source,
+}
+impl std::fmt::Display for MutationRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Arguments => "Invalid memory mutation arguments. Repair once only if the owner requested a change; a recall question needs an answer, not a write",
+            Self::Source => "Memory quote is not in the current owner message; do not invent or rewrite owner evidence. Answer recall questions without a mutation",
+        })
+    }
+}
+impl std::error::Error for MutationRejection {}
+
+pub(super) fn classify(error: anyhow::Error) -> crate::tool::ToolPlanningError {
+    use crate::message::ToolFailure;
+    crate::tool::ToolPlanningError {
+        failure: error
+            .downcast_ref::<MutationRejection>()
+            .map(|kind| match kind {
+                MutationRejection::Arguments => ToolFailure::InvalidMemoryArguments,
+                MutationRejection::Source => ToolFailure::InvalidMemorySource,
+            }),
+        message: format!("{error:#}"),
+    }
+}
+
 fn bounded_arguments<T: DeserializeOwned>(value: &Value) -> Result<T> {
     let fields = value
         .as_object()
@@ -109,65 +137,73 @@ pub(super) fn update(
     owner: Option<&MemoryOwner>,
     arguments: &Value,
     turn: Option<&OwnerTurnInput>,
+    action: Option<UpdateAction>,
 ) -> Result<PlannedToolInvocation> {
     let owner = owner.context(crate::memory::UNAVAILABLE_NOTICE)?;
-    let args: UpdateArgs = bounded_arguments(arguments)?;
+    let args = update_arguments(arguments, action).context(MutationRejection::Arguments)?;
     let guard = bind(owner, turn)?;
     let quote = args.quote.as_deref().unwrap_or("");
-    ensure!(
-        quote.len() <= 8192,
-        "Owner memory quote exceeds 8192 UTF-8 bytes"
-    );
+    ensure!(quote.len() <= 8192, MutationRejection::Arguments);
     if args.action != UpdateAction::Forget {
         validate_statement(
             args.statement
                 .as_deref()
-                .context("Remember and correct require a statement")?,
-        )?;
-        ensure!(
-            !quote.trim().is_empty(),
-            "Quote the current owner's request and fact; earlier context requires the owner to restate it"
-        );
+                .context("Remember and correct require a statement")
+                .context(MutationRejection::Arguments)?,
+        )
+        .context(MutationRejection::Arguments)?;
+        ensure!(!quote.trim().is_empty(), MutationRejection::Source);
     } else {
-        ensure!(
-            args.statement.is_none(),
-            "Forget accepts an exact memory id and revision, not replacement text"
-        );
+        ensure!(args.statement.is_none(), MutationRejection::Arguments);
     }
     if !quote.is_empty() {
         ensure!(
             turn.expect("bound turn").text.contains(quote),
-            "Memory quote is not in the current owner message; ask the owner to restate the request and fact"
+            MutationRejection::Source
         );
     }
     let scope = if args.action == UpdateAction::Remember {
         ensure!(
             args.id.is_none() && args.revision.is_none(),
-            "Remember creates a fact; use correct with id and revision to replace one"
+            MutationRejection::Arguments
         );
         args.scope
             .unwrap_or(ScopeSelector::Conversation)
-            .resolve(&guard.context)?
+            .resolve(&guard.context)
+            .context(MutationRejection::Arguments)?
     } else {
         let id = args
             .id
-            .context("Correct and forget require an exact memory id")?;
+            .context("Correct and forget require an exact memory id")
+            .context(MutationRejection::Arguments)?;
         ensure!(
             !id.is_nil()
                 && args
                     .revision
                     .is_some_and(|revision| revision > 0 && revision < i64::MAX as u64),
-            "Correct and forget require a non-nil id and valid observed revision"
+            MutationRejection::Arguments
         );
-        let record = owner.record(id)?;
+        let record = owner.record(id).map_err(|error| {
+            if matches!(
+                error.downcast_ref::<rusqlite::Error>(),
+                Some(rusqlite::Error::QueryReturnedNoRows)
+            ) {
+                error.context(MutationRejection::Arguments)
+            } else {
+                error
+            }
+        })?;
         ensure!(
             guard.context.scopes().contains(&record.scope),
-            "Memory is outside the current Conversation's visible scopes"
+            MutationRejection::Arguments
         );
         if let Some(scope) = args.scope {
             ensure!(
-                scope.resolve(&guard.context)? == record.scope,
-                "Correct and forget cannot move memory scope; use explicit owner memory controls"
+                scope
+                    .resolve(&guard.context)
+                    .context(MutationRejection::Arguments)?
+                    == record.scope,
+                MutationRejection::Arguments
             );
         }
         record.scope
@@ -196,4 +232,46 @@ pub(super) fn update(
         },
         UpdatePlan { guard, intent },
     ))
+}
+
+fn update_arguments(arguments: &Value, action: Option<UpdateAction>) -> Result<UpdateArgs> {
+    Ok(match action {
+        None => bounded_arguments(arguments)?,
+        Some(UpdateAction::Remember) => {
+            let args: RememberArgs = bounded_arguments(arguments)?;
+            UpdateArgs {
+                action: UpdateAction::Remember,
+                scope: args.scope,
+                statement: Some(args.statement),
+                quote: Some(args.quote),
+                id: None,
+                revision: None,
+                risk: args.risk,
+            }
+        }
+        Some(UpdateAction::Correct) => {
+            let args: CorrectArgs = bounded_arguments(arguments)?;
+            UpdateArgs {
+                action: UpdateAction::Correct,
+                scope: None,
+                statement: Some(args.statement),
+                quote: Some(args.quote),
+                id: Some(args.id),
+                revision: Some(args.revision),
+                risk: args.risk,
+            }
+        }
+        Some(UpdateAction::Forget) => {
+            let args: ForgetArgs = bounded_arguments(arguments)?;
+            UpdateArgs {
+                action: UpdateAction::Forget,
+                scope: None,
+                statement: None,
+                quote: None,
+                id: Some(args.id),
+                revision: Some(args.revision),
+                risk: args.risk,
+            }
+        }
+    })
 }

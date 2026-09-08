@@ -54,6 +54,44 @@ fn selection_is_bounded_current_and_scope_filtered_without_helper_calls() {
     assert_eq!(updated.records[0].statement, "Prefer detailed responses");
     let small = owner.select_for_turn("responses", 128).unwrap();
     assert!(small.records.is_empty());
+    assert_eq!(
+        small.readiness(),
+        MemoryReadiness::Enabled,
+        "budget omissions are not an empty catalog"
+    );
+}
+
+#[test]
+fn empty_readiness_is_scoped_and_never_claims_disabled_memory_is_absent() {
+    let (_home, owner) = fixture();
+    assert_eq!(
+        owner.select_for_turn("name", 128).unwrap().readiness(),
+        MemoryReadiness::Empty
+    );
+    owner
+        .remember(
+            MemoryScope::Project(Uuid::new_v4()),
+            "Foreign fact".into(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        owner.select_for_turn("name", 128).unwrap().readiness(),
+        MemoryReadiness::Empty
+    );
+    owner
+        .controls(
+            MemoryScope::User,
+            MemoryControlEdit {
+                use_enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        owner.select_for_turn("name", 128).unwrap().readiness(),
+        MemoryReadiness::UseDisabled
+    );
 }
 #[test]
 fn forget_after_handoff_requires_fresh_conversation_even_if_fact_origin_was_elsewhere() {

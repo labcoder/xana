@@ -173,7 +173,7 @@ async fn dynamic_memory_cancellation_preserves_a_known_committed_callback_result
 fn dynamic_memory_tools_have_exact_supported_schema_and_bounded_ids_arguments_results() {
     use super::super::dynamic_tools as bridge;
     let tools = bridge::definitions(crate::memory::tools::definitions()).unwrap();
-    assert_eq!(tools.len(), 2);
+    assert_eq!(tools.len(), 4);
     assert!(
         tools
             .iter()

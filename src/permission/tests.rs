@@ -183,6 +183,39 @@ fn personal_memory_scope_does_not_exempt_other_tools_or_unattended_work() {
 }
 
 #[test]
+fn old_umbrella_and_new_action_denies_cannot_be_bypassed_by_tool_renaming() {
+    let root = tempfile::tempdir().unwrap();
+    for (action, name) in [
+        ("remember", "memory_remember"),
+        ("correct", "memory_correct"),
+        ("forget", "memory_forget"),
+    ] {
+        for (rule_name, request_name) in [
+            ("memory_update", name),
+            (name, "memory_update"),
+            (name, name),
+        ] {
+            let mut memory = request(PermissionScope::PersonalMemory {
+                scope: "conversation:test".into(),
+                review: false,
+            });
+            memory.tool_name = request_name.into();
+            memory.effect_class = EffectClass::Write;
+            memory.final_arguments = serde_json::json!({"action":action});
+            let mut deny = rule("deny-memory", PolicyDecision::Deny);
+            deny.tool = Some(rule_name.into());
+            assert_eq!(
+                PermissionPolicy::new(PolicyDecision::Allow, vec![deny], root.path())
+                    .unwrap()
+                    .explain(&memory)
+                    .winning_decision,
+                PolicyDecision::Deny
+            );
+        }
+    }
+}
+
+#[test]
 fn embedded_product_documentation_does_not_prompt_under_the_ask_default() {
     let workspace = tempdir().expect("workspace");
     let mut docs = request(PermissionScope::BuiltInResource {

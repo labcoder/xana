@@ -222,7 +222,7 @@ async fn invoke_measured(
     let planned = fixture
         .registry
         .plan_in_turn(call, fixture.workspace.path(), Some(turn));
-    if call.name == "memory_update" {
+    if crate::memory::tools::is_mutation(&call.name) {
         measured.update_calls += 1;
         if planned.as_ref().is_ok_and(|plan| {
             matches!(
@@ -233,7 +233,7 @@ async fn invoke_measured(
             measured.unreviewed_update_calls += 1;
         }
     }
-    if !matches!(call.name.as_str(), "memory_lookup" | "memory_update") {
+    if call.name != "memory_lookup" && !crate::memory::tools::is_mutation(&call.name) {
         measured.prohibited_tools += 1;
     }
     let approve = planned

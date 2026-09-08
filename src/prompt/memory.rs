@@ -16,21 +16,34 @@ impl PromptSnapshot {
 
     /// A runtime fact, not optional retrieved data; account for it before selecting memory.
     pub(crate) fn with_memory_readiness(
-        mut self,
+        self,
         readiness: crate::memory::MemoryReadiness,
     ) -> Result<Self, PromptError> {
-        self.layers
-            .retain(|layer| layer.source_id != "runtime:personal-memory");
+        self.with_turn_notice(
+            "runtime:personal-memory",
+            "Personal memory readiness",
+            &format!("{}\n{}", readiness.notice(), readiness.guidance()),
+        )
+    }
+
+    /// Mandatory host facts, charged before optional retrieval or dispatch.
+    pub(crate) fn with_turn_notice(
+        mut self,
+        id: &str,
+        name: &str,
+        notice: &str,
+    ) -> Result<Self, PromptError> {
+        self.layers.retain(|layer| layer.source_id != id);
         self.layers.push(layer(
             PromptLayerKind::Environment,
-            "runtime:personal-memory",
+            id,
             SourceProvenance {
-                display_name: "Personal memory readiness".into(),
+                display_name: name.into(),
                 path: None,
                 origin: SourceOrigin::RuntimeEnvironment,
             },
             TrustClass::Runtime,
-            &format!("{}\n{}", readiness.notice(), readiness.guidance()),
+            notice,
             false,
         ));
         let rendered = render_layers(&self.layers);

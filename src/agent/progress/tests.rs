@@ -10,6 +10,36 @@ fn call(id: usize) -> ToolCall {
 }
 
 #[test]
+fn memory_repairs_are_bounded_across_names_arguments_and_intervening_successes() {
+    let mut guard = ProgressGuard::default();
+    for (index, name) in ["memory_remember", "memory_update"].into_iter().enumerate() {
+        let request = ToolCall {
+            name: name.into(),
+            arguments: json!({"quote":index}),
+            ..call(index)
+        };
+        guard.observe(
+            &request,
+            &ToolResult {
+                failure: Some(ToolFailure::InvalidMemorySource),
+                ..ToolResult::error(request.id.clone(), "invalid")
+            },
+        );
+        guard.observe(
+            &call(99),
+            &ToolResult::success("99", "useful unrelated read"),
+        );
+        assert_eq!(guard.memory_recovery_needed(), index == 1);
+    }
+    let mutation = ToolCall {
+        name: "memory_correct".into(),
+        ..call(2)
+    };
+    assert!(guard.blocked_result(&mutation).is_some());
+    assert!(guard.blocked_result(&call(3)).is_none());
+}
+
+#[test]
 fn repeated_failures_survive_continuation_but_not_new_owner_input() {
     let mut history = vec![Message::text(Role::User, "read notes")];
     for id in 0..3 {
@@ -140,5 +170,34 @@ fn unavailable_classification_survives_history_but_does_not_parse_prose_or_cross
     assert!(
         guard.blocked_result(&request).is_none(),
         "ordinary error prose is not authority"
+    );
+}
+
+#[test]
+fn unavailable_memory_cannot_be_retried_under_a_new_mutation_name() {
+    let mut guard = ProgressGuard::default();
+    let legacy = ToolCall {
+        name: "memory_update".into(),
+        ..call(0)
+    };
+    guard.observe(&legacy, &ToolResult::unavailable("0", "no protected home"));
+    for name in [
+        "memory_lookup",
+        "memory_remember",
+        "memory_correct",
+        "memory_forget",
+    ] {
+        let other = ToolCall {
+            name: name.into(),
+            ..call(1)
+        };
+        assert_eq!(
+            guard.blocked_result(&other).unwrap().failure,
+            Some(ToolFailure::Unavailable)
+        );
+    }
+    assert!(
+        guard.blocked_result(&call(2)).is_none(),
+        "a useful unrelated tool remains possible"
     );
 }

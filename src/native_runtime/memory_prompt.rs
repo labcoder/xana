@@ -12,11 +12,7 @@ impl crate::agent::RequestPromptRefresh for MemoryPromptRefresh {
         let selection = self
             .owner
             .select_for_turn(&self.query, snapshot.budget.total_tokens)?;
-        let snapshot = snapshot.with_memory_readiness(if selection.use_enabled {
-            crate::memory::MemoryReadiness::Enabled
-        } else {
-            crate::memory::MemoryReadiness::UseDisabled
-        })?;
+        let snapshot = snapshot.with_memory_readiness(selection.readiness())?;
         let (snapshot, ids) = snapshot.with_personal_memory(&selection);
         self.owner.record_selection(&selection, &ids)?;
         Ok(snapshot)

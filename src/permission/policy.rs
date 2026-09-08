@@ -52,7 +52,8 @@ impl PermissionPolicy {
             }
             if let Some(tool) = &rule.tool
                 && !BUILTIN_TOOL_NAMES.contains(&tool.as_str())
-                && !matches!(tool.as_str(), "memory_lookup" | "memory_update")
+                && tool != "memory_lookup"
+                && !crate::memory::tools::is_mutation(tool)
             {
                 return Err(PolicyError::UnknownTool {
                     rule_id: id.to_owned(),
@@ -192,13 +193,13 @@ impl PermissionPolicy {
 }
 
 fn is_direct_memory_request(request: &PermissionRequest) -> bool {
-    matches!(
-        (request.tool_name.as_str(), request.effect_class),
-        ("memory_lookup", EffectClass::Read) | ("memory_update", EffectClass::Write)
-    ) && matches!(
-        request.scope,
-        PermissionScope::PersonalMemory { review: false, .. }
-    )
+    ((request.tool_name == "memory_lookup" && request.effect_class == EffectClass::Read)
+        || (crate::memory::tools::is_mutation(&request.tool_name)
+            && request.effect_class == EffectClass::Write))
+        && matches!(
+            request.scope,
+            PermissionScope::PersonalMemory { review: false, .. }
+        )
 }
 
 fn is_safe_built_in_read(request: &PermissionRequest) -> bool {
@@ -211,11 +212,25 @@ fn is_safe_built_in_read(request: &PermissionRequest) -> bool {
 }
 
 fn rule_matches(rule: &PermissionRule, request: &PermissionRequest) -> bool {
-    if rule
-        .tool
-        .as_ref()
-        .is_some_and(|tool| tool != &request.tool_name)
+    // Historical umbrella rules retain their meaning. Conversely an old call
+    // must not bypass a new action-specific deny: use the host-normalized plan.
+    let canonical_memory_name = if request.tool_name == "memory_update"
+        && matches!(request.scope, PermissionScope::PersonalMemory { .. })
     {
+        match request.final_arguments["action"].as_str() {
+            Some("remember") => "memory_remember",
+            Some("correct") => "memory_correct",
+            Some("forget") => "memory_forget",
+            _ => "memory_update",
+        }
+    } else {
+        request.tool_name.as_str()
+    };
+    if rule.tool.as_ref().is_some_and(|tool| {
+        tool != canonical_memory_name
+            && !(tool == "memory_update"
+                && crate::memory::tools::is_mutation(canonical_memory_name))
+    }) {
         return false;
     }
     if rule

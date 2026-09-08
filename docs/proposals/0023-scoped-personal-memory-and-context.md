@@ -63,7 +63,7 @@ No SQL or Markdown editor is required. Corrections apply next eligible turn;
 already-dispatched work is not silently restarted.
 
 Free-form owner language is interpreted by the conversational model through
-`memory_lookup` and `memory_update`, not an English phrase recognizer or a hidden
+`memory_lookup`, `memory_remember`, `memory_correct` and `memory_forget`, not an English phrase recognizer or a hidden
 pre-turn classifier. Native and supported managed adapters share a scoped service
 with immutable host-bound owner input; tool arguments cannot invent identity,
 provenance or permission. Keep deterministic CLI/UI controls for offline recovery.
@@ -191,5 +191,5 @@ Existing native branches inherit ancestor quarantine for automatic reuse.
 See [implemented recall architecture](../architecture/recall.md) and
 [owner controls](../user/project-recall.md); broad embedding/media ingestion
 and general managed-agent tool bridging remain outside this implementation.
-The supported Codex bridge is deliberately restricted to the two personal-memory
+The supported Codex bridge is deliberately restricted to the four personal-memory
 tools and does not delegate arbitrary Xana tools to the managed inner loop.

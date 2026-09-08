@@ -12,6 +12,7 @@ pub(crate) struct MemorySelection {
     pub(crate) records: Vec<MemoryRecord>,
     pub(crate) use_enabled: bool,
     pub(crate) notice: &'static str,
+    catalog_empty: bool,
 }
 
 impl MemoryOwner {
@@ -29,6 +30,9 @@ impl MemoryOwner {
             self.check_previous_handoff(conversation)?;
         }
         let mut eligible = self.eligible()?;
+        // An empty bounded selection is not proof that the catalog is empty.
+        let catalog_empty =
+            eligible.use_enabled && !eligible.has_more && eligible.records.is_empty();
         let words = input
             .split_whitespace()
             .take(128)
@@ -67,6 +71,7 @@ impl MemoryOwner {
             records: selected,
             use_enabled: eligible.use_enabled,
             notice: DATA_NOTICE,
+            catalog_empty,
         })
     }
 
@@ -122,6 +127,15 @@ fn receipt_key(conversation: Uuid) -> String {
 }
 
 impl MemorySelection {
+    pub(crate) fn readiness(&self) -> MemoryReadiness {
+        if !self.use_enabled {
+            MemoryReadiness::UseDisabled
+        } else if self.catalog_empty {
+            MemoryReadiness::Empty
+        } else {
+            MemoryReadiness::Enabled
+        }
+    }
     pub(crate) fn managed_text(
         &self,
         input: &str,

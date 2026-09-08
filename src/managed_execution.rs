@@ -964,7 +964,7 @@ fn require_memory_tools(
 ) -> Result<(), CodexError> {
     if !store.memory_tools_current(thread_id, available) {
         return Err(CodexError::Protocol(
-            "This managed thread's personal-memory tool registration is unknown or differs from current storage availability. Start a new conversation (/clear in chat); the old Codex thread is retained. No turn was started.".into(),
+            "This managed thread's personal-memory tool registration is unknown or differs from the current contract or storage availability. Start a new conversation (/clear in chat); the old Codex thread is retained. No turn was started.".into(),
         ));
     }
     Ok(())

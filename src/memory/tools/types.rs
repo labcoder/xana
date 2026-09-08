@@ -45,6 +45,43 @@ pub(crate) enum UpdateAction {
     Forget,
 }
 
+impl UpdateAction {
+    pub(crate) const fn tool_name(self) -> &'static str {
+        match self {
+            Self::Remember => "memory_remember",
+            Self::Correct => "memory_correct",
+            Self::Forget => "memory_forget",
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RememberArgs {
+    pub(super) scope: Option<ScopeSelector>,
+    pub(super) statement: String,
+    pub(super) quote: String,
+    pub(super) risk: Risk,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CorrectArgs {
+    pub(super) id: Uuid,
+    pub(super) revision: u64,
+    pub(super) statement: String,
+    pub(super) quote: String,
+    pub(super) risk: Risk,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ForgetArgs {
+    pub(super) id: Uuid,
+    pub(super) revision: u64,
+    pub(super) risk: Risk,
+}
+
 #[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Risk {

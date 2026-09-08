@@ -35,7 +35,7 @@ external-service effects keep the configured behavior above.
 
 Personal-memory tools use a separate typed scope, never a workspace-file grant.
 With the `ask` default and no matching rule, `memory_lookup` can read eligible
-current scopes and `memory_update` can save an ordinary explicit fact in the
+current scopes and `memory_remember` can save an ordinary explicit fact in the
 current Conversation. Broader, sensitive, uncertain, corrective or destructive
 changes require exact review even under `allow`; deny still wins. The model
 interprets the request, but cannot supply caller identity, change scope controls

@@ -15,16 +15,32 @@ pub(crate) mod types;
 use super::MemoryOwner;
 use crate::tool::{
     OwnerTurnInput, PlannedToolInvocation, RegistryError, Tool, ToolDefinition,
-    ToolExecutionContext, ToolRegistry,
+    ToolExecutionContext, ToolPlanningError, ToolRegistry,
 };
 use futures::future::BoxFuture;
 use serde_json::Value;
 use std::path::Path;
-use types::{LookupPlan, UpdatePlan};
+use types::{LookupPlan, UpdateAction, UpdatePlan};
+
+pub(crate) fn is_mutation(name: &str) -> bool {
+    matches!(
+        name,
+        "memory_update" | "memory_remember" | "memory_correct" | "memory_forget"
+    )
+}
 
 /// Canonical declarations for a runtime with protected memory attached.
 pub(crate) fn definitions() -> Vec<ToolDefinition> {
-    vec![schema::lookup(), schema::update()]
+    std::iter::once(schema::lookup())
+        .chain(
+            [
+                UpdateAction::Remember,
+                UpdateAction::Correct,
+                UpdateAction::Forget,
+            ]
+            .map(schema::mutation),
+        )
+        .collect()
 }
 
 pub(crate) fn register(
@@ -33,13 +49,34 @@ pub(crate) fn register(
 ) -> Result<(), RegistryError> {
     if owner.is_none() {
         const REASON: &str = "Personal memory is unavailable in this Conversation. Do not retry; nothing was read or saved. Answer from current context without file workarounds. The owner can inspect `xana storage status` for setup help.";
-        registry.register_unavailable("memory_lookup", REASON)?;
-        return registry.register_unavailable("memory_update", REASON);
+        for name in [
+            "memory_lookup",
+            "memory_update",
+            "memory_remember",
+            "memory_correct",
+            "memory_forget",
+        ] {
+            registry.register_unavailable(name, REASON)?;
+        }
+        return Ok(());
     }
     registry.register(MemoryLookup {
         owner: owner.clone(),
     })?;
-    registry.register(MemoryUpdate { owner })
+    for action in [
+        UpdateAction::Remember,
+        UpdateAction::Correct,
+        UpdateAction::Forget,
+    ] {
+        registry.register(MemoryUpdate {
+            owner: owner.clone(),
+            action: Some(action),
+        })?;
+    }
+    registry.register_legacy(MemoryUpdate {
+        owner,
+        action: None,
+    })
 }
 
 struct MemoryLookup {
@@ -48,6 +85,7 @@ struct MemoryLookup {
 
 struct MemoryUpdate {
     owner: Option<MemoryOwner>,
+    action: Option<UpdateAction>,
 }
 
 impl Tool for MemoryLookup {
@@ -64,8 +102,9 @@ impl Tool for MemoryLookup {
         arguments: &Value,
         _: &Path,
         turn: Option<&OwnerTurnInput>,
-    ) -> Result<PlannedToolInvocation, String> {
-        planning::lookup(self.owner.as_ref(), arguments, turn).map_err(|error| format!("{error:#}"))
+    ) -> Result<PlannedToolInvocation, ToolPlanningError> {
+        planning::lookup(self.owner.as_ref(), arguments, turn)
+            .map_err(|error| format!("{error:#}").into())
     }
 
     fn execute<'a>(
@@ -94,7 +133,7 @@ impl Tool for MemoryLookup {
 
 impl Tool for MemoryUpdate {
     fn definition(&self) -> ToolDefinition {
-        schema::update()
+        self.action.map_or_else(schema::update, schema::mutation)
     }
 
     fn plan(&self, _: &Value, _: &Path) -> Result<PlannedToolInvocation, String> {
@@ -106,8 +145,9 @@ impl Tool for MemoryUpdate {
         arguments: &Value,
         _: &Path,
         turn: Option<&OwnerTurnInput>,
-    ) -> Result<PlannedToolInvocation, String> {
-        planning::update(self.owner.as_ref(), arguments, turn).map_err(|error| format!("{error:#}"))
+    ) -> Result<PlannedToolInvocation, ToolPlanningError> {
+        planning::update(self.owner.as_ref(), arguments, turn, self.action)
+            .map_err(planning::classify)
     }
 
     fn execute<'a>(
