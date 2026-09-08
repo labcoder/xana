@@ -144,6 +144,9 @@ pub(crate) struct RoundBudgetDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
+    WebProgress {
+        progress: crate::web::WebProgress,
+    },
     CompletionEvidenceRecorded {
         operation_id: OperationId,
         evidence: crate::completion_evidence::CompletionEvidence,

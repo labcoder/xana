@@ -289,6 +289,10 @@ impl<W: Write> EventRenderer<W> {
                 self.finish_stream()?;
                 writeln!(self.output, "browser> {detail}")?;
             }
+            AgentEvent::WebProgress { progress } => {
+                self.finish_stream()?;
+                writeln!(self.output, "web> {}", progress.label())?;
+            }
             AgentEvent::AssistantMessage { message, .. } => {
                 if self.streaming_text {
                     self.finish_stream()?;
@@ -1783,6 +1787,17 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
     let exact_only =
         external_scope || matches!(request.scope, PermissionScope::PersonalMemory { .. });
     let exact_external = external_scope && request.outbound_review.is_some();
+    let public_web = request
+        .outbound_review
+        .as_ref()
+        .and_then(|review| review.public_web_scope())
+        .is_some();
+    if public_web {
+        writeln!(
+            output,
+            "w = allow public web for this turn (selected search route + public HTTPS text only)"
+        )?;
+    }
     if exact_external {
         write!(
             output,
@@ -1804,6 +1819,7 @@ fn permission_decision_with_io<R: BufRead, W: Write>(
 
     Ok(match answer.trim().to_ascii_lowercase().as_str() {
         "o" | "once" | "y" | "yes" => ControllerDecision::AllowOnce,
+        "w" | "web" if public_web => ControllerDecision::AllowPublicWebTurn,
         "s" | "session" if !exact_only => ControllerDecision::AllowSession {
             scope: request.scope.clone(),
         },

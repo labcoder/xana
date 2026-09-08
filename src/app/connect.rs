@@ -12,6 +12,225 @@ use std::io::{BufRead, Write};
 
 const MAX_ATTEMPTS: usize = 4;
 
+/// A web connection is not a model profile. Configuration edits retain every
+/// other provider and route; setup never probes a potentially billed API.
+pub(super) fn run_web(
+    args: &ConnectArgs,
+    paths: &XanaPaths,
+    interactive: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<()> {
+    use crate::{
+        cli::{PublicWebChoice, WebProviderChoice},
+        web::{PublicWebConsent, SearchConnection, SearchProvider},
+    };
+    if args.model.is_some()
+        || args.service_provider.is_some()
+        || args.base_url.is_some()
+        || args.profile.is_some()
+        || args.route.is_some()
+        || args.remove
+    {
+        bail!(
+            "web setup uses --web-provider, --service-connection and optionally --credential-env / --public-web; use --web-provider disabled to disable search without deleting connections"
+        );
+    }
+    let mut web = XanaConfig::load_registry_from(paths.config_file())?.web;
+    writeln!(
+        output,
+        "Public web: independent search connections; no hosted Answers or automatic provider fallback. Actual requests require web consent."
+    )?;
+    writeln!(
+        output,
+        "Current search: {}",
+        web.default_connection.as_deref().unwrap_or("disabled")
+    )?;
+    let choice = if let Some(choice) = args.web_provider {
+        choice
+    } else if args.public_web.is_some() {
+        // Consent-only changes do not silently select or remove a provider.
+        return update_public_web(args, paths, web, interactive, input, output);
+    } else {
+        let selected = value_or_prompt(
+            None,
+            interactive,
+            input,
+            output,
+            "Provider: 1 Exa API (own key), 2 Exa hosted MCP (explicit no-key opt-in, rate limited), 3 Brave API (own key), 4 disabled, 5 known-page reading only (no search)",
+            None,
+        )?;
+        match selected.as_str() {
+            "1" => WebProviderChoice::Exa,
+            "2" => WebProviderChoice::ExaMcp,
+            "3" => WebProviderChoice::Brave,
+            "4" => WebProviderChoice::Disabled,
+            "5" => WebProviderChoice::PagesOnly,
+            _ => bail!("choose 1–5; no changes made"),
+        }
+    };
+    let mut new_secret = None;
+    if matches!(
+        choice,
+        WebProviderChoice::Disabled | WebProviderChoice::PagesOnly
+    ) {
+        web.default_connection = None;
+    } else {
+        let (provider, default, variable) = match choice {
+            WebProviderChoice::Exa => (SearchProvider::Exa, "exa", "EXA_API_KEY"),
+            WebProviderChoice::ExaMcp => (SearchProvider::ExaMcp, "exa-mcp", ""),
+            WebProviderChoice::Brave => (SearchProvider::Brave, "brave", "BRAVE_API_KEY"),
+            WebProviderChoice::Disabled | WebProviderChoice::PagesOnly => unreachable!(),
+        };
+        let name = value_or_prompt(
+            args.service_connection
+                .as_deref()
+                .or((!interactive).then_some(default)),
+            interactive,
+            input,
+            output,
+            "Search connection name",
+            Some(default),
+        )?;
+        let credential = if provider == SearchProvider::ExaMcp {
+            if args.credential_env.is_some() {
+                bail!("Exa hosted MCP uses no key; select Exa API for your own key");
+            }
+            None
+        } else if let Some(variable) = &args.credential_env {
+            Some(CredentialReference::Environment {
+                variable: variable.clone(),
+            })
+        } else if let Some(existing) = web
+            .connections
+            .get(&name)
+            .filter(|c| c.provider == provider)
+        {
+            existing.credential.clone()
+        } else if interactive {
+            writeln!(
+                output,
+                "Enter a key privately to store in the OS credential store, or press Enter to use {variable}. No search will be sent."
+            )?;
+            let raw = rpassword::prompt_password("API key (hidden; optional): ")?;
+            if raw.trim().is_empty() {
+                Some(CredentialReference::Environment {
+                    variable: variable.into(),
+                })
+            } else {
+                let id = format!("web-{}", uuid::Uuid::new_v4());
+                new_secret = Some((id.clone(), crate::credential::SecretString::new(raw)?));
+                Some(CredentialReference::Stored { id })
+            }
+        } else {
+            bail!(
+                "noninteractive API setup requires --credential-env; key values must never be command-line arguments"
+            );
+        };
+        web.connections.insert(
+            name.clone(),
+            SearchConnection {
+                provider,
+                credential,
+            },
+        );
+        web.default_connection = Some(name);
+    }
+    if let Some(consent) = args.public_web {
+        web.public_web = match consent {
+            PublicWebChoice::Ask => PublicWebConsent::Ask,
+            PublicWebChoice::Allow => PublicWebConsent::Allow,
+        };
+    }
+    web.validate().map_err(anyhow::Error::msg)?;
+    let enable_disclosure =
+        choice != WebProviderChoice::Disabled || args.public_web == Some(PublicWebChoice::Allow);
+    if enable_disclosure {
+        review_web_profile(paths, output)?;
+    }
+    writeln!(
+        output,
+        "Selected search: {}; public web: {:?}. Applies to new conversations. Other connections are retained.",
+        web.default_connection.as_deref().unwrap_or("disabled"),
+        web.public_web
+    )?;
+    writeln!(
+        output,
+        "Public-web Allow permits model-generated queries and public HTTPS reads; query contents may leave your machine. It never permits private destinations, local files, cookies or browser actions."
+    )?;
+    if !args.yes
+        && !confirm(
+            interactive,
+            input,
+            output,
+            "Save these web settings? [y/N]: ",
+        )?
+    {
+        writeln!(output, "No changes made.")?;
+        return Ok(());
+    }
+    use crate::credential::SecretStore as _;
+    if let Some((id, secret)) = &new_secret {
+        crate::credential::OsSecretStore.set(id, secret.expose())?;
+    }
+    if let Err(error) = XanaConfig::update_web(paths.config_file(), web, enable_disclosure) {
+        if let Some((id, _)) = &new_secret {
+            let _ = crate::credential::OsSecretStore.delete(id);
+        }
+        return Err(error.into());
+    }
+    writeln!(
+        output,
+        "Web settings saved atomically. Run xana doctor for local readiness; start a new conversation to use them."
+    )?;
+    Ok(())
+}
+
+fn update_public_web(
+    args: &ConnectArgs,
+    paths: &XanaPaths,
+    mut web: crate::web::WebConfig,
+    interactive: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<()> {
+    web.public_web = match args.public_web.expect("consent edit") {
+        crate::cli::PublicWebChoice::Ask => crate::web::PublicWebConsent::Ask,
+        crate::cli::PublicWebChoice::Allow => crate::web::PublicWebConsent::Allow,
+    };
+    writeln!(
+        output,
+        "Public web {:?}: model-generated queries via the selected search connection and public HTTPS reads only; queries may disclose their contents. No private destinations, files, cookies or browser actions.",
+        web.public_web
+    )?;
+    let enable_disclosure = web.public_web == crate::web::PublicWebConsent::Allow;
+    if enable_disclosure {
+        review_web_profile(paths, output)?;
+    }
+    if args.yes || confirm(interactive, input, output, "Save this preference? [y/N]: ")? {
+        XanaConfig::update_web(paths.config_file(), web, enable_disclosure)?;
+    } else {
+        writeln!(output, "No changes made.")?;
+    }
+    Ok(())
+}
+
+fn review_web_profile(paths: &XanaPaths, output: &mut impl Write) -> Result<()> {
+    let registry = XanaConfig::load_registry_from(paths.config_file())?;
+    let name = &registry.default_profile;
+    let policy = registry.profiles[name].egress_policy.as_deref();
+    let allowed = policy
+        .and_then(|key| registry.egress_policies.get(key))
+        .map(|policy| policy.allowed.as_slice())
+        .unwrap_or_default();
+    writeln!(
+        output,
+        "Profile {name}: disclosure policy {} ({allowed:?}) -> add prompt_text if absent. A derived policy preserves shared policies and other classes; only new Conversations use it.",
+        policy.unwrap_or("none")
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FocusedServiceKind {
     Image,
@@ -66,6 +285,7 @@ pub(super) fn write_hub(
         "Xana integration hub (read-only until you choose an exact command)"
     )?;
     writeln!(output, "  provider        xana connect provider")?;
+    writeln!(output, "  public web      xana connect web")?;
     writeln!(output, "  profile         xana connect profile")?;
     writeln!(
         output,
@@ -358,7 +578,9 @@ pub(super) fn run_focused_service(
 }
 
 fn has_focused_options(args: &ConnectArgs) -> bool {
-    args.route.is_some()
+    args.web_provider.is_some()
+        || args.public_web.is_some()
+        || args.route.is_some()
         || args.service_connection.is_some()
         || args.service_provider.is_some()
         || args.model.is_some()

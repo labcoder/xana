@@ -45,6 +45,7 @@ pub(crate) struct PendingApproval {
     pub(crate) tool: String,
     pub(crate) effect: String,
     pub(crate) scope: String,
+    pub(crate) public_web: bool,
 }
 
 /// Xana Desktop owns this state; `gpui-ai` receives immutable snapshots.
@@ -100,6 +101,7 @@ impl ConversationProjection {
                 .pending_approvals
                 .iter()
                 .map(|approval| PendingApproval {
+                    public_web: approval.public_web,
                     id: approval.id,
                     tool: approval.tool.clone(),
                     effect: approval.effect.clone(),
@@ -240,6 +242,7 @@ impl ConversationProjection {
                 tool,
                 effect,
                 scope,
+                public_web,
             } => {
                 if let Some(existing) = self
                     .pending_approvals
@@ -247,6 +250,7 @@ impl ConversationProjection {
                     .find(|approval| approval.id == permission_id)
                 {
                     *existing = PendingApproval {
+                        public_web,
                         id: permission_id,
                         tool: tool.clone(),
                         effect,
@@ -254,6 +258,7 @@ impl ConversationProjection {
                     };
                 } else {
                     self.pending_approvals.push(PendingApproval {
+                        public_web,
                         id: permission_id,
                         tool: tool.clone(),
                         effect,
@@ -268,6 +273,14 @@ impl ConversationProjection {
                     .retain(|approval| approval.id != permission_id);
                 self.pending_approval_count = self.pending_approvals.len();
                 self.latest_activity = "Approval resolved".to_owned();
+            }
+            DesktopEvent::WebProgress {
+                operation_id,
+                label,
+            } => {
+                if self.active_operation == Some(operation_id) {
+                    self.latest_activity = label;
+                }
             }
             DesktopEvent::RoundBudgetReached(suspension) => {
                 self.latest_activity = format!(
@@ -1092,6 +1105,29 @@ mod tests {
                 },
             },
         }
+    }
+
+    #[test]
+    fn stale_web_progress_does_not_replace_the_current_activity() {
+        let mut projection = ConversationProjection::from_snapshot(&empty_snapshot());
+        let current = DesktopOperationId::new();
+        projection.active_operation = Some(current);
+        for (sequence, operation_id, label) in [
+            (1, current, "reading"),
+            (2, DesktopOperationId::new(), "stale"),
+        ] {
+            projection.apply(DesktopObservation {
+                conversation_start: 0,
+                conversation_total: 0,
+                version: xana::desktop::PROTOCOL_VERSION,
+                sequence,
+                event: DesktopEvent::WebProgress {
+                    operation_id,
+                    label: label.into(),
+                },
+            });
+        }
+        assert_eq!(projection.latest_activity, "reading");
     }
 
     #[test]

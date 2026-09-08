@@ -27,6 +27,187 @@ fn workspace_request(path: &Path) -> PermissionRequest {
     })
 }
 
+fn public_web_request(operation: OperationId, route: &str) -> PermissionRequest {
+    use crate::outbound::{
+        OutboundItem, OutboundRequest, PublicWebReview, RecipientIdentity, RecipientKind,
+    };
+    let recipient = RecipientIdentity::new(
+        RecipientKind::WebSearch,
+        "search",
+        "https://api.exa.ai/search",
+        route.as_bytes(),
+    )
+    .unwrap();
+    let item = OutboundItem::new(
+        crate::config::OutboundDataClass::PromptText,
+        "query",
+        None,
+        "test",
+        b"game time".to_vec(),
+    )
+    .unwrap();
+    let mut review = OutboundRequest::new(operation, recipient.clone(), "find sources", vec![item])
+        .unwrap()
+        .review();
+    review.public_web = Some(Box::new(PublicWebReview {
+        route: route.into(),
+        persisted_allow: false,
+    }));
+    let mut request = request(PermissionScope::External {
+        recipient_identity_digest: recipient.identity_digest,
+        operation: "web_search".into(),
+    });
+    request.operation_id = operation;
+    request.tool_name = "web_search".into();
+    request.effect_class = EffectClass::Network;
+    request.outbound_review = Some(review);
+    request
+}
+
+#[tokio::test]
+async fn public_web_turn_covers_pending_and_later_queries_but_not_other_routes_or_turns() {
+    let workspace = tempdir().unwrap();
+    let (events, mut receiver) = mpsc::unbounded_channel();
+    let (broker, task) = PermissionBroker::spawn(
+        policy(PolicyDecision::Ask, vec![], workspace.path()),
+        true,
+        events,
+    );
+    let operation = OperationId::new();
+    let mut waiting = Vec::new();
+    let first = public_web_request(operation, "route-a");
+    for request in [first.clone(), public_web_request(operation, "route-a")] {
+        let handle = broker.clone();
+        waiting.push(tokio::spawn(async move {
+            handle.authorize(request).await.unwrap()
+        }));
+        next_request(&mut receiver).await;
+    }
+    broker
+        .decide(
+            operation,
+            first.invocation_id,
+            ControllerDecision::AllowPublicWebTurn,
+        )
+        .await
+        .unwrap();
+    for result in waiting {
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), result)
+                .await
+                .unwrap()
+                .unwrap(),
+            Authorization::Allowed(_)
+        ));
+    }
+    assert!(matches!(
+        broker
+            .authorize(public_web_request(operation, "route-a"))
+            .await
+            .unwrap(),
+        Authorization::Allowed(_)
+    ));
+    for request in [
+        public_web_request(operation, "route-b"),
+        public_web_request(OperationId::new(), "route-a"),
+        workspace_request(workspace.path()),
+    ] {
+        let handle = broker.clone();
+        let expected = request.clone();
+        let wait = tokio::spawn(async move { handle.authorize(request).await.unwrap() });
+        assert_eq!(next_request(&mut receiver).await, expected);
+        broker
+            .decide(
+                expected.operation_id,
+                expected.invocation_id,
+                ControllerDecision::Deny,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(wait.await.unwrap(), Authorization::Denied(_)));
+    }
+    broker.operation_finished(operation);
+    let finished = public_web_request(operation, "route-a");
+    let handle = broker.clone();
+    let expected = finished.clone();
+    let waiter = tokio::spawn(async move { handle.authorize(finished).await.unwrap() });
+    assert_eq!(
+        next_request(&mut receiver).await,
+        expected,
+        "finished turn grants expire"
+    );
+    broker
+        .decide(
+            operation,
+            expected.invocation_id,
+            ControllerDecision::AllowOnce,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(waiter.await.unwrap(), Authorization::Allowed(_)));
+    broker.controller_lost();
+    assert!(matches!(
+        broker
+            .authorize(public_web_request(operation, "route-a"))
+            .await
+            .unwrap(),
+        Authorization::Denied(_)
+    ));
+    broker.shutdown();
+    task.await.unwrap();
+}
+
+#[test]
+fn explicit_search_denial_remains_a_valid_policy_rule() {
+    let workspace = tempdir().unwrap();
+    let mut deny = rule("deny-search", PolicyDecision::Deny);
+    deny.tool = Some("web_search".into());
+    let policy = policy(PolicyDecision::Allow, vec![deny], workspace.path());
+    assert_eq!(
+        policy
+            .explain(&public_web_request(OperationId::new(), "exa"))
+            .winning_decision,
+        PolicyDecision::Deny
+    );
+}
+
+#[tokio::test]
+async fn public_web_preference_is_independent_of_general_tool_allow_but_not_deny() {
+    let workspace = tempdir().unwrap();
+    for decision in [
+        PolicyDecision::Ask,
+        PolicyDecision::Allow,
+        PolicyDecision::Deny,
+    ] {
+        let (events, _receiver) = mpsc::unbounded_channel();
+        let (broker, task) =
+            PermissionBroker::spawn(policy(decision, vec![], workspace.path()), true, events);
+        let mut request = public_web_request(OperationId::new(), "route-a");
+        request
+            .outbound_review
+            .as_mut()
+            .unwrap()
+            .public_web
+            .as_mut()
+            .unwrap()
+            .persisted_allow = true;
+        let result = broker.authorize(request).await.unwrap();
+        if decision == PolicyDecision::Deny {
+            assert!(matches!(result, Authorization::Denied(_)));
+        } else {
+            let Authorization::Allowed(fact) = result else {
+                panic!("expected explicit web consent")
+            };
+            assert_eq!(
+                fact.controller_decision,
+                Some(ControllerDecision::AllowPublicWebTurn)
+            );
+        }
+        broker.shutdown();
+        task.await.unwrap();
+    }
+}
+
 fn rule(id: &str, decision: PolicyDecision) -> PermissionRule {
     PermissionRule {
         id: id.to_owned(),

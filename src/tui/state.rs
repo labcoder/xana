@@ -427,6 +427,7 @@ pub(super) struct TuiState {
     pub(super) messages: VecDeque<VisibleMessage>,
     pub(super) activity: VecDeque<ActivityCard>,
     pub(super) busy: bool,
+    pub(super) web_progress: Option<crate::web::WebProgress>,
     pub(super) work_indicator_frame: u8,
     pub(super) active_operation: Option<OperationId>,
     pub(super) pending_round_budget: Option<RoundBudgetSuspension>,
@@ -598,6 +599,7 @@ impl TuiState {
             model: "resolving configuration".to_owned(),
             session: "not opened".to_owned(),
             status: "Starting Xana locally…".to_owned(),
+            web_progress: None,
             composer: Composer::new(),
             composer_history: VecDeque::new(),
             composer_history_cursor: None,
@@ -671,6 +673,7 @@ impl TuiState {
             model: snapshot.model.clone(),
             session: snapshot.session_id.to_string(),
             status: "Ready".to_owned(),
+            web_progress: None,
             composer: Composer::new(),
             composer_history: VecDeque::new(),
             composer_history_cursor: None,
@@ -753,6 +756,7 @@ impl TuiState {
             messages: VecDeque::new(),
             activity: VecDeque::new(),
             busy: false,
+            web_progress: None,
             work_indicator_frame: 0,
             active_operation: None,
             pending_round_budget: None,
@@ -1526,6 +1530,7 @@ fn message_row_estimate(message: &VisibleMessage) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ApprovalChoice {
     Once,
+    PublicWebTurn,
     Session,
     SaveAllow,
     SaveDeny,
@@ -1536,6 +1541,9 @@ fn approval_choices(prompt: &ApprovalPrompt) -> Vec<ApprovalChoice> {
     let mut choices = Vec::with_capacity(3);
     if prompt.allow_once {
         choices.push(ApprovalChoice::Once);
+    }
+    if prompt.allow_public_web {
+        choices.push(ApprovalChoice::PublicWebTurn);
     }
     if prompt.allow_session {
         choices.push(ApprovalChoice::Session);
@@ -1562,6 +1570,7 @@ fn controller_decision(
 ) -> ControllerDecision {
     match choice {
         ApprovalChoice::Once => ControllerDecision::AllowOnce,
+        ApprovalChoice::PublicWebTurn => ControllerDecision::AllowPublicWebTurn,
         ApprovalChoice::Session => ControllerDecision::AllowSession { scope },
         ApprovalChoice::SaveAllow => ControllerDecision::SaveOutboundAllow,
         ApprovalChoice::SaveDeny => ControllerDecision::SaveOutboundDeny,

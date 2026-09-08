@@ -153,6 +153,7 @@ pub(crate) async fn inspect(
     let mut report = DoctorReport::new();
     inspect_storage(paths, &mut report);
     inspect_configuration(paths, &mut report);
+    inspect_web(paths, &mut report).await;
     inspect_owned_paths(paths, &mut report);
     inspect_diagnostics(paths, &mut report);
     inspect_presentation(paths, &mut report);
@@ -165,6 +166,72 @@ pub(crate) async fn inspect(
     inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report, probe_connections).await;
     report
+}
+
+async fn inspect_web(paths: &XanaPaths, report: &mut DoctorReport) {
+    let paths = paths.clone();
+    let finding = tokio::task::spawn_blocking(move || {
+        let registry = XanaConfig::load_registry_from(paths.config_file()).ok()?;
+        let profile_allows_web = registry.profiles.get(&registry.default_profile)
+            .and_then(|profile| profile.egress_policy.as_ref())
+            .and_then(|name| registry.egress_policies.get(name))
+            .is_some_and(|policy| policy.allowed.contains(&crate::config::OutboundDataClass::PromptText));
+        if !profile_allows_web {
+            return Some(Finding::new("web.profile_disabled", Severity::Info,
+                "the default Profile does not allow public-web disclosure",
+                "search and page reading require reviewed prompt_text disclosure; existing Conversations retain their frozen Profile",
+                Some("xana connect web, then start a new Conversation".into())));
+        }
+        let Some((name, connection)) = registry.web.selected() else {
+            return Some(Finding::new(
+                "web.search_disabled",
+                Severity::Info,
+                "public web search is not configured",
+                "web_fetch can read known public URLs; it cannot discover sources",
+                Some("xana connect web".into()),
+            ));
+        };
+        let available = connection.credential.as_ref().is_none_or(|reference| {
+            matches!(
+                crate::credential::CredentialResolver::default().status(reference),
+                Ok(crate::credential::CredentialAvailability::Available)
+            )
+        });
+        Some(Finding::new(
+            if available {
+                "web.local_ready"
+            } else {
+                "web.credential_missing"
+            },
+            if available {
+                Severity::Ok
+            } else {
+                Severity::Warning
+            },
+            if available {
+                "search is locally configured; remote service is not probed"
+            } else {
+                "selected search credential is missing or unavailable"
+            },
+            format!(
+                "{name}: {:?}; public web {:?}; no billed request, login or fallback was attempted",
+                connection.provider, registry.web.public_web
+            ),
+            (!available).then(|| "xana connect web".into()),
+        ))
+    })
+    .await;
+    match finding {
+        Ok(Some(finding)) => report.push(finding),
+        Ok(None) => {} // Configuration diagnostics already report invalid/missing config.
+        Err(_) => report.push(Finding::new(
+            "web.inspection_failed",
+            Severity::Warning,
+            "web readiness inspection stopped",
+            "no remote request was attempted",
+            Some("xana doctor".into()),
+        )),
+    }
 }
 
 fn inspect_storage(paths: &XanaPaths, report: &mut DoctorReport) {
@@ -1082,6 +1149,40 @@ mod tests {
         fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
         fs::write(paths.config_file(), rendered).unwrap();
         (directory, paths)
+    }
+
+    #[tokio::test]
+    async fn web_readiness_distinguishes_profile_route_and_credentials_without_probing() {
+        let (_directory, paths) = fixture();
+        let mut report = DoctorReport::new();
+        inspect_web(&paths, &mut report).await;
+        assert_eq!(report.findings[0].code, "web.profile_disabled");
+        let mut web = crate::web::WebConfig::default();
+        XanaConfig::update_web(paths.config_file(), web.clone(), true).unwrap();
+        report.findings.clear();
+        inspect_web(&paths, &mut report).await;
+        assert_eq!(report.findings[0].code, "web.search_disabled");
+        web.default_connection = Some("fixture".into());
+        web.connections.insert(
+            "fixture".into(),
+            crate::web::SearchConnection {
+                provider: crate::web::SearchProvider::Brave,
+                credential: Some(crate::config::CredentialReference::Environment {
+                    variable: format!("XANA_ABSENT_{}", uuid::Uuid::new_v4().simple()),
+                }),
+            },
+        );
+        XanaConfig::update_web(paths.config_file(), web.clone(), true).unwrap();
+        report.findings.clear();
+        inspect_web(&paths, &mut report).await;
+        assert_eq!(report.findings[0].code, "web.credential_missing");
+        web.connections.get_mut("fixture").unwrap().provider = crate::web::SearchProvider::ExaMcp;
+        web.connections.get_mut("fixture").unwrap().credential = None;
+        XanaConfig::update_web(paths.config_file(), web, true).unwrap();
+        report.findings.clear();
+        inspect_web(&paths, &mut report).await;
+        assert_eq!(report.findings[0].code, "web.local_ready");
+        assert!(!paths.cache_dir().exists());
     }
 
     #[tokio::test]

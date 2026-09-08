@@ -417,6 +417,7 @@ async fn apply_observation(
                 id: permission_id,
                 tool: request.method,
                 effect: "execute".to_owned(),
+                public_web: false,
                 scope: request
                     .command
                     .or(request.cwd)
@@ -434,6 +435,7 @@ async fn apply_observation(
                     tool: approval.tool,
                     effect: approval.effect,
                     scope: approval.scope,
+                    public_web: false,
                 },
             )
             .await?;
@@ -630,7 +632,7 @@ async fn handle_command(
         }
         BridgeCommandValue::DecidePermission {
             permission_id,
-            allow_once,
+            decision,
         } => {
             let result = state.require_controller();
             let result = match (result, permission_id.0) {
@@ -645,27 +647,30 @@ async fn handle_command(
                     .send_command(RuntimeCommand::DecidePermission {
                         operation_id,
                         invocation_id,
-                        decision: if allow_once {
-                            ControllerDecision::AllowOnce
-                        } else {
-                            ControllerDecision::Deny
-                        },
+                        decision: decision.clone(),
                     })
                     .await
                     .map_err(local_host_error)
                     .and_then(command_result),
-                (Ok(()), DesktopPermissionTarget::AttachedManaged { approval_id, .. }) => observer
-                    .decide_managed_approval(
-                        approval_id,
-                        if allow_once {
-                            ManagedApprovalDecision::AcceptOnce
-                        } else {
-                            ManagedApprovalDecision::Decline
-                        },
-                    )
-                    .await
-                    .map_err(local_host_error),
-                (Ok(()), DesktopPermissionTarget::Managed { .. }) => Err(DesktopError::new(
+                (Ok(()), DesktopPermissionTarget::AttachedManaged { approval_id, .. })
+                    if matches!(
+                        decision,
+                        ControllerDecision::AllowOnce | ControllerDecision::Deny
+                    ) =>
+                {
+                    observer
+                        .decide_managed_approval(
+                            approval_id,
+                            if decision == ControllerDecision::AllowOnce {
+                                ManagedApprovalDecision::AcceptOnce
+                            } else {
+                                ManagedApprovalDecision::Decline
+                            },
+                        )
+                        .await
+                        .map_err(local_host_error)
+                }
+                (Ok(()), _) => Err(DesktopError::new(
                     DesktopErrorCode::CommandRejected,
                     "an embedded managed approval was sent to an attached host",
                 )),

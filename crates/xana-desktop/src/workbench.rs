@@ -2923,12 +2923,24 @@ impl Workbench {
                     format!("desktop-approval-{permission_id}"),
                     format!("Allow {}?", approval.tool),
                 )
-                .description(format!(
-                    "{}\nScope: {}\nThis decision applies once to the current Run.",
-                    approval.effect, approval.scope
-                ))
+                .description(format!("{}\nScope: {}", approval.effect, approval.scope))
                 .approve_label("Allow once")
                 .reject_label("Deny")
+                .when(approval.public_web, |card| {
+                    card.child(
+                        Button::new(format!("public-web-turn-{permission_id}"))
+                            .label("Allow public web for this turn")
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                match this.runtime.allow_public_web_turn(permission_id) {
+                                    Ok(_) => this
+                                        .projection
+                                        .set_activity("Sending public web consent for this turn…"),
+                                    Err(error) => this.projection.fail(error.message),
+                                }
+                                this.sync_components(window, cx);
+                            })),
+                    )
+                })
                 .on_event(cx.listener(move |this, event: &ApprovalEvent, window, cx| {
                     let allow_once = matches!(event, ApprovalEvent::Approved { .. });
                     match this.runtime.decide_permission(permission_id, allow_once) {

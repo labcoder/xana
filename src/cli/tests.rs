@@ -1243,6 +1243,8 @@ fn parses_exact_noninteractive_vision_connection_setup() {
     assert_eq!(
         cli.command,
         Some(Command::Connect(ConnectArgs {
+            web_provider: None,
+            public_web: None,
             integration: Some(ConnectIntegration::Vision),
             route: Some("describe".into()),
             service_connection: Some("openai-vision".into()),

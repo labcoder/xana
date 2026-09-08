@@ -22,7 +22,8 @@ and are also exposed through its narrow managed Codex bridge.
 | `write_file` | Explicitly create a missing UTF-8 file or atomically overwrite an existing one | 256 KiB content | `Never` |
 | `edit_file` | Atomically apply exact replacements against the original UTF-8 bytes | 64 KiB file/result, 32 edit specifications | `Never` |
 | `run_command` | Run one command through the configured shell | 30-second default, 120-second ceiling, 32 KiB retained independently for stdout and stderr | `Never` |
-| `web_fetch` | Retrieve one exactly reviewed public HTTPS text resource | Three reviewed redirects, 1 MiB default/4 MiB maximum response, 20-second default/60-second maximum timeout, 24 KiB inline text | `Safe` |
+| `web_fetch` | Read a reviewed public HTTPS page as untrusted text | Three checked redirects, 2 MiB default/4 MiB maximum response, 20-second default/60-second maximum timeout, 24 KiB inline text | `Safe` |
+| `web_search` | Discover sources through a separately configured search provider | 2 KiB query, 24 KiB receipt, 25-second deadline and shared turn allowance; no automatic retry or Answers call | `Never` |
 | `read_document` | Extract bounded text from a supported document | Format-specific input and output limits | `Safe` |
 | `xana_docs` | Read Xana's compiled, version-matched documentation | 32 KiB per read | `Safe` |
 

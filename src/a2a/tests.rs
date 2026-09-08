@@ -168,6 +168,7 @@ fn zero_selected_agents_does_not_touch_private_state() {
     let home = tempfile::tempdir().unwrap();
     let paths = XanaPaths::resolve(Some(OsString::from(home.path()))).unwrap();
     let registry = ConnectionRegistry {
+        web: Default::default(),
         default_profile: "default".into(),
         default_child_route: None,
         permission_mode: crate::config::PermissionMode::Ask,

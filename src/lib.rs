@@ -83,6 +83,7 @@ mod tui;
 mod usage_budget;
 mod usage_observation;
 mod vision;
+mod web;
 mod workspace_host;
 mod workspace_identity;
 

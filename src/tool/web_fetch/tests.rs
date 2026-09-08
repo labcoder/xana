@@ -64,6 +64,165 @@ async fn execute(tool: &WebFetch, arguments: Value) -> Result<Value, String> {
         .and_then(|output| serde_json::from_str(&output).map_err(|error| error.to_string()))
 }
 
+async fn in_turn(
+    tool: &WebFetch,
+    operation: OperationId,
+    url: &Url,
+    decision: OutboundApprovalDecision,
+) -> Result<String, String> {
+    let plan = tool
+        .plan(&json!({"url":url.as_str()}), Path::new("."))
+        .unwrap();
+    let review = plan
+        .outbound_review
+        .clone()
+        .unwrap()
+        .for_operation(operation);
+    tool.execute(
+        &plan,
+        ToolExecutionContext {
+            operation_id: operation,
+            events: None,
+            outbound_approval: Some(ReviewedOutboundApproval::new(review, decision)),
+            cleanup: crate::tool::DeferredCleanup::default(),
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn public_turn_follows_a_reviewed_public_redirect_and_charges_both_hops() {
+    let (_home, tool) = fixture();
+    let (destination, end) = serve_once(response(
+        "200 OK",
+        &[("Content-Type", "application/json")],
+        br#"{"game":"September 8", "time":"7:10 PM ET"}"#,
+    ))
+    .await;
+    let (origin, start) = serve_once(response(
+        "302 Found",
+        &[("Location", destination.as_str())],
+        b"",
+    ))
+    .await;
+    let operation = OperationId::new();
+    let value = in_turn(
+        &tool,
+        operation,
+        &origin,
+        OutboundApprovalDecision::AllowPublicWebTurn,
+    )
+    .await
+    .unwrap();
+    let value: Value = serde_json::from_str(&value).unwrap();
+    assert_eq!(value["final_url"], destination.as_str());
+    assert!(value["text"].as_str().unwrap().contains("7:10 PM ET"));
+    start.await.unwrap();
+    end.await.unwrap();
+    for _ in 0..6 {
+        tool.runtime.turn(operation).attempt().unwrap();
+    }
+    assert_eq!(
+        tool.runtime.turn(operation).attempt(),
+        Err(WebFailure::Budget)
+    );
+}
+
+#[tokio::test]
+async fn repeated_missing_page_is_cached_and_changed_urls_share_the_turn_ceiling() {
+    let (_home, mut tool) = fixture();
+    tool.runtime = Arc::new(WebRuntime::new(crate::web::WebLimits {
+        attempts: 1,
+        ..Default::default()
+    }));
+    let (url, task) = serve_once(response("404 Not Found", &[], b"")).await;
+    let operation = OperationId::new();
+    assert!(
+        in_turn(&tool, operation, &url, OutboundApprovalDecision::AllowOnce)
+            .await
+            .unwrap_err()
+            .contains("404")
+    );
+    task.await.unwrap();
+    assert!(
+        in_turn(&tool, operation, &url, OutboundApprovalDecision::AllowOnce)
+            .await
+            .unwrap_err()
+            .contains("Missing")
+    );
+    let next = url.join("/another-guessed-path").unwrap();
+    assert!(
+        in_turn(&tool, operation, &next, OutboundApprovalDecision::AllowOnce)
+            .await
+            .unwrap_err()
+            .contains("Budget")
+    );
+}
+
+#[tokio::test]
+async fn larger_page_and_json_are_bounded_evidence_not_a_binary_rejection() {
+    let (_home, tool) = fixture();
+    let mut body = b"<h1>Schedule</h1><p>Next game: September 8 at 7:10 PM ET.</p><!--".to_vec();
+    body.extend(vec![b'x'; 1100 * 1024]);
+    body.extend(b"-->");
+    let (url, task) = serve_once(response("200 OK", &[("Content-Type", "text/html")], &body)).await;
+    let value = execute(&tool, json!({"url":url.as_str()})).await.unwrap();
+    assert!(value["text"].as_str().unwrap().contains("7:10 PM ET"));
+    assert!(value["text"].as_str().unwrap().len() <= MAX_INLINE_BYTES);
+    assert!(value["artifact"].is_object());
+    task.await.unwrap();
+    let (url, task) = serve_once(response(
+        "200 OK",
+        &[("Content-Type", "application/json")],
+        b"{broken",
+    ))
+    .await;
+    assert!(execute(&tool, json!({"url":url.as_str()})).await.is_err());
+    task.await.unwrap();
+}
+
+#[tokio::test]
+async fn public_turn_does_not_override_a_saved_deny_on_a_redirect() {
+    let (_home, tool) = fixture();
+    let (destination, end) = serve_once(response(
+        "200 OK",
+        &[("Content-Type", "text/plain")],
+        b"must not be requested",
+    ))
+    .await;
+    let operation = OperationId::new();
+    assert!(
+        in_turn(
+            &tool,
+            operation,
+            &destination,
+            OutboundApprovalDecision::SaveDeny
+        )
+        .await
+        .is_err()
+    );
+    let (origin, start) = serve_once(response(
+        "302 Found",
+        &[("Location", destination.as_str())],
+        b"",
+    ))
+    .await;
+    assert!(
+        in_turn(
+            &tool,
+            operation,
+            &origin,
+            OutboundApprovalDecision::AllowPublicWebTurn
+        )
+        .await
+        .unwrap_err()
+        .contains("Policy")
+    );
+    start.await.unwrap();
+    assert!(!end.is_finished());
+    end.abort();
+}
+
 #[tokio::test]
 async fn plain_text_is_bounded_attributed_and_untrusted() {
     let (_home, tool) = fixture();
@@ -316,6 +475,7 @@ async fn cancellation_and_timeout_do_not_wait_for_a_slow_peer() {
         1024,
         Duration::from_secs(2),
         &cancellation,
+        None,
     )
     .await
     .unwrap_err();
@@ -338,6 +498,7 @@ async fn cancellation_and_timeout_do_not_wait_for_a_slow_peer() {
         1024,
         Duration::from_millis(20),
         &CancellationToken::new(),
+        None,
     )
     .await
     .unwrap_err();
@@ -453,6 +614,7 @@ async fn private_addresses_credentials_downgrades_and_cycles_are_rejected() {
         1024,
         Duration::from_secs(1),
         &cancellation,
+        None,
     )
     .await
     .unwrap_err();

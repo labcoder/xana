@@ -895,6 +895,12 @@ raise to the immutable 120-second ceiling. That ceiling and the typed file,
 search, and output resource bounds are not user-configurable; see
 [Workspace tools](workspace-tools.md).
 
+Public-web search/fetch have a separate `[web]` section, independently selected
+search connections and configurable shared turn limits. Use `xana connect web`
+for reviewed setup; see [Public web](public-web.md) for credentials, disclosure
+policy, bounds and the complete TOML example. Existing Conversations retain
+their frozen Profile, so start a new Conversation after enabling web access.
+
 ## Deliberate limits
 
 Quick Setup intentionally creates or updates one functional default

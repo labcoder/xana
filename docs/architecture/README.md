@@ -1042,7 +1042,9 @@ registry:
   canonical target remains inside that workspace. It returns status plus
   independently bounded stdout and stderr, and an immutable per-call timeout
   ceiling stops an owned process that runs too long.
-- `web_fetch` retrieves one exactly reviewed public HTTPS text resource through
+- `web_search` discovers attributed public sources through one explicitly selected
+  Exa API, Exa hosted MCP, or Brave API connection, independently of chat routing.
+- `web_fetch` retrieves a reviewed public HTTPS text resource through
   pinned public-address resolution, no proxy or credentials, an explicit
   redirect chain, bounded response/extraction work, and untrusted attributed
   text with immutable source overflow.
@@ -1107,7 +1109,11 @@ rejects private and special-use IPv4, IPv6, and IPv4-mapped addresses, pins the
 accepted address set into a no-proxy/no-redirect client, and rejects credentials,
 fragments, downgrade redirects, compressed responses, active content, and
 unsupported MIME or character encodings. A returned redirect not already in
-the reviewed chain stops before the next request. Successful results expose a
+the reviewed chain stops before the next request unless the owner granted
+public web for this turn or explicitly saved the public-web preference. That
+narrow grant permits checked public HTTPS redirects, not browser actions,
+private addresses, cookies, arbitrary MCP operations or file uploads. Exact
+saved denies still win before a redirect is sent. Successful results expose a
 typed generic link-preview card with requested and final URL, bounded site and
 title text, time, MIME, byte count, digest, redirects, truncation, and an
 untrusted marker; immediate text is capped at 24 KiB and complete bounded source
@@ -1116,6 +1122,38 @@ original link performs no fetch: preview remains an explicit reviewed action.
 The tool does not provide
 search, cookies, authentication, JavaScript, conditional cache revalidation, or
 browser authority.
+
+Search and fetch share one Conversation-owned `web::WebRuntime`. Each root
+operation has a separate bounded receipt cache and counters: three searches,
+eight wire attempts, 16 MiB ingress and two concurrent operations by default.
+Redirects and MCP handshake traffic count; failures are not free attempts.
+Identical freshly authorized requests reuse terminal receipts (including
+failures); interrupted requests are never automatically resubmitted. Admission
+is also shared across consecutive turns so an abandoned blocking HTML parser
+retains its slot until it exits. Fetch accepts at most 2 MiB by default/4 MiB
+hard limit; rendering rejects trees exceeding 16,384 nodes or depth 64 before
+layout. Extraction has a two-second caller deadline and 256 KiB retained-text
+ceiling. These are resource bounds, not a parser sandbox or hard allocator quota.
+
+`web_search` is `Network` plus `ReplaySafety::Never`: the selected vendor may
+bill a request. Direct adapters use pinned public DNS, identity encoding,
+bounded source receipts and no redirects, retries, Answers calls or provider
+fallback. The isolated Exa hosted-search adapter speaks its SDK-1.x
+`2025-03-26` initialize/initialized/tools-call dialect and allows only
+`web_search_exa`; it does not alter general MCP discovery's `2026-07-28`
+contract. Stateful MCP sessions are rejected by this narrow adapter. API keys
+use existing credential references, never chat-provider credentials.
+
+Public-web approval is typed and operation-bound. The broker expires grants
+on terminal operation state; they are not restored from audit history. The
+outbound guard rechecks exact denies and the frozen Profile's `prompt_text`
+disclosure ceiling even with a turn grant. `connect web` reviews a derived
+default-profile policy for new Conversations without mutating shared policies
+or existing frozen Profiles. An ineligible Profile exposes an actionable
+unavailable capability instead of a tool that cannot legally send. Stage
+events carry operation IDs; clients ignore stale progress and show actual
+search/read/redirect/extract stages, not fabricated reasoning. See
+[public web](../user/public-web.md) for setup and configurable bounds.
 
 One runtime-owned broker task owns policy, memory-only session grants, pending
 requests, and controller presence for every built-in tool. Pure policy combines

@@ -53,6 +53,7 @@ impl PermissionPolicy {
             if let Some(tool) = &rule.tool
                 && !BUILTIN_TOOL_NAMES.contains(&tool.as_str())
                 && tool != "memory_lookup"
+                && tool != "web_search"
                 && !crate::memory::tools::is_mutation(tool)
             {
                 return Err(PolicyError::UnknownTool {

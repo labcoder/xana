@@ -33,6 +33,7 @@ pub(crate) struct PermissionBrokerHandle {
 pub(crate) struct PermissionBroker {
     policy: PermissionPolicy,
     grants: SessionGrants,
+    public_web_turns: HashMap<OperationId, String>,
     // Exact prepared requests, not provider IDs or raw/default argument spellings.
     // Bounded for long-lived clients; exhaustion closes the Ask lane, not policy.
     denials: HashSet<blake3::Hash>,
@@ -65,6 +66,7 @@ enum BrokerCommand {
         invocation_id: ToolInvocationId,
     },
     ControllerLost,
+    OperationFinished(OperationId),
     Shutdown,
 }
 
@@ -108,6 +110,7 @@ impl PermissionBroker {
         let broker = Self {
             policy,
             grants: SessionGrants::default(),
+            public_web_turns: HashMap::new(),
             denials,
             pending: HashMap::new(),
             controller_present,
@@ -122,6 +125,9 @@ impl PermissionBroker {
     async fn run(mut self) {
         while let Some(command) = self.commands.recv().await {
             match command {
+                BrokerCommand::OperationFinished(operation) => {
+                    self.public_web_turns.remove(&operation);
+                }
                 BrokerCommand::Authorize { request, reply } => {
                     self.authorize(*request, reply);
                 }
@@ -180,10 +186,13 @@ impl PermissionBroker {
                 );
             }
             Evaluation::AllowedByPolicy { .. } | Evaluation::AllowedBySessionGrant { .. } => {
+                // General tool authority is not outbound consent. Preserve an
+                // independently selected web preference even in Allow mode.
+                let outbound = self.public_web_decision(&request);
                 self.finish_immediate(
                     request,
                     policy_evaluation,
-                    None,
+                    outbound,
                     PolicyDecision::Allow,
                     reply,
                 );
@@ -194,6 +203,15 @@ impl PermissionBroker {
                     policy_evaluation,
                     None,
                     PolicyDecision::Deny,
+                    reply,
+                );
+            }
+            Evaluation::Ask { .. } if self.public_web_decision(&request).is_some() => {
+                self.finish_immediate(
+                    request,
+                    policy_evaluation,
+                    Some(ControllerDecision::AllowPublicWebTurn),
+                    PolicyDecision::Allow,
                     reply,
                 );
             }
@@ -231,6 +249,18 @@ impl PermissionBroker {
                 }
             }
         }
+    }
+
+    fn public_web_decision(&self, request: &PermissionRequest) -> Option<ControllerDecision> {
+        request
+            .outbound_review
+            .as_ref()
+            .and_then(|review| review.public_web_scope())
+            .filter(|web| {
+                web.persisted_allow
+                    || self.public_web_turns.get(&request.operation_id) == Some(&web.route)
+            })
+            .map(|_| ControllerDecision::AllowPublicWebTurn)
     }
 
     fn finish_immediate(
@@ -296,6 +326,25 @@ impl PermissionBroker {
             });
         }
 
+        if decision == ControllerDecision::AllowPublicWebTurn {
+            let web = pending
+                .request
+                .outbound_review
+                .as_ref()
+                .and_then(|review| review.public_web_scope())
+                .ok_or(DecisionError::ScopeMismatch {
+                    operation_id,
+                    invocation_id,
+                })?;
+            if self.public_web_turns.len() >= MAX_DENIALS
+                && !self.public_web_turns.contains_key(&operation_id)
+            {
+                return Err(DecisionError::GrantLimit);
+            }
+            self.public_web_turns
+                .insert(operation_id, web.route.clone());
+        }
+
         if let ControllerDecision::AllowSession { scope } = &decision {
             self.grants
                 .insert(&pending.request, scope.clone())
@@ -309,6 +358,7 @@ impl PermissionBroker {
         let effective = match &decision {
             ControllerDecision::Deny => PolicyDecision::Deny,
             ControllerDecision::AllowOnce => PolicyDecision::Allow,
+            ControllerDecision::AllowPublicWebTurn => PolicyDecision::Allow,
             ControllerDecision::AllowSession { .. } => PolicyDecision::Allow,
             // These choices authorize only entry into the mandatory outbound
             // guard, which persists and enforces the exact send decision.
@@ -326,10 +376,35 @@ impl PermissionBroker {
         self.finish_immediate(
             pending.request,
             pending.policy_evaluation,
-            Some(decision),
+            Some(decision.clone()),
             effective,
             pending.reply,
         );
+        if decision == ControllerDecision::AllowPublicWebTurn {
+            // Concurrent web tools may already be waiting. Re-evaluate their
+            // policy after this grant instead of showing redundant prompts.
+            let keys = self
+                .pending
+                .iter()
+                .filter_map(|(key, pending)| {
+                    (key.0 == operation_id
+                        && pending
+                            .request
+                            .outbound_review
+                            .as_ref()
+                            .and_then(|review| review.public_web_scope())
+                            .is_some_and(|web| {
+                                self.public_web_turns.get(&operation_id) == Some(&web.route)
+                            }))
+                    .then_some(*key)
+                })
+                .collect::<Vec<_>>();
+            for key in keys {
+                if let Some(pending) = self.pending.remove(&key) {
+                    self.authorize(pending.request, pending.reply);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -424,6 +499,12 @@ impl PermissionBrokerHandle {
 
     pub(crate) fn controller_lost(&self) {
         let _ = self.commands.send(BrokerCommand::ControllerLost);
+    }
+
+    pub(crate) fn operation_finished(&self, operation: OperationId) {
+        let _ = self
+            .commands
+            .send(BrokerCommand::OperationFinished(operation));
     }
 
     pub(crate) fn shutdown(&self) {

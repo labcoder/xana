@@ -6,6 +6,27 @@ use tokio::{
     net::TcpListener,
 };
 
+#[test]
+fn exa_search_compatibility_does_not_change_general_mcp_discovery() {
+    let initialize = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":1,"method":"initialize",
+        "params":{"protocolVersion":EXA_SEARCH_PROTOCOL_VERSION}}))
+    .unwrap();
+    assert!(RequestEnvelope::parse(&initialize, true).is_ok());
+    assert!(RequestEnvelope::parse(&initialize, false).is_err());
+    let discovery = request(1, "server/discover", json!({}));
+    assert!(RequestEnvelope::parse(&discovery, false).is_ok());
+    assert!(RequestEnvelope::parse(&discovery, true).is_err());
+    for tool in ["web_search_exa", "arbitrary_effect"] {
+        let call = serde_json::to_vec(&json!({"jsonrpc":"2.0","id":2,"method":"tools/call",
+            "params":{"name":tool,"arguments":{"query":"fixture"}}}))
+        .unwrap();
+        assert_eq!(
+            RequestEnvelope::parse(&call, true).is_ok(),
+            tool == "web_search_exa"
+        );
+    }
+}
+
 fn request(id: u64, method: &str, params: Value) -> Vec<u8> {
     let mut params = params.as_object().cloned().unwrap();
     params.insert(

@@ -119,6 +119,13 @@ pub(crate) fn referenced_credential_ids(paths: &XanaPaths) -> Result<Vec<String>
                 .values()
                 .filter_map(|connection| connection.credential.as_ref()),
         )
+        .chain(
+            registry
+                .web
+                .connections
+                .values()
+                .filter_map(|connection| connection.credential.as_ref()),
+        )
     {
         if let CredentialReference::Stored { id } = reference {
             ids.insert(id.clone());

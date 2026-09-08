@@ -39,6 +39,8 @@ engineering contracts used to change it.
   explains explicit follow-ups, cumulative scope/budgets and immutable evidence.
 - [Dedicated local browser](user/local-browser.md) explains optional browser
   tasks, exact-recipient review, takeover, cleanup and qualification limits.
+- [Public web](user/public-web.md) explains search providers, page extraction,
+  turn-scoped consent, credentials, configurable bounds and browser distinctions.
 - [M4 native context and compaction evidence](development/m4-native-context-compaction-evidence.md)
   records the redacted budget, prompt-size, checkpoint-size, recovery, and
   managed-runtime baseline used to validate that boundary.

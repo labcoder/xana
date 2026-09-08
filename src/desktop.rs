@@ -939,6 +939,7 @@ pub struct DesktopPendingApproval {
     pub tool: String,
     pub effect: String,
     pub scope: String,
+    pub public_web: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1112,9 +1113,14 @@ pub enum DesktopEvent {
         tool: String,
         effect: String,
         scope: String,
+        public_web: bool,
     },
     PermissionResolved {
         permission_id: DesktopPermissionId,
+    },
+    WebProgress {
+        operation_id: DesktopOperationId,
+        label: String,
     },
     RoundBudgetReached(DesktopRoundBudgetSuspension),
     RoundBudgetDecision {
@@ -1567,7 +1573,33 @@ impl DesktopClient {
     ) -> Result<DesktopCommandReceipt, DesktopError> {
         self.enqueue(BridgeCommandValue::DecidePermission {
             permission_id,
-            allow_once,
+            decision: if allow_once {
+                ControllerDecision::AllowOnce
+            } else {
+                ControllerDecision::Deny
+            },
+        })
+        .map(|command_id| DesktopCommandReceipt {
+            command_id,
+            operation_id: Some(DesktopOperationId(permission_id.operation_id())),
+        })
+    }
+
+    /// Approves bounded public retrieval for one native owner turn. The broker
+    /// still verifies that the pending request offers this exact choice.
+    pub fn allow_public_web_turn(
+        &self,
+        permission_id: DesktopPermissionId,
+    ) -> Result<DesktopCommandReceipt, DesktopError> {
+        if !matches!(permission_id.0, DesktopPermissionTarget::Native { .. }) {
+            return Err(DesktopError::new(
+                DesktopErrorCode::CommandRejected,
+                "public web consent is only available for native web requests",
+            ));
+        }
+        self.enqueue(BridgeCommandValue::DecidePermission {
+            permission_id,
+            decision: ControllerDecision::AllowPublicWebTurn,
         })
         .map(|command_id| DesktopCommandReceipt {
             command_id,
@@ -2050,7 +2082,7 @@ enum BridgeCommandValue {
     },
     DecidePermission {
         permission_id: DesktopPermissionId,
-        allow_once: bool,
+        decision: ControllerDecision,
     },
     DecideRoundBudget {
         operation_id: DesktopOperationId,
@@ -3166,7 +3198,7 @@ impl Bridge {
             }
             BridgeCommandValue::DecidePermission {
                 permission_id,
-                allow_once,
+                decision,
             } => {
                 let DesktopPermissionTarget::Native {
                     operation_id,
@@ -3182,11 +3214,6 @@ impl Bridge {
                     )
                     .await?;
                     return Ok(None);
-                };
-                let decision = if allow_once {
-                    ControllerDecision::AllowOnce
-                } else {
-                    ControllerDecision::Deny
                 };
                 let result = owner
                     .send(ClientCommand::new(RuntimeCommand::DecidePermission {
@@ -3633,10 +3660,13 @@ fn project_frontend_snapshot(
                 id: DesktopPermissionId::native(approval.operation_id, approval.invocation_id),
                 tool: approval.tool_name.clone(),
                 effect: format!("{:?}", approval.effect_class).to_ascii_lowercase(),
-                scope: permission_scope_with_proposal(
-                    &approval.scope,
-                    approval.memory_proposal.as_ref(),
-                ),
+                scope: approval.public_web_review.clone().unwrap_or_else(|| {
+                    permission_scope_with_proposal(
+                        &approval.scope,
+                        approval.memory_proposal.as_ref(),
+                    )
+                }),
+                public_web: approval.public_web_review.is_some(),
             })
             .collect(),
         activity_count: snapshot.activity_count,
@@ -3834,6 +3864,10 @@ fn project_event(
                     diagnostic.outcome, diagnostic.failure.category
                 ),
             },
+            AgentEvent::WebProgress { progress } => DesktopEvent::WebProgress {
+                operation_id: DesktopOperationId(progress.operation_id),
+                label: progress.label(),
+            },
             AgentEvent::CompletionEvidenceRecorded { evidence, .. } => DesktopEvent::Activity {
                 label: evidence.summary(),
             },
@@ -4023,10 +4057,17 @@ fn project_permission(request: &PermissionRequest) -> DesktopEvent {
         tool: request.tool_name.clone(),
         effect: format!("{:?}", request.effect_class).to_ascii_lowercase(),
         scope: permission_review_label(request),
+        public_web: request
+            .outbound_review
+            .as_ref()
+            .is_some_and(|review| review.public_web_scope().is_some()),
     }
 }
 
 fn permission_review_label(request: &PermissionRequest) -> String {
+    if let Some(review) = &request.outbound_review {
+        return review.render();
+    }
     permission_scope_with_proposal(
         &request.scope,
         crate::frontend::MemoryPermissionProposal::from_request(request).as_ref(),

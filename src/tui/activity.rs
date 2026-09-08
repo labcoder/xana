@@ -103,6 +103,7 @@ pub(super) struct ApprovalPrompt {
     pub(super) title: String,
     pub(super) details: Vec<String>,
     pub(super) allow_once: bool,
+    pub(super) allow_public_web: bool,
     pub(super) allow_session: bool,
     pub(super) save_allow: bool,
     pub(super) save_deny: bool,
@@ -111,6 +112,11 @@ pub(super) struct ApprovalPrompt {
 
 impl ApprovalPrompt {
     pub(super) fn native(request: PermissionRequest) -> Self {
+        let allow_public_web = request
+            .outbound_review
+            .as_ref()
+            .and_then(|review| review.public_web_scope())
+            .is_some();
         let external_scope = matches!(
             request.scope,
             crate::permission::PermissionScope::External { .. }
@@ -137,6 +143,7 @@ impl ApprovalPrompt {
             details,
             target: ApprovalTarget::Native(request),
             allow_once: true,
+            allow_public_web,
             allow_session: !exact_only,
             save_allow: exact_external,
             save_deny: exact_external,
@@ -145,6 +152,11 @@ impl ApprovalPrompt {
     }
 
     pub(super) fn child(attribution: ChildAttribution, request: PermissionRequest) -> Self {
+        let allow_public_web = request
+            .outbound_review
+            .as_ref()
+            .and_then(|review| review.public_web_scope())
+            .is_some();
         let owner = format!(
             "Xana child {} via {}",
             attribution.agent_id, attribution.route
@@ -178,6 +190,7 @@ impl ApprovalPrompt {
                 request,
             },
             allow_once: true,
+            allow_public_web,
             allow_session: !exact_only,
             save_allow: exact_external,
             save_deny: exact_external,
@@ -206,6 +219,7 @@ impl ApprovalPrompt {
             allow_once: request.available_decisions.contains("accept"),
             allow_session: request.available_decisions.contains("acceptForSession"),
             save_allow: false,
+            allow_public_web: false,
             save_deny: false,
             deny: request.available_decisions.contains("decline")
                 || request.available_decisions.contains("cancel"),

@@ -1583,6 +1583,13 @@ impl Runtime {
     }
 
     fn emit(&self, event: AgentEvent) {
+        if let AgentEvent::OperationStateChanged {
+            operation_id,
+            state: OperationState::Finished(_),
+        } = &event
+        {
+            self.permissions.operation_finished(*operation_id);
+        }
         let _ = self.events.send(event);
     }
 

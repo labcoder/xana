@@ -349,6 +349,7 @@ pub(super) fn render(
             let mut index = 0usize;
             for (label, enabled) in [
                 ("Allow once", prompt.allow_once),
+                ("Allow public web for this turn", prompt.allow_public_web),
                 (
                     "Allow this exact scope for this session",
                     prompt.allow_session,

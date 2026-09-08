@@ -24,8 +24,9 @@ pub(crate) use catalog::{
     McpToolDefinition, McpToolSummary,
 };
 pub(crate) use http::{
-    McpHttpClient, McpHttpEndpoint, McpHttpError, McpHttpSecurity, McpHttpToolHeaders,
-    mcp_http_recipient, pinned_client, resolve_pinned_addresses,
+    EXA_SEARCH_PROTOCOL_VERSION, McpHttpBudget, McpHttpClient, McpHttpEndpoint, McpHttpError,
+    McpHttpSecurity, McpHttpToolHeaders, mcp_http_recipient, pinned_client,
+    resolve_pinned_addresses,
 };
 pub(crate) use oauth::{
     McpAuthChallenge, McpOAuthClient, McpOAuthError, McpOAuthFlow, McpOAuthReference,

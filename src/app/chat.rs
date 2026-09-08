@@ -784,6 +784,9 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         },
         |profile| profile.external_agents.value.clone(),
     );
+    tools
+        .configure_web(paths, &child_registry.web, &profile_egress)
+        .context("could not configure web tools")?;
     super::mcp_commands::activate_profile_tools(
         &child_registry,
         paths,

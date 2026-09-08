@@ -531,6 +531,9 @@ pub(crate) struct PendingPermissionProjection {
     /// Generic arguments and the original owner quotation remain excluded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) memory_proposal: Option<MemoryPermissionProposal>,
+    /// Bounded owner-facing web disclosure, never a grant restored from history.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_web_review: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -842,6 +845,11 @@ impl ClientSnapshot {
                         effect_class: request.effect_class,
                         scope: request.scope.clone(),
                         memory_proposal: MemoryPermissionProposal::from_request(request),
+                        public_web_review: request
+                            .outbound_review
+                            .as_ref()
+                            .filter(|review| review.public_web_scope().is_some())
+                            .map(|review| bounded_text(review.render(), 16 * 1024)),
                     };
                     if let Some(existing) = self.pending_approvals.iter_mut().find(|candidate| {
                         candidate.operation_id == projection.operation_id
@@ -1238,6 +1246,7 @@ fn bounded_text(mut value: String, limit: usize) -> String {
 
 fn event_kind(event: &AgentEvent) -> &'static str {
     match event {
+        AgentEvent::WebProgress { .. } => "web progress",
         AgentEvent::TerminalDiagnostic { .. } => "terminal diagnostic",
         AgentEvent::CompletionEvidenceRecorded { .. } => "completion evidence",
         AgentEvent::UserMessageCommitted { .. } => "committed user message",

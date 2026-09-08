@@ -67,6 +67,7 @@ pub(crate) struct PermissionRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) enum ControllerDecision {
+    AllowPublicWebTurn,
     Deny,
     AllowOnce,
     AllowSession { scope: PermissionScope },

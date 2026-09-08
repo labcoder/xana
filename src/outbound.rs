@@ -47,6 +47,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum RecipientKind {
+    WebSearch,
     McpStdio,
     McpHttp,
     ExternalAgent,
@@ -58,6 +59,7 @@ pub(crate) enum RecipientKind {
 impl RecipientKind {
     const fn as_str(self) -> &'static str {
         match self {
+            Self::WebSearch => "web_search",
             Self::McpStdio => "mcp_stdio",
             Self::McpHttp => "mcp_http",
             Self::ExternalAgent => "external_agent",
@@ -263,6 +265,7 @@ impl OutboundRequest {
 
     pub(crate) fn review(&self) -> OutboundApprovalRequest {
         OutboundApprovalRequest {
+            public_web: None,
             operation_id: self.operation_id,
             recipient: self.recipient.clone(),
             purpose: self.purpose.clone(),
@@ -320,6 +323,9 @@ pub(crate) struct OutboundItemReview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OutboundApprovalRequest {
+    /// Trusted tool-composition metadata, not model arguments or sent payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) public_web: Option<Box<PublicWebReview>>,
     pub(crate) operation_id: OperationId,
     pub(crate) recipient: RecipientIdentity,
     pub(crate) purpose: String,
@@ -328,7 +334,25 @@ pub(crate) struct OutboundApprovalRequest {
     pub(crate) total_bytes: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublicWebReview {
+    pub(crate) route: String,
+    pub(crate) persisted_allow: bool,
+}
+
 impl OutboundApprovalRequest {
+    pub(crate) fn public_web_scope(&self) -> Option<&PublicWebReview> {
+        if matches!(
+            self.recipient.kind,
+            RecipientKind::WebFetch | RecipientKind::WebSearch
+        ) && self.classes == [OutboundDataClass::PromptText]
+        {
+            self.public_web.as_deref()
+        } else {
+            None
+        }
+    }
     pub(crate) fn for_operation(mut self, operation_id: OperationId) -> Self {
         self.operation_id = operation_id;
         self
@@ -357,6 +381,9 @@ impl OutboundApprovalRequest {
                 item.content_digest
             ));
         }
+        if let Some(web) = self.public_web_scope() {
+            output.push_str(&format!("Public-web turn option: model-generated queries through {} and public HTTPS text reads. No private network, files, cookies or browser actions. Queries may disclose their contents.\n", web.route));
+        }
         output.push_str("Choice: deny once, allow once, save deny, or save allow");
         output
     }
@@ -364,6 +391,7 @@ impl OutboundApprovalRequest {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OutboundApprovalDecision {
+    AllowPublicWebTurn,
     DenyOnce,
     AllowOnce,
     SaveDeny,
@@ -384,8 +412,22 @@ pub(crate) struct ReviewedOutboundApproval {
 }
 
 impl ReviewedOutboundApproval {
-    pub(crate) fn new(review: OutboundApprovalRequest, decision: OutboundApprovalDecision) -> Self {
+    pub(crate) fn new(
+        mut review: OutboundApprovalRequest,
+        mut decision: OutboundApprovalDecision,
+    ) -> Self {
+        if decision == OutboundApprovalDecision::AllowPublicWebTurn
+            && review.public_web_scope().is_none()
+        {
+            decision = OutboundApprovalDecision::DenyOnce;
+        }
+        // UI turn-policy metadata is not part of the transport payload. The
+        // exact recipient, classes, purpose, bytes and digest remain bound.
+        review.public_web = None;
         Self { review, decision }
+    }
+    pub(crate) fn permits_public_web(&self) -> bool {
+        self.decision == OutboundApprovalDecision::AllowPublicWebTurn
     }
 }
 
@@ -420,6 +462,7 @@ impl OutboundApprovalController for ReviewedOutboundApproval {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OutboundDecisionSource {
+    UserTurn,
     PolicyCeiling,
     Saved,
     UserOnce,
@@ -690,6 +733,7 @@ impl OutboundGuard {
                     return Err(OutboundError::Cancelled);
                 }
                 OutboundApprovalDecision::AllowOnce => OutboundDecisionSource::UserOnce,
+                OutboundApprovalDecision::AllowPublicWebTurn => OutboundDecisionSource::UserTurn,
                 OutboundApprovalDecision::SaveAllow => {
                     audit.record(audit_event(
                         &review,
@@ -830,7 +874,21 @@ fn audit_event(review: &OutboundApprovalRequest, stage: OutboundAuditStage) -> O
         operation_id: review.operation_id,
         recipient_kind: review.recipient.kind,
         recipient_connection: review.recipient.connection.clone(),
-        recipient_destination: review.recipient.destination.clone(),
+        recipient_destination: if matches!(
+            review.recipient.kind,
+            RecipientKind::WebFetch | RecipientKind::WebSearch
+        ) {
+            review
+                .recipient
+                .destination
+                .split(" -> ")
+                .filter_map(|value| reqwest::Url::parse(value).ok())
+                .map(|url| url.origin().ascii_serialization())
+                .collect::<Vec<_>>()
+                .join(" -> ")
+        } else {
+            review.recipient.destination.clone()
+        },
         recipient_identity_digest: review.recipient.identity_digest.clone(),
         classes: review.classes.clone(),
         item_count: review.items.len(),
@@ -877,6 +935,7 @@ fn audit_record(event: &OutboundAuditEvent) -> OutboundAuditRecord {
 
 const fn source_name(source: OutboundDecisionSource) -> &'static str {
     match source {
+        OutboundDecisionSource::UserTurn => "user_turn",
         OutboundDecisionSource::PolicyCeiling => "policy_ceiling",
         OutboundDecisionSource::Saved => "saved",
         OutboundDecisionSource::UserOnce => "user_once",

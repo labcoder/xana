@@ -20,6 +20,32 @@ use tokio::sync::Notify;
 
 struct ScriptedProvider;
 
+#[test]
+fn web_progress_belongs_to_the_active_turn_only() {
+    let mut state = TuiState::starting(ComposerPreset::Submit);
+    let current = crate::identity::OperationId::new();
+    state.active_operation = Some(current);
+    for (operation_id, elapsed_ms) in [(current, 12), (crate::identity::OperationId::new(), 999)] {
+        state.apply_runtime(&AgentEvent::WebProgress {
+            progress: crate::web::WebProgress {
+                operation_id,
+                stage: crate::web::WebStage::Reading,
+                elapsed_ms,
+            },
+        });
+    }
+    assert_eq!(state.web_progress.as_ref().unwrap().elapsed_ms, 12);
+    state.active_operation = None;
+    state.apply_runtime(&AgentEvent::WebProgress {
+        progress: crate::web::WebProgress {
+            operation_id: current,
+            stage: crate::web::WebStage::Complete,
+            elapsed_ms: 200,
+        },
+    });
+    assert_eq!(state.web_progress.as_ref().unwrap().elapsed_ms, 12);
+}
+
 struct DelayedProvider {
     started: Arc<Notify>,
     release: Arc<Notify>,

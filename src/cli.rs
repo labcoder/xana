@@ -486,6 +486,12 @@ fn parse_log_lines(value: &str) -> Result<usize, String> {
 
 #[derive(Debug, Args, PartialEq, Eq)]
 pub(crate) struct ConnectArgs {
+    /// Search backend, independent of the conversational model.
+    #[arg(long, value_enum)]
+    pub(crate) web_provider: Option<WebProviderChoice>,
+    /// Explicit preference for public web on future turns; never allows browser actions.
+    #[arg(long, value_enum)]
+    pub(crate) public_web: Option<PublicWebChoice>,
     /// Open one integration path; omit to inspect the hub without mutation.
     #[arg(value_enum)]
     pub(crate) integration: Option<ConnectIntegration>,
@@ -541,6 +547,7 @@ pub(crate) enum FocusedServiceProviderChoice {
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
 pub(crate) enum ConnectIntegration {
+    Web,
     Provider,
     Profile,
     Plugin,
@@ -549,6 +556,20 @@ pub(crate) enum ConnectIntegration {
     ExternalAgent,
     Image,
     Vision,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum WebProviderChoice {
+    Exa,
+    ExaMcp,
+    Brave,
+    PagesOnly,
+    Disabled,
+}
+#[derive(Debug, Clone, Copy, ValueEnum, PartialEq, Eq)]
+pub(crate) enum PublicWebChoice {
+    Ask,
+    Allow,
 }
 
 #[derive(Debug, Args, PartialEq, Eq)]

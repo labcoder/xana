@@ -10,12 +10,12 @@ use crate::{
     identity::{OperationId, PrincipalId},
     mcp::{McpHttpSecurity, pinned_client},
     outbound::{
-        ObservedOutboundAudit, OutboundDisposition, OutboundGuard, OutboundItem,
-        OutboundPolicyLayers, OutboundRequest, OutboundTransport, OutboundTransportFailure,
-        RecipientIdentity, RecipientKind,
+        ObservedOutboundAudit, OutboundDisposition, OutboundGuard, OutboundItem, OutboundRequest,
+        OutboundTransport, OutboundTransportFailure, RecipientIdentity, RecipientKind,
     },
     paths::XanaPaths,
     permission::PermissionScope,
+    web::{WebConfig, WebFailure, WebRuntime, WebTurn},
 };
 use futures::{StreamExt, future::BoxFuture};
 use reqwest::{Url, header};
@@ -24,11 +24,12 @@ use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
     fmt,
+    sync::Arc,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio_util::sync::CancellationToken;
 
-const DEFAULT_RESPONSE_BYTES: usize = 1024 * 1024;
+const DEFAULT_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RESPONSE_HEADERS_BYTES: usize = 32 * 1024;
 const MAX_EXTRACTED_BYTES: usize = 256 * 1024;
@@ -41,20 +42,49 @@ const MAX_REVIEW_DESTINATION_BYTES: usize = 1900;
 const HTML_RENDER_WIDTH: usize = 120;
 const HTML_EXTRACTION_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Default)]
+mod extraction;
+
+#[derive(Clone)]
 pub(crate) struct WebFetch {
     paths: Option<XanaPaths>,
     security: McpHttpSecurity,
+    config: WebConfig,
+    runtime: Arc<WebRuntime>,
+}
+
+impl Default for WebFetch {
+    fn default() -> Self {
+        let config = WebConfig::default();
+        Self {
+            paths: None,
+            security: McpHttpSecurity::default(),
+            runtime: Arc::new(WebRuntime::new(config.limits.clone())),
+            config,
+        }
+    }
 }
 
 impl WebFetch {
+    pub(super) fn configured(
+        paths: XanaPaths,
+        config: WebConfig,
+        runtime: Arc<WebRuntime>,
+    ) -> Self {
+        Self {
+            paths: Some(paths),
+            security: McpHttpSecurity::default(),
+            config,
+            runtime,
+        }
+    }
     #[cfg(test)]
-    fn for_tests(paths: XanaPaths) -> Self {
+    pub(super) fn for_tests(paths: XanaPaths) -> Self {
         Self {
             paths: Some(paths),
             security: McpHttpSecurity {
                 allow_loopback_http: true,
             },
+            ..Self::default()
         }
     }
 
@@ -86,6 +116,7 @@ struct Plan {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ResponseKind {
+    Json,
     PlainText,
     Markdown,
     Html,
@@ -102,6 +133,8 @@ struct FetchReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum FetchError {
+    Rendering(String),
+    Web(WebFailure),
     InvalidUrl,
     CredentialsRejected,
     HttpsRequired,
@@ -126,6 +159,7 @@ enum FetchError {
 impl FetchError {
     fn outbound_failure(&self) -> OutboundTransportFailure {
         match self {
+            Self::Web(_) | Self::Rendering(_) => OutboundTransportFailure::Protocol,
             Self::Unavailable | Self::DnsOrAddressPolicy => OutboundTransportFailure::Unavailable,
             Self::TimedOut => OutboundTransportFailure::TimedOut,
             Self::Cancelled => OutboundTransportFailure::Cancelled,
@@ -151,6 +185,8 @@ impl FetchError {
 impl fmt::Display for FetchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Rendering(error) => formatter.write_str(error),
+            Self::Web(error) => write!(formatter, "{error}"),
             Self::InvalidUrl => formatter.write_str("web_fetch URL is invalid"),
             Self::CredentialsRejected => {
                 formatter.write_str("web_fetch rejects credentials embedded in URLs")
@@ -182,7 +218,7 @@ impl fmt::Display for FetchError {
             Self::ResponseTooLarge => formatter.write_str("web_fetch response exceeds its byte limit"),
             Self::Http(status) => write!(formatter, "web_fetch destination returned HTTP {status}"),
             Self::UnsupportedContentType => formatter.write_str(
-                "web_fetch supports only UTF-8 plain text, Markdown, HTML, and XHTML",
+                "web_fetch supports only UTF-8 plain text, Markdown, HTML, XHTML, and JSON",
             ),
             Self::UnsupportedEncoding => {
                 formatter.write_str("web_fetch supports only UTF-8 response text")
@@ -196,6 +232,11 @@ impl fmt::Display for FetchError {
 }
 
 struct FetchTransport {
+    turn: Arc<WebTurn>,
+    public_web: bool,
+    paths: XanaPaths,
+    operation: OperationId,
+    events: Option<crate::native_runtime::AgentEventSender>,
     urls: Vec<Url>,
     security: McpHttpSecurity,
     max_response_bytes: usize,
@@ -205,7 +246,7 @@ struct FetchTransport {
 }
 
 impl OutboundTransport for FetchTransport {
-    type Receipt = FetchReceipt;
+    type Receipt = String;
 
     fn send<'a>(
         &'a mut self,
@@ -213,20 +254,86 @@ impl OutboundTransport for FetchTransport {
         _items: &'a [OutboundItem],
     ) -> BoxFuture<'a, Result<Self::Receipt, OutboundTransportFailure>> {
         Box::pin(async move {
-            match fetch_chain(
-                &self.urls,
-                self.security,
-                self.max_response_bytes,
-                self.timeout,
-                &self.cancellation,
-            )
-            .await
-            {
+            let turn = Arc::clone(&self.turn);
+            let timeout = self.timeout;
+            let urls = self.urls.iter().map(Url::as_str).collect::<Vec<_>>();
+            let key = blake3::hash(
+                &serde_json::to_vec(&("fetch", urls, self.max_response_bytes, self.public_web))
+                    .map_err(|_| OutboundTransportFailure::Protocol)?,
+            );
+            let fetch = &mut *self;
+            let work_turn = &turn;
+            let work = move |slot| async move {
+                crate::web::progress(
+                    fetch.events.as_ref(),
+                    fetch.operation,
+                    crate::web::WebStage::Reading,
+                    work_turn,
+                );
+                match fetch_chain(
+                    &fetch.urls,
+                    fetch.security,
+                    fetch.max_response_bytes,
+                    fetch.timeout,
+                    &fetch.cancellation,
+                    Some(FetchScope {
+                        turn: work_turn,
+                        public_web: fetch.public_web,
+                        paths: &fetch.paths,
+                        events: fetch.events.as_ref(),
+                        operation: fetch.operation,
+                    }),
+                )
+                .await
+                {
+                    Ok(receipt) => {
+                        crate::web::progress(
+                            fetch.events.as_ref(),
+                            fetch.operation,
+                            crate::web::WebStage::Extracting,
+                            work_turn,
+                        );
+                        render_receipt(receipt, &fetch.paths, fetch.operation, slot)
+                            .await
+                            .map_err(|error| {
+                                fetch.failure = Some(FetchError::Rendering(error));
+                                WebFailure::InvalidResponse
+                            })
+                    }
+                    Err(error) => {
+                        let failure = match &error {
+                            FetchError::Web(failure) => *failure,
+                            FetchError::Http(404) => WebFailure::Missing,
+                            FetchError::Http(401 | 403) => WebFailure::Challenge,
+                            FetchError::Http(429) => WebFailure::RateLimited,
+                            FetchError::TimedOut => WebFailure::TimedOut,
+                            FetchError::Cancelled => WebFailure::Cancelled,
+                            FetchError::ResponseTooLarge => WebFailure::TooLarge,
+                            _ => WebFailure::InvalidResponse,
+                        };
+                        fetch.failure = Some(error);
+                        Err(failure)
+                    }
+                }
+            };
+            let result = tokio::time::timeout(timeout, turn.cached(key, false, work))
+                .await
+                .unwrap_or(Err(WebFailure::TimedOut));
+            crate::web::progress(
+                self.events.as_ref(),
+                self.operation,
+                if result.is_ok() {
+                    crate::web::WebStage::Complete
+                } else {
+                    crate::web::WebStage::Failed
+                },
+                &turn,
+            );
+            match result {
                 Ok(receipt) => Ok(receipt),
-                Err(error) => {
-                    let failure = error.outbound_failure();
-                    self.failure = Some(error);
-                    Err(failure)
+                Err(failure) => {
+                    let error = self.failure.get_or_insert(FetchError::Web(failure));
+                    Err(error.outbound_failure())
                 }
             }
         })
@@ -246,7 +353,7 @@ impl Tool for WebFetch {
         ToolDefinition {
             name: "web_fetch".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
-            description: "Fetch one reviewed public HTTPS text document as bounded, attributed, untrusted evidence. Redirects must be supplied as an exact reviewed chain; this tool has no cookies, credentials, proxy inheritance, JavaScript, or browser authority.".into(),
+            description: "Read a KNOWN public HTTPS URL as bounded, attributed, untrusted text or JSON. This is not search: use web_search to discover source URLs, never guess paths. Exact approval stops at unreviewed redirects; an explicit public-web turn grant follows bounded public redirects subject to saved denies. No cookies, credentials, proxy inheritance, JavaScript or browser authority. On 404 or oversize use another verified source instead of repeating the request.".into(),
             parameters: json!({
                 "type":"object",
                 "additionalProperties":false,
@@ -254,7 +361,7 @@ impl Tool for WebFetch {
                 "properties":{
                     "url":{"type":"string","description":"Public HTTPS URL to fetch"},
                     "redirects":{"type":"array","maxItems":MAX_REDIRECTS,"items":{"type":"string"},"description":"Exact ordered redirect destinations previously reported by web_fetch; omitted on the first attempt"},
-                    "max_response_bytes":{"type":"integer","minimum":1,"maximum":MAX_RESPONSE_BYTES,"description":"Encoded response-byte ceiling; default 1048576"},
+                    "max_response_bytes":{"type":"integer","minimum":1,"maximum":MAX_RESPONSE_BYTES,"description":"Encoded response-byte ceiling; configured default is 2097152"},
                     "timeout_seconds":{"type":"integer","minimum":1,"maximum":MAX_TIMEOUT_SECONDS,"description":"Whole-request timeout; default 20 seconds"}
                 }
             }),
@@ -270,7 +377,9 @@ impl Tool for WebFetch {
     ) -> Result<PlannedToolInvocation, String> {
         let mut args: Args = serde_json::from_value(arguments.clone())
             .map_err(|_| "web_fetch arguments are invalid".to_owned())?;
-        let max_response_bytes = args.max_response_bytes.unwrap_or(DEFAULT_RESPONSE_BYTES);
+        let max_response_bytes = args
+            .max_response_bytes
+            .unwrap_or(self.config.limits.fetch_bytes);
         if max_response_bytes == 0 || max_response_bytes > MAX_RESPONSE_BYTES {
             return Err(format!(
                 "max_response_bytes must be within 1..={MAX_RESPONSE_BYTES}"
@@ -337,7 +446,7 @@ impl Tool for WebFetch {
         )
         .map_err(|error| error.to_string())?;
         let items = vec![item];
-        let review = OutboundRequest::new(
+        let mut review = OutboundRequest::new(
             OperationId::new(),
             recipient.clone(),
             "retrieve public text as untrusted evidence",
@@ -345,6 +454,7 @@ impl Tool for WebFetch {
         )
         .map_err(|error| error.to_string())?
         .review();
+        review.public_web = Some(Box::new(self.config.review()));
         let paths = self.paths()?;
         let final_arguments = serde_json::to_value(&args).map_err(|error| error.to_string())?;
         Ok(PlannedToolInvocation::new(
@@ -372,7 +482,21 @@ impl Tool for WebFetch {
         Box::pin(async move {
             let plan = planned.executable::<Plan>("web_fetch")?;
             let cancellation = CancelOnDrop(CancellationToken::new());
+            let turn = self.runtime.turn(context.operation_id);
+            if context
+                .outbound_approval
+                .as_ref()
+                .is_some_and(|approval| approval.permits_public_web())
+                || self.config.public_web == crate::web::PublicWebConsent::Allow
+            {
+                turn.allow_public_web();
+            }
             let mut transport = FetchTransport {
+                public_web: turn.permits_public_web(),
+                turn,
+                paths: plan.paths.clone(),
+                operation: context.operation_id,
+                events: context.events.clone(),
                 urls: plan.urls.clone(),
                 security: self.security,
                 max_response_bytes: plan
@@ -392,7 +516,7 @@ impl Tool for WebFetch {
                 plan.items.clone(),
             )
             .map_err(|error| error.to_string())?;
-            let policy = web_fetch_policy();
+            let policy = self.runtime.policy();
             let observer = crate::diagnostics::outbound_audit(&plan.paths)
                 .map_err(|error| error.to_string())?;
             let mut audit = ObservedOutboundAudit::new(observer.as_ref());
@@ -416,7 +540,7 @@ impl Tool for WebFetch {
                         .map_or_else(|| error.to_string(), |failure| failure.to_string()));
                 }
             };
-            render_receipt(receipt, &plan.paths, context.operation_id).await
+            Ok(receipt)
         })
     }
 
@@ -430,16 +554,6 @@ impl Tool for WebFetch {
             .disposition(&plan.recipient, plan.items.iter().map(OutboundItem::class))
             .map(Some)
             .map_err(|error| error.to_string())
-    }
-}
-
-fn web_fetch_policy() -> OutboundPolicyLayers {
-    let allowed = BTreeSet::from([OutboundDataClass::PromptText]);
-    OutboundPolicyLayers {
-        connection_allowed: allowed.clone(),
-        user_ceiling: allowed.clone(),
-        profile_allowed: allowed,
-        conversation_allowed: None,
     }
 }
 
@@ -470,29 +584,47 @@ fn textual_loopback(url: &Url) -> bool {
     })
 }
 
+#[derive(Clone, Copy)]
+struct FetchScope<'a> {
+    turn: &'a WebTurn,
+    public_web: bool,
+    paths: &'a XanaPaths,
+    events: Option<&'a crate::native_runtime::AgentEventSender>,
+    operation: OperationId,
+}
+
 async fn fetch_chain(
     urls: &[Url],
     security: McpHttpSecurity,
     max_response_bytes: usize,
     timeout: Duration,
     cancellation: &CancellationToken,
+    turn: Option<FetchScope<'_>>,
 ) -> Result<FetchReceipt, FetchError> {
     let requested_url = urls.first().cloned().ok_or(FetchError::InvalidUrl)?;
     let deadline = tokio::time::Instant::now() + timeout;
     let mut followed = Vec::new();
-    for (index, url) in urls.iter().enumerate() {
+    let mut chain = urls.to_vec();
+    let mut index = 0;
+    while index < chain.len() {
+        let url = chain[index].clone();
+        if let Some(scope) = turn {
+            scope.turn.attempt().map_err(FetchError::Web)?;
+        }
         let remaining = deadline
             .checked_duration_since(tokio::time::Instant::now())
             .ok_or(FetchError::TimedOut)?;
-        let client = pinned_client(url, security, remaining)
+        let client = tokio::time::timeout(remaining, pinned_client(&url, security, remaining))
             .await
+            .map_err(|_| FetchError::TimedOut)?
             .map_err(|_| FetchError::DnsOrAddressPolicy)?;
         let request = client
             .get(url.clone())
             .header(
                 header::ACCEPT,
-                "text/plain, text/markdown, text/html, application/xhtml+xml",
+                "text/plain, text/markdown, text/html, application/xhtml+xml, application/json",
             )
+            .header(header::ACCEPT_ENCODING, "identity")
             .header(
                 header::USER_AGENT,
                 concat!("xana/", env!("CARGO_PKG_VERSION")),
@@ -502,9 +634,29 @@ async fn fetch_chain(
             _ = cancellation.cancelled() => return Err(FetchError::Cancelled),
             response = request.send() => response.map_err(classify_reqwest)?,
         };
-        validate_headers(&response)?;
+        if let Some(scope) = turn {
+            scope
+                .turn
+                .ingress(
+                    response
+                        .headers()
+                        .iter()
+                        .map(|(name, value)| name.as_str().len() + value.len())
+                        .sum(),
+                )
+                .map_err(FetchError::Web)?;
+        }
 
+        validate_headers(&response)?;
         if response.status().is_redirection() {
+            if let Some(scope) = turn {
+                crate::web::progress(
+                    scope.events,
+                    scope.operation,
+                    crate::web::WebStage::Redirecting,
+                    scope.turn,
+                );
+            }
             if index >= MAX_REDIRECTS {
                 return Err(FetchError::RedirectLimit);
             }
@@ -518,23 +670,39 @@ async fn fetch_chain(
             if url.scheme() == "https" && next.scheme() != "https" {
                 return Err(FetchError::RedirectDowngrade);
             }
-            let Some(reviewed) = urls.get(index + 1) else {
+            if chain[..=index].contains(&next) {
+                return Err(FetchError::RedirectLimit);
+            }
+            if let Some(scope) = turn.filter(|scope| scope.public_web) {
+                check_redirect_deny(&chain[..=index], &next, scope.paths)?;
+                if chain.get(index + 1).is_none() {
+                    chain.push(next.clone());
+                }
+            }
+            let Some(reviewed) = chain.get(index + 1) else {
                 return Err(FetchError::RedirectRequiresReview(next.to_string()));
             };
             if reviewed != &next {
                 return Err(FetchError::RedirectPlanMismatch);
             }
             followed.push(next);
+            index += 1;
             continue;
         }
-        if index + 1 != urls.len() {
+        if index + 1 != chain.len() {
             return Err(FetchError::RedirectPlanMismatch);
         }
         if !response.status().is_success() {
             return Err(FetchError::Http(response.status().as_u16()));
         }
         let media_type = response_media_type(&response)?;
-        let body = collect_body(response, max_response_bytes, cancellation).await?;
+        let body = collect_body(
+            response,
+            max_response_bytes,
+            cancellation,
+            turn.map(|scope| scope.turn),
+        )
+        .await?;
         return Ok(FetchReceipt {
             requested_url,
             final_url: url.clone(),
@@ -544,6 +712,29 @@ async fn fetch_chain(
         });
     }
     Err(FetchError::RedirectPlanMismatch)
+}
+
+fn check_redirect_deny(chain: &[Url], next: &Url, paths: &XanaPaths) -> Result<(), FetchError> {
+    let guard = OutboundGuard::open(paths).map_err(|_| FetchError::Web(WebFailure::Policy))?;
+    let mut full = chain.iter().map(Url::as_str).collect::<Vec<_>>();
+    full.push(next.as_str());
+    for urls in [vec![next.as_str()], full] {
+        let recipient = RecipientIdentity::new(
+            RecipientKind::WebFetch,
+            "web_fetch",
+            urls.join(" -> "),
+            &serde_json::to_vec(&urls).map_err(|_| FetchError::InvalidUrl)?,
+        )
+        .map_err(|_| FetchError::InvalidUrl)?;
+        if guard
+            .disposition(&recipient, [OutboundDataClass::PromptText])
+            .map_err(|_| FetchError::Web(WebFailure::Policy))?
+            == OutboundDisposition::SavedDeny
+        {
+            return Err(FetchError::Web(WebFailure::Policy));
+        }
+    }
+    Ok(())
 }
 
 fn validate_headers(response: &reqwest::Response) -> Result<(), FetchError> {
@@ -606,6 +797,7 @@ fn classify_media_type(media_type: &str) -> Result<ResponseKind, FetchError> {
     match media_type {
         "text/plain" => Ok(ResponseKind::PlainText),
         "text/markdown" => Ok(ResponseKind::Markdown),
+        "application/json" | "text/json" => Ok(ResponseKind::Json),
         "text/html" | "application/xhtml+xml" => Ok(ResponseKind::Html),
         _ => Err(FetchError::UnsupportedContentType),
     }
@@ -615,6 +807,7 @@ async fn collect_body(
     response: reqwest::Response,
     max_bytes: usize,
     cancellation: &CancellationToken,
+    turn: Option<&WebTurn>,
 ) -> Result<Vec<u8>, FetchError> {
     if response
         .content_length()
@@ -632,6 +825,9 @@ async fn collect_body(
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(classify_reqwest)?;
+        if let Some(turn) = turn {
+            turn.ingress(chunk.len()).map_err(FetchError::Web)?;
+        }
         if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(FetchError::ResponseTooLarge);
         }
@@ -652,17 +848,30 @@ async fn render_receipt(
     receipt: FetchReceipt,
     paths: &XanaPaths,
     _operation_id: OperationId,
+    slot: Arc<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<String, String> {
     let response_kind =
         classify_media_type(&receipt.media_type).map_err(|error| error.to_string())?;
+    let response_bytes = receipt.body.len() as u64;
+    let content_digest = blake3::hash(&receipt.body).to_hex().to_string();
+    let parser_slot = Arc::clone(&slot);
     let body_for_extraction = receipt.body.clone();
+    if response_kind == ResponseKind::Json {
+        serde_json::from_slice::<serde::de::IgnoredAny>(&body_for_extraction)
+            .map_err(|_| FetchError::MalformedText.to_string())?;
+    }
     let extracted = match response_kind {
-        ResponseKind::PlainText | ResponseKind::Markdown => String::from_utf8(body_for_extraction)
-            .map_err(|_| FetchError::MalformedText.to_string())?,
+        ResponseKind::PlainText | ResponseKind::Markdown | ResponseKind::Json => {
+            String::from_utf8(body_for_extraction)
+                .map_err(|_| FetchError::MalformedText.to_string())?
+        }
         ResponseKind::Html => tokio::time::timeout(
             HTML_EXTRACTION_TIMEOUT,
             tokio::task::spawn_blocking(move || {
-                html2text::from_read(body_for_extraction.as_slice(), HTML_RENDER_WIDTH)
+                // A dropped caller cannot release parser admission while this
+                // non-cancellable blocking operation is still running.
+                let _slot = parser_slot;
+                extraction::html(&body_for_extraction, HTML_RENDER_WIDTH)
             }),
         )
         .await
@@ -672,18 +881,22 @@ async fn render_receipt(
     };
     let extracted = sanitize_text(&extracted);
     let (extracted, extraction_truncated) = truncate_utf8(extracted, MAX_EXTRACTED_BYTES);
-    let (text, inline_truncated) = truncate_utf8(extracted.clone(), MAX_INLINE_BYTES);
+    let title = preview_title(&extracted);
+    let (text, inline_truncated) = truncate_utf8(extracted, MAX_INLINE_BYTES);
     let text_truncated = extraction_truncated || inline_truncated;
     let artifact = if text_truncated || receipt.body.len() > MAX_INLINE_BYTES {
         let store = ArtifactStore::new(paths.data_dir().join("artifacts"));
-        let bytes = receipt.body.clone();
+        let bytes = receipt.body;
         let media_type = receipt.media_type.clone();
         Some(
-            tokio::task::spawn_blocking(move || store.put(&bytes, &media_type, PrincipalId::new()))
-                .await
-                .map_err(|_| "web_fetch artifact publisher stopped unexpectedly".to_owned())?
-                .map_err(|error| error.to_string())?
-                .0,
+            tokio::task::spawn_blocking(move || {
+                let _slot = slot;
+                store.put(&bytes, &media_type, PrincipalId::new())
+            })
+            .await
+            .map_err(|_| "web_fetch artifact publisher stopped unexpectedly".to_owned())?
+            .map_err(|error| error.to_string())?
+            .0,
         )
     } else {
         None
@@ -699,9 +912,6 @@ async fn render_receipt(
         .host_str()
         .ok_or_else(|| FetchError::InvalidUrl.to_string())?
         .to_owned();
-    let title = preview_title(&extracted);
-    let response_bytes = u64::try_from(receipt.body.len())
-        .map_err(|_| "web_fetch response length is out of range".to_owned())?;
     let result = LinkPreviewCardV1 {
         requested_url: receipt.requested_url.to_string(),
         final_url: receipt.final_url.to_string(),
@@ -710,7 +920,7 @@ async fn render_receipt(
         fetched_unix_ms,
         media_type: receipt.media_type,
         response_bytes,
-        content_digest: blake3::hash(&receipt.body).to_hex().to_string(),
+        content_digest,
         redirects: receipt
             .redirects
             .into_iter()

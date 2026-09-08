@@ -29,6 +29,23 @@ impl TuiState {
             std::mem::swap(&mut self.messages, background);
         }
         match event {
+            AgentEvent::WebProgress { progress } => {
+                if self.active_operation == Some(progress.operation_id) {
+                    self.web_progress = Some(progress.clone());
+                    self.push_card(ActivityCard::new(
+                        "Xana web",
+                        format!("web-{}", progress.operation_id),
+                        ActivityKind::Tool,
+                        match progress.stage {
+                            crate::web::WebStage::Complete => ActivityState::Complete,
+                            crate::web::WebStage::Failed => ActivityState::Failed,
+                            _ => ActivityState::Running,
+                        },
+                        progress.label(),
+                        "Public-web work; details and evidence are in the tool request/result.",
+                    ));
+                }
+            }
             AgentEvent::CompletionEvidenceRecorded {
                 operation_id,
                 evidence,
@@ -641,7 +658,9 @@ impl TuiState {
                         crate::managed::codex::ApprovalDecision::Decline
                     }
                     ApprovalChoice::Deny => crate::managed::codex::ApprovalDecision::Cancel,
-                    ApprovalChoice::SaveAllow | ApprovalChoice::SaveDeny => {
+                    ApprovalChoice::SaveAllow
+                    | ApprovalChoice::SaveDeny
+                    | ApprovalChoice::PublicWebTurn => {
                         crate::managed::codex::ApprovalDecision::Cancel
                     }
                 };

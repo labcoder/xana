@@ -87,6 +87,8 @@ struct ConfigDocument {
     context: PromptBudgetPolicy,
     #[serde(default)]
     resources: ResourcePolicyV1,
+    #[serde(default)]
+    web: crate::web::WebConfig,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,6 +450,7 @@ pub(crate) struct RouteConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ConnectionRegistry {
+    pub(crate) web: crate::web::WebConfig,
     pub(crate) default_profile: String,
     pub(crate) default_child_route: Option<String>,
     pub(crate) permission_mode: PermissionMode,
@@ -1048,6 +1051,7 @@ impl XanaConfig {
             notifications: NotificationPolicy::default(),
             context: PromptBudgetPolicy::default(),
             resources: ResourcePolicyV1::default(),
+            web: crate::web::WebConfig::default(),
         };
 
         let rendered = toml::to_string_pretty(&document).map_err(ConfigError::Encode)?;
@@ -1071,6 +1075,31 @@ impl XanaConfig {
         let document: ConfigDocument = toml::from_str(input).map_err(ConfigError::Decode)?;
         validate_document(&document)?;
         Ok(registry_from_document(document))
+    }
+
+    pub(crate) fn update_web(
+        path: &Path,
+        web: crate::web::WebConfig,
+        enable_disclosure: bool,
+    ) -> Result<(), ConfigError> {
+        web.validate().map_err(ConfigError::Edit)?;
+        let mut transaction = ConfigEditTransaction::begin(path)?;
+        // Setup reviews this narrowly scoped addition. Derive a new policy
+        // rather than mutating a shared policy or an existing frozen Profile.
+        if enable_disclosure {
+            let profile = transaction.registry.default_profile.clone();
+            let document = transaction.document_mut();
+            let policy =
+                profile_egress_policy_with(document, &profile, "public-web", &["prompt_text"])?;
+            document["profiles"][&profile]["egress_policy"] = toml_edit::value(policy);
+        }
+        let rendered =
+            toml::to_string(&web).map_err(|error| ConfigError::Edit(error.to_string()))?;
+        let table = rendered
+            .parse::<toml_edit::DocumentMut>()
+            .map_err(|error| ConfigError::Edit(error.to_string()))?;
+        transaction.document_mut()["web"] = toml_edit::Item::Table(table.as_table().clone());
+        transaction.commit(false)
     }
 
     pub(crate) fn upsert_permission_rule(
@@ -2220,6 +2249,7 @@ impl ConfigError {
 }
 
 fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
+    document.web.validate().map_err(ConfigError::Edit)?;
     Shell::resolve(document.shell.clone()).map_err(ConfigError::InvalidShell)?;
     PermissionPolicy::validate_rules(&document.permission_rules)
         .map_err(ConfigError::InvalidPermissionPolicy)?;
@@ -2600,6 +2630,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
         })
         .collect();
     ConnectionRegistry {
+        web: document.web,
         default_profile: document.default_profile,
         default_child_route: document.default_child_route,
         permission_mode: document.permission_mode,

@@ -335,6 +335,7 @@ fn child_activity(event: AgentEvent) -> Option<ChildActivity> {
         | AgentEvent::CompletionEvidenceRecorded { .. }
         | AgentEvent::TerminalDiagnostic { .. }
         | AgentEvent::BrowserStatus { .. }
+        | AgentEvent::WebProgress { .. }
         | AgentEvent::InvocationIntentCommitted { .. }
         | AgentEvent::InvocationResultCommitted { .. }
         | AgentEvent::AssistantMessage { .. }

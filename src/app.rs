@@ -334,7 +334,16 @@ async fn run_connect_command<W: Write>(
     paths: &XanaPaths,
     output: &mut W,
 ) -> Result<()> {
+    if (args.web_provider.is_some() || args.public_web.is_some())
+        && args.integration != Some(cli::ConnectIntegration::Web)
+    {
+        anyhow::bail!("--web-provider and --public-web require xana connect web");
+    }
     match args.integration {
+        Some(cli::ConnectIntegration::Web) => {
+            let stdin = io::stdin();
+            connect::run_web(&args, paths, stdin.is_terminal(), &mut stdin.lock(), output)
+        }
         Some(cli::ConnectIntegration::Provider) => {
             let setup = cli::SetupArgs {
                 section: Some(cli::SetupSectionChoice::Connection),

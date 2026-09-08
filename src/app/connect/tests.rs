@@ -27,6 +27,8 @@ fn fixture() -> (tempfile::TempDir, XanaPaths) {
 
 fn empty_args() -> ConnectArgs {
     ConnectArgs {
+        web_provider: None,
+        public_web: None,
         integration: Some(ConnectIntegration::Vision),
         route: None,
         service_connection: None,
@@ -39,6 +41,123 @@ fn empty_args() -> ConnectArgs {
         remove: false,
         yes: false,
     }
+}
+
+#[test]
+fn search_setup_retains_chat_and_other_search_connections_without_network() {
+    let (_root, paths) = fixture();
+    let before = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    let mut args = empty_args();
+    args.integration = Some(ConnectIntegration::Web);
+    args.web_provider = Some(crate::cli::WebProviderChoice::ExaMcp);
+    args.yes = true;
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    args.web_provider = Some(crate::cli::WebProviderChoice::Brave);
+    args.credential_env = Some("XANA_TEST_UNSET_BRAVE_KEY".into());
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let after = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert_eq!(after.connections, before.connections);
+    assert_eq!(after.default_profile, before.default_profile);
+    let profile = &after.profiles[&after.default_profile];
+    let mut original = before.profiles[&before.default_profile].clone();
+    original.egress_policy = profile.egress_policy.clone();
+    assert_eq!(
+        profile, &original,
+        "only the reviewed disclosure policy changes"
+    );
+    assert_eq!(
+        after.egress_policies[profile.egress_policy.as_ref().unwrap()].allowed,
+        vec![crate::config::OutboundDataClass::PromptText]
+    );
+    assert_eq!(after.web.connections.len(), 2);
+    assert_eq!(after.web.default_connection.as_deref(), Some("brave"));
+    args.web_provider = Some(crate::cli::WebProviderChoice::Disabled);
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let after = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert_eq!(after.web.connections.len(), 2);
+    assert!(after.web.selected().is_none());
+}
+
+#[test]
+fn public_web_preference_is_explicit_and_does_not_select_search() {
+    let (_root, paths) = fixture();
+    let mut args = empty_args();
+    args.integration = Some(ConnectIntegration::Web);
+    args.public_web = Some(crate::cli::PublicWebChoice::Allow);
+    args.yes = true;
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let config = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert_eq!(config.web.public_web, crate::web::PublicWebConsent::Allow);
+    assert!(config.web.selected().is_none());
+}
+
+#[test]
+fn narrowing_web_settings_preserves_restrictive_profiles_and_cancel_is_atomic() {
+    let (_root, paths) = fixture();
+    let original = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    let mut args = empty_args();
+    args.integration = Some(ConnectIntegration::Web);
+    args.yes = true;
+    args.public_web = Some(crate::cli::PublicWebChoice::Ask);
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    args.public_web = None;
+    args.web_provider = Some(crate::cli::WebProviderChoice::Disabled);
+    run_web(
+        &args,
+        &paths,
+        false,
+        &mut Cursor::new(Vec::new()),
+        &mut Vec::new(),
+    )
+    .unwrap();
+    let narrowed = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert_eq!(narrowed.profiles, original.profiles);
+    assert_eq!(narrowed.egress_policies, original.egress_policies);
+    let before = std::fs::read(paths.config_file()).unwrap();
+    args.yes = false;
+    args.web_provider = Some(crate::cli::WebProviderChoice::PagesOnly);
+    let mut output = Vec::new();
+    run_web(&args, &paths, true, &mut Cursor::new(b"n\n"), &mut output).unwrap();
+    assert_eq!(std::fs::read(paths.config_file()).unwrap(), before);
+    let output = String::from_utf8(output).unwrap();
+    assert!(output.contains("Profile default"));
+    assert!(output.contains("add prompt_text"));
+    assert!(output.contains("No changes made"));
 }
 
 #[test]

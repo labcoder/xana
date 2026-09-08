@@ -16,6 +16,7 @@ mod read_document;
 mod read_file;
 mod run_command;
 mod web_fetch;
+mod web_search;
 mod workspace_path;
 mod write_file;
 mod xana_docs;
@@ -222,6 +223,9 @@ impl ToolExecutionContext {
                 if matches!(fact.request.scope, PermissionScope::External { .. }) =>
             {
                 let decision = match fact.controller_decision.as_ref() {
+                    Some(crate::permission::ControllerDecision::AllowPublicWebTurn) => {
+                        Some(crate::outbound::OutboundApprovalDecision::AllowPublicWebTurn)
+                    }
                     Some(crate::permission::ControllerDecision::SaveOutboundAllow) => {
                         Some(crate::outbound::OutboundApprovalDecision::SaveAllow)
                     }
@@ -487,6 +491,49 @@ impl Default for ToolRegistry {
 }
 
 impl ToolRegistry {
+    /// Configure the existing web tools without replacing chat providers or
+    /// granting arbitrary MCP/network capabilities. One budget owner per registry.
+    pub(crate) fn configure_web(
+        &mut self,
+        paths: &crate::paths::XanaPaths,
+        config: &crate::web::WebConfig,
+        profile_egress: &[crate::config::OutboundDataClass],
+    ) -> Result<(), RegistryError> {
+        config.validate().map_err(RegistryError::Composition)?;
+        if !profile_egress.contains(&crate::config::OutboundDataClass::PromptText) {
+            self.tools
+                .retain(|tool| tool.definition.name != "web_fetch");
+            let reason = "Public web is unavailable under this Conversation's frozen Profile disclosure policy. Run xana connect web to review setup, then start a new Conversation. Do not guess URLs or bypass this policy with commands or another service.";
+            self.register_unavailable("web_fetch", reason)?;
+            return self.register_unavailable("web_search", reason);
+        }
+        let runtime = Arc::new(
+            crate::web::WebRuntime::new(config.limits.clone()).with_profile(profile_egress),
+        );
+        if let Some(tool) = self
+            .tools
+            .iter_mut()
+            .find(|tool| tool.definition.name == "web_fetch")
+        {
+            tool.implementation = Box::new(web_fetch::WebFetch::configured(
+                paths.clone(),
+                config.clone(),
+                Arc::clone(&runtime),
+            ));
+            tool.definition = tool.implementation.definition();
+        }
+        if config.selected().is_some() {
+            self.register(web_search::WebSearch {
+                paths: paths.clone(),
+                config: config.clone(),
+                runtime,
+                #[cfg(test)]
+                fixture: None,
+            })
+        } else {
+            self.register_unavailable("web_search", "Web search is not configured. Run xana connect web to choose Exa API, Exa hosted MCP, or Brave. Do not invent search results or guess URL paths.")
+        }
+    }
     pub(crate) fn command_status(
         name: &str,
         output: &str,

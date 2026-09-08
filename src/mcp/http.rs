@@ -28,6 +28,16 @@ const MAX_TOOL_HEADERS: usize = 32;
 const MAX_SCHEMA_WALK_DEPTH: usize = 16;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+// Exa's hosted search adapter uses the vendor's stable SDK-1.x dialect;
+// it does not change the general MCP 2026 discovery/catalog contract.
+pub(crate) const EXA_SEARCH_PROTOCOL_VERSION: &str = "2025-03-26";
+
+/// Optional caller-owned aggregate accounting, including control traffic and
+/// SSE envelopes. The transport retains its own independent hard ceilings.
+pub(crate) trait McpHttpBudget: Send + Sync {
+    fn request(&self) -> Result<(), McpHttpError>;
+    fn received(&self, bytes: usize) -> Result<(), McpHttpError>;
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct McpHttpSecurity {
@@ -72,12 +82,33 @@ impl McpHttpEndpoint {
 pub(crate) struct McpHttpClient {
     endpoint: McpHttpEndpoint,
     client: Client,
+    exa_search: bool,
 }
 
 impl McpHttpClient {
     pub(crate) async fn connect(endpoint: McpHttpEndpoint) -> Result<Self, McpHttpError> {
         let client = pinned_client(&endpoint.url, endpoint.security, REQUEST_TIMEOUT).await?;
-        Ok(Self { endpoint, client })
+        Ok(Self {
+            endpoint,
+            client,
+            exa_search: false,
+        })
+    }
+
+    pub(crate) async fn connect_exa_search(
+        endpoint: McpHttpEndpoint,
+    ) -> Result<Self, McpHttpError> {
+        let mut client = Self::connect(endpoint).await?;
+        client.exa_search = true;
+        Ok(client)
+    }
+
+    fn protocol_version(&self) -> &'static str {
+        if self.exa_search {
+            EXA_SEARCH_PROTOCOL_VERSION
+        } else {
+            MCP_PROTOCOL_VERSION
+        }
     }
 
     pub(crate) fn endpoint(&self) -> &McpHttpEndpoint {
@@ -91,16 +122,29 @@ impl McpHttpClient {
         tool_headers: &McpHttpToolHeaders,
         cancellation: &CancellationToken,
     ) -> Result<McpHttpResponse, McpHttpError> {
+        self.request_with_budget(body, bearer, tool_headers, cancellation, None)
+            .await
+    }
+
+    pub(crate) async fn request_with_budget(
+        &self,
+        body: &[u8],
+        bearer: Option<&SecretString>,
+        tool_headers: &McpHttpToolHeaders,
+        cancellation: &CancellationToken,
+        budget: Option<&dyn McpHttpBudget>,
+    ) -> Result<McpHttpResponse, McpHttpError> {
         if body.len() > MAX_RESPONSE_BYTES {
             return Err(McpHttpError::RequestTooLarge);
         }
-        let envelope = RequestEnvelope::parse(body)?;
+        let envelope = RequestEnvelope::parse(body, self.exa_search)?;
         let mut request = self
             .client
             .post(self.endpoint.url.clone())
             .header(header::ACCEPT, "application/json, text/event-stream")
             .header(header::CONTENT_TYPE, "application/json")
-            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+            .header(header::ACCEPT_ENCODING, "identity")
+            .header("MCP-Protocol-Version", self.protocol_version())
             .header("Mcp-Method", &envelope.method)
             .body(body.to_vec());
         if let Some(name) = &envelope.name {
@@ -112,12 +156,27 @@ impl McpHttpClient {
         if let Some(bearer) = bearer {
             request = request.bearer_auth(bearer.expose());
         }
+        if let Some(budget) = budget {
+            budget.request()?;
+        }
         let response = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(McpHttpError::Cancelled),
             response = request.send() => response.map_err(classify_reqwest)?,
         };
+        if let Some(budget) = budget {
+            budget.received(
+                response
+                    .headers()
+                    .iter()
+                    .map(|(name, value)| name.as_str().len() + value.len())
+                    .sum(),
+            )?;
+        }
         validate_response_headers(&response)?;
+        if self.exa_search && response.headers().contains_key("Mcp-Session-Id") {
+            return Err(McpHttpError::ProtocolShape);
+        }
         match response.status() {
             StatusCode::UNAUTHORIZED => {
                 return Err(McpHttpError::Unauthorized(parse_challenge_header(
@@ -141,16 +200,63 @@ impl McpHttpClient {
             .map(str::trim);
         match content_type {
             Some("application/json") => {
-                let bytes = collect_body(response, cancellation).await?;
+                let bytes = collect_body(response, cancellation, budget).await?;
                 validate_final_response(&bytes, envelope.id)?;
                 Ok(McpHttpResponse {
                     final_response: bytes,
                     notifications: Vec::new(),
                 })
             }
-            Some("text/event-stream") => collect_sse(response, envelope.id, cancellation).await,
+            Some("text/event-stream") => {
+                collect_sse(response, envelope.id, cancellation, budget).await
+            }
             _ => Err(McpHttpError::UnsupportedMediaType),
         }
+    }
+
+    /// Complete the stateless HTTP initialization handshake. This is a fixed
+    /// protocol notification, not an arbitrary model-selected MCP operation.
+    pub(crate) async fn initialized_with_budget(
+        &self,
+        cancellation: &CancellationToken,
+        budget: &dyn McpHttpBudget,
+    ) -> Result<(), McpHttpError> {
+        if !self.exa_search {
+            return Err(McpHttpError::ProtocolShape);
+        }
+        budget.request()?;
+        let request = self
+            .client
+            .post(self.endpoint.url.clone())
+            .header(header::ACCEPT, "application/json, text/event-stream")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::ACCEPT_ENCODING, "identity")
+            .header("MCP-Protocol-Version", self.protocol_version())
+            .header("Mcp-Method", "notifications/initialized")
+            .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#);
+        let response = tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(McpHttpError::Cancelled),
+            response = request.send() => response.map_err(classify_reqwest)?,
+        };
+        budget.received(
+            response
+                .headers()
+                .iter()
+                .map(|(name, value)| name.as_str().len() + value.len())
+                .sum(),
+        )?;
+        validate_response_headers(&response)?;
+        if response.status() != StatusCode::ACCEPTED {
+            return Err(McpHttpError::Http(response.status().as_u16()));
+        }
+        if !collect_body(response, cancellation, Some(budget))
+            .await?
+            .is_empty()
+        {
+            return Err(McpHttpError::ProtocolShape);
+        }
+        Ok(())
     }
 }
 
@@ -273,7 +379,7 @@ struct RequestEnvelope {
 }
 
 impl RequestEnvelope {
-    fn parse(bytes: &[u8]) -> Result<Self, McpHttpError> {
+    fn parse(bytes: &[u8], exa_search: bool) -> Result<Self, McpHttpError> {
         let value: Value =
             serde_json::from_slice(bytes).map_err(|_| McpHttpError::ProtocolShape)?;
         let object = value.as_object().ok_or(McpHttpError::ProtocolShape)?;
@@ -294,7 +400,16 @@ impl RequestEnvelope {
             .get("params")
             .and_then(Value::as_object)
             .ok_or(McpHttpError::ProtocolShape)?;
-        if params
+        if exa_search {
+            if !(method == "initialize"
+                && params.get("protocolVersion").and_then(Value::as_str)
+                    == Some(EXA_SEARCH_PROTOCOL_VERSION)
+                || method == "tools/call"
+                    && params.get("name").and_then(Value::as_str) == Some("web_search_exa"))
+            {
+                return Err(McpHttpError::ProtocolShape);
+            }
+        } else if params
             .get("_meta")
             .and_then(|meta| meta.get("io.modelcontextprotocol/protocolVersion"))
             .and_then(Value::as_str)
@@ -322,6 +437,7 @@ impl RequestEnvelope {
 async fn collect_body(
     response: reqwest::Response,
     cancellation: &CancellationToken,
+    budget: Option<&dyn McpHttpBudget>,
 ) -> Result<Vec<u8>, McpHttpError> {
     if response
         .content_length()
@@ -339,6 +455,9 @@ async fn collect_body(
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(classify_reqwest)?;
+        if let Some(budget) = budget {
+            budget.received(chunk.len())?;
+        }
         if output.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
             return Err(McpHttpError::ResponseTooLarge);
         }
@@ -351,6 +470,7 @@ async fn collect_sse(
     response: reqwest::Response,
     expected_id: u64,
     cancellation: &CancellationToken,
+    budget: Option<&dyn McpHttpBudget>,
 ) -> Result<McpHttpResponse, McpHttpError> {
     let mut stream = response.bytes_stream();
     let mut decoder = SseDecoder::default();
@@ -366,6 +486,9 @@ async fn collect_sse(
         };
         let Some(chunk) = next else { break };
         let chunk = chunk.map_err(classify_reqwest)?;
+        if let Some(budget) = budget {
+            budget.received(chunk.len())?;
+        }
         total = total.saturating_add(chunk.len());
         if total > MAX_RESPONSE_BYTES {
             return Err(McpHttpError::ResponseTooLarge);
@@ -411,6 +534,13 @@ fn validate_final_response(bytes: &[u8], expected_id: u64) -> Result<(), McpHttp
 }
 
 fn validate_response_headers(response: &reqwest::Response) -> Result<(), McpHttpError> {
+    if response
+        .headers()
+        .get(header::CONTENT_ENCODING)
+        .is_some_and(|v| v != "identity")
+    {
+        return Err(McpHttpError::UnsupportedMediaType);
+    }
     let bytes = response
         .headers()
         .iter()
@@ -616,6 +746,7 @@ fn permitted_ipv6(address: Ipv6Addr) -> bool {
 
 #[derive(Debug)]
 pub(crate) enum McpHttpError {
+    AggregateLimit,
     InvalidEndpoint,
     HttpsRequired,
     Dns,
@@ -666,6 +797,7 @@ impl fmt::Display for McpHttpError {
             Self::Transport => formatter.write_str("MCP HTTP transport failed"),
             Self::RequestTooLarge => formatter.write_str("MCP HTTP request exceeds its limit"),
             Self::ResponseTooLarge => formatter.write_str("MCP HTTP response exceeds its limit"),
+            Self::AggregateLimit => formatter.write_str("MCP HTTP caller allowance is exhausted"),
             Self::ResponseHeadersTooLarge => {
                 formatter.write_str("MCP HTTP response headers exceed their limit")
             }

@@ -82,6 +82,7 @@ impl PendingApproval {
         match self {
             Self::Vendor { request, .. } => project_managed_approval(operation, id, request),
             Self::Memory { request, .. } => DesktopPendingApproval {
+                public_web: false,
                 id: DesktopPermissionId::managed(operation, id),
                 tool: bounded_text(format!("Xana {}", request.tool_name), MAX_PUBLIC_TEXT_BYTES),
                 effect: format!("{:?}", request.effect_class).to_ascii_lowercase(),
@@ -1382,7 +1383,7 @@ impl Bridge {
             }
             BridgeCommandValue::DecidePermission {
                 permission_id,
-                allow_once,
+                decision,
             } => {
                 let DesktopPermissionTarget::Managed {
                     operation_id,
@@ -1410,8 +1411,12 @@ impl Bridge {
                     .await?;
                     return Ok(None);
                 };
-                let result = if state.active_operation == Some(operation_id) {
-                    pending.resolve(allow_once)
+                let result = if state.active_operation == Some(operation_id)
+                    && matches!(
+                        decision,
+                        ControllerDecision::AllowOnce | ControllerDecision::Deny
+                    ) {
+                    pending.resolve(decision == ControllerDecision::AllowOnce)
                 } else {
                     Err(DesktopError::new(
                         DesktopErrorCode::StateInvalid,
@@ -1490,6 +1495,7 @@ impl Bridge {
                     .insert(request_id, PendingApproval::Vendor { request, reply });
                 self.publish_critical(DesktopUpdate::Observation(state.observation(
                     DesktopEvent::PermissionRequired {
+                        public_web: false,
                         permission_id: approval.id,
                         tool: approval.tool,
                         effect: approval.effect,
@@ -1514,6 +1520,7 @@ impl Bridge {
                 state.pending_approvals.insert(request_id, pending);
                 self.publish_critical(DesktopUpdate::Observation(state.observation(
                     DesktopEvent::PermissionRequired {
+                        public_web: false,
                         permission_id: approval.id,
                         tool: approval.tool,
                         effect: approval.effect,
@@ -1582,6 +1589,7 @@ fn project_managed_approval(
     request: &ApprovalRequest,
 ) -> DesktopPendingApproval {
     DesktopPendingApproval {
+        public_web: false,
         id: DesktopPermissionId::managed(operation_id, request_id),
         tool: bounded_text(
             request

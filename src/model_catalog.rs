@@ -1086,6 +1086,7 @@ mod tests {
 
     fn registry() -> ConnectionRegistry {
         ConnectionRegistry {
+            web: Default::default(),
             default_profile: "default".into(),
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,
@@ -1146,6 +1147,7 @@ mod tests {
 
     fn codex_registry() -> ConnectionRegistry {
         ConnectionRegistry {
+            web: Default::default(),
             default_profile: "default".into(),
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,

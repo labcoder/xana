@@ -82,7 +82,14 @@ fn conversation(state: &TuiState, profile: ResolvedPresentation, area: Rect) -> 
                 semantic_style(profile, SemanticToken::Assistant).add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("is working{dots}"),
+                state
+                    .web_progress
+                    .as_ref()
+                    .filter(|progress| Some(progress.operation_id) == state.active_operation)
+                    .map_or_else(
+                        || format!("is working{dots}"),
+                        |progress| format!("is working{dots} — {}", progress.label()),
+                    ),
                 semantic_style(profile, SemanticToken::Muted),
             ),
         ]));

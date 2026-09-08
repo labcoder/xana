@@ -94,7 +94,7 @@ else permission_mode
 
 Supported effects are `read`, `write`, `execute`, `network`, and `external`.
 Current tool names are `read_file`, `list_files`, `find_files`, `grep_files`,
-`write_file`, `edit_file`, `run_command`, `web_fetch`, `read_document`, and
+`write_file`, `edit_file`, `run_command`, `web_fetch`, `web_search`, `read_document`, and
 `xana_docs`.
 Workspace matchers are relative to Xana's launch workspace;
 they are resolved to existing canonical paths when chat starts. Absolute,
@@ -246,8 +246,13 @@ invalid. A command that references an approved external file should keep
 `web_fetch` binds an external scope to one canonical GET URL plus its complete
 explicit redirect chain. The separate outbound-data guard remains final
 authority: a broad `network` allow rule or `permission_mode = "allow"` cannot
-replace the first exact recipient review. A saved deny wins, and a redirect not
-already present in the reviewed chain stops before the destination request.
+replace web disclosure consent. You can allow the exact request, or explicitly
+allow public web for this turn (selected search route and public HTTPS page
+reads). A separately configured persistent preference is also available. A
+saved deny and the frozen Profile disclosure ceiling still win. In exact-only
+mode an unreviewed redirect stops before its destination request; public-web
+mode follows only bounded, checked public redirects. This does not authorize
+browser control or file uploads. See [Public web](public-web.md).
 
 Each result produces an audit fact containing its ids, tool and
 effect, scope, final arguments, policy outcome, optional terminal decision,
