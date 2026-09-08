@@ -493,6 +493,15 @@ static ENTRIES: &[BundledDoc] = &[
         body: include_str!("../docs/user/web-fetch.md"),
     },
     BundledDoc {
+        id: "user.public-web",
+        title: "Public web search, page reading and browser setup",
+        audience: USER_AUDIENCE,
+        authority: DocAuthority::Descriptive,
+        status: DocStatus::Shipped,
+        topics: &["web", "search", "browser", "permissions"],
+        body: include_str!("../docs/user/public-web.md"),
+    },
+    BundledDoc {
         id: "user.protected-storage",
         title: "Protected storage, migration and recovery",
         audience: USER_AUDIENCE,
@@ -635,6 +644,7 @@ mod tests {
             ("schedules", "user.durable-schedules"),
             ("workers", "user.retained-workers"),
             ("browser", "user.local-browser"),
+            ("search", "user.public-web"),
             ("encryption", "user.protected-storage"),
             ("budgets", "user.usage-budgets"),
         ] {

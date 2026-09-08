@@ -20,7 +20,9 @@ Xana shows the exact URL chain, purpose, `prompt_text` data class, provenance,
 byte estimate, and content digest through the same outbound-data approval used
 by MCP, A2A, and focused services. A broad tool setting of `allow` does not
 silently approve a new web recipient. Noninteractive use needs an existing
-exact saved allow or it fails closed.
+exact saved allow or the separately configured public-web preference; otherwise
+it fails closed. An interactive user can also approve public web for this turn.
+See [public web](public-web.md) for search setup, Profile eligibility and consent.
 
 ## Request and network boundary
 
@@ -28,7 +30,7 @@ The tool accepts only:
 
 - one public HTTPS URL;
 - up to three exact redirect destinations;
-- a response ceiling from 1 byte through 4 MiB, default 1 MiB; and
+- a response ceiling from 1 byte through 4 MiB, default 2 MiB (configurable); and
 - a whole-request timeout from 1 through 60 seconds, default 20 seconds.
 
 URLs with embedded credentials or fragments are rejected. Xana inherits no
@@ -38,21 +40,24 @@ rejects loopback, private, link-local, metadata, documentation, multicast, and
 other special-use addresses, then pins the validated addresses into a
 no-redirect client. The same policy applies again after every redirect.
 
-Redirects do not widen an approval. On the first unreviewed redirect,
+Exact approvals are not widened. Without a public-web turn grant or explicit
+persistent public-web preference, on the first unreviewed redirect,
 `web_fetch` stops before contacting the destination and returns its canonical
 URL. The agent may retry with that URL in the ordered `redirects` argument;
 Xana then presents the complete chain for one new exact review. A different,
-extra, cyclic, or HTTPS-to-HTTP redirect fails closed.
+extra redirect needs that review. A public-web grant permits checked public HTTPS
+redirects within the existing three-hop/shared-attempt limits; saved denies still
+win. Cyclic or HTTPS-to-HTTP redirects fail closed in either mode.
 
 ## Returned evidence
 
 Successful responses must be UTF-8 `text/plain`, `text/markdown`, `text/html`,
-or `application/xhtml+xml`. Xana rejects compressed bodies rather than risk a
+`application/xhtml+xml`, or JSON. Xana rejects compressed bodies rather than risk a
 decoded-size expansion beyond the reviewed byte ceiling. Header bytes, body
 bytes, extraction work, extracted text, and inline model text all have separate
 bounds.
 
-Plain text and Markdown remain text. HTML is parsed without JavaScript, CSS,
+Plain text, Markdown and validated JSON remain text. HTML is parsed without JavaScript, CSS,
 subresource loading, iframe loading, form submission, or DOM automation and is
 rendered to bounded plain text. Control characters are made inert. Every
 result reports:
@@ -81,11 +86,12 @@ profile to use all stock native capabilities, include `network.fetch`
 explicitly in a narrowed profile, or omit it to prevent the model from seeing
 the tool.
 
-Xana does not currently provide web search, authenticated-site access,
-download execution, browser automation, JavaScript rendering, cache reuse,
-conditional revalidation, or automatic redirect following. A later focused
-search route can be added without changing this provider-neutral fetch
-contract.
+This tool does not provide authenticated-site access, download execution,
+JavaScript rendering or conditional revalidation. Separate `web_search` and
+`browser` tools provide discovery and approved browser control. Search and fetch
+share bounded per-turn attempts/ingress and reuse identical authorized receipts,
+including failures, without a persistent cross-turn cache. A reused receipt
+retains its original timestamp. See [public web](public-web.md) for the limits.
 
 ## Troubleshooting
 
@@ -95,7 +101,7 @@ contract.
 | `stopped before an unreviewed redirect` | Retry only if the reported canonical destination is expected; Xana will review the complete chain. |
 | `could not be resolved to permitted public addresses` | DNS failed or any resolved address was private or special-use. Do not bypass the check. |
 | compressed response rejected | The server did not provide an identity-encoded bounded body. Use another public text representation. |
-| unsupported content type or encoding | The resource is not one of the four UTF-8 text forms. Use a suitable media/document service. |
+| unsupported content type or encoding | The resource is not a supported UTF-8 text or JSON form. Use a suitable media/document service. |
 | response exceeds its byte limit | Request a smaller public resource; increasing the per-call limit cannot exceed 4 MiB. |
 | timeout, unavailable, or cancelled | The operation ended without a complete response. Inspect activity and metadata-only diagnostics before an explicit retry. |
 
