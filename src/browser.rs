@@ -63,6 +63,9 @@ pub(crate) const EGRESS_DISCLOSURE: &str = "Dedicated fresh browser; exact revie
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum BrowserRequest {
+    Open {
+        url: String,
+    },
     Launch {
         origins: Vec<String>,
     },
@@ -112,6 +115,9 @@ pub(crate) enum BrowserError {
 
 impl std::fmt::Display for BrowserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Self::NoSession {
+            return f.write_str("browser NoSession: use browser {op: open, url: HTTPS_URL} to launch, navigate and read the page; no action was replayed");
+        }
         write!(f, "browser {:?}; no action is automatically replayed", self)
     }
 }

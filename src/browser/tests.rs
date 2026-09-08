@@ -25,6 +25,54 @@ fn fixture() -> (tempfile::TempDir, BrowserOwner) {
     (root, owner)
 }
 
+#[test]
+fn open_contract_avoids_an_undocumented_launch_prerequisite() {
+    let request = serde_json::from_value::<BrowserRequest>(serde_json::json!({
+        "op": "open", "url": "https://example.com/guide"
+    }));
+    assert!(
+        request.is_ok(),
+        "opening a page must be one supported operation"
+    );
+    let message = BrowserError::NoSession.to_string();
+    assert!(
+        message.contains("open"),
+        "missing-session errors must identify recovery"
+    );
+}
+
+#[test]
+fn open_validates_the_destination_without_launching_or_expanding_authority() {
+    for url in [
+        "file:///tmp/data",
+        "http://localhost/",
+        "https://user:secret@example.com/",
+        "https://example.com/#fragment",
+        "not a URL",
+    ] {
+        assert!(super::session::open_origin(url).is_err(), "{url}");
+    }
+    assert_eq!(
+        super::session::open_origin("https://example.com:443/guide?q=one").unwrap(),
+        "https://example.com"
+    );
+    let (_root, owner) = fixture();
+    assert!(matches!(
+        owner.plan(BrowserRequest::Open {
+            url: "https://example.com/".into()
+        }),
+        Err(BrowserError::Unavailable)
+    ));
+    assert!(!owner.paths().cache_dir().exists());
+    owner.simulate_cleanup_failure(uuid::Uuid::new_v4());
+    assert!(matches!(
+        owner.plan(BrowserRequest::Open {
+            url: "https://example.com/".into()
+        }),
+        Err(BrowserError::Process)
+    ));
+}
+
 #[tokio::test]
 async fn unavailable_owner_is_lazy_and_lifecycle_receipts_are_durable_without_replay() {
     let (_root, owner) = fixture();
@@ -209,6 +257,50 @@ async fn native_production_adapter_reads_effects_and_lifecycle() {
         receipt
     }
     let mut timings = Vec::new();
+    // Opening is an approved composition, not a model-dependent launch sequence.
+    // Keep this separate from the established cold/warm timing denominators.
+    {
+        let (_root, owner) = fixture();
+        let owner = owner.native_fixture(origin, address, spki.into());
+        let opened = apply(
+            &owner,
+            BrowserRequest::Open {
+                url: format!("{origin}/"),
+            },
+        )
+        .await;
+        assert!(
+            opened.observation.as_ref().unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .contains("Production adapter fixture")
+        );
+        assert_eq!(owner.snapshot().actions_remaining, MAX_ACTIONS - 2);
+        let task = owner.snapshot().task;
+        apply(
+            &owner,
+            BrowserRequest::Open {
+                url: format!("{origin}/"),
+            },
+        )
+        .await;
+        assert_eq!(owner.snapshot().task, task);
+        assert_eq!(owner.snapshot().actions_remaining, MAX_ACTIONS - 4);
+        assert!(matches!(
+            owner.plan(BrowserRequest::Open {
+                url: "https://example.com/".into()
+            }),
+            Err(BrowserError::UnsupportedEgress)
+        ));
+        apply(&owner, BrowserRequest::Takeover {}).await;
+        assert!(matches!(
+            owner.plan(BrowserRequest::Open {
+                url: format!("{origin}/")
+            }),
+            Err(BrowserError::TakenOver)
+        ));
+        apply(&owner, BrowserRequest::Close {}).await;
+    }
     for cycle in 0..5 {
         let (_root, owner) = fixture();
         let owner = owner.native_fixture(origin, address, spki.into());

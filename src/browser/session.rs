@@ -335,6 +335,13 @@ impl BrowserOwner {
             .map_err(|_| BrowserError::Busy)?;
         let snapshot = self.snapshot();
         match &request {
+            BrowserRequest::Open { url } if session.is_none() => {
+                self.cleanup_status()?;
+                open_origin(url)?;
+                if !snapshot.available {
+                    return Err(BrowserError::Unavailable);
+                }
+            }
             BrowserRequest::Launch { origins } => {
                 self.cleanup_status()?;
                 if !snapshot.available {
@@ -370,6 +377,18 @@ impl BrowserOwner {
             }
         }
         match &request {
+            BrowserRequest::Open { url } => {
+                let origin = open_origin(url)?;
+                if session.is_some() && !snapshot.origins.contains(&origin) {
+                    return Err(BrowserError::UnsupportedEgress);
+                }
+                if session
+                    .as_ref()
+                    .is_some_and(|live| live.actions.saturating_add(2) > MAX_ACTIONS)
+                {
+                    return Err(BrowserError::Limit);
+                }
+            }
             BrowserRequest::Navigate { url } if url.len() > 2048 => {
                 return Err(BrowserError::InvalidInput);
             }
@@ -439,6 +458,7 @@ impl BrowserOwner {
         if matches!(
             plan.request,
             BrowserRequest::Launch { .. }
+                | BrowserRequest::Open { .. }
                 | BrowserRequest::Navigate { .. }
                 | BrowserRequest::Act { .. }
                 | BrowserRequest::Resume {}
@@ -453,7 +473,9 @@ impl BrowserOwner {
         {
             return Err(BrowserError::Stale);
         }
-        let launch_id = matches!(plan.request, BrowserRequest::Launch { .. }).then(Uuid::new_v4);
+        let launch_id = (matches!(plan.request, BrowserRequest::Launch { .. })
+            || (matches!(plan.request, BrowserRequest::Open { .. }) && slot.is_none()))
+        .then(Uuid::new_v4);
         let mut receipt = BrowserReceipt {
             id: Uuid::new_v4(),
             task: launch_id.or(self.snapshot().task),
@@ -479,6 +501,13 @@ impl BrowserOwner {
             }
         }
         let mut result = async {
+            if let BrowserRequest::Open { url } = &plan.request
+                && let Some(id) = launch_id
+            {
+                let session = self.launch(&[open_origin(url)?], id, cancelled.clone()).await?;
+                receipt.task = Some(session.id);
+                *slot = Some(session);
+            }
             match plan.request {
                 BrowserRequest::Launch { origins } => match self
                     .launch(
@@ -507,7 +536,12 @@ impl BrowserOwner {
                     {
                         return Err(BrowserError::Limit);
                     }
-                    live.actions = live.actions.saturating_add(1);
+                    let actions = if matches!(request, BrowserRequest::Open { .. }) { 2 } else { 1 };
+                    if !matches!(request, BrowserRequest::Takeover {})
+                        && live.actions.saturating_add(actions) > MAX_ACTIONS {
+                        return Err(BrowserError::Limit);
+                    }
+                    live.actions += actions;
                     let live_stop = live.stop.clone();
                     tokio::select! {
                       biased;
@@ -515,7 +549,10 @@ impl BrowserOwner {
                       () = live_stop.cancelled() => Err(BrowserError::Cancelled),
                       result = async { match request {
                         BrowserRequest::Navigate { url } => live.page.navigate(&url).await,
-                        BrowserRequest::Observe {} | BrowserRequest::Resume {} => {
+                        BrowserRequest::Open { .. } | BrowserRequest::Observe {} | BrowserRequest::Resume {} => {
+                            if let BrowserRequest::Open { url } = &request {
+                                live.page.navigate(url).await?;
+                            }
                             if matches!(request, BrowserRequest::Resume {}) {
                                 live.page.invalidate();
                                 live.takeover = false;
@@ -611,6 +648,24 @@ impl BrowserOwner {
         }
         Ok(receipt)
     }
+}
+/// No DNS, profile creation or browser work occurs during approval planning.
+pub(super) fn open_origin(value: &str) -> Result<String, BrowserError> {
+    if value.len() > 2048 {
+        return Err(BrowserError::InvalidInput);
+    }
+    let url = reqwest::Url::parse(value).map_err(|_| BrowserError::InvalidInput)?;
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.host_str().is_none()
+        || url.fragment().is_some()
+    {
+        return Err(BrowserError::InvalidInput);
+    }
+    let origin = url.origin().ascii_serialization();
+    EgressPolicy::parse(std::slice::from_ref(&origin), McpHttpSecurity::default())?;
+    Ok(origin)
 }
 struct DispatchGuard {
     cancelled: CancellationToken,

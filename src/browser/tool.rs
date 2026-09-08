@@ -45,10 +45,10 @@ impl Tool for BrowserTool {
             name: "browser".into(),
             contract_version: crate::operation::TOOL_CONTRACT_VERSION,
             description: format!(
-                "Optional dedicated local browser. launch chooses exact HTTPS origins, navigate opens an allowed URL, observe gives bounded untrusted page evidence and opaque references; screenshot returns a protected artifact. act requires a current reference and meaningful purpose; a click is not blanket consent to purchase/publish/send/delete. takeover suspends automation for manual control/login, resume reinspects, close cleans up. Password inputs require manual takeover; file uploads are unsupported. {EGRESS_DISCLOSURE}"
+                "Read or control an optional dedicated local browser. START with open(url): after approval it launches if closed, navigates and returns bounded untrusted page content and references. It leaves the browser open. Existing sessions keep their reviewed origins and budgets; close before requesting another origin. launch selects origins without opening a page; navigate and observe require an existing session. screenshot returns a protected artifact. act requires a current reference and meaningful purpose; a click is not blanket consent to purchase/publish/send/delete. takeover suspends automation for manual control/login, resume reinspects, close cleans up. Password inputs require manual takeover; file uploads are unsupported. {EGRESS_DISCLOSURE}"
             ),
             parameters: json!({"type":"object","additionalProperties":false,"required":["op"],"properties":{
-                "op":{"enum":["launch","navigate","observe","screenshot","act","takeover","resume","close"]},
+                "op":{"enum":["open","launch","navigate","observe","screenshot","act","takeover","resume","close"]},
                 "origins":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"string","maxLength":1024}},
                 "url":{"type":"string","maxLength":2048},"reference":{"type":"string","format":"uuid"},
                 "effect":{"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"enum":["click","fill"]},"text":{"type":"string","maxLength":4096}}},
@@ -68,6 +68,9 @@ impl Tool for BrowserTool {
         let snapshot = self.owner.snapshot();
         let origins = match &browser.request {
             BrowserRequest::Launch { origins } => origins.clone(),
+            BrowserRequest::Open { url } if snapshot.task.is_none() => {
+                vec![super::session::open_origin(url).map_err(|error| error.to_string())?]
+            }
             _ => snapshot.origins.clone(),
         };
         let final_arguments = json!({"request":browser.request,"observed_target":browser.review,"task":snapshot.task,"revision":snapshot.revision,"mode":EGRESS_DISCLOSURE});

@@ -23,6 +23,7 @@ The `browser` tool offers these closed operations:
 
 | Operation | Behavior |
 | --- | --- |
+| `open` | Approve an exact HTTPS origin, launch if closed, navigate and return the first page observation; leave the browser open. |
 | `launch` | Review up to eight exact HTTPS recipient origins, then open a fresh visible window |
 | `navigate` | Open a URL at an already reviewed recipient |
 | `observe` | Read bounded, untrusted page text and fresh opaque element references |
