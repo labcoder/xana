@@ -5,6 +5,9 @@ use crate::{
     storage::{ProtectedStore, TestCustody},
 };
 
+#[cfg(windows)]
+mod qualification;
+
 fn fixture() -> (tempfile::TempDir, BrowserOwner) {
     let root = tempfile::tempdir().unwrap();
     let paths = XanaPaths::resolve(Some(root.path().as_os_str().to_owned())).unwrap();
