@@ -86,15 +86,25 @@ pub(super) async fn run(
                     sender.fail(BrowserError::Limit);
                     break;
                 }
-                let mut state = sender.shared.state.lock().expect("browser transport");
-                if state.sessions.len() >= MAX_TARGETS {
-                    drop(state);
-                    sender.fail(BrowserError::Limit);
-                    break;
+                // Only usable documents occupy the live-document allowance.
+                // Built-in background targets are closed while still paused,
+                // not retained forever as if they were open user pages.
+                if kind == "page" || kind == "iframe" {
+                    let attached = sender
+                        .shared
+                        .state
+                        .lock()
+                        .expect("browser transport")
+                        .attach_document(target, session);
+                    match attached {
+                        Ok(true) => {}
+                        Ok(false) => continue,
+                        Err(error) => {
+                            sender.fail(error);
+                            break;
+                        }
+                    }
                 }
-                state.sessions.insert(target.to_owned(), session.to_owned());
-                state.epochs.insert(session.to_owned(), 0);
-                drop(state);
                 let (session, target, kind) =
                     (session.to_owned(), target.to_owned(), kind.to_owned());
                 let control = sender.clone();
@@ -108,6 +118,16 @@ pub(super) async fn run(
                             .map(|_| ())
                     }
                 });
+            }
+            Some("Target.detachedFromTarget") => {
+                if let Some(session) = value["params"]["sessionId"].as_str() {
+                    sender
+                        .shared
+                        .state
+                        .lock()
+                        .expect("browser transport")
+                        .detach_document(session);
+                }
             }
             Some(
                 "Page.frameNavigated" | "DOM.documentUpdated" | "Page.navigatedWithinDocument",

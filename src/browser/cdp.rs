@@ -43,6 +43,29 @@ struct State {
     #[cfg(all(test, windows))]
     suppressed_reply: Option<u64>,
 }
+impl State {
+    fn attach_document(&mut self, target: &str, session: &str) -> Result<bool, BrowserError> {
+        if let Some(existing) = self.sessions.get(target) {
+            return if existing == session {
+                Ok(false)
+            } else {
+                Err(BrowserError::Protocol)
+            };
+        }
+        if self.sessions.len() >= MAX_TARGETS {
+            return Err(BrowserError::Limit);
+        }
+        self.sessions.insert(target.to_owned(), session.to_owned());
+        self.epochs.insert(session.to_owned(), 0);
+        Ok(true)
+    }
+    fn detach_document(&mut self, session: &str) {
+        self.sessions.retain(|_, value| value != session);
+        self.epochs.remove(session);
+        self.configured.remove(session);
+        self.ready.retain(|(owner, _), _| owner != session);
+    }
+}
 struct Shared {
     writer: AsyncMutex<Option<Writer>>,
     state: Mutex<State>,
@@ -231,12 +254,10 @@ impl Cdp {
         ] {
             self.call(method, params, Some(session)).await?;
         }
-        self.shared
-            .state
-            .lock()
-            .expect("browser transport")
-            .configured
-            .insert(session.to_owned());
+        let mut state = self.shared.state.lock().expect("browser transport");
+        if state.epochs.contains_key(session) {
+            state.configured.insert(session.to_owned());
+        }
         Ok(())
     }
 

@@ -1,6 +1,36 @@
 use super::*;
 use futures::StreamExt;
 
+#[test]
+fn live_document_allowance_is_reclaimed_without_weakening_the_limit() {
+    let mut state = State::default();
+    for index in 0..MAX_TARGETS {
+        assert!(
+            state
+                .attach_document(&format!("t{index}"), &format!("s{index}"))
+                .unwrap()
+        );
+    }
+    assert!(!state.attach_document("t0", "s0").unwrap());
+    assert_eq!(
+        state.attach_document("overflow", "overflow"),
+        Err(BrowserError::Limit)
+    );
+    state.configured.insert("s0".into());
+    state
+        .ready
+        .insert(("s0".into(), "frame".into()), "loader".into());
+    state.detach_document("s0");
+    assert!(!state.epochs.contains_key("s0"));
+    assert!(!state.configured.contains("s0"));
+    assert!(state.ready.is_empty());
+    assert!(state.attach_document("new", "new").unwrap());
+    assert_eq!(
+        state.attach_document("new", "other"),
+        Err(BrowserError::Protocol)
+    );
+}
+
 #[tokio::test]
 async fn explicit_close_joins_pending_policy_tasks_and_releases_the_socket() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
