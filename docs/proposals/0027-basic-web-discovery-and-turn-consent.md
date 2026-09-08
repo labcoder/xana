@@ -1,8 +1,17 @@
 # Basic web discovery and turn consent
 
 > Audience: Contributors and coding agents
-> Authority: Prescriptive
-> Status: Accepted
+> Authority: None
+> Status: Implemented
+
+Implemented by the web runtime, tool adapters, permission broker and shared
+client projections. See [Architecture](../architecture/README.md) and
+[public web](../user/public-web.md). Deterministic protocol/authority/resource
+tests, full Windows workspace gates and three consecutive local-model search
+and native browser-answer cases pass. Hosted vendor availability and owner UI
+observations are not inferred from fixtures. The browser remains the qualified
+Windows adapter; this proposal does not close the independent cross-platform
+browser qualification contract in [0026](0026-bounded-local-browser-authority.md).
 
 ## Outcome and ownership
 
