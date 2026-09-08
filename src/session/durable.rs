@@ -103,6 +103,42 @@ pub(crate) struct NativeConversationHandle {
 }
 
 impl DurableSession {
+    pub(crate) fn execution_configuration(
+        &self,
+    ) -> Option<&crate::profile::execution::ExecutionConfiguration> {
+        self.restored.execution_configuration.as_ref()
+    }
+
+    pub(crate) fn has_unfinished_work(&self) -> bool {
+        !self.restored.unfinished_operations().is_empty()
+    }
+
+    pub(crate) fn live_children(&self) -> bool {
+        self.restored
+            .children
+            .values()
+            .any(|child| !child.handle.lifecycle.is_terminal())
+    }
+
+    pub(crate) fn child_inspections(&self) -> Vec<ChildInspection> {
+        self.restored
+            .children
+            .values()
+            .map(|child| child.inspection())
+            .collect()
+    }
+
+    pub(crate) fn configure_execution(
+        &mut self,
+        configuration: crate::profile::execution::ExecutionConfiguration,
+    ) -> Result<()> {
+        if self.execution_configuration() != Some(&configuration) {
+            self.append_record(SessionRecord::ExecutionConfigured {
+                configuration: Box::new(configuration),
+            })?;
+        }
+        Ok(())
+    }
     /// Workspace-only routing checks must not hydrate a retained transcript.
     pub(crate) fn inspect_workspace_root(
         data_dir: &Path,
@@ -362,6 +398,22 @@ impl DurableSession {
         let path = SessionStore::path_for(&data_dir.join("sessions"), session_id);
         let loaded = SessionStore::inspect(&path).context("could not inspect durable session")?;
         summary_from_loaded(&path, &loaded)
+    }
+
+    pub(crate) fn inspect_execution_configuration(
+        data_dir: &Path,
+        session_id: SessionId,
+    ) -> Result<(
+        Option<crate::profile::execution::ExecutionConfiguration>,
+        bool,
+    )> {
+        let state = if let Some(home) = crate::storage::ProtectedStore::configured(data_dir)? {
+            protected::restore_execution(&home, session_id)?.0
+        } else {
+            Self::inspect_restored(data_dir, session_id)?.1
+        };
+        let unfinished = !state.unfinished_operations().is_empty();
+        Ok((state.execution_configuration, unfinished))
     }
 
     pub(crate) fn inspect_restored(

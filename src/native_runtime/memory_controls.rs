@@ -63,7 +63,16 @@ impl Runtime {
                     input_entry_id: entry,
                 }
             };
-            if let Err(error) = session.append_record(accepted) {
+            let commit = session.append_record(accepted).and_then(|()| {
+                if let Some(configuration) = &self.execution_configuration {
+                    session.append_record(SessionRecord::OperationConfigurationBound {
+                        operation_id,
+                        configuration_digest: configuration.digest(),
+                    })?;
+                }
+                Ok(())
+            });
+            if let Err(error) = commit {
                 self.storage_diagnostic(operation_id);
                 self.emit(AgentEvent::CommandRejected {
                     reason: format!("Could not persist memory control: {error:#}"),

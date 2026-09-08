@@ -225,6 +225,14 @@ impl<W: Write> EventRenderer<W> {
 
     fn render(&mut self, event: &AgentEvent) -> io::Result<()> {
         match event {
+            AgentEvent::ExecutionConfigurationChanged {
+                connection, model, ..
+            } => {
+                writeln!(
+                    self.output,
+                    "xana> settings updated for this conversation: {connection}/{model}"
+                )?;
+            }
             AgentEvent::CompletionEvidenceRecorded { evidence, .. } => {
                 self.finish_stream()?;
                 writeln!(self.output, "xana> {}", evidence.summary())?;
@@ -873,10 +881,12 @@ pub(crate) async fn run_chat(
                     match header.models.select(connection, model) {
                         Ok(_) => {
                             println!(
-                                "xana> selected {connection}/{model}; starting a new conversation so runtime ownership remains explicit"
+                                "xana> selected {connection}/{model}; applying settings to this conversation"
                             );
                             runtime.send(RuntimeCommand::Shutdown).await?;
-                            exit = ChatExit::Restart;
+                            exit = ChatExit::SwitchConversation(ConversationRef::Native {
+                                session_id: header.session_id,
+                            });
                             break;
                         }
                         Err(error) => println!("xana> could not select model: {error}"),

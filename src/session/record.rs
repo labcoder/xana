@@ -40,6 +40,13 @@ impl RecordEnvelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
 pub(crate) enum SessionRecord {
+    ExecutionConfigured {
+        configuration: Box<crate::profile::execution::ExecutionConfiguration>,
+    },
+    OperationConfigurationBound {
+        operation_id: OperationId,
+        configuration_digest: String,
+    },
     VisionReceiptRecorded {
         receipt: crate::vision::receipt::VisionReceipt,
     },

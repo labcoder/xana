@@ -36,14 +36,14 @@ pub(super) fn customize_quick(
         return Ok(Customization {
             config: rendered,
             preferences: None,
-            effects: vec!["new conversation (connection/model owner changed)"],
+            effects: vec!["next turn in this conversation (compatible execution owner required)"],
         });
     }
     if !args.full {
         return Ok(Customization {
             config: rendered,
             preferences: None,
-            effects: vec!["new conversation (selected connection/model changed)"],
+            effects: vec!["next turn in this conversation (compatible execution owner required)"],
         });
     }
 
@@ -62,7 +62,7 @@ pub(super) fn customize_quick(
         effects: vec![
             "appearance immediately after commit",
             "managed model/reasoning on subsequent turns",
-            "connection, shell, authority, profile, and route changes in a new conversation",
+            "execution settings before the next new turn; existing history is retained",
         ],
     })
 }
@@ -112,7 +112,7 @@ pub(super) fn run_section(
         atomic_write(&paths.presentation_file(), rendered.as_bytes())?;
         writeln!(output, "Appearance preferences applied immediately.")?;
         return Ok(SetupOutcome::Committed {
-            requires_new_conversation: false,
+            execution_changed: false,
         });
     }
 
@@ -165,7 +165,7 @@ pub(super) fn run_section(
                 false,
                 ui,
             )?;
-            "new conversation (shell or authority snapshot changed)"
+            "next new turn (shell or authority settings changed)"
         }
         SetupSectionChoice::ProfilesRoutes => {
             edit_profiles_routes(
@@ -176,7 +176,7 @@ pub(super) fn run_section(
                 !args.non_interactive,
                 ui,
             )?;
-            "new conversation (profile/route snapshot changed)"
+            "next new turn (profile/route settings changed)"
         }
         SetupSectionChoice::Connection
         | SetupSectionChoice::Appearance
@@ -218,7 +218,7 @@ pub(super) fn run_section(
         )?;
     }
     Ok(SetupOutcome::Committed {
-        requires_new_conversation: true,
+        execution_changed: true,
     })
 }
 
@@ -952,7 +952,7 @@ mod tests {
         assert_eq!(
             outcome,
             SetupOutcome::Committed {
-                requires_new_conversation: false
+                execution_changed: false
             }
         );
         assert_eq!(fs::read(paths.config_file()).unwrap(), original);

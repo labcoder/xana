@@ -43,6 +43,12 @@ use anyhow::{Context, Result};
 use clap::Parser as _;
 use std::{io::Write, sync::Arc};
 
+mod configuration;
+mod native;
+
+#[cfg(test)]
+mod tests;
+
 pub(super) enum ChatSurface {
     Plain(BannerMode),
     Tui {
@@ -163,25 +169,8 @@ async fn run_with_target(
         .await?
         {
             ChatRun::Complete(result) => return Ok(result),
-            ChatRun::Exited {
-                exit,
-                presentation,
-                restart_tui,
-                tui_required,
-                tui_continuation,
-                desktop_restart,
-            } => {
-                let Some(restart) = continue_after_chat_exit(
-                    paths,
-                    exit,
-                    presentation,
-                    restart_tui,
-                    tui_required,
-                    tui_continuation,
-                    desktop_restart,
-                )
-                .await?
-                else {
+            ChatRun::Exited(state) => {
+                let Some(restart) = continue_after_chat_exit(paths, *state).await? else {
                     return Ok(None);
                 };
                 surface = restart.surface;
@@ -197,14 +186,17 @@ async fn run_with_target(
 
 enum ChatRun {
     Complete(Option<OneShotSuccess>),
-    Exited {
-        exit: ChatExit,
-        presentation: presentation::ResolvedPresentation,
-        restart_tui: bool,
-        tui_required: bool,
-        tui_continuation: Option<tui::TuiContinuation>,
-        desktop_restart: Option<DesktopRestart>,
-    },
+    Exited(Box<ChatExitState>),
+}
+
+struct ChatExitState {
+    exit: ChatExit,
+    presentation: presentation::ResolvedPresentation,
+    restart_tui: bool,
+    tui_required: bool,
+    tui_continuation: Option<tui::TuiContinuation>,
+    desktop_restart: Option<DesktopRestart>,
+    conversation: ConversationRef,
 }
 
 struct DesktopRestart {
@@ -227,6 +219,40 @@ struct ChatIntent {
     force_new: bool,
     one_shot: Option<OneShotInput>,
     stream_sequence: Option<StreamSequence>,
+}
+
+fn automatic_conversation(
+    snapshot: &crate::workspace_host::WorkspaceSnapshot,
+    connection: &str,
+    kind: ProviderKind,
+    require_existing: bool,
+) -> Result<Option<ConversationRef>> {
+    if kind == ProviderKind::Codex {
+        return Ok(snapshot.conversations.iter().find_map(|row| {
+            matches!(&row.conversation, ConversationRef::Managed { connection: name, .. }
+                if name == connection && row.selected)
+            .then(|| row.conversation.clone())
+        }));
+    }
+    if snapshot.active.is_some() && require_existing {
+        return Err(anyhow::Error::new(WorkspaceHostError::Busy(
+            snapshot.active.clone().map(Box::new),
+        )));
+    }
+    let retained = snapshot
+        .active
+        .is_none()
+        .then(|| {
+            snapshot.conversations.iter().find_map(|row| {
+                matches!(row.conversation, ConversationRef::Native { .. })
+                    .then(|| row.conversation.clone())
+            })
+        })
+        .flatten();
+    if require_existing && retained.is_none() {
+        anyhow::bail!("--continue found no inactive native conversation for this workspace");
+    }
+    Ok(retained)
 }
 
 async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -> Result<ChatRun> {
@@ -296,75 +322,119 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let child_registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load child route registry")?;
     let notification_policy = child_registry.notifications.clone();
+    let selected = manager.selected()?;
+    let workspace_root = surface
+        .workspace()
+        .map(std::path::Path::to_path_buf)
+        .map_or_else(std::env::current_dir, Ok)
+        .context("could not resolve Xana workspace root")?
+        .canonicalize()
+        .context("could not canonicalize Xana workspace root")?;
+    let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
+    let host_snapshot = workspace_host.snapshot()?;
+    let exact_target = conversation_target.is_some();
+    // Select identity before resolving authority or constructing tools. Implicit
+    // resume and exact-ID resume retain the same historical Profile identity;
+    // current settings receive a separate execution revision, never a re-freeze.
+    let automatic_target = if conversation_target.is_none()
+        && resume.is_none()
+        && !force_new
+        && (continue_chat || one_shot.is_none())
+    {
+        automatic_conversation(
+            &host_snapshot,
+            &selected.connection,
+            manager.connection(&selected.connection)?.kind,
+            continue_chat,
+        )?
+    } else {
+        None
+    };
+    let implicit_managed = matches!(automatic_target, Some(ConversationRef::Managed { .. }));
+    let conversation_target = conversation_target.or(automatic_target);
     let profile_key = conversation_target
         .as_ref()
         .and_then(ConversationRef::conversation_id)
         .map(|conversation_id| conversation_id.to_string())
         .or_else(|| resume.map(|session_id| session_id.to_string()));
-    let frozen_profile = profile_key
+    let saved_profile = profile_key
         .as_deref()
         .map(|key| {
             crate::profile::ProfileStore::open(paths)
-                .snapshot(key)
+                .resolved_snapshot(key)
                 .map_err(anyhow::Error::new)
         })
         .transpose()?
-        .flatten()
-        .map(|snapshot| {
-            serde_json::from_value::<crate::profile::ResolvedProfile>(snapshot.resolved)
-                .context("frozen profile snapshot is invalid")
-        })
-        .transpose()?;
-    let selected = manager.selected()?;
-    if matches!(conversation_target, Some(ConversationRef::Managed { .. }))
-        && frozen_profile.is_none()
+        .flatten();
+    let mut retained_native = match conversation_target.as_ref() {
+        Some(ConversationRef::Native { session_id }) => {
+            Some(DurableSession::resume(paths.data_dir(), *session_id)?)
+        }
+        _ => resume
+            .map(|id| DurableSession::resume(paths.data_dir(), id))
+            .transpose()?,
+    };
+    let pending = retained_native
+        .as_ref()
+        .is_some_and(|(session, _)| session.has_unfinished_work());
+    let execution_configuration = if pending {
+        retained_native
+            .as_ref()
+            .and_then(|(session, _)| session.execution_configuration().cloned())
+            .map(Ok)
+            .unwrap_or_else(|| {
+                let profile = saved_profile.clone().context(
+                    "Unfinished Conversation has no saved Profile; use operation recovery",
+                )?;
+                Ok::<_, anyhow::Error>(crate::profile::execution::ExecutionConfiguration {
+                    version: 1,
+                    profile,
+                    inputs_digest: configuration::inputs_digest(paths)?,
+                })
+            })?
+    } else {
+        configuration::resolve(paths, saved_profile.as_ref())?
+    };
+    let frozen_profile = Some(execution_configuration.profile.clone());
+    if exact_target
+        && matches!(conversation_target, Some(ConversationRef::Managed { .. }))
+        && saved_profile.is_none()
     {
         anyhow::bail!(
             "the selected managed Conversation has no frozen Profile and cannot be attached safely"
         );
     }
-    let launch_profile = if frozen_profile.is_none() {
-        Some(
-            crate::profile::ProfileStore::open(paths)
-                .resolve_global_for_selection(&child_registry.default_profile, &selected)?,
-        )
-    } else {
-        None
-    };
     let selected_connection_name = frozen_profile
         .as_ref()
         .map_or(selected.connection.as_str(), |profile| {
             profile.connection.value.as_str()
         });
-    let selected_model = frozen_profile
-        .as_ref()
+    // Codex's existing in-thread model/reasoning controls are selection state,
+    // not changes to the Conversation's frozen permission/capability ceiling.
+    let selection_profile = frozen_profile.as_ref().filter(|_| !implicit_managed);
+    let selected_model = selection_profile
         .map_or(selected.model.as_str(), |profile| {
             profile.model.value.as_str()
         })
         .to_owned();
-    let selected_connection = manager.connection(selected_connection_name)?.clone();
+    let selected_connection = manager.connection(selected_connection_name)
+        .context("Conversation connection is unavailable; run `xana doctor` and restore a compatible connection without changing saved history")?
+        .clone();
     let profile_name = frozen_profile.as_ref().map_or_else(
         || child_registry.default_profile.clone(),
         |profile| profile.name.clone(),
     );
 
     let XanaConfig {
-        mut permission_mode,
         permission_rules,
-        shell,
-        mut max_tool_rounds,
-        context: prompt_budget_policy,
         resources: resource_policy,
         ..
     } = config;
-    if let Some(profile) = &frozen_profile {
-        permission_mode = profile.permission_mode.value;
-        max_tool_rounds = profile.max_tool_rounds.value;
-    }
+    let permission_mode = execution_configuration.profile.permission_mode.value;
     let provider_name = selected_connection_name.to_owned();
     let provider_kind = selected_connection.kind;
     let model = selected_model;
-    let managed_reasoning_summary = match &frozen_profile {
+    let managed_reasoning_summary = match selection_profile {
         Some(profile) => profile
             .reasoning_summary
             .value
@@ -377,78 +447,14 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
     let managed_selection = crate::model_catalog::ModelSelection {
         connection: provider_name.clone(),
         model: model.clone(),
-        reasoning_effort: frozen_profile.as_ref().map_or_else(
+        reasoning_effort: selection_profile.map_or_else(
             || selected.reasoning_effort.clone(),
             |profile| profile.reasoning_effort.value.clone(),
         ),
         reasoning_summary: managed_reasoning_summary,
     };
-    let shell = Shell::resolve(shell).context("could not resolve configured shell")?;
-    let configured_shell = shell.prompt_description();
-    let workspace_root = surface
-        .workspace()
-        .map(std::path::Path::to_path_buf)
-        .map_or_else(std::env::current_dir, Ok)
-        .context("could not resolve Xana workspace root")?
-        .canonicalize()
-        .context("could not canonicalize Xana workspace root")?;
-    let profile_skills = frozen_profile.as_ref().map_or_else(
-        || {
-            child_registry
-                .profiles
-                .get(&child_registry.default_profile)
-                .map(|profile| profile.skills.clone())
-                .unwrap_or_default()
-        },
-        |profile| profile.skills.value.clone(),
-    );
-    let plugin_revisions = match &frozen_profile {
-        Some(profile) => profile.plugin_revisions.clone(),
-        None => {
-            let plugins = child_registry
-                .profiles
-                .get(&child_registry.default_profile)
-                .map(|profile| profile.plugins.as_slice())
-                .unwrap_or_default();
-            let (revisions, readiness) = crate::plugin::PluginManager::open(paths)
-                .resolve_profile_plugins(
-                    plugins,
-                    &crate::plugin::PluginScope::Profile {
-                        project: None,
-                        profile: child_registry.default_profile.clone(),
-                    },
-                )?;
-            if !readiness.is_empty() {
-                anyhow::bail!(
-                    "default profile plugin requirements are not ready: {}",
-                    readiness.join("; ")
-                );
-            }
-            revisions
-        }
-    };
-    let plugin_skill_sources =
-        crate::plugin::PluginManager::open(paths).skill_sources_for_revisions(&plugin_revisions)?;
-    let skill_catalog = super::skills::catalog(&workspace_root, plugin_skill_sources)?;
-    let activated_skills = skill_catalog
-        .activate_all(profile_skills.iter().map(String::as_str))
-        .context(
-            "profile Agent Skill activation failed; run `xana skill list` and qualify collisions",
-        )?;
-    let skill_sources = activated_skills
-        .iter()
-        .map(crate::skill::ActivatedSkill::context_source)
-        .collect::<Vec<_>>();
-    let managed_skill_instructions = activated_skills
-        .iter()
-        .map(crate::skill::ActivatedSkill::prompt_text)
-        .collect::<Vec<_>>()
-        .join("\n\n");
     let artifact_store = ArtifactStore::open(paths.data_dir())?;
 
-    let workspace_host = WorkspaceHost::open(paths.data_dir(), &workspace_root)?;
-    debug_assert_eq!(workspace_host.workspace(), workspace_root);
-    let host_snapshot = workspace_host.snapshot()?;
     if let Some(target) = &conversation_target {
         let owner_matches = match target {
             ConversationRef::Native { .. } => provider_kind != ProviderKind::Codex,
@@ -459,20 +465,24 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         };
         if !owner_matches {
             anyhow::bail!(
-                "Conversation {target} does not match the execution owner in its frozen Profile"
+                "Conversation {target} requires its original execution owner; select a compatible model to continue here. History was not changed"
             );
         }
-        let state = host_snapshot
-            .conversations
-            .iter()
-            .find(|projection| projection.conversation == *target)
-            .map(|projection| projection.state);
-        match state {
-            Some(crate::workspace_host::ConversationState::Inactive) => {}
-            Some(state) => anyhow::bail!(
-                "Conversation {target} became {state} before control could be acquired; preview it or retry after its active Run stops"
-            ),
-            None => anyhow::bail!("Conversation {target} is no longer retained in this workspace"),
+        if exact_target {
+            let state = host_snapshot
+                .conversations
+                .iter()
+                .find(|projection| projection.conversation == *target)
+                .map(|projection| projection.state);
+            match state {
+                Some(crate::workspace_host::ConversationState::Inactive) => {}
+                Some(state) => anyhow::bail!(
+                    "Conversation {target} became {state} before control could be acquired; preview it or retry after its active Run stops"
+                ),
+                None => {
+                    anyhow::bail!("Conversation {target} is no longer retained in this workspace")
+                }
+            }
         }
     }
     let resume = conversation_target
@@ -482,83 +492,88 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             _ => None,
         })
         .or(resume);
-    let resume = if provider_kind != ProviderKind::Codex {
-        if (resume.is_some() || continue_chat) && host_snapshot.active.is_some() {
-            return Err(anyhow::Error::new(WorkspaceHostError::Busy(
-                host_snapshot.active.clone().map(Box::new),
-            )));
-        }
-        if !force_new && resume.is_none() && (continue_chat || one_shot.is_none()) {
-            let latest = if host_snapshot.active.is_none() {
-                DurableSession::latest_for_workspace(paths.data_dir(), &workspace_root)?
-            } else {
-                None
-            };
-            if continue_chat && latest.is_none() {
-                anyhow::bail!(
-                    "--continue found no inactive native conversation for this workspace"
-                );
-            }
-            if one_shot.is_none() && host_snapshot.active.is_some() {
-                writeln!(
-                    anstream::stdout().lock(),
-                    "another Xana root is active in this workspace; opening a new inactive conversation for drafting. Submitting work waits until the controlling root ends"
-                )?;
-            }
-            latest
-        } else {
-            resume
-        }
-    } else {
-        resume
-    };
+    if provider_kind != ProviderKind::Codex
+        && (resume.is_some() || continue_chat)
+        && host_snapshot.active.is_some()
+    {
+        return Err(anyhow::Error::new(WorkspaceHostError::Busy(
+            host_snapshot.active.clone().map(Box::new),
+        )));
+    }
     let conversation = if let Some(target) = conversation_target {
         target
     } else if provider_kind == ProviderKind::Codex {
-        let current = (resume.is_none() && !force_new && (one_shot.is_none() || continue_chat))
-            .then(|| {
-                host_snapshot.conversations.iter().find_map(|projection| {
-                    match &projection.conversation {
-                        ConversationRef::Managed {
-                            conversation_id,
-                            connection,
-                            thread_id,
-                        } if connection == &provider_name && projection.selected => {
-                            Some(ConversationRef::Managed {
-                                conversation_id: *conversation_id,
-                                connection: connection.clone(),
-                                thread_id: thread_id.clone(),
-                            })
-                        }
-                        _ => None,
-                    }
-                })
-            })
-            .flatten();
-        current.unwrap_or_else(|| ConversationRef::NewManaged {
+        ConversationRef::NewManaged {
             conversation_id: resume.map_or_else(ConversationId::new, ConversationId::for_native),
             connection: provider_name.clone(),
-        })
+        }
     } else {
         resume.map_or(ConversationRef::NewNative, |session_id| {
             ConversationRef::Native { session_id }
         })
     };
     if provider_kind == ProviderKind::Codex {
+        let profile_skills = frozen_profile.as_ref().map_or_else(
+            || {
+                child_registry
+                    .profiles
+                    .get(&child_registry.default_profile)
+                    .map(|profile| profile.skills.clone())
+                    .unwrap_or_default()
+            },
+            |profile| profile.skills.value.clone(),
+        );
+        let plugin_revisions = match &frozen_profile {
+            Some(profile) => profile.plugin_revisions.clone(),
+            None => {
+                let plugins = child_registry
+                    .profiles
+                    .get(&child_registry.default_profile)
+                    .map(|profile| profile.plugins.as_slice())
+                    .unwrap_or_default();
+                let (revisions, readiness) = crate::plugin::PluginManager::open(paths)
+                    .resolve_profile_plugins(
+                        plugins,
+                        &crate::plugin::PluginScope::Profile {
+                            project: None,
+                            profile: child_registry.default_profile.clone(),
+                        },
+                    )?;
+                if !readiness.is_empty() {
+                    anyhow::bail!(
+                        "default profile plugin requirements are not ready: {}",
+                        readiness.join("; ")
+                    );
+                }
+                revisions
+            }
+        };
+        let plugin_skill_sources = crate::plugin::PluginManager::open(paths)
+            .skill_sources_for_revisions(&plugin_revisions)?;
+        let skill_catalog = super::skills::catalog(&workspace_root, plugin_skill_sources)?;
+        let activated_skills = skill_catalog
+        .activate_all(profile_skills.iter().map(String::as_str))
+        .context(
+            "profile Agent Skill activation failed; run `xana skill list` and qualify collisions",
+        )?;
+        let managed_skill_instructions = activated_skills
+            .iter()
+            .map(crate::skill::ActivatedSkill::prompt_text)
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
         if resume.is_some() && frozen_profile.is_none() {
             anyhow::bail!(
                 "Xana durable --resume applies to native conversations or a planned managed continuation with a frozen profile; Codex owns ordinary managed thread resume"
             )
         }
-        if frozen_profile.is_none() {
+        if saved_profile.is_none() {
             let conversation_id = conversation
                 .conversation_id()
                 .expect("managed conversations always have a Xana identity");
             crate::profile::ProfileStore::open(paths).freeze(
                 &conversation_id.to_string(),
-                launch_profile
-                    .as_ref()
-                    .expect("fresh launches resolve one Profile"),
+                &execution_configuration.profile,
             )?;
         }
         let mut server = CodexAppServer::spawn(&codex_launch(&selected_connection)).await?;
@@ -593,11 +608,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                 .conversation_id()
                 .context("managed memory needs Conversation identity")?
                 .to_string(),
-            frozen_profile
-                .as_ref()
-                .or(launch_profile.as_ref())
-                .context("memory needs a resolved Profile")?
-                .profile_id,
+            execution_configuration.profile.profile_id,
         )?;
         let managed_config = ManagedChatConfig {
             memory,
@@ -658,6 +669,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             None => {
                 let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
                 let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
+                let retained_conversation = conversation.clone();
                 let (exit, tui_continuation) = match surface {
                     ChatSurface::Plain(_) => {
                         let exit = run_codex_chat(
@@ -713,164 +725,52 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                         (exit, None)
                     }
                 };
-                Ok(ChatRun::Exited {
+                Ok(ChatRun::Exited(Box::new(ChatExitState {
                     exit,
                     presentation,
                     restart_tui,
                     tui_required,
                     tui_continuation,
                     desktop_restart,
-                })
+                    conversation: retained_conversation,
+                })))
             }
         };
     }
 
-    let descriptor = manager
-        .descriptor(&provider_name, &model)
-        .context("could not resolve selected model metadata for prompt planning")?;
-    let prompt_budget = PromptBudgetPlan::derive(
-        &prompt_budget_policy,
-        ModelBudgetFacts {
-            connection: provider_name.clone(),
-            model: model.clone(),
-            context_tokens: descriptor.context_tokens,
-            max_output_tokens: descriptor.max_output_tokens,
-            reasoning: descriptor.reasoning == Some(true),
-        },
-    )
-    .context("could not derive a safe native prompt budget")?;
-
-    let (provider, endpoint) =
-        compose_native_provider(&selected_connection, &model, artifact_store.clone(), false)
-            .map_err(anyhow::Error::msg)?;
-    let mut tools =
-        ToolRegistry::builtins(shell.clone()).context("could not build tool registry")?;
-    let (profile_mcp_servers, profile_mcp_allowlists, profile_egress) =
-        frozen_profile.as_ref().map_or_else(
-            || {
-                child_registry
-                    .profiles
-                    .get(&child_registry.default_profile)
-                    .map(|profile| {
-                        let egress = profile
-                            .egress_policy
-                            .as_deref()
-                            .and_then(|policy| child_registry.egress_policies.get(policy))
-                            .map(|policy| policy.allowed.clone())
-                            .unwrap_or_default();
-                        (
-                            profile.mcp_servers.clone(),
-                            profile.mcp_allowlists.clone(),
-                            egress,
-                        )
-                    })
-                    .unwrap_or_default()
-            },
-            |profile| {
-                (
-                    profile.mcp_servers.value.clone(),
-                    profile.mcp_allowlists.value.clone(),
-                    profile.egress.value.clone(),
-                )
-            },
-        );
-    let profile_external_agents = frozen_profile.as_ref().map_or_else(
-        || {
-            child_registry
-                .profiles
-                .get(&child_registry.default_profile)
-                .map(|profile| profile.external_agents.clone())
-                .unwrap_or_default()
-        },
-        |profile| profile.external_agents.value.clone(),
-    );
-    tools
-        .configure_web(paths, &child_registry.web, &profile_egress)
-        .context("could not configure web tools")?;
-    super::mcp_commands::activate_profile_tools(
-        &child_registry,
-        paths,
-        &workspace_root,
-        &profile_mcp_servers,
-        &profile_mcp_allowlists,
-        &profile_egress,
-        &mut tools,
-    )
-    .await?;
-    let (session, permission_policy, resumed, repair_truncate_to, unfinished, restored_children) =
-        match resume {
-            Some(session_id) => {
-                let (session, summary) = DurableSession::resume(paths.data_dir(), session_id)?;
-                if session.workspace_root() != workspace_root {
-                    anyhow::bail!(
-                        "session {session_id} belongs to workspace {}; current workspace is {}",
-                        session.workspace_root().display(),
-                        workspace_root.display()
-                    );
-                }
-                let unfinished = summary.unfinished.clone();
-                let permission_policy = PermissionPolicy::new(
-                    permission_mode.into(),
-                    permission_rules.clone(),
-                    session.workspace_root(),
-                )
-                .context("could not resolve permission policy for the session workspace")?;
+    let (mut session, resumed, repair_truncate_to, unfinished, restored_children) =
+        match retained_native.take() {
+            Some((session, summary)) => {
+                anyhow::ensure!(
+                    session.workspace_root() == workspace_root,
+                    "Conversation workspace differs; no history was changed"
+                );
                 (
                     session,
-                    permission_policy,
                     true,
                     summary.repair_truncate_to,
-                    unfinished,
+                    summary.unfinished,
                     summary.children,
                 )
             }
-            None => {
-                let permission_policy = PermissionPolicy::new(
-                    permission_mode.into(),
-                    permission_rules.clone(),
-                    &workspace_root,
-                )
-                .context("could not resolve permission policy for the launch workspace")?;
-                (
-                    DurableSession::create(paths.data_dir(), workspace_root.clone())?,
-                    permission_policy,
-                    false,
-                    None,
-                    Vec::new(),
-                    Vec::new(),
-                )
-            }
+            None => (
+                DurableSession::create(paths.data_dir(), workspace_root.clone())?,
+                false,
+                None,
+                Vec::new(),
+                Vec::new(),
+            ),
         };
-    if frozen_profile.is_none()
+    if saved_profile.is_none()
         && let Err(error) = crate::profile::ProfileStore::open(paths).freeze(
             &session.session_id().to_string(),
-            launch_profile
-                .as_ref()
-                .expect("fresh launches resolve one Profile"),
+            &execution_configuration.profile,
         )
     {
         if !resumed {
-            session.discard_unstarted().with_context(|| {
-                format!("Profile freeze failed ({error}); empty session cleanup also failed")
-            })?;
+            session.discard_unstarted()?;
         }
-        return Err(error).context("could not freeze the Conversation Profile");
-    }
-    let workspace_root = session.workspace_root().to_owned();
-    if let Some(store) = artifact_store.protected_home() {
-        tools
-            .register(crate::recall::RecallTool {
-                owner: crate::recall::RecallOwner {
-                    store: store.clone(),
-                    paths: paths.clone(),
-                    conversation: session.session_id(),
-                },
-                route: crate::session::compaction::semantic::route_digest(
-                    &selected_connection,
-                    &model,
-                ),
-            })
-            .context("could not register bounded Project recall")?;
+        return Err(error).context("could not record initial Conversation Profile");
     }
     let artifact_owner = session.artifact_owner();
     let browser = artifact_store.protected_home().map(|store| {
@@ -881,203 +781,53 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             session.session_id(),
         )
     });
-    if let Some(owner) = browser.as_ref().filter(|owner| owner.snapshot().available) {
-        crate::browser::register_tools(
-            &mut tools,
-            owner.clone(),
-            profile_egress.iter().copied().collect(),
-        )
-        .context("could not activate the dedicated local browser")?;
-    }
-    crate::a2a::activate_profile_delegation_tools(
-        &child_registry,
-        crate::a2a::A2aDelegationActivation {
-            paths,
-            workspace: &workspace_root,
-            external_agents: &profile_external_agents,
-            profile_egress: &profile_egress,
-            artifacts: artifact_store.clone(),
-            owner: artifact_owner,
-        },
-        &mut tools,
+    let composed = native::compose(
+        paths,
+        &session,
+        execution_configuration.clone(),
+        browser.clone(),
     )
-    .context("could not activate profile external-agent delegation tools")?;
-    let profile_service_routes = frozen_profile.as_ref().map_or_else(
-        || {
-            child_registry
-                .profiles
-                .get(&child_registry.default_profile)
-                .map(|profile| profile.service_routes.clone())
-                .unwrap_or_default()
-        },
-        |profile| profile.service_routes.value.clone(),
+    .await?;
+    anyhow::ensure!(
+        pending || execution_configuration.inputs_digest == configuration::inputs_digest(paths)?,
+        "Settings changed during preparation; retry startup. Conversation history is retained."
     );
-    crate::focused_service::activate_profile_image_tool(
-        &child_registry,
-        &profile_service_routes,
-        &profile_egress,
-        artifact_store.clone(),
-        artifact_owner,
-        paths,
-        &mut tools,
-    )
-    .map_err(anyhow::Error::msg)
-    .context("could not activate profile image-generation tool")?;
-    let vision = super::vision::VisionTurnService::new(
-        child_registry.clone(),
-        crate::outbound::OutboundGuard::open(paths)
-            .context("could not open the outbound policy gate for vision")?,
-        profile_service_routes.clone(),
-        profile_egress.clone(),
-        permission_mode,
-        artifact_store.clone(),
-        artifact_owner,
-    )
-    .with_outbound_audit(crate::diagnostics::outbound_audit(paths)?);
-    let restored_plans = session.started_orchestration_plans();
-    let child_supervisor = if child_registry.routes.is_empty() {
-        None
+    let resume_configuration_error = if pending
+        && (session.execution_configuration().is_none()
+            || !configuration::resolve(paths, Some(&execution_configuration.profile))
+                .is_ok_and(|current| current == execution_configuration))
+    {
+        Some("This interrupted operation's execution settings cannot be reconstructed after configuration changes. Choose Stop (not Continue), then send a new turn in this same Conversation. No effects were replayed.".to_owned())
     } else {
-        let root_profile = child_registry
-            .profiles
-            .get(&child_registry.default_profile)
-            .context("validated configuration lost its default profile")?;
-        let budget = OrchestrationBudget::new(
-            root_profile.orchestration.clone(),
-            root_profile.max_tool_rounds,
-        );
-        let factory = ChildExecutionOwnerFactory::new(
-            child_registry,
-            model_manager(paths)?,
-            shell,
-            workspace_root.clone(),
-            artifact_store.clone(),
-            permission_rules,
-        )
-        .with_usage_budget(super::usage_commands::compose_budget(
-            paths,
-            session.session_id().to_string(),
-            crate::usage_budget::DispatchFacts::default(),
-        )?);
-        let (handle, supervisor) = ChildSupervisor::with_restored(
-            ParentExecution {
-                agent_id: session.agent_id(),
-                thread_id: session.thread_id(),
-            },
-            Arc::new(factory),
-            restored_children.clone(),
-            restored_plans,
-            budget,
-            artifact_store.clone(),
-            artifact_owner,
-        );
-        let supervisor =
-            supervisor.with_consumed_reservations(&session.orchestration_reservations()?);
-        tools
-            .enable_child_delegation(handle.clone())
-            .context("could not register child delegation tool")?;
-        Some((handle, supervisor))
+        None
     };
-    let environment = PromptEnvironment {
-        connection: provider_name.clone(),
-        model: model.clone(),
-        operating_system: std::env::consts::OS.to_owned(),
-        working_directory: workspace_root.clone(),
-        configured_shell,
-        surface: PromptSurface::Cli,
-    };
-    let memory = super::memory_commands::compose(
-        paths,
-        &artifact_store,
-        &session.session_id().to_string(),
-        frozen_profile
-            .as_ref()
-            .or(launch_profile.as_ref())
-            .context("memory needs a resolved Profile")?
-            .profile_id,
-    )?;
-    crate::memory::tools::register(&mut tools, memory.clone())
-        .context("could not register personal memory tools")?;
-    let definitions = tools.definitions().into_iter().cloned().collect::<Vec<_>>();
-    let prompt_assembler = PromptAssembler::new(
-        definitions,
-        environment,
-        Some(ProductDocumentationHint {
-            capability: "xana_docs".to_owned(),
-            references: crate::self_docs::default_catalog()
-                .list(None)
-                .into_iter()
-                .map(|entry| entry.id.to_owned())
-                .collect(),
-        }),
-        ContextBudget {
-            total_tokens: prompt_budget.input_budget_tokens,
-            conversation_reserve_tokens: prompt_budget.conversation_reserve_tokens,
-        },
-    )
-    .with_budget_plan(prompt_budget)
-    .with_context_sources(skill_sources);
-    let prompt = prompt_assembler
-        .assemble(&[])
-        .context("could not assemble Xana base prompt")?;
-    let mut context_report = ContextPlanReport::render(&prompt.context_plan)
-        .as_str()
-        .to_owned();
-    context_report.push('\n');
-    let agent = Agent::new(
-        provider,
-        tools,
-        workspace_root.clone(),
-        prompt,
-        max_tool_rounds,
-    )
-    .with_runtime_telemetry(crate::diagnostics::runtime_telemetry())
-    .with_semantic_compaction(super::sessions::semantic_policy(
-        paths,
-        &selected_connection,
-        &model,
-    )?)
-    .with_usage_budget(super::usage_commands::compose_budget(
-        paths,
-        session.session_id().to_string(),
-        crate::usage_budget::DispatchFacts {
-            owner: Some("native".into()),
-            connection: Some(provider_name.clone()),
-            model: Some(model.clone()),
-            profile: Some(profile_name.clone()),
-            reasoning: selected.reasoning_effort.clone(),
-            project: None,
-        },
-    )?);
+    if !pending {
+        session.configure_execution(execution_configuration)?;
+    }
+    let native::Composed {
+        execution,
+        endpoint,
+        mut context_report,
+        vision,
+    } = composed;
     let session_id = session.session_id();
     let session_path = session.path().to_owned();
     let round_budget_suspension = session.round_budget_suspension();
-    if memory.is_some() {
+    if pending {
+        context_report.push_str("\nUnfinished work retains its execution settings. Stop or reconcile it before applying newer settings.\n");
+    }
+    if execution.memory.is_some() {
         context_report.push_str(crate::memory::learning::DISCLOSURE);
     } else {
         context_report.push_str(crate::memory::UNAVAILABLE_NOTICE);
     }
-    let runtime = match child_supervisor {
-        Some((handle, supervisor)) => RuntimeHandle::spawn_persistent_with_supervisor(
-            agent,
-            permission_policy,
-            true,
-            session,
-            prompt_assembler,
-            handle,
-            supervisor,
-            memory,
-        )?,
-        None => RuntimeHandle::spawn_persistent(
-            agent,
-            permission_policy,
-            true,
-            session,
-            prompt_assembler,
-            memory,
-        )?,
-    };
-    let runtime = runtime.with_browser(browser);
+    let refresh = Arc::new(configuration::Refresh {
+        paths: paths.clone(),
+        browser: browser.clone(),
+    });
+    let runtime =
+        RuntimeHandle::spawn_configurable(execution, session, refresh, resume_configuration_error)?
+            .with_browser(browser);
     let conversation = match conversation {
         ConversationRef::NewNative => ConversationRef::Native { session_id },
         conversation => conversation,
@@ -1140,6 +890,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
 
     let restart_tui = matches!(&surface, ChatSurface::Tui { .. });
     let tui_required = matches!(&surface, ChatSurface::Tui { required: true, .. });
+    let retained_conversation = conversation.clone();
     let (exit, tui_continuation) = match surface {
         ChatSurface::Plain(_) => {
             let exit =
@@ -1178,25 +929,30 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             (exit, None)
         }
     };
-    Ok(ChatRun::Exited {
+    Ok(ChatRun::Exited(Box::new(ChatExitState {
         exit,
         presentation,
         restart_tui,
         tui_required,
         tui_continuation,
         desktop_restart,
-    })
+        conversation: retained_conversation,
+    })))
 }
 
 async fn continue_after_chat_exit(
     paths: &XanaPaths,
-    exit: ChatExit,
-    mut presentation: presentation::ResolvedPresentation,
-    restart_tui: bool,
-    tui_required: bool,
-    tui_continuation: Option<tui::TuiContinuation>,
-    desktop_restart: Option<DesktopRestart>,
+    state: ChatExitState,
 ) -> Result<Option<ChatRestart>> {
+    let ChatExitState {
+        exit,
+        mut presentation,
+        restart_tui,
+        tui_required,
+        tui_continuation,
+        desktop_restart,
+        conversation: current_conversation,
+    } = state;
     if exit == ChatExit::Quit {
         return Ok(None);
     }
@@ -1223,7 +979,7 @@ async fn continue_after_chat_exit(
     let mut conversation_target = match &exit {
         ChatExit::SwitchConversation(conversation) => Some(conversation.clone()),
         ChatExit::DesktopSwitchConversation { conversation, .. } => Some(conversation.clone()),
-        _ => None,
+        _ => Some(current_conversation),
     };
     let mut continue_chat = false;
     if let ChatExit::ControlCommand { family, arguments } = &exit {
@@ -1256,19 +1012,16 @@ async fn continue_after_chat_exit(
     if let ChatExit::Setup(request) = &exit {
         let mut args = crate::setup::args_for_request(request)?;
         args.plain = !restart_tui;
-        force_new_conversation = run_setup_command(&args, paths)
-            .await?
-            .requires_new_conversation();
+        run_setup_command(&args, paths).await?;
     }
     if let ChatExit::Settings(request) = &exit {
         let settings_profile = super::resolved_presentation(paths, true, true);
-        let outcome = tui::run_settings(
+        tui::run_settings(
             paths,
             (!request.is_empty()).then_some(request.as_str()),
             None,
             settings_profile,
         )?;
-        force_new_conversation |= outcome.requires_new_conversation;
         presentation = super::resolved_presentation(paths, true, true);
     }
     let doctor_resume = if let ChatExit::Doctor(session_id) = &exit {
@@ -1282,6 +1035,9 @@ async fn continue_after_chat_exit(
         if XanaConfig::load_from(paths.config_file()).is_err() {
             return Ok(None);
         }
+    }
+    if force_new_conversation {
+        conversation_target = None;
     }
     let restart_surface = if let Some(mut desktop) = desktop_restart {
         match &exit {

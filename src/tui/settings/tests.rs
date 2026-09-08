@@ -144,7 +144,7 @@ fn applying_refreshes_the_draft_and_tracks_new_conversation_effects() {
     state.apply_succeeded(&receipt, replacement);
 
     assert_eq!(state.pending_count(), 0);
-    assert!(state.requires_new_conversation());
+    assert!(!state.requires_new_conversation());
     assert_eq!(state.applied_transactions, 1);
     assert_eq!(state.status.tone, state::StatusTone::Success);
 }

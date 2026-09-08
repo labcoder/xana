@@ -12,6 +12,9 @@ engineering contracts used to change it.
 - [Configuration](user/configuration.md) explains setup, provider/profile
   settings, platform paths, `XANA_HOME`, doctor, validated editing, and scoped
   reset.
+- [Changing settings without losing a conversation](user/execution-settings.md)
+  explains safe turn-boundary updates, retained history, interrupted work and
+  client reattachment without creating a new Conversation.
 - [Settings workspace and configuration editing](user/settings.md) explains
   the persistent terminal browser, stable CLI catalog, staged scalar edits,
   scope/source/effect metadata, transaction guarantees, and focused managers.

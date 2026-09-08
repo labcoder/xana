@@ -843,6 +843,7 @@ fn short_effect(effect: SettingEffect) -> &'static str {
     match effect {
         SettingEffect::Immediate => "Now",
         SettingEffect::NewConversation => "New conversation",
+        SettingEffect::NextTurn => "Next new turn",
         SettingEffect::NextLaunch => "Next launch",
         SettingEffect::ManagedElsewhere => "Focused manager",
     }

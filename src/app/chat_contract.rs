@@ -41,7 +41,6 @@ pub(crate) struct ChatHeader {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ChatExit {
     Quit,
-    Restart,
     NewConversation,
     SwitchConversation(ConversationRef),
     DesktopNewConversation {

@@ -62,7 +62,7 @@ file:
   presentation preferences, or derived status.
 - **Scope** says whether the edit targets this terminal frontend, global Xana
   configuration, or a focused task manager.
-- **Effect** says whether the value applies immediately, to new conversations,
+- **Effect** says whether the value applies immediately, before the next new turn, to new conversations,
   on Xana's next launch, or only through another manager.
 
 No stored key, environment-secret value, or credential-store handle enters a
@@ -214,8 +214,9 @@ before entering settings. On return:
 
 - presentation-only changes resume the same conversation with refreshed
   presentation;
-- a setting marked **Applies to new conversations** starts a new conversation
-  rather than mutating the frozen runtime snapshot; and
+- compatible execution changes apply before the next new turn in the same
+  conversation; the default Profile selector affects future conversations but
+  does not create one on return; and
 - cancellation resumes the originating plain or full-screen surface without
   changing durable state.
 

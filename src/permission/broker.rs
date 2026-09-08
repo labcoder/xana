@@ -51,6 +51,10 @@ struct PendingRequest {
 }
 
 enum BrokerCommand {
+    ReplacePolicy {
+        policy: PermissionPolicy,
+        reply: oneshot::Sender<bool>,
+    },
     Authorize {
         request: Box<PermissionRequest>,
         reply: oneshot::Sender<Authorization>,
@@ -125,6 +129,15 @@ impl PermissionBroker {
     async fn run(mut self) {
         while let Some(command) = self.commands.recv().await {
             match command {
+                BrokerCommand::ReplacePolicy { policy, reply } => {
+                    let allowed = self.pending.is_empty();
+                    if allowed {
+                        self.policy = policy;
+                        self.grants = SessionGrants::default();
+                        self.public_web_turns.clear();
+                    }
+                    let _ = reply.send(allowed);
+                }
                 BrokerCommand::OperationFinished(operation) => {
                     self.public_web_turns.remove(&operation);
                 }
@@ -453,6 +466,20 @@ fn denial_key(request: &PermissionRequest) -> blake3::Hash {
 }
 
 impl PermissionBrokerHandle {
+    pub(crate) async fn replace_policy(
+        &self,
+        policy: PermissionPolicy,
+    ) -> Result<(), BrokerUnavailable> {
+        let (reply, receiver) = oneshot::channel();
+        self.commands
+            .send(BrokerCommand::ReplacePolicy { policy, reply })
+            .map_err(|_| BrokerUnavailable)?;
+        if receiver.await.map_err(|_| BrokerUnavailable)? {
+            Ok(())
+        } else {
+            Err(BrokerUnavailable)
+        }
+    }
     pub(crate) async fn authorize(
         &self,
         request: PermissionRequest,

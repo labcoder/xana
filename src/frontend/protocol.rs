@@ -725,6 +725,18 @@ impl ClientSnapshot {
         }
         match event {
             ClientEvent::Runtime(event) => match event.as_ref() {
+                AgentEvent::ExecutionConfigurationChanged {
+                    connection,
+                    model,
+                    approval_policy,
+                    reasoning_effort,
+                    ..
+                } => {
+                    self.connection = bounded_text(connection.clone(), MAX_OMISSION_LABEL_BYTES);
+                    self.model = bounded_text(model.clone(), MAX_OMISSION_LABEL_BYTES);
+                    self.approval_policy = approval_policy.clone();
+                    self.reasoning_effort = reasoning_effort.clone();
+                }
                 AgentEvent::TerminalDiagnostic { diagnostic } => {
                     self.retain_terminal_diagnostic(diagnostic.clone());
                 }
@@ -1251,6 +1263,7 @@ fn event_kind(event: &AgentEvent) -> &'static str {
         AgentEvent::CompletionEvidenceRecorded { .. } => "completion evidence",
         AgentEvent::UserMessageCommitted { .. } => "committed user message",
         AgentEvent::BrowserStatus { .. } => "browser status",
+        AgentEvent::ExecutionConfigurationChanged { .. } => "execution settings",
         AgentEvent::OperationStateChanged { .. } => "operation state",
         AgentEvent::AssistantTextDelta { .. } => "assistant delta",
         AgentEvent::ProviderReasoningDelta { .. } => "provider reasoning delta",
@@ -1287,6 +1300,42 @@ mod tests {
     use crate::managed::codex::ManagedNotification;
     use crate::message::{ContentBlock, Role};
     use crate::{permission::PermissionRequest, tool::EffectClass};
+
+    #[test]
+    fn execution_refresh_updates_live_metadata_without_clearing_conversation() {
+        let id = SessionId::new();
+        let history = vec![Message::text(Role::User, "retain me")];
+        let mut snapshot = ClientSnapshot::initial(
+            ClientSnapshotSeed {
+                session_id: id,
+                connection: "old".into(),
+                execution_owner: "native".into(),
+                model: "old".into(),
+                reasoning_effort: None,
+                host_location: HostLocationV1::Embedded,
+                approval_policy: "allow".into(),
+                children: vec![],
+                resource_policy: ResourcePolicyV1::default(),
+            },
+            history.clone(),
+        );
+        snapshot.apply(
+            &ClientEvent::Runtime(Box::new(AgentEvent::ExecutionConfigurationChanged {
+                connection: "new".into(),
+                model: "new-model".into(),
+                profile: "default".into(),
+                approval_policy: "ask".into(),
+                reasoning_effort: Some("high".into()),
+            })),
+            1,
+        );
+        assert_eq!(snapshot.session_id, id);
+        assert_eq!(snapshot.conversation, history);
+        assert_eq!(snapshot.connection, "new");
+        assert_eq!(snapshot.model, "new-model");
+        assert_eq!(snapshot.approval_policy, "ask");
+        assert_eq!(snapshot.reasoning_effort.as_deref(), Some("high"));
+    }
 
     #[test]
     fn completion_projection_is_byte_bounded_and_stale_evidence_cannot_downgrade_it() {

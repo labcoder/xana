@@ -144,6 +144,13 @@ pub(crate) struct RoundBudgetDecision {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum AgentEvent {
+    ExecutionConfigurationChanged {
+        connection: String,
+        model: String,
+        profile: String,
+        approval_policy: String,
+        reasoning_effort: Option<String>,
+    },
     WebProgress {
         progress: crate::web::WebProgress,
     },

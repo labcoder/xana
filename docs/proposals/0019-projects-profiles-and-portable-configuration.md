@@ -31,7 +31,10 @@ Proposals 0001 through 0009 remain Proposed.
   external connections, permissions, budgets, task routes, and primary/child
   applicability. It is configuration, not a running agent.
 - A **resolved profile snapshot** is the exact redacted value frozen for a
-  conversation. Changing a profile never silently changes existing authority.
+  conversation's original identity. An **execution configuration revision** is
+  the resolved value bound to a new native operation. User-owned configuration
+  edits can affect subsequent turns without replacing the conversation; active
+  or suspended operations retain their prior authority.
 - **Portable project configuration** is explicitly shared non-secret TOML under
   `.agents/xana/`. Detection is an invitation to inspect or register, not
   authority or installation state.
@@ -70,9 +73,11 @@ The following invariants are mandatory:
    identity and a bounded, reviewable handoff. The source remains unchanged.
 6. Rename, archive, relink, unarchive, and local forget never delete workspace
    files, sessions, artifacts, credentials, or provider-owned history.
-7. A conversation freezes its resolved profile. Selecting a different profile
-   creates an explicit continuation. Existing owner-specific model/reasoning
-   changes retain their current documented semantics.
+7. A conversation preserves its initial resolved profile. Compatible settings
+   changes append execution revisions at safe new-turn boundaries; immutable
+   per-operation bindings preserve provenance and never replay unfinished work.
+   Explicit selection of another Profile through the continuation API remains
+   a separate operation. Model/setup/settings controls retain compatible history.
 8. Canonical path identity uses platform path APIs and existing workspace
    identity rules, never display strings or prefix comparisons.
 

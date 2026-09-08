@@ -4018,6 +4018,9 @@ fn project_event(
             AgentEvent::BrowserStatus { .. } => DesktopEvent::Activity {
                 label: "Browser status updated; see Activity details".to_owned(),
             },
+            AgentEvent::ExecutionConfigurationChanged { .. } => DesktopEvent::Activity {
+                label: "Execution settings updated for this Conversation".to_owned(),
+            },
         },
         ClientEvent::Managed(_) => DesktopEvent::Error(DesktopError::new(
             DesktopErrorCode::UnsupportedExecutionOwner,

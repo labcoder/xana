@@ -1446,6 +1446,7 @@ fn target_label(target: DesktopSettingTarget) -> String {
 fn effect_label(effect: DesktopSettingEffect) -> String {
     match effect {
         DesktopSettingEffect::Immediate => "Immediately after apply",
+        DesktopSettingEffect::NextTurn => "Before the next new turn",
         DesktopSettingEffect::NewConversation => "New Conversations",
         DesktopSettingEffect::NextLaunch => "Next launch",
         DesktopSettingEffect::ManagedElsewhere => "Managed in a focused workflow",

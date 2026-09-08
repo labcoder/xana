@@ -1146,10 +1146,11 @@ use existing credential references, never chat-provider credentials.
 
 Public-web approval is typed and operation-bound. The broker expires grants
 on terminal operation state; they are not restored from audit history. The
-outbound guard rechecks exact denies and the frozen Profile's `prompt_text`
+outbound guard rechecks exact denies and the execution Profile's `prompt_text`
 disclosure ceiling even with a turn grant. `connect web` reviews a derived
-default-profile policy for new Conversations without mutating shared policies
-or existing frozen Profiles. An ineligible Profile exposes an actionable
+default-profile policy without mutating shared policies or historical Profiles.
+Existing native Conversations adopt it at a safe new-turn boundary.
+An ineligible Profile exposes an actionable
 unavailable capability instead of a tool that cannot legally send. Stage
 events carry operation IDs; clients ignore stale progress and show actual
 search/read/redirect/extract stages, not fabricated reasoning. See
@@ -1241,8 +1242,8 @@ instead of replaying stale
 cursor positions through separate renders. Bracketed and detected fallback
 paste therefore enter one normalized confirmation as untrusted draft data
 rather than repeated submits. Model
-selection persists through `ModelManager` and restarts into a new conversation
-rather than translating history. Activity visibility is presentation state,
+selection persists through `ModelManager` and recomposes compatible execution
+in the same conversation, without translating native/vendor history. Activity visibility is presentation state,
 not reasoning configuration. The bounded activity projection groups typed
 cards by root, native child, managed Codex item, and approval identity. It
 labels exposed reasoning separately, never requests an extra summary, and
@@ -1452,8 +1453,8 @@ streams are terminals and degrades to the same grouped catalog otherwise.
 dry-run, and redacted receipt forms. `/settings [SECTION]` first shuts down the
 native or managed foreground owner, restores the terminal, and returns through
 the application restart loop. Machine-local presentation can apply while the
-same conversation resumes; global defaults classified as new-conversation
-state never rewrite an active immutable snapshot.
+same conversation resumes; execution preferences apply before its next new
+turn. The default Profile selector remains a future-conversation preference.
 
 Desktop projects the same catalog and draft transaction into twelve responsive
 sections, then routes connections, credentials, model selection, Projects,
@@ -1473,7 +1474,7 @@ comments, then validate the complete document before one atomic replacement.
 Appearance is a separately versioned frontend file and applies immediately;
 when included in Full Custom, its write participates in config/credential
 rollback. Receipts classify managed model/reasoning as subsequent-turn state
-and resolved owner/policy/profile changes as new-conversation state. No setup
+and compatible policy/profile changes as next-turn state. No setup
 operation mutates an already running agent or managed thread implicitly.
 When valid state already contains named connections, Quick/focused setup can
 revalidate and select any existing connection/model or add/update another;
@@ -1493,7 +1494,12 @@ that outcome but never parse, migrate, or repair configuration themselves.
 
 The diagnostic boundary emits a versioned redacted set of stable findings
 across the production config/credential/model/path/presentation/terminal/host
-state and configured interoperability declarations. Default doctor performs
+state and configured interoperability declarations. Its bounded retained-
+Conversation Profile inspection covers the current workspace and selected
+execution owner as well as new-chat defaults. It reports
+saved/default differences, missing routes, invalid snapshots and unavailable
+inspection without creating coordination files, replacing snapshots, claiming
+an active-owner check or contacting a provider. Default doctor performs
 only bounded local inspection: it starts no provider, Codex app-server, MCP
 process, or external-agent request. `doctor --probe-connections` separately
 admits bounded live native-catalog and Codex executable/account/catalog probes;
@@ -2173,11 +2179,31 @@ attributed, untrusted data.
 
 Snapshot records reside beside project membership in the private versioned
 project record and contain only the redacted resolved document plus its digest.
-An existing snapshot cannot be replaced. A profile change allocates a new
-conversation identity, copies only the optional project membership, records the
-predecessor link, and freezes the new snapshot; owner-specific model/reasoning
-history in the source remains untouched. Provider/process availability never
-participates in resolution and appears only as readiness.
+An initial snapshot cannot be replaced. Automatic and exact-ID selection retain
+the Conversation identity before resolving execution. Native `ExecutionConfigured`
+records append a redacted resolved Profile and an input digest; each new admitted
+operation records an `OperationConfigurationBound` digest before any effect.
+Hydration keeps one current revision, while historical revisions stay in the
+journal. Desktop idempotency binds to the stable original owner identity; that
+binding is not permission authority. Execution uses the current revision's tools
+and policy. The reducer rejects reconfiguration during unfinished work and
+duplicate operation bindings.
+
+Application-owned native composition is shared by startup and an injected
+between-turn refresher. Unchanged settings reuse the Agent and its connections;
+changed settings prepare a replacement, record provenance, invalidate transient
+allow grants, and replace the idle runtime's policy/tools/prompt. Explicit denials
+remain. Preparation is bounded to ten seconds and control input cancels it before
+admission. No configuration parsing or process-global reads enter `Agent` itself.
+Active/suspended turns do not refresh. After restart, changed or unprovable
+execution inputs block Continue, not Stop/recovery or subsequent new turns in the
+same Conversation. Tools and provider effects are never automatically replayed.
+
+Managed Codex retains its vendor-owned thread and existing model/reasoning
+controls. Shared setup/settings returns preserve its exact Conversation target;
+automatic per-turn configuration refresh is native-only. Explicit Profile
+continuations and cross-workspace/owner transitions retain their separate APIs.
+Provider/process availability is readiness, not implicit fallback authority.
 
 See [Configuration](../user/configuration.md) for the user-facing schema and
 path rules.

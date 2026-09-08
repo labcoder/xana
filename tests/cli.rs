@@ -398,7 +398,7 @@ fn blocking_chat_server() -> (
     )
 }
 
-fn read_http_request(stream: &mut TcpStream) {
+fn read_http_request(stream: &mut TcpStream) -> serde_json::Value {
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .expect("request timeout");
@@ -426,6 +426,11 @@ fn read_http_request(stream: &mut TcpStream) {
         assert!(read > 0, "provider request ended before body");
         request.extend_from_slice(&buffer[..read]);
     }
+    if content_length == 0 {
+        return serde_json::Value::Null;
+    }
+    serde_json::from_slice(&request[header_end..header_end + content_length])
+        .expect("provider JSON request")
 }
 
 fn init_native(home: &Path, base_url: &str) {
@@ -447,6 +452,133 @@ fn init_native(home: &Path, base_url: &str) {
         .output()
         .expect("initialize fake provider");
     assert_success(&output);
+}
+
+#[test]
+fn web_enablement_during_a_turn_applies_to_next_turn_in_the_same_conversation() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    init_native(
+        &home,
+        &format!("http://{}/v1", listener.local_addr().unwrap()),
+    );
+    let fixture_home = home.clone();
+    let worker = thread::spawn(move || {
+        let mut captured = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        for index in 0..3 {
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "missing provider request {index}"
+                        );
+                        thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("fixture accept: {error}"),
+                }
+            };
+            captured.push(read_http_request(&mut stream));
+            let delta = if index == 0 {
+                // Edit real configuration while the first request is in flight.
+                // Pages-only setup performs no network or credential operation.
+                assert_success(
+                    &xana(&fixture_home)
+                        .args(["connect", "web", "--web-provider", "pages-only", "--yes"])
+                        .output()
+                        .unwrap(),
+                );
+                serde_json::json!({"tool_calls":[{"index":0,"id":"fixture-call","type":"function","function":{
+                    "name":"xana_docs","arguments":"{\"op\":\"list\"}"
+                }}]})
+            } else {
+                serde_json::json!({"content": format!("fixture answer {index}")})
+            };
+            let body = format!(
+                "data: {}\n\ndata: [DONE]\n\n",
+                serde_json::json!({"choices":[{"delta":delta}]})
+            );
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        }
+        captured
+    });
+    let mut process = xana(&home)
+        .current_dir(directory.path())
+        .args(["--plain"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    process
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"first fixture question\nsecond fixture question\n/quit\n")
+        .unwrap();
+    let output = process.wait_with_output().unwrap();
+    assert_success(&output);
+    let requests = worker.join().unwrap();
+    let has_fetch = |request: &serde_json::Value| {
+        request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["function"]["name"] == "web_fetch")
+    };
+    assert!(!has_fetch(&requests[0]));
+    assert!(
+        !has_fetch(&requests[1]),
+        "active tool loop changed configuration"
+    );
+    assert!(
+        has_fetch(&requests[2]),
+        "new turn did not acquire enabled web capability"
+    );
+    assert!(
+        requests[2]["messages"]
+            .to_string()
+            .contains("first fixture question")
+    );
+    assert!(
+        requests[2]["messages"]
+            .to_string()
+            .contains("fixture answer 1")
+    );
+    let journals = std::fs::read_dir(home.join("data/sessions"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        journals.len(),
+        1,
+        "settings must not create another Conversation"
+    );
+    let records = std::fs::read_to_string(&journals[0])
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let revisions = records
+        .iter()
+        .filter(|record| record["kind"] == "execution_configured")
+        .collect::<Vec<_>>();
+    assert_eq!(revisions.len(), 2);
+    let bound = records
+        .iter()
+        .filter(|record| record["kind"] == "operation_configuration_bound")
+        .map(|record| record["data"]["configuration_digest"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(bound.len(), 2);
+    assert_ne!(bound[0], bound[1]);
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("settings updated for this conversation")
+    );
 }
 
 #[test]
@@ -517,6 +649,20 @@ fn protected_home_setup_stream_restart_lock_and_manual_recovery() {
     );
     let verified = command().args(["storage", "verify"]).output().unwrap();
     assert_success(&verified);
+    assert_success(
+        &command()
+            .args(["profile", "edit", "default", "--max-tool-rounds", "7"])
+            .output()
+            .unwrap(),
+    );
+    let doctor = command()
+        .args(["doctor", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("conversation.profile.update_ready"));
+    let reopened = command().output().unwrap();
+    assert_success(&reopened);
+    assert!(String::from_utf8_lossy(&reopened.stdout).contains("resumed: yes"));
     let usage = command().args(["usage", "ledger"]).output().unwrap();
     assert_success(&usage);
     let ledger: serde_json::Value = serde_json::from_slice(&usage.stdout).unwrap();
@@ -725,6 +871,139 @@ fn storage_migration_backup_and_restore_preserve_a_real_cli_conversation() {
         serde_json::from_slice::<serde_json::Value>(&before.stdout).unwrap(),
         serde_json::from_slice::<serde_json::Value>(&after.stdout).unwrap()
     );
+}
+
+#[test]
+fn bare_restart_updates_execution_settings_without_replacing_conversation() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+    let run = |args: &[&str]| {
+        xana(&home)
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert_success(&run(&[]));
+    let projects = home.join("data/interoperable/projects.json");
+    let before = std::fs::read(&projects).unwrap();
+    let config_path = home.join("config.toml");
+    let mut config: toml_edit::DocumentMut = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    config["profiles"]["default"]["max_tool_rounds"] = toml_edit::value(7);
+    config["profiles"]["default"]["permission_mode"] = toml_edit::value("allow");
+    std::fs::write(&config_path, config.to_string()).unwrap();
+
+    let doctor = run(&["doctor", "--output", "json"]);
+    assert_success(&doctor);
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("conversation.profile.update_ready"));
+    assert_eq!(std::fs::read(&projects).unwrap(), before);
+    assert_eq!(
+        std::fs::read_to_string(&config_path).unwrap(),
+        config.to_string()
+    );
+
+    // A bare launch selects the retained session and records a new execution revision.
+    let resumed = run(&[]);
+    assert_success(&resumed);
+    assert!(String::from_utf8_lossy(&resumed.stdout).contains("resumed: yes"));
+    assert_success(&run(&["--continue"]));
+    assert_eq!(std::fs::read(&projects).unwrap(), before);
+    assert_success(&run(&["conversation", "new"]));
+    let old: serde_json::Value = serde_json::from_slice(&before).unwrap();
+    let after: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(projects).unwrap()).unwrap();
+    let snapshots = after["conversation_profiles"].as_object().unwrap();
+    assert_eq!(snapshots.len(), 2);
+    let (old_id, old_snapshot) = old["conversation_profiles"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .next()
+        .unwrap();
+    assert_eq!(&snapshots[old_id], old_snapshot);
+    let new_snapshot = snapshots.iter().find(|(id, _)| *id != old_id).unwrap().1;
+    assert_eq!(new_snapshot["resolved"]["max_tool_rounds"]["value"], 7);
+    assert_eq!(
+        new_snapshot["resolved"]["permission_mode"]["value"],
+        "allow"
+    );
+    assert_success(&run(&["--resume", old_id]));
+    // Native /model preserves this Conversation; only the execution is recomposed.
+    let mut child = xana(&home)
+        .current_dir(directory.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"/model test/test-model\n")
+        .unwrap();
+    let switched = child.wait_with_output().unwrap();
+    assert_success(&switched);
+    assert!(
+        String::from_utf8_lossy(&switched.stdout).contains("selected test/test-model"),
+        "{}",
+        String::from_utf8_lossy(&switched.stdout)
+    );
+    let after: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(home.join("data/interoperable/projects.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        after["conversation_profiles"].as_object().unwrap().len(),
+        2,
+        "{}",
+        String::from_utf8_lossy(&switched.stdout)
+    );
+}
+
+#[test]
+fn invalid_frozen_profile_is_diagnosed_without_replacing_history() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    init_native(&home, "http://127.0.0.1:9/v1");
+    let run = |args: &[&str]| {
+        xana(&home)
+            .current_dir(directory.path())
+            .stdin(Stdio::null())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    assert_success(&run(&[]));
+    let projects = home.join("data/interoperable/projects.json");
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&projects).unwrap()).unwrap();
+    let (id, snapshot) = document["conversation_profiles"]
+        .as_object_mut()
+        .unwrap()
+        .iter_mut()
+        .next()
+        .unwrap();
+    let id = id.clone();
+    snapshot["resolved"]["max_tool_rounds"]["value"] = "invalid".into();
+    let damaged = serde_json::to_vec(&document).unwrap();
+    std::fs::write(&projects, &damaged).unwrap();
+    let journal_path = home.join("data/sessions").join(format!("{id}.jsonl"));
+    let journal = std::fs::read(&journal_path).unwrap();
+    let doctor = run(&["doctor", "--output", "json"]);
+    assert!(String::from_utf8_lossy(&doctor.stdout).contains("conversation.profile.invalid"));
+    let resumed = run(&[]);
+    assert!(!resumed.status.success());
+    assert!(String::from_utf8_lossy(&resumed.stderr).contains("xana conversation new"));
+    assert_eq!(std::fs::read(&projects).unwrap(), damaged);
+    assert_eq!(std::fs::read(journal_path).unwrap(), journal);
+    // Recovery never depends on successfully opening the damaged Conversation.
+    assert_success(&run(&["conversation", "new"]));
 }
 
 #[test]

@@ -29,6 +29,24 @@ or unfinished-operation replay. If the current canonical directory differs
 from the stored workspace, Xana rejects resume rather than crossing workspace
 identity.
 
+Automatic startup and exact-ID resume keep the Conversation's identity and
+history. For an idle native Conversation, Xana resolves current settings into
+a new execution revision rather than overwriting its original Profile snapshot.
+Enabling web, changing permissions or selecting a compatible native model does
+**not** require a new Conversation. Live native execution checks settings before
+each new turn; an already-running turn keeps its original tools and policy.
+`/setup`, `/settings` and native `/model` return to the same Conversation.
+See [Changing settings without losing a conversation](execution-settings.md)
+for interrupted work and settings that require reopening a client.
+
+`xana doctor` also inspects the latest retained native Conversation, or the
+selected managed handle for the current connection and workspace. It reports
+whether current settings can apply, unfinished work needs attention, or a
+snapshot/connection/model is unavailable. This is read-only local readiness, not a
+provider probe or proof that another process is not controlling the
+Conversation. A damaged snapshot is never overwritten with defaults; a fresh
+Conversation remains available as a non-destructive recovery path.
+
 Managed Codex owns its thread history. Xana does not duplicate that history in
 native session JSONL, and `--resume` is rejected for a Codex selection. Xana
 does retain a bounded catalog of opaque Codex thread ids for each connection

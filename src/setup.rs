@@ -71,21 +71,21 @@ impl Error for SetupBack {}
 pub(crate) enum SetupOutcome {
     Unchanged,
     Blank,
-    Committed { requires_new_conversation: bool },
+    Committed { execution_changed: bool },
 }
 
 impl SetupOutcome {
-    pub(crate) fn requires_new_conversation(self) -> bool {
+    pub(crate) fn execution_changed(self) -> bool {
         matches!(
             self,
             Self::Committed {
-                requires_new_conversation: true
+                execution_changed: true
             }
         )
     }
 
     pub(crate) fn starts_new_conversation(self, requested: bool) -> bool {
-        requested && self.requires_new_conversation()
+        requested && self.execution_changed()
     }
 }
 
@@ -499,7 +499,7 @@ async fn run_once(
     state::clear_blank(paths)
         .context("configuration installed, but obsolete blank setup state could not be removed")?;
     Ok(SetupOutcome::Committed {
-        requires_new_conversation: true,
+        execution_changed: true,
     })
 }
 
@@ -677,7 +677,7 @@ async fn configure_existing_connection(
             "Reasoning    {}",
             reasoning.as_deref().unwrap_or("provider default")
         ),
-        "Applies      new conversation".to_owned(),
+        "Applies      next new turn with a compatible owner; conversation retained".to_owned(),
     ];
     if args.dry_run {
         return Ok(SetupOutcome::Unchanged);
@@ -694,7 +694,7 @@ async fn configure_existing_connection(
     state::clear_blank(paths)
         .context("configuration selected, but obsolete blank setup state could not be removed")?;
     Ok(SetupOutcome::Committed {
-        requires_new_conversation: true,
+        execution_changed: true,
     })
 }
 
@@ -1620,7 +1620,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(outcome.requires_new_conversation());
+        assert!(outcome.execution_changed());
         let manager = ModelManager::new(
             XanaConfig::load_registry_from(paths.config_file()).unwrap(),
             paths.cache_dir().to_owned(),
@@ -1812,22 +1812,22 @@ mod tests {
     }
 
     #[test]
-    fn start_new_requires_both_a_request_and_new_conversation_commit() {
+    fn start_new_requires_both_a_request_and_execution_commit() {
         assert!(
             SetupOutcome::Committed {
-                requires_new_conversation: true
+                execution_changed: true
             }
             .starts_new_conversation(true)
         );
         assert!(
             !SetupOutcome::Committed {
-                requires_new_conversation: false
+                execution_changed: false
             }
             .starts_new_conversation(true)
         );
         assert!(
             !SetupOutcome::Committed {
-                requires_new_conversation: true
+                execution_changed: true
             }
             .starts_new_conversation(false)
         );

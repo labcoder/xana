@@ -92,7 +92,7 @@ fn draft_previews_and_commits_changes_across_both_owners() {
     let receipt = manager.commit(&draft, false).expect("commit settings");
 
     assert_eq!(receipt.changes.len(), 2);
-    assert!(receipt.requires_new_conversation());
+    assert!(!receipt.requires_new_conversation());
     assert_ne!(receipt.revision_before, receipt.revision_after);
     assert_eq!(
         fs::read(paths.config_file().with_extension("toml.bak")).expect("read backup"),

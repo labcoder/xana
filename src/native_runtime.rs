@@ -7,6 +7,7 @@
 mod adapter;
 mod browser_controls;
 mod completion;
+pub(crate) mod configuration;
 mod failure;
 mod memory_controls;
 mod memory_prompt;
@@ -72,6 +73,9 @@ pub(crate) enum RuntimeExit {
 }
 
 struct Runtime {
+    resume_configuration_error: Option<String>,
+    execution_refresh: Option<Arc<dyn configuration::ExecutionRefresh>>,
+    execution_configuration: Option<crate::profile::execution::ExecutionConfiguration>,
     memory_maintenance: Option<JoinHandle<()>>,
     automatic_learning: bool,
     owned_tasks: tokio_util::task::TaskTracker,
@@ -85,6 +89,7 @@ struct Runtime {
     active: Option<ActiveOperation>,
     suspended_round_budget: Option<RoundBudgetSuspension>,
     commands: mpsc::Receiver<RuntimeCommand>,
+    deferred_command: Option<RuntimeCommand>,
     events: mpsc::UnboundedSender<AgentEvent>,
     permissions: PermissionBrokerHandle,
     broker_events: mpsc::UnboundedReceiver<AgentEvent>,
@@ -121,6 +126,9 @@ struct OperationCompletion {
 }
 
 struct RuntimeSeed {
+    resume_configuration_error: Option<String>,
+    execution_refresh: Option<Arc<dyn configuration::ExecutionRefresh>>,
+    execution_configuration: Option<crate::profile::execution::ExecutionConfiguration>,
     automatic_learning: bool,
     memory: Option<crate::memory::MemoryOwner>,
     session: Option<DurableSession>,
@@ -135,6 +143,9 @@ impl RuntimeSeed {
     #[cfg(test)]
     fn transient() -> Self {
         Self {
+            resume_configuration_error: None,
+            execution_refresh: None,
+            execution_configuration: None,
             automatic_learning: true,
             memory: None,
             session: None,
@@ -164,6 +175,9 @@ impl RuntimeSeed {
             .map_err(|_| RuntimeUnavailable)?;
         let suspended_round_budget = session.round_budget_suspension();
         Ok(Self {
+            resume_configuration_error: None,
+            execution_refresh: None,
+            execution_configuration: None,
             automatic_learning: true,
             session: Some(session),
             memory,
@@ -177,6 +191,25 @@ impl RuntimeSeed {
 }
 
 impl RuntimeHandle {
+    pub(crate) fn spawn_configurable(
+        prepared: configuration::PreparedExecution,
+        session: DurableSession,
+        refresh: Arc<dyn configuration::ExecutionRefresh>,
+        resume_configuration_error: Option<String>,
+    ) -> Result<Self, RuntimeUnavailable> {
+        let mut seed =
+            RuntimeSeed::persistent(session, prepared.prompt_assembler, prepared.memory)?;
+        seed.execution_refresh = Some(refresh);
+        seed.resume_configuration_error = resume_configuration_error;
+        seed.execution_configuration = Some(prepared.configuration);
+        Ok(Self::spawn_inner(
+            prepared.agent,
+            prepared.policy,
+            true,
+            seed,
+            prepared.child_supervisor,
+        ))
+    }
     /// Explicit background composition shares the native durable runtime but
     /// cannot turn scheduled model output into an automatic memory proposal.
     pub(crate) fn spawn_persistent_background(
@@ -227,6 +260,7 @@ impl RuntimeHandle {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn spawn_persistent(
         agent: Agent,
         policy: PermissionPolicy,
@@ -245,6 +279,7 @@ impl RuntimeHandle {
     }
 
     #[allow(clippy::too_many_arguments)] // Composition-only ownership handoff.
+    #[cfg(test)]
     pub(crate) fn spawn_persistent_with_supervisor(
         agent: Agent,
         policy: PermissionPolicy,
@@ -272,6 +307,9 @@ impl RuntimeHandle {
         child_supervisor: Option<(ChildSupervisorHandle, ChildSupervisor)>,
     ) -> Self {
         let RuntimeSeed {
+            resume_configuration_error,
+            execution_refresh,
+            execution_configuration,
             automatic_learning,
             memory,
             session,
@@ -310,6 +348,9 @@ impl RuntimeHandle {
         let owned_tasks = tokio_util::task::TaskTracker::new();
         let control_events = event_sender.downgrade();
         let runtime = Runtime {
+            resume_configuration_error,
+            execution_refresh,
+            execution_configuration,
             memory_maintenance: None,
             automatic_learning,
             owned_tasks: owned_tasks.clone(),
@@ -323,6 +364,7 @@ impl RuntimeHandle {
             active: None,
             suspended_round_budget,
             commands: command_receiver,
+            deferred_command: None,
             events: event_sender,
             permissions,
             broker_events: broker_event_receiver,
@@ -460,6 +502,11 @@ impl Runtime {
             self.emit(AgentEvent::RoundBudgetReached { suspension });
         }
         loop {
+            if let Some(command) = self.deferred_command.take()
+                && self.handle_command(command).await
+            {
+                return RuntimeExit::ShutdownRequested;
+            }
             if self.stop_after_verification {
                 self.permissions.controller_lost();
                 self.shutdown_children().await;
@@ -806,6 +853,14 @@ impl Runtime {
             return;
         }
 
+        if let Err(reason) = self.refresh_configuration().await {
+            self.emit(AgentEvent::CommandRejected { reason });
+            return;
+        }
+        // The guard belongs to the retained unfinished operation, not future
+        // operations after the owner has stopped/reconciled it.
+        self.resume_configuration_error = None;
+
         if owner_input.is_none()
             && images.is_empty()
             && matches!(
@@ -988,7 +1043,16 @@ impl Runtime {
                     input_entry_id,
                 }
             };
-            if let Err(error) = session.append_record(accepted) {
+            let commit = session.append_record(accepted).and_then(|()| {
+                if let Some(configuration) = &self.execution_configuration {
+                    session.append_record(SessionRecord::OperationConfigurationBound {
+                        operation_id,
+                        configuration_digest: configuration.digest(),
+                    })?;
+                }
+                Ok(())
+            });
+            if let Err(error) = commit {
                 self.agent
                     .record_storage_failure(operation_id, "operation-accepted");
                 self.storage_diagnostic(operation_id);
@@ -1427,6 +1491,14 @@ impl Runtime {
             return;
         }
 
+        if action == RoundBudgetAction::Continue
+            && let Some(reason) = &self.resume_configuration_error
+        {
+            self.emit(AgentEvent::CommandRejected {
+                reason: reason.clone(),
+            });
+            return;
+        }
         let prompt = if action == RoundBudgetAction::Continue {
             match self.prepare_turn_prompt() {
                 Ok(prompt) => prompt,

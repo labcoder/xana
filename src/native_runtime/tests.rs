@@ -746,6 +746,7 @@ async fn receive_finished(
 
 mod child_lifecycle;
 mod completion;
+mod configuration;
 mod context_performance;
 mod core;
 mod delegation;

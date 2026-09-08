@@ -88,7 +88,7 @@ fn get_is_script_friendly_and_explain_names_ownership() {
     let explanation = String::from_utf8(explanation).expect("UTF-8 explanation");
     assert!(explanation.contains("Source:"));
     assert!(explanation.contains("Global Xana configuration"));
-    assert!(explanation.contains("Applies to new conversations"));
+    assert!(explanation.contains("Applies before the next new turn"));
     assert!(explanation.contains("deny, ask, allow"));
 }
 
@@ -112,7 +112,7 @@ fn dry_run_prints_receipt_without_mutating_config() {
     assert!(output.contains("Settings preview (no files changed)"));
     assert!(output.contains("ask -> deny"));
     assert!(output.contains("Global Xana configuration"));
-    assert!(output.contains("Active conversations are unchanged"));
+    assert!(output.contains("Applies before the next new turn"));
     assert_eq!(fs::read(paths.config_file()).expect("read config"), before);
 }
 

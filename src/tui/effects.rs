@@ -1003,7 +1003,11 @@ pub(super) async fn dispatch_effect(
                         .send(RuntimeCommand::Shutdown)
                         .await
                         .context("could not stop the old model runtime")?;
-                    return Ok(Some(ChatExit::Restart));
+                    return Ok(Some(ChatExit::SwitchConversation(
+                        ConversationRef::Native {
+                            session_id: header.session_id,
+                        },
+                    )));
                 }
                 Err(error) => state.set_status(format!("could not select model: {error}")),
             }
@@ -1015,7 +1019,11 @@ pub(super) async fn dispatch_effect(
                         .send(RuntimeCommand::Shutdown)
                         .await
                         .context("could not stop the old reasoning runtime")?;
-                    return Ok(Some(ChatExit::Restart));
+                    return Ok(Some(ChatExit::SwitchConversation(
+                        ConversationRef::Native {
+                            session_id: header.session_id,
+                        },
+                    )));
                 }
                 Err(error) => state.set_status(format!("could not select reasoning: {error}")),
             }

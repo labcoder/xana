@@ -118,6 +118,7 @@ pub enum DesktopSettingTarget {
 pub enum DesktopSettingEffect {
     Immediate,
     NewConversation,
+    NextTurn,
     NextLaunch,
     ManagedElsewhere,
 }
@@ -513,6 +514,7 @@ fn project_effect(effect: SettingEffect) -> DesktopSettingEffect {
     match effect {
         SettingEffect::Immediate => DesktopSettingEffect::Immediate,
         SettingEffect::NewConversation => DesktopSettingEffect::NewConversation,
+        SettingEffect::NextTurn => DesktopSettingEffect::NextTurn,
         SettingEffect::NextLaunch => DesktopSettingEffect::NextLaunch,
         SettingEffect::ManagedElsewhere => DesktopSettingEffect::ManagedElsewhere,
     }

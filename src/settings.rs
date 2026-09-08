@@ -202,6 +202,7 @@ impl SettingTarget {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SettingEffect {
     Immediate,
+    NextTurn,
     NewConversation,
     NextLaunch,
     ManagedElsewhere,
@@ -211,6 +212,7 @@ impl SettingEffect {
     pub(crate) const fn label(self) -> &'static str {
         match self {
             Self::Immediate => "Applies immediately",
+            Self::NextTurn => "Applies before the next new turn",
             Self::NewConversation => "Applies to new conversations",
             Self::NextLaunch => "Applies on the next Xana launch",
             Self::ManagedElsewhere => "Managed by a focused workflow",
@@ -966,7 +968,7 @@ fn permission_entries(registry: &ConnectionRegistry) -> Vec<SettingEntry> {
             SettingValue::scalar("ask"),
             SettingSource::ConfigurationFile,
             SettingTarget::GlobalConfiguration,
-            SettingEffect::NewConversation,
+            SettingEffect::NextTurn,
         )
         .choices(["deny", "ask", "allow"]),
         SettingEntry::new(
@@ -1009,7 +1011,7 @@ fn execution_entries(
             SettingValue::scalar("platform"),
             source_for_nested(document, "shell", "kind"),
             SettingTarget::GlobalConfiguration,
-            SettingEffect::NewConversation,
+            SettingEffect::NextTurn,
         )
         .choices(shell_choices),
         SettingEntry::new(
@@ -1024,7 +1026,7 @@ fn execution_entries(
             SettingValue::automatic("Automatic"),
             source_for_nested(document, "shell", "program"),
             SettingTarget::GlobalConfiguration,
-            SettingEffect::NewConversation,
+            SettingEffect::NextTurn,
         ),
         SettingEntry::new(
             EXECUTION_DEFAULT_CHILD_ROUTE,
@@ -1038,7 +1040,7 @@ fn execution_entries(
             SettingValue::automatic("None"),
             source_for_top_level(document, "default_child_route"),
             SettingTarget::GlobalConfiguration,
-            SettingEffect::NewConversation,
+            SettingEffect::NextTurn,
         )
         .choices(route_choices),
     ]

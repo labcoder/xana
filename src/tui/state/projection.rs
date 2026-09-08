@@ -29,6 +29,13 @@ impl TuiState {
             std::mem::swap(&mut self.messages, background);
         }
         match event {
+            AgentEvent::ExecutionConfigurationChanged {
+                connection, model, ..
+            } => {
+                self.connection = connection.clone();
+                self.model = model.clone();
+                self.set_status("Updated settings for this Conversation's next turn");
+            }
             AgentEvent::WebProgress { progress } => {
                 if self.active_operation == Some(progress.operation_id) {
                     self.web_progress = Some(progress.clone());

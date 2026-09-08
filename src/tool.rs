@@ -503,7 +503,7 @@ impl ToolRegistry {
         if !profile_egress.contains(&crate::config::OutboundDataClass::PromptText) {
             self.tools
                 .retain(|tool| tool.definition.name != "web_fetch");
-            let reason = "Public web is unavailable under this Conversation's frozen Profile disclosure policy. Run xana connect web to review setup, then start a new Conversation. Do not guess URLs or bypass this policy with commands or another service.";
+            let reason = "Public web is unavailable under this operation's Profile disclosure policy. Run xana connect web to review setup; the next new turn in this Conversation can use the updated settings. Do not guess URLs or bypass this policy with commands or another service.";
             self.register_unavailable("web_fetch", reason)?;
             return self.register_unavailable("web_search", reason);
         }

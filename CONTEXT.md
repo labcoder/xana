@@ -4,6 +4,15 @@ This glossary defines Xana's shared domain terms and documentation authority.
 
 ## Language
 
+### Conversation and execution
+
+**Conversation**: A continuous exchange with a stable identity and retained history;
+changing its available capabilities does not create a different Conversation.
+
+**Execution configuration**: The resolved configuration revision governing an
+operation, fixed for that operation even when later work uses newer settings.
+_Avoid_: Permanently frozen Conversation settings
+
 ### Personal memory
 
 **Personal memory**: Durable scoped knowledge about the user, separate from task

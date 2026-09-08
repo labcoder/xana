@@ -147,6 +147,7 @@ fn pending_operation(
         saved_replay_safety: saved_safety,
     };
     RestoredOperation {
+        configuration_digest: None,
         operation_id,
         thread_id: ThreadId::new(),
         input_entry_id: ConversationEntryId::new(),

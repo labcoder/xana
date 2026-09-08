@@ -1,6 +1,7 @@
 //! Read-only installation diagnostics and explicitly bounded repairs.
 
 mod connections;
+mod conversations;
 
 use crate::{
     config::XanaConfig,
@@ -162,6 +163,7 @@ pub(crate) async fn inspect(
     inspect_private_records(paths, &mut report);
     inspect_plugins(paths, &mut report);
     inspect_projects(paths, &mut report);
+    conversations::inspect(paths, &mut report).await;
     inspect_skills(&mut report);
     inspect_interoperability(paths, &mut report);
     connections::inspect(paths, &mut report, probe_connections).await;

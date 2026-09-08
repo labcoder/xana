@@ -194,7 +194,7 @@ pub(super) fn run(
             receipts.push(export_receipt(path));
         }
         return Ok(SetupOutcome::Committed {
-            requires_new_conversation: true,
+            execution_changed: true,
         });
     }
     let status = ProtectedStore::status(paths.data_dir())?;
@@ -274,7 +274,7 @@ pub(super) fn run(
         receipts.push(export_receipt(&path));
     }
     Ok(SetupOutcome::Committed {
-        requires_new_conversation: changed,
+        execution_changed: changed,
     })
 }
 

@@ -21,6 +21,7 @@ use crate::{
     project::ProjectError,
 };
 use serde::{Deserialize, Serialize};
+pub(crate) mod execution;
 use std::{collections::BTreeMap, error::Error, fmt, path::PathBuf};
 
 const MAX_CONVERSATION_BRANCHES: usize = 100_000;
@@ -379,6 +380,23 @@ impl ProfileStore {
                 .conversation_profiles
                 .remove(conversation),
         )
+    }
+
+    /// Restore the saved authority before composing a resumed Conversation.
+    /// Invalid records are not replaced with current defaults.
+    pub(crate) fn resolved_snapshot(
+        &self,
+        conversation: &str,
+    ) -> Result<Option<ResolvedProfile>, ProfileError> {
+        self.snapshot(conversation)?
+            .map(|snapshot| {
+                serde_json::from_value(snapshot.resolved).map_err(|_| {
+                    ProfileError::Invalid(format!(
+                        "Conversation {conversation} has an invalid frozen Profile; run `xana doctor` or `xana conversation new`. The retained Conversation was not changed"
+                    ))
+                })
+            })
+            .transpose()
     }
 
     pub(crate) fn continue_with(

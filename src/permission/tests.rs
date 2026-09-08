@@ -27,6 +27,74 @@ fn workspace_request(path: &Path) -> PermissionRequest {
     })
 }
 
+#[tokio::test]
+async fn replacing_policy_rejects_pending_requests_and_discards_old_allows_not_denials() {
+    let workspace = tempdir().unwrap();
+    let (events, mut receiver) = mpsc::unbounded_channel();
+    let (broker, task) = PermissionBroker::spawn(
+        policy(PolicyDecision::Ask, vec![], workspace.path()),
+        true,
+        events,
+    );
+    let first = workspace_request(workspace.path());
+    let handle = broker.clone();
+    let pending = first.clone();
+    let waiter = tokio::spawn(async move { handle.authorize(pending).await.unwrap() });
+    next_request(&mut receiver).await;
+    assert!(
+        broker
+            .replace_policy(policy(PolicyDecision::Allow, vec![], workspace.path()))
+            .await
+            .is_err()
+    );
+    broker
+        .decide(
+            first.operation_id,
+            first.invocation_id,
+            ControllerDecision::AllowSession {
+                scope: first.scope.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(waiter.await.unwrap(), Authorization::Allowed(_)));
+    assert!(matches!(
+        broker
+            .authorize(workspace_request(workspace.path()))
+            .await
+            .unwrap(),
+        Authorization::Allowed(_)
+    ));
+    broker
+        .replace_policy(policy(PolicyDecision::Ask, vec![], workspace.path()))
+        .await
+        .unwrap();
+    let next = workspace_request(workspace.path());
+    let handle = broker.clone();
+    let pending = next.clone();
+    let waiter = tokio::spawn(async move { handle.authorize(pending).await.unwrap() });
+    assert_eq!(next_request(&mut receiver).await, next);
+    broker
+        .decide(
+            next.operation_id,
+            next.invocation_id,
+            ControllerDecision::Deny,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(waiter.await.unwrap(), Authorization::Denied(_)));
+    broker
+        .replace_policy(policy(PolicyDecision::Allow, vec![], workspace.path()))
+        .await
+        .unwrap();
+    assert!(matches!(
+        broker.authorize(next).await.unwrap(),
+        Authorization::Denied(_)
+    ));
+    broker.shutdown();
+    task.await.unwrap();
+}
+
 fn public_web_request(operation: OperationId, route: &str) -> PermissionRequest {
     use crate::outbound::{
         OutboundItem, OutboundRequest, PublicWebReview, RecipientIdentity, RecipientKind,

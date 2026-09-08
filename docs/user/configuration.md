@@ -192,8 +192,9 @@ transitions do not nest chat launchers.
 
 Use `/settings [SECTION]` for ordinary post-setup preferences. It also closes
 the foreground owner before opening the staged settings workspace. Immediate
-presentation edits return to the same conversation; global defaults marked for
-new conversations start one explicitly rather than mutating active context.
+presentation and compatible execution edits return to the same conversation.
+The global default Profile selects future conversations; editing the current
+Profile applies at a safe new-turn boundary without rewriting history.
 
 ## Full Custom and focused sections
 
@@ -245,11 +246,12 @@ xana setup --non-interactive --section profiles-routes \
 
 Receipts distinguish timing. Appearance is immediate and policy-neutral.
 Compatible managed model/reasoning choices affect subsequent turns without
-replacing Codex context. Connection/execution owner, shell, permissions,
-profiles, routes, capabilities, and orchestration limits are frozen into a
-conversation snapshot, so config edits affect a new conversation only.
-`--start-new` launches a fresh conversation after a committed change that
-requires a new execution snapshot. A canceled or dry-run setup, and an
+replacing Codex context. Native execution resolves current shell, permissions,
+Profile, routes, capabilities and orchestration limits before a new turn, with
+an append-only configuration revision and unchanged conversation identity.
+Active or suspended work is not silently reconfigured. Native-to-managed owner
+translation is not supported; select a compatible owner to retain this history.
+`--start-new` remains an explicit request for a fresh conversation. A canceled or dry-run setup, and an
 appearance-only change, do not launch one. Xana never silently discards an
 open native session or Codex thread.
 
@@ -312,7 +314,8 @@ shell command with arguments. A valid edit installs atomically after checking
 that no other writer changed the live file, and the exact prior config becomes
 `config.toml.bak`. Cancellation, nonzero editor exit, invalid UTF-8/TOML/schema,
 oversize, concurrent change, or commit failure preserves the live file and
-reports the retained draft path. Changes apply to a new conversation.
+reports the retained draft path. Compatible execution changes apply before the
+next new turn in the same conversation; client-owned settings refresh on reattach.
 
 For a managed Codex first connection, no HTTP base URL or Xana credential is
 accepted:
@@ -402,8 +405,9 @@ a bounded live `model/list` compatibility check before the first prompt.
 configured default profile and prints known
 input, tool, reasoning, and context capabilities. `/model` lists models during chat
 with the same compact capability labels;
-`/model CONNECTION/MODEL` persists a selection and starts a new conversation
-when runtime ownership changes.
+`/model CONNECTION/MODEL` persists a selection and recomposes compatible native
+execution in this conversation. It does not translate native history into a
+managed vendor thread. See [execution settings](execution-settings.md).
 
 Advanced connection commands are:
 
@@ -899,7 +903,8 @@ Public-web search/fetch have a separate `[web]` section, independently selected
 search connections and configurable shared turn limits. Use `xana connect web`
 for reviewed setup; see [Public web](public-web.md) for credentials, disclosure
 policy, bounds and the complete TOML example. Existing Conversations retain
-their frozen Profile, so start a new Conversation after enabling web access.
+their original Profile as historical identity, with current web configuration
+adopted before the next new native turn. No new Conversation is required.
 
 ## Deliberate limits
 

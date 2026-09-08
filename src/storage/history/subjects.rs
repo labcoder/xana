@@ -351,6 +351,7 @@ pub(super) fn record_subjects(record: &SessionRecord) -> Vec<HistorySubject> {
         SessionRecord::ConversationEntryAppended { entry } => vec![S::Entry(entry.id)],
         SessionRecord::OperationStateChanged { operation_id, .. }
         | SessionRecord::OperationAccepted { operation_id, .. }
+        | SessionRecord::OperationConfigurationBound { operation_id, .. }
         | SessionRecord::FiniteOperationAccepted { operation_id, .. }
         | SessionRecord::AdapterOperationAccepted { operation_id, .. }
         | SessionRecord::StepStarted { operation_id, .. }
@@ -410,6 +411,7 @@ pub(super) fn record_subjects(record: &SessionRecord) -> Vec<HistorySubject> {
             S::CompactionOperation(checkpoint.operation_id),
         ],
         SessionRecord::SessionCreated { .. }
+        | SessionRecord::ExecutionConfigured { .. }
         | SessionRecord::ConversationBranched { .. }
         | SessionRecord::ThreadHeadMoved { .. }
         | SessionRecord::PermissionAudited { .. }

@@ -30,6 +30,8 @@ use std::{
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RestoredSession {
+    #[serde(default)]
+    pub(crate) execution_configuration: Option<crate::profile::execution::ExecutionConfiguration>,
     pub(crate) session_id: SessionId,
     pub(crate) thread_id: ThreadId,
     pub(crate) workspace_root: PathBuf,
@@ -90,6 +92,8 @@ impl RestoredChild {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RestoredOperation {
+    #[serde(default)]
+    pub(crate) configuration_digest: Option<String>,
     pub(crate) operation_id: OperationId,
     pub(crate) thread_id: ThreadId,
     pub(crate) input_entry_id: ConversationEntryId,
@@ -121,6 +125,7 @@ pub(crate) fn reduce(records: &[RecordEnvelope]) -> Result<RestoredSession, Redu
         return Err(ReductionError::UnsupportedVersion(first.version));
     }
     let mut state = RestoredSession {
+        execution_configuration: None,
         session_id: first.session_id,
         thread_id: *thread_id,
         workspace_root: workspace_root.clone(),
@@ -186,6 +191,41 @@ pub(crate) fn validate_envelope_with_compaction_proof(
     }
 
     match &envelope.record {
+        SessionRecord::OperationConfigurationBound {
+            operation_id,
+            configuration_digest,
+        } => {
+            let valid = configuration_digest.len() == 64
+                && configuration_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit())
+                && state
+                    .execution_configuration
+                    .as_ref()
+                    .is_none_or(|config| config.digest() == *configuration_digest)
+                && state.operation_details.get(operation_id).is_some_and(|op| {
+                    op.finished.is_none()
+                        && op.configuration_digest.is_none()
+                        && op.step_order.is_empty()
+                });
+            if valid {
+                Ok(())
+            } else {
+                Err(ReductionError::InvalidExecutionConfiguration)
+            }
+        }
+        SessionRecord::ExecutionConfigured { configuration } => {
+            if !configuration.validate()
+                || state
+                    .operations
+                    .values()
+                    .any(|state| !matches!(state, OperationState::Finished(_)))
+            {
+                Err(ReductionError::InvalidExecutionConfiguration)
+            } else {
+                Ok(())
+            }
+        }
         SessionRecord::SessionCreated { .. } => Err(ReductionError::SecondCreation { index }),
         SessionRecord::ConversationBranched { lineage } => {
             if index != 1
@@ -731,6 +771,19 @@ pub(crate) fn validate_envelope_with_compaction_proof(
 
 pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecord) {
     match record {
+        SessionRecord::OperationConfigurationBound {
+            operation_id,
+            configuration_digest,
+        } => {
+            state
+                .operation_details
+                .get_mut(operation_id)
+                .expect("validated operation")
+                .configuration_digest = Some(configuration_digest.clone());
+        }
+        SessionRecord::ExecutionConfigured { configuration } => {
+            state.execution_configuration = Some(configuration.as_ref().clone());
+        }
         // Historical receipts are indexed separately, never accumulated in the
         // hot execution projection or injected into a model prompt.
         SessionRecord::VisionReceiptRecorded { .. } => {}
@@ -794,6 +847,7 @@ pub(crate) fn apply_validated(state: &mut RestoredSession, record: &SessionRecor
             state.operation_details.insert(
                 *operation_id,
                 RestoredOperation {
+                    configuration_digest: None,
                     operation_id: *operation_id,
                     thread_id: *thread_id,
                     input_entry_id: *input_entry_id,
@@ -1408,6 +1462,7 @@ fn valid_operation_transition(previous: Option<OperationState>, next: OperationS
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum ReductionError {
+    InvalidExecutionConfiguration,
     InvalidVisionReceipt,
     InvalidCompletionEvidence {
         operation: OperationId,

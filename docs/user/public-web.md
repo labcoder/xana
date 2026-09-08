@@ -33,13 +33,15 @@ Exa key. Xana does not probe or bill a service during setup or doctor.
 `--service-connection NAME` names the search connection. Setup retains other
 search and chat connections; select another route by setting it up under its
 existing name. `--web-provider disabled` disables discovery without deleting
-connections or preventing known-page reads. Start a new conversation after
-changing settings. Doctor distinguishes local readiness from remote validation.
+connections or preventing known-page reads. Existing native Conversations adopt
+web changes before their next new turn; a new Conversation is not required.
+Doctor distinguishes local readiness from remote validation.
 
-Setup also reviews enabling `prompt_text` disclosure in the default Profile for
-new Conversations. Other Profiles and existing frozen Conversations are not
-silently widened. If web tools say the frozen Profile disallows disclosure,
-run the setup and start a new Conversation (`/sessions new`). Permission to
+Setup also reviews enabling `prompt_text` disclosure in the default Profile.
+Existing Conversations using that Profile adopt the owner-approved change at
+a safe turn boundary, preserving their history and original Profile record.
+Other named Profiles must be configured explicitly. If web tools say the Profile
+disallows disclosure, review its configuration and retry here. Permission to
 send public queries is still requested separately; enabling a capability is
 not the same as granting it unrestricted authority.
 `pages-only` enables known-page reading without selecting a search provider.
