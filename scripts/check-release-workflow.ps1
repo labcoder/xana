@@ -4,8 +4,13 @@ Set-StrictMode -Version Latest
 $path = ".github/workflows/release.yml"
 $workflow = Get-Content -Raw -LiteralPath $path
 $ciWorkflow = Get-Content -Raw -LiteralPath ".github/workflows/ci.yml"
+$localCi = Get-Content -Raw -LiteralPath "scripts/ci-local.ps1"
 $draftScript = Get-Content -Raw -LiteralPath "scripts/create-release-draft.ps1"
 $distInstaller = Get-Content -Raw -LiteralPath "scripts/install-cargo-dist.sh"
+if (-not $localCi.Contains('cargo install --locked --path . --debug --root') -or
+    $localCi.Contains('$packageArguments = @("package"')) {
+    throw "local CI must verify the complete locked source install, not an unsupported normalized crate"
+}
 $uses = @([regex]::Matches(
     $workflow + "`n" + $ciWorkflow,
     '(?m)^\s*uses:\s*([^@\s]+)@([^\s#]+)'

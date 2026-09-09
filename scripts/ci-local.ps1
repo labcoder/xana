@@ -50,6 +50,7 @@ try {
     ./scripts/report-ci-environment.ps1
     Write-Output "CI Bash: $bash"
     Invoke-CiStep "Formatting" { & cargo fmt --all --check }
+    Invoke-CiStep "Loopback TLS fixture" { ./tests/fixtures/adapter-vision-tls/certificates.ps1 }
     Invoke-CiStep "Clippy" {
         & cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     }
@@ -59,6 +60,10 @@ try {
     Invoke-CiStep "No-default-feature tests ($TestThreads threads)" {
         & cargo test --locked --workspace --all-targets --no-default-features -- "--test-threads=$TestThreads"
     }
+    Invoke-CiStep "Root no-default-feature tests ($TestThreads threads)" {
+        & cargo test --locked -p xana --all-targets --no-default-features -- "--test-threads=$TestThreads"
+    }
+    Invoke-CiStep "Desktop dependency boundary" { ./scripts/check-desktop-dependencies.ps1 }
     Invoke-CiStep "MCP stdio lifecycle stress" {
         & cargo test --locked --lib --all-features `
             mcp::stdio::tests::stdio_lifecycle_is_stable_under_repetition -- `
@@ -81,6 +86,7 @@ try {
     }
     Invoke-CiStep "Release workflow contracts" {
         ./scripts/check-release-workflow.ps1
+        ./scripts/test-native-qualification.ps1
         ./scripts/test-release-ci-evidence.ps1
         ./scripts/test-create-release-draft.ps1
         ./scripts/test-release-archive-contract.ps1
@@ -91,15 +97,10 @@ try {
         ./scripts/test-removal-recipes.ps1
     }
 
-    $packageArguments = @("package", "--package", "xana", "--locked")
-    if (-not $RequireClean) { $packageArguments += "--allow-dirty" }
-    Invoke-CiStep "Packageable application" {
-        $env:CARGO_TARGET_DIR = "$resolvedTarget-package"
-        try {
-            & cargo @packageArguments
-        } finally {
-            $env:CARGO_TARGET_DIR = $resolvedTarget
-        }
+    # A normalized .crate intentionally cannot build the reviewed native patch.
+    # Match hosted CI's complete-workspace install, reusing the same Cargo cache.
+    Invoke-CiStep "Locked source installation" {
+        & cargo install --locked --path . --debug --root (Join-Path $resolvedTarget "source-install")
     }
 
     if ($IncludeReleasePlan) {
