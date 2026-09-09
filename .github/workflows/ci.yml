@@ -16,14 +16,18 @@ permissions:
 
 env:
   CARGO_INCREMENTAL: "0"
+  # Match dev/test dependencies without generating unused CI symbol files.
+  # This does not disable debug assertions or affect local/release profiles.
+  CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
 
 jobs:
   checks:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
-    # A cold Windows SQLCipher/OpenSSL + Desktop test build exceeds 30 minutes.
-    timeout-minutes: 60
+    # A cold Windows run can use 56 minutes before dependency-cache compression.
+    # Keep all test/install gates and bounded headroom for that post-job work.
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:

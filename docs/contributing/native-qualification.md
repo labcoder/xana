@@ -77,8 +77,13 @@ execute its exact test once. Failed checks do not suppress independent later
 checks, and upload runs even after failure. A cancelled/timed-out/missing gate is
 incomplete evidence, not Pass. Jobs have a three-hour limit; custody has 15 minutes
 and the resource gate has 90 minutes. Each history process has a 30-minute limit.
-Ordinary CI allows up to one hour per quality job so a cold Windows
-SQLCipher/OpenSSL plus Desktop build can finish without skipping test gates.
+Ordinary CI allows up to 90 minutes per quality job: a measured cold Windows
+run completed all source/test/install gates in 56 minutes, then exhausted its
+former one-hour limit while compressing the dependency cache. CI disables unused
+dev and test debug-symbol generation consistently, retaining debug assertions
+and every test gate. These workflow-only settings do not change developers'
+local profiles or optimized release artifacts; cold-cache execution still needs
+its own successful hosted result.
 The native Linux lane installs Fontconfig, xkbcommon/X11 and XCB development
 libraries for actual Desktop test linking, not just `cargo check`.
 
