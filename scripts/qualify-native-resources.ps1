@@ -23,19 +23,7 @@ try {
     foreach ($count in @(10000, 100000)) {
         & "$PSScriptRoot/measure-history-resources.ps1" -TestExecutable $executables[0] -Messages $count -OutputDirectory $output
     }
-    $suffix = if ($IsWindows) { '.exe' } else { '' }
-    $binaries = foreach ($package in @('xana', 'xana-desktop')) {
-        # Separate Cargo invocations avoid a workspace-wide feature union in
-        # the CLI measurement. Record each executable immediately after its build.
-        $command = Get-NativeQualificationCommand "build-$package"
-        Invoke-NativeQualificationCommand $command.Program $command.Arguments "$output/resource-$package-build.log"
-        $path = "target/release/$package$suffix"
-        [ordered]@{
-            name = $package; command = @($command.Program) + $command.Arguments
-            bytes = (Get-Item -LiteralPath $path).Length
-            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
-        }
-    }
+    $binaries = @(Measure-NativePackages $output)
     [ordered]@{
         status = 'passed'; profile = 'release'; binaries = @($binaries)
         limitations = @('Uncompressed native executable sizes, not installer/archive sizes', 'Desktop is built, not launched; GUI/idle/FPS acceptance is separate')

@@ -41,6 +41,32 @@ foreach ($package in @('xana', 'xana-desktop')) {
     }
 }
 
+# Exercise the production build/report loop, not only its command catalog.
+# Stubs are local to this scope: no Cargo invocation or fake binary is needed.
+& {
+    . "$PSScriptRoot/native-qualification.ps1"
+    $builds = [Collections.Generic.List[string]]::new()
+    function Invoke-NativeQualificationCommand {
+        param($Program, $Arguments, $LogPath)
+        $builds.Add("$Program $($Arguments -join ' ')")
+        Write-Output "Compiling synthetic package; log: $LogPath"
+    }
+    function Get-Item { param($LiteralPath) return @{ Length = 123 } }
+    function Get-FileHash { param($LiteralPath, $Algorithm) return @{ Hash = ('A' * 64) } }
+    $records = @(Measure-NativePackages 'fixture-logs')
+    if ($records.Count -ne 2 -or $records[0].name -ne 'xana' -or
+        $records[1].name -ne 'xana-desktop') {
+        throw 'package evidence must contain only two binary records, never build output'
+    }
+    foreach ($index in 0..1) {
+        $record = $records[$index]
+        if ($record.bytes -ne 123 -or $record.sha256 -cne ('a' * 64) -or
+            ($record.command -join ' ') -cne $builds[$index]) {
+            throw 'package evidence lost its exact command, size or checksum'
+        }
+    }
+}
+
 # Exercise real subprocess failure/log propagation, without running Cargo,
 # opening any keychain or needing any network connection.
 $log = [IO.Path]::GetTempFileName()

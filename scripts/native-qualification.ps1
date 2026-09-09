@@ -40,6 +40,23 @@ function Get-NativeTestEvidence {
     return $totals
 }
 
+function Measure-NativePackages {
+    param([Parameter(Mandatory)][string]$OutputDirectory)
+    $suffix = if ($IsWindows) { '.exe' } else { '' }
+    foreach ($package in @('xana', 'xana-desktop')) {
+        # Separate invocations keep Desktop feature unification out of the CLI.
+        $command = Get-NativeQualificationCommand "build-$package"
+        # Build output belongs to the console/log, not the returned JSON records.
+        Invoke-NativeQualificationCommand $command.Program $command.Arguments "$OutputDirectory/resource-$package-build.log" | Out-Host
+        $path = "target/release/$package$suffix"
+        [ordered]@{
+            name = $package; command = @($command.Program) + $command.Arguments
+            bytes = (Get-Item -LiteralPath $path).Length
+            sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant()
+        }
+    }
+}
+
 function Invoke-NativeQualificationCommand {
     param(
         [Parameter(Mandatory)][string]$Program,
