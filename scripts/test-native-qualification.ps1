@@ -96,13 +96,27 @@ function Assert-NativeWorkflow {
     foreach ($required in @(
         'contents: read', 'persist-credentials: false', 'save-if: false', 'fail-fast: false',
         'ubuntu-24.04', 'macos-15', 'macos-15-intel', 'aarch64-apple-darwin',
-        'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu', 'timeout-minutes: 180', 'timeout-minutes: 90',
+        'x86_64-apple-darwin', 'x86_64-unknown-linux-gnu',
+        'timeout-minutes: ${{ matrix.job_minutes }}', 'timeout-minutes: ${{ matrix.resource_minutes }}',
         'timeout-minutes: 15', 'if: always()', 'retention-days: 7',
         'target/native-qualification/*.log', 'target/native-qualification/*.json'
         'libfontconfig1-dev', 'libxkbcommon-dev', 'libxkbcommon-x11-dev', 'libxcb1-dev'
     )) {
         if (-not $Workflow.Contains($required)) { throw "missing native workflow contract: $required" }
     }
+    # These are cold-build allowances, not history-probe or application SLAs.
+    # Intel exhausted 90 minutes after successful history probes while compiling
+    # Desktop. Keep the proven Linux/ARM limits and bounded serialized builds.
+    $normalized = $Workflow.Replace("`r`n", "`n")
+    foreach ($policy in @(
+        @('ubuntu-24.04', 'x86_64-unknown-linux-gnu', 180, 90),
+        @('macos-15', 'aarch64-apple-darwin', 180, 90),
+        @('macos-15-intel', 'x86_64-apple-darwin', 300, 150)
+    )) {
+        $row = "          - runner: $($policy[0])`n            target: $($policy[1])`n            job_minutes: $($policy[2])`n            resource_minutes: $($policy[3])"
+        if (-not $normalized.Contains($row)) { throw 'native target build allowance is missing or changed' }
+    }
+    if (-not $Workflow.Contains('CARGO_BUILD_JOBS: "1"')) { throw 'native builds must retain serialized memory pressure' }
     foreach ($check in @('contracts', 'format', 'lint', 'all-features', 'no-default', 'root-no-default', 'custody', 'source-package', 'resources')) {
         if (-not $Workflow.Contains("run-native-qualification.ps1 -Check $check")) { throw "missing native gate: $check" }
     }
@@ -121,6 +135,10 @@ Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '\*\.json', '**') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '-Check custody', '-Check format') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace '-Check resources', '-Check format') }
 Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'libxkbcommon-x11-dev', '') }
+Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'job_minutes: 300', 'job_minutes: 180') }
+Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'resource_minutes: 150', 'resource_minutes: 90') }
+Assert-Rejected { Assert-NativeWorkflow ($workflow.Replace('timeout-minutes: ${{ matrix.resource_minutes }}', 'timeout-minutes: 90')) }
+Assert-Rejected { Assert-NativeWorkflow ($workflow -replace 'CARGO_BUILD_JOBS: "1"', 'CARGO_BUILD_JOBS: "4"') }
 
 # The production custody script must refuse this synthetic call before touching
 # the OS. Use Git Bash explicitly on Windows, never the Windows WSL shim.

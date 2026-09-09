@@ -77,8 +77,15 @@ status, and test totals where applicable. Command output is streamed to logs.
 Empty selections and compile-only logs cannot pass a test gate; custody must
 execute its exact test once. Failed checks do not suppress independent later
 checks, and upload runs even after failure. A cancelled/timed-out/missing gate is
-incomplete evidence, not Pass. Jobs have a three-hour limit; custody has 15 minutes
-and the resource gate has 90 minutes. Each history process has a 30-minute limit.
+incomplete evidence, not Pass. Linux/ARM64 jobs have a three-hour limit and
+90-minute resource gate. Intel macOS allows five hours per job and 150 minutes
+for resources: the measured cold serialized build used 36m27s for the optimized
+test binary and 20m02s for the CLI, then exhausted the old resource allowance
+while compiling Desktop, after both history probes had passed. These are build
+allowances, not application performance targets. Cargo remains serialized on
+each runner. Custody still has 15 minutes and each history process 30 minutes;
+no runtime/probe deadline, assertion, release optimization or other target's
+allowance is relaxed.
 Ordinary CI allows up to 90 minutes per quality job: a measured cold Windows
 run completed all source/test/install gates in 56 minutes, then exhausted its
 former one-hour limit while compressing the dependency cache. CI disables unused
