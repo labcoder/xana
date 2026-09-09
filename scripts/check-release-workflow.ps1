@@ -36,6 +36,7 @@ $required = @(
     "check-release-ci-evidence.ps1",
     "install-cargo-dist.sh",
     "check-release-plan.ps1",
+    '-ExpectedVersion ''${{ needs.plan.outputs.version }}''',
     "-SummaryOutput `$env:GITHUB_STEP_SUMMARY",
     '-MetricsOutput ''target/size-metrics/${{ matrix.target }}.json''',
     'name: size-baseline-${{ matrix.target }}',

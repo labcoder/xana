@@ -149,6 +149,7 @@ jobs:
           ./scripts/check-release-archive.ps1
           -Archive 'target/distrib/${{ matrix.archive }}'
           -Target '${{ matrix.target }}'
+          -ExpectedVersion '${{ needs.plan.outputs.version }}'
           -SummaryOutput $env:GITHUB_STEP_SUMMARY
           -MetricsOutput 'target/size-metrics/${{ matrix.target }}.json'
 

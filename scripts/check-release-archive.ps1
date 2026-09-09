@@ -10,6 +10,9 @@ param(
         "x86_64-unknown-linux-gnu"
     )]
     [string]$Target,
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')]
+    [string]$ExpectedVersion,
     [string]$SummaryOutput,
     [string]$MetricsOutput
 )
@@ -18,6 +21,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 . "$PSScriptRoot/release-archive-contract.ps1"
+. "$PSScriptRoot/fixture-cleanup.ps1"
 
 $archivePath = (Resolve-Path -LiteralPath $Archive).Path
 $archiveBytes = (Get-Item -LiteralPath $archivePath).Length
@@ -50,7 +54,8 @@ $entries = if ($archivePath.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCa
 $executable = if ($Target -eq "x86_64-pc-windows-msvc") { "xana.exe" } else { "xana" }
 $layout = Resolve-ReleaseArchiveLayout -Entries $entries -Target $Target
 
-$staging = Join-Path ([System.IO.Path]::GetTempPath()) ("xana-archive-audit-" + [Guid]::NewGuid().ToString("N"))
+$stagingParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$staging = Join-Path $stagingParent ("xana-archive-audit-" + [Guid]::NewGuid().ToString("N"))
 $binaryBytes = 0L
 New-Item -ItemType Directory -Path $staging | Out-Null
 try {
@@ -71,21 +76,22 @@ try {
     $binary = Join-Path $payloadDirectory $executable
     $binaryBytes = (Get-Item -LiteralPath $binary).Length
     $versionOutput = (& $binary --version 2>&1 | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $versionOutput -notmatch '^xana 0\.\d+\.\d+') {
-        throw "staged Xana version smoke failed: $versionOutput"
-    }
+    Assert-ReleaseArchiveVersion -Output $versionOutput -ExpectedVersion $ExpectedVersion -ExitCode $LASTEXITCODE
     & $binary --help *> $null
     if ($LASTEXITCODE -ne 0) {
         throw "staged Xana help smoke failed"
     }
 } finally {
-    $resolvedStaging = (Resolve-Path -LiteralPath $staging).Path
-    $tempRoot = [System.IO.Path]::GetTempPath().TrimEnd([System.IO.Path]::DirectorySeparatorChar)
-    $requiredPrefix = $tempRoot + [System.IO.Path]::DirectorySeparatorChar
-    if (-not $resolvedStaging.StartsWith($requiredPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "refusing to clean a non-temporary audit directory"
+    $fullStaging = [IO.Path]::GetFullPath($staging)
+    if (-not (Test-SafeFixtureCleanupRoot `
+            -Parent $stagingParent -Root $fullStaging `
+            -Separator ([IO.Path]::DirectorySeparatorChar) `
+            -RequiredPrefix "xana-archive-audit-")) {
+        throw "refusing unsafe release-archive audit cleanup"
     }
-    Remove-Item -Recurse -Force -LiteralPath $resolvedStaging
+    if (Test-Path -LiteralPath $fullStaging) {
+        [IO.Directory]::Delete($fullStaging, $true)
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($SummaryOutput)) {

@@ -10,6 +10,8 @@ if ($null -eq (Get-Variable -Name IsWindows -ErrorAction SilentlyContinue)) {
 }
 
 . "$PSScriptRoot/release-archive-contract.ps1"
+. "$PSScriptRoot/fixture-cleanup.ps1"
+Assert-FixtureCleanupGuardContract
 
 function Assert-Rejected {
     param(
@@ -81,4 +83,18 @@ Assert-Rejected `
     ) `
     -Target "x86_64-pc-windows-msvc"
 
-Write-Output "release archive contract verified: canonical roots, exact inventory, unsafe-layout rejection"
+Assert-ReleaseArchiveVersion -Output "xana 0.8.0" -ExpectedVersion "0.8.0" -ExitCode 0
+foreach ($case in @(
+    @("xana 0.7.0", 0),
+    @("xana 0.8.0-extra", 0),
+    @("xana 0.8.0`nignored error", 0),
+    @("xana 0.8.0", 1)
+)) {
+    $rejected = $false
+    try {
+        Assert-ReleaseArchiveVersion -Output $case[0] -ExpectedVersion "0.8.0" -ExitCode $case[1]
+    } catch { $rejected = $true }
+    if (-not $rejected) { throw "wrong version or failed executable passed the release archive audit" }
+}
+
+Write-Output "release archive contract verified: canonical roots, exact inventory/version, unsafe-layout and failed-smoke rejection"

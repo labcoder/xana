@@ -1,6 +1,18 @@
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function Assert-ReleaseArchiveVersion {
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Output,
+        [Parameter(Mandatory)][string]$ExpectedVersion,
+        [Parameter(Mandatory)][int]$ExitCode
+    )
+
+    if ($ExitCode -ne 0 -or $Output -cne "xana $ExpectedVersion") {
+        throw "staged Xana version smoke failed: expected xana $ExpectedVersion, got '$Output' (exit $ExitCode)"
+    }
+}
+
 function Resolve-ReleaseArchiveLayout {
     [CmdletBinding()]
     param(

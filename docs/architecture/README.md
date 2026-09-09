@@ -2253,8 +2253,9 @@ The repository contains a pinned local `cargo-dist` 0.32.0 plan for exactly the
 x64 glibc. It produces conventional native archives containing `xana`, the
 license, README, and installation documentation plus SHA-256 metadata. A
 semantic plan check fixes that inventory and GitHub attestation intent; a
-native archive audit verifies checksum, bounded contents, and version/help
-execution. The planner uses Cargo's existing release profile and performs no
+native archive audit verifies checksum, bounded contents, exact planned binary
+version and help execution. Temporary audit cleanup uses the same direct-child
+path guard as the release fixtures. The planner uses Cargo's existing release profile and performs no
 publish or install effect.
 
 The source-controlled Bash installer is the Unix Release Preview activation
