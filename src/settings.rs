@@ -897,7 +897,12 @@ fn profile_entries(
     registry: &ConnectionRegistry,
     document: &toml_edit::DocumentMut,
 ) -> Vec<SettingEntry> {
-    let profiles = registry.profiles.keys().cloned().collect::<Vec<_>>();
+    let profiles = registry
+        .profiles
+        .values()
+        .filter(|profile| profile.can_be_default())
+        .map(|profile| profile.id.clone())
+        .collect::<Vec<_>>();
     vec![
         SettingEntry::new(
             PROFILES_DEFAULT,
@@ -908,7 +913,7 @@ fn profile_entries(
         )
         .editable(
             SettingKind::Choice,
-            SettingValue::scalar("default"),
+            SettingValue::scalar(&registry.default_profile),
             source_for_top_level(document, "default_profile"),
             SettingTarget::GlobalConfiguration,
             SettingEffect::NewConversation,
@@ -1535,6 +1540,10 @@ fn render_sources(
                 apply_config_change(&mut document, key, change)?;
             }
         }
+        crate::config::profiles::reconcile_selection_revision(
+            &XanaConfig::parse_registry(source)?,
+            &mut document,
+        )?;
         let rendered = document.to_string();
         XanaConfig::parse_registry(&rendered)?;
         config = rendered.into_bytes();
@@ -1665,7 +1674,10 @@ fn apply_config_change(
     let value = change_value(change);
     match key {
         PROFILES_DEFAULT => {
-            document["default_profile"] = toml_edit::value(value.unwrap_or("default"));
+            // Reset retains the current valid designation; no profile name is reserved.
+            if let Some(value) = value {
+                document["default_profile"] = toml_edit::value(value);
+            }
         }
         PERMISSIONS_DEFAULT => {
             document["permission_mode"] = toml_edit::value(value.unwrap_or("ask"));

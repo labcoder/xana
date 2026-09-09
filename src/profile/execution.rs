@@ -40,17 +40,53 @@ pub(crate) fn resolve_current(
         paths.cache_dir().to_owned(),
         paths.data_dir().join("selection.toml"),
     );
-    let selected = manager.selected()?;
     let store = ProfileStore::open(paths);
     let profile = match prior {
         Some(prior) if matches!(prior.scope, ProfileScope::Project(_)) => {
             let ProfileScope::Project(project) = prior.scope else {
                 unreachable!()
             };
-            store.resolve_project(paths, project, &prior.name)?
+            let portable = crate::portable_project::PortableProjectStore::open(paths)
+                .resolve(paths, project)?;
+            let name = portable
+                .manifest
+                .profiles
+                .iter()
+                .find(|(name, profile)| {
+                    !profile.archived
+                        && crate::portable_project::PortableProjectStore::profile_id(
+                            &portable.manifest,
+                            name,
+                            profile,
+                        ) == prior.profile_id
+                })
+                .map(|(name, _)| name)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(RetiredProfile {
+                        name: prior.name.clone()
+                    })
+                })?;
+            store.resolve_project(paths, project, name)?
         }
-        Some(prior) => store.resolve_global_for_selection(&prior.name, &selected)?,
-        None => store.resolve_global_for_selection(&registry.default_profile, &selected)?,
+        Some(prior) => {
+            let profile = registry
+                .profiles
+                .values()
+                .find(|profile| profile.profile_id == prior.profile_id)
+                .filter(|profile| !profile.archived)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(RetiredProfile {
+                        name: prior.name.clone()
+                    })
+                })?;
+            store.resolve_global_for_selection(
+                &profile.id,
+                &manager.selected_for_profile(&profile.id)?,
+            )?
+        }
+        None => {
+            store.resolve_global_for_selection(&registry.default_profile, &manager.selected()?)?
+        }
     };
     anyhow::ensure!(
         before == inputs_digest(paths)?,
@@ -66,6 +102,39 @@ pub(crate) fn resolve_current(
         profile,
         inputs_digest: before,
     })
+}
+
+#[derive(Debug)]
+pub(crate) struct RetiredProfile {
+    name: String,
+}
+
+impl std::fmt::Display for RetiredProfile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Profile {:?} was removed or archived. History and private memory are retained; restore that profile, or use `xana profile continue NAME CONVERSATION` to explicitly choose a linked continuation. No replacement was selected automatically.",
+            self.name
+        )
+    }
+}
+
+impl std::error::Error for RetiredProfile {}
+
+/// Retired Conversations remain viewable. Submission still resolves current authority and fails closed.
+pub(crate) fn resolve_for_startup(
+    paths: &XanaPaths,
+    prior: Option<&ResolvedProfile>,
+) -> Result<ExecutionConfiguration> {
+    match resolve_current(paths, prior) {
+        Ok(configuration) => Ok(configuration),
+        Err(error) if error.is::<RetiredProfile>() => Ok(ExecutionConfiguration {
+            version: 1,
+            profile: prior.expect("retirement requires a saved profile").clone(),
+            inputs_digest: inputs_digest(paths)?,
+        }),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

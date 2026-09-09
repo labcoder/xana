@@ -46,6 +46,8 @@ pub(crate) struct SetupView {
     provider: DesktopProviderKind,
     permission: DesktopPermissionMode,
     connection: Entity<InputState>,
+    profile: Entity<InputState>,
+    make_default: bool,
     endpoint: Entity<InputState>,
     credential: Entity<InputState>,
     credential_source: Entity<InputState>,
@@ -70,6 +72,13 @@ impl SetupView {
         let draft =
             DesktopSetupDraft::for_provider(provider, DesktopSetupMode::StartWithConnection);
         let connection = input(window, cx, "Connection name", &draft.connection, false);
+        let profile = input(
+            window,
+            cx,
+            "Profile name (blank: current default)",
+            "",
+            false,
+        );
         let endpoint = input(
             window,
             cx,
@@ -82,6 +91,7 @@ impl SetupView {
         let codex_program = input(window, cx, "Codex executable", "codex", false);
         let model_search = input(window, cx, "Filter models", "", false);
         let subscriptions = [
+            &profile,
             &connection,
             &endpoint,
             &credential_source,
@@ -105,6 +115,8 @@ impl SetupView {
             provider,
             permission: DesktopPermissionMode::Ask,
             connection,
+            profile,
+            make_default: false,
             endpoint,
             credential,
             credential_source,
@@ -189,6 +201,8 @@ impl SetupView {
         };
         Ok((
             DesktopSetupDraft {
+                profile: nonblank(self.profile.read(cx).value().as_ref()),
+                make_default: self.make_default,
                 mode: self.mode,
                 provider: self.provider,
                 connection,
@@ -262,13 +276,21 @@ impl SetupView {
             }
         };
         let mode = self.mode;
+        let review = match &self.snapshot {
+            Ok(snapshot) => snapshot.clone(),
+            Err(error) => {
+                self.error = Some(error.clone());
+                cx.notify();
+                return;
+            }
+        };
         self.busy = Some("Revalidating and installing configuration…".to_owned());
         self.error = None;
         let control = self.control.clone();
         self._task = Some(cx.spawn(async move |this, cx| {
             let result = cx
                 .background_executor()
-                .spawn(async move { control.commit_setup(&draft, secret.as_ref()).await })
+                .spawn(async move { control.commit_setup(&draft, secret.as_ref(), &review).await })
                 .await;
             _ = this.update(cx, |this, cx| {
                 this.busy = None;
@@ -398,6 +420,21 @@ impl SetupView {
                     .children(provider_buttons),
             )
             .child(field("Connection name", Input::new(&self.connection), cx))
+            .child(field(
+                "Profile name (blank: current default)",
+                Input::new(&self.profile),
+                cx,
+            ))
+            .child(
+                Button::new("setup-make-default")
+                    .label("Use this profile for new conversations")
+                    .selected(self.make_default)
+                    .disabled(self.profile.read(cx).value().trim().is_empty())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.make_default = !this.make_default;
+                        cx.notify();
+                    })),
+            )
             .when(!self.provider.uses_managed_account(), |form| {
                 form.child(field("Endpoint", Input::new(&self.endpoint), cx))
             })
@@ -543,6 +580,8 @@ impl SetupView {
             ("Setup path", format!("{:?}", self.mode)),
             ("Provider", self.provider.title().to_owned()),
             ("Connection", self.connection.read(cx).value().to_string()),
+            ("Profile", nonblank(self.profile.read(cx).value().as_ref()).unwrap_or_else(|| "Current default (first setup: default)".into())),
+            ("Default", if self.make_default { "Use this profile" } else { "First profile becomes default; existing default is preserved" }.into()),
             (
                 "Model",
                 self.selected_model

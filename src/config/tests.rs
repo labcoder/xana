@@ -1214,13 +1214,12 @@ fn config_edits_fail_closed_while_another_writer_holds_the_lock() {
     let before = fs::read(&path).expect("read config before edit");
     let lock = ConfigTransactionLock::acquire(&path).expect("hold edit lock");
 
-    let error = XanaConfig::add_profile(
+    let error = XanaConfig::create_profile_from_defaults(
         &path,
-        NewProfile {
-            id: "worker".to_owned(),
-            connection: "local".to_owned(),
-            model: "qwen-worker".to_owned(),
-        },
+        "worker",
+        Some("local"),
+        Some("qwen-worker"),
+        false,
     )
     .expect_err("competing edit must fail");
 
@@ -1230,13 +1229,12 @@ fn config_edits_fail_closed_while_another_writer_holds_the_lock() {
     );
     assert_eq!(fs::read(&path).expect("read unchanged config"), before);
     drop(lock);
-    XanaConfig::add_profile(
+    XanaConfig::create_profile_from_defaults(
         &path,
-        NewProfile {
-            id: "worker".to_owned(),
-            connection: "local".to_owned(),
-            model: "qwen-worker".to_owned(),
-        },
+        "worker",
+        Some("local"),
+        Some("qwen-worker"),
+        false,
     )
     .expect("edit succeeds after lock release");
 }

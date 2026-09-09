@@ -170,6 +170,7 @@ fn zero_selected_agents_does_not_touch_private_state() {
     let registry = ConnectionRegistry {
         web: Default::default(),
         default_profile: "default".into(),
+        model_selection_revision: None,
         default_child_route: None,
         permission_mode: crate::config::PermissionMode::Ask,
         permission_rules: Vec::new(),

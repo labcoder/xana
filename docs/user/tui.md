@@ -147,6 +147,9 @@ requires an idle Run, restores the terminal, invokes the exact typed top-level
 CLI command (including its confirmations and secure input), and then returns
 to the Conversation. The TUI does not parse configuration or credentials on a
 separate path.
+`/profile default NAME` changes the default designation. Archive/delete use the
+same [replacement review and last-profile safeguard](profiles.md) as the CLI;
+they do not delete conversation history or shared connection credentials.
 
 `/setup` restores the chat terminal before opening the same keyboard-driven,
 full-screen selectors as `xana setup`. A focused section is available from

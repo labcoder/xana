@@ -31,6 +31,34 @@ fn fixture() -> (TempDir, XanaPaths) {
 }
 
 #[test]
+fn default_profile_choices_and_reset_do_not_reserve_a_literal_name() {
+    let (_directory, paths) = fixture();
+    XanaConfig::rename_profile(paths.config_file(), "default", "personal").unwrap();
+    XanaConfig::create_profile_from_defaults(paths.config_file(), "work", None, None, false)
+        .unwrap();
+    let manager = SettingsManager::new(&paths);
+    let mut draft = manager.begin().unwrap();
+    draft.reset(PROFILES_DEFAULT).unwrap();
+    manager.commit(&draft, false).unwrap();
+    assert_eq!(
+        XanaConfig::load_registry_from(paths.config_file())
+            .unwrap()
+            .default_profile,
+        "personal"
+    );
+    let mut draft = manager.begin().unwrap();
+    draft.set(PROFILES_DEFAULT, "work").unwrap();
+    assert_eq!(
+        draft.preview().unwrap().revision,
+        draft.preview().unwrap().revision
+    );
+    manager.commit(&draft, false).unwrap();
+    let after = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+    assert_eq!(after.default_profile, "work");
+    assert!(after.model_selection_revision.is_some());
+}
+
+#[test]
 fn snapshot_exposes_stable_keys_without_configuration_secrets() {
     let (_directory, paths) = fixture();
     let manager = SettingsManager::new(&paths);

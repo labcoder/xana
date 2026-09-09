@@ -518,9 +518,17 @@ impl PortableProjectStore {
                     "portable profile {new:?} already exists"
                 )));
             }
-            let profile = manifest.profiles.remove(old).ok_or_else(|| {
+            let identity = manifest
+                .profiles
+                .get(old)
+                .map(|profile| Self::profile_id(manifest, old, profile))
+                .ok_or_else(|| {
+                    PortableProjectError::Invalid(format!("unknown portable profile {old:?}"))
+                })?;
+            let mut profile = manifest.profiles.remove(old).ok_or_else(|| {
                 PortableProjectError::Invalid(format!("unknown portable profile {old:?}"))
             })?;
+            profile.profile_id = Some(identity);
             manifest.profiles.insert(new.to_owned(), profile);
             if manifest.default_profile.as_deref() == Some(old) {
                 manifest.default_profile = Some(new.to_owned());
@@ -539,9 +547,7 @@ impl PortableProjectStore {
     ) -> Result<PortableProfile, PortableProjectError> {
         self.edit_profiles(paths, project, |manifest| {
             if archived && manifest.default_profile.as_deref() == Some(name) {
-                return Err(PortableProjectError::Invalid(
-                    "the default portable profile cannot be archived".into(),
-                ));
+                manifest.default_profile = next_portable_default(manifest, name);
             }
             manifest
                 .profiles
@@ -563,9 +569,7 @@ impl PortableProjectStore {
     ) -> Result<(), PortableProjectError> {
         self.edit_profiles(paths, project, |manifest| {
             if manifest.default_profile.as_deref() == Some(name) {
-                return Err(PortableProjectError::Invalid(
-                    "the default portable profile cannot be deleted".into(),
-                ));
+                manifest.default_profile = next_portable_default(manifest, name);
             }
             if manifest.profiles.remove(name).is_none() {
                 return Err(PortableProjectError::Invalid(format!(
@@ -688,6 +692,20 @@ impl PortableProjectStore {
     }
 }
 
+fn next_portable_default(manifest: &PortableProjectManifest, removed: &str) -> Option<String> {
+    let eligible = || {
+        manifest.profiles.iter().filter(|(name, profile)| {
+            name.as_str() != removed
+                && !profile.archived
+                && profile.applies_to.contains(&ProfileUse::Primary)
+        })
+    };
+    eligible()
+        .find(|(name, _)| name.as_str() > removed)
+        .or_else(|| eligible().next())
+        .map(|(name, _)| name.clone())
+}
+
 fn project_workspace(
     paths: &XanaPaths,
     project: crate::identity::ProjectId,
@@ -774,10 +792,12 @@ fn validate_manifest(manifest: &PortableProjectManifest) -> Result<(), PortableP
         }
     }
     if let Some(default) = manifest.default_profile.as_deref()
-        && !manifest.profiles.contains_key(default)
+        && !manifest.profiles.get(default).is_some_and(|profile| {
+            !profile.archived && profile.applies_to.contains(&ProfileUse::Primary)
+        })
     {
         return Err(PortableProjectError::Invalid(format!(
-            "default_profile references unknown portable profile {default}"
+            "default_profile {default} must reference an active primary portable profile"
         )));
     }
     let encoded = toml::to_string(manifest)
@@ -1385,6 +1405,43 @@ service_routes = []
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn retiring_portable_defaults_promotes_then_clears_the_optional_pointer() {
+        for archive in [true, false] {
+            let (directory, paths) = paths();
+            let (project, _) = shared_project(&paths, &directory.path().join("workspace"));
+            let portable = PortableProjectStore::open(&paths);
+            let profile: PortableProfile = toml::from_str(
+                "authority_profile = 'default'\nconnection = 'chat'\nmodel = 'qwen'\n",
+            )
+            .unwrap();
+            for name in ["first", "second"] {
+                portable
+                    .create_profile(&paths, project.id, name, profile.clone())
+                    .unwrap();
+            }
+            portable
+                .edit_profiles(&paths, project.id, |manifest| {
+                    manifest.default_profile = Some("first".into());
+                    Ok(())
+                })
+                .unwrap();
+            for (name, expected) in [("first", Some("second")), ("second", None)] {
+                if archive {
+                    portable
+                        .set_profile_archived(&paths, project.id, name, true)
+                        .unwrap();
+                } else {
+                    portable.delete_profile(&paths, project.id, name).unwrap();
+                }
+                let manifest = PortableProjectStore::inspect(&project.canonical_workspace)
+                    .unwrap()
+                    .manifest;
+                assert_eq!(manifest.default_profile.as_deref(), expected);
+            }
+        }
     }
 
     #[test]

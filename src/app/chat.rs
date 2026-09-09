@@ -393,7 +393,7 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
                 })
             })?
     } else {
-        configuration::resolve(paths, saved_profile.as_ref())?
+        crate::profile::execution::resolve_for_startup(paths, saved_profile.as_ref())?
     };
     let frozen_profile = Some(execution_configuration.profile.clone());
     if exact_target

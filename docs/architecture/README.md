@@ -1756,6 +1756,41 @@ in `config.toml`; project-local profiles live only in an explicitly shared
 portable manifest. There is no inheritance graph. Duplication copies values into
 a new independent profile identity.
 
+`config::profiles` owns complete draft construction, default eligibility and
+revision-bound retirement. The default is an explicit pointer to an active
+primary-capable global profile, not a special name. Setup gives its initial
+profile the chosen name before appearance; later creation copies the current
+default's concrete values with a fresh UUID. All initialized registries retain
+at least one eligible global profile. Optional portable profile collections may
+be empty. UUIDs must be unique within a registry, and rename materializes legacy
+derived identity before moving the table.
+
+CLI and Desktop preview the same retirement plan: suggested next name-sorted
+eligible default (with wrap), available alternatives and dependent child routes.
+The writer lock, exact input revision check, pointer update, route removal and
+config validation share one atomic commit. Routes are removed only through the
+review, never redirected to the successor. Registered project authority references
+block rename/removal until explicitly changed; retained jobs keep their binding.
+Credentials, historical snapshots, artifacts and private memory are not purged or
+transferred. Copying integration requirements does not copy private scope grants.
+
+Default identity changes advance `model_selection_revision` in that same config
+transaction. Version-3 `selection.toml` records the revision; older/mismatched
+overrides fall back to the selected profile's configured binding. Existing
+version-1/2 selections remain valid until a default change. This avoids a
+two-file mutation when promoting a profile and prevents an old override masking
+the new default. Settings preview derives the revision deterministically; reset
+retains the current valid default rather than inventing a profile named `default`.
+
+Native new-turn resolution matches the historical profile UUID, not its old
+name, and falls back to that profile's binding rather than the global default.
+Retired native profiles can still display retained history, but strict new-turn
+resolution requires explicit recovery. Active/suspended operations retain their
+configuration; managed Codex retains its frozen authority and vendor lifecycle.
+Setup captures a config revision before interaction and checks it again before
+installation; conflicting drafts cannot overwrite another writer's config,
+credentials or presentation preferences.
+
 `ProfileStore` is the application-domain boundary for lifecycle, pure
 resolution, readiness, and immutable conversation snapshots. Resolution emits a
 secret-safe `ResolvedProfile`: every effective field carries value and

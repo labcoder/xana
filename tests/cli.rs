@@ -492,6 +492,102 @@ fn init_native(home: &Path, base_url: &str) {
 }
 
 #[test]
+fn full_setup_named_profile_and_lifecycle_round_trip_share_one_binding() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let (endpoint, server) = fake_catalog_server(1);
+    let setup = xana(&home)
+        .args([
+            "setup",
+            "--full",
+            "--non-interactive",
+            "--yes",
+            "--legacy-storage",
+            "--kind",
+            "openai-compatible",
+            "--connection",
+            "shared",
+            "--base-url",
+            &endpoint,
+            "--model",
+            "test-model",
+            "--permission-mode",
+            "ask",
+            "--profile",
+            "xana-dev",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&setup);
+    server.join().unwrap();
+    let listed = xana(&home).args(["profile", "list"]).output().unwrap();
+    assert_success(&listed);
+    let list = String::from_utf8_lossy(&listed.stdout);
+    assert!(list.contains("xana-dev"));
+    let config: toml::Value = std::fs::read_to_string(home.join("config.toml"))
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(config["default_profile"].as_str(), Some("xana-dev"));
+    assert_eq!(config["profiles"].as_table().unwrap().len(), 1);
+    for name in ["personal", "work"] {
+        assert_success(
+            &xana(&home)
+                .args(["profile", "create", name])
+                .output()
+                .unwrap(),
+        );
+    }
+    let preview = xana(&home)
+        .args(["profile", "delete", "xana-dev"])
+        .output()
+        .unwrap();
+    assert_success(&preview);
+    assert!(String::from_utf8_lossy(&preview.stdout).contains("personal"));
+    // An automated deletion must name its choice when more than one successor exists.
+    let ambiguous = xana(&home)
+        .args(["profile", "delete", "xana-dev", "--yes"])
+        .output()
+        .unwrap();
+    assert!(!ambiguous.status.success());
+    assert_success(
+        &xana(&home)
+            .args([
+                "profile",
+                "delete",
+                "xana-dev",
+                "--replacement",
+                "work",
+                "--yes",
+            ])
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        &xana(&home)
+            .args(["profile", "delete", "personal", "--yes"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !xana(&home)
+            .args(["profile", "archive", "work", "--yes"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let resolved = xana(&home)
+        .args(["profile", "resolve", "work", "--json"])
+        .output()
+        .unwrap();
+    assert_success(&resolved);
+    let profile: serde_json::Value = serde_json::from_slice(&resolved.stdout).unwrap();
+    assert_eq!(profile["connection"]["value"], "shared");
+    assert_eq!(profile["model"]["value"], "test-model");
+}
+
+#[test]
 fn web_enablement_during_a_turn_applies_to_next_turn_in_the_same_conversation() {
     let directory = tempdir().unwrap();
     let home = directory.path().join("home");

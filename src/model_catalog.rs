@@ -199,6 +199,8 @@ pub(crate) struct ModelSelection {
 #[serde(deny_unknown_fields)]
 struct SelectionDocument {
     version: u32,
+    #[serde(default)]
+    model_selection_revision: Option<uuid::Uuid>,
     connection: String,
     model: String,
     #[serde(default)]
@@ -320,15 +322,22 @@ impl ModelManager {
     }
 
     pub(crate) fn selected(&self) -> Result<ModelSelection, ModelError> {
+        self.selected_for_profile(&self.registry.default_profile)
+    }
+
+    pub(crate) fn selected_for_profile(&self, profile: &str) -> Result<ModelSelection, ModelError> {
         match bounded_file::read_to_string(&self.selection_path, MAX_SELECTION_BYTES) {
             Ok(input) => {
                 let document: SelectionDocument = toml::from_str(&input)
                     .map_err(|error| ModelError::Decode(error.to_string()))?;
-                if !matches!(document.version, 1 | 2) {
+                if !matches!(document.version, 1..=3) {
                     return Err(ModelError::Decode(format!(
                         "unsupported selection version {}",
                         document.version
                     )));
+                }
+                if document.model_selection_revision != self.registry.model_selection_revision {
+                    return self.configured_profile(profile);
                 }
                 let selection = ModelSelection {
                     connection: document.connection,
@@ -341,17 +350,7 @@ impl ModelManager {
             Err(bounded_file::BoundedReadError::Io { source, .. })
                 if source.kind() == io::ErrorKind::NotFound =>
             {
-                let profile = self
-                    .registry
-                    .profiles
-                    .get(&self.registry.default_profile)
-                    .expect("configuration validation requires the default profile");
-                self.normalize_and_validate_selection(ModelSelection {
-                    connection: profile.connection.clone(),
-                    model: profile.model.clone(),
-                    reasoning_effort: None,
-                    reasoning_summary: None,
-                })
+                self.configured_profile(profile)
             }
             Err(bounded_file::BoundedReadError::Io { path, source }) => {
                 Err(ModelError::Io { path, source })
@@ -367,11 +366,15 @@ impl ModelManager {
     }
 
     pub(crate) fn configured_default(&self) -> Result<ModelSelection, ModelError> {
+        self.configured_profile(&self.registry.default_profile)
+    }
+
+    fn configured_profile(&self, name: &str) -> Result<ModelSelection, ModelError> {
         let profile = self
             .registry
             .profiles
-            .get(&self.registry.default_profile)
-            .expect("configuration validation requires the default profile");
+            .get(name)
+            .ok_or_else(|| ModelError::InvalidOption(format!("unknown profile {name:?}")))?;
         self.normalize_and_validate_selection(ModelSelection {
             connection: profile.connection.clone(),
             model: profile.model.clone(),
@@ -437,7 +440,8 @@ impl ModelManager {
 
     fn write_selection(&self, selection: &ModelSelection) -> Result<(), ModelError> {
         let document = SelectionDocument {
-            version: 2,
+            version: 3,
+            model_selection_revision: self.registry.model_selection_revision,
             connection: selection.connection.clone(),
             model: selection.model.clone(),
             reasoning_effort: selection.reasoning_effort.clone(),
@@ -1088,6 +1092,7 @@ mod tests {
         ConnectionRegistry {
             web: Default::default(),
             default_profile: "default".into(),
+            model_selection_revision: None,
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,
             permission_rules: Vec::new(),
@@ -1149,6 +1154,7 @@ mod tests {
         ConnectionRegistry {
             web: Default::default(),
             default_profile: "default".into(),
+            model_selection_revision: None,
             default_child_route: None,
             permission_mode: crate::config::PermissionMode::Ask,
             permission_rules: Vec::new(),
@@ -1291,7 +1297,7 @@ mod tests {
         assert_eq!(selected.reasoning_effort.as_deref(), Some("xhigh"));
         assert_eq!(selected.reasoning_summary, Some(ReasoningSummary::Detailed));
         let persisted = fs::read_to_string(&selection_path).unwrap();
-        assert!(persisted.contains("version = 2"));
+        assert!(persisted.contains("version = 3"));
         assert!(persisted.contains("reasoning_effort = \"xhigh\""));
 
         fs::write(

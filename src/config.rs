@@ -26,6 +26,7 @@ use std::{
 };
 
 mod interoperable;
+pub(crate) mod profiles;
 
 pub(crate) use interoperable::{
     EgressPolicyDeclaration, ExternalAgentDeclaration, McpOAuthDeclaration, McpPrimitiveSelection,
@@ -56,6 +57,8 @@ struct VersionHeader {
 struct ConfigDocument {
     version: u32,
     default_profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    model_selection_revision: Option<uuid::Uuid>,
     #[serde(default)]
     default_child_route: Option<String>,
     permission_mode: PermissionMode,
@@ -452,6 +455,7 @@ pub(crate) struct RouteConfig {
 pub(crate) struct ConnectionRegistry {
     pub(crate) web: crate::web::WebConfig,
     pub(crate) default_profile: String,
+    pub(crate) model_selection_revision: Option<uuid::Uuid>,
     pub(crate) default_child_route: Option<String>,
     pub(crate) permission_mode: PermissionMode,
     pub(crate) permission_rules: Vec<PermissionRule>,
@@ -468,13 +472,6 @@ pub(crate) struct ConnectionRegistry {
     pub(crate) notifications: NotificationPolicy,
     pub(crate) context: PromptBudgetPolicy,
     pub(crate) resources: ResourcePolicyV1,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct NewProfile {
-    pub(crate) id: String,
-    pub(crate) connection: String,
-    pub(crate) model: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1034,6 +1031,7 @@ impl XanaConfig {
         let document = ConfigDocument {
             version: CONFIG_VERSION,
             default_profile: "default".to_owned(),
+            model_selection_revision: None,
             default_child_route: Some("default".to_owned()),
             permission_mode,
             permission_rules: Vec::new(),
@@ -1564,25 +1562,6 @@ impl XanaConfig {
         transaction.commit(true)
     }
 
-    pub(crate) fn add_profile(path: &Path, input: NewProfile) -> Result<(), ConfigError> {
-        validate_name("profile", &input.id)?;
-        let mut transaction = ConfigEditTransaction::begin(path)?;
-        let document = transaction.document_mut();
-        let profiles = profiles_table_mut(document)?;
-        if profiles.contains_key(&input.id) {
-            return Err(ConfigError::Edit(format!(
-                "profile {:?} already exists",
-                input.id
-            )));
-        }
-        let mut profile = toml_edit::Table::new();
-        profile["profile_id"] = toml_edit::value(uuid::Uuid::new_v4().to_string());
-        profile["connection"] = toml_edit::value(input.connection);
-        profile["model"] = toml_edit::value(input.model);
-        profiles[&input.id] = toml_edit::Item::Table(profile);
-        transaction.commit(false)
-    }
-
     pub(crate) fn update_profile(
         path: &Path,
         id: &str,
@@ -1697,15 +1676,22 @@ impl XanaConfig {
     pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
         validate_name("profile", new)?;
         let mut transaction = ConfigEditTransaction::begin(path)?;
+        let identity = transaction
+            .registry
+            .profiles
+            .get(old)
+            .ok_or_else(|| ConfigError::Edit(format!("unknown profile {old:?}")))?
+            .profile_id;
         let document = transaction.document_mut();
         {
             let profiles = profiles_table_mut(document)?;
             if profiles.contains_key(new) {
                 return Err(ConfigError::Edit(format!("profile {new:?} already exists")));
             }
-            let profile = profiles
+            let mut profile = profiles
                 .remove(old)
                 .ok_or_else(|| ConfigError::Edit(format!("unknown profile {old:?}")))?;
+            profile["profile_id"] = toml_edit::value(identity.to_string());
             profiles.insert(new, profile);
         }
         if document
@@ -1730,55 +1716,11 @@ impl XanaConfig {
         transaction.commit(false)
     }
 
-    pub(crate) fn set_profile_archived(
-        path: &Path,
-        id: &str,
-        archived: bool,
-    ) -> Result<(), ConfigError> {
+    pub(crate) fn restore_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
         let mut transaction = ConfigEditTransaction::begin(path)?;
         let document = transaction.document_mut();
-        if archived
-            && document
-                .get("default_profile")
-                .and_then(toml_edit::Item::as_str)
-                == Some(id)
-        {
-            return Err(ConfigError::Edit(
-                "the default profile cannot be archived".into(),
-            ));
-        }
         let profile = profile_table_mut(document, id)?;
-        if archived {
-            profile["archived"] = toml_edit::value(true);
-        } else {
-            profile.remove("archived");
-        }
-        transaction.commit(false)
-    }
-
-    pub(crate) fn delete_profile(path: &Path, id: &str) -> Result<(), ConfigError> {
-        let mut transaction = ConfigEditTransaction::begin(path)?;
-        let (registry, document) = transaction.parts();
-        if registry.default_profile == id {
-            return Err(ConfigError::Edit(
-                "the default profile cannot be deleted".into(),
-            ));
-        }
-        let routes = registry
-            .routes
-            .values()
-            .filter(|route| route.profile == id)
-            .map(|route| route.id.clone())
-            .collect::<Vec<_>>();
-        if !routes.is_empty() {
-            return Err(ConfigError::Edit(format!(
-                "profile {id:?} is referenced by route(s): {}",
-                routes.join(", ")
-            )));
-        }
-        if profiles_table_mut(document)?.remove(id).is_none() {
-            return Err(ConfigError::Edit(format!("unknown profile {id:?}")));
-        }
+        profile.remove("archived");
         transaction.commit(false)
     }
 }
@@ -2140,6 +2082,7 @@ impl<'a> ConfigEditTransaction<'a> {
     fn commit(mut self, with_backup: bool) -> Result<(), ConfigError> {
         migrate_profile_connection_keys(&mut self.document)?;
         self.document["version"] = toml_edit::value(CONFIG_VERSION as i64);
+        profiles::reconcile_selection_revision(&self.registry, &mut self.document)?;
         let rendered = self.document.to_string();
         XanaConfig::parse_registry(&rendered)?;
         if with_backup {
@@ -2355,9 +2298,28 @@ fn validate_document(document: &ConfigDocument) -> Result<(), ConfigError> {
             "the default profile cannot be archived".into(),
         ));
     }
+    if document
+        .profiles
+        .get(&document.default_profile)
+        .is_some_and(|profile| !profile.applies_to.contains(&ProfileUse::Primary))
+    {
+        return Err(ConfigError::Edit(
+            "the default profile must support primary conversations".into(),
+        ));
+    }
 
+    let mut profile_ids = std::collections::BTreeSet::new();
     for (name, profile) in &document.profiles {
         validate_name("profile", name)?;
+        if !profile_ids.insert(
+            profile
+                .profile_id
+                .unwrap_or_else(|| stable_profile_id("global", name)),
+        ) {
+            return Err(ConfigError::Edit(format!(
+                "profile {name:?} shares an identity with another profile; duplicate through profile commands to create an independent identity"
+            )));
+        }
 
         if !document.providers.contains_key(&profile.connection) {
             return Err(ConfigError::UnknownProvider {
@@ -2632,6 +2594,7 @@ fn registry_from_document(document: ConfigDocument) -> ConnectionRegistry {
     ConnectionRegistry {
         web: document.web,
         default_profile: document.default_profile,
+        model_selection_revision: document.model_selection_revision,
         default_child_route: document.default_child_route,
         permission_mode: document.permission_mode,
         permission_rules: document.permission_rules,

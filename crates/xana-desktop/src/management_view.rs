@@ -16,7 +16,7 @@ use gpui_component::{
 use std::path::PathBuf;
 use xana::desktop::{
     DesktopCapabilitySnapshot, DesktopControlPlane, DesktopEntityMutationReceipt,
-    DesktopManagementSnapshot, DesktopProfileDraft, DesktopProjectDraft,
+    DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileRetirement, DesktopProjectDraft,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,7 @@ pub(crate) enum ManagementViewEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Confirmation {
-    DeleteProfile(String),
+    RetireProfile(DesktopProfileRetirement),
     ForgetProject(String),
 }
 
@@ -217,6 +217,10 @@ impl ManagementView {
     }
 
     fn toggle_profile(&mut self, profile: String, archived: bool, cx: &mut Context<Self>) {
+        if archived {
+            self.preview_profile_retirement(profile, true, None, cx);
+            return;
+        }
         self.spawn_operation(
             if archived {
                 "Archiving Profile…"
@@ -226,6 +230,39 @@ impl ManagementView {
             move |control| control.set_profile_archived(&profile, archived),
             cx,
         );
+    }
+
+    fn preview_profile_retirement(
+        &mut self,
+        profile: String,
+        archive: bool,
+        replacement: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy.is_some() {
+            return;
+        }
+        self.busy = Some("Reviewing Profile…".into());
+        let control = self.control.clone();
+        self._task = Some(cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    control.preview_profile_retirement(&profile, archive, replacement.as_deref())
+                })
+                .await;
+            _ = this.update(cx, |this, cx| {
+                this.busy = None;
+                match result {
+                    Ok(plan) => {
+                        this.confirmation = Some(Confirmation::RetireProfile(plan));
+                        this.error = None;
+                    }
+                    Err(error) => this.error = Some(error.message),
+                }
+                cx.notify();
+            });
+        }));
     }
 
     fn toggle_project(&mut self, project: String, archived: bool, cx: &mut Context<Self>) {
@@ -245,10 +282,10 @@ impl ManagementView {
             return;
         };
         match confirmation {
-            Confirmation::DeleteProfile(profile) => {
+            Confirmation::RetireProfile(plan) => {
                 self.spawn_operation(
-                    "Deleting Profile…",
-                    move |control| control.delete_profile(&profile),
+                    "Updating Profiles…",
+                    move |control| control.retire_profile(&plan),
                     cx,
                 );
             }
@@ -311,6 +348,11 @@ impl ManagementView {
             .map(|snapshot| snapshot.profiles.as_slice())
             .unwrap_or_default();
         let selected = self.selected_profile.as_deref();
+        let default_profile = self
+            .snapshot
+            .as_ref()
+            .ok()
+            .map(|snapshot| snapshot.default_profile.as_str());
         let detail = selected
             .and_then(|selected| rows.iter().find(|profile| profile.name == selected))
             .cloned();
@@ -334,7 +376,7 @@ impl ManagementView {
                                 v_flex()
                                     .w_full()
                                     .items_start()
-                                    .child(profile.name.clone())
+                                    .child(if default_profile == Some(profile.name.as_str()) { format!("{} · default", profile.name) } else { profile.name.clone() })
                                     .child(
                                         div()
                                             .text_xs()
@@ -369,6 +411,8 @@ impl ManagementView {
                     .when_some(detail, |panel, profile| {
                         let profile_name = profile.name.clone();
                         let delete_name = profile.name.clone();
+                        let default_name = profile.name.clone();
+                        let is_default = default_profile == Some(profile.name.as_str());
                         panel.child(
                             v_flex()
                                 .gap(tokens.spacing.sm)
@@ -379,9 +423,17 @@ impl ManagementView {
                                 .child(
                                     h_flex()
                                         .gap(tokens.spacing.sm)
+                                        .child(Button::new("profile-make-default")
+                                            .label(if is_default { "Default" } else { "Make default" })
+                                            .disabled(self.busy.is_some() || !profile.can_be_default || is_default)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                let name = default_name.clone();
+                                                this.spawn_operation("Changing default…", move |control| control.set_default_profile(&name), cx);
+                                            })))
                                         .child(
                                             Button::new("profile-toggle-archive")
                                                 .label(if profile.archived { "Restore" } else { "Archive" })
+                                                .disabled(self.busy.is_some())
                                                 .on_click(cx.listener(move |this, _, _, cx| {
                                                     this.toggle_profile(profile_name.clone(), !profile.archived, cx);
                                                 })),
@@ -390,9 +442,9 @@ impl ManagementView {
                                             Button::new("profile-delete")
                                                 .label("Delete…")
                                                 .danger()
+                                                .disabled(self.busy.is_some())
                                                 .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.confirmation = Some(Confirmation::DeleteProfile(delete_name.clone()));
-                                                    cx.notify();
+                                                    this.preview_profile_retirement(delete_name.clone(), false, None, cx);
                                                 })),
                                         ),
                                 ),
@@ -615,13 +667,13 @@ impl ManagementView {
         let confirmation = self.confirmation.as_ref()?;
         let tokens = cx.theme().semantic_tokens();
         let (title, detail) = match confirmation {
-            Confirmation::DeleteProfile(profile) => (
-                format!("Delete Profile {profile}?"),
-                "Existing Conversations keep frozen snapshots; the global Profile definition is removed.",
+            Confirmation::RetireProfile(plan) => (
+                format!("{} profile {}?", if plan.is_archive() { "Archive" } else { "Delete" }, plan.name()),
+                format!("Replacement default: {}. Remove child routes: {}. Credentials, Conversation history, artifacts and private memory stay intact. No child route or existing Conversation is rerouted.", plan.replacement().unwrap_or("unchanged"), if plan.removed_routes().is_empty() { "none".into() } else { plan.removed_routes().join(", ") }),
             ),
             Confirmation::ForgetProject(project) => (
                 format!("Forget Project {project}?"),
-                "Only local organization is removed. Workspaces and Conversation history are preserved.",
+                "Only local organization is removed. Workspaces and Conversation history are preserved.".to_owned(),
             ),
         };
         Some(
@@ -632,6 +684,47 @@ impl ManagementView {
                 .border_color(cx.theme().danger)
                 .child(title)
                 .child(detail)
+                .when_some(
+                    match confirmation {
+                        Confirmation::RetireProfile(plan) if plan.replacement().is_some() => {
+                            Some(plan.clone())
+                        }
+                        _ => None,
+                    },
+                    |panel, plan| {
+                        let position = plan
+                            .candidates()
+                            .iter()
+                            .position(|candidate| Some(candidate.as_str()) == plan.replacement())
+                            .unwrap_or(0);
+                        let replacement =
+                            plan.candidates()[(position + 1) % plan.candidates().len()].clone();
+                        panel.child(
+                            h_flex()
+                                .gap(tokens.spacing.sm)
+                                .child(format!(
+                                    "Replacement {} of {}",
+                                    position + 1,
+                                    plan.candidates().len()
+                                ))
+                                .child(
+                                    Button::new("profile-next-replacement")
+                                        .label("Next replacement")
+                                        .disabled(
+                                            self.busy.is_some() || plan.candidates().len() < 2,
+                                        )
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.preview_profile_retirement(
+                                                plan.name().to_owned(),
+                                                plan.is_archive(),
+                                                Some(replacement.clone()),
+                                                cx,
+                                            )
+                                        })),
+                                ),
+                        )
+                    },
+                )
                 .child(
                     h_flex()
                         .gap(tokens.spacing.sm)
@@ -640,6 +733,8 @@ impl ManagementView {
                                 .label("Cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.confirmation = None;
+                                    this._task = None;
+                                    this.busy = None;
                                     cx.notify();
                                 })),
                         )
@@ -647,6 +742,7 @@ impl ManagementView {
                             Button::new("management-confirm")
                                 .label("Confirm")
                                 .danger()
+                                .disabled(self.busy.is_some())
                                 .on_click(cx.listener(|this, _, _, cx| this.confirm(cx))),
                         ),
                 )

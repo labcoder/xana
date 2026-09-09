@@ -31,7 +31,50 @@ pub(super) fn customize_quick(
     output: &mut impl Write,
     ui: SetupUi,
 ) -> Result<Customization> {
-    let rendered = merge_existing_connection_if_valid(paths, rendered)?;
+    let mut args = args.clone();
+    let current_default = XanaConfig::load_registry_from(paths.config_file())
+        .ok()
+        .map(|registry| registry.default_profile)
+        .unwrap_or_else(|| "default".into());
+    if args.full && args.profile.is_none() && !args.non_interactive {
+        args.profile = Some(loop {
+            let name = super::ui::prompt_value(
+                input,
+                output,
+                ui,
+                "Profile name",
+                &current_default,
+                true,
+                false,
+            )?;
+            match crate::config::profiles::validate_profile_name(&name) {
+                Ok(()) => break name,
+                Err(error) => writeln!(output, "{error}; choose a profile name again.")?,
+            }
+        });
+    }
+    let mut rendered = merge_setup_profile(paths, rendered, args.profile.as_deref())?;
+    if let Some(name) = args.profile.as_deref() {
+        let mut document = rendered.parse::<DocumentMut>()?;
+        let already_default = document["default_profile"].as_str() == Some(name);
+        let make_default = args.make_default
+            || (!already_default
+                && !args.non_interactive
+                && super::ui::confirm_review(
+                    input,
+                    output,
+                    ui,
+                    "Default profile",
+                    &[format!(
+                        "Use {name:?} for new conversations? Existing conversations keep their profile."
+                    )],
+                )?);
+        if make_default {
+            document["default_profile"] = value(name);
+        }
+        rendered = validate_document(document)?;
+    }
+    let args = &args;
     if args.section == Some(SetupSectionChoice::Connection) {
         return Ok(Customization {
             config: rendered,
@@ -54,8 +97,8 @@ pub(super) fn customize_quick(
     let mut document = rendered.parse::<DocumentMut>()?;
     edit_permissions_shell(&mut document, args, input, output, true, true, ui)?;
     edit_profiles_routes(&mut document, args, input, output, true, ui)?;
-    let preferences = appearance::edit(args, paths, input, output, true, ui)?;
     let config = validate_document(document)?;
+    let preferences = appearance::edit(args, paths, input, output, true, ui)?;
     Ok(Customization {
         config,
         preferences: Some(preferences.render()?),
@@ -135,6 +178,8 @@ pub(super) fn run_section(
             }
             SetupSectionChoice::ProfilesRoutes
                 if args.capabilities.is_none()
+                    && args.profile.is_none()
+                    && !args.make_default
                     && args.profile_connection.is_none()
                     && args.profile_model.is_none()
                     && args.route_profile.is_none()
@@ -206,7 +251,15 @@ pub(super) fn run_section(
         writeln!(output, "No changes made.")?;
         return Ok(SetupOutcome::Unchanged);
     }
-    super::install(paths.config_file(), &rendered, None, &OsSecretStore)?;
+    super::install_with_preferences(
+        paths.config_file(),
+        &rendered,
+        None,
+        &OsSecretStore,
+        None,
+        None,
+        Some(super::ConfigRevision(Some(blake3::hash(source.as_bytes())))),
+    )?;
     writeln!(
         output,
         "Section committed atomically; current conversation was not mutated."
@@ -222,7 +275,12 @@ pub(super) fn run_section(
     })
 }
 
+#[cfg(test)]
 fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
+    merge_named_connection(existing, replacement, None)
+}
+
+fn merge_named_connection(existing: &str, replacement: &str, name: Option<&str>) -> Result<String> {
     let mut current = existing.parse::<DocumentMut>()?;
     let replacement = replacement.parse::<DocumentMut>()?;
     let new_provider = replacement["providers"]
@@ -245,7 +303,9 @@ fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
     let new_profile = replacement["profiles"][replacement_default]
         .as_table()
         .context("replacement setup has no default profile")?;
-    let profile = current["profiles"][&current_default]
+    let target = name.unwrap_or(&current_default);
+    crate::config::profiles::ensure_profile(&mut current, target)?;
+    let profile = current["profiles"][target]
         .as_table_mut()
         .context("existing config has no default profile")?;
     for key in [
@@ -263,18 +323,37 @@ fn merge_connection(existing: &str, replacement: &str) -> Result<String> {
     validate_document(current)
 }
 
+#[cfg(test)]
 pub(super) fn merge_existing_connection_if_valid(
     paths: &XanaPaths,
     replacement: String,
 ) -> Result<String> {
+    merge_setup_profile(paths, replacement, None)
+}
+
+pub(super) fn merge_setup_profile(
+    paths: &XanaPaths,
+    replacement: String,
+    name: Option<&str>,
+) -> Result<String> {
     if !paths.config_file().is_file() {
-        return Ok(replacement);
+        return name.map_or(Ok(replacement.clone()), |name| {
+            Ok(crate::config::profiles::name_initial_profile(
+                &replacement,
+                name,
+            )?)
+        });
     }
     let existing = fs::read_to_string(paths.config_file())?;
     if XanaConfig::parse(&existing).is_err() {
-        return Ok(replacement);
+        return name.map_or(Ok(replacement.clone()), |name| {
+            Ok(crate::config::profiles::name_initial_profile(
+                &replacement,
+                name,
+            )?)
+        });
     }
-    merge_connection(&existing, &replacement)
+    merge_named_connection(&existing, &replacement, name)
 }
 
 fn edit_permissions_shell(
@@ -344,7 +423,7 @@ fn edit_permissions_shell(
 
     let shell = match args.shell {
         Some(value) => shell_name(value).to_owned(),
-        None if args.non_interactive && !full => document["shell"]["kind"]
+        None if args.non_interactive => document["shell"]["kind"]
             .as_str()
             .context("shell.kind must be a string")?
             .to_owned(),
@@ -447,19 +526,27 @@ fn edit_profiles_routes(
     full: bool,
     ui: SetupUi,
 ) -> Result<()> {
+    let default_profile = document["default_profile"]
+        .as_str()
+        .context("missing default profile")?
+        .to_owned();
     let profile_name = match &args.profile {
         Some(profile) => profile.clone(),
-        None if full && !args.non_interactive => {
-            super::ui::prompt_value(input, output, ui, "Profile name", "default", true, false)?
-        }
-        None => "default".to_owned(),
+        None if full && !args.non_interactive => super::ui::prompt_value(
+            input,
+            output,
+            ui,
+            "Profile name",
+            &default_profile,
+            true,
+            false,
+        )?,
+        None => default_profile.clone(),
     };
+    crate::config::profiles::ensure_profile(document, &profile_name)?;
     let profiles = document["profiles"]
         .as_table_mut()
         .context("profiles must be a table")?;
-    if !profiles.contains_key(&profile_name) {
-        profiles.insert(&profile_name, Item::Table(Table::new()));
-    }
     let profile = profiles[&profile_name]
         .as_table_mut()
         .context("profile must be a table")?;
@@ -625,12 +712,27 @@ fn edit_profiles_routes(
         )?,
     );
 
+    let default_route = if profile_name == default_profile {
+        document
+            .get("default_child_route")
+            .and_then(Item::as_str)
+            .unwrap_or(&profile_name)
+            .to_owned()
+    } else {
+        profile_name.clone()
+    };
     let route_name = match &args.route {
         Some(route) => route.clone(),
-        None if full && !args.non_interactive => {
-            super::ui::prompt_value(input, output, ui, "Task route name", "default", true, false)?
-        }
-        None => "default".to_owned(),
+        None if full && !args.non_interactive => super::ui::prompt_value(
+            input,
+            output,
+            ui,
+            "Task route name",
+            &default_route,
+            true,
+            false,
+        )?,
+        None => default_route,
     };
     let route_profile = args
         .route_profile
@@ -643,6 +745,9 @@ fn edit_profiles_routes(
         routes.insert(&route_name, Item::Table(Table::new()));
     }
     routes[&route_name]["profile"] = value(route_profile);
+    if args.make_default {
+        document["default_profile"] = value(profile_name);
+    }
     Ok(())
 }
 
@@ -792,6 +897,60 @@ mod tests {
         assert!(merged.starts_with("# retained"));
         assert!(merged.contains("permission_mode = \"deny\""));
         assert!(merged.contains("model = \"new\""));
+    }
+
+    #[test]
+    fn full_setup_creates_one_complete_named_default_without_advanced_binding_flags() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        let args = SetupArgs {
+            full: true,
+            non_interactive: true,
+            profile: Some("xana-dev".into()),
+            ..SetupArgs::default()
+        };
+        let result = customize_quick(
+            base(),
+            &args,
+            &paths,
+            &mut std::io::Cursor::new([]),
+            &mut Vec::new(),
+            plain_ui(),
+        )
+        .unwrap();
+        let registry = XanaConfig::parse_registry(&result.config).unwrap();
+        assert_eq!(registry.default_profile, "xana-dev");
+        assert_eq!(registry.profiles.len(), 1);
+        assert_eq!(registry.profiles["xana-dev"].connection, "ollama");
+        assert_eq!(registry.profiles["xana-dev"].model, "old");
+        assert!(
+            registry
+                .routes
+                .values()
+                .all(|route| route.profile == "xana-dev")
+        );
+        assert!(!paths.config_file().exists());
+    }
+
+    #[test]
+    fn additional_setup_profile_does_not_replace_the_default_or_its_binding() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(paths.config_file(), base()).unwrap();
+        let result =
+            merge_setup_profile(&paths, base().replace("old", "new"), Some("work")).unwrap();
+        let registry = XanaConfig::parse_registry(&result).unwrap();
+        assert_eq!(registry.default_profile, "default");
+        assert_eq!(registry.profiles["default"].model, "old");
+        assert_eq!(registry.profiles["work"].model, "new");
+        assert_eq!(registry.connections.len(), 1);
+        assert_ne!(
+            registry.profiles["default"].profile_id,
+            registry.profiles["work"].profile_id
+        );
     }
 
     #[test]

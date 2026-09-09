@@ -25,7 +25,12 @@ pub(super) fn run_command(
                 }
             }
             None => {
+                let default = crate::config::XanaConfig::load_registry_from(paths.config_file())?
+                    .default_profile;
                 for profile in profiles.list_global(all)? {
+                    if profile.id == default {
+                        writeln!(output, "[default]")?;
+                    }
                     render_global(output, &profile)?;
                 }
             }
@@ -36,6 +41,7 @@ pub(super) fn run_command(
             model,
             project,
             authority_profile,
+            make_default,
         } => match project {
             Some(project) => {
                 let authority_profile = authority_profile.ok_or_else(|| {
@@ -49,8 +55,11 @@ pub(super) fn run_command(
                         profile_id: None,
                         archived: false,
                         authority_profile,
-                        connection,
-                        model,
+                        connection: connection.ok_or_else(|| {
+                            anyhow::anyhow!("project profiles require a logical --connection")
+                        })?,
+                        model: model
+                            .ok_or_else(|| anyhow::anyhow!("project profiles require --model"))?,
                         reasoning_effort: None,
                         reasoning_summary: None,
                         identity: None,
@@ -74,9 +83,24 @@ pub(super) fn run_command(
                 if authority_profile.is_some() {
                     bail!("--authority-profile is valid only with --project");
                 }
-                render_global(output, &profiles.create_global(name, connection, model)?)?;
+                render_global(
+                    output,
+                    &profiles.create_from_defaults(
+                        &name,
+                        connection.as_deref(),
+                        model.as_deref(),
+                        make_default,
+                    )?,
+                )?;
             }
         },
+        ProfileCommand::Default { name } => {
+            crate::config::XanaConfig::set_default_profile(paths.config_file(), &name)?;
+            writeln!(
+                output,
+                "Default profile: {name}. Existing Conversations keep their profile identity."
+            )?;
+        }
         ProfileCommand::Inspect { name, project } => match project {
             Some(project) => render_portable(
                 output,
@@ -161,14 +185,19 @@ pub(super) fn run_command(
             )?,
             None => render_global(output, &profiles.rename_global(&old, &new)?)?,
         },
-        ProfileCommand::Archive { name, project } => match project {
+        ProfileCommand::Archive {
+            name,
+            project,
+            replacement,
+            yes,
+        } => match project {
             Some(project) => render_portable(
                 output,
                 project,
                 &name,
                 &portable.set_profile_archived(paths, project, &name, true)?,
             )?,
-            None => render_global(output, &profiles.set_global_archived(&name, true)?)?,
+            None => retire_global(&profiles, &name, true, replacement.as_deref(), yes, output)?,
         },
         ProfileCommand::Unarchive { name, project } => match project {
             Some(project) => render_portable(
@@ -179,19 +208,24 @@ pub(super) fn run_command(
             )?,
             None => render_global(output, &profiles.set_global_archived(&name, false)?)?,
         },
-        ProfileCommand::Delete { name, project, yes } => {
-            if !yes {
-                bail!("profile deletion requires review and --yes");
+        ProfileCommand::Delete {
+            name,
+            project,
+            yes,
+            replacement,
+        } => match project {
+            Some(project) => {
+                if !yes {
+                    bail!("project profile deletion requires review and --yes");
+                }
+                portable.delete_profile(paths, project, &name)?;
+                writeln!(
+                    output,
+                    "Deleted project profile {name:?}; frozen snapshots are retained."
+                )?;
             }
-            match project {
-                Some(project) => portable.delete_profile(paths, project, &name)?,
-                None => profiles.delete_global(&name)?,
-            }
-            writeln!(
-                output,
-                "Deleted profile {name:?}; conversations retain frozen snapshots."
-            )?;
-        }
+            None => retire_global(&profiles, &name, false, replacement.as_deref(), yes, output)?,
+        },
         ProfileCommand::Resolve {
             name,
             project,
@@ -235,6 +269,59 @@ pub(super) fn run_command(
             )?;
         }
     }
+    Ok(())
+}
+
+fn retire_global(
+    store: &ProfileStore,
+    name: &str,
+    archive: bool,
+    replacement: Option<&str>,
+    yes: bool,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let plan = store.plan_retirement(name, archive, replacement)?;
+    writeln!(
+        output,
+        "{} profile {name:?}",
+        if archive { "Archive" } else { "Delete" }
+    )?;
+    if let Some(next) = &plan.replacement {
+        writeln!(
+            output,
+            "Replacement default: {next}; eligible choices: {}",
+            plan.candidates.join(", ")
+        )?;
+    }
+    if !plan.removed_routes.is_empty() {
+        writeln!(
+            output,
+            "Remove dependent child routes (not reroute): {}",
+            plan.removed_routes.join(", ")
+        )?;
+    }
+    writeln!(
+        output,
+        "Preserve credentials, Conversations, artifacts, and profile-private memory."
+    )?;
+    if !yes && (!archive || plan.replacement.is_some() || !plan.removed_routes.is_empty()) {
+        writeln!(
+            output,
+            "Preview only. Repeat with --yes; use --replacement NAME to select another default."
+        )?;
+        return Ok(());
+    }
+    if yes && plan.replacement.is_some() && plan.candidates.len() > 1 && replacement.is_none() {
+        bail!(
+            "multiple replacement defaults are available; specify --replacement NAME to confirm the choice"
+        );
+    }
+    store.retire(&plan)?;
+    writeln!(
+        output,
+        "Profile {}. Existing Conversations retain their saved identity and history.",
+        if archive { "archived" } else { "deleted" }
+    )?;
     Ok(())
 }
 

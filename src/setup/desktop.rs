@@ -23,6 +23,8 @@ pub(crate) enum DesktopSetupCredential {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DesktopSetupDraft {
+    pub(crate) profile: Option<String>,
+    pub(crate) make_default: bool,
     pub(crate) kind: ProviderKind,
     pub(crate) connection: String,
     pub(crate) base_url: Option<String>,
@@ -56,7 +58,12 @@ pub(crate) async fn commit_for_desktop(
     draft: &DesktopSetupDraft,
     paths: &XanaPaths,
     secret: Option<&SecretString>,
+    expected_config: super::ConfigRevision,
 ) -> Result<DesktopSetupCommit> {
+    expected_config.check(paths.config_file())?;
+    if let Some(name) = &draft.profile {
+        crate::config::profiles::validate_profile_name(name)?;
+    }
     let selected = draft
         .model
         .as_deref()
@@ -75,8 +82,23 @@ pub(crate) async fn commit_for_desktop(
     let replaced_existing_configuration = paths.config_file().exists();
     let rendered = XanaConfig::render_initial(concrete.initial_config())
         .context("could not render the validated setup configuration")?;
-    let rendered = super::custom::merge_existing_connection_if_valid(paths, rendered)
+    let rendered = super::custom::merge_setup_profile(paths, rendered, draft.profile.as_deref())
         .context("could not merge the setup connection into existing configuration")?;
+    let rendered = if draft.make_default {
+        let name = draft
+            .profile
+            .as_deref()
+            .context("choose a profile name before making it the default")?;
+        let mut document = rendered.parse::<toml_edit::DocumentMut>()?;
+        document["default_profile"] = toml_edit::value(name);
+        let rendered = document.to_string();
+        XanaConfig::parse_registry(&rendered)?;
+        rendered
+    } else {
+        rendered
+    };
+    expected_config.check(paths.config_file())?;
+    let reset_selection = super::resets_model_selection(paths.config_file(), &rendered)?;
     super::storage::FreshPlan::automatic(paths)?.apply(paths, &crate::storage::OsCustody)?;
     let selection_path = paths.data_dir().join("selection.toml");
     let stored = match (&concrete.credential, concrete.staged_secret.as_ref()) {
@@ -89,7 +111,8 @@ pub(crate) async fn commit_for_desktop(
         stored,
         &OsSecretStore,
         None,
-        Some(&selection_path),
+        reset_selection.then_some(selection_path.as_path()),
+        Some(expected_config),
     )?;
     let registry = XanaConfig::parse_registry(&rendered)
         .context("configuration committed but its model catalog could not be reopened")?;
@@ -181,6 +204,8 @@ mod tests {
 
     fn draft(credential: DesktopSetupCredential) -> DesktopSetupDraft {
         DesktopSetupDraft {
+            profile: None,
+            make_default: false,
             kind: ProviderKind::OpenAi,
             connection: "openai".to_owned(),
             base_url: None,

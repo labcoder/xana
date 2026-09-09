@@ -213,3 +213,11 @@ resolved conversation snapshots, explicit same-workspace placement and
 cross-workspace continuation, bounded `.agents/xana/` import/share, and locked
 plan/review/apply migration. Architecture and User Documentation describe the
 current behavior. The broader deferrals above remain proposed work.
+
+The accepted profile lifecycle refinement is also implemented: arbitrary initial
+names, shared connection/model reuse, explicit default designation, last-active-
+primary protection, reviewed default promotion and dependent child-route removal,
+stable identity across legacy rename, and stale-draft rejection. Default changes
+do not reroute retained work or transfer profile-private data. Registered portable
+authority references require explicit rebinding before global retirement. See
+[Profiles](../user/profiles.md) and the profile-resolution section of Architecture.

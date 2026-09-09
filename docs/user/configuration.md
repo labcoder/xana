@@ -205,6 +205,13 @@ The production configuration, permission, capability, route, and budget
 validators run before commit. A rule entered by flags uses the bounded form
 `ID:DECISION:EFFECT[:WORKSPACE]`; setup does not add automatic routing or
 provider scoring.
+The first chosen profile name becomes the default; no extra `default` preset is
+created. Each new named profile starts with a complete connection/model binding,
+and profile/route validation runs before appearance questions. Existing setup
+edits the current default unless `--profile NAME` selects or adds another;
+`--make-default` explicitly changes the designation. To add a preset without
+reconnecting a provider, use `xana profile create NAME`. See
+[profile lifecycle and removal](profiles.md).
 Interactive Full Setup keeps permission, shell, profile, route, orchestration,
 theme, glyph, motion, density, composer, activity, and final review steps in
 the same full-screen shell. Appearance choices preview their palette in memory;
@@ -223,7 +230,10 @@ xana setup --section storage
 
 The connection section performs the same live availability and catalog checks
 as Quick Setup, then structurally replaces only the chosen provider and
-default profile selection while preserving comments and unrelated config.
+selected profile binding while preserving comments and unrelated config.
+Without `--profile`, that selected profile is the current default. Setup rejects
+a commit if configuration changed while its review was open; rerun the review
+instead of overwriting the other writer's changes.
 Permissions/shell and profiles/routes use comment-preserving structured TOML
 edits. Appearance writes only `data/frontend/presentation.toml`.
 Storage reviews encryption/migration and recovery backup independently of model

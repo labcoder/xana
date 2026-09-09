@@ -313,6 +313,7 @@ async fn run_once(
         return Err(SetupCancelled.into());
     };
     let args = &args;
+    let expected_config = ConfigRevision::capture(paths.config_file())?;
     if args.section == Some(crate::cli::SetupSectionChoice::Storage) {
         return storage::run(args, paths, input, output, setup_ui, receipts);
     }
@@ -418,9 +419,11 @@ async fn run_once(
             ui::preview_preferences(setup_ui, preferences)
         });
     let rendered = customization.config;
+    let registry = XanaConfig::parse_registry(&rendered)?;
     let storage = storage::fresh_plan(args, paths, input, output, setup_ui)?;
 
     let mut review = vec![
+        format!("Default profile {}", registry.default_profile),
         format!("Connection   {}", draft.connection),
         format!("Kind         {}", draft.kind.as_str()),
     ];
@@ -468,6 +471,8 @@ async fn run_once(
         return Ok(SetupOutcome::Unchanged);
     }
 
+    expected_config.check(paths.config_file())?;
+    let reset_selection = resets_model_selection(paths.config_file(), &rendered)?;
     storage.apply(paths, &crate::storage::OsCustody)?;
     storage.record_receipt(receipts);
     let selection_path = paths.data_dir().join("selection.toml");
@@ -483,7 +488,8 @@ async fn run_once(
             .preferences
             .as_ref()
             .map(|rendered| (paths.presentation_file(), rendered.as_bytes())),
-        Some(&selection_path),
+        reset_selection.then_some(selection_path.as_path()),
+        Some(expected_config),
     )?;
     let installed_registry = XanaConfig::parse_registry(&rendered)
         .context("configuration installed, but its model catalog could not be reopened")?;
@@ -1351,13 +1357,50 @@ fn read_bounded_secret(input: &mut impl BufRead) -> Result<SecretString> {
     SecretString::new(value.trim_end_matches(['\r', '\n']).to_owned()).map_err(Into::into)
 }
 
+#[cfg(test)]
 fn install(
     path: &Path,
     rendered: &str,
     credential: Option<(&str, &SecretString)>,
     store: &impl SecretStore,
 ) -> Result<()> {
-    install_with_preferences(path, rendered, credential, store, None, None)
+    install_with_preferences(path, rendered, credential, store, None, None, None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ConfigRevision(Option<blake3::Hash>);
+
+impl ConfigRevision {
+    pub(crate) fn capture(path: &Path) -> Result<Self> {
+        Ok(Self(
+            read_optional_bounded(path, MAX_CONFIG_BYTES)?
+                .as_deref()
+                .map(blake3::hash),
+        ))
+    }
+
+    fn check(self, path: &Path) -> Result<()> {
+        anyhow::ensure!(
+            self.0 == Self::capture(path)?.0,
+            "Configuration changed while setup was open; no configuration or credentials were overwritten. Review setup again."
+        );
+        Ok(())
+    }
+}
+
+fn resets_model_selection(path: &Path, rendered: &str) -> Result<bool> {
+    let before = match XanaConfig::load_registry_from(path) {
+        Ok(registry) => registry,
+        Err(_) => return Ok(true),
+    };
+    let after = XanaConfig::parse_registry(rendered)?;
+    let before = &before.profiles[&before.default_profile];
+    let after = &after.profiles[&after.default_profile];
+    Ok(before.profile_id != after.profile_id
+        || before.connection != after.connection
+        || before.model != after.model
+        || before.reasoning_effort != after.reasoning_effort
+        || before.reasoning_summary != after.reasoning_summary)
 }
 
 fn install_with_preferences(
@@ -1367,6 +1410,7 @@ fn install_with_preferences(
     store: &impl SecretStore,
     preference: Option<(PathBuf, &[u8])>,
     selection_path: Option<&Path>,
+    expected_config: Option<ConfigRevision>,
 ) -> Result<()> {
     XanaConfig::parse(rendered).context("refusing to install an invalid configuration")?;
     if let Some((_, bytes)) = &preference {
@@ -1376,7 +1420,18 @@ fn install_with_preferences(
     }
     let _lock = crate::config::ConfigTransactionLock::acquire(path)
         .context("could not lock configuration for the setup transaction")?;
+    if let Some(expected) = expected_config {
+        expected.check(path)?;
+    }
     let previous_config = read_optional_bounded(path, MAX_CONFIG_BYTES)?;
+    let mut document = rendered.parse::<toml_edit::DocumentMut>()?;
+    if let Some(previous) = &previous_config
+        && let Ok(text) = std::str::from_utf8(previous)
+        && let Ok(registry) = XanaConfig::parse_registry(text)
+    {
+        crate::config::profiles::reconcile_selection_revision(&registry, &mut document)?;
+    }
+    let rendered = document.to_string();
     let backup = path.with_extension("toml.bak");
     let previous_backup = read_optional_bounded(&backup, MAX_CONFIG_BYTES)?;
     let previous_preference = match &preference {
@@ -1539,6 +1594,50 @@ mod tests {
             fs::read_to_string(path.with_extension("toml.bak")).unwrap(),
             original
         );
+    }
+
+    #[test]
+    fn stale_setup_review_preserves_config_credentials_preferences_and_selection() {
+        for initially_present in [false, true] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("config.toml");
+            if initially_present {
+                fs::write(&path, rendered("original")).unwrap();
+            }
+            let expected = ConfigRevision::capture(&path).unwrap();
+            let concurrent = rendered("other-writer");
+            fs::write(&path, &concurrent).unwrap();
+            let preference_path = directory.path().join("presentation.toml");
+            let preferences = PresentationPreferences::default().render().unwrap();
+            fs::write(&preference_path, &preferences).unwrap();
+            let selection = directory.path().join("selection.toml");
+            fs::write(&selection, "retained selection").unwrap();
+            let store = FakeStore::default();
+            store.set("key", "retained credential").unwrap();
+            let secret = SecretString::new("replacement credential".into()).unwrap();
+            let error = install_with_preferences(
+                &path,
+                &rendered("stale"),
+                Some(("key", &secret)),
+                &store,
+                Some((preference_path.clone(), preferences.as_bytes())),
+                Some(&selection),
+                Some(expected),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("changed while setup was open"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), concurrent);
+            assert_eq!(fs::read_to_string(&preference_path).unwrap(), preferences);
+            assert_eq!(
+                fs::read_to_string(&selection).unwrap(),
+                "retained selection"
+            );
+            assert_eq!(
+                store.get("key").unwrap().as_deref(),
+                Some("retained credential")
+            );
+            assert!(!path.with_extension("toml.bak").exists());
+        }
     }
 
     #[tokio::test]

@@ -43,8 +43,8 @@ pub use actions::{
 };
 pub use entities::{
     DesktopCapabilityFact, DesktopCapabilitySnapshot, DesktopEntityMutationReceipt,
-    DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileSummary, DesktopProjectDraft,
-    DesktopProjectSummary,
+    DesktopManagementSnapshot, DesktopProfileDraft, DesktopProfileRetirement,
+    DesktopProfileSummary, DesktopProjectDraft, DesktopProjectSummary,
 };
 pub use maintenance::{
     DesktopDiagnosticEntry, DesktopDiagnosticsSnapshot, DesktopDoctorFinding,
@@ -209,6 +209,8 @@ impl fmt::Debug for DesktopSecret {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopSetupDraft {
+    pub profile: Option<String>,
+    pub make_default: bool,
     pub mode: DesktopSetupMode,
     pub provider: DesktopProviderKind,
     pub connection: String,
@@ -225,6 +227,8 @@ impl DesktopSetupDraft {
     pub fn for_provider(provider: DesktopProviderKind, mode: DesktopSetupMode) -> Self {
         Self {
             mode,
+            profile: None,
+            make_default: false,
             provider,
             connection: provider.default_connection().to_owned(),
             endpoint: provider.default_endpoint().map(str::to_owned),
@@ -246,6 +250,7 @@ impl DesktopSetupDraft {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DesktopSetupSnapshot {
+    configuration_revision: setup::ConfigRevision,
     pub version: u16,
     pub configuration_state: String,
     pub intentionally_blank: bool,
@@ -376,6 +381,8 @@ impl DesktopControlPlane {
             .map_err(control_error)?
             == setup::SetupInstallation::Blank;
         Ok(DesktopSetupSnapshot {
+            configuration_revision: setup::ConfigRevision::capture(self.paths.config_file())
+                .map_err(control_error)?,
             version: DESKTOP_MANAGEMENT_VERSION,
             configuration_state: ConfigReadiness::inspect(self.paths.config_file())
                 .as_str()
@@ -425,22 +432,28 @@ impl DesktopControlPlane {
         &self,
         draft: &DesktopSetupDraft,
         secret: Option<&DesktopSecret>,
+        review: &DesktopSetupSnapshot,
     ) -> Result<DesktopSetupReceipt, DesktopError> {
         if draft.mode == DesktopSetupMode::Blank {
             return self.commit_blank();
         }
-        setup::commit_for_desktop(&core_draft(draft), &self.paths, secret.map(|s| &s.0))
-            .await
-            .map(|receipt| DesktopSetupReceipt {
-                semantic_code: "setup.commit.completed.v1".to_owned(),
-                connection: Some(receipt.connection),
-                model: Some(receipt.model),
-                discovered_model_count: receipt.discovered_model_count,
-                replaced_existing_configuration: receipt.replaced_existing_configuration,
-                backup_created: receipt.backup_created,
-                requires_new_conversation: true,
-            })
-            .map_err(control_error)
+        setup::commit_for_desktop(
+            &core_draft(draft),
+            &self.paths,
+            secret.map(|s| &s.0),
+            review.configuration_revision,
+        )
+        .await
+        .map(|receipt| DesktopSetupReceipt {
+            semantic_code: "setup.commit.completed.v1".to_owned(),
+            connection: Some(receipt.connection),
+            model: Some(receipt.model),
+            discovered_model_count: receipt.discovered_model_count,
+            replaced_existing_configuration: receipt.replaced_existing_configuration,
+            backup_created: receipt.backup_created,
+            requires_new_conversation: true,
+        })
+        .map_err(control_error)
     }
 
     pub fn commit_blank(&self) -> Result<DesktopSetupReceipt, DesktopError> {
@@ -525,6 +538,8 @@ impl DesktopControlPlane {
 
 fn core_draft(draft: &DesktopSetupDraft) -> CoreDraft {
     CoreDraft {
+        profile: draft.profile.clone(),
+        make_default: draft.make_default,
         kind: match draft.provider {
             DesktopProviderKind::Ollama => ProviderKind::Ollama,
             DesktopProviderKind::OpenAiCompatible => ProviderKind::OpenAiCompat,

@@ -10,6 +10,8 @@ use crate::{
 use std::{ffi::OsString, fs};
 use tempfile::tempdir;
 
+mod lifecycle;
+
 fn write_plugin(root: &std::path::Path) {
     fs::create_dir_all(root.join("skills/review")).unwrap();
     fs::write(
@@ -200,4 +202,42 @@ fn project_profile_resolves_private_binding_and_reports_staleness_separately() {
     assert_eq!(resolved.connection.value, "local");
     assert_eq!(resolved.permission_mode.value, PermissionMode::Deny);
     assert_eq!(resolved.max_tool_rounds.value, 1);
+    let store = ProfileStore::open(&paths);
+    store
+        .create_from_defaults("work", None, None, false)
+        .unwrap();
+    assert!(
+        store
+            .plan_retirement("default", false, Some("work"))
+            .unwrap_err()
+            .to_string()
+            .contains("authority ceiling")
+    );
+    assert!(
+        store
+            .rename_global("default", "renamed")
+            .unwrap_err()
+            .to_string()
+            .contains("authority ceiling")
+    );
+    portable
+        .rename_profile(&paths, project.id, "safe", "review")
+        .unwrap();
+    assert_eq!(
+        portable
+            .inspect_profile(&paths, project.id, "review")
+            .unwrap()
+            .profile_id,
+        Some(resolved.profile_id)
+    );
+    // Project profiles are optional; no synthetic profile must survive deleting the last one.
+    portable
+        .delete_profile(&paths, project.id, "review")
+        .unwrap();
+    assert!(
+        portable
+            .list_profiles(&paths, project.id, true)
+            .unwrap()
+            .is_empty()
+    );
 }

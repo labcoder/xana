@@ -120,6 +120,12 @@ impl ConfigDraft {
             );
         }
 
+        let mut document = edited_text.parse::<toml_edit::DocumentMut>()?;
+        if let Ok(original) = std::str::from_utf8(&current)
+            && let Ok(registry) = XanaConfig::parse_registry(original)
+        {
+            crate::config::profiles::reconcile_selection_revision(&registry, &mut document)?;
+        }
         let backup = self.live_path.with_extension("toml.bak");
         let previous_backup = read_optional_bounded(&backup)?;
         atomic_write(&backup, &current).with_context(|| {
@@ -128,7 +134,7 @@ impl ConfigDraft {
                 self.path.display()
             )
         })?;
-        if let Err(error) = atomic_write(&self.live_path, &edited) {
+        if let Err(error) = atomic_write(&self.live_path, document.to_string().as_bytes()) {
             restore_optional(&backup, previous_backup.as_deref())?;
             return Err(error).with_context(|| {
                 format!(

@@ -17,6 +17,7 @@ pub struct DesktopProfileSummary {
     pub name: String,
     pub id: String,
     pub archived: bool,
+    pub can_be_default: bool,
     pub connection: String,
     pub model: String,
     pub permission: String,
@@ -47,6 +48,30 @@ pub struct DesktopProfileDraft {
     pub name: String,
     pub connection: String,
     pub model: String,
+}
+
+/// A reviewed, revision-bound operation. Clients cannot mutate the reviewed consequences.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesktopProfileRetirement {
+    plan: crate::config::profiles::ProfileRetirement,
+}
+
+impl DesktopProfileRetirement {
+    pub fn name(&self) -> &str {
+        &self.plan.name
+    }
+    pub fn is_archive(&self) -> bool {
+        self.plan.archive
+    }
+    pub fn replacement(&self) -> Option<&str> {
+        self.plan.replacement.as_deref()
+    }
+    pub fn candidates(&self) -> &[String] {
+        &self.plan.candidates
+    }
+    pub fn removed_routes(&self) -> &[String] {
+        &self.plan.removed_routes
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +114,49 @@ pub struct DesktopCapabilitySnapshot {
 }
 
 impl DesktopControlPlane {
+    pub fn preview_profile_retirement(
+        &self,
+        name: &str,
+        archive: bool,
+        replacement: Option<&str>,
+    ) -> Result<DesktopProfileRetirement, DesktopError> {
+        ProfileStore::open(&self.paths)
+            .plan_retirement(name, archive, replacement)
+            .map(|plan| DesktopProfileRetirement { plan })
+            .map_err(control_error)
+    }
+
+    pub fn retire_profile(
+        &self,
+        preview: &DesktopProfileRetirement,
+    ) -> Result<DesktopEntityMutationReceipt, DesktopError> {
+        ProfileStore::open(&self.paths)
+            .retire(&preview.plan)
+            .map_err(control_error)?;
+        Ok(entity_receipt(
+            "profile.retire.completed.v1",
+            preview.name().to_owned(),
+            if preview.is_archive() {
+                "archived"
+            } else {
+                "deleted"
+            },
+            "Credentials, Conversation history, artifacts and private memory retained; dependent child routes removed, never rerouted.",
+        ))
+    }
+
+    pub fn set_default_profile(
+        &self,
+        name: &str,
+    ) -> Result<DesktopEntityMutationReceipt, DesktopError> {
+        XanaConfig::set_default_profile(self.paths.config_file(), name).map_err(control_error)?;
+        Ok(entity_receipt(
+            "profile.default.completed.v1",
+            name.to_owned(),
+            "default",
+            "Used for new Conversations; existing Conversations keep their profile identity.",
+        ))
+    }
     pub fn management_snapshot(&self) -> Result<DesktopManagementSnapshot, DesktopError> {
         let registry =
             XanaConfig::load_registry_from(self.paths.config_file()).map_err(control_error)?;
@@ -107,6 +175,7 @@ impl DesktopControlPlane {
                     Err(error) => (false, vec![bounded(error.to_string())]),
                 };
                 DesktopProfileSummary {
+                    can_be_default: profile.can_be_default(),
                     name: bounded(profile.id),
                     id: profile.profile_id.to_string(),
                     archived: profile.archived,
@@ -479,5 +548,71 @@ mod tests {
                 .iter()
                 .any(|fact| fact.kind == "native" && fact.available == Some(true))
         );
+    }
+
+    #[test]
+    fn desktop_retirement_uses_the_reviewed_successor_and_rejects_stale_plans() {
+        let (_directory, control) = control();
+        assert!(
+            control
+                .preview_profile_retirement("default", false, None)
+                .is_err()
+        );
+        for name in ["work", "personal"] {
+            control
+                .create_profile(DesktopProfileDraft {
+                    name: name.into(),
+                    connection: "local".into(),
+                    model: "qwen".into(),
+                })
+                .unwrap();
+        }
+        let stale = control
+            .preview_profile_retirement("default", false, None)
+            .unwrap();
+        assert_eq!(stale.replacement(), Some("personal"));
+        assert_eq!(stale.removed_routes(), ["default"]);
+        control.set_default_profile("work").unwrap();
+        let before = fs::read(control.paths.config_file()).unwrap();
+        assert!(control.retire_profile(&stale).is_err());
+        assert_eq!(fs::read(control.paths.config_file()).unwrap(), before);
+        let reviewed = control
+            .preview_profile_retirement("work", true, Some("personal"))
+            .unwrap();
+        control.retire_profile(&reviewed).unwrap();
+        let snapshot = control.management_snapshot().unwrap();
+        assert_eq!(snapshot.default_profile, "personal");
+        assert!(
+            snapshot
+                .profiles
+                .iter()
+                .any(|profile| profile.name == "work"
+                    && profile.archived
+                    && !profile.can_be_default)
+        );
+    }
+
+    #[tokio::test]
+    async fn desktop_setup_rejects_an_outdated_open_review_before_provider_calls() {
+        let (_directory, control) = control();
+        let review = control.setup_snapshot().unwrap();
+        control
+            .create_profile(DesktopProfileDraft {
+                name: "concurrent".into(),
+                connection: "local".into(),
+                model: "qwen".into(),
+            })
+            .unwrap();
+        let draft = super::super::DesktopSetupDraft::for_provider(
+            super::super::DesktopProviderKind::Ollama,
+            super::super::DesktopSetupMode::StartWithConnection,
+        );
+        let before = fs::read(control.paths.config_file()).unwrap();
+        let error = control
+            .commit_setup(&draft, None, &review)
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("changed while setup was open"));
+        assert_eq!(fs::read(control.paths.config_file()).unwrap(), before);
     }
 }

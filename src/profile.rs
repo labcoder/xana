@@ -144,15 +144,73 @@ impl ProfileStore {
         connection: String,
         model: String,
     ) -> Result<ProfileConfig, ProfileError> {
-        XanaConfig::add_profile(
+        self.create_from_defaults(&name, Some(&connection), Some(&model), false)
+    }
+
+    pub(crate) fn create_from_defaults(
+        &self,
+        name: &str,
+        connection: Option<&str>,
+        model: Option<&str>,
+        make_default: bool,
+    ) -> Result<ProfileConfig, ProfileError> {
+        XanaConfig::create_profile_from_defaults(
             &self.config_file,
-            crate::config::NewProfile {
-                id: name.clone(),
-                connection,
-                model,
-            },
+            name,
+            connection,
+            model,
+            make_default,
         )?;
-        self.inspect_global(&name)
+        self.inspect_global(name)
+    }
+
+    pub(crate) fn plan_retirement(
+        &self,
+        name: &str,
+        archive: bool,
+        replacement: Option<&str>,
+    ) -> Result<crate::config::profiles::ProfileRetirement, ProfileError> {
+        self.check_project_references(name)?;
+        Ok(XanaConfig::plan_profile_retirement(
+            &self.config_file,
+            name,
+            archive,
+            replacement,
+        )?)
+    }
+
+    pub(crate) fn retire(
+        &self,
+        plan: &crate::config::profiles::ProfileRetirement,
+    ) -> Result<(), ProfileError> {
+        self.check_project_references(&plan.name)?;
+        Ok(XanaConfig::retire_profile(&self.config_file, plan)?)
+    }
+
+    fn check_project_references(&self, name: &str) -> Result<(), ProfileError> {
+        for project in crate::project::ProjectStore::list_existing(&self.paths, true)? {
+            if PortableProjectStore::detect(&project.canonical_workspace)?.is_none() {
+                continue;
+            }
+            let inspection = PortableProjectStore::inspect(&project.canonical_workspace)?;
+            let references = inspection
+                .manifest
+                .profiles
+                .iter()
+                .filter(|(_, profile)| profile.authority_profile == name)
+                .map(|(profile, _)| profile.as_str())
+                .collect::<Vec<_>>();
+            if !references.is_empty() {
+                return Err(ProfileError::Config(crate::config::ConfigError::Edit(
+                    format!(
+                        "profile {name:?} is an authority ceiling for project {:?} profile(s) {}; explicitly review and change those authority_profile references first; no project files were changed",
+                        project.name,
+                        references.join(", ")
+                    ),
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn edit_global(
@@ -178,6 +236,7 @@ impl ProfileStore {
         old: &str,
         new: &str,
     ) -> Result<ProfileConfig, ProfileError> {
+        self.check_project_references(old)?;
         XanaConfig::rename_profile(&self.config_file, old, new)?;
         self.inspect_global(new)
     }
@@ -187,12 +246,24 @@ impl ProfileStore {
         name: &str,
         archived: bool,
     ) -> Result<ProfileConfig, ProfileError> {
-        XanaConfig::set_profile_archived(&self.config_file, name, archived)?;
+        if archived {
+            let plan = self.plan_retirement(name, true, None)?;
+            if plan.replacement.is_some() || !plan.removed_routes.is_empty() {
+                return Err(ProfileError::Config(crate::config::ConfigError::Edit("review profile retirement before changing the default or removing dependent routes".into())));
+            }
+            self.retire(&plan)?;
+            return self.inspect_global(name);
+        }
+        XanaConfig::restore_profile(&self.config_file, name)?;
         self.inspect_global(name)
     }
 
     pub(crate) fn delete_global(&self, name: &str) -> Result<(), ProfileError> {
-        XanaConfig::delete_profile(&self.config_file, name).map_err(ProfileError::Config)
+        let plan = self.plan_retirement(name, false, None)?;
+        if plan.replacement.is_some() || !plan.removed_routes.is_empty() {
+            return Err(ProfileError::Config(crate::config::ConfigError::Edit("review profile retirement before changing the default or removing dependent routes".into())));
+        }
+        self.retire(&plan)
     }
 
     pub(crate) fn resolve_global(&self, name: &str) -> Result<ResolvedProfile, ProfileError> {

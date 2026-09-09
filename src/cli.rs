@@ -982,9 +982,13 @@ pub(crate) struct SetupArgs {
     #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) capabilities: Option<String>,
 
-    /// Name the profile edited by profiles/routes setup.
+    /// Name the initial profile or add/edit a profile using the selected connection and model.
     #[arg(long, help_heading = "Profiles and routes")]
     pub(crate) profile: Option<String>,
+
+    /// Use the edited profile as the default for new conversations.
+    #[arg(long, requires = "profile", help_heading = "Profiles and routes")]
+    pub(crate) make_default: bool,
 
     /// Select the exact connection for the edited profile.
     #[arg(long, help_heading = "Profiles and routes")]
@@ -1672,14 +1676,19 @@ pub(crate) enum ProfileCommand {
     Create {
         name: String,
         #[arg(long)]
-        connection: String,
+        connection: Option<String>,
         #[arg(long)]
-        model: String,
+        model: Option<String>,
+        /// Use this profile for new conversations (global scope only).
+        #[arg(long, conflicts_with = "project")]
+        make_default: bool,
         #[arg(long)]
         project: Option<ProjectId>,
         #[arg(long, requires = "project")]
         authority_profile: Option<String>,
     },
+    /// Choose the active primary profile used for new conversations.
+    Default { name: String },
     /// Inspect one profile without resolving provider or process availability.
     Inspect {
         name: String,
@@ -1725,6 +1734,11 @@ pub(crate) enum ProfileCommand {
         name: String,
         #[arg(long)]
         project: Option<ProjectId>,
+        #[arg(long, conflicts_with = "project")]
+        replacement: Option<String>,
+        /// Confirm default replacement and removal of dependent child routes.
+        #[arg(long)]
+        yes: bool,
     },
     /// Restore an archived profile.
     Unarchive {
@@ -1737,6 +1751,8 @@ pub(crate) enum ProfileCommand {
         name: String,
         #[arg(long)]
         project: Option<ProjectId>,
+        #[arg(long, conflicts_with = "project")]
+        replacement: Option<String>,
         #[arg(long)]
         yes: bool,
     },
