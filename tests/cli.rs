@@ -1066,9 +1066,33 @@ fn connection_json_is_typed_secret_free_and_scope_explicit() {
 fn connection_add_test_and_repair_share_validated_catalog_semantics() {
     let directory = tempdir().expect("temporary Xana home");
     let home = directory.path().join("xana-home");
+    // Catalog behavior must not depend on a developer's keychain or a CI login
+    // session. Keep first-connection setup protected, with fixture-only custody.
+    let key = directory.path().join("recovery.key");
+    assert_success(
+        &xana(&home)
+            .args(["storage", "recovery-key", "--output"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    assert_success(
+        &xana(&home)
+            .args(["storage", "initialize", "--manual-unlock", "--recovery-key"])
+            .arg(&key)
+            .output()
+            .unwrap(),
+    );
+    assert!(!home.join("config.toml").exists());
+    let command = || {
+        let mut cmd = xana(&home);
+        cmd.env("XANA_STORAGE_RECOVERY_KEY", &key)
+            .stdin(Stdio::null());
+        cmd
+    };
     let (base_url, server) = fake_catalog_server(3);
 
-    let added = xana(&home)
+    let added = command()
         .args([
             "connection",
             "--json",
@@ -1090,7 +1114,7 @@ fn connection_add_test_and_repair_share_validated_catalog_semantics() {
     assert!(home.join("config.toml").is_file());
 
     std::fs::remove_dir_all(home.join("cache/models")).unwrap();
-    let tested = xana(&home)
+    let tested = command()
         .args(["connection", "--json", "test", "local"])
         .output()
         .expect("test connection");
@@ -1100,7 +1124,7 @@ fn connection_add_test_and_repair_share_validated_catalog_semantics() {
     assert_eq!(tested_json["usable"], true);
     assert!(!home.join("cache/models/local.json").exists());
 
-    let repaired = xana(&home)
+    let repaired = command()
         .args(["connection", "--json", "repair", "local"])
         .output()
         .expect("repair connection");
@@ -1112,6 +1136,10 @@ fn connection_add_test_and_repair_share_validated_catalog_semantics() {
     );
     assert!(home.join("cache/models/local.json").is_file());
     server.join().unwrap();
+
+    let status = command().args(["storage", "status"]).output().unwrap();
+    assert_success(&status);
+    assert!(String::from_utf8_lossy(&status.stdout).contains("Storage: protected"));
 }
 
 #[test]
