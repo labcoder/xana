@@ -399,9 +399,17 @@ fn blocking_chat_server() -> (
 }
 
 fn read_http_request(stream: &mut TcpStream) -> serde_json::Value {
+    // Accepted sockets can inherit the listener's nonblocking mode on Windows.
+    // The fixture parser expects bounded blocking reads across fragmented data.
+    stream
+        .set_nonblocking(false)
+        .expect("blocking provider fixture stream");
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(10)))
         .expect("request timeout");
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
+        .expect("response timeout");
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
     let header_end = loop {
@@ -431,6 +439,35 @@ fn read_http_request(stream: &mut TcpStream) -> serde_json::Value {
     }
     serde_json::from_slice(&request[header_end..header_end + content_length])
         .expect("provider JSON request")
+}
+
+#[test]
+fn cli_fixture_reads_fragmented_json_on_a_nonblocking_accepted_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+    let (mut server, _) = listener.accept().unwrap();
+    // Reproduce Windows listener-mode inheritance on every native platform.
+    server.set_nonblocking(true).unwrap();
+    let (started_tx, started_rx) = mpsc::channel();
+    let reader = thread::spawn(move || {
+        started_tx.send(()).unwrap();
+        read_http_request(&mut server)
+    });
+    started_rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    thread::sleep(std::time::Duration::from_millis(30));
+    let written = client
+        .write_all(b"POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 16\r\n\r\n")
+        .and_then(|()| {
+            thread::sleep(std::time::Duration::from_millis(30));
+            client.write_all(br#"{"fixture":true}"#)
+        });
+    drop(client);
+    // Join even when the peer closed early, retaining the reader's real error.
+    let request = reader.join().expect("read fragmented fixture request");
+    written.expect("write fragmented fixture request");
+    assert_eq!(request, serde_json::json!({"fixture": true}));
 }
 
 fn init_native(home: &Path, base_url: &str) {
