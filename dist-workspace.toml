@@ -9,6 +9,9 @@ cargo-dist-version = "0.32.0"
 # planner and builder without asking it to replace that reviewed CI file.
 allow-dirty = ["ci"]
 packages = ["xana"]
+# Inventory selection alone still builds --workspace by default. Build the CLI
+# separately so Desktop dependencies and feature unification cannot leak in.
+precise-builds = true
 display-name = "Xana"
 targets = [
   "aarch64-apple-darwin",

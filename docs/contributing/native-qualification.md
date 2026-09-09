@@ -67,7 +67,9 @@ provider call. GitHub's standard hosted-runner/billing policies still apply.
 - An explicit release-profile resource gate: one optimized library-test build,
   then separate 10k/100k protected-history processes. Each records five independent
   database opens and resume windows, verification, backup and restore. The gate
-  also builds CLI/Desktop release executables and records their sizes and hashes.
+  also builds CLI/Desktop release executables in separate Cargo invocations and
+  records each exact command, size and hash. A combined workspace build can
+  unify Desktop-only features into the CLI and is not a standalone CLI baseline.
 
 Each check records the commit, dirty-tree flag, lockfile hash, toolchain,
 OS/architecture, CPU count, runtime-available memory, runner image, start/end,

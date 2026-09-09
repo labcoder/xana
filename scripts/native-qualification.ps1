@@ -15,6 +15,8 @@ function Get-NativeQualificationCommand {
         'root-no-default' { return @{ Program = 'cargo'; Arguments = $test + @('-p', 'xana', '--all-targets', '--no-default-features') } }
         'custody' { return @{ Program = 'bash'; Arguments = @('scripts/qualify-native-custody.sh') } }
         'resources' { return @{ Program = 'pwsh'; Arguments = @('-NoProfile', '-File', 'scripts/qualify-native-resources.ps1') } }
+        'build-xana' { return @{ Program = 'cargo'; Arguments = @('build', '--locked', '--release', '-p', 'xana') } }
+        'build-xana-desktop' { return @{ Program = 'cargo'; Arguments = @('build', '--locked', '--release', '-p', 'xana-desktop') } }
         default { throw "unknown native qualification check: $Check" }
     }
 }

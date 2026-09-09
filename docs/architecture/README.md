@@ -2254,9 +2254,11 @@ x64 glibc. It produces conventional native archives containing `xana`, the
 license, README, and installation documentation plus SHA-256 metadata. A
 semantic plan check fixes that inventory and GitHub attestation intent; a
 native archive audit verifies checksum, bounded contents, exact planned binary
-version and help execution. Temporary audit cleanup uses the same direct-child
-path guard as the release fixtures. The planner uses Cargo's existing release profile and performs no
-publish or install effect.
+version and help execution. `precise-builds = true` makes cargo-dist build only
+the selected CLI package, rather than compiling Desktop through its default
+workspace build and unifying Desktop-only features. Temporary audit cleanup uses
+the same direct-child path guard as the release fixtures. The planner uses
+Cargo's existing release profile and performs no publish or install effect.
 
 The source-controlled Bash installer is the Unix Release Preview activation
 boundary. It accepts only the three planned macOS/Linux targets and one exact
@@ -2290,7 +2292,8 @@ executes full workspace/root test modes on Linux and both macOS architectures,
 plus disposable production OS-custody and source-installation checks. Its
 explicit resource gate runs optimized protected-history fixtures at 10k/100k
 messages with five independent opens, sampled process RSS/CPU, backup/restore,
-and release CLI/Desktop executable sizes. It has
+and separately built release CLI/Desktop executable sizes, without a shared
+package-feature union. It has
 read-only repository permissions and uploads only synthetic test logs/metadata.
 It does not publish artifacts as releases or claim native browser parity,
 interactive OS consent, OS-cold-cache latency, graphical performance or acceptance.

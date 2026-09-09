@@ -7,6 +7,12 @@ $ciWorkflow = Get-Content -Raw -LiteralPath ".github/workflows/ci.yml"
 $localCi = Get-Content -Raw -LiteralPath "scripts/ci-local.ps1"
 $draftScript = Get-Content -Raw -LiteralPath "scripts/create-release-draft.ps1"
 $distInstaller = Get-Content -Raw -LiteralPath "scripts/install-cargo-dist.sh"
+$distConfig = Get-Content -Raw -LiteralPath "dist-workspace.toml"
+# Selecting release inventory does not stop cargo-dist's default --workspace
+# build. Keep Desktop-only dependencies/features out of the shipped CLI.
+if ($distConfig -cnotmatch '(?m)^precise-builds\s*=\s*true\s*(?:#.*)?$') {
+    throw "CLI release builds must explicitly enable precise-builds, not compile the Desktop workspace"
+}
 if (-not $localCi.Contains('cargo install --locked --path . --debug --root') -or
     $localCi.Contains('$packageArguments = @("package"')) {
     throw "local CI must verify the complete locked source install, not an unsupported normalized crate"

@@ -33,6 +33,13 @@ $rootCommand = (Get-NativeQualificationCommand 'root-no-default').Arguments -joi
 if ($rootCommand -notmatch '-p xana .*--no-default-features' -or $rootCommand -match '--workspace') {
     throw 'root no-default must avoid workspace feature unification'
 }
+foreach ($package in @('xana', 'xana-desktop')) {
+    $command = Get-NativeQualificationCommand "build-$package"
+    if ($command.Program -ne 'cargo' -or
+        ($command.Arguments -join ' ') -cne "build --locked --release -p $package") {
+        throw 'native executable sizes require separate locked package builds without Desktop feature unification'
+    }
+}
 
 # Exercise real subprocess failure/log propagation, without running Cargo,
 # opening any keychain or needing any network connection.
