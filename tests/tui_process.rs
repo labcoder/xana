@@ -79,21 +79,23 @@ impl TuiProcess {
     fn wait_for(&mut self, marker: &str) {
         let deadline = Instant::now() + DEADLINE;
         loop {
-            let (text, cursor_query) = {
+            let (text, terminal_query) = {
                 let output = self.output.lock().unwrap();
                 assert!(output.len() < OUTPUT_LIMIT, "TUI exceeded capture limit");
                 self.screen.process(&output[self.parsed_output_offset..]);
                 self.parsed_output_offset = output.len();
-                let cursor_query = output[self.terminal_reply_offset..]
-                    .windows(4)
-                    .position(|bytes| bytes == b"\x1b[6n");
-                (String::from_utf8_lossy(&output).into_owned(), cursor_query)
+                let terminal_query = terminal_reply(&output[self.terminal_reply_offset..]);
+                (
+                    String::from_utf8_lossy(&output).into_owned(),
+                    terminal_query,
+                )
             };
-            // ConPTY asks its terminal host for the initial cursor position.
-            // This harness is that host; do not let startup wait for a human.
-            if let Some(offset) = cursor_query {
+            // Act as the terminal host for both ConPTY's cursor request and
+            // ratatui-image's device-status terminator. Without the latter,
+            // Unix's timed-out capability reader consumes the first typed key.
+            if let Some((offset, reply)) = terminal_query {
                 self.terminal_reply_offset += offset + 4;
-                self.send(b"\x1b[1;1R");
+                self.send(reply);
             }
             let tail = &text[text.floor_char_boundary(text.len().saturating_sub(4096))..];
             assert!(!text.contains("overflowed its stack"), "{tail}");
@@ -136,6 +138,17 @@ impl TuiProcess {
             thread::sleep(Duration::from_millis(20));
         }
     }
+}
+
+fn terminal_reply(bytes: &[u8]) -> Option<(usize, &'static [u8])> {
+    bytes.windows(4).enumerate().find_map(|(offset, query)| {
+        let reply: &[u8] = match query {
+            b"\x1b[5n" => b"\x1b[0n", // Device ready; no graphics capability claimed.
+            b"\x1b[6n" => b"\x1b[1;1R",
+            _ => return None,
+        };
+        Some((offset, reply))
+    })
 }
 
 impl Drop for TuiProcess {
@@ -225,4 +238,16 @@ fn terminal_screen_handles_fragmented_redraws_without_stale_readiness() {
     screen.process(b"\x1b[2J\x1b[HSETTINGS");
     assert!(screen.screen().contents().contains("SETTINGS"));
     assert!(!screen.screen().contents().contains("[/header]"));
+}
+
+#[test]
+fn terminal_host_answers_status_and_cursor_queries_in_wire_order() {
+    let queries = b"\x1b[c\x1b[5n\x1b[6n";
+    assert_eq!(terminal_reply(queries), Some((3, b"\x1b[0n".as_slice())));
+    assert_eq!(
+        terminal_reply(&queries[7..]),
+        Some((0, b"\x1b[1;1R".as_slice()))
+    );
+    assert_eq!(terminal_reply(b"\x1b[5"), None);
+    assert_eq!(terminal_reply(b"\x1b[c"), None);
 }
