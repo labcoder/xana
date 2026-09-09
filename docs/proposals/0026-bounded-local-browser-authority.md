@@ -6,6 +6,19 @@
 
 ## Product and topology
 
+### September 8, 2026 delivery amendment
+
+The owner deferred further full browser-control implementation and qualification
+to a future delivery decision. Current delivery prioritizes bounded
+`web_search` and `web_fetch`. Preserve the existing
+qualified Windows adapter and its fail-closed limits; this is neither a claim
+of macOS/Linux support nor authorization to remove safety checks.
+
+Whether to distribute Chromium, reuse an installed browser, or use an optional
+automation backend remains undecided. Desktop-only bundling is a candidate,
+not an accepted dependency or packaging change. The requirements below still
+govern any future browser promotion; missing evidence is deferred, not passed.
+
 Deliver a usable optional local browser adapter under Xana's existing policy,
 not another browsing agent. Prefer structured APIs/connectors when suitable.
 A dedicated fresh browser supports explicit viewing/takeover/manual login,
@@ -57,8 +70,9 @@ and useful public-site checks; cross-compilation is not runtime proof.
 
 The [first-party browser adapter](../user/local-browser.md) implements the typed
 local contract for the qualified Windows build. Native macOS/Linux and human
-viewing/takeover/login qualification remain required before integrated acceptance;
-this proposal stays Accepted while those gates are open. The direct adapter
+viewing/takeover/login qualification remain required before broader browser
+acceptance, but are deferred by the amendment above. This proposal
+stays Accepted while those gates are open. The direct adapter
 uses owned process containment and a mandatory recipient proxy, not an
 agent-browser dependency or its unrestricted command surface. `web_fetch`
 remains the lighter bounded HTTP path.

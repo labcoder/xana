@@ -6,8 +6,11 @@ does not launch or download a browser. Protected storage is required.
 
 The initial adapter supports the explicitly qualified Windows Edge build. An
 unqualified build or platform fails closed; installing a newer browser is not
-itself a qualification. macOS/Linux native qualification and human checks of
-viewing, manual login and takeover remain separate acceptance gates.
+itself a qualification. Further browser-control development and macOS/Linux
+qualification are deferred. Use [public search and page reading](public-web.md)
+for the current cross-platform web workflow; neither requires a browser download.
+Xana does not currently bundle Chromium. Human viewing, manual login and takeover
+checks remain separate from automated evidence.
 
 The qualified browser identity is Microsoft Edge **152.0.4191.66**, CDP **1.3**,
 on Windows x64. Browser auto-updates may require a new qualification before
