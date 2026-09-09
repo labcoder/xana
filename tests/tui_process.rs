@@ -21,6 +21,8 @@ struct TuiProcess {
     output: Arc<Mutex<Vec<u8>>>,
     reader: Option<thread::JoinHandle<()>>,
     terminal_reply_offset: usize,
+    parsed_output_offset: usize,
+    screen: vt100::Parser,
 }
 
 impl TuiProcess {
@@ -65,6 +67,8 @@ impl TuiProcess {
             output,
             reader: Some(reader),
             terminal_reply_offset: 0,
+            parsed_output_offset: 0,
+            screen: vt100::Parser::new(35, 120, 0),
         }
     }
 
@@ -72,30 +76,40 @@ impl TuiProcess {
         String::from_utf8_lossy(&self.output.lock().unwrap()).into_owned()
     }
 
-    fn clear_capture(&mut self) {
-        self.output.lock().unwrap().clear();
-        self.terminal_reply_offset = 0;
-    }
-
     fn wait_for(&mut self, marker: &str) {
         let deadline = Instant::now() + DEADLINE;
         loop {
-            let text = self.transcript();
+            let (text, cursor_query) = {
+                let output = self.output.lock().unwrap();
+                assert!(output.len() < OUTPUT_LIMIT, "TUI exceeded capture limit");
+                self.screen.process(&output[self.parsed_output_offset..]);
+                self.parsed_output_offset = output.len();
+                let cursor_query = output[self.terminal_reply_offset..]
+                    .windows(4)
+                    .position(|bytes| bytes == b"\x1b[6n");
+                (String::from_utf8_lossy(&output).into_owned(), cursor_query)
+            };
             // ConPTY asks its terminal host for the initial cursor position.
             // This harness is that host; do not let startup wait for a human.
-            if let Some(offset) = text[self.terminal_reply_offset..].find("\x1b[6n") {
+            if let Some(offset) = cursor_query {
                 self.terminal_reply_offset += offset + 4;
                 self.send(b"\x1b[1;1R");
             }
             let tail = &text[text.floor_char_boundary(text.len().saturating_sub(4096))..];
             assert!(!text.contains("overflowed its stack"), "{tail}");
-            if text.contains(marker) {
+            // Ratatui and ConPTY emit cursor-addressed diffs, not complete text
+            // labels. Assert the current screen, not stale/fragmented raw bytes.
+            let screen = self.screen.screen().contents();
+            if screen.contains(marker) {
                 return;
             }
             if let Some(status) = self.child.try_wait().unwrap() {
-                panic!("TUI exited before {marker:?}: {status}\n{tail}");
+                panic!("TUI exited before {marker:?}: {status}\n{screen}\n{tail}");
             }
-            assert!(Instant::now() < deadline, "TUI missing {marker:?}\n{tail}");
+            assert!(
+                Instant::now() < deadline,
+                "TUI missing {marker:?}\n{screen}\nRaw tail:\n{tail}"
+            );
             thread::sleep(Duration::from_millis(20));
         }
     }
@@ -170,8 +184,7 @@ fn empty_native_tui_accepts_input_and_quits_on_the_production_stack() {
             .unwrap();
         assert!(initialized.status.success(), "{initialized:?}");
         let mut tui = TuiProcess::start(&home, directory.path(), args);
-        // ConPTY elides unchanged cells ("Ready" may arrive as "Re", cursor
-        // advance, "dy"). This newly created session row is emitted together.
+        // Wait for the attached Conversation, not the initial starting screen.
         tui.wait_for("[idle]");
         // No Enter: this originally crashed even with empty history and no Run.
         tui.send(b"a");
@@ -186,10 +199,8 @@ fn empty_native_tui_accepts_input_and_quits_on_the_production_stack() {
             tui.send(&[*byte]);
         }
         thread::sleep(Duration::from_millis(60));
-        tui.clear_capture();
         tui.send(b"\r");
         tui.wait_for("SETTINGS");
-        tui.clear_capture();
         tui.send(b"\x1b"); // Escape without edits returns to the same Conversation.
         tui.wait_for("[idle]");
         assert_eq!(std::fs::read(&projects_path).unwrap(), projects_before);
@@ -200,4 +211,18 @@ fn empty_native_tui_accepts_input_and_quits_on_the_production_stack() {
             std::io::ErrorKind::WouldBlock
         );
     }
+}
+
+#[test]
+fn terminal_screen_handles_fragmented_redraws_without_stale_readiness() {
+    let mut screen = vt100::Parser::new(35, 120, 0);
+    let redraw = b"\x1b[1;1H[/he\x1b[1;5Hader]";
+    assert!(!String::from_utf8_lossy(redraw).contains("[/header]"));
+    for byte in redraw {
+        screen.process(&[*byte]);
+    }
+    assert!(screen.screen().contents().contains("[/header]"));
+    screen.process(b"\x1b[2J\x1b[HSETTINGS");
+    assert!(screen.screen().contents().contains("SETTINGS"));
+    assert!(!screen.screen().contents().contains("[/header]"));
 }

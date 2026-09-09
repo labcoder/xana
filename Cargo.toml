@@ -121,6 +121,7 @@ zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["rt-async-
 portable-pty = "=0.9.0"
 tempfile = "3.27.0"
 tokio = { version = "1.48.0", features = ["test-util"] }
+vt100 = "=0.16.2"
 
 # `cargo-dist` requires a named profile; no settings override Cargo's existing
 # release profile for the developer preview.
