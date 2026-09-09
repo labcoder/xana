@@ -73,6 +73,7 @@ $ciRequired = @(
     "--test encrypted_storage_contract",
     "--test adapter_outcomes",
     "--test adapter_vision",
+    "--test tui_process",
     "test-release-ci-evidence.ps1",
     "test-create-release-draft.ps1"
 )

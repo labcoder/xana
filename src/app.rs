@@ -54,18 +54,27 @@ use crate::{
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
 
-pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
+// Select the command before polling it. A single async match accumulates debug
+// temporaries for every route on each poll, including unused chat launchers.
+// One allocation per command keeps that construction frame off the live chat
+// stack; this is not an extra task, thread, or allocation per input event.
+pub(crate) fn run(
+    cli: Cli,
+    paths: XanaPaths,
+) -> futures::future::LocalBoxFuture<'static, Result<()>> {
     let no_banner = cli.no_banner;
 
     if (cli.resume.is_some() || cli.continue_chat || cli.plain || cli.tui || cli.print.is_some())
         && cli.command.is_some()
     {
-        anyhow::bail!(
-            "chat surface, continuation, and one-shot options cannot be combined with a subcommand"
-        );
+        return Box::pin(async {
+            anyhow::bail!(
+                "chat surface, continuation, and one-shot options cannot be combined with a subcommand"
+            )
+        });
     }
     match cli.command {
-        None => {
+        None => Box::pin(async move {
             if let Some(argument) = cli.print {
                 let output = if cli.json {
                     OneShotOutput::Json
@@ -106,23 +115,37 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             )
             .await
             .map(|_| ())
+        }),
+        Some(Command::Init(args)) => {
+            Box::pin(async move { run_init_command(&args, &paths, no_banner) })
         }
-        Some(Command::Init(args)) => run_init_command(&args, &paths, no_banner),
-        Some(Command::Autonomy(args)) => autonomy_commands::run(args, &paths).await,
-        Some(Command::Recall(args)) => recall_commands::run(args, &paths).await,
-        Some(Command::Worker(args)) => worker_commands::run(args, &paths).await,
-        Some(Command::Storage(args)) => {
+        Some(Command::Autonomy(args)) => {
+            Box::pin(async move { autonomy_commands::run(args, &paths).await })
+        }
+        Some(Command::Recall(args)) => {
+            Box::pin(async move { recall_commands::run(args, &paths).await })
+        }
+        Some(Command::Worker(args)) => {
+            Box::pin(async move { worker_commands::run(args, &paths).await })
+        }
+        Some(Command::Storage(args)) => Box::pin(async move {
             storage_commands::run(&args.command, &paths, &mut io::stdout().lock())
-        }
+        }),
         Some(Command::Budget(args)) => {
-            usage_commands::budget(args, &paths, &mut io::stdout().lock())
+            Box::pin(async move { usage_commands::budget(args, &paths, &mut io::stdout().lock()) })
         }
         Some(Command::Memory(args)) => {
-            memory_commands::run(args, &paths, &mut std::io::stdout()).await
+            Box::pin(
+                async move { memory_commands::run(args, &paths, &mut std::io::stdout()).await },
+            )
         }
-        Some(Command::Serve(args)) => hosting::run_serve(&args, &paths).await,
-        Some(Command::Attach(args)) => hosting::run_attach(&args, &paths).await,
-        Some(Command::Setup(args)) => {
+        Some(Command::Serve(args)) => {
+            Box::pin(async move { hosting::run_serve(&args, &paths).await })
+        }
+        Some(Command::Attach(args)) => {
+            Box::pin(async move { hosting::run_attach(&args, &paths).await })
+        }
+        Some(Command::Setup(args)) => Box::pin(async move {
             if args.if_needed {
                 if *args
                     != (cli::SetupArgs {
@@ -143,22 +166,24 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
             } else {
                 Ok(())
             }
+        }),
+        Some(Command::Doctor(args)) => {
+            Box::pin(async move { run_doctor_command(&args, &paths).await })
         }
-        Some(Command::Doctor(args)) => run_doctor_command(&args, &paths).await,
-        Some(Command::Logs(args)) => {
+        Some(Command::Logs(args)) => Box::pin(async move {
             let stdout = io::stdout();
             diagnostics_commands::run(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Outbound(args)) => {
+        }),
+        Some(Command::Outbound(args)) => Box::pin(async move {
             let stdout = io::stdout();
             outbound_commands::run(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Reset(args)) => run_reset_command(&args, &paths),
-        Some(Command::Config(args)) => {
+        }),
+        Some(Command::Reset(args)) => Box::pin(async move { run_reset_command(&args, &paths) }),
+        Some(Command::Config(args)) => Box::pin(async move {
             let stdout = io::stdout();
             run_config_command(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Settings(args)) => {
+        }),
+        Some(Command::Settings(args)) => Box::pin(async move {
             ensure_setup(&paths).await?;
             let input_is_terminal = io::stdin().is_terminal();
             let output_is_terminal = io::stdout().is_terminal();
@@ -199,133 +224,137 @@ pub(crate) async fn run(cli: Cli, paths: XanaPaths) -> Result<()> {
                     &mut stdout.lock(),
                 )
             }
-        }
-        Some(Command::Session(args)) => match args.command {
-            SessionCommand::EvaluateCompaction {
-                connection,
-                model,
-                case_id,
-                inspect_synthetic_summary,
-                yes,
-                enable,
-                disable,
-            } => {
-                let stdout = io::stdout();
-                sessions::evaluate_compaction(
-                    &paths,
-                    &connection,
-                    &model,
-                    sessions::CompactionEvaluationOptions {
-                        yes,
-                        enable,
-                        disable,
-                        case_id: case_id.as_deref(),
-                        inspect_synthetic_summary,
-                    },
-                    &mut stdout.lock(),
-                )
-                .await
-            }
-            SessionCommand::New => {
-                ensure_setup(&paths).await?;
-                let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
-                chat::run(&paths, surface, None, false, true, None, None)
+        }),
+        Some(Command::Session(args)) => Box::pin(async move {
+            match args.command {
+                SessionCommand::EvaluateCompaction {
+                    connection,
+                    model,
+                    case_id,
+                    inspect_synthetic_summary,
+                    yes,
+                    enable,
+                    disable,
+                } => {
+                    let stdout = io::stdout();
+                    sessions::evaluate_compaction(
+                        &paths,
+                        &connection,
+                        &model,
+                        sessions::CompactionEvaluationOptions {
+                            yes,
+                            enable,
+                            disable,
+                            case_id: case_id.as_deref(),
+                            inspect_synthetic_summary,
+                        },
+                        &mut stdout.lock(),
+                    )
                     .await
-                    .map(|_| ())
+                }
+                SessionCommand::New => {
+                    ensure_setup(&paths).await?;
+                    let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
+                    chat::run(&paths, surface, None, false, true, None, None)
+                        .await
+                        .map(|_| ())
+                }
+                SessionCommand::Continue => {
+                    ensure_setup(&paths).await?;
+                    let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
+                    chat::run(&paths, surface, None, true, false, None, None)
+                        .await
+                        .map(|_| ())
+                }
+                SessionCommand::Attach { conversation } => {
+                    ensure_setup(&paths).await?;
+                    let conversation = sessions::resolve_attach_target(&paths, &conversation)?;
+                    let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
+                    chat::run_attached(&paths, surface, conversation)
+                        .await
+                        .map(|_| ())
+                }
+                command => {
+                    let stdout = io::stdout();
+                    sessions::run_command(command, &paths, &mut stdout.lock())
+                }
             }
-            SessionCommand::Continue => {
-                ensure_setup(&paths).await?;
-                let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
-                chat::run(&paths, surface, None, true, false, None, None)
-                    .await
-                    .map(|_| ())
-            }
-            SessionCommand::Attach { conversation } => {
-                ensure_setup(&paths).await?;
-                let conversation = sessions::resolve_attach_target(&paths, &conversation)?;
-                let surface = prepare_default_chat_surface(&paths, false, false, no_banner)?;
-                chat::run_attached(&paths, surface, conversation)
-                    .await
-                    .map(|_| ())
-            }
-            command => {
-                let stdout = io::stdout();
-                sessions::run_command(command, &paths, &mut stdout.lock())
-            }
-        },
-        Some(Command::Project(args)) => {
+        }),
+        Some(Command::Project(args)) => Box::pin(async move {
             let stdout = io::stdout();
             projects::run_command(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Profile(args)) => {
+        }),
+        Some(Command::Profile(args)) => Box::pin(async move {
             let stdout = io::stdout();
             profiles::run_command(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Skill(args)) => {
+        }),
+        Some(Command::Skill(args)) => Box::pin(async move {
             let stdout = io::stdout();
             skills::run_command(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Plugin(args)) => {
+        }),
+        Some(Command::Plugin(args)) => Box::pin(async move {
             let stdout = io::stdout();
             plugins::run_command(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Mcp(args)) => match args.command {
-            cli::McpCommand::Serve {
-                workspace,
-                profile,
-                allow,
-            } => mcp_commands::serve(&paths, workspace, profile, allow).await,
-            command => {
-                let stdout = io::stdout();
-                mcp_commands::run(command, &paths, &mut stdout.lock()).await
+        }),
+        Some(Command::Mcp(args)) => Box::pin(async move {
+            match args.command {
+                cli::McpCommand::Serve {
+                    workspace,
+                    profile,
+                    allow,
+                } => mcp_commands::serve(&paths, workspace, profile, allow).await,
+                command => {
+                    let stdout = io::stdout();
+                    mcp_commands::run(command, &paths, &mut stdout.lock()).await
+                }
             }
-        },
-        Some(Command::ExternalAgent(args)) => {
+        }),
+        Some(Command::ExternalAgent(args)) => Box::pin(async move {
             let stdout = io::stdout();
             external_agents::run(args.command, &paths, &mut stdout.lock()).await
-        }
-        Some(Command::Image(args)) => {
+        }),
+        Some(Command::Image(args)) => Box::pin(async move {
             let stdout = io::stdout();
             let stdin = io::stdin();
             image_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
-        }
-        Some(Command::Vision(args)) => {
+        }),
+        Some(Command::Vision(args)) => Box::pin(async move {
             let stdout = io::stdout();
             let stdin = io::stdin();
             vision_commands::run(args.command, &paths, &mut stdin.lock(), &mut stdout.lock()).await
-        }
-        Some(Command::Connect(args)) => {
+        }),
+        Some(Command::Connect(args)) => Box::pin(async move {
             let stdout = io::stdout();
             run_connect_command(args, &paths, &mut stdout.lock()).await
-        }
-        Some(Command::Operation(args)) => {
+        }),
+        Some(Command::Operation(args)) => Box::pin(async move {
             let stdout = io::stdout();
             operations::run_operation(args.command, &paths, &mut stdout.lock()).await
-        }
-        Some(Command::Connection(args)) => {
+        }),
+        Some(Command::Connection(args)) => Box::pin(async move {
             let stdout = io::stdout();
             run_connection_command(args.command, &paths, &mut stdout.lock(), args.json).await
-        }
-        Some(Command::Usage(args)) => {
+        }),
+        Some(Command::Usage(args)) => Box::pin(async move {
             let stdout = io::stdout();
             usage_commands::run(args, &paths, &mut stdout.lock()).await
-        }
-        Some(Command::Capabilities(args)) => {
+        }),
+        Some(Command::Capabilities(args)) => Box::pin(async move {
             let stdout = io::stdout();
             capabilities::run(args, &paths, &mut stdout.lock())
-        }
-        Some(Command::Model(args)) => {
+        }),
+        Some(Command::Model(args)) => Box::pin(async move {
             let stdout = io::stdout();
             run_model_command(args.command, &paths, &mut stdout.lock()).await
-        }
-        Some(Command::Route(args)) => {
+        }),
+        Some(Command::Route(args)) => Box::pin(async move {
             let stdout = io::stdout();
             operations::run_route(args.command, &paths, &mut stdout.lock())
-        }
-        Some(Command::Auth(args)) => {
+        }),
+        Some(Command::Auth(args)) => Box::pin(async move {
             let stdout = io::stdout();
             run_auth_command(args.command, &paths, &mut stdout.lock()).await
-        }
+        }),
     }
 }
 

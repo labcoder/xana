@@ -118,6 +118,7 @@ apple-native-keyring-store = { version = "=1.0.2", features = ["keychain"] }
 zbus-secret-service-keyring-store = { version = "=1.0.1", features = ["rt-async-io-crypto-rust"] }
 
 [dev-dependencies]
+portable-pty = "=0.9.0"
 tempfile = "3.27.0"
 tokio = { version = "1.48.0", features = ["test-util"] }
 

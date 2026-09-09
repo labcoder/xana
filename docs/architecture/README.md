@@ -20,9 +20,12 @@ a narrow repository-private boundary and carries graphical dependencies only
 in the Desktop package.
 The application edge resolves paths, loads configuration, initializes
 dependencies, and routes CLI commands. Process startup gives that application
-owner one named 4 MiB stack before it enters Tokio; this bounds the one extra
-thread while preserving debug-build headroom for the large managed-runtime
-future on platforms whose process-main stack is smaller. Tokio retains
+owner one named 4 MiB stack before it enters Tokio. The command router selects
+one heap-backed future before polling, so inactive subcommands do not contribute
+their debug temporary frames to the live chat stack. This is one allocation per
+top-level command, not a new task or per-keystroke allocation. Real pseudo-
+terminal subprocess tests cover empty native input, settings return to the same
+Conversation and clean shutdown on that unchanged stack budget. Tokio retains
 ownership of asynchronous workers and cancellation beneath that edge.
 The capability module owns validated capability/tool identifiers and an
 immutable capability snapshot. Capability discovery remains pure metadata;

@@ -111,8 +111,8 @@ jobs:
       - name: Run Linux integration tests
         if: ${{ !cancelled() && runner.os == 'Linux' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
         run: |
-          cargo test --locked --test cli --test settings_cli --test encrypted_storage_contract --test adapter_outcomes --test adapter_vision --all-features
-          cargo test --locked --test cli --test settings_cli --test encrypted_storage_contract --test adapter_outcomes --test adapter_vision --no-default-features
+          cargo test --locked --test cli --test tui_process --test settings_cli --test encrypted_storage_contract --test adapter_outcomes --test adapter_vision --all-features
+          cargo test --locked --test cli --test tui_process --test settings_cli --test encrypted_storage_contract --test adapter_outcomes --test adapter_vision --no-default-features
 
       - name: Stress MCP stdio lifecycle
         if: ${{ !cancelled() && runner.os == 'Windows' && steps.checkout.outcome == 'success' && steps.rust.outcome == 'success' }}
