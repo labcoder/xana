@@ -170,9 +170,13 @@ says so rather than silently treating a follow-up as a steer.
 The model menu is populated from the selected connection's runtime-owned model
 catalog. Managed Codex model and reasoning controls apply to later turns only
 after the app-server acknowledges them, and the existing vendor thread remains
-attached. A native model or Profile transition instead requires a fresh
-Conversation; the prior history remains unchanged. Every transition reports its
-effect in Activity.
+attached. The native composer model shortcut explicitly offers to start a new
+Conversation; a Profile continuation also creates a distinct identity. Neither
+rewrites prior history. To retain an existing native Conversation, use Settings
+or change its compatible native selection externally: the next turn resolves
+current configuration through the shared runtime, as described in
+[changing settings](execution-settings.md). Every transition reports its effect
+in Activity.
 
 Failed responses expose **Retry** only while Xana retains the exact bounded Run
 input. **Regenerate** and edit actions copy text into Message for review and do

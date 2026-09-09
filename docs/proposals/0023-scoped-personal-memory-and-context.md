@@ -82,7 +82,9 @@ Do not advertise personal-memory tools when no protected owner is attached.
 Readiness guidance must match the actual capabilities, and permanent
 unavailability must not be treated as an ordinary retryable argument error.
 Unknown-fact questions are not permission to write a guessed fact. Ordinary
-fresh setup remains distinct from explicitly initializing protected storage.
+fresh setup now protects empty homes with generated OS-managed keys. Existing
+homes still require an explicitly reviewed migration; automatic protection does
+not authorize helper calls or wider memory use.
 
 The background learner interprets language into closed ordinary preference values
 (response detail, examples, units, theme and supported development languages).

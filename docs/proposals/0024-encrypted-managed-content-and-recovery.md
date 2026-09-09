@@ -90,6 +90,9 @@ migration. Migration now preserves the prior generation and resumes interrupted
 activation. Encrypted backup commands enforce rolling retention and verify a
 replacement before pruning; restored generations require memory/automation
 authority review. Maintenance runs when invoked, including a due-checked mode;
-it does not yet install an automatic scheduler. Complete memory/automation
-integration and native-platform acceptance remain pending, so this proposal
-remains Accepted rather than Implemented. No existing home is migrated implicitly.
+it does not yet install an automatic backup scheduler. Scoped memory, bounded
+learning, durable jobs and retained work now use the protected store. Full
+native-platform and interactive recovery qualification remain acceptance
+requirements; implemented slices do not by themselves establish those results.
+The proposal remains Accepted for that complete contract. No existing home is
+migrated implicitly.

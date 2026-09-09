@@ -9,7 +9,7 @@ exclude = ["vendor/libsqlite3-sys"]
 libsqlite3-sys = { path = "vendor/libsqlite3-sys" }
 
 [workspace.package]
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.97.1"
 license = "MIT"

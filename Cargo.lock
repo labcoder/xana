@@ -10452,7 +10452,7 @@ dependencies = [
 
 [[package]]
 name = "xana"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "age",
  "anstream",
@@ -10510,7 +10510,7 @@ dependencies = [
 
 [[package]]
 name = "xana-desktop"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui",
  "gpui-ai",

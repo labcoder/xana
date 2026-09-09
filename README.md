@@ -5,9 +5,9 @@
 [![CI](https://github.com/labcoder/xana/actions/workflows/ci.yml/badge.svg)](https://github.com/labcoder/xana/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Xana is a terminal-first personal AI agent for work in local repositories. It
-can chat, edit files, run commands with permission, read documents, use images,
-and coordinate bounded child tasks.
+Xana is a terminal-first personal AI agent for coding, research, and everyday
+work on your computer. It can remember scoped preferences, read and edit files,
+search the web, run approved commands, and coordinate bounded background work.
 
 Use Xana's native agent loop with Ollama, OpenAI-compatible servers, OpenAI,
 OpenRouter, or Anthropic. You can also connect a ChatGPT Plus or Pro account
@@ -26,14 +26,14 @@ sandbox, and conversation history.
 | Models | Local Ollama, OpenAI-compatible endpoints, OpenAI, OpenRouter, Anthropic, and managed Codex |
 | Native tools | Bounded workspace discovery/search, paged reads, explicit file creation, atomic exact edits, timed commands, text/CSV extraction, bundled Xana docs, and [public web search/page reading](docs/user/public-web.md) |
 | State | Durable native sessions with lossless history, resumable round-budget boundaries, and bounded compaction; Codex thread handles, immutable artifacts, projects, and named profiles |
-| Privacy | Opt-in [protected storage](docs/user/protected-storage.md), reviewed legacy migration, encrypted backup/restore, local OS unlock, independent recovery, and explicit locking |
+| Privacy | Automatic [protected storage](docs/user/protected-storage.md) for fresh setup, reviewed legacy migration, encrypted backup/restore, local OS unlock, independent recovery, and explicit locking |
 | Extensions | Agent Skills, declarative Agent Plugins, allowlisted MCP servers, and trusted A2A agents |
 | Media | PNG, JPEG, and GIF input plus named image-generation and vision routes |
 | Local autonomy | Explicit [durable jobs](docs/user/durable-schedules.md), selected-file and named GitHub CI triggers, bounded background supervision |
 | Retained work | [Retained children](docs/user/retained-workers.md), explicit follow-ups and cited context operations under cumulative parent limits |
 | Personal learning | Scoped [memory](docs/user/personal-memory.md), reviewable learned candidates, exact undo and inert Skill drafts |
 | Completion | [Finite-work evidence](docs/user/completion-evidence.md) distinguishes delivered answers from observed checks and unresolved effects |
-| Browser | Optional [dedicated local browser](docs/user/local-browser.md) with reviewed recipients, bounded evidence, takeover and owned cleanup on the qualified Windows adapter |
+| Browser preview | Optional [dedicated local browser](docs/user/local-browser.md) on the qualified Windows adapter; broader control/platform support is deferred, not required for search or fetch |
 
 Xana keeps its native engine separate from terminal presentation and provider
 wire formats. The same application policy drives interactive chat, automation,
@@ -96,6 +96,12 @@ saves a selection. API-key connections can use the operating-system credential s
 or one named environment variable. If you choose managed Codex, install and
 sign in to a compatible Codex CLI first.
 
+Fresh setup generates protected-storage keys using OS custody; you do not need
+to create a password. Export the independent recovery key to a private location
+and keep encrypted data backups. Existing homes are **not** migrated silently:
+use `xana storage status`, then the reviewed
+[migration flow](docs/user/protected-storage.md).
+
 Run one noninteractive turn with `-p`:
 
 ```bash
@@ -119,7 +125,9 @@ authoritative result frame; see
 | Managed Codex | Codex app-server owns inference, tools, sandbox, approvals, login, and inner history | ChatGPT Plus or Pro through an installed Codex CLI |
 
 Switching execution owners starts a new conversation. Xana does not translate
-history between its native loop and Codex. Read
+history between its native loop and Codex. Compatible native settings changes
+apply between turns without replacing the Conversation or history; see
+[changing settings](docs/user/execution-settings.md). Read
 [Connections, models, and managed runtimes](docs/architecture/models-and-managed-runtimes.md)
 for the ownership boundaries.
 
@@ -181,7 +189,7 @@ engineering contracts. Useful starting points include:
 - [Conversations and recovery](docs/user/sessions.md)
 - [Workspace file, search, and command tools](docs/user/workspace-tools.md)
 - [Rich content, resources, and safe fallbacks](docs/user/rich-content.md)
-- [Native bounded web fetch](docs/user/web-fetch.md)
+- [Public web search and page reading](docs/user/public-web.md)
 - [Agent Skills](docs/user/skills.md) and [Agent Plugins](docs/user/plugins.md)
 - [MCP integrations](docs/user/mcp.md)
 
@@ -209,33 +217,16 @@ cargo run --locked -p xana-desktop
 cargo run --locked -p xana-desktop -- --workspace .
 ```
 
-Desktop currently provides native and managed Codex Conversations, native
-menus, a searchable command palette, a bounded shortcut set, redacted
-notifications, safe close handling, and one instance per canonical
-`XANA_HOME`. Its persistent Project/Conversation sidebar and bounded,
-recoverable Workbench support trusted panels, resizable split layouts, one user
-default, and inert layout sharing. Its contextual navigation actions rename and
-archive Projects, move or ungroup Conversations, and create exact
-source-preserving branches or cross-workspace continuations through the shared
-runtime services. The isolated Message panel supports multiline drafts, multiple
-validated image attachments, drag/drop and clipboard images, queued follow-ups,
-interrupt, retry, and explicit edit/regenerate recovery. Managed Codex model and
-reasoning changes preserve the vendor thread when accepted; native model and
-Profile changes start a fresh Conversation instead of claiming to rewrite
-history. Complete `xana setup` first.
+Desktop provides native and managed Codex Conversations, persistent navigation,
+a recoverable multi-panel Workbench, rich content, image attachments, shared
+settings and recovery, and bounded supervision. It is a source-built preview:
+visual polish, assistive-technology evidence and reference-frame performance
+qualification remain separate work. The release archives contain the terminal
+application, not a Desktop installer.
 Launching without arguments opens a read-only workspace chooser; it neither
 infers the process directory nor creates a Project or Conversation. Use
 `--workspace .` during repository development to open the current directory
 directly.
-Graphical setup, Settings, connection/model management, Doctor, and recovery are
-available alongside a global/Project Espejo command center. Complete graphical
-rich-content rendering includes sanitized Markdown, selectable code and diff
-content, safe links, bounded static image previews, and typed fallbacks for
-formats without a reviewed native adapter.
-When a compatible CLI/TUI foreground host already owns the selected workspace,
-Desktop joins it as a local client instead of creating a second writer. It
-requests only an unclaimed controller lease and otherwise opens as an observer;
-takeover remains explicit in the terminal host flow.
 See [using Xana Desktop](docs/user/desktop.md) and
 [Desktop development](docs/contributing/desktop-development.md).
 
@@ -261,6 +252,11 @@ suite with:
 ```powershell
 ./scripts/ci-local.ps1 -RequireClean
 ```
+
+This checks installation from the complete locked workspace, retaining the
+reviewed native storage patch; a standalone `.crate` is not supported. The
+install check reuses the selected Cargo cache. Pass `-TargetDirectory target`
+to use your normal development cache instead of the default `target/ci-local`.
 
 Read [Code organization](docs/contributing/code-organization.md) before moving
 module boundaries or adding public interfaces. Xana's Cargo workspace contains

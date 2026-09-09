@@ -232,15 +232,23 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   from conversational providers. Architecture and User Documentation own the
   shipped contract.
 - [Accepted local multi-surface Workbench and execution host](proposals/0022-local-multisurface-workbench-and-execution-host.md)
-- [Accepted scoped personal memory and bounded context](proposals/0023-scoped-personal-memory-and-context.md)
-- [Accepted encrypted managed content and recovery](proposals/0024-encrypted-managed-content-and-recovery.md)
-- [Accepted durable local autonomy and retained work](proposals/0025-durable-local-autonomy-and-retained-work.md)
-- [Accepted bounded local browser authority](proposals/0026-bounded-local-browser-authority.md)
   defines the prescriptive native Desktop, deferred-browser, execution-host,
   controller/observer, typed-content, Workbench, Espejo, lifecycle, and
   non-split-brain contracts. The owner selected native GPUI with `gpui-ai` as
   the AI-native component layer inside Xana's existing repository and Cargo
   workspace; local web remains deferred.
+- [Accepted scoped personal memory and bounded context](proposals/0023-scoped-personal-memory-and-context.md)
+  separates personal knowledge, learned candidates, selected-source recall and
+  evaluated compaction from instructions and permission grants.
+- [Accepted encrypted managed content and recovery](proposals/0024-encrypted-managed-content-and-recovery.md)
+  defines protected storage, automatic fresh-home key custody, reviewed legacy
+  migration and independent recovery, including their qualification boundaries.
+- [Accepted durable local autonomy and retained work](proposals/0025-durable-local-autonomy-and-retained-work.md)
+  defines scheduled intents, budgets, retained children, context operations and
+  completion evidence under one local execution owner.
+- [Accepted bounded local browser authority](proposals/0026-bounded-local-browser-authority.md)
+  preserves the existing Windows browser adapter and the explicitly deferred
+  broader browser-control qualification; it does not gate ordinary search/fetch.
 - [Implemented Release Preview](proposals/0018-release-preview-distribution.md)
   records the bounded four-target native preview, source-controlled installers,
   Xana-owned readiness handoff, attributable draft assembly, and explicit
@@ -256,6 +264,9 @@ state a limitation, but it does not present a proposal as an upcoming feature.
   Documentation now own the shipped contract.
 - [Release notes](releases/) are versioned source inputs to release assembly,
   not evidence that the corresponding release has been published.
+- [Xana 0.8.0 release notes](releases/0.8.0.md) describe scoped memory,
+  protected storage, bounded local autonomy, reliable web basics and retained
+  preview limitations.
 - [Xana 0.7.0 release notes](releases/0.7.0.md) describe the completed
   Interfaces milestone and native GPUI Desktop preview.
 - [Xana 0.6.5 release notes](releases/0.6.5.md) describe the MCP OAuth
