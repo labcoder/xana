@@ -36,6 +36,7 @@ use std::path::PathBuf;
 
 #[derive(Clone)]
 pub(crate) struct ManagedChatConfig {
+    pub(crate) profile_guard: Option<std::sync::Arc<ManagedProfileGuard>>,
     pub(crate) memory: Option<crate::memory::MemoryOwner>,
     pub(crate) permission_default: crate::permission::PolicyDecision,
     pub(crate) permission_rules: Vec<crate::permission::PermissionRule>,
@@ -57,6 +58,35 @@ pub(crate) struct ManagedOneShotRequest {
     pub(crate) input: String,
     pub(crate) continue_thread: bool,
     pub(crate) conversation: ConversationRef,
+}
+
+impl ManagedChatConfig {
+    async fn prepare_turn(
+        &self,
+        conversation: ConversationId,
+        input: &crate::tool::OwnerTurnInput,
+    ) -> Result<String, String> {
+        if let Some(guard) = self.profile_guard.clone() {
+            guard.validate().await?;
+        }
+        memory_context::prepare_turn(self.memory.as_ref(), conversation, input).await
+    }
+}
+
+pub(crate) struct ManagedProfileGuard {
+    pub(crate) paths: crate::paths::XanaPaths,
+    pub(crate) profile: crate::profile::ResolvedProfile,
+}
+
+impl ManagedProfileGuard {
+    pub(crate) async fn validate(self: std::sync::Arc<Self>) -> Result<(), String> {
+        tokio::task::spawn_blocking(move || {
+            crate::profile::execution::resolve_current(&self.paths, Some(&self.profile)).map(|_| ())
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("Profile is unavailable; no Codex turn was sent: {error:#}"))
+    }
 }
 
 enum ManagedThreadState {
@@ -506,12 +536,9 @@ pub(crate) async fn run_codex_chat(
         };
         server.set_usage_identity(thread.conversation_id().to_string(), operation_id);
         let _foreground = memory_context::foreground(config.memory.as_ref())?;
-        let managed_input = match memory_context::prepare_turn(
-            config.memory.as_ref(),
-            thread.conversation_id(),
-            &owner_input,
-        )
-        .await
+        let managed_input = match config
+            .prepare_turn(thread.conversation_id(), &owner_input)
+            .await
         {
             Ok(text) => text,
             Err(error) => {
@@ -712,10 +739,10 @@ async fn run_codex_one_shot_inner(
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
     let _foreground = memory_context::foreground(config.memory.as_ref())
         .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error.to_string()))?;
-    let managed_input =
-        memory_context::prepare_turn(config.memory.as_ref(), conversation_id, &owner_input)
-            .await
-            .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
+    let managed_input = config
+        .prepare_turn(conversation_id, &owner_input)
+        .await
+        .map_err(|error| OneShotFailure::new(ExitCategory::Runtime, error))?;
     server.set_usage_identity(conversation_id.to_string(), operation_id);
     let turn = server
         .run_turn(

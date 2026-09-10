@@ -669,7 +669,7 @@ impl ManagementView {
         let (title, detail) = match confirmation {
             Confirmation::RetireProfile(plan) => (
                 format!("{} profile {}?", if plan.is_archive() { "Archive" } else { "Delete" }, plan.name()),
-                format!("Replacement default: {}. Remove child routes: {}. Credentials, Conversation history, artifacts and private memory stay intact. No child route or existing Conversation is rerouted.", plan.replacement().unwrap_or("unchanged"), if plan.removed_routes().is_empty() { "none".into() } else { plan.removed_routes().join(", ") }),
+                format!("Replacement default: {}. Remove child routes: {}. Credentials, Conversation history, artifacts and private memory stay intact. No child route or existing Conversation is rerouted. Scheduled work keeps its original binding; review affected jobs before their next run.", plan.replacement().unwrap_or("unchanged"), if plan.removed_routes().is_empty() { "none".into() } else { plan.removed_routes().join(", ") }),
             ),
             Confirmation::ForgetProject(project) => (
                 format!("Forget Project {project}?"),

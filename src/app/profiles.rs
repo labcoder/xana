@@ -304,6 +304,10 @@ fn retire_global(
         output,
         "Preserve credentials, Conversations, artifacts, and profile-private memory."
     )?;
+    writeln!(
+        output,
+        "Retained scheduled work keeps its original binding; review affected jobs before their next dispatch."
+    )?;
     if !yes && (!archive || plan.replacement.is_some() || !plan.removed_routes.is_empty()) {
         writeln!(
             output,

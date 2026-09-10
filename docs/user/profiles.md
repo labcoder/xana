@@ -30,6 +30,8 @@ Creating a global profile copies the current default's concrete settings into a
 new identity. Omit connection and model to reuse both; no new account, API key,
 model download, or provider call is needed. Override the model alone to use a
 different model on that connection. Changing connection requires its model too.
+Either change clears copied reasoning options so the selected model can use its
+own defaults; configure its supported options afterward.
 Integration requirements are copied, but private scoped enablement is not
 granted: inspect `profile resolve NAME` for readiness.
 
@@ -89,9 +91,8 @@ content. A project profile may narrow the named global ceiling but cannot add a
 capability, integration, outbound-data class, permission, or budget outside it.
 The rejected diagnostic names the exact field.
 Project profiles are optional: deleting the last one leaves the collection
-empty. Removing a project default selects the next eligible project profile, or
-clears that optional pointer when none remains; it never substitutes a different
-global authority ceiling.
+empty. Removing a project default clears that optional pointer; unlike global
+default promotion, Xana does not pick another project's authority ceiling for you.
 
 ## Resolution and readiness
 
@@ -132,8 +133,9 @@ Native conversation resolution follows the saved UUID after a rename, not the
 old name or the new default. Reusing a deleted name cannot claim the old
 conversation or its memory. A retired native profile leaves history viewable,
 but a new turn requires restoring the archived profile or explicitly choosing a
-linked continuation. Managed Codex retains its existing frozen authority and
-vendor-owned conversation lifecycle; changing a default is not a Codex handoff.
+linked continuation. Managed plain/TUI/one-shot turns check the same profile
+lifecycle before submitting to Codex. Codex still retains its frozen authority
+and vendor-owned conversation lifecycle; changing a default is not a handoff.
 
 Profile identity text and instructions are guidance. They do not grant tool
 authority, change permission policy, or make repository/model/tool content

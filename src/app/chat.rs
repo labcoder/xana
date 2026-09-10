@@ -396,6 +396,26 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
         crate::profile::execution::resolve_for_startup(paths, saved_profile.as_ref())?
     };
     let frozen_profile = Some(execution_configuration.profile.clone());
+    let manager = if matches!(
+        execution_configuration.profile.scope,
+        crate::profile::ProfileScope::Global
+    ) {
+        manager.for_profile(
+            &execution_configuration.profile.name,
+            execution_configuration.profile.profile_id,
+        )
+    } else {
+        manager
+    };
+    let implicit_managed = implicit_managed
+        && child_registry.profiles.values().any(|profile| {
+            !profile.archived && profile.profile_id == execution_configuration.profile.profile_id
+        });
+    let selected = if implicit_managed {
+        manager.selected_for_profile(&execution_configuration.profile.name)?
+    } else {
+        selected
+    };
     if exact_target
         && matches!(conversation_target, Some(ConversationRef::Managed { .. }))
         && saved_profile.is_none()
@@ -611,6 +631,10 @@ async fn run_once(paths: &XanaPaths, surface: ChatSurface, intent: ChatIntent) -
             execution_configuration.profile.profile_id,
         )?;
         let managed_config = ManagedChatConfig {
+            profile_guard: Some(Arc::new(crate::managed_execution::ManagedProfileGuard {
+                paths: paths.clone(),
+                profile: execution_configuration.profile.clone(),
+            })),
             memory,
             permission_default: permission_mode.into(),
             permission_rules,

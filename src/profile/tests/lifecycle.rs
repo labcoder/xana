@@ -253,11 +253,130 @@ fn managed_profile_reuses_vendor_connection_without_starting_codex() {
     assert_eq!(created.connection, "codex");
     assert_eq!(created.model, "managed-fixture");
     assert_eq!(created.reasoning_effort.as_deref(), Some("medium"));
+    let other = store
+        .create_from_defaults("other-model", None, Some("different-model"), false)
+        .unwrap();
+    assert_eq!(other.reasoning_effort, None);
+    assert_eq!(other.reasoning_summary, None);
     assert_eq!(
         XanaConfig::load_registry_from(paths.config_file())
             .unwrap()
             .connections
             .len(),
         1
+    );
+}
+
+#[tokio::test]
+async fn managed_new_turn_guard_rejects_retirement_without_a_vendor_call() {
+    let (_directory, paths) = fixture();
+    let store = ProfileStore::open(&paths);
+    let guard = std::sync::Arc::new(crate::managed_execution::ManagedProfileGuard {
+        paths: paths.clone(),
+        profile: store.resolve_global("default").unwrap(),
+    });
+    guard.clone().validate().await.unwrap();
+    store
+        .create_from_defaults("work", None, None, false)
+        .unwrap();
+    store
+        .retire(&store.plan_retirement("default", true, None).unwrap())
+        .unwrap();
+    assert!(
+        guard
+            .validate()
+            .await
+            .unwrap_err()
+            .contains("no Codex turn was sent")
+    );
+}
+
+#[test]
+fn retired_model_controls_cannot_claim_a_reused_profile_name() {
+    let (_directory, paths) = fixture();
+    let store = ProfileStore::open(&paths);
+    let retired = store
+        .create_from_defaults("personal", None, None, false)
+        .unwrap();
+    store.delete_global("personal").unwrap();
+    let replacement = store
+        .create_from_defaults("personal", None, None, false)
+        .unwrap();
+    assert_ne!(retired.profile_id, replacement.profile_id);
+    let make_manager = || {
+        crate::model_catalog::ModelManager::new(
+            XanaConfig::load_registry_from(paths.config_file()).unwrap(),
+            paths.cache_dir().into(),
+            paths.data_dir().join("selection.toml"),
+        )
+    };
+    make_manager()
+        .for_profile("personal", replacement.profile_id)
+        .select("local", "qwen")
+        .unwrap();
+    let before = fs::read(paths.data_dir().join("selection.toml")).unwrap();
+    let retired_manager = make_manager().for_profile("personal", retired.profile_id);
+    assert!(retired_manager.selected().is_err());
+    assert!(retired_manager.select("local", "qwen").is_err());
+    assert_eq!(
+        fs::read(paths.data_dir().join("selection.toml")).unwrap(),
+        before
+    );
+}
+
+#[test]
+fn default_promotion_preserves_old_profile_override_without_leaking_it_to_new_profiles() {
+    let (_directory, paths) = fixture();
+    // The override stays in the connection catalog after its configured profile changes.
+    let source = fs::read_to_string(paths.config_file()).unwrap();
+    fs::write(
+        paths.config_file(),
+        format!("{source}\n[providers.local.models.qwen]\n"),
+    )
+    .unwrap();
+    let store = ProfileStore::open(&paths);
+    let manager = crate::model_catalog::ModelManager::new(
+        XanaConfig::load_registry_from(paths.config_file()).unwrap(),
+        paths.cache_dir().into(),
+        paths.data_dir().join("selection.toml"),
+    );
+    manager.select("local", "qwen").unwrap();
+    store
+        .edit_global(
+            "default",
+            ProfileUpdate {
+                model: Some("configured-model".into()),
+                ..ProfileUpdate::default()
+            },
+        )
+        .unwrap();
+    store
+        .create_from_defaults("work", None, Some("work-model"), true)
+        .unwrap();
+    let manager = crate::model_catalog::ModelManager::new(
+        XanaConfig::load_registry_from(paths.config_file()).unwrap(),
+        paths.cache_dir().into(),
+        paths.data_dir().join("selection.toml"),
+    );
+    assert_eq!(manager.selected().unwrap().model, "work-model");
+    assert_eq!(
+        manager.selected_for_profile("default").unwrap().model,
+        "qwen"
+    );
+    manager.select("local", "work-model").unwrap();
+    assert_eq!(
+        manager.selected_for_profile("default").unwrap().model,
+        "configured-model"
+    );
+    let before = fs::read(paths.data_dir().join("selection.toml")).unwrap();
+    assert!(
+        manager
+            .for_profile("missing", uuid::Uuid::new_v4())
+            .select("local", "qwen")
+            .is_err()
+    );
+    assert_eq!(
+        fs::read(paths.data_dir().join("selection.toml")).unwrap(),
+        before
     );
 }

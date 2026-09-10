@@ -414,12 +414,9 @@ async fn run_actor(
                         continue;
                     }
                 };
-                let input = match super::memory_context::prepare_turn(
-                    config.memory.as_ref(),
-                    thread.conversation_id(),
-                    &owner_input,
-                )
-                .await
+                let input = match config
+                    .prepare_turn(thread.conversation_id(), &owner_input)
+                    .await
                 {
                     Ok(text) => text,
                     Err(error) => {

@@ -94,18 +94,25 @@ fetch timestamp. The shared management read model treats a cache up to 24 hours
 old as fresh and an older cache as stale. Version-1 caches remain readable with
 unknown age rather than being discarded or assigned a fabricated timestamp.
 
-Quick Setup is the one deliberate pre-install discovery path. It constructs a
+Adding a connection in Quick Setup is the deliberate pre-install discovery path. It constructs a
 staged registry, establishes the endpoint/executable plus credential/account,
 and fetches a live catalog before committing anything. Only an id from that
 result can become the installed default model. After the configuration commit,
 Xana writes the same bounded non-secret result to the normal catalog cache so
 the first conversation sees the capabilities that setup validated. A hidden API key
 is held in zeroizing memory until confirmation; configuration contains only
-its OS-store id or environment-variable name. A successful replacement clears
+its OS-store id or environment-variable name. Replacing the selected default's
+binding (including its endpoint, credential reference or executable) clears
 the separate foreground selection in the rollback-safe transaction, making
 the installed default connection/model effective for the next conversation
 instead of resuming an older valid or now-orphaned override. This transaction
 does not turn ordinary startup into implicit network discovery.
+Reusing an existing connection instead offers configured/cached models and
+stages a complete profile through the same setup/customization transaction, with
+no account probe. Live refresh is explicit. Naming an additional profile does
+not clear the current default's override. Changing the default identity advances
+the config revision instead; version-3 selections carry their owning profile UUID
+so an old override cannot select a model for the new default.
 
 `connection_management` is the presentation-neutral boundary for ongoing
 connection work. It projects independent credential, managed-account,

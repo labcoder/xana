@@ -524,10 +524,8 @@ fn full_setup_named_profile_and_lifecycle_round_trip_share_one_binding() {
     assert_success(&listed);
     let list = String::from_utf8_lossy(&listed.stdout);
     assert!(list.contains("xana-dev"));
-    let config: toml::Value = std::fs::read_to_string(home.join("config.toml"))
-        .unwrap()
-        .parse()
-        .unwrap();
+    let config: toml::Value =
+        toml::from_str(&std::fs::read_to_string(home.join("config.toml")).unwrap()).unwrap();
     assert_eq!(config["default_profile"].as_str(), Some("xana-dev"));
     assert_eq!(config["profiles"].as_table().unwrap().len(), 1);
     for name in ["personal", "work"] {

@@ -972,6 +972,17 @@ mod tests {
     }
 
     #[test]
+    fn reconfiguration_normalizes_the_existing_legacy_profile_binding() {
+        let existing = base().replace("connection = \"ollama\"", "provider = \"ollama\"");
+        let replacement = base().replace("old", "new");
+        let merged = merge_connection(&existing, &replacement).unwrap();
+        let registry = XanaConfig::parse_registry(&merged).unwrap();
+        assert_eq!(registry.profiles["default"].connection, "ollama");
+        assert_eq!(registry.profiles["default"].model, "new");
+        assert!(!merged.contains("provider = \"ollama\""));
+    }
+
+    #[test]
     fn quick_reconfiguration_preserves_existing_connections() {
         let directory = tempdir().unwrap();
         let paths =

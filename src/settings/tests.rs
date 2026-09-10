@@ -33,7 +33,7 @@ fn fixture() -> (TempDir, XanaPaths) {
 #[test]
 fn default_profile_choices_and_reset_do_not_reserve_a_literal_name() {
     let (_directory, paths) = fixture();
-    XanaConfig::rename_profile(paths.config_file(), "default", "personal").unwrap();
+    XanaConfig::rename_profile(paths.config_file(), "default", "personal", || Ok(())).unwrap();
     XanaConfig::create_profile_from_defaults(paths.config_file(), "work", None, None, false)
         .unwrap();
     let manager = SettingsManager::new(&paths);

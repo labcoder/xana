@@ -183,8 +183,10 @@ impl ProfileStore {
         &self,
         plan: &crate::config::profiles::ProfileRetirement,
     ) -> Result<(), ProfileError> {
-        self.check_project_references(&plan.name)?;
-        Ok(XanaConfig::retire_profile(&self.config_file, plan)?)
+        Ok(XanaConfig::retire_profile(&self.config_file, plan, || {
+            self.check_project_references(&plan.name)
+                .map_err(|error| crate::config::ConfigError::Edit(error.to_string()))
+        })?)
     }
 
     fn check_project_references(&self, name: &str) -> Result<(), ProfileError> {
@@ -236,8 +238,10 @@ impl ProfileStore {
         old: &str,
         new: &str,
     ) -> Result<ProfileConfig, ProfileError> {
-        self.check_project_references(old)?;
-        XanaConfig::rename_profile(&self.config_file, old, new)?;
+        XanaConfig::rename_profile(&self.config_file, old, new, || {
+            self.check_project_references(old)
+                .map_err(|error| crate::config::ConfigError::Edit(error.to_string()))
+        })?;
         self.inspect_global(new)
     }
 

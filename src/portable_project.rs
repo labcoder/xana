@@ -223,6 +223,8 @@ impl PortableProjectStore {
         paths: &XanaPaths,
         workspace: &Path,
     ) -> Result<PortableResolution, PortableProjectError> {
+        let _config_lock = crate::config::ConfigTransactionLock::acquire(paths.config_file())
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
         let inspection = Self::inspect_with_user_authority(workspace, paths.config_file())?;
         let projects = ProjectStore::open(paths).map_err(PortableProjectError::Project)?;
         let project = match projects
@@ -252,6 +254,8 @@ impl PortableProjectStore {
         paths: &XanaPaths,
         project: crate::identity::ProjectId,
     ) -> Result<PortableResolution, PortableProjectError> {
+        let _config_lock = crate::config::ConfigTransactionLock::acquire(paths.config_file())
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
         let projects = ProjectStore::open(paths).map_err(PortableProjectError::Project)?;
         let project_record = projects
             .get(project)
@@ -547,7 +551,7 @@ impl PortableProjectStore {
     ) -> Result<PortableProfile, PortableProjectError> {
         self.edit_profiles(paths, project, |manifest| {
             if archived && manifest.default_profile.as_deref() == Some(name) {
-                manifest.default_profile = next_portable_default(manifest, name);
+                manifest.default_profile = None;
             }
             manifest
                 .profiles
@@ -569,7 +573,7 @@ impl PortableProjectStore {
     ) -> Result<(), PortableProjectError> {
         self.edit_profiles(paths, project, |manifest| {
             if manifest.default_profile.as_deref() == Some(name) {
-                manifest.default_profile = next_portable_default(manifest, name);
+                manifest.default_profile = None;
             }
             if manifest.profiles.remove(name).is_none() {
                 return Err(PortableProjectError::Invalid(format!(
@@ -637,6 +641,9 @@ impl PortableProjectStore {
         edit: impl FnOnce(&mut PortableProjectManifest) -> Result<T, PortableProjectError>,
     ) -> Result<T, PortableProjectError> {
         let workspace = project_workspace(paths, project)?;
+        // Global authority and portable references share lock order: config, then manifest.
+        let _config_lock = crate::config::ConfigTransactionLock::acquire(paths.config_file())
+            .map_err(|error| PortableProjectError::Invalid(error.to_string()))?;
         let path = Self::detect(&workspace)?.ok_or_else(|| {
             PortableProjectError::Invalid(format!(
                 "project {project} is private; run `xana project share {project}` first"
@@ -692,20 +699,6 @@ impl PortableProjectStore {
     }
 }
 
-fn next_portable_default(manifest: &PortableProjectManifest, removed: &str) -> Option<String> {
-    let eligible = || {
-        manifest.profiles.iter().filter(|(name, profile)| {
-            name.as_str() != removed
-                && !profile.archived
-                && profile.applies_to.contains(&ProfileUse::Primary)
-        })
-    };
-    eligible()
-        .find(|(name, _)| name.as_str() > removed)
-        .or_else(|| eligible().next())
-        .map(|(name, _)| name.clone())
-}
-
 fn project_workspace(
     paths: &XanaPaths,
     project: crate::identity::ProjectId,
@@ -740,16 +733,14 @@ fn validate_manifest(manifest: &PortableProjectManifest) -> Result<(), PortableP
         "required service connections",
         &manifest.requirements.service_connections,
     )?;
+    let mut profile_ids = std::collections::BTreeSet::new();
     for (name, profile) in &manifest.profiles {
         validate_stable_name("portable profile", name)?;
         validate_stable_name("authority profile", &profile.authority_profile)?;
         validate_stable_name("logical connection", &profile.connection)?;
         validate_text("model", &profile.model, 1, 512)?;
-        if let Some(profile_id) = profile.profile_id
-            && manifest.profiles.iter().any(|(other_name, other)| {
-                other_name != name && other.profile_id == Some(profile_id)
-            })
-        {
+        let profile_id = PortableProjectStore::profile_id(manifest, name, profile);
+        if !profile_ids.insert(profile_id) {
             return Err(PortableProjectError::Invalid(format!(
                 "portable profiles contain duplicate profile_id {profile_id}"
             )));
@@ -1408,7 +1399,7 @@ service_routes = []
     }
 
     #[test]
-    fn retiring_portable_defaults_promotes_then_clears_the_optional_pointer() {
+    fn retiring_portable_defaults_clears_pointer_without_substituting_authority() {
         for archive in [true, false] {
             let (directory, paths) = paths();
             let (project, _) = shared_project(&paths, &directory.path().join("workspace"));
@@ -1428,7 +1419,7 @@ service_routes = []
                     Ok(())
                 })
                 .unwrap();
-            for (name, expected) in [("first", Some("second")), ("second", None)] {
+            for name in ["first", "second"] {
                 if archive {
                     portable
                         .set_profile_archived(&paths, project.id, name, true)
@@ -1439,9 +1430,47 @@ service_routes = []
                 let manifest = PortableProjectStore::inspect(&project.canonical_workspace)
                     .unwrap()
                     .manifest;
-                assert_eq!(manifest.default_profile.as_deref(), expected);
+                assert_eq!(manifest.default_profile, None);
             }
         }
+    }
+
+    #[test]
+    fn portable_validation_rejects_collisions_between_legacy_and_explicit_identity() {
+        let (directory, paths) = paths();
+        let (_, inspection) = shared_project(&paths, &directory.path().join("workspace"));
+        let mut manifest = inspection.manifest;
+        let mut profile: PortableProfile =
+            toml::from_str("authority_profile = 'default'\nconnection = 'chat'\nmodel = 'qwen'")
+                .unwrap();
+        manifest.requirements.connections.push("chat".into());
+        manifest.profiles.insert("alpha".into(), profile.clone());
+        profile.profile_id = Some(PortableProjectStore::profile_id(
+            &manifest, "alpha", &profile,
+        ));
+        manifest.profiles.insert("zebra".into(), profile);
+        assert!(
+            validate_manifest(&manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate profile_id")
+        );
+    }
+
+    #[test]
+    fn portable_authority_edits_do_not_race_a_global_profile_transaction() {
+        let (directory, paths) = paths();
+        let (project, inspection) = shared_project(&paths, &directory.path().join("workspace"));
+        let before = fs::read(&inspection.path).unwrap();
+        let _lock = crate::config::ConfigTransactionLock::acquire(paths.config_file()).unwrap();
+        let profile: PortableProfile =
+            toml::from_str("authority_profile = 'default'\nconnection = 'chat'\nmodel = 'qwen'")
+                .unwrap();
+        let error = PortableProjectStore::open(&paths)
+            .create_profile(&paths, project.id, "worker", profile)
+            .unwrap_err();
+        assert!(error.to_string().contains("another Xana process"));
+        assert_eq!(fs::read(&inspection.path).unwrap(), before);
     }
 
     #[test]

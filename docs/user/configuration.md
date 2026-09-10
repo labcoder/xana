@@ -104,7 +104,7 @@ headless form. A later successful connection setup removes the marker, while
 the newly established connection into a valid existing document, retaining
 other connections and unrelated profile, route, shell, and permission fields.
 When a valid configuration already contains connections, rich setup first
-offers the configured connections for live revalidation and model selection,
+offers configured connections and their configured/cached models for reuse,
 plus an explicit Add or update choice. One installation can therefore retain
 Ollama, OpenRouter, OpenAI, Anthropic, OpenAI-compatible, and managed Codex
 connections and switch the active connection/model without erasing the rest.
@@ -228,8 +228,10 @@ xana setup --section connection
 xana setup --section storage
 ```
 
-The connection section performs the same live availability and catalog checks
-as Quick Setup, then structurally replaces only the chosen provider and
+Adding a connection performs live availability and catalog checks. Reusing an
+existing connection uses configured/cached models without a provider call;
+`xana connection refresh NAME` requests live discovery separately. Both paths
+structurally update only the chosen provider and
 selected profile binding while preserving comments and unrelated config.
 Without `--profile`, that selected profile is the current default. Setup rejects
 a commit if configuration changed while its review was open; rerun the review

@@ -628,6 +628,9 @@ async fn configure_existing_connection(
     output: &mut impl Write,
     ui: SetupUi,
 ) -> Result<SetupOutcome> {
+    let source = read_optional_bounded(paths.config_file(), MAX_CONFIG_BYTES)?
+        .context("configuration disappeared during setup")?;
+    let expected_config = ConfigRevision(Some(blake3::hash(&source)));
     let registry = XanaConfig::load_registry_from(paths.config_file())
         .context("could not load configured connections")?;
     let connection = registry
@@ -636,36 +639,18 @@ async fn configure_existing_connection(
         .cloned()
         .context("selected connection disappeared during setup")?;
     let selection_path = paths.data_dir().join("selection.toml");
-    let manager = ModelManager::new(registry, paths.cache_dir().to_owned(), selection_path);
+    let manager = ModelManager::new(
+        registry,
+        paths.cache_dir().to_owned(),
+        selection_path.clone(),
+    );
     ui::show_status(
         output,
         ui,
-        "Establishing connection",
-        &format!("Checking {connection_id} before model selection"),
+        "Reuse configured connection",
+        "Choose a configured/cached model; use connection refresh separately for live discovery",
     )?;
-    let models = if connection.kind == ProviderKind::Codex {
-        let mut server = CodexAppServer::spawn(&CodexLaunchConfig {
-            program: connection
-                .codex_program
-                .clone()
-                .unwrap_or_else(|| "codex".to_owned()),
-            home: connection.codex_home.clone(),
-        })
-        .await
-        .context("configured Codex executable or app-server is unavailable")?;
-        if matches!(server.account_status().await?, AccountStatus::LoggedOut) {
-            bail!("Codex is logged out; run `codex login`, then retry setup");
-        }
-        server
-            .models()
-            .await
-            .context("Codex model discovery failed")?
-    } else {
-        manager
-            .probe_native(connection_id, None)
-            .await
-            .context("could not establish the configured provider")?
-    };
+    let models = manager.models_for(&connection);
     if models.is_empty() {
         bail!("the established connection advertised no selectable models");
     }
@@ -675,7 +660,37 @@ async fn configure_existing_connection(
         .find(|candidate| candidate.id == model)
         .context("selected model disappeared from the live catalog")?;
     let reasoning = choose_reasoning(args, connection.kind, descriptor, input, output, ui)?;
+    let mut replacement = std::str::from_utf8(&source)?.parse::<toml_edit::DocumentMut>()?;
+    replacement["providers"]
+        .as_table_mut()
+        .context("missing providers")?
+        .retain(|name, _| name == connection_id);
+    let default = replacement["default_profile"]
+        .as_str()
+        .context("missing default profile")?
+        .to_owned();
+    let profile = replacement["profiles"][&default]
+        .as_table_mut()
+        .context("missing default profile table")?;
+    profile.remove("provider");
+    profile["connection"] = toml_edit::value(connection_id);
+    profile["model"] = toml_edit::value(&model);
+    if connection.kind != ProviderKind::Codex {
+        profile.remove("reasoning_summary");
+    }
+    match &reasoning {
+        Some(value) => {
+            profile["reasoning_effort"] = toml_edit::value(value);
+        }
+        None => {
+            profile.remove("reasoning_effort");
+        }
+    }
+    let customization =
+        custom::customize_quick(replacement.to_string(), args, paths, input, output, ui)?;
+    let registry = XanaConfig::parse_registry(&customization.config)?;
     let review = vec![
+        format!("Default profile {}", registry.default_profile),
         format!("Connection   {connection_id}"),
         format!("Kind         {}", connection.kind.as_str()),
         format!("Model        {model}"),
@@ -691,12 +706,19 @@ async fn configure_existing_connection(
     if !args.yes && !ui::confirm_review(input, output, ui, "Use configured connection", &review)? {
         return Ok(SetupOutcome::Unchanged);
     }
-    manager
-        .write_discovered_cache(connection_id, &models)
-        .context("could not cache the established model catalog")?;
-    manager
-        .select_with_options(connection_id, &model, reasoning, None)
-        .context("could not persist the selected connection and model")?;
+    let reset_selection = resets_model_selection(paths.config_file(), &customization.config)?;
+    install_with_preferences(
+        paths.config_file(),
+        &customization.config,
+        None,
+        &OsSecretStore,
+        customization
+            .preferences
+            .as_ref()
+            .map(|text| (paths.presentation_file(), text.as_bytes())),
+        reset_selection.then_some(selection_path.as_path()),
+        Some(expected_config),
+    )?;
     state::clear_blank(paths)
         .context("configuration selected, but obsolete blank setup state could not be removed")?;
     Ok(SetupOutcome::Committed {
@@ -1394,13 +1416,35 @@ fn resets_model_selection(path: &Path, rendered: &str) -> Result<bool> {
         Err(_) => return Ok(true),
     };
     let after = XanaConfig::parse_registry(rendered)?;
-    let before = &before.profiles[&before.default_profile];
-    let after = &after.profiles[&after.default_profile];
-    Ok(before.profile_id != after.profile_id
-        || before.connection != after.connection
-        || before.model != after.model
-        || before.reasoning_effort != after.reasoning_effort
-        || before.reasoning_summary != after.reasoning_summary)
+    let before_profile = &before.profiles[&before.default_profile];
+    let after_profile = &after.profiles[&after.default_profile];
+    let before_connection = &before.connections[&before_profile.connection];
+    let Some(after_connection) = after.connections.get(&before_profile.connection) else {
+        return Ok(true);
+    };
+    let connection_changed = (
+        before_connection.kind,
+        &before_connection.base_url,
+        &before_connection.credential,
+        &before_connection.codex_program,
+        &before_connection.codex_home,
+    ) != (
+        after_connection.kind,
+        &after_connection.base_url,
+        &after_connection.credential,
+        &after_connection.codex_program,
+        &after_connection.codex_home,
+    );
+    if connection_changed {
+        return Ok(true);
+    }
+    if before_profile.profile_id != after_profile.profile_id {
+        return Ok(false); // Keep the old override only while its connection is unchanged.
+    }
+    Ok(before_profile.connection != after_profile.connection
+        || before_profile.model != after_profile.model
+        || before_profile.reasoning_effort != after_profile.reasoning_effort
+        || before_profile.reasoning_summary != after_profile.reasoning_summary)
 }
 
 fn install_with_preferences(
@@ -1638,6 +1682,135 @@ mod tests {
             );
             assert!(!path.with_extension("toml.bak").exists());
         }
+    }
+
+    #[test]
+    fn replacing_endpoint_under_same_connection_invalidates_stale_selection() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let before = rendered("same-model");
+        fs::write(&path, &before).unwrap();
+        assert!(!resets_model_selection(&path, &before).unwrap());
+        assert!(resets_model_selection(&path, &before.replace("11434", "23456")).unwrap());
+        let mut added = before.parse::<toml_edit::DocumentMut>().unwrap();
+        crate::config::profiles::ensure_profile(&mut added, "work").unwrap();
+        added["profiles"]["work"]["model"] = toml_edit::value("additional-model");
+        assert!(!resets_model_selection(&path, &added.to_string()).unwrap());
+        added["default_profile"] = toml_edit::value("work");
+        assert!(!resets_model_selection(&path, &added.to_string()).unwrap());
+        assert!(
+            resets_model_selection(&path, &added.to_string().replace("11434", "23456")).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn existing_connection_setup_creates_a_named_profile_offline() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        fs::write(paths.config_file(), rendered("cached-model")).unwrap();
+        let before = fs::read(paths.config_file()).unwrap();
+        let mut args = SetupArgs {
+            full: true,
+            non_interactive: true,
+            yes: true,
+            profile: Some("work".into()),
+            model: Some("cached-model".into()),
+            dry_run: true,
+            ..SetupArgs::default()
+        };
+        configure_existing_connection(
+            &args,
+            &paths,
+            "ollama",
+            &mut io::Cursor::new([]),
+            &mut Vec::new(),
+            plain_ui(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read(paths.config_file()).unwrap(), before);
+        args.dry_run = false;
+        args.make_default = true;
+        configure_existing_connection(
+            &args,
+            &paths,
+            "ollama",
+            &mut io::Cursor::new([]),
+            &mut Vec::new(),
+            plain_ui(),
+        )
+        .await
+        .unwrap();
+        let registry = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+        assert_eq!(registry.default_profile, "work");
+        assert_eq!(registry.profiles.len(), 2);
+        assert_eq!(registry.connections.len(), 1);
+        assert_eq!(registry.profiles["work"].model, "cached-model");
+    }
+
+    #[tokio::test]
+    async fn existing_native_connection_does_not_inherit_codex_reasoning_summary() {
+        let directory = tempdir().unwrap();
+        let paths =
+            XanaPaths::resolve(Some(directory.path().join("home").into_os_string())).unwrap();
+        fs::create_dir_all(paths.config_file().parent().unwrap()).unwrap();
+        let mut source = XanaConfig::render_initial(InitialConfig {
+            connection: InitialConnection::Codex {
+                name: "codex".into(),
+                program: "not-launched-fixture".into(),
+                home: None,
+            },
+            model: "managed-fixture".into(),
+            reasoning_effort: Some("medium".into()),
+            max_tool_rounds: 8,
+            permission_mode: PermissionMode::Ask,
+            shell: ShellConfig::default(),
+        })
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+        let native = rendered("cached-model")
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        source["providers"]["ollama"] = native["providers"]["ollama"].clone();
+        source["providers"]["ollama"]["models"] = toml_edit::Item::Table(toml_edit::Table::new());
+        source["providers"]["ollama"]["models"]["cached-model"] =
+            toml_edit::Item::Table(toml_edit::Table::new());
+        source["profiles"]["default"]["reasoning_summary"] = toml_edit::value("detailed");
+        fs::write(paths.config_file(), source.to_string()).unwrap();
+        let args = SetupArgs {
+            non_interactive: true,
+            yes: true,
+            profile: Some("work".into()),
+            make_default: true,
+            model: Some("cached-model".into()),
+            ..SetupArgs::default()
+        };
+        configure_existing_connection(
+            &args,
+            &paths,
+            "ollama",
+            &mut io::Cursor::new([]),
+            &mut Vec::new(),
+            plain_ui(),
+        )
+        .await
+        .unwrap();
+        let registry = XanaConfig::load_registry_from(paths.config_file()).unwrap();
+        assert_eq!(
+            registry.profiles["default"].reasoning_summary.as_deref(),
+            Some("detailed")
+        );
+        assert_eq!(registry.profiles["work"].reasoning_summary, None);
+        assert_eq!(registry.profiles["work"].reasoning_effort, None);
+        let manager = ModelManager::new(
+            registry,
+            paths.cache_dir().into(),
+            paths.data_dir().join("selection.toml"),
+        );
+        assert_eq!(manager.selected().unwrap().model, "cached-model");
     }
 
     #[tokio::test]

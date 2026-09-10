@@ -1673,9 +1673,15 @@ impl XanaConfig {
         transaction.commit(false)
     }
 
-    pub(crate) fn rename_profile(path: &Path, old: &str, new: &str) -> Result<(), ConfigError> {
+    pub(crate) fn rename_profile(
+        path: &Path,
+        old: &str,
+        new: &str,
+        check_references: impl FnOnce() -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
         validate_name("profile", new)?;
         let mut transaction = ConfigEditTransaction::begin(path)?;
+        check_references()?;
         let identity = transaction
             .registry
             .profiles

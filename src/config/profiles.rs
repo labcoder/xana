@@ -64,6 +64,11 @@ impl XanaConfig {
             profile["connection"] = value(connection);
         }
         if let Some(model) = model {
+            if profile.get("model").and_then(Item::as_str) != Some(model) {
+                // Reasoning support belongs to the model; do not copy another model's options.
+                profile.remove("reasoning_effort");
+                profile.remove("reasoning_summary");
+            }
             profile["model"] = value(model);
         }
         if make_default {
@@ -127,8 +132,13 @@ impl XanaConfig {
     }
 
     /// Applying a reviewed plan is one validated config replacement under the writer lock.
-    pub(crate) fn retire_profile(path: &Path, plan: &ProfileRetirement) -> Result<(), ConfigError> {
+    pub(crate) fn retire_profile(
+        path: &Path,
+        plan: &ProfileRetirement,
+        check_references: impl FnOnce() -> Result<(), ConfigError>,
+    ) -> Result<(), ConfigError> {
         let mut transaction = ConfigEditTransaction::begin(path)?;
+        check_references()?;
         if blake3::hash(read_config(path)?.as_bytes())
             .to_hex()
             .as_str()
@@ -208,10 +218,11 @@ pub(crate) fn ensure_profile(document: &mut DocumentMut, name: &str) -> Result<(
             .as_table_mut()
             .ok_or_else(|| ConfigError::Edit("profile must be a table".into()))?;
         table.remove("archived");
-        if let Some(provider) = table.remove("provider") {
-            table.insert("connection", provider);
-        }
         profiles.insert(name, profile);
+    }
+    let table = profile_table_mut(document, name)?;
+    if let Some(provider) = table.remove("provider") {
+        table.insert("connection", provider);
     }
     Ok(())
 }

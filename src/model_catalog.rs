@@ -200,6 +200,8 @@ pub(crate) struct ModelSelection {
 struct SelectionDocument {
     version: u32,
     #[serde(default)]
+    profile_id: Option<uuid::Uuid>,
+    #[serde(default)]
     model_selection_revision: Option<uuid::Uuid>,
     connection: String,
     model: String,
@@ -296,6 +298,8 @@ impl Error for ModelError {
 
 pub(crate) struct ModelManager {
     registry: ConnectionRegistry,
+    selection_profile: String,
+    selection_profile_id: Option<uuid::Uuid>,
     cache_root: PathBuf,
     selection_path: PathBuf,
     client: Client,
@@ -309,6 +313,11 @@ impl ModelManager {
         selection_path: PathBuf,
     ) -> Self {
         Self {
+            selection_profile: registry.default_profile.clone(),
+            selection_profile_id: registry
+                .profiles
+                .get(&registry.default_profile)
+                .map(|profile| profile.profile_id),
             registry,
             cache_root,
             selection_path,
@@ -322,7 +331,20 @@ impl ModelManager {
     }
 
     pub(crate) fn selected(&self) -> Result<ModelSelection, ModelError> {
-        self.selected_for_profile(&self.registry.default_profile)
+        self.selection_owner()?;
+        self.selected_for_profile(&self.selection_profile)
+    }
+
+    pub(crate) fn for_profile(mut self, name: &str, profile_id: uuid::Uuid) -> Self {
+        self.selection_profile = name.to_owned();
+        self.selection_profile_id = Some(profile_id);
+        self
+    }
+
+    fn selection_owner(&self) -> Result<&crate::config::ProfileConfig, ModelError> {
+        self.registry.profiles.get(&self.selection_profile)
+            .filter(|profile| !profile.archived && Some(profile.profile_id) == self.selection_profile_id)
+            .ok_or_else(|| ModelError::InvalidOption(format!("profile {:?} is unavailable or has a different identity; select an active profile before changing its model", self.selection_profile)))
     }
 
     pub(crate) fn selected_for_profile(&self, profile: &str) -> Result<ModelSelection, ModelError> {
@@ -336,7 +358,17 @@ impl ModelManager {
                         document.version
                     )));
                 }
-                if document.model_selection_revision != self.registry.model_selection_revision {
+                if document.profile_id.is_some_and(|owner| {
+                    self.registry
+                        .profiles
+                        .get(profile)
+                        .is_none_or(|selected| selected.profile_id != owner)
+                }) {
+                    return self.configured_profile(profile);
+                }
+                if profile == self.registry.default_profile
+                    && document.model_selection_revision != self.registry.model_selection_revision
+                {
                     return self.configured_profile(profile);
                 }
                 let selection = ModelSelection {
@@ -439,8 +471,10 @@ impl ModelManager {
     }
 
     fn write_selection(&self, selection: &ModelSelection) -> Result<(), ModelError> {
+        let owner = self.selection_owner()?;
         let document = SelectionDocument {
             version: 3,
+            profile_id: Some(owner.profile_id),
             model_selection_revision: self.registry.model_selection_revision,
             connection: selection.connection.clone(),
             model: selection.model.clone(),

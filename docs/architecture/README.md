@@ -1771,22 +1771,31 @@ The writer lock, exact input revision check, pointer update, route removal and
 config validation share one atomic commit. Routes are removed only through the
 review, never redirected to the successor. Registered project authority references
 block rename/removal until explicitly changed; retained jobs keep their binding.
+Portable profile writes/registration and global retirement use the config lock
+before any portable-manifest lock, so reference validation remains inside the
+write transaction. Removing an optional portable default clears its pointer
+instead of substituting another authority. Effective portable UUID validation
+includes legacy derived IDs, not only explicitly stored IDs.
 Credentials, historical snapshots, artifacts and private memory are not purged or
 transferred. Copying integration requirements does not copy private scope grants.
 
 Default identity changes advance `model_selection_revision` in that same config
-transaction. Version-3 `selection.toml` records the revision; older/mismatched
-overrides fall back to the selected profile's configured binding. Existing
-version-1/2 selections remain valid until a default change. This avoids a
-two-file mutation when promoting a profile and prevents an old override masking
-the new default. Settings preview derives the revision deterministically; reset
+transaction. Version-3 `selection.toml` records the revision and owning profile
+UUID. A different profile ignores that override; the new default rejects an
+older default revision without deleting the prior profile's override. Legacy
+unscoped selections retain their compatibility behavior until rewritten, but
+cannot mask a newly designated default. There remains one foreground override,
+not a per-conversation selection database. This avoids a two-file mutation when
+promoting a profile. Settings preview derives the revision deterministically; reset
 retains the current valid default rather than inventing a profile named `default`.
 
 Native new-turn resolution matches the historical profile UUID, not its old
 name, and falls back to that profile's binding rather than the global default.
 Retired native profiles can still display retained history, but strict new-turn
 resolution requires explicit recovery. Active/suspended operations retain their
-configuration; managed Codex retains its frozen authority and vendor lifecycle.
+configuration; managed Codex retains its frozen authority and vendor lifecycle,
+but all managed new-turn paths check current profile eligibility before vendor
+submission through an off-thread, shared guard.
 Setup captures a config revision before interaction and checks it again before
 installation; conflicting drafts cannot overwrite another writer's config,
 credentials or presentation preferences.

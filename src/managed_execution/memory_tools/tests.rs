@@ -138,6 +138,7 @@ async fn cleared_managed_conversation_cannot_lookup_or_write_prior_project_scope
         owner.remember(scope, statement.into(), None).unwrap();
     }
     let config = ManagedChatConfig {
+        profile_guard: None,
         memory: Some(owner.clone()),
         permission_default: PolicyDecision::Ask,
         permission_rules: vec![],
